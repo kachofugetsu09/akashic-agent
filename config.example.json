@@ -1,0 +1,39 @@
+{
+  "_comment": "将此文件复制为 config.json，填入对应值即可使用",
+
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "api_key": "${DEEPSEEK_API_KEY}",
+  "system_prompt": "You are Akasic, a helpful AI assistant with access to tools. Always respond in the same language the user uses.",
+  "max_tokens": 8192,
+  "max_iterations": 10,
+
+  "channels": {
+    "_comment": "不配置 telegram 则只启动 IPC server（供 CLI 客户端连接）",
+
+    "telegram": {
+      "token": "${TELEGRAM_BOT_TOKEN}",
+      "allowFrom": ["your_username_or_numeric_id"]
+    },
+
+    "cli": {
+      "_comment": "CLI IPC server 配置，通常不需要修改",
+      "socket": "/tmp/akasic.sock"
+    }
+  },
+
+  "_provider_presets": {
+    "_comment": "以下 provider 有内置 base_url，无需手动填写",
+    "deepseek": "https://api.deepseek.com/v1",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "openai": "https://api.openai.com/v1"
+  },
+
+  "_custom_provider_example": {
+    "_comment": "自定义 OpenAI 兼容地址时，显式填写 base_url",
+    "provider": "my-provider",
+    "model": "some-model",
+    "api_key": "${MY_API_KEY}",
+    "base_url": "https://my-llm-api.example.com/v1"
+  }
+}

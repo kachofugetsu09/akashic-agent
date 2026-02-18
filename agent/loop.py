@@ -37,7 +37,7 @@ class AgentLoop:
 
     async def run(self) -> None:
         self._running = True
-        logger.info("AgentLoop 启动")
+        logger.info(f"AgentLoop 启动  model={self.model}  max_iter={self.max_iterations}")
         while self._running:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
@@ -62,8 +62,21 @@ class AgentLoop:
 
     async def _process(self, msg: InboundMessage) -> OutboundMessage:
         history = self._history.setdefault(msg.session_key, [])
+        is_new = len(history) == 0
         history.append({"role": "user", "content": msg.content})
+
+        preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
+        logger.info(
+            f"[{msg.channel}] 收到消息  session={msg.session_key}"
+            f"  {'(新会话)' if is_new else f'(历史{len(history)}条)'}"
+            f"  内容: {preview!r}"
+        )
+
         reply = await self._run_agent_loop(history)
+
+        reply_preview = reply[:60] + "..." if len(reply) > 60 else reply
+        logger.info(f"[{msg.channel}] 回复完成  session={msg.session_key}  内容: {reply_preview!r}")
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -73,7 +86,9 @@ class AgentLoop:
 
     async def _run_agent_loop(self, history: list[dict]) -> str:
         """迭代调用 LLM，直到无工具调用或达到上限"""
-        for _ in range(self.max_iterations):
+        iteration = 0
+        for iteration in range(self.max_iterations):
+            logger.debug(f"LLM 调用  iteration={iteration + 1}")
             response = await self.provider.chat(
                 messages=history,
                 tools=self.tools.get_schemas(),
@@ -82,7 +97,8 @@ class AgentLoop:
             )
 
             if response.tool_calls:
-                # assistant 消息（含 tool_calls 字段）
+                logger.info(f"LLM 请求调用 {len(response.tool_calls)} 个工具: "
+                            f"{[tc.name for tc in response.tool_calls]}")
                 history.append({
                     "role": "assistant",
                     "content": response.content,
@@ -98,13 +114,17 @@ class AgentLoop:
                         for tc in response.tool_calls
                     ],
                 })
-                # 每个工具结果独立一条 role=tool 消息
                 for tc in response.tool_calls:
-                    logger.info(f"调用工具: {tc.name}  参数: {tc.arguments}")
+                    args_str = json.dumps(tc.arguments, ensure_ascii=False)
+                    logger.info(f"  → 工具 {tc.name}  参数: {args_str[:120]}")
                     result = await self.tools.execute(tc.name, tc.arguments)
+                    result_preview = result[:80] + "..." if len(result) > 80 else result
+                    logger.info(f"  ← 工具 {tc.name}  结果: {result_preview!r}")
                     history.append({"role": "tool", "tool_call_id": tc.id, "content": result})
             else:
+                logger.info(f"LLM 返回最终回复  iteration={iteration + 1}")
                 history.append({"role": "assistant", "content": response.content})
                 return response.content or "（无响应）"
 
+        logger.warning(f"已达到最大迭代次数 {self.max_iterations}")
         return "（已达到最大迭代次数）"

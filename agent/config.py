@@ -10,22 +10,38 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 内置 OpenAI 兼容服务的 base_url 预设
 _PRESETS: dict[str, str] = {
-    "qwen":    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "qwen":     "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "deepseek": "https://api.deepseek.com/v1",
     "openai":   "https://api.openai.com/v1",
 }
 
+# CLI channel 默认 Unix socket 路径
+DEFAULT_SOCKET = "/tmp/akasic.sock"
+
+
+@dataclass
+class TelegramChannelConfig:
+    token: str
+    allow_from: list[str] = field(default_factory=list)  # 空 = 允许所有人
+
+
+@dataclass
+class ChannelsConfig:
+    telegram: TelegramChannelConfig | None = None
+    socket: str = DEFAULT_SOCKET        # IPC server 监听路径
+
+
 @dataclass
 class Config:
-    provider: str           # "qwen" | "deepseek" | "openai" | 自定义名
+    provider: str
     model: str
     api_key: str
     system_prompt: str
     max_tokens: int = 8192
     max_iterations: int = 10
-    base_url: str | None = None     # 内置预设或显式指定
+    base_url: str | None = None
+    channels: ChannelsConfig = field(default_factory=ChannelsConfig)
 
     @classmethod
     def load(cls, path: str | Path = "config.json") -> Config:
@@ -33,22 +49,31 @@ class Config:
             data = json.load(f)
 
         provider = data["provider"]
-        api_key = _resolve(data.get("api_key", ""))
+        channels_data = data.get("channels", {})
 
-        # base_url 优先级：显式配置 > 内置预设 > None（Anthropic 不需要）
-        base_url = data.get("base_url") or _PRESETS.get(provider)
+        telegram = None
+        if tg := channels_data.get("telegram"):
+            telegram = TelegramChannelConfig(
+                token=_resolve(tg["token"]),
+                allow_from=[str(u) for u in tg.get("allowFrom", [])],
+            )
+
+        channels = ChannelsConfig(
+            telegram=telegram,
+            socket=channels_data.get("cli", {}).get("socket", DEFAULT_SOCKET),
+        )
 
         return cls(
             provider=provider,
             model=data["model"],
-            api_key=api_key,
+            api_key=_resolve(data.get("api_key", "")),
             system_prompt=data.get("system_prompt", "You are a helpful assistant."),
             max_tokens=data.get("max_tokens", 8192),
             max_iterations=data.get("max_iterations", 10),
-            base_url=base_url,
+            base_url=data.get("base_url") or _PRESETS.get(provider),
+            channels=channels,
         )
 
 
 def _resolve(value: str) -> str:
-    """将 ${VAR_NAME} 替换为对应环境变量值"""
     return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)

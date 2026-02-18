@@ -1,72 +1,72 @@
 """
-CLI Channel
-将标准输入/输出作为一个 channel 接入 MessageBus。
-用法：python main.py
+CLI Channel（客户端）
+
+连接到运行中的 agent 实例（通过 Unix socket），提供交互式命令行界面。
+启动方式：python main.py cli
 """
 import asyncio
+import json
 import sys
 
-from bus.events import InboundMessage
-from bus.queue import MessageBus
+from agent.config import DEFAULT_SOCKET
 
-_CHANNEL = "cli"
-_CHAT_ID = "default"
 _EXIT_CMDS = {"exit", "quit", "q"}
 
 
-class CLIChannel:
-    """
-    CLI 是一种特殊的 channel：
-    - stdin  → publish_inbound  → AgentLoop
-    - AgentLoop → publish_outbound → stdout
-    """
+class CLIClient:
+    """连接到已运行的 agent 实例"""
 
-    def __init__(self, bus: MessageBus) -> None:
-        self.bus = bus
-        self._response_ready = asyncio.Event()
-        self._last_response: str = ""
-        bus.subscribe_outbound(_CHANNEL, self._on_response)
+    def __init__(self, socket_path: str = DEFAULT_SOCKET) -> None:
+        self._socket_path = socket_path
 
     async def run(self) -> None:
+        try:
+            reader, writer = await asyncio.open_unix_connection(self._socket_path)
+        except (FileNotFoundError, ConnectionRefusedError):
+            print(f"无法连接到 agent（{self._socket_path}），请先启动主进程：python main.py")
+            return
+
         _print_banner()
+
+        # 后台持续接收 agent 回复
+        receive_task = asyncio.create_task(self._receive(reader))
+
+        try:
+            while True:
+                text = await _read_line()
+                stripped = text.strip()
+                if stripped.lower() in _EXIT_CMDS:
+                    break
+                if not stripped:
+                    continue
+                payload = json.dumps({"content": stripped}, ensure_ascii=False) + "\n"
+                writer.write(payload.encode())
+                await writer.drain()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        finally:
+            receive_task.cancel()
+            writer.close()
+            print("\n再见！")
+
+    @staticmethod
+    async def _receive(reader: asyncio.StreamReader) -> None:
         while True:
-            try:
-                user_input = await _read_line()
-            except (EOFError, KeyboardInterrupt):
+            line = await reader.readline()
+            if not line:
+                print("\n连接已断开")
                 break
-
-            text = user_input.strip()
-            if not text:
-                continue
-            if text.lower() in _EXIT_CMDS:
-                break
-
-            # 发送消息，等待回复
-            self._response_ready.clear()
-            await self.bus.publish_inbound(InboundMessage(
-                channel=_CHANNEL,
-                sender="user",
-                chat_id=_CHAT_ID,
-                content=text,
-            ))
-            await self._response_ready.wait()
-            print(f"\n{self._last_response}\n")
-
-        print("再见！")
-
-    async def _on_response(self, msg) -> None:
-        self._last_response = msg.content
-        self._response_ready.set()
+            data = json.loads(line)
+            print(f"\n{data['content']}\n> ", end="", flush=True)
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────
 
 def _print_banner() -> None:
-    print("Akasic Agent  |  输入 exit 退出\n")
+    print("Akasic Agent CLI  |  输入 exit 退出\n")
 
 
 async def _read_line() -> str:
-    """在线程池中读取 stdin，不阻塞事件循环"""
     loop = asyncio.get_event_loop()
     sys.stdout.write("> ")
     sys.stdout.flush()
