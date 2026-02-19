@@ -6,6 +6,7 @@ from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
+from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class AgentLoop:
         bus: MessageBus,
         provider: LLMProvider,
         tools: ToolRegistry,
+        session_manager: SessionManager,
         model: str = "deepseek-chat",
         max_iterations: int = 10,
         max_tokens: int = 8192,
@@ -29,11 +31,11 @@ class AgentLoop:
         self.bus = bus
         self.provider = provider
         self.tools = tools
+        self.session_manager = session_manager
         self.model = model
         self.max_iterations = max_iterations
         self.max_tokens = max_tokens
         self._running = False
-        self._history: dict[str, list[dict]] = {}  # session_key → OpenAI messages
 
     async def run(self) -> None:
         self._running = True
@@ -61,9 +63,9 @@ class AgentLoop:
     # ── 私有方法 ──────────────────────────────────────────────────
 
     async def _process(self, msg: InboundMessage) -> OutboundMessage:
-        history = self._history.setdefault(msg.session_key, [])
+        session = self.session_manager.get_or_create(msg.session_key)
+        history = session.get_history()
         is_new = len(history) == 0
-        history.append({"role": "user", "content": msg.content})
 
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(
@@ -72,7 +74,15 @@ class AgentLoop:
             f"  内容: {preview!r}"
         )
 
+        # 将用户消息写入 session，并加入本轮 LLM 上下文
+        session.add_message("user", msg.content)
+        history.append({"role": "user", "content": msg.content})
+
         reply = await self._run_agent_loop(history)
+
+        # 将助手回复写入 session 并持久化
+        session.add_message("assistant", reply)
+        self.session_manager.save(session)
 
         reply_preview = reply[:60] + "..." if len(reply) > 60 else reply
         logger.info(f"[{msg.channel}] 回复完成  session={msg.session_key}  内容: {reply_preview!r}")

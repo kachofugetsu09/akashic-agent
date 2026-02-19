@@ -17,6 +17,7 @@ from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool
 from agent.tools.web_fetch import WebFetchTool
+from session.manager import SessionManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +33,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 # ── 服务端 ────────────────────────────────────────────────────────
 
-def _build_agent(config: Config) -> tuple[AgentLoop, MessageBus, ToolRegistry]:
+def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus, ToolRegistry]:
     bus = MessageBus()
     tools = ToolRegistry()
     tools.register(ShellTool())
@@ -42,8 +43,10 @@ def _build_agent(config: Config) -> tuple[AgentLoop, MessageBus, ToolRegistry]:
         base_url=config.base_url,
         system_prompt=config.system_prompt,
     )
+    session_manager = SessionManager(workspace)
     loop = AgentLoop(
         bus=bus, provider=provider, tools=tools,
+        session_manager=session_manager,
         model=config.model,
         max_iterations=config.max_iterations,
         max_tokens=config.max_tokens,
@@ -53,7 +56,8 @@ def _build_agent(config: Config) -> tuple[AgentLoop, MessageBus, ToolRegistry]:
 
 async def serve(config_path: str = "config.json") -> None:
     config = Config.load(config_path)
-    agent_loop, bus, tools = _build_agent(config)
+    workspace = Path(config_path).parent / "workspace"
+    agent_loop, bus, tools = _build_agent(config, workspace)
 
     from channels.ipc_server import IPCServerChannel
     ipc = IPCServerChannel(bus, config.channels.socket)
