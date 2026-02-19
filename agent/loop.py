@@ -16,7 +16,20 @@ from session.manager import SessionManager
 logger = logging.getLogger(__name__)
 
 # 内部注入的反思提示，不应持久化到 session
-_REFLECT_PROMPT = "Reflect on the results and decide next steps."
+_REFLECT_PROMPT = "根据上述工具执行结果，决定下一步操作。"
+
+# 检测到"零工具调用却声称完成操作"时的纠正提示
+_NO_TOOL_BUT_CLAIMED_PROMPT = (
+    "你在上一条回复中没有调用任何工具，但描述了某些操作的执行结果。"
+    "请现在实际调用工具完成任务，不要描述假设的执行过程。"
+)
+
+# 响应中暗示"已完成实际操作"的特征词（检测幻觉用）
+_ACTION_CLAIM_MARKERS = (
+    "successfully", "已下载", "下载完成", "已执行", "执行成功", "执行了",
+    "已安装", "安装完成", "i called", "i ran", "i executed", "shell tool",
+    "yt-dlp", "命令执行", "文件已保存", "下载到",
+)
 
 
 class AgentLoop:
@@ -167,6 +180,12 @@ class AgentLoop:
                 # 工具结果注入后，提示 LLM 反思并决定下一步
                 messages.append({"role": "user", "content": _REFLECT_PROMPT})
             else:
+                # 零工具调用但声称完成了操作 → 纠正一次
+                if not tools_used and _claims_action_without_tools(response.content):
+                    logger.warning("检测到零工具调用但声称完成操作，注入纠正提示")
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "user", "content": _NO_TOOL_BUT_CLAIMED_PROMPT})
+                    continue
                 logger.info(f"LLM 返回最终回复  iteration={iteration + 1}")
                 messages.append({"role": "assistant", "content": response.content})
                 return response.content or "（无响应）", tools_used
@@ -294,3 +313,13 @@ Respond with ONLY valid JSON, no markdown fences."""
         return response.content if response else ""
 
 
+def _claims_action_without_tools(content: str | None) -> bool:
+    """检测响应是否在没有工具调用的情况下声称完成了实际操作。
+
+    仅用于校验模型自身的输出，而非猜测用户意图。
+    触发条件：响应里含有"已执行/下载完成/successfully"等暗示操作已完成的词语。
+    """
+    if not content:
+        return False
+    lower = content.lower()
+    return any(marker in lower for marker in _ACTION_CLAIM_MARKERS)
