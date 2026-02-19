@@ -11,9 +11,13 @@ QQ Channel
 """
 import asyncio
 import logging
+from pathlib import Path
 
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
+
+# NcatBot 运行时产物（plugins、logs）放到用户目录，不污染项目目录
+_NCATBOT_DIR = Path.home() / ".akasic" / "ncatbot"
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,10 @@ class QQChannel:
         ncatbot_config.skip_ncatbot_install_check = True
         ncatbot_config.napcat.remote_mode = True
         ncatbot_config.enable_webui_interaction = False
+        # 运行时产物重定向到 ~/.akasic/ncatbot/，不污染项目目录
+        _NCATBOT_DIR.mkdir(parents=True, exist_ok=True)
+        (_NCATBOT_DIR / "plugins").mkdir(exist_ok=True)
+        ncatbot_config.plugin.plugins_dir = str(_NCATBOT_DIR / "plugins")
 
         # username（QQ 号字符串）→ chat_id 映射，供主动推送工具使用
         # QQ 私聊 chat_id == user_id，此 map 主要用于按 QQ 号检索

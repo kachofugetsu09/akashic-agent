@@ -15,9 +15,6 @@ logs/
 workspace/
 plugins/
 
-# NapCat 软链接（指向 ~/napcat，每台机器路径不同）
-/napcat
-
 # IDE
 .idea/
 .vscode/
