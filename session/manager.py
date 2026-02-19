@@ -118,9 +118,9 @@ class SessionManager:
                 "metadata": session.metadata
             }
             # 先写入元数据
-            f.write(json.dumps(metadata_line) +"\n")
+            f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
             for msg in session.messages:
-                f.write(json.dumps(msg) + "\n")
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
         self._cache[session.key] = session
 

@@ -56,7 +56,7 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
 
 async def serve(config_path: str = "config.json") -> None:
     config = Config.load(config_path)
-    workspace = Path(config_path).parent / "workspace"
+    workspace = Path.home() / ".akasic" / "workspace"
     agent_loop, bus, tools = _build_agent(config, workspace)
 
     from channels.ipc_server import IPCServerChannel
