@@ -118,7 +118,10 @@ class AgentLoop:
             metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
         )
 
-    async def _run_agent_loop(self, initial_messages: list[dict]) -> tuple[str, list[str]]:
+    async def _run_agent_loop(
+        self,
+        initial_messages: list[dict],
+    ) -> tuple[str, list[str]]:
         """迭代调用 LLM，直到无工具调用或达到上限。返回 (final_content, tools_used)"""
         messages = initial_messages
         tools_used: list[str] = []
@@ -289,3 +292,5 @@ Respond with ONLY valid JSON, no markdown fences."""
 
         response = await self._process(msg, session_key=session_key)
         return response.content if response else ""
+
+

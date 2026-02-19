@@ -15,6 +15,7 @@ from agent.config import Config
 from agent.loop import AgentLoop
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
+from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.shell import ShellTool
 from agent.tools.web_fetch import WebFetchTool
@@ -39,6 +40,10 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     tools = ToolRegistry()
     tools.register(ShellTool())
     tools.register(WebFetchTool())
+    tools.register(ReadFileTool())
+    tools.register(WriteFileTool())
+    tools.register(EditFileTool())
+    tools.register(ListDirTool())
     push_tool = MessagePushTool()
     tools.register(push_tool)
     provider = LLMProvider(
@@ -74,7 +79,7 @@ async def serve(config_path: str = "config.json") -> None:
         tg = config.channels.telegram
         tg_channel = TelegramChannel(token=tg.token, bus=bus, session_manager=session_manager, allow_from=tg.allow_from)
         await tg_channel.start()
-        push_tool.register_channel("telegram", tg_channel.send)
+        push_tool.register_channel("telegram", text=tg_channel.send, file=tg_channel.send_file, image=tg_channel.send_image)
         print(f"Telegram Bot 已启动")
 
     qq_channel = None
@@ -83,7 +88,7 @@ async def serve(config_path: str = "config.json") -> None:
         qq = config.channels.qq
         qq_channel = QQChannel(bot_uin=qq.bot_uin, bus=bus, session_manager=session_manager, allow_from=qq.allow_from)
         await qq_channel.start()
-        push_tool.register_channel("qq", qq_channel.send)
+        push_tool.register_channel("qq", text=qq_channel.send, file=qq_channel.send_file, image=qq_channel.send_image)
         print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
 
     try:

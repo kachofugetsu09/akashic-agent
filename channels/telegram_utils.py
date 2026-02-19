@@ -38,4 +38,24 @@ async def send_markdown(bot: Bot, chat_id: int | str, text: str) -> None:
                 )
     except Exception as e:
         logger.warning(f"[telegram] Markdown 转换失败，降级纯文本: {e}")
-        await bot.send_message(chat_id=cid, text=text)
+        for chunk in _split_text(text, 4090):
+            await bot.send_message(chat_id=cid, text=chunk)
+
+
+def _split_text(text: str, limit: int) -> list[str]:
+    """按行切分文本，每段不超过 limit 字符。"""
+    chunks, current = [], []
+    current_len = 0
+    for line in text.splitlines(keepends=True):
+        if current_len + len(line) > limit and current:
+            chunks.append("".join(current))
+            current, current_len = [], 0
+        # 单行本身超限时强制切断
+        while len(line) > limit:
+            chunks.append(line[:limit])
+            line = line[limit:]
+        current.append(line)
+        current_len += len(line)
+    if current:
+        chunks.append("".join(current))
+    return chunks

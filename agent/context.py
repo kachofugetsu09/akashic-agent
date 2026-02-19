@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.memory import MemoryStore
+from agent.skills import SkillsLoader
 
 
 class ContextBuilder:
@@ -14,9 +15,9 @@ class ContextBuilder:
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
-        # skill todo
+        self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self) -> str:
+    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         parts = []
         # 核心identity
         parts.append(self._get_identity())
@@ -25,6 +26,27 @@ class ContextBuilder:
         memory = self.memory.get_memory_context()
         if memory:
             parts.append(memory)
+
+        # Skills - progressive loading
+        # 1. Always-loaded skills + explicitly requested skills: include full content
+        always_skills = self.skills.get_always_skills()
+        extra = [s for s in (skill_names or []) if s not in always_skills]
+        skills_to_load = always_skills + extra
+        if skills_to_load:
+            always_content = self.skills.load_skills_for_context(skills_to_load)
+            if always_content:
+                parts.append(f"# Active Skills\n\n{always_content}")
+
+        # 2. Available skills summary: always shown so agent knows what's available
+        skills_summary = self.skills.build_skills_summary()
+        if skills_summary:
+            parts.append(f"""# Skills
+
+The following skills extend your capabilities.
+**When a task matches a skill's description, call `read_file` with the path in `<location>` to get full instructions, then follow them.**
+Skills with available="false" need dependencies installed first.
+
+{skills_summary}""")
 
         return "\n\n---\n\n".join(parts)
 
@@ -52,11 +74,13 @@ class ContextBuilder:
         Your workspace is at: {workspace_path}
         - Long-term memory: {workspace_path}/memory/MEMORY.md
         - History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
+        - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
         
         
-        IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
-Only use the 'message' tool when you need to send a message to a specific chat channel (like WhatsApp).
-For normal conversation, just respond with text - do not call the message tool.
+        IMPORTANT: When responding to direct questions or conversations, reply directly with text.
+For cross-channel proactive delivery (send message/file/image), use `message_push`.
+Never claim that a message/file/image was sent unless a tool call in this turn returned success.
+For normal conversation, do not call `message_push`.
 
         Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
         When remembering something important, write to {workspace_path}/memory/MEMORY.md
@@ -67,6 +91,7 @@ For normal conversation, just respond with text - do not call the message tool.
             history: list[dict[str, Any]],
             current_message: str,
             media: list[str] | None = None,
+            skill_names: list[str] | None = None,
             channel: str | None = None,
             chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -84,7 +109,7 @@ For normal conversation, just respond with text - do not call the message tool.
                    List of messages including system prompt.
                """
         messages = []
-        system_prompt = self.build_system_prompt()
+        system_prompt = self.build_system_prompt(skill_names)
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

@@ -1,7 +1,7 @@
 """
 Shell 工具（Bash 命令执行）
 设计参考 OpenCode internal/llm/tools/bash.go：
-- 禁止命令黑名单（curl、wget、nc 等网络工具）
+- 禁止高风险命令黑名单（nc、telnet、浏览器等）
 - 超时：默认 60s，最大 600s（10 分钟）
 - 输出截断：超过 30000 字符时首尾各取一半，中间注明省略行数
 - 记录执行时长
@@ -9,6 +9,9 @@ Shell 工具（Bash 命令执行）
 """
 import asyncio
 import json
+import shlex
+import ipaddress
+from urllib.parse import urlparse
 import time
 from typing import Any
 
@@ -20,9 +23,21 @@ _MAX_OUTPUT = 30_000    # 字符（与 OpenCode MaxOutputLength 一致）
 
 # 禁止命令（对应 OpenCode bannedCommands）
 _BANNED = frozenset({
-    "alias", "curl", "curlie", "wget", "axel", "aria2c",
-    "nc", "telnet", "lynx", "w3m", "links", "httpie", "xh",
+    "curlie", "axel", "aria2c",
+    "nc", "telnet", "lynx", "w3m", "links",
     "http-prompt", "chrome", "firefox", "safari",
+})
+
+# 对网络命令启用额外安全限制
+_NETWORK_CMDS = frozenset({"curl", "wget", "http", "httpie", "xh"})
+_NET_WRITE_FLAGS = frozenset({
+    # curl
+    "-o", "--output", "-O", "--remote-name", "-T", "--upload-file",
+    "-F", "--form", "--form-string",
+    # wget
+    "-O", "--output-document", "--post-file",
+    # httpie/xh
+    "--download", "--output", "--offline", "@",
 })
 
 
@@ -35,7 +50,8 @@ class ShellTool(Tool):
         "注意：\n"
         "- 使用绝对路径，避免依赖 cd 切换目录\n"
         "- 多条命令用 ; 或 && 连接，不要用换行分隔\n"
-        "- 以下命令被禁止：curl、wget、nc、telnet 等网络工具\n"
+        "- 网络命令（curl/wget/httpie/xh）仅允许访问公网 HTTP(S)，且禁止上传/写文件\n"
+        "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
         "- 输出超过 30000 字符时自动截断\n"
         "- 超时默认 60 秒，最大 600 秒"
     )
@@ -67,6 +83,9 @@ class ShellTool(Tool):
         base_cmd = command.split()[0].lower()
         if base_cmd in _BANNED:
             return _err(f"命令 '{base_cmd}' 不被允许（安全限制）")
+        net_err = _validate_network_command(command)
+        if net_err:
+            return _err(net_err)
 
         start_ms = int(time.monotonic() * 1000)
         stdout, stderr, exit_code, interrupted = await _run(command, timeout)
@@ -146,3 +165,60 @@ def _truncate(content: str) -> str:
         f"... [{skipped_lines} 行已省略] ...\n\n"
         f"{content[len(content) - half:]}"
     )
+
+
+def _validate_network_command(command: str) -> str | None:
+    """网络命令护栏：仅允许 HTTP(S) 且禁止内网目标与写入类参数。"""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return "命令解析失败，请检查引号是否匹配"
+    if not tokens:
+        return None
+
+    cmd = tokens[0].lower()
+    if cmd not in _NETWORK_CMDS:
+        return None
+
+    # 阻止文件写入/上传相关参数
+    for t in tokens[1:]:
+        low = t.lower()
+        if low in _NET_WRITE_FLAGS:
+            return f"网络命令参数 '{t}' 不被允许（禁止上传/写文件）"
+        if any(low.startswith(flag + "=") for flag in _NET_WRITE_FLAGS):
+            return f"网络命令参数 '{t}' 不被允许（禁止上传/写文件）"
+        # httpie/xh 支持 field=@file 语法上传文件
+        if "=@" in t or t.startswith("@"):
+            return f"网络命令参数 '{t}' 不被允许（禁止本地文件上传）"
+
+    # 提取 URL 并校验
+    urls = [t for t in tokens[1:] if t.startswith(("http://", "https://"))]
+    if not urls:
+        return "网络命令必须显式提供 http:// 或 https:// URL"
+
+    for u in urls:
+        err = _validate_url_target(u)
+        if err:
+            return err
+    return None
+
+
+def _validate_url_target(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return "仅允许 http:// 或 https:// URL"
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return "URL 缺少主机名"
+    if host == "localhost":
+        return "禁止访问 localhost"
+
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+            return f"禁止访问内网/本地地址：{host}"
+    except ValueError:
+        # 域名：阻断常见本地域名后缀
+        if host.endswith(".local") or host.endswith(".localhost"):
+            return f"禁止访问本地域名：{host}"
+    return None

@@ -115,10 +115,7 @@ class TelegramChannel:
             metadata={"username": user.username or ""},
         ))
 
-    async def send(self, chat_id: str, message: str) -> None:
-        """主动发送消息（供 MessagePushTool 调用）。
-        chat_id 可以是数字 ID，也可以是用户名（不含 @），会自动查表转换。
-        """
+    def _resolve_chat_id(self, chat_id: str) -> str:
         resolved = chat_id.lstrip("@").lower()
         if not resolved.lstrip("-").isdigit():
             resolved = self.user_map.get(resolved)
@@ -127,7 +124,26 @@ class TelegramChannel:
                     f"找不到用户 {chat_id!r} 的 chat_id，该用户需先给 bot 发一条消息。"
                     f"已知用户：{list(self.user_map.keys()) or '（无）'}"
                 )
-        await send_markdown(self._app.bot, resolved, message)
+        return resolved
+
+    async def send(self, chat_id: str, message: str) -> None:
+        """发送文本消息（供 MessagePushTool 调用）"""
+        await send_markdown(self._app.bot, self._resolve_chat_id(chat_id), message)
+
+    async def send_file(self, chat_id: str, file_path: str, name: str | None = None) -> None:
+        """发送文件"""
+        cid = int(self._resolve_chat_id(chat_id))
+        with open(file_path, "rb") as f:
+            await self._app.bot.send_document(chat_id=cid, document=f, filename=name)
+
+    async def send_image(self, chat_id: str, image: str) -> None:
+        """发送图片（本地路径或 URL）"""
+        cid = int(self._resolve_chat_id(chat_id))
+        if image.startswith(("http://", "https://")):
+            await self._app.bot.send_photo(chat_id=cid, photo=image)
+        else:
+            with open(image, "rb") as f:
+                await self._app.bot.send_photo(chat_id=cid, photo=f)
 
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content

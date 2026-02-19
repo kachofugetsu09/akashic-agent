@@ -7,9 +7,10 @@ QQ Channel
 摩擦点说明：
   1. run_backend() 是同步阻塞调用 → 用 run_in_executor 包裹
   2. NcatBot 事件回调运行在独立线程/loop → 用 run_coroutine_threadsafe 桥接到主 loop
-  3. 出站消息需跨 loop 调用 API → 使用 NcatBot 的同步接口 + run_in_executor
+  3. 出站消息需跨 loop 调用 API → 使用 run_coroutine_threadsafe 投递回 NcatBot loop
 """
 import asyncio
+import base64
 import logging
 from pathlib import Path
 
@@ -37,6 +38,7 @@ class QQChannel:
         self._bot = BotClient()
         self._api = None
         self._main_loop: asyncio.AbstractEventLoop | None = None
+        self._bot_loop: asyncio.AbstractEventLoop | None = None
 
         ncatbot_config.bt_uin = bot_uin
         # NapCat 由 Docker 容器管理，NcatBot 只负责连接 WebSocket
@@ -65,6 +67,8 @@ class QQChannel:
         # 注意：回调运行在 NcatBot 内部 loop（独立线程），不能直接 await 主 loop 的协程
         @self._bot.on_private_message()
         async def _(event) -> None:
+            if self._bot_loop is None:
+                self._bot_loop = asyncio.get_running_loop()
             user_id = str(event.user_id)
 
             if not self._is_allowed(user_id):
@@ -82,6 +86,10 @@ class QQChannel:
                 self._handle_inbound(user_id, content),
                 self._main_loop,
             )
+
+        @self._bot.on_startup()
+        async def _(_event) -> None:
+            self._bot_loop = asyncio.get_running_loop()
 
         # run_backend() 阻塞直到 NapCat 连接成功，放入线程池避免阻塞主 loop
         logger.info("[qq] 正在启动 NcatBot（首次运行需要扫码登录）...")
@@ -110,25 +118,46 @@ class QQChannel:
         ))
 
     async def send(self, chat_id: str, message: str) -> None:
-        """主动发送消息（供 MessagePushTool 调用）"""
+        """发送文本消息"""
         if not self._api:
             raise RuntimeError("QQChannel 尚未启动")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None, self._api.send_private_text_sync, int(chat_id), message
-        )
+        await self._run_on_bot_loop(self._api.send_private_text(int(chat_id), message))
+
+    async def send_file(self, chat_id: str, file_path: str, name: str | None = None) -> None:
+        """发送文件（base64 编码，绕过 Docker 路径限制）"""
+        if not self._api:
+            raise RuntimeError("QQChannel 尚未启动")
+        uri = _local_to_base64(file_path) if _is_local(file_path) else file_path
+        await self._run_on_bot_loop(self._api.send_private_file(int(chat_id), uri, name))
+
+    async def send_image(self, chat_id: str, image: str) -> None:
+        """发送图片（本地文件转 base64，绕过 Docker 路径限制；URL 直接传）"""
+        if not self._api:
+            raise RuntimeError("QQChannel 尚未启动")
+        uri = _local_to_base64(image) if _is_local(image) else image
+        await self._run_on_bot_loop(self._api.send_private_image(int(chat_id), uri))
 
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[qq] 发送回复  user_id={msg.chat_id}  内容: {preview!r}")
         try:
-            loop = asyncio.get_running_loop()
-            # 使用同步接口 + run_in_executor，避免跨 loop 调用 async API
-            await loop.run_in_executor(
-                None,
-                self._api.send_private_text_sync,
-                int(msg.chat_id),
-                msg.content,
-            )
+            await self._run_on_bot_loop(self._api.send_private_text(int(msg.chat_id), msg.content))
         except Exception as e:
             logger.error(f"[qq] 发送失败  user_id={msg.chat_id}  错误: {e}")
+
+    async def _run_on_bot_loop(self, coro):
+        if self._bot_loop is None:
+            raise RuntimeError("QQ bot loop 未就绪")
+        future = asyncio.run_coroutine_threadsafe(coro, self._bot_loop)
+        await asyncio.wrap_future(future)
+
+
+def _is_local(path: str) -> bool:
+    """判断是否为本地文件路径（非 URL、非 base64）"""
+    return not path.startswith(("http://", "https://", "base64://", "file://"))
+
+
+def _local_to_base64(path: str) -> str:
+    """将本地文件编码为 NapCat 接受的 base64:// URI"""
+    data = Path(path).read_bytes()
+    return "base64://" + base64.b64encode(data).decode()
