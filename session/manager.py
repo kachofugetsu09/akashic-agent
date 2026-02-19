@@ -118,6 +118,7 @@ class SessionManager:
         with open(path, "w") as f:
             metadata_line = {
                 "_type": "metadata",
+                "key": session.key,
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
                 "last_consolidated": session.last_consolidated,
@@ -161,3 +162,30 @@ class SessionManager:
                 continue
 
         return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
+
+    def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
+        """返回指定 channel 的所有 session 的 metadata（只读首行，不加载消息）。
+
+        返回列表元素形如：{"key": "telegram:123456", "chat_id": "123456", "metadata": {...}}
+        """
+        results = []
+        prefix = _safe_filename(channel + ":")
+        for path in self.session_dir.glob(f"{prefix}*.jsonl"):
+            try:
+                with open(path) as f:
+                    first_line = f.readline().strip()
+                if not first_line:
+                    continue
+                data = json.loads(first_line)
+                if data.get("_type") != "metadata":
+                    continue
+                key = data.get("key") or path.stem.replace("_", ":", 1)
+                chat_id = key.split(":", 1)[-1] if ":" in key else path.stem[len(prefix):]
+                results.append({
+                    "key": key,
+                    "chat_id": chat_id,
+                    "metadata": data.get("metadata", {}),
+                })
+            except Exception:
+                continue
+        return results

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
+from session.manager import SessionManager
 
 # NcatBot 运行时产物（plugins、logs）放到用户目录，不污染项目目录
 _NCATBOT_DIR = Path.home() / ".akasic" / "ncatbot"
@@ -26,11 +27,12 @@ _CHANNEL = "qq"
 
 class QQChannel:
 
-    def __init__(self, bot_uin: str, bus: MessageBus, allow_from: list[str] | None = None) -> None:
+    def __init__(self, bot_uin: str, bus: MessageBus, session_manager: SessionManager, allow_from: list[str] | None = None) -> None:
         from ncatbot.core import BotClient
         from ncatbot.utils import ncatbot_config
 
         self._bus = bus
+        self._session_manager = session_manager
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._bot = BotClient()
         self._api = None
@@ -77,12 +79,7 @@ class QQChannel:
 
             # 桥接到主 asyncio loop（run_coroutine_threadsafe 是线程安全的）
             asyncio.run_coroutine_threadsafe(
-                self._bus.publish_inbound(InboundMessage(
-                    channel=_CHANNEL,
-                    sender=user_id,
-                    chat_id=user_id,
-                    content=content,
-                )),
+                self._handle_inbound(user_id, content),
                 self._main_loop,
             )
 
@@ -98,6 +95,28 @@ class QQChannel:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._bot.exit)
             logger.info("[qq] QQChannel 已停止")
+
+    async def _handle_inbound(self, user_id: str, content: str) -> None:
+        """在主 loop 里执行：持久化 sender metadata + 发布到 bus。"""
+        session = self._session_manager.get_or_create(f"{_CHANNEL}:{user_id}")
+        if "user_id" not in session.metadata:
+            session.metadata["user_id"] = user_id
+            self._session_manager.save(session)
+        await self._bus.publish_inbound(InboundMessage(
+            channel=_CHANNEL,
+            sender=user_id,
+            chat_id=user_id,
+            content=content,
+        ))
+
+    async def send(self, chat_id: str, message: str) -> None:
+        """主动发送消息（供 MessagePushTool 调用）"""
+        if not self._api:
+            raise RuntimeError("QQChannel 尚未启动")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._api.send_private_text_sync, int(chat_id), message
+        )
 
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content

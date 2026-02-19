@@ -15,6 +15,7 @@ from agent.config import Config
 from agent.loop import AgentLoop
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
+from agent.tools.message_push import MessagePushTool
 from agent.tools.shell import ShellTool
 from agent.tools.web_fetch import WebFetchTool
 from session.manager import SessionManager
@@ -33,11 +34,13 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 # ── 服务端 ────────────────────────────────────────────────────────
 
-def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus, ToolRegistry]:
+def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus, ToolRegistry, MessagePushTool, SessionManager]:
     bus = MessageBus()
     tools = ToolRegistry()
     tools.register(ShellTool())
     tools.register(WebFetchTool())
+    push_tool = MessagePushTool()
+    tools.register(push_tool)
     provider = LLMProvider(
         api_key=config.api_key,
         base_url=config.base_url,
@@ -52,13 +55,13 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
         max_iterations=config.max_iterations,
         max_tokens=config.max_tokens,
     )
-    return loop, bus, tools
+    return loop, bus, tools, push_tool, session_manager
 
 
 async def serve(config_path: str = "config.json") -> None:
     config = Config.load(config_path)
     workspace = Path.home() / ".akasic" / "workspace"
-    agent_loop, bus, tools = _build_agent(config, workspace)
+    agent_loop, bus, tools, push_tool, session_manager = _build_agent(config, workspace)
 
     from channels.ipc_server import IPCServerChannel
     ipc = IPCServerChannel(bus, config.channels.socket)
@@ -68,21 +71,19 @@ async def serve(config_path: str = "config.json") -> None:
     tg_channel = None
     if config.channels.telegram:
         from channels.telegram_channel import TelegramChannel
-        from agent.tools.telegram_push import TelegramPushTool
         tg = config.channels.telegram
-        tg_channel = TelegramChannel(token=tg.token, bus=bus, allow_from=tg.allow_from)
+        tg_channel = TelegramChannel(token=tg.token, bus=bus, session_manager=session_manager, allow_from=tg.allow_from)
         await tg_channel.start()
-        tools.register(TelegramPushTool(bot=tg_channel.bot, user_map=tg_channel.user_map))
+        push_tool.register_channel("telegram", tg_channel.send)
         print(f"Telegram Bot 已启动")
 
     qq_channel = None
     if config.channels.qq:
         from channels.qq_channel import QQChannel
-        from agent.tools.qq_push import QQPushTool
         qq = config.channels.qq
-        qq_channel = QQChannel(bot_uin=qq.bot_uin, bus=bus, allow_from=qq.allow_from)
+        qq_channel = QQChannel(bot_uin=qq.bot_uin, bus=bus, session_manager=session_manager, allow_from=qq.allow_from)
         await qq_channel.start()
-        tools.register(QQPushTool(channel=qq_channel))
+        push_tool.register_channel("qq", qq_channel.send)
         print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
 
     try:
