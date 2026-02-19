@@ -27,8 +27,8 @@ class ContextBuilder:
         if memory:
             parts.append(memory)
 
-        # Skills - progressive loading
-        # 1. Always-loaded skills + explicitly requested skills: include full content
+        # 技能渐进式加载：
+        # 第一步：always 技能 + 本轮显式请求的技能 → 直接内嵌完整正文
         always_skills = self.skills.get_always_skills()
         extra = [s for s in (skill_names or []) if s not in always_skills]
         skills_to_load = always_skills + extra
@@ -37,14 +37,15 @@ class ContextBuilder:
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
 
-        # 2. Available skills summary: always shown so agent knows what's available
+        # 第二步：其余技能注入摘要（名称/描述/路径/可用状态），
+        # 模型识别到任务匹配时，通过 read_file 读取对应 SKILL.md 获取完整指令
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
             parts.append(f"""# Skills
 
-The following skills extend your capabilities.
-**When a task matches a skill's description, call `read_file` with the path in `<location>` to get full instructions, then follow them.**
-Skills with available="false" need dependencies installed first.
+以下技能扩展了你的能力范围。
+**当任务与某个技能的描述匹配时，调用 `read_file` 读取 `<location>` 中的路径，获取完整指令后再执行。**
+available="false" 的技能需先安装对应依赖。
 
 {skills_summary}""")
 

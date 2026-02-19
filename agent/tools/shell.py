@@ -204,6 +204,7 @@ def _validate_network_command(command: str) -> str | None:
 
 
 def _validate_url_target(url: str) -> str | None:
+    """校验 URL 目标是否为合法的公网地址。"""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return "仅允许 http:// 或 https:// URL"
@@ -214,6 +215,7 @@ def _validate_url_target(url: str) -> str | None:
         return "禁止访问 localhost"
 
     try:
+        # IP 地址：禁止回环、私有、链路本地、保留地址
         ip = ipaddress.ip_address(host)
         if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
             return f"禁止访问内网/本地地址：{host}"

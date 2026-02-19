@@ -1,4 +1,4 @@
-"""File system tools: read, write, edit."""
+"""文件系统工具：读取、写入、编辑文件，以及列举目录。"""
 
 from pathlib import Path
 from typing import Any
@@ -7,15 +7,15 @@ from agent.tools.base import Tool
 
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
-    """Resolve path and optionally enforce directory restriction."""
+    """解析路径（展开 ~ 并取绝对路径），可选限制在允许目录内。"""
     resolved = Path(path).expanduser().resolve()
     if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
-        raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
+        raise PermissionError(f"路径 {path} 超出允许目录 {allowed_dir}")
     return resolved
 
 
 class ReadFileTool(Tool):
-    """Tool to read file contents."""
+    """读取文件内容。"""
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -26,7 +26,7 @@ class ReadFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Read the contents of a file at the given path."
+        return "读取指定路径文件的完整内容。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -35,7 +35,7 @@ class ReadFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to read"
+                    "description": "要读取的文件路径"
                 }
             },
             "required": ["path"]
@@ -45,20 +45,19 @@ class ReadFileTool(Tool):
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():
-                return f"Error: File not found: {path}"
+                return f"错误：文件不存在：{path}"
             if not file_path.is_file():
-                return f"Error: Not a file: {path}"
+                return f"错误：路径不是文件：{path}"
 
-            content = file_path.read_text(encoding="utf-8")
-            return content
+            return file_path.read_text(encoding="utf-8")
         except PermissionError as e:
-            return f"Error: {e}"
+            return f"错误：{e}"
         except Exception as e:
-            return f"Error reading file: {str(e)}"
+            return f"读取文件失败：{e}"
 
 
 class WriteFileTool(Tool):
-    """Tool to write content to a file."""
+    """将内容写入文件，自动创建所需的父目录。"""
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -69,7 +68,7 @@ class WriteFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Write content to a file at the given path. Creates parent directories if needed."
+        return "将内容写入指定路径的文件，不存在的父目录会自动创建。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -78,11 +77,11 @@ class WriteFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to write to"
+                    "description": "要写入的文件路径"
                 },
                 "content": {
                     "type": "string",
-                    "description": "The content to write"
+                    "description": "要写入的文本内容"
                 }
             },
             "required": ["path", "content"]
@@ -93,15 +92,15 @@ class WriteFileTool(Tool):
             file_path = _resolve_path(path, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
-            return f"Successfully wrote {len(content)} bytes to {path}"
+            return f"已写入 {len(content)} 字节到 {path}"
         except PermissionError as e:
-            return f"Error: {e}"
+            return f"错误：{e}"
         except Exception as e:
-            return f"Error writing file: {str(e)}"
+            return f"写入文件失败：{e}"
 
 
 class EditFileTool(Tool):
-    """Tool to edit a file by replacing text."""
+    """精确替换文件中的指定文本片段。"""
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -112,7 +111,7 @@ class EditFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file."
+        return "将文件中的 old_text 替换为 new_text，old_text 必须与文件内容完全匹配。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -121,15 +120,15 @@ class EditFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to edit"
+                    "description": "要编辑的文件路径"
                 },
                 "old_text": {
                     "type": "string",
-                    "description": "The exact text to find and replace"
+                    "description": "要查找并替换的原始文本（必须与文件内容完全一致）"
                 },
                 "new_text": {
                     "type": "string",
-                    "description": "The text to replace with"
+                    "description": "替换后的新文本"
                 }
             },
             "required": ["path", "old_text", "new_text"]
@@ -139,30 +138,30 @@ class EditFileTool(Tool):
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():
-                return f"Error: File not found: {path}"
+                return f"错误：文件不存在：{path}"
 
             content = file_path.read_text(encoding="utf-8")
 
             if old_text not in content:
-                return f"Error: old_text not found in file. Make sure it matches exactly."
+                return "错误：未找到 old_text，请确保与文件内容完全一致。"
 
-            # Count occurrences
+            # 若匹配到多处，提示提供更多上下文以唯一定位
             count = content.count(old_text)
             if count > 1:
-                return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
+                return f"警告：old_text 在文件中出现了 {count} 次，请提供更多上下文以唯一匹配。"
 
             new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
 
-            return f"Successfully edited {path}"
+            return f"已成功编辑 {path}"
         except PermissionError as e:
-            return f"Error: {e}"
+            return f"错误：{e}"
         except Exception as e:
-            return f"Error editing file: {str(e)}"
+            return f"编辑文件失败：{e}"
 
 
 class ListDirTool(Tool):
-    """Tool to list directory contents."""
+    """列举目录内容。"""
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -173,7 +172,7 @@ class ListDirTool(Tool):
 
     @property
     def description(self) -> str:
-        return "List the contents of a directory."
+        return "列举指定目录下的文件和子目录。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -182,7 +181,7 @@ class ListDirTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The directory path to list"
+                    "description": "要列举的目录路径"
                 }
             },
             "required": ["path"]
@@ -192,9 +191,9 @@ class ListDirTool(Tool):
         try:
             dir_path = _resolve_path(path, self._allowed_dir)
             if not dir_path.exists():
-                return f"Error: Directory not found: {path}"
+                return f"错误：目录不存在：{path}"
             if not dir_path.is_dir():
-                return f"Error: Not a directory: {path}"
+                return f"错误：路径不是目录：{path}"
 
             items = []
             for item in sorted(dir_path.iterdir()):
@@ -202,10 +201,10 @@ class ListDirTool(Tool):
                 items.append(f"{prefix}{item.name}")
 
             if not items:
-                return f"Directory {path} is empty"
+                return f"目录 {path} 为空"
 
             return "\n".join(items)
         except PermissionError as e:
-            return f"Error: {e}"
+            return f"错误：{e}"
         except Exception as e:
-            return f"Error listing directory: {str(e)}"
+            return f"列举目录失败：{e}"
