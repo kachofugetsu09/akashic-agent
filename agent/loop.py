@@ -129,7 +129,11 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
-            metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
+            metadata={
+                **(msg.metadata or {}),  # Pass through for channel-specific needs (e.g. Slack thread_ts)
+                "tools_used": tools_used,
+                "tool_chain": tool_chain,
+            },
         )
 
     async def _run_agent_loop(

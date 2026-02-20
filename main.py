@@ -106,10 +106,18 @@ async def serve(config_path: str = "config.json") -> None:
 
 # ── 客户端 ────────────────────────────────────────────────────────
 
-async def connect_cli(config_path: str = "config.json") -> None:
-    from channels.cli import CLIClient
+def connect_cli(config_path: str = "config.json") -> None:
     socket_path = Config.load(config_path).channels.socket
-    await CLIClient(socket_path).run()
+    try:
+        from channels.cli_tui import run_tui
+    except RuntimeError as exc:
+        print(exc)
+        print("回退到纯文本 CLI。")
+        from channels.cli import CLIClient
+        asyncio.run(CLIClient(socket_path).run())
+        return
+
+    run_tui(socket_path)
 
 
 # ── 入口 ──────────────────────────────────────────────────────────
@@ -128,6 +136,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if "cli" in args:
-        asyncio.run(connect_cli(config_path))
+        connect_cli(config_path)
     else:
         asyncio.run(serve(config_path))

@@ -78,6 +78,13 @@ class IPCServerChannel:
     async def _on_response(self, msg: OutboundMessage) -> None:
         writer = self._writers.get(msg.chat_id)
         if writer and not writer.is_closing():
-            payload = json.dumps({"content": msg.content}, ensure_ascii=False) + "\n"
+            payload = json.dumps(
+                {
+                    "type": "assistant",
+                    "content": msg.content,
+                    "metadata": msg.metadata or {},
+                },
+                ensure_ascii=False,
+            ) + "\n"
             writer.write(payload.encode())
             await writer.drain()
