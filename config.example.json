@@ -19,7 +19,15 @@
     "_comment_qq": "配置 qq 后会启动 QQ Bot，bot_uin 为 Bot 的 QQ 号",
     "qq": {
       "bot_uin": "123456789",
-      "allowFrom": ["987654321"]
+      "allowFrom": ["987654321"],
+      "groups": [
+        {
+          "_comment": "每个群单独配置，chat_id 为 gqq:{groupId}",
+          "groupId": "111222333",
+          "allowFrom": ["987654321", "444444444"],
+          "requireAt": true
+        }
+      ]
     },
 
     "cli": {

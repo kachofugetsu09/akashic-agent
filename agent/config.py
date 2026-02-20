@@ -27,9 +27,17 @@ class TelegramChannelConfig:
 
 
 @dataclass
+class QQGroupConfig:
+    group_id: str
+    allow_from: list[str] = field(default_factory=list)  # 空 = 群内所有人
+    require_at: bool = True                               # 仅响应 @ 消息
+
+
+@dataclass
 class QQChannelConfig:
-    bot_uin: str                                          # Bot 的 QQ 号
-    allow_from: list[str] = field(default_factory=list)  # 空 = 允许所有人
+    bot_uin: str                                              # Bot 的 QQ 号
+    allow_from: list[str] = field(default_factory=list)      # 私聊白名单，空 = 允许所有人
+    groups: list[QQGroupConfig] = field(default_factory=list) # 群组配置
 
 
 @dataclass
@@ -67,9 +75,18 @@ class Config:
 
         qq = None
         if qq_data := channels_data.get("qq"):
+            groups = [
+                QQGroupConfig(
+                    group_id=str(g["groupId"]),
+                    allow_from=[str(u) for u in g.get("allowFrom", [])],
+                    require_at=g.get("requireAt", True),
+                )
+                for g in qq_data.get("groups", [])
+            ]
             qq = QQChannelConfig(
                 bot_uin=str(qq_data["bot_uin"]),
                 allow_from=[str(u) for u in qq_data.get("allowFrom", [])],
+                groups=groups,
             )
 
         channels = ChannelsConfig(

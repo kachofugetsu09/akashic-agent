@@ -86,7 +86,7 @@ async def serve(config_path: str = "config.json") -> None:
     if config.channels.qq:
         from channels.qq_channel import QQChannel
         qq = config.channels.qq
-        qq_channel = QQChannel(bot_uin=qq.bot_uin, bus=bus, session_manager=session_manager, allow_from=qq.allow_from)
+        qq_channel = QQChannel(bot_uin=qq.bot_uin, bus=bus, session_manager=session_manager, allow_from=qq.allow_from, groups=qq.groups)
         await qq_channel.start()
         push_tool.register_channel("qq", text=qq_channel.send, file=qq_channel.send_file, image=qq_channel.send_image)
         print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
