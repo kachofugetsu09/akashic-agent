@@ -15,8 +15,13 @@ chat_id 约定：
 """
 import asyncio
 import base64
+import html
 import logging
+import re
+import tempfile
 from pathlib import Path
+
+import httpx
 
 from agent.config import QQGroupConfig
 from bus.events import InboundMessage, OutboundMessage
@@ -31,6 +36,41 @@ logger = logging.getLogger(__name__)
 
 _CHANNEL = "qq"
 _GROUP_PREFIX = "gqq:"
+
+# 匹配 CQ:image 码中的 url 字段
+_CQ_IMAGE_RE = re.compile(r'\[CQ:image[^\]]*?(?:,|\b)url=([^,\]]+)[^\]]*\]')
+
+
+def _extract_cq_images(raw: str) -> tuple[str, list[str]]:
+    """从 CQ 码中提取图片 URL，返回 (纯文本, [url...])"""
+    urls = _CQ_IMAGE_RE.findall(raw)
+    text = re.sub(r'\[CQ:image[^\]]*\]', '', raw).strip()
+    return text, urls
+
+
+async def _download_to_temp(urls: list[str]) -> list[str]:
+    """下载图片到临时文件，返回本地路径列表"""
+    if not urls:
+        return []
+    paths: list[str] = []
+    ext_map = {
+        "image/jpeg": ".jpg", "image/png": ".png",
+        "image/gif": ".gif", "image/webp": ".webp",
+    }
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        for url in urls:
+            try:
+                url = html.unescape(url)  # 还原 &amp; 等 HTML 实体
+                resp = await client.get(url)
+                resp.raise_for_status()
+                ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                ext = ext_map.get(ct, ".jpg")
+                tmp = tempfile.mktemp(suffix=ext, prefix="akasic_qq_")
+                Path(tmp).write_bytes(resp.content)
+                paths.append(tmp)
+            except Exception as e:
+                logger.warning(f"[qq] 图片下载失败  url={url[:80]}  错误: {e}")
+    return paths
 
 
 class QQChannel:
@@ -95,14 +135,15 @@ class QQChannel:
                 logger.warning(f"[qq] 拒绝未授权用户  user_id={user_id}")
                 return
 
-            content: str = event.raw_message
-            preview = content[:60] + "..." if len(content) > 60 else content
-            logger.info(f"[qq] 私聊消息  user_id={user_id}  内容: {preview!r}")
+            raw: str = event.raw_message
+            text, img_urls = _extract_cq_images(raw)
+            preview = text[:60] + "..." if len(text) > 60 else text
+            logger.info(f"[qq] 私聊消息  user_id={user_id}  内容: {preview!r}  图片: {len(img_urls)}")
 
             self.user_map[user_id] = user_id
 
             asyncio.run_coroutine_threadsafe(
-                self._handle_private(user_id, content),
+                self._handle_private(user_id, text, img_urls),
                 self._main_loop,
             )
 
@@ -127,12 +168,13 @@ class QQChannel:
             if not future.result(timeout=5):
                 return
 
-            content = strip_at_segments(event.raw_message)
-            preview = content[:60] + "..." if len(content) > 60 else content
-            logger.info(f"[qq] 群聊消息  group_id={group_id}  user_id={user_id}  内容: {preview!r}")
+            raw = strip_at_segments(event.raw_message)
+            text, img_urls = _extract_cq_images(raw)
+            preview = text[:60] + "..." if len(text) > 60 else text
+            logger.info(f"[qq] 群聊消息  group_id={group_id}  user_id={user_id}  内容: {preview!r}  图片: {len(img_urls)}")
 
             asyncio.run_coroutine_threadsafe(
-                self._handle_group(group_id, user_id, content),
+                self._handle_group(group_id, user_id, text, img_urls),
                 self._main_loop,
             )
 
@@ -154,32 +196,36 @@ class QQChannel:
 
     # ── 入站处理 ──────────────────────────────────────────────────────
 
-    async def _handle_private(self, user_id: str, content: str) -> None:
+    async def _handle_private(self, user_id: str, content: str, img_urls: list[str] | None = None) -> None:
         """私聊入站：chat_id = user_id"""
         session = self._session_manager.get_or_create(f"{_CHANNEL}:{user_id}")
         if "user_id" not in session.metadata:
             session.metadata["user_id"] = user_id
             self._session_manager.save(session)
+        media = await _download_to_temp(img_urls or [])
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=user_id,
             chat_id=user_id,
             content=content,
+            media=media,
             metadata={"chat_type": "private"},
         ))
 
-    async def _handle_group(self, group_id: str, user_id: str, content: str) -> None:
+    async def _handle_group(self, group_id: str, user_id: str, content: str, img_urls: list[str] | None = None) -> None:
         """群聊入站：chat_id = gqq:{group_id}，session 按群共享"""
         chat_id = f"{_GROUP_PREFIX}{group_id}"
         session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id}")
         if "group_id" not in session.metadata:
             session.metadata["group_id"] = group_id
             self._session_manager.save(session)
+        media = await _download_to_temp(img_urls or [])
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=user_id,
             chat_id=chat_id,
             content=content,
+            media=media,
             metadata={"chat_type": "group", "group_id": group_id, "sender_id": user_id},
         ))
 

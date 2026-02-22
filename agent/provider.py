@@ -29,9 +29,11 @@ class LLMProvider:
         api_key: str,
         base_url: str | None = None,
         system_prompt: str = "",
+        extra_body: dict | None = None,
     ) -> None:
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._system = system_prompt
+        self._extra_body = extra_body or {}
 
     async def chat(
         self,
@@ -48,7 +50,9 @@ class LLMProvider:
         )
         kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
         if tools:
-            kwargs["tools"] = tools  # 已是 OpenAI 格式，直接传
+            kwargs["tools"] = tools
+        if self._extra_body:
+            kwargs["extra_body"] = self._extra_body
 
         resp = await self._client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message

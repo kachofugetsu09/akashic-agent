@@ -12,6 +12,8 @@ from agent.skills import SkillsLoader
 
 class ContextBuilder:
 
+    BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md"]
+
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
@@ -101,6 +103,18 @@ available="false" 的技能需先安装对应依赖。
 记录重要信息时写入 {workspace_path}/memory/MEMORY.md
 回忆历史时 grep {workspace_path}/memory/HISTORY.md"""
 
+    def _load_bootstrap_files(self) -> str:
+        """Load all bootstrap files from workspace."""
+        parts = []
+
+        for filename in self.BOOTSTRAP_FILES:
+            file_path = self.workspace / filename
+            if file_path.exists():
+                content = file_path.read_text(encoding="utf-8")
+                parts.append(f"## {filename}\n\n{content}")
+
+        return "\n\n".join(parts) if parts else ""
+
     def build_messages(
             self,
             history: list[dict[str, Any]],
@@ -139,18 +153,21 @@ available="false" 的技能需先安装对应依赖。
         return messages
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+        """Build user message content with optional images (local paths or HTTP URLs)."""
         if not media:
             return text
 
         images = []
-        for path in media:
-            p = Path(path)
-            mime, _ = mimetypes.guess_type(p)
-            if not p.is_file() or not mime or not mime.startswith("image/"):
-                continue
-            b64 = base64.b64encode(open(p, "rb").read()).decode()
-            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        for item in media:
+            if item.startswith(("http://", "https://")):
+                images.append({"type": "image_url", "image_url": {"url": item}})
+            else:
+                p = Path(item)
+                mime, _ = mimetypes.guess_type(p)
+                if not p.is_file() or not mime or not mime.startswith("image/"):
+                    continue
+                b64 = base64.b64encode(open(p, "rb").read()).decode()
+                images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
 
         if not images:
             return text

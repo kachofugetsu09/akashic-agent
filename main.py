@@ -50,6 +50,7 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
         api_key=config.api_key,
         base_url=config.base_url,
         system_prompt=config.system_prompt,
+        extra_body=config.extra_body,
     )
     session_manager = SessionManager(workspace)
     loop = AgentLoop(

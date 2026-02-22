@@ -4,6 +4,7 @@ Telegram Channel
 将 Telegram Bot 接入 MessageBus，支持 allowFrom 白名单。
 """
 import logging
+import tempfile
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -34,6 +35,9 @@ class TelegramChannel:
         self._app = Application.builder().token(token).build()
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
+        )
+        self._app.add_handler(
+            MessageHandler(filters.PHOTO & ~filters.COMMAND, self._on_photo)
         )
         bus.subscribe_outbound(_CHANNEL, self._on_response)
         # username.lower() → chat_id，启动时从 session 重建，运行时实时更新
@@ -112,6 +116,45 @@ class TelegramChannel:
             sender=str(user.id),
             chat_id=str(chat.id),
             content=msg.text,
+            metadata={"username": user.username or ""},
+        ))
+
+    async def _on_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        msg = update.effective_message
+        chat = update.effective_chat
+        user = update.effective_user
+
+        if not msg or not msg.photo or not user:
+            return
+
+        if not self._is_allowed(user):
+            logger.warning(
+                f"[telegram] 拒绝未授权用户  id={user.id}  username=@{user.username}"
+            )
+            return
+
+        if user.username:
+            username = user.username.lower()
+            chat_id_str = str(chat.id)
+            self.user_map[username] = chat_id_str
+            session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id_str}")
+            session.metadata["username"] = username
+            self._session_manager.save(session)
+
+        await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
+
+        # 下载最高分辨率的图片到临时文件
+        tg_file = await context.bot.get_file(msg.photo[-1].file_id)
+        tmp = tempfile.mktemp(suffix=".jpg", prefix="akasic_tg_")
+        await tg_file.download_to_drive(tmp)
+        logger.info(f"[telegram] 收到图片  chat_id={chat.id}  user=@{user.username or user.id}  tmp={tmp}")
+
+        await self._bus.publish_inbound(InboundMessage(
+            channel=_CHANNEL,
+            sender=str(user.id),
+            chat_id=str(chat.id),
+            content=msg.caption or "",
+            media=[tmp],
             metadata={"username": user.username or ""},
         ))
 

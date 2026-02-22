@@ -56,6 +56,7 @@ class Config:
     max_tokens: int = 8192
     max_iterations: int = 10
     base_url: str | None = None
+    extra_body: dict = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
 
     @classmethod
@@ -103,6 +104,7 @@ class Config:
             max_tokens=data.get("max_tokens", 8192),
             max_iterations=data.get("max_iterations", 10),
             base_url=data.get("base_url") or _PRESETS.get(provider),
+            extra_body=data.get("extra_body", {}),
             channels=channels,
         )
 
