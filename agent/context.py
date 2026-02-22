@@ -87,6 +87,14 @@ available="false" 的技能需先安装对应依赖。
 - 凡是需要实际执行的操作（下载文件、运行命令、发送消息、写入文件），必须通过工具完成，不得在未调用工具的情况下声称已完成
 - 本轮对话中没有工具调用返回成功结果，就不能说"已完成"、"已下载"、"已发送"
 
+**知识时效性（重要）**
+- 你的训练数据有截止日期，对 2024 年底之后发生的事情可能一无所知或存在错误
+- 凡涉及以下类型的信息，**必须先调用 `web_search` 查证，不得直接凭记忆回答**：
+  - 硬件/软件产品（显卡、CPU、手机、游戏等）的发布状态、规格、价格
+  - 时事新闻、人物动态、公司政策
+  - 用户声称拥有某产品/某事已发生，而你印象中尚未发布/发生的情况
+- 宁可多搜一次，也不要自信地给出过期信息
+
 **技能使用**
 - 当任务匹配某个技能时，先用 `read_file` 读取 SKILL.md 获取完整指令，再执行
 - 技能标记为 available="false" 时，说明依赖未安装，先按技能指令安装依赖，再执行任务
@@ -141,6 +149,15 @@ available="false" 的技能需先安装对应依赖。
         system_prompt = self.build_system_prompt(skill_names)
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+        if channel == "telegram":
+            system_prompt += (
+                "\n\n## Telegram 渲染限制（硬性规则）\n"
+                "Telegram 手机端等宽字体每行约 40 字符。多列表格每行超过 80 字符，必然换行错位、完全不可读。\n"
+                "**无论用户是否主动要求表格，都不得输出 Markdown 表格（`| ... |` 语法）。**\n"
+                "对比多个对象时，改用分组列表格式，例如：\n"
+                "**9800X3D**\n• 核心：8核16线程\n• 功耗：120W\n\n"
+                "**i9-14900KS**\n• 核心：24核32线程\n• 功耗：350W+"
+            )
         messages.append({"role": "system", "content": system_prompt})
 
         # History

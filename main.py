@@ -19,6 +19,7 @@ from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, Writ
 from agent.tools.message_push import MessagePushTool
 from agent.tools.shell import ShellTool
 from agent.tools.web_fetch import WebFetchTool
+from agent.tools.web_search import WebSearchTool
 from session.manager import SessionManager
 
 logging.basicConfig(
@@ -39,6 +40,7 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     bus = MessageBus()
     tools = ToolRegistry()
     tools.register(ShellTool())
+    tools.register(WebSearchTool())
     tools.register(WebFetchTool())
     tools.register(ReadFileTool())
     tools.register(WriteFileTool())
