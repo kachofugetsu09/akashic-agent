@@ -134,6 +134,23 @@ class ProactiveStateStore:
             ts,
         )
 
+    def count_deliveries_in_window(
+        self,
+        session_key: str,
+        window_hours: int,
+        now: datetime | None = None,
+    ) -> int:
+        """统计指定 session 在最近窗口内的发送次数。"""
+        now = now or _utcnow()
+        cutoff = now - timedelta(hours=max(window_hours, 1))
+        sess = self._state["deliveries"].get(session_key, {})
+        count = 0
+        for raw_ts in sess.values():
+            ts = _parse_iso(raw_ts)
+            if ts and ts >= cutoff:
+                count += 1
+        return count
+
     def get_semantic_items(
         self,
         window_hours: int,

@@ -74,6 +74,18 @@ class ProactiveConfig:
     score_recent_scale: float = 10.0     # D_recent 消息数归一化基数
     score_llm_threshold: float = 0.40    # draw_score 超过此值才调 LLM
     score_pre_threshold: float = 0.05    # pre_score 低于此值直接跳过（省 feed 拉取）
+    # ── Interruptibility（非硬拦截，作为软权重）──
+    interrupt_weight_time: float = 0.25
+    interrupt_weight_reply: float = 0.35
+    interrupt_weight_activity: float = 0.25
+    interrupt_weight_fatigue: float = 0.15
+    interrupt_activity_decay_minutes: float = 180.0
+    interrupt_reply_decay_minutes: float = 120.0
+    interrupt_no_reply_decay_minutes: float = 360.0
+    interrupt_fatigue_window_hours: int = 24
+    interrupt_fatigue_soft_cap: float = 6.0
+    interrupt_random_strength: float = 0.12
+    interrupt_min_floor: float = 0.08
     # ── 昼夜节律 ──
     quiet_hours_start: int = 23           # 静默开始（本地时间）
     quiet_hours_end: int = 8              # 静默结束（本地时间）
@@ -84,6 +96,10 @@ class ProactiveConfig:
     tick_interval_s2: int = 1080         # base_score > 0.40 → ~18 min
     tick_interval_s3: int = 420          # base_score > 0.70 → ~7 min
     tick_jitter: float = 0.3            # 随机抖动幅度，0.3=±30%，0=关闭
+    # ── 旧参数兼容（当前主流程不再使用）──
+    energy_cool_threshold: float = 0.20
+    energy_crisis_threshold: float = 0.05
+    energy_min_urge: float = 0.10
 
 
 @dataclass
@@ -192,6 +208,14 @@ class ProactiveLoop:
             logger.warning("[proactive] 随机记忆抽取失败: %s", e)
             return []
 
+    def _has_global_memory(self) -> bool:
+        if not self._memory:
+            return False
+        try:
+            return bool(self._memory.read_long_term().strip())
+        except Exception:
+            return False
+
     def _compute_energy(self) -> float:
         """计算目标 session 的当前电量（取目标与全局较高值）。"""
         if not self._presence:
@@ -202,6 +226,92 @@ class ProactiveLoop:
         energy_target = compute_energy(last_target)
         energy_global = compute_energy(last_global) * 0.6
         return max(energy_target, energy_global)
+
+    def _compute_interruptibility(
+        self,
+        *,
+        now_hour: int,
+        now_utc: datetime,
+        recent_msg_count: int,
+    ) -> tuple[float, dict[str, float]]:
+        """计算软打扰系数（0~1），并注入随机探索，避免长期锁死。"""
+        w_time = time_weight(
+            now_hour,
+            self._cfg.quiet_hours_start,
+            self._cfg.quiet_hours_end,
+            self._cfg.quiet_hours_weight,
+        )
+        f_time = max(0.0, min(1.0, w_time))
+
+        session_key = self._target_session_key()
+        if not self._presence or not session_key:
+            return 1.0, {
+                "f_time": f_time,
+                "f_reply": 1.0,
+                "f_activity": 1.0,
+                "f_fatigue": 1.0,
+                "random_delta": 0.0,
+            }
+
+        last_user = self._presence.get_last_user_at(session_key)
+        last_proactive = self._presence.get_last_proactive_at(session_key)
+        last_global_user = self._presence.most_recent_user_at()
+
+        # 回复信号：有回复且回复快 -> 高；长期不回复 -> 低，但保留探索地板
+        if last_proactive is None:
+            f_reply = 0.6
+        elif last_user is not None and last_user > last_proactive:
+            lag_min = max(0.0, (last_user - last_proactive).total_seconds() / 60.0)
+            decay = max(self._cfg.interrupt_reply_decay_minutes, 1.0)
+            f_reply = math.exp(-lag_min / decay)
+        else:
+            silence_min = max(0.0, (now_utc - last_proactive).total_seconds() / 60.0)
+            decay = max(self._cfg.interrupt_no_reply_decay_minutes, 1.0)
+            f_reply = 0.15 + 0.35 * math.exp(-silence_min / decay)
+
+        # 活跃信号：最近消息越近越高；并结合当前上下文消息量
+        if last_global_user is None:
+            f_live = 0.2
+        else:
+            idle_min = max(0.0, (now_utc - last_global_user).total_seconds() / 60.0)
+            decay = max(self._cfg.interrupt_activity_decay_minutes, 1.0)
+            f_live = math.exp(-idle_min / decay)
+        f_recent = d_recent(recent_msg_count, self._cfg.score_recent_scale)
+        f_activity = 0.5 * f_live + 0.5 * f_recent
+
+        # 疲劳信号：最近主动次数越多，系数越低（软约束）
+        sent_24h = self._state.count_deliveries_in_window(
+            session_key,
+            self._cfg.interrupt_fatigue_window_hours,
+            now=now_utc,
+        )
+        soft_cap = max(self._cfg.interrupt_fatigue_soft_cap, 0.1)
+        f_fatigue = 1.0 / (1.0 + sent_24h / soft_cap)
+
+        w_sum = (
+            self._cfg.interrupt_weight_time
+            + self._cfg.interrupt_weight_reply
+            + self._cfg.interrupt_weight_activity
+            + self._cfg.interrupt_weight_fatigue
+        )
+        raw = (
+            self._cfg.interrupt_weight_time * f_time
+            + self._cfg.interrupt_weight_reply * f_reply
+            + self._cfg.interrupt_weight_activity * f_activity
+            + self._cfg.interrupt_weight_fatigue * f_fatigue
+        ) / (w_sum if w_sum > 0 else 1.0)
+        random_delta = (self._rng or _random_module).uniform(
+            -self._cfg.interrupt_random_strength,
+            self._cfg.interrupt_random_strength,
+        )
+        score = max(self._cfg.interrupt_min_floor, min(1.0, raw + random_delta))
+        return score, {
+            "f_time": f_time,
+            "f_reply": f_reply,
+            "f_activity": f_activity,
+            "f_fatigue": f_fatigue,
+            "random_delta": random_delta,
+        }
 
     # ── internal ──────────────────────────────────────────────────
 
@@ -217,27 +327,40 @@ class ProactiveLoop:
         # ── 第一阶段：pre_score（不拉 feed，纯本地计算）──────────────
         energy = self._compute_energy()
         now_hour = datetime.now().hour
-        w_time = time_weight(now_hour, self._cfg.quiet_hours_start, self._cfg.quiet_hours_end, self._cfg.quiet_hours_weight)
-
-        # 静默时段直接跳过
-        if w_time == 0.0:
-            logger.info("[proactive] 静默时段（%02d:xx），跳过本轮", now_hour)
-            de = d_energy(energy)
-            return composite_score(de, 0.0, 0.0, self._cfg.score_weight_energy, self._cfg.score_weight_content, self._cfg.score_weight_recent)
+        now_utc = datetime.now(timezone.utc)
 
         recent = self._collect_recent()
         de = d_energy(energy)
         dr = d_recent(len(recent), self._cfg.score_recent_scale)
+        interruptibility, interrupt_detail = self._compute_interruptibility(
+            now_hour=now_hour,
+            now_utc=now_utc,
+            recent_msg_count=len(recent),
+        )
+        interrupt_factor = 0.6 + 0.4 * interruptibility
         # pre_score：只用 D_energy 和 D_recent，权重重新归一化（排除 D_content）
         w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
         pre_score = (
             (self._cfg.score_weight_energy * de + self._cfg.score_weight_recent * dr) / w_sum
             if w_sum > 0 else 0.0
-        ) * w_time
+        ) * interrupt_factor
 
         logger.info(
-            "[proactive] pre_score=%.3f  D_energy=%.3f D_recent=%.3f W_time=%.1f  energy=%.3f msg_count=%d",
-            pre_score, de, dr, w_time, energy, len(recent),
+            "[proactive] pre_score=%.3f interrupt=%.3f factor=%.3f"
+            " (time=%.2f reply=%.2f activity=%.2f fatigue=%.2f rand=%+.2f)"
+            " D_energy=%.3f D_recent=%.3f energy=%.3f msg_count=%d",
+            pre_score,
+            interruptibility,
+            interrupt_factor,
+            interrupt_detail["f_time"],
+            interrupt_detail["f_reply"],
+            interrupt_detail["f_activity"],
+            interrupt_detail["f_fatigue"],
+            interrupt_detail["random_delta"],
+            de,
+            dr,
+            energy,
+            len(recent),
         )
 
         if pre_score < self._cfg.score_pre_threshold:
@@ -260,26 +383,40 @@ class ProactiveLoop:
                 len(semantic_duplicate_entries),
             )
 
+        has_memory = self._has_global_memory()
+        if self._cfg.only_new_items_trigger and not new_items and not self._presence and not has_memory:
+            logger.info("[proactive] 无新信息且 only_new_items_trigger=true（无 presence），跳过本轮反思")
+            return pre_score
+
         dc = d_content(len(new_items), self._cfg.score_content_halfsat)
         base_score = composite_score(
             de, dc, dr,
             self._cfg.score_weight_energy,
             self._cfg.score_weight_content,
             self._cfg.score_weight_recent,
-        ) * w_time
+        ) * interrupt_factor
 
         w_random = random_weight(rng=self._rng)
         draw_score = base_score * w_random
+        session_key = self._target_session_key()
+        target_last_user = self._presence.get_last_user_at(session_key) if self._presence and session_key else None
+        force_reflect = (
+            energy < 0.05
+            or (self._presence is not None and bool(session_key) and target_last_user is None)
+            or (energy < 0.20 and has_memory)
+        )
 
         logger.info(
             "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"
-            "  W_time=%.1f W_random=%.2f → draw_score=%.3f 阈值=%.2f",
-            base_score, de, dc, dr, w_time, w_random, draw_score, self._cfg.score_llm_threshold,
+            "  interrupt=%.3f W_random=%.2f → draw_score=%.3f 阈值=%.2f force_reflect=%s",
+            base_score, de, dc, dr, interruptibility, w_random, draw_score, self._cfg.score_llm_threshold, force_reflect,
         )
 
-        if draw_score < self._cfg.score_llm_threshold:
+        if draw_score < self._cfg.score_llm_threshold and not force_reflect:
             logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
             return base_score
+        if draw_score < self._cfg.score_llm_threshold and force_reflect:
+            logger.info("[proactive] draw_score 未过门槛，但命中兜底条件，继续反思")
 
         # ── 第三阶段：LLM 反思 ────────────────────────────────────
         is_crisis = energy < 0.05
