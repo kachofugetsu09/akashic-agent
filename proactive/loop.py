@@ -133,7 +133,6 @@ class ProactiveLoop:
             f"send={decision.should_send}  "
             f"reasoning={decision.reasoning[:80]!r}"
         )
-        self._state.mark_items_seen(new_entries)
 
         # 4. 阈值判断
         if decision.should_send and decision.score >= self._cfg.threshold:
@@ -154,12 +153,19 @@ class ProactiveLoop:
                 window_hours=self._cfg.delivery_dedupe_hours,
             ):
                 logger.info("[proactive] 命中发送去重，跳过发送")
+                self._state.mark_items_seen(new_entries)
+                logger.info("[proactive] 已按去重命中标记本轮条目为 seen（视为已送达过同等内容）")
                 return
             sent = await self._send(decision.message)
             if sent and session_key:
                 self._state.mark_delivery(session_key, delivery_key)
+                self._state.mark_items_seen(new_entries)
+                logger.info("[proactive] 已发送成功并标记本轮条目为 seen")
+            else:
+                logger.info("[proactive] 本轮发送未成功，不标记 seen，后续可再次尝试")
         else:
             logger.info("[proactive] 决定不主动发送")
+            logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
 
     def _filter_new_items(self, items: list[FeedItem]) -> tuple[list[FeedItem], list[tuple[str, str]]]:
         if not items:

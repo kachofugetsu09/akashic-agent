@@ -26,7 +26,7 @@ from session.manager import SessionManager
 from feeds.store import FeedStore
 from feeds.registry import FeedRegistry
 from feeds.rss import RSSFeedSource
-from feeds.tools import FeedSubscribeTool, FeedUnsubscribeTool, FeedListTool
+from feeds.tools import FeedManageTool, FeedQueryTool
 from proactive.loop import ProactiveLoop
 from proactive.state import ProactiveStateStore
 
@@ -95,9 +95,8 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     feed_registry.register_source_type("rss", lambda sub: RSSFeedSource(sub))
 
     # Register feed tools
-    tools.register(FeedSubscribeTool(feed_store))
-    tools.register(FeedUnsubscribeTool(feed_store))
-    tools.register(FeedListTool(feed_store))
+    tools.register(FeedManageTool(feed_store))
+    tools.register(FeedQueryTool(feed_store, feed_registry))
 
     return loop, bus, tools, push_tool, session_manager, scheduler, feed_registry, feed_store, provider
 

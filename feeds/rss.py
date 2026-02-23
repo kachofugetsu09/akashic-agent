@@ -9,6 +9,8 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -38,6 +40,15 @@ class RSSFeedSource(FeedSource):
     async def fetch(self, limit: int = 5) -> list[FeedItem]:
         if not self._sub.url:
             return []
+        if self._sub.url.startswith("file://"):
+            parsed = urlparse(self._sub.url)
+            local_path = unquote(parsed.path or "")
+            try:
+                text = Path(local_path).read_text(encoding="utf-8")
+                return self._parse(text, limit)
+            except Exception as e:
+                logger.warning(f"RSS local file read error [{self._sub.name}] path={local_path!r}: {e}")
+                return []
         async with httpx.AsyncClient(
             timeout=_TIMEOUT,
             follow_redirects=True,
