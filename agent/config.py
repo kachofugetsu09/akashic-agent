@@ -135,6 +135,7 @@ class Config:
                 tick_interval_normal=int(p.get("tick_interval_normal", 1800)),
                 tick_interval_low=int(p.get("tick_interval_low", 900)),
                 tick_interval_crisis=int(p.get("tick_interval_crisis", 600)),
+                tick_jitter=float(p.get("tick_jitter", 0.3)),
             )
 
         return cls(

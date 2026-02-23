@@ -64,10 +64,11 @@ class ProactiveConfig:
     quiet_hours_start: int = 23           # 静默开始（本地时间）
     quiet_hours_end: int = 8              # 静默结束（本地时间）
     quiet_hours_weight: float = 0.0      # 静默时段权重，0=完全不发，0.1=低概率仍可发
-    tick_interval_high: int = 7200        # 电量高时间隔（秒）
-    tick_interval_normal: int = 1800      # 正常间隔（秒）
-    tick_interval_low: int = 900          # 电量低时间隔（秒）
-    tick_interval_crisis: int = 600       # 危机模式间隔（秒）
+    tick_interval_high: int = 7200        # 电量高时间隔（秒，中心值）
+    tick_interval_normal: int = 1800      # 正常间隔（秒，中心值）
+    tick_interval_low: int = 900          # 电量低时间隔（秒，中心值）
+    tick_interval_crisis: int = 600       # 危机模式间隔（秒，中心值）
+    tick_jitter: float = 0.3             # 随机抖动幅度，0.3=±30%，0=关闭
 
 
 @dataclass
@@ -150,6 +151,8 @@ class ProactiveLoop:
             tick_normal=self._cfg.tick_interval_normal,
             tick_low=self._cfg.tick_interval_low,
             tick_crisis=self._cfg.tick_interval_crisis,
+            tick_jitter=self._cfg.tick_jitter,
+            rng=self._rng,
         )
 
     def _target_session_key(self) -> str:

@@ -134,30 +134,40 @@ def test_time_weight_custom_quiet_window():
 
 
 # ── next_tick_interval ────────────────────────────────────────────
+# jitter=0 关掉随机，验证档位逻辑；带 jitter 时验证落在合理范围内
 
 def test_tick_interval_high_when_energy_above_half():
-    interval = next_tick_interval(0.60)
-    assert interval == 7200
+    assert next_tick_interval(0.60, tick_jitter=0) == 7200
 
 
 def test_tick_interval_normal_when_energy_between_cool_and_half():
-    interval = next_tick_interval(0.30)
-    assert interval == 1800
+    assert next_tick_interval(0.30, tick_jitter=0) == 1800
 
 
 def test_tick_interval_low_when_energy_below_cool_threshold():
-    interval = next_tick_interval(0.15)
-    assert interval == 900
+    assert next_tick_interval(0.15, tick_jitter=0) == 900
 
 
 def test_tick_interval_crisis_when_energy_below_crisis_threshold():
-    interval = next_tick_interval(0.03)
-    assert interval == 600
+    assert next_tick_interval(0.03, tick_jitter=0) == 600
 
 
 def test_tick_interval_crisis_at_zero_energy():
-    interval = next_tick_interval(0.0)
-    assert interval == 600
+    assert next_tick_interval(0.0, tick_jitter=0) == 600
+
+
+def test_tick_interval_jitter_stays_within_range():
+    import random
+    rng = random.Random(42)
+    base = 600
+    jitter = 0.3
+    for _ in range(50):
+        v = next_tick_interval(0.0, tick_crisis=base, tick_jitter=jitter, rng=rng)
+        assert int(base * (1 - jitter)) <= v <= int(base * (1 + jitter)) + 1
+
+
+def test_tick_interval_jitter_zero_returns_exact():
+    assert next_tick_interval(0.60, tick_high=7200, tick_jitter=0.0) == 7200
 
 
 def test_tick_interval_decreases_as_energy_drops():

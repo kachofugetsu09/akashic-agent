@@ -113,16 +113,25 @@ def next_tick_interval(
     tick_normal: int = 1800,
     tick_low: int = 900,
     tick_crisis: int = 600,
+    tick_jitter: float = 0.3,
+    rng: _random.Random | None = None,
 ) -> int:
-    """根据当前电量返回下一次心跳的等待秒数（自适应间隔）。
+    """根据当前电量返回下一次心跳的等待秒数（自适应 + 随机抖动）。
 
     电量高 → 拉长间隔（刚聊完，别烦）
     电量低 → 缩短间隔（快去找话说）
+    tick_jitter 控制随机浮动幅度：0.3 表示 ±30%，让行为不那么机械。
     """
     if energy > 0.50:
-        return tick_high
-    if energy > cool_threshold:
-        return tick_normal
-    if energy > crisis_threshold:
-        return tick_low
-    return tick_crisis
+        base = tick_high
+    elif energy > cool_threshold:
+        base = tick_normal
+    elif energy > crisis_threshold:
+        base = tick_low
+    else:
+        base = tick_crisis
+
+    if tick_jitter <= 0:
+        return base
+    r = (rng or _random).uniform(1 - tick_jitter, 1 + tick_jitter)
+    return max(1, int(base * r))

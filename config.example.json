@@ -61,11 +61,13 @@
     "_comment_quiet_weight": "静默时段权重：0.0=完全不发，0.1=低概率仍可发（危机模式下约10%量级）",
     "quiet_hours_weight": 0.0,
 
-    "_comment_tick": "── tick 检查间隔（秒）── 话痨模式可全部缩短一半",
+    "_comment_tick": "── tick 检查间隔（秒，中心值）── 实际值 = center × uniform(1±jitter)",
     "tick_interval_high": 7200,
     "tick_interval_normal": 1800,
     "tick_interval_low": 900,
     "tick_interval_crisis": 600,
+    "_comment_jitter": "随机抖动幅度：0.3=±30%，让行为不那么机械，0=关闭",
+    "tick_jitter": 0.3,
 
     "_comment_feed": "── 信息流 ──",
     "items_per_source": 3,
