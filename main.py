@@ -31,6 +31,7 @@ from feeds.tools import FeedManageTool, FeedQueryTool
 from proactive.loop import ProactiveLoop
 from proactive.state import ProactiveStateStore
 from proactive.presence import PresenceStore
+from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,6 +140,9 @@ async def serve(config_path: str = "config.json") -> None:
         scheduler.run(),
     ]
 
+    memory_store = MemoryStore(workspace)
+    presence = PresenceStore(workspace / "presence.json")
+
     if config.proactive.enabled:
         proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
         proactive_loop = ProactiveLoop(
@@ -150,10 +154,19 @@ async def serve(config_path: str = "config.json") -> None:
             model=config.model,
             max_tokens=config.max_tokens,
             state_store=proactive_state,
-            memory_store=MemoryStore(workspace),
+            memory_store=memory_store,
+            presence=presence,
         )
         tasks.append(proactive_loop.run())
-        print(f"ProactiveLoop 已启动  间隔={config.proactive.interval_seconds}s")
+
+    # 每日 00:00 记忆质量优化 + 问题生成
+    mem_optimizer = MemoryOptimizer(
+        memory=memory_store,
+        provider=provider,
+        model=config.model,
+    )
+    tasks.append(MemoryOptimizerLoop(mem_optimizer).run())
+    print("MemoryOptimizerLoop 已启动，每日 00:00 执行")
 
     try:
         await asyncio.gather(*tasks)

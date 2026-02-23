@@ -122,6 +122,19 @@ class Config:
                 semantic_dedupe_text_max_chars=int(p.get("semantic_dedupe_text_max_chars", 240)),
                 use_global_memory=bool(p.get("use_global_memory", True)),
                 global_memory_max_chars=int(p.get("global_memory_max_chars", 3000)),
+                # ── 能量/冲动 ──
+                energy_cool_threshold=float(p.get("energy_cool_threshold", 0.20)),
+                energy_crisis_threshold=float(p.get("energy_crisis_threshold", 0.05)),
+                energy_min_urge=float(p.get("energy_min_urge", 0.10)),
+                # ── 静默时间窗口（本地时间）──
+                quiet_hours_start=int(p.get("quiet_hours_start", 23)),
+                quiet_hours_end=int(p.get("quiet_hours_end", 8)),
+                quiet_hours_weight=float(p.get("quiet_hours_weight", 0.0)),
+                # ── tick 间隔（秒）──
+                tick_interval_high=int(p.get("tick_interval_high", 7200)),
+                tick_interval_normal=int(p.get("tick_interval_normal", 1800)),
+                tick_interval_low=int(p.get("tick_interval_low", 900)),
+                tick_interval_crisis=int(p.get("tick_interval_crisis", 600)),
             )
 
         return cls(

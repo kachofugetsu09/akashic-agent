@@ -39,12 +39,37 @@
   "proactive": {
     "_comment": "主动触达：定期拉取订阅信息流，LLM 判断是否值得主动发消息",
     "enabled": false,
-    "interval_seconds": 1800,
-    "threshold": 0.70,
-    "items_per_source": 3,
-    "recent_chat_messages": 20,
     "default_channel": "telegram",
     "default_chat_id": "your_numeric_chat_id",
+
+    "_comment_personality": "── 主动性人格（标准 / 话痨测试）──",
+    "_comment_threshold": "score 高于此值才发送。标准=0.70，话痨=0.50",
+    "threshold": 0.70,
+
+    "_comment_energy": "── 能量衰减门控 ──",
+    "_comment_cool": "电量低于此值才开始产生冲动。标准=0.20（~6h），话痨=0.45（~2h）",
+    "energy_cool_threshold": 0.20,
+    "_comment_crisis": "电量低于此值进入危机模式（强制找话说）。标准=0.05（~3天），话痨=0.15（~12h）",
+    "energy_crisis_threshold": 0.05,
+    "_comment_min_urge": "最终冲动低于此值跳过 LLM。标准=0.10，话痨=0.05",
+    "energy_min_urge": 0.10,
+
+    "_comment_quiet": "── 静默时间窗口（本地时间，该时段内不主动打扰）──",
+    "_comment_quiet2": "标准=23~8（9小时），话痨=1~7（6小时）",
+    "quiet_hours_start": 23,
+    "quiet_hours_end": 8,
+    "_comment_quiet_weight": "静默时段权重：0.0=完全不发，0.1=低概率仍可发（危机模式下约10%量级）",
+    "quiet_hours_weight": 0.0,
+
+    "_comment_tick": "── tick 检查间隔（秒）── 话痨模式可全部缩短一半",
+    "tick_interval_high": 7200,
+    "tick_interval_normal": 1800,
+    "tick_interval_low": 900,
+    "tick_interval_crisis": 600,
+
+    "_comment_feed": "── 信息流 ──",
+    "items_per_source": 3,
+    "recent_chat_messages": 20,
     "dedupe_seen_ttl_hours": 336,
     "delivery_dedupe_hours": 24,
     "only_new_items_trigger": true,
@@ -54,6 +79,8 @@
     "semantic_dedupe_max_candidates": 200,
     "semantic_dedupe_ngram": 3,
     "semantic_dedupe_text_max_chars": 240,
+
+    "_comment_memory": "── 记忆注入 ──",
     "use_global_memory": true,
     "global_memory_max_chars": 3000
   },

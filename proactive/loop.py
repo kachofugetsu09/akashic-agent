@@ -14,6 +14,7 @@ import math
 import hashlib
 import json
 import logging
+import random as _random_module
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -26,6 +27,9 @@ from agent.memory import MemoryStore
 from agent.tools.message_push import MessagePushTool
 from feeds.base import FeedItem
 from feeds.registry import FeedRegistry
+from proactive.energy import compute_energy, content_weight, next_tick_interval, random_weight, time_weight, urge_base
+from proactive.memory_sampler import sample_memory_chunks
+from proactive.presence import PresenceStore
 from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
 
@@ -35,7 +39,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ProactiveConfig:
     enabled: bool = False
-    interval_seconds: int = 1800    # 两次 tick 间隔（秒）
+    interval_seconds: int = 1800    # 无 presence 时的固定间隔（秒）
     threshold: float = 0.70         # score 高于此值才发送
     items_per_source: int = 3       # 每个信息源取几条
     recent_chat_messages: int = 20  # 回顾最近 N 条对话
@@ -53,6 +57,17 @@ class ProactiveConfig:
     semantic_dedupe_text_max_chars: int = 240
     use_global_memory: bool = True
     global_memory_max_chars: int = 3000
+    # ── 动态电量 / 昼夜节律 ──
+    energy_cool_threshold: float = 0.20   # 低于此值才开始计算冲动
+    energy_crisis_threshold: float = 0.05 # 低于此值进入危机模式
+    energy_min_urge: float = 0.10         # 低于此冲动值跳过 LLM
+    quiet_hours_start: int = 23           # 静默开始（本地时间）
+    quiet_hours_end: int = 8              # 静默结束（本地时间）
+    quiet_hours_weight: float = 0.0      # 静默时段权重，0=完全不发，0.1=低概率仍可发
+    tick_interval_high: int = 7200        # 电量高时间隔（秒）
+    tick_interval_normal: int = 1800      # 正常间隔（秒）
+    tick_interval_low: int = 900          # 电量低时间隔（秒）
+    tick_interval_crisis: int = 600       # 危机模式间隔（秒）
 
 
 @dataclass
@@ -77,6 +92,8 @@ class ProactiveLoop:
         state_store: ProactiveStateStore | None = None,
         state_path: Path | None = None,
         memory_store: MemoryStore | None = None,
+        presence: PresenceStore | None = None,
+        rng: _random_module.Random | None = None,
     ) -> None:
         self._feeds = feed_registry
         self._sessions = session_manager
@@ -87,6 +104,8 @@ class ProactiveLoop:
         self._max_tokens = max_tokens
         self._state = state_store or ProactiveStateStore(state_path or Path("proactive_state.json"))
         self._memory = memory_store
+        self._presence = presence
+        self._rng = rng
         self._running = False
         logger.info(
             "[proactive] 去重配置 seen_ttl=%dh delivery_window=%dh only_new_items_trigger=%s semantic_enabled=%s semantic_threshold=%.2f semantic_window=%dh ngram=%d use_global_memory=%s memory_max_chars=%d",
@@ -104,19 +123,67 @@ class ProactiveLoop:
     async def run(self) -> None:
         self._running = True
         logger.info(
-            f"ProactiveLoop 已启动  间隔={self._cfg.interval_seconds}s  "
-            f"阈值={self._cfg.threshold}  "
+            f"ProactiveLoop 已启动  阈值={self._cfg.threshold}  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
         while self._running:
-            await asyncio.sleep(self._cfg.interval_seconds)
+            interval = self._next_interval()
+            logger.info("[proactive] 下次 tick 间隔=%ds", interval)
+            await asyncio.sleep(interval)
             try:
                 await self._tick()
             except Exception:
                 logger.exception("ProactiveLoop tick 异常")
 
+    def _next_interval(self) -> int:
+        """根据当前电量返回自适应等待秒数。无 presence 时回退固定间隔。"""
+        if not self._presence:
+            return self._cfg.interval_seconds
+        session_key = self._target_session_key()
+        last_user_at = self._presence.get_last_user_at(session_key)
+        energy = compute_energy(last_user_at)
+        return next_tick_interval(
+            energy,
+            cool_threshold=self._cfg.energy_cool_threshold,
+            crisis_threshold=self._cfg.energy_crisis_threshold,
+            tick_high=self._cfg.tick_interval_high,
+            tick_normal=self._cfg.tick_interval_normal,
+            tick_low=self._cfg.tick_interval_low,
+            tick_crisis=self._cfg.tick_interval_crisis,
+        )
+
+    def _target_session_key(self) -> str:
+        channel = (self._cfg.default_channel or "").strip()
+        chat_id = self._cfg.default_chat_id.strip()
+        return f"{channel}:{chat_id}" if channel and chat_id else ""
+
     def stop(self) -> None:
         self._running = False
+
+    def _sample_random_memory(self, n: int = 2) -> list[str]:
+        """随机抽取 n 条记忆片段，无记忆时返回 []。"""
+        if not self._memory:
+            return []
+        try:
+            raw = self._memory.read_long_term().strip()
+            return sample_memory_chunks(raw, n=n)
+        except Exception as e:
+            logger.warning("[proactive] 随机记忆抽取失败: %s", e)
+            return []
+
+    def _compute_energy_urge(self) -> tuple[float, float]:
+        """计算目标 session 的当前电量和基础冲动值。"""
+        if not self._presence:
+            return 0.0, 1.0  # 无 presence 时视作完全放电，冲动最大
+        session_key = self._target_session_key()
+        # 取目标 session 与全局最近活跃中的较高值，防误判危机
+        last_target = self._presence.get_last_user_at(session_key)
+        last_global = self._presence.most_recent_user_at()
+        energy_target = compute_energy(last_target)
+        energy_global = compute_energy(last_global) * 0.6
+        energy = max(energy_target, energy_global)
+        urge = urge_base(energy, self._cfg.energy_cool_threshold)
+        return energy, urge
 
     # ── internal ──────────────────────────────────────────────────
 
@@ -127,6 +194,19 @@ class ProactiveLoop:
             delivery_ttl_hours=self._cfg.delivery_dedupe_hours,
             semantic_ttl_hours=max(self._cfg.dedupe_seen_ttl_hours, self._cfg.semantic_dedupe_window_hours),
         )
+
+        # 0. 能量前置门控：电量高 → 冲动为 0 → 直接跳过，省 LLM 调用
+        energy, urge = self._compute_energy_urge()
+        now_hour = datetime.now().hour
+        w_time = time_weight(now_hour, self._cfg.quiet_hours_start, self._cfg.quiet_hours_end, self._cfg.quiet_hours_weight)
+
+        # 快速剪枝：冲动或时间权重为零 → 跳过，不拉 feed
+        if self._presence and urge * w_time == 0.0:
+            if urge == 0.0:
+                logger.info("[proactive] 电量充足（%.2f），无需主动联系，跳过本轮", energy)
+            else:
+                logger.info("[proactive] 静默时段（%02d:xx），W_time=%.1f，跳过本轮", now_hour, w_time)
+            return
 
         # 1. 并发拉取信息流
         items = await self._feeds.fetch_all(self._cfg.items_per_source)
@@ -143,17 +223,36 @@ class ProactiveLoop:
                 "[proactive] 已标记语义重复条目为 seen count=%d（避免跨源重复重试）",
                 len(semantic_duplicate_entries),
             )
-        if not new_items and self._cfg.only_new_items_trigger:
-            logger.info("[proactive] 无新信息，按配置跳过本轮反思")
+
+        # 2. W_content + W_random → 最终冲动
+        # 无 presence 时不触发危机模式——内容门控依赖真实电量数据
+        is_crisis = self._presence is not None and energy < self._cfg.energy_crisis_threshold
+        has_memory = bool(self._memory and self._memory.read_long_term().strip())
+        w_content = content_weight(
+            new_items=len(new_items),
+            has_memory=has_memory,
+            is_crisis=is_crisis,
+        )
+        w_random = random_weight(rng=self._rng)
+        effective_urge = urge * w_time * w_content * w_random
+        logger.info(
+            "[proactive] 电量=%.3f 冲动=%.3f W_time=%.1f W_content=%.2f W_random=%.2f → 最终冲动=%.3f 阈值=%.2f",
+            energy, urge, w_time, w_content, w_random, effective_urge, self._cfg.energy_min_urge,
+        )
+        if effective_urge < self._cfg.energy_min_urge:
+            logger.info("[proactive] 最终冲动不足，跳过本轮反思")
             return
 
-        # 2. 最近聊天上下文
+        # 3. 最近聊天上下文
         recent = self._collect_recent()
         logger.info("[proactive] 最近会话消息条数=%d", len(recent))
 
-        # 3. LLM 反思
-        reflect_items = new_items if self._cfg.only_new_items_trigger else items
-        decision = await self._reflect(reflect_items, recent)
+        # 4. LLM 反思
+        decision = await self._reflect(
+            new_items, recent,
+            energy=energy, urge=effective_urge,
+            is_crisis=is_crisis,
+        )
         logger.info(
             f"[proactive] score={decision.score:.2f}  "
             f"send={decision.should_send}  "
@@ -165,7 +264,7 @@ class ProactiveLoop:
             channel = (self._cfg.default_channel or "").strip()
             chat_id = self._cfg.default_chat_id.strip()
             session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
-            evidence_ids = _resolve_evidence_item_ids(decision, new_items if new_items else reflect_items)
+            evidence_ids = _resolve_evidence_item_ids(decision, new_items if new_items else items)
             delivery_key = _build_delivery_key(evidence_ids, decision.message)
             logger.info(
                 "[proactive] 发送前去重检查 session=%s evidence_count=%d delivery_key=%s",
@@ -345,11 +444,50 @@ class ProactiveLoop:
             logger.warning(f"[proactive] 加载 session {key!r} 失败: {e}")
             return []
 
-    async def _reflect(self, items: list[FeedItem], recent: list[dict]) -> _Decision:
+    async def _reflect(
+        self,
+        items: list[FeedItem],
+        recent: list[dict],
+        energy: float = 0.0,
+        urge: float = 0.0,
+        is_crisis: bool = False,
+    ) -> _Decision:
         now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
         feed_text = _format_items(items) or "（暂无订阅内容）"
         chat_text = _format_recent(recent) or "（无近期对话记录）"
+
+        # 始终注入全量记忆——可靠助手的基础语境
         memory_text = self._collect_global_memory()
+
+        # 待了解的问题列表（作为话题素材）
+        questions_text = ""
+        if self._memory:
+            try:
+                questions_text = self._memory.read_questions().strip()
+            except Exception:
+                pass
+
+        # 危机模式：额外随机抽取一条记忆话题作为开场建议
+        crisis_hint = ""
+        if is_crisis:
+            topic_chunks = self._sample_random_memory(n=1)
+            topic_hint = topic_chunks[0] if topic_chunks else ""
+            session_key = self._target_session_key()
+            last_at = self._presence.get_last_user_at(session_key) if self._presence else None
+            elapsed = ""
+            if last_at:
+                hours = (datetime.now(timezone.utc) - last_at).total_seconds() / 3600
+                elapsed = f"距离上次对话已超过 {hours:.0f} 小时。"
+            topic_section = (
+                f"\n\n## 随机话题建议（危机开场用）\n\n{topic_hint}"
+                if topic_hint else ""
+            )
+            crisis_hint = (
+                f"\n[危机模式] {elapsed}"
+                "用户可能已忘记你的存在，需要主动找一个自然的切入点重新联系。"
+                "可以从下方随机话题出发，或用关心/有趣内容开场。"
+                f"{topic_section}"
+            )
 
         system_msg = (
             "你是一个陪伴型 AI 助手，正在决定是否主动联系用户。"
@@ -359,6 +497,11 @@ class ProactiveLoop:
 
         user_msg = f"""当前时间：{now_str}
 
+## 主动性上下文
+
+当前电量（与用户的互动新鲜度）: {energy:.2f}  (0=完全冷却, 1=刚刚对话)
+主动冲动指数: {urge:.2f}  (0=不需要说, 1=非常需要联系){crisis_hint}
+
 ## 订阅信息流（最新内容）
 
 {feed_text}
@@ -366,7 +509,7 @@ class ProactiveLoop:
 ## 长期记忆（用户画像/偏好）
 
 {memory_text}
-
+{f"## 待了解的话题（可作为开场素材）\n\n{questions_text}\n" if questions_text else ""}
 ## 近期对话
 
 {chat_text}
@@ -377,6 +520,7 @@ class ProactiveLoop:
 - 信息流里有没有用户可能感兴趣的内容
 - 现在说点什么是否自然、不唐突
 - 与近期对话有无关联或延伸
+- 电量越低越需要主动联系，危机模式时哪怕简单关心也有价值
 
 只输出 JSON，不要其他内容：
 {{
@@ -462,6 +606,8 @@ evidence_item_ids 从订阅信息流里挑选支持你判断的 item_id（可为
                 tools_used=["message_push"],
             )
             self._sessions.save(session)
+            if self._presence:
+                self._presence.record_proactive_sent(key)
             logger.info(f"[proactive] 已发送主动消息并写入会话 → {channel}:{chat_id}")
             return True
         except Exception as e:
