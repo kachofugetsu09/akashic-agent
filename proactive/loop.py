@@ -27,7 +27,16 @@ from agent.memory import MemoryStore
 from agent.tools.message_push import MessagePushTool
 from feeds.base import FeedItem
 from feeds.registry import FeedRegistry
-from proactive.energy import compute_energy, content_weight, next_tick_interval, random_weight, time_weight, urge_base
+from proactive.energy import (
+    compute_energy,
+    composite_score,
+    d_content,
+    d_energy,
+    d_recent,
+    next_tick_from_score,
+    random_weight,
+    time_weight,
+)
 from proactive.memory_sampler import sample_memory_chunks
 from proactive.presence import PresenceStore
 from proactive.state import ProactiveStateStore
@@ -57,18 +66,24 @@ class ProactiveConfig:
     semantic_dedupe_text_max_chars: int = 240
     use_global_memory: bool = True
     global_memory_max_chars: int = 3000
-    # ── 动态电量 / 昼夜节律 ──
-    energy_cool_threshold: float = 0.20   # 低于此值才开始计算冲动
-    energy_crisis_threshold: float = 0.05 # 低于此值进入危机模式
-    energy_min_urge: float = 0.10         # 低于此冲动值跳过 LLM
+    # ── 多维打分 ──
+    score_weight_energy: float = 0.40    # D_energy 权重（互动饥渴度）
+    score_weight_content: float = 0.40   # D_content 权重（信息流新鲜度）
+    score_weight_recent: float = 0.20    # D_recent 权重（对话语境丰富度）
+    score_content_halfsat: float = 3.0   # D_content 半饱和点（新条目数）
+    score_recent_scale: float = 10.0     # D_recent 消息数归一化基数
+    score_llm_threshold: float = 0.40    # draw_score 超过此值才调 LLM
+    score_pre_threshold: float = 0.05    # pre_score 低于此值直接跳过（省 feed 拉取）
+    # ── 昼夜节律 ──
     quiet_hours_start: int = 23           # 静默开始（本地时间）
     quiet_hours_end: int = 8              # 静默结束（本地时间）
     quiet_hours_weight: float = 0.0      # 静默时段权重，0=完全不发，0.1=低概率仍可发
-    tick_interval_high: int = 7200        # 电量高时间隔（秒，中心值）
-    tick_interval_normal: int = 1800      # 正常间隔（秒，中心值）
-    tick_interval_low: int = 900          # 电量低时间隔（秒，中心值）
-    tick_interval_crisis: int = 600       # 危机模式间隔（秒，中心值）
-    tick_jitter: float = 0.3             # 随机抖动幅度，0.3=±30%，0=关闭
+    # ── tick 间隔（由 base_score 驱动）──
+    tick_interval_s0: int = 4800         # base_score ≤ 0.20 → ~80 min
+    tick_interval_s1: int = 2400         # base_score > 0.20 → ~40 min
+    tick_interval_s2: int = 1080         # base_score > 0.40 → ~18 min
+    tick_interval_s3: int = 420          # base_score > 0.70 → ~7 min
+    tick_jitter: float = 0.3            # 随机抖动幅度，0.3=±30%，0=关闭
 
 
 @dataclass
@@ -127,30 +142,33 @@ class ProactiveLoop:
             f"ProactiveLoop 已启动  阈值={self._cfg.threshold}  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
+        last_base_score: float | None = None
         while self._running:
-            interval = self._next_interval()
+            interval = self._next_interval(last_base_score)
             logger.info("[proactive] 下次 tick 间隔=%ds", interval)
             await asyncio.sleep(interval)
             try:
-                await self._tick()
+                last_base_score = await self._tick()
             except Exception:
                 logger.exception("ProactiveLoop tick 异常")
+                last_base_score = None
 
-    def _next_interval(self) -> int:
-        """根据当前电量返回自适应等待秒数。无 presence 时回退固定间隔。"""
+    def _next_interval(self, base_score: float | None = None) -> int:
+        """根据 base_score 返回自适应等待秒数。无 presence 时回退固定间隔。"""
         if not self._presence:
             return self._cfg.interval_seconds
-        session_key = self._target_session_key()
-        last_user_at = self._presence.get_last_user_at(session_key)
-        energy = compute_energy(last_user_at)
-        return next_tick_interval(
-            energy,
-            cool_threshold=self._cfg.energy_cool_threshold,
-            crisis_threshold=self._cfg.energy_crisis_threshold,
-            tick_high=self._cfg.tick_interval_high,
-            tick_normal=self._cfg.tick_interval_normal,
-            tick_low=self._cfg.tick_interval_low,
-            tick_crisis=self._cfg.tick_interval_crisis,
+        # base_score 由 _tick 传入；首次启动时用电量估算一个初始值
+        if base_score is None:
+            session_key = self._target_session_key()
+            last_user_at = self._presence.get_last_user_at(session_key)
+            energy = compute_energy(last_user_at)
+            base_score = d_energy(energy) * self._cfg.score_weight_energy
+        return next_tick_from_score(
+            base_score,
+            tick_s3=self._cfg.tick_interval_s3,
+            tick_s2=self._cfg.tick_interval_s2,
+            tick_s1=self._cfg.tick_interval_s1,
+            tick_s0=self._cfg.tick_interval_s0,
             tick_jitter=self._cfg.tick_jitter,
             rng=self._rng,
         )
@@ -174,23 +192,21 @@ class ProactiveLoop:
             logger.warning("[proactive] 随机记忆抽取失败: %s", e)
             return []
 
-    def _compute_energy_urge(self) -> tuple[float, float]:
-        """计算目标 session 的当前电量和基础冲动值。"""
+    def _compute_energy(self) -> float:
+        """计算目标 session 的当前电量（取目标与全局较高值）。"""
         if not self._presence:
-            return 0.0, 1.0  # 无 presence 时视作完全放电，冲动最大
+            return 0.0  # 无 presence 时视作完全放电
         session_key = self._target_session_key()
-        # 取目标 session 与全局最近活跃中的较高值，防误判危机
         last_target = self._presence.get_last_user_at(session_key)
         last_global = self._presence.most_recent_user_at()
         energy_target = compute_energy(last_target)
         energy_global = compute_energy(last_global) * 0.6
-        energy = max(energy_target, energy_global)
-        urge = urge_base(energy, self._cfg.energy_cool_threshold)
-        return energy, urge
+        return max(energy_target, energy_global)
 
     # ── internal ──────────────────────────────────────────────────
 
-    async def _tick(self) -> None:
+    async def _tick(self) -> float:
+        """执行一次主动判断循环，返回本轮 base_score（供调整下次 tick 间隔）。"""
         logger.info("[proactive] tick 开始")
         self._state.cleanup(
             seen_ttl_hours=self._cfg.dedupe_seen_ttl_hours,
@@ -198,22 +214,39 @@ class ProactiveLoop:
             semantic_ttl_hours=max(self._cfg.dedupe_seen_ttl_hours, self._cfg.semantic_dedupe_window_hours),
         )
 
-        # 0. 能量前置门控：电量高 → 冲动为 0 → 直接跳过，省 LLM 调用
-        energy, urge = self._compute_energy_urge()
+        # ── 第一阶段：pre_score（不拉 feed，纯本地计算）──────────────
+        energy = self._compute_energy()
         now_hour = datetime.now().hour
         w_time = time_weight(now_hour, self._cfg.quiet_hours_start, self._cfg.quiet_hours_end, self._cfg.quiet_hours_weight)
 
-        # 快速剪枝：冲动或时间权重为零 → 跳过，不拉 feed
-        if self._presence and urge * w_time == 0.0:
-            if urge == 0.0:
-                logger.info("[proactive] 电量充足（%.2f），无需主动联系，跳过本轮", energy)
-            else:
-                logger.info("[proactive] 静默时段（%02d:xx），W_time=%.1f，跳过本轮", now_hour, w_time)
-            return
+        # 静默时段直接跳过
+        if w_time == 0.0:
+            logger.info("[proactive] 静默时段（%02d:xx），跳过本轮", now_hour)
+            de = d_energy(energy)
+            return composite_score(de, 0.0, 0.0, self._cfg.score_weight_energy, self._cfg.score_weight_content, self._cfg.score_weight_recent)
 
-        # 1. 并发拉取信息流
+        recent = self._collect_recent()
+        de = d_energy(energy)
+        dr = d_recent(len(recent), self._cfg.score_recent_scale)
+        # pre_score：只用 D_energy 和 D_recent，权重重新归一化（排除 D_content）
+        w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
+        pre_score = (
+            (self._cfg.score_weight_energy * de + self._cfg.score_weight_recent * dr) / w_sum
+            if w_sum > 0 else 0.0
+        ) * w_time
+
+        logger.info(
+            "[proactive] pre_score=%.3f  D_energy=%.3f D_recent=%.3f W_time=%.1f  energy=%.3f msg_count=%d",
+            pre_score, de, dr, w_time, energy, len(recent),
+        )
+
+        if pre_score < self._cfg.score_pre_threshold:
+            logger.info("[proactive] pre_score 过低（%.3f < %.2f），跳过本轮", pre_score, self._cfg.score_pre_threshold)
+            return pre_score
+
+        # ── 第二阶段：拉 feed，计算完整 base_score ──────────────────
         items = await self._feeds.fetch_all(self._cfg.items_per_source)
-        logger.info(f"[proactive] 拉取到 {len(items)} 条信息")
+        logger.info("[proactive] 拉取到 %d 条信息", len(items))
         new_items, new_entries, semantic_duplicate_entries = self._filter_new_items(items)
         logger.info(
             "[proactive] 去重后剩余新信息 %d 条（过滤重复 %d 条）",
@@ -223,37 +256,36 @@ class ProactiveLoop:
         if semantic_duplicate_entries:
             self._state.mark_items_seen(semantic_duplicate_entries)
             logger.info(
-                "[proactive] 已标记语义重复条目为 seen count=%d（避免跨源重复重试）",
+                "[proactive] 已标记语义重复条目为 seen count=%d",
                 len(semantic_duplicate_entries),
             )
 
-        # 2. W_content + W_random → 最终冲动
-        # 无 presence 时不触发危机模式——内容门控依赖真实电量数据
-        is_crisis = self._presence is not None and energy < self._cfg.energy_crisis_threshold
-        has_memory = bool(self._memory and self._memory.read_long_term().strip())
-        w_content = content_weight(
-            new_items=len(new_items),
-            has_memory=has_memory,
-            is_crisis=is_crisis,
-        )
+        dc = d_content(len(new_items), self._cfg.score_content_halfsat)
+        base_score = composite_score(
+            de, dc, dr,
+            self._cfg.score_weight_energy,
+            self._cfg.score_weight_content,
+            self._cfg.score_weight_recent,
+        ) * w_time
+
         w_random = random_weight(rng=self._rng)
-        effective_urge = urge * w_time * w_content * w_random
+        draw_score = base_score * w_random
+
         logger.info(
-            "[proactive] 电量=%.3f 冲动=%.3f W_time=%.1f W_content=%.2f W_random=%.2f → 最终冲动=%.3f 阈值=%.2f",
-            energy, urge, w_time, w_content, w_random, effective_urge, self._cfg.energy_min_urge,
+            "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"
+            "  W_time=%.1f W_random=%.2f → draw_score=%.3f 阈值=%.2f",
+            base_score, de, dc, dr, w_time, w_random, draw_score, self._cfg.score_llm_threshold,
         )
-        if effective_urge < self._cfg.energy_min_urge:
-            logger.info("[proactive] 最终冲动不足，跳过本轮反思")
-            return
 
-        # 3. 最近聊天上下文
-        recent = self._collect_recent()
-        logger.info("[proactive] 最近会话消息条数=%d", len(recent))
+        if draw_score < self._cfg.score_llm_threshold:
+            logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
+            return base_score
 
-        # 4. LLM 反思
+        # ── 第三阶段：LLM 反思 ────────────────────────────────────
+        is_crisis = energy < 0.05
         decision = await self._reflect(
             new_items, recent,
-            energy=energy, urge=effective_urge,
+            energy=energy, urge=draw_score,
             is_crisis=is_crisis,
         )
         logger.info(
@@ -284,7 +316,7 @@ class ProactiveLoop:
                 self._state.mark_items_seen(new_entries)
                 self._state.mark_semantic_items(_semantic_entries(new_items, self._cfg.semantic_dedupe_text_max_chars))
                 logger.info("[proactive] 已按去重命中标记本轮条目为 seen（视为已送达过同等内容）")
-                return
+                return base_score
             sent = await self._send(decision.message)
             if sent and session_key:
                 self._state.mark_delivery(session_key, delivery_key)
@@ -296,6 +328,7 @@ class ProactiveLoop:
         else:
             logger.info("[proactive] 决定不主动发送")
             logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
+        return base_score
 
     def _filter_new_items(
         self, items: list[FeedItem]

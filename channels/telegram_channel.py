@@ -5,9 +5,11 @@ Telegram Channel
 """
 import logging
 import tempfile
+import asyncio
 
 from telegram import Update
 from telegram.constants import ChatAction
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from bus.events import InboundMessage, OutboundMessage
@@ -109,7 +111,7 @@ class TelegramChannel:
             session.metadata["username"] = username
             self._session_manager.save(session)
 
-        await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
+        await self._safe_send_typing(context, chat.id)
 
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
@@ -141,7 +143,7 @@ class TelegramChannel:
             session.metadata["username"] = username
             self._session_manager.save(session)
 
-        await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
+        await self._safe_send_typing(context, chat.id)
 
         # 下载最高分辨率的图片到临时文件
         tg_file = await context.bot.get_file(msg.photo[-1].file_id)
@@ -192,3 +194,34 @@ class TelegramChannel:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
         await send_markdown(self._app.bot, msg.chat_id, msg.content)
+
+    async def _safe_send_typing(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+        """发送 typing 状态；失败时指数退避重试，不影响消息主流程。"""
+        base_delay = 0.4
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+                return
+            except (TimedOut, NetworkError) as e:
+                if attempt >= max_attempts:
+                    logger.warning(
+                        "[telegram] send_chat_action 重试耗尽，跳过 typing chat_id=%s attempts=%d err=%s",
+                        chat_id,
+                        attempt,
+                        e,
+                    )
+                    return
+                delay = base_delay * (2 ** (attempt - 1))
+                logger.warning(
+                    "[telegram] send_chat_action 失败，准备重试 chat_id=%s attempt=%d/%d backoff=%.1fs err=%s",
+                    chat_id,
+                    attempt,
+                    max_attempts,
+                    delay,
+                    e,
+                )
+                await asyncio.sleep(delay)
+            except Exception as e:
+                logger.warning("[telegram] send_chat_action 失败，已跳过 typing chat_id=%s err=%s", chat_id, e)
+                return
