@@ -101,7 +101,7 @@ class MemoryOptimizer:
         memory: MemoryStore,
         provider: LLMProvider,
         model: str,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         history_max_chars: int = 6000,
     ) -> None:
         self._memory = memory
@@ -109,6 +109,7 @@ class MemoryOptimizer:
         self._model = model
         self._max_tokens = max_tokens
         self._history_max_chars = history_max_chars
+
 
     async def optimize(self) -> None:
         """合并 PENDING 事实到 MEMORY + 生成问题列表。"""
@@ -254,6 +255,14 @@ class MemoryOptimizerLoop:
 
     def stop(self) -> None:
         self._running = False
+
+    def _seconds_until_midnight(self) -> float:
+        """计算距下一个午夜 00:00 的秒数（结果始终 > 0）。"""
+        now = self._now_fn()
+        tomorrow_midnight = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return max(1.0, (tomorrow_midnight - now).total_seconds())
 
     def _seconds_until_next_tick(self) -> float:
         """计算距下一个对齐整点的秒数。

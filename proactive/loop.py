@@ -29,19 +29,26 @@ from feeds.base import FeedItem
 from feeds.registry import FeedRegistry
 from proactive.energy import (
     compute_energy,
-    composite_score,
-    d_content,
     d_energy,
-    d_recent,
     next_tick_from_score,
-    random_weight,
-    time_weight,
 )
+from proactive.components import (
+    ProactiveFeatureScorer,
+    ProactiveItemFilter,
+    ProactiveMessageComposer,
+    ProactiveMessageDeduper,
+    ProactiveReflector,
+    ProactiveSender,
+    ReflectHooks,
+)
+from proactive.anyaction import AnyActionGate, QuotaStore
+from proactive.engine import ProactiveEngine
 from proactive.memory_sampler import sample_memory_chunks
+from proactive.ports import DefaultDecidePort, DefaultSensePort
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
 from proactive.state import ProactiveStateStore
-from proactive.interest import InterestFilterConfig, select_interesting_items
+from proactive.interest import InterestFilterConfig
 from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -100,6 +107,31 @@ class ProactiveConfig:
     tick_interval_s2: int = 1080         # base_score > 0.40 → ~18 min
     tick_interval_s3: int = 420          # base_score > 0.70 → ~7 min
     tick_jitter: float = 0.3            # 随机抖动幅度，0.3=±30%，0=关闭
+    # ── AnyAction 通用层（后台动作门控）──
+    anyaction_enabled: bool = False
+    anyaction_daily_max_actions: int = 24
+    anyaction_min_interval_seconds: int = 300
+    anyaction_reset_hour_local: int = 12
+    anyaction_timezone: str = "Asia/Shanghai"
+    anyaction_probability_min: float = 0.03
+    anyaction_probability_max: float = 0.45
+    anyaction_idle_scale_minutes: float = 240.0
+    # ── AI特征打分 + 算法决策（可选）──
+    feature_scoring_enabled: bool = False
+    feature_send_threshold: float = 0.52
+    feature_weight_topic_continuity: float = 0.24
+    feature_weight_interest_match: float = 0.24
+    feature_weight_content_novelty: float = 0.20
+    feature_weight_reconnect_value: float = 0.16
+    feature_weight_message_readiness: float = 0.16
+    feature_weight_disturb_risk: float = 0.70
+    feature_weight_interrupt_penalty: float = 0.30
+    feature_weight_d_recent_bonus: float = 0.10
+    feature_weight_d_content_bonus: float = 0.10
+    feature_weight_d_energy_bonus: float = 0.08
+    # ── 发送前消息语义去重 ──
+    message_dedupe_enabled: bool = True   # 发送前用 LLM 检测是否与近期 proactive 消息重复
+    message_dedupe_recent_n: int = 5      # 取最近 N 条 proactive 消息做比对
     # ── 旧参数兼容（当前主流程不再使用）──
     energy_cool_threshold: float = 0.20
     energy_crisis_threshold: float = 0.05
@@ -185,6 +217,110 @@ class ProactiveLoop:
             self._cfg.interest_filter.top_k,
             self._cfg.interest_filter.exploration_ratio,
         )
+        self._item_filter = ProactiveItemFilter(
+            cfg=self._cfg,
+            state=self._state,
+            source_key_fn=_source_key,
+            item_id_fn=_item_id,
+            semantic_text_fn=_semantic_text,
+            build_tfidf_vectors_fn=_build_tfidf_vectors,
+            cosine_fn=_cosine_sparse,
+        )
+        self._reflector = ProactiveReflector(
+            provider=self._provider,
+            model=self._model,
+            max_tokens=self._max_tokens,
+            cfg=self._cfg,
+            memory_store=self._memory,
+            presence=self._presence,
+            hooks=ReflectHooks(
+                format_items=_format_items,
+                format_recent=_format_recent,
+                parse_decision=_parse_decision,
+                collect_global_memory=self._collect_global_memory,
+                sample_random_memory=self._sample_random_memory,
+                target_session_key=self._target_session_key,
+                on_reflect_error=lambda e: _Decision(
+                    score=0.0,
+                    should_send=False,
+                    message="",
+                    reasoning=str(e),
+                ),
+            ),
+        )
+        self._sender = ProactiveSender(
+            cfg=self._cfg,
+            push_tool=self._push,
+            sessions=self._sessions,
+            presence=self._presence,
+        )
+        self._feature_scorer = ProactiveFeatureScorer(
+            provider=self._provider,
+            model=self._model,
+            max_tokens=self._max_tokens,
+            format_items=_format_items,
+            format_recent=_format_recent,
+            collect_global_memory=self._collect_global_memory,
+        )
+        self._message_composer = ProactiveMessageComposer(
+            provider=self._provider,
+            model=self._model,
+            max_tokens=self._max_tokens,
+            format_items=_format_items,
+            format_recent=_format_recent,
+            collect_global_memory=self._collect_global_memory,
+        )
+        quota_path = (self._state.path.parent / "proactive_quota.json") if hasattr(self._state, "path") else Path("proactive_quota.json")
+        self._anyaction = AnyActionGate(
+            cfg=self._cfg,
+            quota_store=QuotaStore(quota_path),
+            rng=self._rng,
+        )
+        self._sense = DefaultSensePort(
+            cfg=self._cfg,
+            feeds=self._feeds,
+            sessions=self._sessions,
+            state=self._state,
+            item_filter=self._item_filter,
+            memory=self._memory,
+            presence=self._presence,
+            schedule=self._schedule,
+            rng=self._rng,
+        )
+        self._decide = DefaultDecidePort(
+            reflector=self._reflector,
+            randomize_fn=lambda decision: _decision_with_randomized_score(
+                decision,
+                strength=self._cfg.decision_score_random_strength,
+                rng=self._rng,
+            ),
+            source_key_fn=_source_key,
+            item_id_fn=_item_id,
+            semantic_text_fn=_semantic_text,
+            semantic_text_max_chars=self._cfg.semantic_dedupe_text_max_chars,
+            feature_scorer=self._feature_scorer,
+            message_composer=self._message_composer,
+        )
+        self._message_deduper = (
+            ProactiveMessageDeduper(
+                provider=self._provider,
+                model=self._model,
+                max_tokens=self._max_tokens,
+            )
+            if self._cfg.message_dedupe_enabled
+            else None
+        )
+        self._engine = ProactiveEngine(
+            cfg=self._cfg,
+            state=self._state,
+            presence=self._presence,
+            rng=self._rng,
+            sense=self._sense,
+            decide=self._decide,
+            act=self._sender,
+            anyaction=self._anyaction,
+            message_deduper=self._message_deduper,
+        )
 
     async def run(self) -> None:
         self._running = True
@@ -224,19 +360,11 @@ class ProactiveLoop:
         )
 
     def _target_session_key(self) -> str:
-        channel = (self._cfg.default_channel or "").strip()
-        chat_id = self._cfg.default_chat_id.strip()
-        return f"{channel}:{chat_id}" if channel and chat_id else ""
+        return self._sense.target_session_key()
 
     def _quiet_hours(self) -> tuple[int, int, float]:
         """从 schedule.json 读取静默时段配置，缺失时回退 cfg 默认值。"""
-        if self._schedule:
-            return (
-                self._schedule.quiet_hours_start(self._cfg.quiet_hours_start),
-                self._schedule.quiet_hours_end(self._cfg.quiet_hours_end),
-                self._schedule.quiet_hours_weight(self._cfg.quiet_hours_weight),
-            )
-        return self._cfg.quiet_hours_start, self._cfg.quiet_hours_end, self._cfg.quiet_hours_weight
+        return self._sense.quiet_hours()
 
     def stop(self) -> None:
         self._running = False
@@ -253,31 +381,14 @@ class ProactiveLoop:
             return []
 
     def _has_global_memory(self) -> bool:
-        if not self._memory:
-            return False
-        try:
-            return bool(self._memory.read_long_term().strip())
-        except Exception:
-            return False
+        return self._sense.has_global_memory()
 
     def _read_memory_text(self) -> str:
-        if not self._memory:
-            return ""
-        try:
-            return self._memory.read_long_term().strip()
-        except Exception:
-            return ""
+        return self._sense.read_memory_text()
 
     def _compute_energy(self) -> float:
         """计算目标 session 的当前电量（取目标与全局较高值）。"""
-        if not self._presence:
-            return 0.0  # 无 presence 时视作完全放电
-        session_key = self._target_session_key()
-        last_target = self._presence.get_last_user_at(session_key)
-        last_global = self._presence.most_recent_user_at()
-        energy_target = compute_energy(last_target)
-        energy_global = compute_energy(last_global) * 0.6
-        return max(energy_target, energy_global)
+        return self._sense.compute_energy()
 
     def _compute_interruptibility(
         self,
@@ -287,469 +398,28 @@ class ProactiveLoop:
         recent_msg_count: int,
     ) -> tuple[float, dict[str, float]]:
         """计算软打扰系数（0~1），并注入随机探索，避免长期锁死。"""
-        q_start, q_end, q_weight = self._quiet_hours()
-        w_time = time_weight(
-            now_hour,
-            q_start,
-            q_end,
-            q_weight,
+        return self._sense.compute_interruptibility(
+            now_hour=now_hour,
+            now_utc=now_utc,
+            recent_msg_count=recent_msg_count,
         )
-        f_time = max(0.0, min(1.0, w_time))
-
-        session_key = self._target_session_key()
-        if not self._presence or not session_key:
-            return 1.0, {
-                "f_time": f_time,
-                "f_reply": 1.0,
-                "f_activity": 1.0,
-                "f_fatigue": 1.0,
-                "random_delta": 0.0,
-            }
-
-        last_user = self._presence.get_last_user_at(session_key)
-        last_proactive = self._presence.get_last_proactive_at(session_key)
-        last_global_user = self._presence.most_recent_user_at()
-
-        # 回复信号：有回复且回复快 -> 高；长期不回复 -> 低，但保留探索地板
-        if last_proactive is None:
-            f_reply = 0.6
-        elif last_user is not None and last_user > last_proactive:
-            lag_min = max(0.0, (last_user - last_proactive).total_seconds() / 60.0)
-            decay = max(self._cfg.interrupt_reply_decay_minutes, 1.0)
-            f_reply = math.exp(-lag_min / decay)
-        else:
-            silence_min = max(0.0, (now_utc - last_proactive).total_seconds() / 60.0)
-            decay = max(self._cfg.interrupt_no_reply_decay_minutes, 1.0)
-            f_reply = 0.15 + 0.35 * math.exp(-silence_min / decay)
-
-        # 活跃信号：最近消息越近越高；并结合当前上下文消息量
-        if last_global_user is None:
-            f_live = 0.2
-        else:
-            idle_min = max(0.0, (now_utc - last_global_user).total_seconds() / 60.0)
-            decay = max(self._cfg.interrupt_activity_decay_minutes, 1.0)
-            f_live = math.exp(-idle_min / decay)
-        f_recent = d_recent(recent_msg_count, self._cfg.score_recent_scale)
-        f_activity = 0.5 * f_live + 0.5 * f_recent
-
-        # 疲劳信号：最近主动次数越多，系数越低（软约束）
-        sent_24h = self._state.count_deliveries_in_window(
-            session_key,
-            self._cfg.interrupt_fatigue_window_hours,
-            now=now_utc,
-        )
-        soft_cap = max(self._cfg.interrupt_fatigue_soft_cap, 0.1)
-        f_fatigue = 1.0 / (1.0 + sent_24h / soft_cap)
-
-        w_sum = (
-            self._cfg.interrupt_weight_time
-            + self._cfg.interrupt_weight_reply
-            + self._cfg.interrupt_weight_activity
-            + self._cfg.interrupt_weight_fatigue
-        )
-        raw = (
-            self._cfg.interrupt_weight_time * f_time
-            + self._cfg.interrupt_weight_reply * f_reply
-            + self._cfg.interrupt_weight_activity * f_activity
-            + self._cfg.interrupt_weight_fatigue * f_fatigue
-        ) / (w_sum if w_sum > 0 else 1.0)
-        random_delta = (self._rng or _random_module).uniform(
-            -self._cfg.interrupt_random_strength,
-            self._cfg.interrupt_random_strength,
-        )
-        score = max(self._cfg.interrupt_min_floor, min(1.0, raw + random_delta))
-        return score, {
-            "f_time": f_time,
-            "f_reply": f_reply,
-            "f_activity": f_activity,
-            "f_fatigue": f_fatigue,
-            "random_delta": random_delta,
-        }
 
     # ── internal ──────────────────────────────────────────────────
 
-    async def _tick(self) -> float:
-        """执行一次主动判断循环，返回本轮 base_score（供调整下次 tick 间隔）。"""
-        logger.info("[proactive] tick 开始")
-        self._state.cleanup(
-            seen_ttl_hours=self._cfg.dedupe_seen_ttl_hours,
-            delivery_ttl_hours=self._cfg.delivery_dedupe_hours,
-            semantic_ttl_hours=max(self._cfg.dedupe_seen_ttl_hours, self._cfg.semantic_dedupe_window_hours),
-        )
-
-        # ── 第一阶段：pre_score（不拉 feed，纯本地计算）──────────────
-        energy = self._compute_energy()
-        now_hour = datetime.now().hour
-        now_utc = datetime.now(timezone.utc)
-
-        recent = self._collect_recent()
-        de = d_energy(energy)
-        dr = d_recent(len(recent), self._cfg.score_recent_scale)
-        interruptibility, interrupt_detail = self._compute_interruptibility(
-            now_hour=now_hour,
-            now_utc=now_utc,
-            recent_msg_count=len(recent),
-        )
-        interrupt_factor = 0.6 + 0.4 * interruptibility
-        # pre_score：只用 D_energy 和 D_recent，权重重新归一化（排除 D_content）
-        w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
-        pre_score = (
-            (self._cfg.score_weight_energy * de + self._cfg.score_weight_recent * dr) / w_sum
-            if w_sum > 0 else 0.0
-        ) * interrupt_factor
-
-        logger.info(
-            "[proactive] pre_score=%.3f interrupt=%.3f factor=%.3f"
-            " (time=%.2f reply=%.2f activity=%.2f fatigue=%.2f rand=%+.2f)"
-            " D_energy=%.3f D_recent=%.3f energy=%.3f msg_count=%d",
-            pre_score,
-            interruptibility,
-            interrupt_factor,
-            interrupt_detail["f_time"],
-            interrupt_detail["f_reply"],
-            interrupt_detail["f_activity"],
-            interrupt_detail["f_fatigue"],
-            interrupt_detail["random_delta"],
-            de,
-            dr,
-            energy,
-            len(recent),
-        )
-
-        if pre_score < self._cfg.score_pre_threshold:
-            logger.info("[proactive] pre_score 过低（%.3f < %.2f），跳过本轮", pre_score, self._cfg.score_pre_threshold)
-            return pre_score
-
-        # ── 第二阶段：拉 feed，计算完整 base_score ──────────────────
-        items = await self._feeds.fetch_all(self._cfg.items_per_source)
-        logger.info("[proactive] 拉取到 %d 条信息", len(items))
-        new_items, new_entries, semantic_duplicate_entries = self._filter_new_items(items)
-        logger.info(
-            "[proactive] 去重后剩余新信息 %d 条（过滤重复 %d 条）",
-            len(new_items),
-            len(items) - len(new_items),
-        )
-        if semantic_duplicate_entries:
-            self._state.mark_items_seen(semantic_duplicate_entries)
-            logger.info(
-                "[proactive] 已标记语义重复条目为 seen count=%d",
-                len(semantic_duplicate_entries),
-            )
-
-        # memory 兴趣筛选：先压缩候选，再交给 LLM 反思
-        if self._cfg.interest_filter.enabled and new_items:
-            memory_text = self._read_memory_text()
-            if memory_text:
-                filtered_items, ranked = select_interesting_items(new_items, memory_text, self._cfg.interest_filter)
-                keep_ids = {_item_id(item) for item in filtered_items}
-                old_count = len(new_items)
-                new_items = filtered_items
-                new_entries = [(source_key, item_id) for source_key, item_id in new_entries if item_id in keep_ids]
-                top_preview = ", ".join(
-                    f"{(pair[0].title or '')[:28]}:{pair[1]:.2f}" for pair in ranked[:3]
-                )
-                logger.info(
-                    "[proactive] memory 兴趣筛选 old=%d kept=%d min_score=%.2f top=%s",
-                    old_count,
-                    len(new_items),
-                    self._cfg.interest_filter.min_score,
-                    top_preview or "-",
-                )
-            else:
-                logger.info("[proactive] memory 兴趣筛选跳过：memory 为空")
-
-        has_memory = self._has_global_memory()
-        if self._cfg.only_new_items_trigger and not new_items and not self._presence and not has_memory:
-            logger.info("[proactive] 无新信息且 only_new_items_trigger=true（无 presence），跳过本轮反思")
-            return pre_score
-
-        dc = d_content(len(new_items), self._cfg.score_content_halfsat)
-        base_score = composite_score(
-            de, dc, dr,
-            self._cfg.score_weight_energy,
-            self._cfg.score_weight_content,
-            self._cfg.score_weight_recent,
-        ) * interrupt_factor
-
-        w_random = random_weight(rng=self._rng)
-        draw_score = base_score * w_random
-        session_key = self._target_session_key()
-        target_last_user = self._presence.get_last_user_at(session_key) if self._presence and session_key else None
-        last_proactive_at = self._presence.get_last_proactive_at(session_key) if self._presence and session_key else None
-        force_reflect = (
-            energy < 0.05
-            or (self._presence is not None and bool(session_key) and target_last_user is None)
-            or (energy < 0.20 and has_memory)
-        )
-
-        logger.info(
-            "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"
-            "  interrupt=%.3f W_random=%.2f → draw_score=%.3f 阈值=%.2f force_reflect=%s",
-            base_score, de, dc, dr, interruptibility, w_random, draw_score, self._cfg.score_llm_threshold, force_reflect,
-        )
-
-        if draw_score < self._cfg.score_llm_threshold and not force_reflect:
-            logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
-            return base_score
-        if draw_score < self._cfg.score_llm_threshold and force_reflect:
-            logger.info("[proactive] draw_score 未过门槛，但命中兜底条件，继续反思")
-
-        # ── 第三阶段：LLM 反思 ────────────────────────────────────
-        is_crisis = energy < 0.05
-        q_start, q_end, q_weight = self._quiet_hours()
-        in_quiet = (
-            (now_hour >= q_start or now_hour < q_end)
-            if q_start > q_end
-            else (q_start <= now_hour < q_end)
-        )
-        sent_24h = (
-            self._state.count_deliveries_in_window(session_key, 24, now=now_utc)
-            if session_key else 0
-        )
-        replied_after_last_proactive = (
-            bool(target_last_user and last_proactive_at and target_last_user > last_proactive_at)
-        )
-        mins_since_last_user = (
-            int((now_utc - target_last_user).total_seconds() / 60)
-            if target_last_user else None
-        )
-        mins_since_last_proactive = (
-            int((now_utc - last_proactive_at).total_seconds() / 60)
-            if last_proactive_at else None
-        )
-        fresh_items_24h = sum(
-            1
-            for item in new_items
-            if item.published_at and (now_utc - item.published_at).total_seconds() <= 24 * 3600
-        )
-        decision_signals: dict[str, object] = {
-            "quiet_window_local": f"{q_start:02d}:00-{q_end:02d}:00",
-            "in_quiet_hours": in_quiet,
-            "quiet_hours_weight": q_weight,
-            "minutes_since_last_user": mins_since_last_user,
-            "minutes_since_last_proactive": mins_since_last_proactive,
-            "user_replied_after_last_proactive": replied_after_last_proactive,
-            "proactive_sent_24h": sent_24h,
-            "interruptibility": round(interruptibility, 3),
-            "interrupt_breakdown": {
-                "time": round(interrupt_detail["f_time"], 3),
-                "reply": round(interrupt_detail["f_reply"], 3),
-                "activity": round(interrupt_detail["f_activity"], 3),
-                "fatigue": round(interrupt_detail["f_fatigue"], 3),
-            },
-            "scores": {
-                "pre_score": round(pre_score, 3),
-                "base_score": round(base_score, 3),
-                "draw_score": round(draw_score, 3),
-                "llm_threshold": round(self._cfg.score_llm_threshold, 3),
-                "send_threshold": round(self._cfg.threshold, 3),
-            },
-            "candidate_items": len(new_items),
-            "fresh_items_24h": fresh_items_24h,
-        }
-        decision = await self._reflect(
-            new_items, recent,
-            energy=energy, urge=draw_score,
-            is_crisis=is_crisis,
-            decision_signals=decision_signals,
-        )
-        decision, decision_delta = _decision_with_randomized_score(
-            decision,
-            strength=self._cfg.decision_score_random_strength,
-            rng=self._rng,
-        )
-        logger.info(
-            f"[proactive] score={decision.score:.2f}  "
-            f"score_delta={decision_delta:+.2f}  "
-            f"send={decision.should_send}  "
-            f"reasoning={decision.reasoning[:80]!r}"
-        )
-
-        # 4. 阈值判断
-        if decision.should_send and decision.score >= self._cfg.threshold:
-            channel = (self._cfg.default_channel or "").strip()
-            chat_id = self._cfg.default_chat_id.strip()
-            session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
-            evidence_ids = _resolve_evidence_item_ids(decision, new_items if new_items else items)
-            delivery_key = _build_delivery_key(evidence_ids, decision.message)
-            logger.info(
-                "[proactive] 发送前去重检查 session=%s evidence_count=%d delivery_key=%s",
-                session_key or "（未配置）",
-                len(evidence_ids),
-                delivery_key[:16],
-            )
-            if session_key and self._state.is_delivery_duplicate(
-                session_key=session_key,
-                delivery_key=delivery_key,
-                window_hours=self._cfg.delivery_dedupe_hours,
-            ):
-                logger.info("[proactive] 命中发送去重，跳过发送")
-                self._state.mark_items_seen(new_entries)
-                self._state.mark_semantic_items(_semantic_entries(new_items, self._cfg.semantic_dedupe_text_max_chars))
-                logger.info("[proactive] 已按去重命中标记本轮条目为 seen（视为已送达过同等内容）")
-                return base_score
-            sent = await self._send(decision.message)
-            if sent and session_key:
-                self._state.mark_delivery(session_key, delivery_key)
-                self._state.mark_items_seen(new_entries)
-                self._state.mark_semantic_items(_semantic_entries(new_items, self._cfg.semantic_dedupe_text_max_chars))
-                logger.info("[proactive] 已发送成功并标记本轮条目为 seen")
-            else:
-                logger.info("[proactive] 本轮发送未成功，不标记 seen，后续可再次尝试")
-        else:
-            logger.info("[proactive] 决定不主动发送")
-            logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
-        return base_score
+    async def _tick(self) -> float | None:
+        """执行一次主动判断循环。
+        返回 base_score 供调度器调整间隔；None 表示 gate 按能量自算（不强制最长间隔）。
+        """
+        return await self._engine.tick()
 
     def _filter_new_items(
         self, items: list[FeedItem]
     ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
-        if not items:
-            logger.info("[proactive] 本轮无 item，去重过滤跳过")
-            return [], [], []
-        now = datetime.now(timezone.utc)
-        source_fresh: list[FeedItem] = []
-        source_entries: list[tuple[str, str]] = []
-        for item in items:
-            source_key = _source_key(item)
-            item_id = _item_id(item)
-            seen = self._state.is_item_seen(
-                source_key=source_key,
-                item_id=item_id,
-                ttl_hours=self._cfg.dedupe_seen_ttl_hours,
-                now=now,
-            )
-            logger.info(
-                "[proactive] item 去重检查 source=%s item_id=%s seen=%s title=%r",
-                source_key,
-                item_id[:16],
-                seen,
-                (item.title or "")[:60],
-            )
-            if seen:
-                continue
-            source_fresh.append(item)
-            source_entries.append((source_key, item_id))
-        if not self._cfg.semantic_dedupe_enabled or not source_fresh:
-            return source_fresh, source_entries, []
-        return self._semantic_dedupe(source_fresh, source_entries, now)
-
-    def _semantic_dedupe(
-        self,
-        source_fresh: list[FeedItem],
-        source_entries: list[tuple[str, str]],
-        now: datetime,
-    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
-        history = self._state.get_semantic_items(
-            window_hours=self._cfg.semantic_dedupe_window_hours,
-            max_candidates=self._cfg.semantic_dedupe_max_candidates,
-            now=now,
-        )
-        payload = [
-            {
-                "item": item,
-                "source_key": source_key,
-                "item_id": item_id,
-                "text": _semantic_text(item, self._cfg.semantic_dedupe_text_max_chars),
-            }
-            for item, (source_key, item_id) in zip(source_fresh, source_entries)
-        ]
-        if not payload:
-            return [], [], []
-        docs = [h["text"] for h in history] + [p["text"] for p in payload]
-        vectors = _build_tfidf_vectors(docs, self._cfg.semantic_dedupe_ngram)
-        history_vectors = vectors[: len(history)]
-        payload_vectors = vectors[len(history):]
-
-        keep_items: list[FeedItem] = []
-        keep_entries: list[tuple[str, str]] = []
-        duplicate_entries: list[tuple[str, str]] = []
-        accepted_vectors: list[dict[str, float]] = []
-        accepted_meta: list[dict[str, str]] = []
-        threshold = self._cfg.semantic_dedupe_threshold
-        for idx, p in enumerate(payload):
-            vec = payload_vectors[idx]
-            best_sim = 0.0
-            best_kind = ""
-            best_source = ""
-            best_item_id = ""
-
-            for h_idx, h_vec in enumerate(history_vectors):
-                sim = _cosine_sparse(vec, h_vec)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_kind = "history"
-                    best_source = history[h_idx].get("source_key", "")
-                    best_item_id = history[h_idx].get("item_id", "")
-
-            for a_idx, a_vec in enumerate(accepted_vectors):
-                sim = _cosine_sparse(vec, a_vec)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_kind = "batch"
-                    best_source = accepted_meta[a_idx].get("source_key", "")
-                    best_item_id = accepted_meta[a_idx].get("item_id", "")
-
-            logger.info(
-                "[proactive] 语义去重检查 source=%s item_id=%s best_sim=%.4f threshold=%.2f matched_kind=%s matched_source=%s matched_item=%s title=%r",
-                p["source_key"],
-                p["item_id"][:16],
-                best_sim,
-                threshold,
-                best_kind or "-",
-                best_source or "-",
-                (best_item_id or "-")[:16],
-                (p["item"].title or "")[:80],
-            )
-
-            if best_sim >= threshold:
-                duplicate_entries.append((p["source_key"], p["item_id"]))
-                logger.info(
-                    "[proactive] 语义去重命中，过滤 item source=%s item_id=%s sim=%.4f",
-                    p["source_key"],
-                    p["item_id"][:16],
-                    best_sim,
-                )
-                continue
-
-            keep_items.append(p["item"])
-            keep_entries.append((p["source_key"], p["item_id"]))
-            accepted_vectors.append(vec)
-            accepted_meta.append({"source_key": p["source_key"], "item_id": p["item_id"]})
-        logger.info(
-            "[proactive] 语义去重结果 keep=%d duplicate=%d history_candidates=%d",
-            len(keep_items),
-            len(duplicate_entries),
-            len(history),
-        )
-        return keep_items, keep_entries, duplicate_entries
+        return self._sense.filter_new_items(items)
 
     def _collect_recent(self) -> list[dict]:
         """取目标会话最近 N 条消息（只取 user/assistant 文本）。"""
-        channel = (self._cfg.default_channel or "").strip()
-        chat_id = self._cfg.default_chat_id.strip()
-        if not channel or not chat_id:
-            logger.info("[proactive] collect_recent 跳过：目标 channel/chat_id 未配置")
-            return []
-        key = f"{channel}:{chat_id}"
-
-        try:
-            session = self._sessions.get_or_create(key)
-            msgs = session.messages[-self._cfg.recent_chat_messages:]
-            logger.info(
-                "[proactive] collect_recent 成功 key=%s total=%d selected=%d",
-                key,
-                len(session.messages),
-                len(msgs),
-            )
-            return [
-                {"role": m["role"], "content": str(m.get("content", ""))[:200]}
-                for m in msgs
-                if m.get("role") in ("user", "assistant") and m.get("content")
-            ]
-        except Exception as e:
-            logger.warning(f"[proactive] 加载 session {key!r} 失败: {e}")
-            return []
+        return self._sense.collect_recent()
 
     async def _reflect(
         self,
@@ -760,106 +430,14 @@ class ProactiveLoop:
         is_crisis: bool = False,
         decision_signals: dict[str, object] | None = None,
     ) -> _Decision:
-        now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
-        feed_text = _format_items(items) or "（暂无订阅内容）"
-        chat_text = _format_recent(recent) or "（无近期对话记录）"
-
-        # 始终注入全量记忆——可靠助手的基础语境
-        memory_text = self._collect_global_memory()
-
-        # 待了解的问题列表（作为话题素材）
-        questions_text = ""
-        if self._memory:
-            try:
-                questions_text = self._memory.read_questions().strip()
-            except Exception:
-                pass
-
-        # 危机模式：额外随机抽取一条记忆话题作为开场建议
-        crisis_hint = ""
-        if is_crisis:
-            topic_chunks = self._sample_random_memory(n=1)
-            topic_hint = topic_chunks[0] if topic_chunks else ""
-            session_key = self._target_session_key()
-            last_at = self._presence.get_last_user_at(session_key) if self._presence else None
-            elapsed = ""
-            if last_at:
-                hours = (datetime.now(timezone.utc) - last_at).total_seconds() / 3600
-                elapsed = f"距离上次对话已超过 {hours:.0f} 小时。"
-            topic_section = (
-                f"\n\n## 随机话题建议（危机开场用）\n\n{topic_hint}"
-                if topic_hint else ""
-            )
-            crisis_hint = (
-                f"\n[危机模式] {elapsed}"
-                "用户可能已忘记你的存在，需要主动找一个自然的切入点重新联系。"
-                "可以从下方随机话题出发，或用关心/有趣内容开场。"
-                f"{topic_section}"
-            )
-
-        system_msg = (
-            "你是一个陪伴型 AI 助手，正在决定是否主动联系用户。"
-            "你了解用户订阅的信息流和最近的对话内容。"
-            "你的目标是在恰当的时机分享有价值的信息，而不是频繁打扰用户。"
+        return await self._reflector.reflect(
+            items=items,
+            recent=recent,
+            energy=energy,
+            urge=urge,
+            is_crisis=is_crisis,
+            decision_signals=decision_signals,
         )
-
-        user_msg = f"""当前时间：{now_str}
-
-## 主动性上下文
-
-当前电量（与用户的互动新鲜度）: {energy:.2f}  (0=完全冷却, 1=刚刚对话)
-主动冲动指数: {urge:.2f}  (0=不需要说, 1=非常需要联系){crisis_hint}
-{f"## 决策信号（系统计算）\n\n```json\n{json.dumps(decision_signals, ensure_ascii=False, indent=2)}\n```\n" if decision_signals else ""}
-
-## 订阅信息流（最新内容）
-
-{feed_text}
-
-## 长期记忆（用户画像/偏好）
-
-{memory_text}
-{f"## 待了解的话题（可作为开场素材）\n\n{questions_text}\n" if questions_text else ""}
-## 近期对话
-
-{chat_text}
-
-## 任务
-
-综合以上信息，判断是否值得主动联系用户。考虑：
-- 信息流里有没有用户可能感兴趣的内容
-- 现在说点什么是否自然、不唐突
-- 与近期对话有无关联或延伸
-- 电量越低越需要主动联系，危机模式时哪怕简单关心也有价值
-
-只输出 JSON，不要其他内容：
-{{
-  "reasoning": "内心独白（不会显示给用户，说清楚你的判断依据）",
-  "score": 0.0,
-  "should_send": false,
-  "message": "",
-  "evidence_item_ids": []
-}}
-
-score 说明：0.0=完全没必要  0.5=有点想说  0.7=比较值得  1.0=非常值得立刻说
-message 若 should_send=true，写要发给用户的话（口语化，不要像系统通知）
-evidence_item_ids 从订阅信息流里挑选支持你判断的 item_id（可为空数组）"""
-
-        try:
-            resp = await self._provider.chat(
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg},
-                ],
-                tools=[],
-                model=self._model,
-                max_tokens=self._max_tokens,
-            )
-            content = resp.content or ""
-            logger.info("[proactive] LLM 原始输出预览: %r", content[:240])
-            return _parse_decision(content)
-        except Exception as e:
-            logger.error(f"[proactive] LLM 反思失败: {e}")
-            return _Decision(score=0.0, should_send=False, message="", reasoning=str(e))
 
     def _collect_global_memory(self) -> str:
         if not self._cfg.use_global_memory:
@@ -885,43 +463,7 @@ evidence_item_ids 从订阅信息流里挑选支持你判断的 item_id（可为
             return "（读取全局记忆失败）"
 
     async def _send(self, message: str) -> bool:
-        channel = (self._cfg.default_channel or "").strip()
-        chat_id = self._cfg.default_chat_id.strip()
-        if not channel or not chat_id:
-            logger.warning("[proactive] default_channel/default_chat_id 未配置，跳过发送")
-            return False
-        logger.info(
-            "[proactive] 准备发送主动消息 channel=%s chat_id=%s message_len=%d",
-            channel,
-            chat_id,
-            len(message),
-        )
-        try:
-            result = await self._push.execute(
-                channel=channel,
-                chat_id=chat_id,
-                message=message,
-            )
-            logger.info("[proactive] message_push 返回: %r", result[:200])
-            if "已发送" not in result:
-                logger.warning(f"[proactive] 发送未成功: {result}")
-                return False
-            key = f"{channel}:{chat_id}"
-            session = self._sessions.get_or_create(key)
-            session.add_message(
-                "assistant",
-                message,
-                proactive=True,
-                tools_used=["message_push"],
-            )
-            self._sessions.save(session)
-            if self._presence:
-                self._presence.record_proactive_sent(key)
-            logger.info(f"[proactive] 已发送主动消息并写入会话 → {channel}:{chat_id}")
-            return True
-        except Exception as e:
-            logger.error(f"[proactive] 发送失败: {e}")
-            return False
+        return await self._sender.send(message)
 
 
 # ── helpers ──────────────────────────────────────────────────────

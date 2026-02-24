@@ -15,6 +15,9 @@ class MemoryStore:
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
         self.pending_file = self.memory_dir / "PENDING.md"
+        # 确保 PENDING.md 始终存在，避免首次运行时找不到文件
+        if not self.pending_file.exists():
+            self.pending_file.touch()
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():

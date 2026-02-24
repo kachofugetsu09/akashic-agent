@@ -596,3 +596,208 @@ async def test_send_records_proactive_sent_in_presence(tmp_path):
     assert presence.get_last_proactive_at("telegram:456") is None
     await loop._send("你好")
     assert presence.get_last_proactive_at("telegram:456") is not None
+
+
+# ── P1-1: record_action/mark_items_seen 与 session_key 解耦 ─────────
+
+
+@pytest.mark.asyncio
+async def test_sent_without_session_key_still_marks_items_seen(tmp_path):
+    """sent=True 且 session_key 为空时：mark_items_seen 执行，mark_delivery 跳过。"""
+    from unittest.mock import MagicMock, patch
+    from proactive.engine import ProactiveEngine
+    from proactive.state import ProactiveStateStore
+    from proactive.anyaction import AnyActionGate, QuotaStore
+
+    state = ProactiveStateStore(tmp_path / "state.json")
+    seen_calls: list = []
+    delivery_calls: list = []
+
+    original_mark_seen = state.mark_items_seen
+    original_mark_delivery = state.mark_delivery
+
+    def _track_seen(entries, **kw):
+        seen_calls.append(entries)
+        return original_mark_seen(entries, **kw)
+
+    def _track_delivery(session_key, delivery_key, **kw):
+        delivery_calls.append((session_key, delivery_key))
+        return original_mark_delivery(session_key, delivery_key, **kw)
+
+    state.mark_items_seen = _track_seen
+    state.mark_delivery = _track_delivery
+
+    item = FeedItem(
+        source_name="S", source_type="rss", title="T",
+        content="c", url="https://x.com/1", author=None, published_at=None,
+    )
+
+    class _Sense:
+        def compute_energy(self): return 0.0
+        def collect_recent(self): return []
+        def collect_recent_proactive(self, n=5): return []
+        def compute_interruptibility(self, **kw): return 1.0, {"f_time":1,"f_reply":1,"f_activity":1,"f_fatigue":1,"random_delta":0}
+        async def fetch_items(self, n): return [item]
+        def filter_new_items(self, items): return items, [("s:s","id1")], []
+        def read_memory_text(self): return ""
+        def has_global_memory(self): return False
+        def last_user_at(self): return None
+        def target_session_key(self): return ""  # 空 session_key
+        def quiet_hours(self): return 23, 10, 0.0
+
+    class _Decide:
+        async def score_features(self, **kw): return None
+        async def compose_message(self, **kw): return ""
+        async def reflect(self, items, recent, **kw):
+            class D:
+                score = 0.9; should_send = True; message = "hi"; reasoning = "ok"; evidence_item_ids = []
+            return D()
+        def randomize_decision(self, d): return d, 0.0
+        def resolve_evidence_item_ids(self, d, items): return ["id1"]
+        def build_delivery_key(self, ids, msg): return "key1"
+        def semantic_entries(self, items): return [{"source_key":"s:s","item_id":"id1","text":"t"}]
+        def item_id_for(self, item): return "id1"
+
+    class _Act:
+        async def send(self, msg): return True  # 发送成功
+
+    cfg = ProactiveConfig(
+        enabled=True, default_channel="", default_chat_id="",
+        anyaction_enabled=False,
+    )
+    engine = ProactiveEngine(
+        cfg=cfg, state=state, presence=None, rng=None,
+        sense=_Sense(), decide=_Decide(), act=_Act(),
+    )
+    await engine.tick()
+
+    assert len(seen_calls) > 0, "mark_items_seen 应被调用"
+    assert len(delivery_calls) == 0, "session_key 为空时 mark_delivery 不应调用"
+
+
+# ── P2-4: gate 拒绝返回值语义 ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gate_quota_exhausted_returns_zero(tmp_path):
+    """gate 拒绝原因为 quota_exhausted → tick 返回 0.0（调度最长间隔）。"""
+    from proactive.engine import ProactiveEngine
+    from proactive.state import ProactiveStateStore
+    from proactive.anyaction import AnyActionGate, QuotaStore
+    from datetime import timezone
+
+    state = ProactiveStateStore(tmp_path / "state.json")
+
+    class _Gate:
+        def should_act(self, *, now_utc, last_user_at):
+            return False, {"reason": "quota_exhausted", "used_today": 24, "remaining_today": 0}
+        def record_action(self, *, now_utc): pass
+
+    class _Sense:
+        def compute_energy(self): return 0.5
+        def collect_recent(self): return []
+        def collect_recent_proactive(self, n=5): return []
+        def compute_interruptibility(self, **kw): return 1.0, {"f_time":1,"f_reply":1,"f_activity":1,"f_fatigue":1,"random_delta":0}
+        async def fetch_items(self, n): return []
+        def filter_new_items(self, items): return [], [], []
+        def read_memory_text(self): return ""
+        def has_global_memory(self): return False
+        def last_user_at(self): return None
+        def target_session_key(self): return "telegram:123"
+        def quiet_hours(self): return 23, 10, 0.0
+
+    class _Decide:
+        async def score_features(self, **kw): return None
+        async def compose_message(self, **kw): return ""
+        async def reflect(self, *a, **kw): raise AssertionError("不应调用")
+        def randomize_decision(self, d): return d, 0.0
+        def resolve_evidence_item_ids(self, d, items): return []
+        def build_delivery_key(self, ids, msg): return ""
+        def semantic_entries(self, items): return []
+        def item_id_for(self, item): return ""
+
+    class _Act:
+        async def send(self, msg): return False
+
+    cfg = ProactiveConfig(enabled=True, anyaction_enabled=True, default_channel="telegram", default_chat_id="123")
+    engine = ProactiveEngine(
+        cfg=cfg, state=state, presence=None, rng=None,
+        sense=_Sense(), decide=_Decide(), act=_Act(),
+        anyaction=_Gate(),
+    )
+    result = await engine.tick()
+    assert result == 0.0
+
+
+@pytest.mark.asyncio
+async def test_gate_min_interval_returns_none(tmp_path):
+    """gate 拒绝原因为 min_interval → tick 返回 None（调度器按能量自算）。"""
+    from proactive.engine import ProactiveEngine
+    from proactive.state import ProactiveStateStore
+
+    state = ProactiveStateStore(tmp_path / "state.json")
+
+    class _Gate:
+        def should_act(self, *, now_utc, last_user_at):
+            return False, {"reason": "min_interval", "used_today": 1, "remaining_today": 23, "seconds_since_last_action": 60}
+        def record_action(self, *, now_utc): pass
+
+    class _Sense:
+        def compute_energy(self): return 0.5
+        def collect_recent(self): return []
+        def collect_recent_proactive(self, n=5): return []
+        def compute_interruptibility(self, **kw): return 1.0, {"f_time":1,"f_reply":1,"f_activity":1,"f_fatigue":1,"random_delta":0}
+        async def fetch_items(self, n): return []
+        def filter_new_items(self, items): return [], [], []
+        def read_memory_text(self): return ""
+        def has_global_memory(self): return False
+        def last_user_at(self): return None
+        def target_session_key(self): return "telegram:123"
+        def quiet_hours(self): return 23, 10, 0.0
+
+    class _Decide:
+        async def score_features(self, **kw): return None
+        async def compose_message(self, **kw): return ""
+        async def reflect(self, *a, **kw): raise AssertionError("不应调用")
+        def randomize_decision(self, d): return d, 0.0
+        def resolve_evidence_item_ids(self, d, items): return []
+        def build_delivery_key(self, ids, msg): return ""
+        def semantic_entries(self, items): return []
+        def item_id_for(self, item): return ""
+
+    class _Act:
+        async def send(self, msg): return False
+
+    cfg = ProactiveConfig(enabled=True, anyaction_enabled=True, default_channel="telegram", default_chat_id="123")
+    engine = ProactiveEngine(
+        cfg=cfg, state=state, presence=None, rng=None,
+        sense=_Sense(), decide=_Decide(), act=_Act(),
+        anyaction=_Gate(),
+    )
+    result = await engine.tick()
+    assert result is None
+
+
+# ── P2-3: 时区配置校验 ────────────────────────────────────────────
+
+
+def test_invalid_timezone_raises_when_anyaction_enabled():
+    """anyaction_enabled=True 且时区无效 → 配置加载 fail-fast。"""
+    from agent.config import _validated_timezone
+    with pytest.raises(ValueError, match="anyaction_timezone"):
+        _validated_timezone("Invalid/Timezone_XYZ", enabled=True)
+
+
+def test_invalid_timezone_ignored_when_anyaction_disabled():
+    """anyaction_enabled=False 时，无效时区不报错（功能未启用，副作用不扩大）。"""
+    from agent.config import _validated_timezone
+    result = _validated_timezone("Invalid/Timezone_XYZ", enabled=False)
+    assert result == "Invalid/Timezone_XYZ"
+
+
+def test_safe_zone_fallback_on_invalid_timezone():
+    """运行时 _safe_zone 遇到无效时区应回退 UTC，不抛异常。"""
+    from proactive.anyaction import _safe_zone
+    from zoneinfo import ZoneInfo
+    tz = _safe_zone("Not/A/Real_Zone")
+    assert tz == ZoneInfo("UTC")

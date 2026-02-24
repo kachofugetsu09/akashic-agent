@@ -9,6 +9,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from proactive.loop import ProactiveConfig
 from proactive.interest import InterestFilterConfig
@@ -21,6 +22,20 @@ _PRESETS: dict[str, str] = {
 
 # CLI channel 默认 Unix socket 路径
 DEFAULT_SOCKET = "/tmp/akasic.sock"
+
+
+def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
+    """仅当 anyaction_enabled=True 时校验时区合法性，无效则启动时 fail-fast。"""
+    if not enabled:
+        return tz_name
+    try:
+        ZoneInfo(tz_name)
+        return tz_name
+    except Exception:
+        raise ValueError(
+            f"proactive.anyaction_timezone 无效: {tz_name!r}，"
+            "请使用 IANA 格式，如 'Asia/Shanghai'"
+        )
 
 
 @dataclass
@@ -165,6 +180,31 @@ class Config:
                 tick_interval_s2=int(p.get("tick_interval_s2", 1080)),
                 tick_interval_s3=int(p.get("tick_interval_s3", 420)),
                 tick_jitter=float(p.get("tick_jitter", 0.3)),
+                anyaction_enabled=bool(p.get("anyaction_enabled", False)),
+                anyaction_daily_max_actions=int(p.get("anyaction_daily_max_actions", 24)),
+                anyaction_min_interval_seconds=int(p.get("anyaction_min_interval_seconds", 300)),
+                anyaction_reset_hour_local=int(p.get("anyaction_reset_hour_local", 12)),
+                anyaction_timezone=_validated_timezone(
+                    str(p.get("anyaction_timezone", "Asia/Shanghai")),
+                    enabled=bool(p.get("anyaction_enabled", False)),
+                ),
+                anyaction_probability_min=float(p.get("anyaction_probability_min", 0.03)),
+                anyaction_probability_max=float(p.get("anyaction_probability_max", 0.45)),
+                anyaction_idle_scale_minutes=float(p.get("anyaction_idle_scale_minutes", 240.0)),
+                feature_scoring_enabled=bool(p.get("feature_scoring_enabled", False)),
+                feature_send_threshold=float(p.get("feature_send_threshold", 0.52)),
+                feature_weight_topic_continuity=float(p.get("feature_weight_topic_continuity", 0.24)),
+                feature_weight_interest_match=float(p.get("feature_weight_interest_match", 0.24)),
+                feature_weight_content_novelty=float(p.get("feature_weight_content_novelty", 0.20)),
+                feature_weight_reconnect_value=float(p.get("feature_weight_reconnect_value", 0.16)),
+                feature_weight_message_readiness=float(p.get("feature_weight_message_readiness", 0.16)),
+                feature_weight_disturb_risk=float(p.get("feature_weight_disturb_risk", 0.70)),
+                feature_weight_interrupt_penalty=float(p.get("feature_weight_interrupt_penalty", 0.30)),
+                feature_weight_d_recent_bonus=float(p.get("feature_weight_d_recent_bonus", 0.10)),
+                feature_weight_d_content_bonus=float(p.get("feature_weight_d_content_bonus", 0.10)),
+                feature_weight_d_energy_bonus=float(p.get("feature_weight_d_energy_bonus", 0.08)),
+                message_dedupe_enabled=bool(p.get("message_dedupe_enabled", True)),
+                message_dedupe_recent_n=int(p.get("message_dedupe_recent_n", 5)),
             )
 
         return cls(

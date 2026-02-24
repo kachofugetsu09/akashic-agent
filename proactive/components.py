@@ -1,0 +1,599 @@
+from __future__ import annotations
+
+import json
+import logging
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable
+
+from agent.memory import MemoryStore
+from agent.provider import LLMProvider
+from agent.tools.message_push import MessagePushTool
+from feeds.base import FeedItem
+from proactive.presence import PresenceStore
+from proactive.state import ProactiveStateStore
+from session.manager import SessionManager
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReflectHooks:
+    format_items: Callable[[list[FeedItem]], str]
+    format_recent: Callable[[list[dict]], str]
+    parse_decision: Callable[[str], Any]
+    collect_global_memory: Callable[[], str]
+    sample_random_memory: Callable[[int], list[str]]
+    target_session_key: Callable[[], str]
+    on_reflect_error: Callable[[Exception], Any]
+
+
+class ProactiveReflector:
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        model: str,
+        max_tokens: int,
+        cfg: Any,
+        memory_store: MemoryStore | None,
+        presence: PresenceStore | None,
+        hooks: ReflectHooks,
+    ) -> None:
+        self._provider = provider
+        self._model = model
+        self._max_tokens = max_tokens
+        self._cfg = cfg
+        self._memory = memory_store
+        self._presence = presence
+        self._hooks = hooks
+
+    async def reflect(
+        self,
+        items: list[FeedItem],
+        recent: list[dict],
+        energy: float = 0.0,
+        urge: float = 0.0,
+        is_crisis: bool = False,
+        decision_signals: dict[str, object] | None = None,
+    ) -> Any:
+        now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        feed_text = self._hooks.format_items(items) or "（暂无订阅内容）"
+        chat_text = self._hooks.format_recent(recent) or "（无近期对话记录）"
+        memory_text = self._hooks.collect_global_memory()
+
+        questions_text = ""
+        if self._memory:
+            try:
+                questions_text = self._memory.read_questions().strip()
+            except Exception:
+                pass
+
+        crisis_hint = ""
+        if is_crisis:
+            topic_chunks = self._hooks.sample_random_memory(1)
+            topic_hint = topic_chunks[0] if topic_chunks else ""
+            session_key = self._hooks.target_session_key()
+            last_at = self._presence.get_last_user_at(session_key) if self._presence else None
+            elapsed = ""
+            if last_at:
+                hours = (datetime.now(timezone.utc) - last_at).total_seconds() / 3600
+                elapsed = f"距离上次对话已超过 {hours:.0f} 小时。"
+            topic_section = (
+                f"\n\n## 随机话题建议（危机开场用）\n\n{topic_hint}"
+                if topic_hint else ""
+            )
+            crisis_hint = (
+                f"\n[危机模式] {elapsed}"
+                "用户可能已忘记你的存在，需要主动找一个自然的切入点重新联系。"
+                "可以从下方随机话题出发，或用关心/有趣内容开场。"
+                f"{topic_section}"
+            )
+
+        system_msg = (
+            "你是一个陪伴型 AI 助手，正在决定是否主动联系用户。"
+            "你了解用户订阅的信息流和最近的对话内容。"
+            "你的目标是在恰当的时机分享有价值的信息，而不是频繁打扰用户。"
+        )
+        user_msg = f"""当前时间：{now_str}
+
+## 主动性上下文
+
+当前电量（与用户的互动新鲜度）: {energy:.2f}  (0=完全冷却, 1=刚刚对话)
+主动冲动指数: {urge:.2f}  (0=不需要说, 1=非常需要联系){crisis_hint}
+{f"## 决策信号（系统计算）\n\n```json\n{json.dumps(decision_signals, ensure_ascii=False, indent=2)}\n```\n" if decision_signals else ""}
+
+## 订阅信息流（最新内容）
+
+{feed_text}
+
+## 长期记忆（用户画像/偏好）
+
+{memory_text}
+{f"## 待了解的话题（可作为开场素材）\n\n{questions_text}\n" if questions_text else ""}
+## 近期对话
+
+{chat_text}
+
+## 任务
+
+综合以上信息，判断是否值得主动联系用户。考虑：
+- 信息流里有没有用户可能感兴趣的内容
+- 现在说点什么是否自然、不唐突
+- 与近期对话有无关联或延伸
+- 电量越低越需要主动联系，危机模式时哪怕简单关心也有价值
+
+只输出 JSON，不要其他内容：
+{{
+  "reasoning": "内心独白（不会显示给用户，说清楚你的判断依据）",
+  "score": 0.0,
+  "should_send": false,
+  "message": "",
+  "evidence_item_ids": []
+}}
+
+score 说明：0.0=完全没必要  0.5=有点想说  0.7=比较值得  1.0=非常值得立刻说
+message 若 should_send=true，写要发给用户的话（口语化，不要像系统通知）
+evidence_item_ids 从订阅信息流里挑选支持你判断的 item_id（可为空数组）"""
+
+        try:
+            resp = await self._provider.chat(
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                tools=[],
+                model=self._model,
+                max_tokens=self._max_tokens,
+            )
+            content = resp.content or ""
+            logger.info("[proactive] LLM 原始输出预览: %r", content[:240])
+            return self._hooks.parse_decision(content)
+        except Exception as e:
+            logger.error(f"[proactive] LLM 反思失败: {e}")
+            return self._hooks.on_reflect_error(e)
+
+
+class ProactiveSender:
+    def __init__(
+        self,
+        *,
+        cfg: Any,
+        push_tool: MessagePushTool,
+        sessions: SessionManager,
+        presence: PresenceStore | None,
+    ) -> None:
+        self._cfg = cfg
+        self._push = push_tool
+        self._sessions = sessions
+        self._presence = presence
+
+    async def send(self, message: str) -> bool:
+        channel = (self._cfg.default_channel or "").strip()
+        chat_id = self._cfg.default_chat_id.strip()
+        if not channel or not chat_id:
+            logger.warning("[proactive] default_channel/default_chat_id 未配置，跳过发送")
+            return False
+        logger.info(
+            "[proactive] 准备发送主动消息 channel=%s chat_id=%s message_len=%d",
+            channel,
+            chat_id,
+            len(message),
+        )
+        try:
+            result = await self._push.execute(
+                channel=channel,
+                chat_id=chat_id,
+                message=message,
+            )
+            logger.info("[proactive] message_push 返回: %r", result[:200])
+            if "已发送" not in result:
+                logger.warning(f"[proactive] 发送未成功: {result}")
+                return False
+            key = f"{channel}:{chat_id}"
+            session = self._sessions.get_or_create(key)
+            session.add_message(
+                "assistant",
+                message,
+                proactive=True,
+                tools_used=["message_push"],
+            )
+            self._sessions.save(session)
+            if self._presence:
+                self._presence.record_proactive_sent(key)
+            logger.info(f"[proactive] 已发送主动消息并写入会话 → {channel}:{chat_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[proactive] 发送失败: {e}")
+            return False
+
+
+class ProactiveItemFilter:
+    def __init__(
+        self,
+        *,
+        cfg: Any,
+        state: ProactiveStateStore,
+        source_key_fn: Callable[[FeedItem], str],
+        item_id_fn: Callable[[FeedItem], str],
+        semantic_text_fn: Callable[[FeedItem, int], str],
+        build_tfidf_vectors_fn: Callable[[list[str], int], list[dict[str, float]]],
+        cosine_fn: Callable[[dict[str, float], dict[str, float]], float],
+    ) -> None:
+        self._cfg = cfg
+        self._state = state
+        self._source_key = source_key_fn
+        self._item_id = item_id_fn
+        self._semantic_text = semantic_text_fn
+        self._build_tfidf_vectors = build_tfidf_vectors_fn
+        self._cosine = cosine_fn
+
+    def filter_new_items(
+        self, items: list[FeedItem]
+    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
+        if not items:
+            logger.info("[proactive] 本轮无 item，去重过滤跳过")
+            return [], [], []
+        now = datetime.now(timezone.utc)
+        source_fresh: list[FeedItem] = []
+        source_entries: list[tuple[str, str]] = []
+        for item in items:
+            source_key = self._source_key(item)
+            item_id = self._item_id(item)
+            seen = self._state.is_item_seen(
+                source_key=source_key,
+                item_id=item_id,
+                ttl_hours=self._cfg.dedupe_seen_ttl_hours,
+                now=now,
+            )
+            logger.debug(
+                "[proactive] item 去重检查 source=%s item_id=%s seen=%s title=%r",
+                source_key,
+                item_id[:16],
+                seen,
+                (item.title or "")[:60],
+            )
+            if seen:
+                continue
+            source_fresh.append(item)
+            source_entries.append((source_key, item_id))
+        if not self._cfg.semantic_dedupe_enabled or not source_fresh:
+            return source_fresh, source_entries, []
+        return self._semantic_dedupe(source_fresh, source_entries, now)
+
+    def _semantic_dedupe(
+        self,
+        source_fresh: list[FeedItem],
+        source_entries: list[tuple[str, str]],
+        now: datetime,
+    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
+        history = self._state.get_semantic_items(
+            window_hours=self._cfg.semantic_dedupe_window_hours,
+            max_candidates=self._cfg.semantic_dedupe_max_candidates,
+            now=now,
+        )
+        payload = [
+            {
+                "item": item,
+                "source_key": source_key,
+                "item_id": item_id,
+                "text": self._semantic_text(item, self._cfg.semantic_dedupe_text_max_chars),
+            }
+            for item, (source_key, item_id) in zip(source_fresh, source_entries)
+        ]
+        if not payload:
+            return [], [], []
+        docs = [h["text"] for h in history] + [p["text"] for p in payload]
+        vectors = self._build_tfidf_vectors(docs, self._cfg.semantic_dedupe_ngram)
+        history_vectors = vectors[: len(history)]
+        payload_vectors = vectors[len(history):]
+
+        keep_items: list[FeedItem] = []
+        keep_entries: list[tuple[str, str]] = []
+        duplicate_entries: list[tuple[str, str]] = []
+        accepted_vectors: list[dict[str, float]] = []
+        accepted_meta: list[dict[str, str]] = []
+        threshold = self._cfg.semantic_dedupe_threshold
+        for idx, p in enumerate(payload):
+            vec = payload_vectors[idx]
+            best_sim = 0.0
+            best_kind = ""
+            best_source = ""
+            best_item_id = ""
+
+            for h_idx, h_vec in enumerate(history_vectors):
+                sim = self._cosine(vec, h_vec)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_kind = "history"
+                    best_source = history[h_idx].get("source_key", "")
+                    best_item_id = history[h_idx].get("item_id", "")
+
+            for a_idx, a_vec in enumerate(accepted_vectors):
+                sim = self._cosine(vec, a_vec)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_kind = "batch"
+                    best_source = accepted_meta[a_idx].get("source_key", "")
+                    best_item_id = accepted_meta[a_idx].get("item_id", "")
+
+            logger.info(
+                "[proactive] 语义去重检查 source=%s item_id=%s best_sim=%.4f threshold=%.2f matched_kind=%s matched_source=%s matched_item=%s title=%r",
+                p["source_key"],
+                p["item_id"][:16],
+                best_sim,
+                threshold,
+                best_kind or "-",
+                best_source or "-",
+                (best_item_id or "-")[:16],
+                (p["item"].title or "")[:80],
+            )
+
+            if best_sim >= threshold:
+                duplicate_entries.append((p["source_key"], p["item_id"]))
+                logger.info(
+                    "[proactive] 语义去重命中，过滤 item source=%s item_id=%s sim=%.4f",
+                    p["source_key"],
+                    p["item_id"][:16],
+                    best_sim,
+                )
+                continue
+
+            keep_items.append(p["item"])
+            keep_entries.append((p["source_key"], p["item_id"]))
+            accepted_vectors.append(vec)
+            accepted_meta.append({"source_key": p["source_key"], "item_id": p["item_id"]})
+        logger.info(
+            "[proactive] 语义去重结果 keep=%d duplicate=%d history_candidates=%d",
+            len(keep_items),
+            len(duplicate_entries),
+            len(history),
+        )
+        return keep_items, keep_entries, duplicate_entries
+
+
+class ProactiveFeatureScorer:
+    """AI 特征打分器：仅输出固定特征分（0~1），不做最终决策。"""
+
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        model: str,
+        max_tokens: int,
+        format_items: Callable[[list[FeedItem]], str],
+        format_recent: Callable[[list[dict]], str],
+        collect_global_memory: Callable[[], str],
+    ) -> None:
+        self._provider = provider
+        self._model = model
+        self._max_tokens = max_tokens
+        self._format_items = format_items
+        self._format_recent = format_recent
+        self._collect_global_memory = collect_global_memory
+
+    async def score_features(
+        self,
+        *,
+        items: list[FeedItem],
+        recent: list[dict],
+        decision_signals: dict[str, object],
+    ) -> dict[str, float]:
+        now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        feed_text = self._format_items(items) or "（暂无订阅内容）"
+        chat_text = self._format_recent(recent) or "（无近期对话记录）"
+        memory_text = self._collect_global_memory()
+        system_msg = (
+            "你是主动触达特征评估器。只输出固定JSON字段。"
+            "每个分数字段必须是0到1的小数；同时给每个字段一句简短理由。"
+            "不要给最终决策，不要输出额外文本。"
+        )
+        user_msg = f"""当前时间：{now_str}
+
+## 决策信号（系统计算）
+```json
+{json.dumps(decision_signals, ensure_ascii=False, indent=2)}
+```
+
+## 订阅信息流
+{feed_text}
+
+## 长期记忆
+{memory_text}
+
+## 近期对话
+{chat_text}
+
+只输出 JSON，且仅包含以下键：
+{{
+  "topic_continuity": 0.0,
+  "topic_continuity_reason": "",
+  "interest_match": 0.0,
+  "interest_match_reason": "",
+  "content_novelty": 0.0,
+  "content_novelty_reason": "",
+  "reconnect_value": 0.0,
+  "reconnect_value_reason": "",
+  "disturb_risk": 0.0,
+  "disturb_risk_reason": "",
+  "message_readiness": 0.0,
+  "message_readiness_reason": "",
+  "confidence": 0.0,
+  "confidence_reason": ""
+}}
+"""
+        try:
+            resp = await self._provider.chat(
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                tools=[],
+                model=self._model,
+                max_tokens=min(512, self._max_tokens),
+            )
+            text = (resp.content or "").strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            raw = json.loads(text)
+            return self._sanitize(raw)
+        except Exception:
+            return self._sanitize({})
+
+    @staticmethod
+    def _sanitize(raw: dict) -> dict[str, float | str]:
+        def get(name: str, default: float) -> float:
+            try:
+                v = float(raw.get(name, default))
+            except Exception:
+                v = default
+            return max(0.0, min(1.0, v))
+        def reason(name: str) -> str:
+            try:
+                text = str(raw.get(name, "")).strip()
+            except Exception:
+                text = ""
+            return text[:120]
+
+        return {
+            "topic_continuity": get("topic_continuity", 0.5),
+            "topic_continuity_reason": reason("topic_continuity_reason"),
+            "interest_match": get("interest_match", 0.5),
+            "interest_match_reason": reason("interest_match_reason"),
+            "content_novelty": get("content_novelty", 0.5),
+            "content_novelty_reason": reason("content_novelty_reason"),
+            "reconnect_value": get("reconnect_value", 0.5),
+            "reconnect_value_reason": reason("reconnect_value_reason"),
+            "disturb_risk": get("disturb_risk", 0.5),
+            "disturb_risk_reason": reason("disturb_risk_reason"),
+            "message_readiness": get("message_readiness", 0.5),
+            "message_readiness_reason": reason("message_readiness_reason"),
+            "confidence": get("confidence", 0.5),
+            "confidence_reason": reason("confidence_reason"),
+        }
+
+
+class ProactiveMessageDeduper:
+    """发送前语义去重：比对新消息与最近5条已发 proactive 消息，判断是否内容重复。"""
+
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        model: str,
+        max_tokens: int,
+    ) -> None:
+        self._provider = provider
+        self._model = model
+        self._max_tokens = max_tokens
+
+    async def is_duplicate(
+        self,
+        new_message: str,
+        recent_proactive: list[str],
+    ) -> tuple[bool, str]:
+        """返回 (is_duplicate, reason)。recent_proactive 为空时直接放行。"""
+        if not recent_proactive:
+            return False, "无近期主动消息，放行"
+
+        recent_text = "\n---\n".join(
+            f"[{i + 1}] {msg}" for i, msg in enumerate(recent_proactive)
+        )
+        system_msg = (
+            "你是消息重复检测器。判断【新消息】是否与【近期已发消息】在实质信息上重复。\n"
+            "重复定义：同一事件/新闻/信息，即使措辞、语气、细节不同，本质信息相同。\n"
+            "不重复定义：话题相同但有真正的新进展、新内容或不同角度。\n"
+            "只输出 JSON，不要其他内容。"
+        )
+        user_msg = (
+            f"近期已发消息（最多5条）：\n{recent_text}\n\n"
+            f"---\n新消息：{new_message}\n\n"
+            "---\n只输出 JSON：\n"
+            '{"is_duplicate": false, "reason": "简短说明"}'
+        )
+        try:
+            resp = await self._provider.chat(
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                tools=[],
+                model=self._model,
+                max_tokens=min(128, self._max_tokens),
+            )
+            content = (resp.content or "").strip()
+            match = re.search(r"\{[\s\S]*\}", content)
+            if not match:
+                logger.warning("[proactive.deduper] 无法解析 JSON: %r", content[:100])
+                return False, "解析失败，放行"
+            d = json.loads(match.group())
+            is_dup = bool(d.get("is_duplicate", False))
+            reason = str(d.get("reason", ""))
+            logger.info("[proactive.deduper] is_duplicate=%s reason=%r", is_dup, reason[:80])
+            return is_dup, reason
+        except Exception as e:
+            logger.warning("[proactive.deduper] 检测失败，放行: %s", e)
+            return False, str(e)
+
+
+class ProactiveMessageComposer:
+    """特征模式下的消息生成器：只负责生成 message，不做是否发送决策。"""
+
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        model: str,
+        max_tokens: int,
+        format_items: Callable[[list[FeedItem]], str],
+        format_recent: Callable[[list[dict]], str],
+        collect_global_memory: Callable[[], str],
+    ) -> None:
+        self._provider = provider
+        self._model = model
+        self._max_tokens = max_tokens
+        self._format_items = format_items
+        self._format_recent = format_recent
+        self._collect_global_memory = collect_global_memory
+
+    async def compose_message(
+        self,
+        *,
+        items: list[FeedItem],
+        recent: list[dict],
+        decision_signals: dict[str, object],
+    ) -> str:
+        now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        feed_text = self._format_items(items) or "（暂无订阅内容）"
+        chat_text = self._format_recent(recent) or "（无近期对话记录）"
+        memory_text = self._collect_global_memory()
+        system_msg = (
+            "你是陪伴型助手。系统已经决定可以主动发送，请只生成一条自然、简短、可直接发送给用户的中文消息。"
+            "不要输出JSON，不要解释。"
+        )
+        user_msg = f"""当前时间：{now_str}
+## 决策信号
+```json
+{json.dumps(decision_signals, ensure_ascii=False, indent=2)}
+```
+## 信息流
+{feed_text}
+## 长期记忆
+{memory_text}
+## 近期对话
+{chat_text}
+请给出一条可发送消息（不超过120字）。"""
+        try:
+            resp = await self._provider.chat(
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                tools=[],
+                model=self._model,
+                max_tokens=min(256, self._max_tokens),
+            )
+            return (resp.content or "").strip()
+        except Exception:
+            return ""
