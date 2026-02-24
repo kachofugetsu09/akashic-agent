@@ -1,10 +1,12 @@
 """
 ProactiveStateStore — 主动消息流的去重状态持久化。
 
-状态文件包含三类信息：
-1) seen_items: 每个 source 下已处理过的 item_id
+状态文件包含四类信息：
+1) seen_items: 每个 source 下已处理过的 item_id（长 TTL，14天）
 2) deliveries: 每个 session 下已发送过的 delivery_key
-3) semantic_items: 语义去重历史（文本与时间戳）
+3) semantic_items: 语义去重历史（文本与时间戳，72h TTL）
+4) rejection_cooldown: LLM 拒绝后的软冷却（可配置 TTL，默认 12h）
+   独立于 seen_items，防止拒绝误判造成永久压制。
 """
 from __future__ import annotations
 
@@ -39,11 +41,12 @@ class ProactiveStateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._state = self._load()
         logger.info(
-            "[proactive.state] 初始化完成 path=%s seen_sources=%d delivery_sessions=%d semantic_items=%d",
+            "[proactive.state] 初始化完成 path=%s seen_sources=%d delivery_sessions=%d semantic_items=%d reject_cool=%d",
             self.path,
             len(self._state["seen_items"]),
             len(self._state["deliveries"]),
             len(self._state["semantic_items"]),
+            sum(len(v) for v in self._state["rejection_cooldown"].values()),
         )
 
     def is_item_seen(
@@ -221,7 +224,53 @@ class ProactiveStateStore:
             ts,
         )
 
-    def cleanup(self, seen_ttl_hours: int, delivery_ttl_hours: int, semantic_ttl_hours: int) -> None:
+    # ── rejection_cooldown ────────────────────────────────────────
+
+    def is_rejection_cooled(
+        self,
+        source_key: str,
+        item_id: str,
+        ttl_hours: int,
+        now: datetime | None = None,
+    ) -> bool:
+        """LLM 拒绝冷却中返回 True；ttl_hours≤0 表示禁用，始终返回 False。"""
+        if ttl_hours <= 0:
+            return False
+        now = now or _utcnow()
+        source_map = self._state["rejection_cooldown"].get(source_key, {})
+        ts = _parse_iso(source_map.get(item_id))
+        if ts is None:
+            return False
+        if ts < now - timedelta(hours=ttl_hours):
+            return False
+        return True
+
+    def mark_rejection_cooldown(
+        self,
+        entries: list[tuple[str, str]],
+        hours: int,
+        now: datetime | None = None,
+    ) -> None:
+        """记录 LLM 拒绝冷却；hours≤0 或 entries 为空时跳过。"""
+        if hours <= 0 or not entries:
+            return
+        now = now or _utcnow()
+        ts = now.isoformat()
+        added = 0
+        for source_key, item_id in entries:
+            source_map = self._state["rejection_cooldown"].setdefault(source_key, {})
+            if item_id not in source_map:
+                added += 1
+            source_map[item_id] = ts
+        self._save()
+        logger.info(
+            "[proactive.state] 拒绝冷却已记录 count=%d newly_added=%d ttl_hours=%d",
+            len(entries),
+            added,
+            hours,
+        )
+
+    def cleanup(self, seen_ttl_hours: int, delivery_ttl_hours: int, semantic_ttl_hours: int, rejection_cooldown_ttl_hours: int = 0) -> None:
         now = _utcnow()
         seen_cutoff = now - timedelta(hours=max(seen_ttl_hours, 1))
         delivery_cutoff = now - timedelta(hours=max(delivery_ttl_hours, 1))
@@ -258,17 +307,31 @@ class ProactiveStateStore:
         ]
         removed_semantic = before_semantic - len(self._state["semantic_items"])
 
+        removed_cooldown = 0
+        if rejection_cooldown_ttl_hours > 0:
+            cooldown_cutoff = now - timedelta(hours=rejection_cooldown_ttl_hours)
+            for source_key in list(self._state["rejection_cooldown"].keys()):
+                source_map = self._state["rejection_cooldown"][source_key]
+                for item_id in list(source_map.keys()):
+                    ts = _parse_iso(source_map[item_id])
+                    if ts is None or ts < cooldown_cutoff:
+                        del source_map[item_id]
+                        removed_cooldown += 1
+                if not source_map:
+                    del self._state["rejection_cooldown"][source_key]
+
         self._save()
         logger.info(
-            "[proactive.state] cleanup 完成 removed_seen=%d removed_delivery=%d removed_semantic=%d",
+            "[proactive.state] cleanup 完成 removed_seen=%d removed_delivery=%d removed_semantic=%d removed_cooldown=%d",
             removed_seen,
             removed_delivery,
             removed_semantic,
+            removed_cooldown,
         )
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"version": 2, "seen_items": {}, "deliveries": {}, "semantic_items": []}
+            return {"version": 3, "seen_items": {}, "deliveries": {}, "semantic_items": [], "rejection_cooldown": {}}
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             state = {
@@ -276,12 +339,14 @@ class ProactiveStateStore:
                 "seen_items": dict(raw.get("seen_items", {})),
                 "deliveries": dict(raw.get("deliveries", {})),
                 "semantic_items": list(raw.get("semantic_items", [])),
+                # 向后兼容：旧文件无此字段时自动初始化
+                "rejection_cooldown": dict(raw.get("rejection_cooldown", {})),
             }
             logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)
             return state
         except Exception as e:
             logger.warning("[proactive.state] 加载失败，回退空状态: %s", e)
-            return {"version": 2, "seen_items": {}, "deliveries": {}, "semantic_items": []}
+            return {"version": 3, "seen_items": {}, "deliveries": {}, "semantic_items": [], "rejection_cooldown": {}}
 
     def _save(self) -> None:
         self.path.write_text(

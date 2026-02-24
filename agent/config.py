@@ -205,6 +205,15 @@ class Config:
                 feature_weight_d_energy_bonus=float(p.get("feature_weight_d_energy_bonus", 0.08)),
                 message_dedupe_enabled=bool(p.get("message_dedupe_enabled", True)),
                 message_dedupe_recent_n=int(p.get("message_dedupe_recent_n", 5)),
+                # ── LLM 拒绝冷却 ──
+                llm_reject_cooldown_hours=max(0, int(p.get("llm_reject_cooldown_hours", 12))),
+                # ── Feed 轮询器 ──
+                feed_poller_enabled=bool(p.get("feed_poller_enabled", False)),
+                feed_poller_interval_seconds=max(5, int(p.get("feed_poller_interval_seconds", 300))),
+                feed_poller_fetch_limit=max(1, int(p.get("feed_poller_fetch_limit", 20))),
+                feed_poller_buffer_ttl_hours=max(1, int(p.get("feed_poller_buffer_ttl_hours", 48))),
+                feed_poller_buffer_max_per_source=max(1, int(p.get("feed_poller_buffer_max_per_source", 100))),
+                feed_poller_read_limit=max(0, int(p.get("feed_poller_read_limit", 50))),
             )
 
         return cls(

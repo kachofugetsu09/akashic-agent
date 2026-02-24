@@ -20,12 +20,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 from agent.provider import LLMProvider
 from agent.memory import MemoryStore
 from agent.tools.message_push import MessagePushTool
 from feeds.base import FeedItem
+from feeds.buffer import FeedBuffer
 from feeds.registry import FeedRegistry
 from proactive.energy import (
     compute_energy,
@@ -43,6 +43,7 @@ from proactive.components import (
 )
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.engine import ProactiveEngine
+from proactive.item_id import compute_item_id, compute_source_key, normalize_url
 from proactive.memory_sampler import sample_memory_chunks
 from proactive.ports import DefaultDecidePort, DefaultSensePort
 from proactive.presence import PresenceStore
@@ -132,6 +133,15 @@ class ProactiveConfig:
     # ── 发送前消息语义去重 ──
     message_dedupe_enabled: bool = True   # 发送前用 LLM 检测是否与近期 proactive 消息重复
     message_dedupe_recent_n: int = 5      # 取最近 N 条 proactive 消息做比对
+    # ── LLM 拒绝冷却 ──
+    llm_reject_cooldown_hours: int = 12  # LLM 拒绝后的软冷却时长（小时）；0 = 禁用
+    # ── Feed 轮询器（后台解耦拉取）──
+    feed_poller_enabled: bool = False           # 启用后台 FeedPoller（解耦拉取与决策）
+    feed_poller_interval_seconds: int = 300     # 拉取间隔（秒）
+    feed_poller_fetch_limit: int = 20           # 每源拉取条数上限
+    feed_poller_buffer_ttl_hours: int = 48      # buffer 条目有效期（小时）
+    feed_poller_buffer_max_per_source: int = 100  # 每源最多保留条数
+    feed_poller_read_limit: int = 50            # 引擎从 buffer 读取的条数上限（0=全部）
     # ── 旧参数兼容（当前主流程不再使用）──
     energy_cool_threshold: float = 0.20
     energy_crisis_threshold: float = 0.05
@@ -198,6 +208,15 @@ class ProactiveLoop:
         self._schedule = schedule
         self._rng = rng
         self._running = False
+        # FeedBuffer：feed_poller_enabled=True 时由 FeedPoller 写入；False 则为 None（直接拉取）
+        self.feed_buffer: FeedBuffer | None = (
+            FeedBuffer(
+                ttl_hours=config.feed_poller_buffer_ttl_hours,
+                max_per_source=config.feed_poller_buffer_max_per_source,
+            )
+            if config.feed_poller_enabled
+            else None
+        )
         logger.info(
             "[proactive] 去重配置 seen_ttl=%dh delivery_window=%dh only_new_items_trigger=%s semantic_enabled=%s semantic_threshold=%.2f semantic_window=%dh ngram=%d use_global_memory=%s memory_max_chars=%d",
             self._cfg.dedupe_seen_ttl_hours,
@@ -286,6 +305,7 @@ class ProactiveLoop:
             presence=self._presence,
             schedule=self._schedule,
             rng=self._rng,
+            feed_buffer=self.feed_buffer,
         )
         self._decide = DefaultDecidePort(
             reflector=self._reflector,
@@ -541,34 +561,15 @@ def _strict_bool(value: object) -> bool:
 
 
 def _source_key(item: FeedItem) -> str:
-    return f"{(item.source_type or '').strip().lower()}:{(item.source_name or '').strip().lower()}"
-
-
-def _normalize_url(url: str | None) -> str:
-    if not url:
-        return ""
-    try:
-        p = urlsplit(url.strip())
-        scheme = (p.scheme or "").lower()
-        netloc = (p.netloc or "").lower()
-        path = p.path.rstrip("/")
-        return urlunsplit((scheme, netloc, path, p.query, ""))
-    except Exception:
-        return (url or "").strip()
+    return compute_source_key(item)
 
 
 def _item_id(item: FeedItem) -> str:
-    url = _normalize_url(item.url)
-    if url:
-        return "u_" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
-    raw = "|".join([
-        (item.source_type or "").strip().lower(),
-        (item.source_name or "").strip().lower(),
-        (item.title or "").strip().lower(),
-        (item.content or "").strip().lower()[:200],
-        item.published_at.isoformat() if item.published_at else "",
-    ])
-    return "h_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return compute_item_id(item)
+
+
+def _normalize_url(url: str | None) -> str:
+    return normalize_url(url)
 
 
 def _resolve_evidence_item_ids(decision: _Decision, items: list[FeedItem]) -> list[str]:

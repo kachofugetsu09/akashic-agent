@@ -238,6 +238,7 @@ class ProactiveItemFilter:
         now = datetime.now(timezone.utc)
         source_fresh: list[FeedItem] = []
         source_entries: list[tuple[str, str]] = []
+        cooldown_hours = getattr(self._cfg, "llm_reject_cooldown_hours", 0)
         for item in items:
             source_key = self._source_key(item)
             item_id = self._item_id(item)
@@ -255,6 +256,18 @@ class ProactiveItemFilter:
                 (item.title or "")[:60],
             )
             if seen:
+                continue
+            # LLM 拒绝冷却检查（独立短 TTL，不影响 seen_items 的 14天去重）
+            if cooldown_hours > 0 and self._state.is_rejection_cooled(
+                source_key=source_key,
+                item_id=item_id,
+                ttl_hours=cooldown_hours,
+                now=now,
+            ):
+                logger.debug(
+                    "[proactive] rejection_cooldown 跳过 source=%s item_id=%s ttl_hours=%d",
+                    source_key, item_id[:16], cooldown_hours,
+                )
                 continue
             source_fresh.append(item)
             source_entries.append((source_key, item_id))

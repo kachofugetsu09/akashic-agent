@@ -131,8 +131,9 @@ async def test_tick_dedupes_seen_items_and_skips_second_reflect(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tick_delivery_dedupe_blocks_duplicate_send(tmp_path):
-    """delivery dedup 阻止重复推送：tick1 有新 item 触发发送，tick2 同 item 已 seen 但有 memory
-    支撑 content_weight > 0 使 LLM 被调到，delivery key 复用 fallback item id → 去重拦截第二次发送。"""
+    """item 发送后标记为 seen，tick2 无新条目时 only_new_items_trigger 早退，不重复发送。
+    Fix D 移除了 new_items 到 items 的回退逻辑，delivery_key 现仅基于 new_items 中的证据；
+    当 new_items=[] 时使用 time_bucket+prefix 格式，因此依赖 only_new_items_trigger 阻断重复。"""
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
 
@@ -155,8 +156,6 @@ async def test_tick_delivery_dedupe_blocks_duplicate_send(tmp_path):
         )
     )
     session_manager = SessionManager(tmp_path)
-    memory = MemoryStore(tmp_path)
-    memory.write_long_term("用户偏好：关注游戏资讯。")  # has_memory=True → tick2 content_weight > 0
     loop = ProactiveLoop(
         feed_registry=feed,
         session_manager=session_manager,
@@ -167,17 +166,18 @@ async def test_tick_delivery_dedupe_blocks_duplicate_send(tmp_path):
             default_channel="telegram",
             default_chat_id="7674283004",
             delivery_dedupe_hours=24,
+            only_new_items_trigger=True,   # tick2 item 已 seen → new_items=[] → 早退
+            message_dedupe_enabled=False,  # 避免额外的 LLM 调用干扰计数
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
-        memory_store=memory,
     )
 
     await loop._tick()
     await loop._tick()
 
-    assert provider.chat.await_count == 2   # LLM 被调两次
-    assert push_tool.execute.await_count == 1  # 第二次被 delivery dedup 拦截
+    assert provider.chat.await_count == 1   # tick2 早退，不调 LLM
+    assert push_tool.execute.await_count == 1  # item seen 后不重复发送
 
 
 @pytest.mark.asyncio
@@ -405,14 +405,36 @@ async def test_reflect_contains_crisis_hint_when_energy_very_low(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tick_skips_llm_when_no_content_and_no_crisis(tmp_path):
-    """电量低但没有内容（无 feed，无记忆），且非危机 → W_content=0 → 跳过 LLM。"""
+    """有 presence（1h前）但无内容（无 feed、无记忆），且非危机 → D_content=0 → 跳过 LLM。
+
+    使用固定 rng seed + 1h 场景保证确定性：
+    1h 时 energy≈0.49 → d_energy≈0.51 → base_score_max≈0.23 < score_llm_threshold=0.40，
+    random_weight∈[0.5, 1.5] 的最大扰动也无法突破阈值，不依赖随机采样结果。
+    """
+    import random
     provider = _DummyProvider()
     provider.chat = AsyncMock()
 
-    # 电量低（24h前），但无记忆无 feed
-    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 24)
-    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
-    # 无记忆注入，无 feed（_DummyFeedRegistry 返回 []）
+    # 1h 前有互动（非危机，非冷启动），无 feed，无记忆
+    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60)
+    push_tool = AsyncMock()
+    push_tool.execute = AsyncMock(return_value="文本已发送")
+    loop = ProactiveLoop(
+        feed_registry=_DummyFeedRegistry(),
+        session_manager=SessionManager(tmp_path),
+        provider=provider,
+        push_tool=push_tool,
+        config=ProactiveConfig(
+            enabled=True,
+            default_channel="telegram",
+            default_chat_id="123",
+            only_new_items_trigger=False,
+        ),
+        model="test-model",
+        state_path=tmp_path / "proactive_state.json",
+        presence=presence,
+        rng=random.Random(42),  # 固定种子，防止 random_weight 偶发超阈值
+    )
 
     await loop._tick()
 
@@ -801,3 +823,192 @@ def test_safe_zone_fallback_on_invalid_timezone():
     from zoneinfo import ZoneInfo
     tz = _safe_zone("Not/A/Real_Zone")
     assert tz == ZoneInfo("UTC")
+
+
+# ── Fix A: delivery_key 不含 message 文本 ──────────────────────────
+
+def test_delivery_key_with_evidence_ignores_message():
+    """有证据时，delivery_key 只取决于 item_ids，与 message 文本无关。"""
+    from proactive.ports import DefaultDecidePort
+    from unittest.mock import MagicMock
+    decide = DefaultDecidePort(
+        reflector=MagicMock(),
+        randomize_fn=lambda d: (d, 0.0),
+        source_key_fn=lambda i: "rss:test",
+        item_id_fn=lambda i: "id1",
+        semantic_text_fn=lambda i, n: "",
+        semantic_text_max_chars=240,
+    )
+    ids = ["u_abc123"]
+    key1 = decide.build_delivery_key(ids, "版本A的消息措辞")
+    key2 = decide.build_delivery_key(ids, "版本B完全不同的说法")
+    assert key1 == key2, "同 evidence 不同措辞应产生相同 delivery_key"
+
+
+def test_delivery_key_empty_ids_uses_time_bucket_and_prefix():
+    """空 evidence 时，不同内容不退化到同一 hash。"""
+    from proactive.ports import DefaultDecidePort
+    from unittest.mock import MagicMock
+    decide = DefaultDecidePort(
+        reflector=MagicMock(),
+        randomize_fn=lambda d: (d, 0.0),
+        source_key_fn=lambda i: "rss:test",
+        item_id_fn=lambda i: "id1",
+        semantic_text_fn=lambda i, n: "",
+        semantic_text_max_chars=240,
+    )
+    key1 = decide.build_delivery_key([], "消息A内容")
+    key2 = decide.build_delivery_key([], "消息B完全不同的内容")
+    assert key1 != key2, "空 evidence 不同消息前缀应产生不同 delivery_key"
+
+
+# ── Fix C: rejection_cooldown ────────────────────────────────────
+
+
+def test_rejection_cooldown_mark_and_check(tmp_path):
+    """mark_rejection_cooldown → is_rejection_cooled 返回 True；超时后返回 False。"""
+    from datetime import timezone
+    from proactive.state import ProactiveStateStore
+
+    state = ProactiveStateStore(tmp_path / "state.json")
+    entries = [("rss:test", "u_abc123")]
+
+    # 未标记时不冷却
+    assert not state.is_rejection_cooled("rss:test", "u_abc123", ttl_hours=12)
+
+    state.mark_rejection_cooldown(entries, hours=12)
+    assert state.is_rejection_cooled("rss:test", "u_abc123", ttl_hours=12)
+
+    # 模拟过期
+    state._state["rejection_cooldown"]["rss:test"]["u_abc123"] = (
+        (datetime.now(timezone.utc) - timedelta(hours=13)).isoformat()
+    )
+    assert not state.is_rejection_cooled("rss:test", "u_abc123", ttl_hours=12)
+
+
+def test_rejection_cooldown_disabled_when_hours_zero(tmp_path):
+    """hours=0 时，mark/check 均为 no-op。"""
+    from proactive.state import ProactiveStateStore
+    state = ProactiveStateStore(tmp_path / "state.json")
+    entries = [("rss:test", "u_x")]
+    state.mark_rejection_cooldown(entries, hours=0)  # should be no-op
+    assert not state.is_rejection_cooled("rss:test", "u_x", ttl_hours=0)
+
+
+def test_rejection_cooldown_filters_in_next_tick(tmp_path):
+    """LLM 拒绝后条目进入 rejection_cooldown，下轮 filter_new_items 跳过该条目。"""
+    from proactive.state import ProactiveStateStore
+    from proactive.components import ProactiveItemFilter
+    from proactive.item_id import compute_item_id, compute_source_key
+    from unittest.mock import MagicMock
+
+    item = FeedItem(
+        source_name="test", source_type="rss",
+        title="被拒绝的内容", content="", url="https://example.com/rejected",
+        author=None, published_at=None,
+    )
+    source_key = compute_source_key(item)
+    item_id = compute_item_id(item)
+
+    state = ProactiveStateStore(tmp_path / "state.json")
+    # 模拟 LLM 已拒绝，写入 cooldown
+    state.mark_rejection_cooldown([(source_key, item_id)], hours=12)
+
+    cfg = MagicMock()
+    cfg.dedupe_seen_ttl_hours = 336
+    cfg.semantic_dedupe_enabled = False
+    cfg.llm_reject_cooldown_hours = 12
+
+    item_filter = ProactiveItemFilter(
+        cfg=cfg,
+        state=state,
+        source_key_fn=compute_source_key,
+        item_id_fn=compute_item_id,
+        semantic_text_fn=lambda i, n: "",
+        build_tfidf_vectors_fn=lambda texts, n: [],
+        cosine_fn=lambda a, b: 0.0,
+    )
+
+    new_items, new_entries, _ = item_filter.filter_new_items([item])
+    assert len(new_items) == 0, "rejection_cooldown 中的条目应被过滤掉"
+
+
+@pytest.mark.asyncio
+async def test_llm_rejection_writes_rejection_cooldown(tmp_path):
+    """LLM 返回 should_send=False → new_entries 写入 rejection_cooldown，不写 seen_items。"""
+    from proactive.state import ProactiveStateStore
+    from proactive.engine import ProactiveEngine
+    from proactive.item_id import compute_item_id, compute_source_key
+    from unittest.mock import AsyncMock, MagicMock
+
+    item = FeedItem(
+        source_name="src", source_type="rss",
+        title="LLM 拒绝的条目", content="", url="https://example.com/llm-rejected",
+        author=None, published_at=None,
+    )
+    source_key = compute_source_key(item)
+    item_id = compute_item_id(item)
+
+    state = ProactiveStateStore(tmp_path / "state.json")
+
+    sense = MagicMock()
+    sense.compute_energy.return_value = 0.5
+    sense.collect_recent.return_value = []
+    sense.compute_interruptibility.return_value = (
+        0.5,
+        {"f_time": 0.5, "f_reply": 0.5, "f_activity": 0.5, "f_fatigue": 0.5, "random_delta": 0.0},
+    )
+    sense.fetch_items = AsyncMock(return_value=[item])
+    sense.filter_new_items.return_value = (
+        [item],
+        [(source_key, item_id)],
+        [],
+    )
+    sense.read_memory_text.return_value = ""
+    sense.has_global_memory.return_value = False
+    sense.last_user_at.return_value = None
+    sense.target_session_key.return_value = "telegram:123"
+    sense.quiet_hours.return_value = (23, 8, 0.0)
+
+    # decide: reflect 返回 should_send=False
+    from proactive.loop import _Decision
+    decide = MagicMock()
+    decide.reflect = AsyncMock(return_value=_Decision(
+        score=0.2, should_send=False, message="", reasoning="not interesting"
+    ))
+    decide.randomize_decision.side_effect = lambda d: (d, 0.0)
+    decide.semantic_entries.return_value = []
+
+    cfg = MagicMock()
+    cfg.anyaction_enabled = False
+    cfg.score_weight_energy = 0.40
+    cfg.score_weight_content = 0.30
+    cfg.score_weight_recent = 0.20
+    cfg.score_recent_scale = 8.0
+    cfg.score_content_halfsat = 2.5
+    cfg.score_pre_threshold = 0.01
+    cfg.score_llm_threshold = 0.01   # 很低，确保进 LLM
+    cfg.items_per_source = 5
+    cfg.interest_filter.enabled = False
+    cfg.only_new_items_trigger = False
+    cfg.feature_scoring_enabled = False
+    cfg.threshold = 0.9   # 高 threshold → should_send 不触发
+    cfg.dedupe_seen_ttl_hours = 336
+    cfg.delivery_dedupe_hours = 10
+    cfg.semantic_dedupe_window_hours = 72
+    cfg.llm_reject_cooldown_hours = 12
+
+    engine = ProactiveEngine(
+        cfg=cfg, state=state, presence=None,
+        rng=None, sense=sense, decide=decide, act=MagicMock(),
+    )
+
+    await engine.tick()
+
+    # rejection_cooldown 应写入
+    assert state.is_rejection_cooled(source_key, item_id, ttl_hours=12), \
+        "LLM 拒绝后条目应进入 rejection_cooldown"
+
+    # seen_items 不应写入
+    assert not state.is_item_seen(source_key=source_key, item_id=item_id, ttl_hours=336), \
+        "LLM 拒绝后条目不应写入 seen_items（仅软冷却）"

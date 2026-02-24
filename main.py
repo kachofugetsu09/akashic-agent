@@ -29,6 +29,7 @@ from feeds.registry import FeedRegistry
 from feeds.rss import RSSFeedSource
 from feeds.tools import FeedManageTool, FeedQueryTool
 from proactive.loop import ProactiveLoop
+from proactive.feed_poller import FeedPoller
 from proactive.state import ProactiveStateStore
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
@@ -161,6 +162,10 @@ async def serve(config_path: str = "config.json") -> None:
             schedule=schedule_store,
         )
         tasks.append(proactive_loop.run())
+        if config.proactive.feed_poller_enabled and proactive_loop.feed_buffer is not None:
+            feed_poller = FeedPoller(feed_registry, proactive_loop.feed_buffer, config.proactive)
+            tasks.append(feed_poller.run())
+            print(f"FeedPoller 已启动  |  间隔={config.proactive.feed_poller_interval_seconds}s")
 
     # 记忆质量优化（定期合并 PENDING → MEMORY）
     if config.memory_optimizer_enabled:

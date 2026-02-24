@@ -65,6 +65,7 @@ class ProactiveEngine:
             seen_ttl_hours=self._cfg.dedupe_seen_ttl_hours,
             delivery_ttl_hours=self._cfg.delivery_dedupe_hours,
             semantic_ttl_hours=max(self._cfg.dedupe_seen_ttl_hours, self._cfg.semantic_dedupe_window_hours),
+            rejection_cooldown_ttl_hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
         )
         now_utc = datetime.now(timezone.utc)
         if self._cfg.anyaction_enabled and self._anyaction:
@@ -129,9 +130,10 @@ class ProactiveEngine:
             len(items) - len(new_items),
         )
         if semantic_duplicate_entries:
-            self._state.mark_items_seen(semantic_duplicate_entries)
+            # 语义重复条目不写入 seen_items（14天 TTL），避免误判导致长期压制。
+            # 这些条目仍受 semantic_items（72h TTL）窗口抑制；窗口到期后可重新参与决策。
             logger.info(
-                "[proactive] 已标记语义重复条目为 seen count=%d",
+                "[proactive] 语义重复条目 count=%d 不写入 seen_items，72h 窗口自然抑制",
                 len(semantic_duplicate_entries),
             )
 
@@ -248,7 +250,7 @@ class ProactiveEngine:
         feature_payload: dict[str, float | str] = {}
         if self._cfg.feature_scoring_enabled:
             features = await self._decide.score_features(
-                items=new_items if new_items else items,
+                items=new_items,   # 不回退到全量 items，尊重 interest_filter 过滤结果
                 recent=recent,
                 decision_signals=decision_signals,
             )
@@ -269,13 +271,17 @@ class ProactiveEngine:
             )
             if feature_final_score < self._cfg.feature_send_threshold:
                 logger.info("[proactive] selected_action=idle reason=feature_score")
+                # Fix C：feature_score 拒绝 = LLM 已评估，写拒绝冷却防止短期重入
+                self._state.mark_rejection_cooldown(
+                    new_entries, hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0)
+                )
                 return base_score
         decision = None
         decision_message = ""
         should_send = False
         if self._cfg.feature_scoring_enabled:
             decision_message = await self._decide.compose_message(
-                items=new_items if new_items else items,
+                items=new_items,   # 不回退，尊重 interest_filter 过滤结果
                 recent=recent,
                 decision_signals=decision_signals,
             )
@@ -316,7 +322,7 @@ class ProactiveEngine:
             session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
             evidence_ids = self._decide.resolve_evidence_item_ids(
                 decision if decision is not None else _PseudoDecision(message=decision_message),
-                new_items if new_items else items,
+                new_items,   # 与 score_features/compose_message 保持一致，不回退全量
             )
             delivery_key = self._decide.build_delivery_key(evidence_ids, decision_message)
             logger.info(
@@ -348,7 +354,8 @@ class ProactiveEngine:
                         "[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason
                     )
                     logger.info("[proactive] selected_action=idle reason=message_dedupe")
-                    self._state.mark_items_seen(new_entries)
+                    # Fix B：message_dedupe 误判率较高，只写 semantic_items（72h 软抑制）
+                    # 不写 seen_items，避免误判导致 14 天硬压制
                     self._state.mark_semantic_items(self._decide.semantic_entries(new_items))
                     return base_score
             sent = await self._act.send(decision_message)
@@ -371,6 +378,10 @@ class ProactiveEngine:
             logger.info("[proactive] 决定不主动发送")
             logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
             logger.info("[proactive] selected_action=idle reason=decision")
+            # Fix C：LLM 已评估并拒绝，写拒绝冷却防止短期内重复进 LLM
+            self._state.mark_rejection_cooldown(
+                new_entries, hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0)
+            )
         return base_score
 
 

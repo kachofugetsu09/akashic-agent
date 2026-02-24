@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import random as _random_module
 import re
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
+logger = logging.getLogger(__name__)
+
 from agent.memory import MemoryStore
 from feeds.base import FeedItem
+from feeds.buffer import FeedBuffer
 from feeds.registry import FeedRegistry
 from proactive.energy import compute_energy, d_recent, time_weight
 from proactive.presence import PresenceStore
@@ -87,6 +91,7 @@ class DefaultSensePort:
         presence: PresenceStore | None,
         schedule: ScheduleStore | None,
         rng: Any,
+        feed_buffer: FeedBuffer | None = None,
     ) -> None:
         self._cfg = cfg
         self._feeds = feeds
@@ -97,6 +102,7 @@ class DefaultSensePort:
         self._presence = presence
         self._schedule = schedule
         self._rng = rng
+        self._feed_buffer = feed_buffer
 
     def target_session_key(self) -> str:
         channel = (self._cfg.default_channel or "").strip()
@@ -239,6 +245,11 @@ class DefaultSensePort:
         }
 
     async def fetch_items(self, limit_per_source: int) -> list[FeedItem]:
+        if self._feed_buffer is not None:
+            n = getattr(self._cfg, "feed_poller_read_limit", 50)
+            items = self._feed_buffer.get_all(n=n)
+            logger.debug("[sense] fetch_items from buffer items=%d read_limit=%d", len(items), n)
+            return items
         return await self._feeds.fetch_all(limit_per_source)
 
     def collect_recent_proactive(self, n: int = 5) -> list[str]:
@@ -351,9 +362,16 @@ class DefaultDecidePort:
         return fallback[:5]
 
     def build_delivery_key(self, item_ids: list[str], message: str) -> str:
-        canonical_ids = "|".join(sorted(set(item_ids)))
-        canonical_msg = re.sub(r"\s+", " ", (message or "").strip().lower())
-        raw = f"{canonical_ids}::{canonical_msg}"
+        if item_ids:
+            # 有证据：仅基于 item_ids 去重，换措辞不影响结果
+            raw = "|".join(sorted(set(item_ids)))
+        else:
+            # 无证据：退化防护——用消息前缀(40字) + 4小时时间桶，
+            # 避免所有空证据消息都被同一 hash 压住
+            now = datetime.now(timezone.utc)
+            time_bucket = f"{now.year}-{now.month:02d}-{now.day:02d}-h{now.hour // 4}"
+            prefix = re.sub(r"\s+", " ", (message or "").strip().lower())[:40]
+            raw = f"no_evidence::{time_bucket}::{prefix}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     def semantic_entries(self, items: list[FeedItem]) -> list[dict[str, str]]:
