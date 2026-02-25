@@ -2,6 +2,7 @@
 配置加载模块
 从 config.json 读取配置，支持 ${ENV_VAR} 格式的环境变量插值。
 """
+
 from __future__ import annotations
 
 import json
@@ -15,9 +16,9 @@ from proactive.loop import ProactiveConfig
 from proactive.interest import InterestFilterConfig
 
 _PRESETS: dict[str, str] = {
-    "qwen":     "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "deepseek": "https://api.deepseek.com/v1",
-    "openai":   "https://api.openai.com/v1",
+    "openai": "https://api.openai.com/v1",
 }
 
 # CLI channel 默认 Unix socket 路径
@@ -48,21 +49,21 @@ class TelegramChannelConfig:
 class QQGroupConfig:
     group_id: str
     allow_from: list[str] = field(default_factory=list)  # 空 = 群内所有人
-    require_at: bool = True                               # 仅响应 @ 消息
+    require_at: bool = True  # 仅响应 @ 消息
 
 
 @dataclass
 class QQChannelConfig:
-    bot_uin: str                                              # Bot 的 QQ 号
-    allow_from: list[str] = field(default_factory=list)      # 私聊白名单，空 = 允许所有人
-    groups: list[QQGroupConfig] = field(default_factory=list) # 群组配置
+    bot_uin: str  # Bot 的 QQ 号
+    allow_from: list[str] = field(default_factory=list)  # 私聊白名单，空 = 允许所有人
+    groups: list[QQGroupConfig] = field(default_factory=list)  # 群组配置
 
 
 @dataclass
 class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
-    socket: str = DEFAULT_SOCKET        # IPC server 监听路径
+    socket: str = DEFAULT_SOCKET  # IPC server 监听路径
 
 
 @dataclass
@@ -134,11 +135,19 @@ class Config:
                 delivery_dedupe_hours=int(p.get("delivery_dedupe_hours", 24)),
                 only_new_items_trigger=bool(p.get("only_new_items_trigger", True)),
                 semantic_dedupe_enabled=bool(p.get("semantic_dedupe_enabled", True)),
-                semantic_dedupe_threshold=float(p.get("semantic_dedupe_threshold", 0.90)),
-                semantic_dedupe_window_hours=int(p.get("semantic_dedupe_window_hours", 72)),
-                semantic_dedupe_max_candidates=int(p.get("semantic_dedupe_max_candidates", 200)),
+                semantic_dedupe_threshold=float(
+                    p.get("semantic_dedupe_threshold", 0.90)
+                ),
+                semantic_dedupe_window_hours=int(
+                    p.get("semantic_dedupe_window_hours", 72)
+                ),
+                semantic_dedupe_max_candidates=int(
+                    p.get("semantic_dedupe_max_candidates", 200)
+                ),
                 semantic_dedupe_ngram=int(p.get("semantic_dedupe_ngram", 3)),
-                semantic_dedupe_text_max_chars=int(p.get("semantic_dedupe_text_max_chars", 240)),
+                semantic_dedupe_text_max_chars=int(
+                    p.get("semantic_dedupe_text_max_chars", 240)
+                ),
                 use_global_memory=bool(p.get("use_global_memory", True)),
                 global_memory_max_chars=int(p.get("global_memory_max_chars", 3000)),
                 interest_filter=InterestFilterConfig(
@@ -158,17 +167,33 @@ class Config:
                 score_recent_scale=float(p.get("score_recent_scale", 10.0)),
                 score_llm_threshold=float(p.get("score_llm_threshold", 0.40)),
                 score_pre_threshold=float(p.get("score_pre_threshold", 0.05)),
-                decision_score_random_strength=float(p.get("decision_score_random_strength", 0.0)),
+                decision_score_random_strength=float(
+                    p.get("decision_score_random_strength", 0.0)
+                ),
                 interrupt_weight_time=float(p.get("interrupt_weight_time", 0.25)),
                 interrupt_weight_reply=float(p.get("interrupt_weight_reply", 0.35)),
-                interrupt_weight_activity=float(p.get("interrupt_weight_activity", 0.25)),
+                interrupt_weight_activity=float(
+                    p.get("interrupt_weight_activity", 0.25)
+                ),
                 interrupt_weight_fatigue=float(p.get("interrupt_weight_fatigue", 0.15)),
-                interrupt_activity_decay_minutes=float(p.get("interrupt_activity_decay_minutes", 180.0)),
-                interrupt_reply_decay_minutes=float(p.get("interrupt_reply_decay_minutes", 120.0)),
-                interrupt_no_reply_decay_minutes=float(p.get("interrupt_no_reply_decay_minutes", 360.0)),
-                interrupt_fatigue_window_hours=int(p.get("interrupt_fatigue_window_hours", 24)),
-                interrupt_fatigue_soft_cap=float(p.get("interrupt_fatigue_soft_cap", 6.0)),
-                interrupt_random_strength=float(p.get("interrupt_random_strength", 0.12)),
+                interrupt_activity_decay_minutes=float(
+                    p.get("interrupt_activity_decay_minutes", 180.0)
+                ),
+                interrupt_reply_decay_minutes=float(
+                    p.get("interrupt_reply_decay_minutes", 120.0)
+                ),
+                interrupt_no_reply_decay_minutes=float(
+                    p.get("interrupt_no_reply_decay_minutes", 360.0)
+                ),
+                interrupt_fatigue_window_hours=int(
+                    p.get("interrupt_fatigue_window_hours", 24)
+                ),
+                interrupt_fatigue_soft_cap=float(
+                    p.get("interrupt_fatigue_soft_cap", 6.0)
+                ),
+                interrupt_random_strength=float(
+                    p.get("interrupt_random_strength", 0.12)
+                ),
                 interrupt_min_floor=float(p.get("interrupt_min_floor", 0.08)),
                 # ── 静默时间窗口（本地时间）──
                 quiet_hours_start=int(p.get("quiet_hours_start", 23)),
@@ -181,39 +206,82 @@ class Config:
                 tick_interval_s3=int(p.get("tick_interval_s3", 420)),
                 tick_jitter=float(p.get("tick_jitter", 0.3)),
                 anyaction_enabled=bool(p.get("anyaction_enabled", False)),
-                anyaction_daily_max_actions=int(p.get("anyaction_daily_max_actions", 24)),
-                anyaction_min_interval_seconds=int(p.get("anyaction_min_interval_seconds", 300)),
+                anyaction_daily_max_actions=int(
+                    p.get("anyaction_daily_max_actions", 24)
+                ),
+                anyaction_min_interval_seconds=int(
+                    p.get("anyaction_min_interval_seconds", 300)
+                ),
                 anyaction_reset_hour_local=int(p.get("anyaction_reset_hour_local", 12)),
                 anyaction_timezone=_validated_timezone(
                     str(p.get("anyaction_timezone", "Asia/Shanghai")),
                     enabled=bool(p.get("anyaction_enabled", False)),
                 ),
-                anyaction_probability_min=float(p.get("anyaction_probability_min", 0.03)),
-                anyaction_probability_max=float(p.get("anyaction_probability_max", 0.45)),
-                anyaction_idle_scale_minutes=float(p.get("anyaction_idle_scale_minutes", 240.0)),
+                anyaction_probability_min=float(
+                    p.get("anyaction_probability_min", 0.03)
+                ),
+                anyaction_probability_max=float(
+                    p.get("anyaction_probability_max", 0.45)
+                ),
+                anyaction_idle_scale_minutes=float(
+                    p.get("anyaction_idle_scale_minutes", 240.0)
+                ),
                 feature_scoring_enabled=bool(p.get("feature_scoring_enabled", False)),
                 feature_send_threshold=float(p.get("feature_send_threshold", 0.52)),
-                feature_weight_topic_continuity=float(p.get("feature_weight_topic_continuity", 0.24)),
-                feature_weight_interest_match=float(p.get("feature_weight_interest_match", 0.24)),
-                feature_weight_content_novelty=float(p.get("feature_weight_content_novelty", 0.20)),
-                feature_weight_reconnect_value=float(p.get("feature_weight_reconnect_value", 0.16)),
-                feature_weight_message_readiness=float(p.get("feature_weight_message_readiness", 0.16)),
-                feature_weight_disturb_risk=float(p.get("feature_weight_disturb_risk", 0.70)),
-                feature_weight_interrupt_penalty=float(p.get("feature_weight_interrupt_penalty", 0.30)),
-                feature_weight_d_recent_bonus=float(p.get("feature_weight_d_recent_bonus", 0.10)),
-                feature_weight_d_content_bonus=float(p.get("feature_weight_d_content_bonus", 0.10)),
-                feature_weight_d_energy_bonus=float(p.get("feature_weight_d_energy_bonus", 0.08)),
+                feature_weight_topic_continuity=float(
+                    p.get("feature_weight_topic_continuity", 0.24)
+                ),
+                feature_weight_interest_match=float(
+                    p.get("feature_weight_interest_match", 0.24)
+                ),
+                feature_weight_content_novelty=float(
+                    p.get("feature_weight_content_novelty", 0.20)
+                ),
+                feature_weight_reconnect_value=float(
+                    p.get("feature_weight_reconnect_value", 0.16)
+                ),
+                feature_weight_message_readiness=float(
+                    p.get("feature_weight_message_readiness", 0.16)
+                ),
+                feature_weight_disturb_risk=float(
+                    p.get("feature_weight_disturb_risk", 0.70)
+                ),
+                feature_weight_interrupt_penalty=float(
+                    p.get("feature_weight_interrupt_penalty", 0.30)
+                ),
+                feature_weight_d_recent_bonus=float(
+                    p.get("feature_weight_d_recent_bonus", 0.10)
+                ),
+                feature_weight_d_content_bonus=float(
+                    p.get("feature_weight_d_content_bonus", 0.10)
+                ),
+                feature_weight_d_energy_bonus=float(
+                    p.get("feature_weight_d_energy_bonus", 0.08)
+                ),
                 message_dedupe_enabled=bool(p.get("message_dedupe_enabled", True)),
                 message_dedupe_recent_n=int(p.get("message_dedupe_recent_n", 5)),
                 # ── LLM 拒绝冷却 ──
-                llm_reject_cooldown_hours=max(0, int(p.get("llm_reject_cooldown_hours", 12))),
+                llm_reject_cooldown_hours=max(
+                    0, int(p.get("llm_reject_cooldown_hours", 12))
+                ),
                 # ── Feed 轮询器 ──
                 feed_poller_enabled=bool(p.get("feed_poller_enabled", False)),
-                feed_poller_interval_seconds=max(5, int(p.get("feed_poller_interval_seconds", 300))),
-                feed_poller_fetch_limit=max(1, int(p.get("feed_poller_fetch_limit", 20))),
-                feed_poller_buffer_ttl_hours=max(1, int(p.get("feed_poller_buffer_ttl_hours", 48))),
-                feed_poller_buffer_max_per_source=max(1, int(p.get("feed_poller_buffer_max_per_source", 100))),
+                feed_poller_interval_seconds=max(
+                    5, int(p.get("feed_poller_interval_seconds", 300))
+                ),
+                feed_poller_fetch_limit=max(
+                    1, int(p.get("feed_poller_fetch_limit", 20))
+                ),
+                feed_poller_buffer_ttl_hours=max(
+                    1, int(p.get("feed_poller_buffer_ttl_hours", 48))
+                ),
+                feed_poller_buffer_max_per_source=max(
+                    1, int(p.get("feed_poller_buffer_max_per_source", 100))
+                ),
                 feed_poller_read_limit=max(0, int(p.get("feed_poller_read_limit", 50))),
+                # ── Skill Action ──
+                skill_actions_enabled=bool(p.get("skill_actions_enabled", False)),
+                skill_actions_path=str(p.get("skill_actions_path", "")),
             )
 
         return cls(
@@ -228,9 +296,13 @@ class Config:
             channels=channels,
             proactive=proactive,
             memory_optimizer_enabled=bool(data.get("memory_optimizer_enabled", True)),
-            memory_optimizer_interval_seconds=int(data.get("memory_optimizer_interval_seconds", 3600)),
+            memory_optimizer_interval_seconds=int(
+                data.get("memory_optimizer_interval_seconds", 3600)
+            ),
         )
 
 
 def _resolve(value: str) -> str:
-    return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value)
+    return re.sub(
+        r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value
+    )

@@ -7,6 +7,7 @@ ProactiveLoop — 主动触达核心循环。
   3. 调用 LLM 反思：有没有值得主动说的
   4. 高于阈值时通过 MessagePushTool 发送消息
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,6 +51,7 @@ from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
 from proactive.state import ProactiveStateStore
 from proactive.interest import InterestFilterConfig
+from proactive.skill_action import SkillActionRegistry, SkillActionRunner
 from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -58,11 +60,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ProactiveConfig:
     enabled: bool = False
-    interval_seconds: int = 1800    # 无 presence 时的固定间隔（秒）
-    threshold: float = 0.70         # score 高于此值才发送
-    items_per_source: int = 3       # 每个信息源取几条
+    interval_seconds: int = 1800  # 无 presence 时的固定间隔（秒）
+    threshold: float = 0.70  # score 高于此值才发送
+    items_per_source: int = 3  # 每个信息源取几条
     recent_chat_messages: int = 20  # 回顾最近 N 条对话
-    model: str = ""                 # 留空则继承全局 model
+    model: str = ""  # 留空则继承全局 model
     default_channel: str = "telegram"
     default_chat_id: str = ""
     dedupe_seen_ttl_hours: int = 24 * 14
@@ -78,13 +80,13 @@ class ProactiveConfig:
     global_memory_max_chars: int = 3000
     interest_filter: InterestFilterConfig = field(default_factory=InterestFilterConfig)
     # ── 多维打分 ──
-    score_weight_energy: float = 0.40    # D_energy 权重（互动饥渴度）
-    score_weight_content: float = 0.40   # D_content 权重（信息流新鲜度）
-    score_weight_recent: float = 0.20    # D_recent 权重（对话语境丰富度）
-    score_content_halfsat: float = 3.0   # D_content 半饱和点（新条目数）
-    score_recent_scale: float = 10.0     # D_recent 消息数归一化基数
-    score_llm_threshold: float = 0.40    # draw_score 超过此值才调 LLM
-    score_pre_threshold: float = 0.05    # pre_score 低于此值直接跳过（省 feed 拉取）
+    score_weight_energy: float = 0.40  # D_energy 权重（互动饥渴度）
+    score_weight_content: float = 0.40  # D_content 权重（信息流新鲜度）
+    score_weight_recent: float = 0.20  # D_recent 权重（对话语境丰富度）
+    score_content_halfsat: float = 3.0  # D_content 半饱和点（新条目数）
+    score_recent_scale: float = 10.0  # D_recent 消息数归一化基数
+    score_llm_threshold: float = 0.40  # draw_score 超过此值才调 LLM
+    score_pre_threshold: float = 0.05  # pre_score 低于此值直接跳过（省 feed 拉取）
     decision_score_random_strength: float = 0.0  # 最终发送分数随机扰动幅度（0=关闭）
     # ── Interruptibility（非硬拦截，作为软权重）──
     interrupt_weight_time: float = 0.25
@@ -99,15 +101,15 @@ class ProactiveConfig:
     interrupt_random_strength: float = 0.12
     interrupt_min_floor: float = 0.08
     # ── 昼夜节律 ──
-    quiet_hours_start: int = 23           # 静默开始（本地时间）
-    quiet_hours_end: int = 10             # 静默结束（本地时间）
-    quiet_hours_weight: float = 0.0      # 静默时段权重，0=完全不发，0.1=低概率仍可发
+    quiet_hours_start: int = 23  # 静默开始（本地时间）
+    quiet_hours_end: int = 10  # 静默结束（本地时间）
+    quiet_hours_weight: float = 0.0  # 静默时段权重，0=完全不发，0.1=低概率仍可发
     # ── tick 间隔（由 base_score 驱动）──
-    tick_interval_s0: int = 4800         # base_score ≤ 0.20 → ~80 min
-    tick_interval_s1: int = 2400         # base_score > 0.20 → ~40 min
-    tick_interval_s2: int = 1080         # base_score > 0.40 → ~18 min
-    tick_interval_s3: int = 420          # base_score > 0.70 → ~7 min
-    tick_jitter: float = 0.3            # 随机抖动幅度，0.3=±30%，0=关闭
+    tick_interval_s0: int = 4800  # base_score ≤ 0.20 → ~80 min
+    tick_interval_s1: int = 2400  # base_score > 0.20 → ~40 min
+    tick_interval_s2: int = 1080  # base_score > 0.40 → ~18 min
+    tick_interval_s3: int = 420  # base_score > 0.70 → ~7 min
+    tick_jitter: float = 0.3  # 随机抖动幅度，0.3=±30%，0=关闭
     # ── AnyAction 通用层（后台动作门控）──
     anyaction_enabled: bool = False
     anyaction_daily_max_actions: int = 24
@@ -131,17 +133,22 @@ class ProactiveConfig:
     feature_weight_d_content_bonus: float = 0.10
     feature_weight_d_energy_bonus: float = 0.08
     # ── 发送前消息语义去重 ──
-    message_dedupe_enabled: bool = True   # 发送前用 LLM 检测是否与近期 proactive 消息重复
-    message_dedupe_recent_n: int = 5      # 取最近 N 条 proactive 消息做比对
+    message_dedupe_enabled: bool = (
+        True  # 发送前用 LLM 检测是否与近期 proactive 消息重复
+    )
+    message_dedupe_recent_n: int = 5  # 取最近 N 条 proactive 消息做比对
     # ── LLM 拒绝冷却 ──
     llm_reject_cooldown_hours: int = 12  # LLM 拒绝后的软冷却时长（小时）；0 = 禁用
     # ── Feed 轮询器（后台解耦拉取）──
-    feed_poller_enabled: bool = False           # 启用后台 FeedPoller（解耦拉取与决策）
-    feed_poller_interval_seconds: int = 300     # 拉取间隔（秒）
-    feed_poller_fetch_limit: int = 20           # 每源拉取条数上限
-    feed_poller_buffer_ttl_hours: int = 48      # buffer 条目有效期（小时）
+    feed_poller_enabled: bool = False  # 启用后台 FeedPoller（解耦拉取与决策）
+    feed_poller_interval_seconds: int = 300  # 拉取间隔（秒）
+    feed_poller_fetch_limit: int = 20  # 每源拉取条数上限
+    feed_poller_buffer_ttl_hours: int = 48  # buffer 条目有效期（小时）
     feed_poller_buffer_max_per_source: int = 100  # 每源最多保留条数
-    feed_poller_read_limit: int = 50            # 引擎从 buffer 读取的条数上限（0=全部）
+    feed_poller_read_limit: int = 50  # 引擎从 buffer 读取的条数上限（0=全部）
+    # ── Skill Action（chat idle 时后台执行 skill 任务）──
+    skill_actions_enabled: bool = False  # 是否启用 skill action
+    skill_actions_path: str = ""  # skill_actions.json 路径（空=禁用）
     # ── 旧参数兼容（当前主流程不再使用）──
     energy_cool_threshold: float = 0.20
     energy_crisis_threshold: float = 0.05
@@ -202,7 +209,9 @@ class ProactiveLoop:
         self._cfg = config
         self._model = config.model or model
         self._max_tokens = max_tokens
-        self._state = state_store or ProactiveStateStore(state_path or Path("proactive_state.json"))
+        self._state = state_store or ProactiveStateStore(
+            state_path or Path("proactive_state.json")
+        )
         self._memory = memory_store
         self._presence = presence
         self._schedule = schedule
@@ -289,7 +298,11 @@ class ProactiveLoop:
             format_recent=_format_recent,
             collect_global_memory=self._collect_global_memory,
         )
-        quota_path = (self._state.path.parent / "proactive_quota.json") if hasattr(self._state, "path") else Path("proactive_quota.json")
+        quota_path = (
+            (self._state.path.parent / "proactive_quota.json")
+            if hasattr(self._state, "path")
+            else Path("proactive_quota.json")
+        )
         self._anyaction = AnyActionGate(
             cfg=self._cfg,
             quota_store=QuotaStore(quota_path),
@@ -340,7 +353,35 @@ class ProactiveLoop:
             act=self._sender,
             anyaction=self._anyaction,
             message_deduper=self._message_deduper,
+            skill_action_runner=self._build_skill_action_runner(),
         )
+
+    def _build_skill_action_runner(self) -> SkillActionRunner | None:
+        """构造 SkillActionRunner，若未配置则返回 None。"""
+        if not self._cfg.skill_actions_enabled:
+            return None
+        skill_path_str = (self._cfg.skill_actions_path or "").strip()
+        if not skill_path_str:
+            return None
+        skill_path = Path(skill_path_str).expanduser()
+        state_path = (
+            self._state.path.parent / "skill_action_state.json"
+            if hasattr(self._state, "path")
+            else None
+        )
+        registry = SkillActionRegistry(skill_path)
+        runner = SkillActionRunner(
+            registry,
+            rng=self._rng,
+            state_path=state_path,
+        )
+        enabled_count = len(registry.list_enabled())
+        logger.info(
+            "[proactive] skill_action_runner 已初始化 path=%s enabled_actions=%d",
+            skill_path,
+            enabled_count,
+        )
+        return runner
 
     async def run(self) -> None:
         self._running = True
@@ -488,6 +529,7 @@ class ProactiveLoop:
 
 # ── helpers ──────────────────────────────────────────────────────
 
+
 def _format_items(items: list[FeedItem]) -> str:
     if not items:
         return ""
@@ -496,7 +538,9 @@ def _format_items(items: list[FeedItem]) -> str:
         pub = ""
         if item.published_at:
             try:
-                pub = " (" + item.published_at.astimezone().strftime("%m-%d %H:%M") + ")"
+                pub = (
+                    " (" + item.published_at.astimezone().strftime("%m-%d %H:%M") + ")"
+                )
             except Exception:
                 pass
         title = item.title or "(无标题)"
@@ -512,7 +556,7 @@ def _format_recent(msgs: list[dict]) -> str:
     if not msgs:
         return ""
     lines = []
-    for m in msgs[-10:]:   # 最多展示最近 10 条
+    for m in msgs[-10:]:  # 最多展示最近 10 条
         role = "用户" if m["role"] == "user" else "助手"
         content = str(m.get("content", ""))[:150]
         lines.append(f"{role}: {content}")
@@ -529,7 +573,9 @@ def _parse_decision(text: str) -> _Decision:
     brace_match = re.search(r"\{[\s\S]*\}", raw)
     if not brace_match:
         logger.warning(f"[proactive] 无法提取 JSON: {text[:200]!r}")
-        return _Decision(score=0.0, should_send=False, message="", reasoning="parse error")
+        return _Decision(
+            score=0.0, should_send=False, message="", reasoning="parse error"
+        )
 
     try:
         d = json.loads(brace_match.group())

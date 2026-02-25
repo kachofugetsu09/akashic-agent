@@ -5,6 +5,7 @@
   python main.py          启动 agent 服务（AgentLoop + 所有 channel + IPC server）
   python main.py cli      连接到运行中的 agent（CLI 客户端）
 """
+
 import asyncio
 import logging
 import sys
@@ -17,16 +18,27 @@ from agent.provider import LLMProvider
 from agent.memory import MemoryStore
 from agent.tools.registry import ToolRegistry
 from agent.scheduler import LatencyTracker, SchedulerService
-from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from agent.tools.filesystem import (
+    EditFileTool,
+    ListDirTool,
+    ReadFileTool,
+    WriteFileTool,
+)
 from agent.tools.message_push import MessagePushTool
 from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
 from agent.tools.shell import ShellTool
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
+from agent.tools.skill_action_tool import (
+    SkillActionRegisterTool,
+    SkillActionUnregisterTool,
+    SkillActionListTool,
+)
 from session.manager import SessionManager
 from feeds.store import FeedStore
 from feeds.registry import FeedRegistry
 from feeds.rss import RSSFeedSource
+from feeds.novel import NovelKBFeedSource
 from feeds.tools import FeedManageTool, FeedQueryTool
 from proactive.loop import ProactiveLoop
 from proactive.feed_poller import FeedPoller
@@ -49,7 +61,20 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 # ── 服务端 ────────────────────────────────────────────────────────
 
-def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus, ToolRegistry, MessagePushTool, SessionManager, SchedulerService, FeedRegistry, FeedStore, LLMProvider]:
+
+def _build_agent(
+    config: Config, workspace: Path
+) -> tuple[
+    AgentLoop,
+    MessageBus,
+    ToolRegistry,
+    MessagePushTool,
+    SessionManager,
+    SchedulerService,
+    FeedRegistry,
+    FeedStore,
+    LLMProvider,
+]:
     bus = MessageBus()
     tools = ToolRegistry()
     tools.register(ShellTool())
@@ -62,11 +87,17 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     push_tool = MessagePushTool()
     tools.register(push_tool)
 
+    # Skill action 管理工具（写入 skill_actions.json，ProactiveLoop 热重载）
+    skill_actions_path = workspace / "skill_actions.json"
+    tools.register(SkillActionRegisterTool(skill_actions_path))
+    tools.register(SkillActionUnregisterTool(skill_actions_path))
+    tools.register(SkillActionListTool(skill_actions_path))
+
     tracker = LatencyTracker()
     scheduler = SchedulerService(
         store_path=workspace / "schedules.json",
         push_tool=push_tool,
-        agent_loop=None,   # set after loop is created
+        agent_loop=None,  # set after loop is created
         tracker=tracker,
     )
 
@@ -79,7 +110,9 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     session_manager = SessionManager(workspace)
     presence = PresenceStore(workspace / "presence.json")
     loop = AgentLoop(
-        bus=bus, provider=provider, tools=tools,
+        bus=bus,
+        provider=provider,
+        tools=tools,
         session_manager=session_manager,
         workspace=workspace,
         model=config.model,
@@ -100,20 +133,42 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     feed_store = FeedStore(workspace / "feeds.json")
     feed_registry = FeedRegistry(feed_store)
     feed_registry.register_source_type("rss", lambda sub: RSSFeedSource(sub))
+    feed_registry.register_source_type("novel-kb", lambda sub: NovelKBFeedSource(sub))
 
     # Register feed tools
     tools.register(FeedManageTool(feed_store))
     tools.register(FeedQueryTool(feed_store, feed_registry))
 
-    return loop, bus, tools, push_tool, session_manager, scheduler, feed_registry, feed_store, provider
+    return (
+        loop,
+        bus,
+        tools,
+        push_tool,
+        session_manager,
+        scheduler,
+        feed_registry,
+        feed_store,
+        provider,
+    )
 
 
 async def serve(config_path: str = "config.json") -> None:
     config = Config.load(config_path)
     workspace = Path.home() / ".akasic" / "workspace"
-    agent_loop, bus, tools, push_tool, session_manager, scheduler, feed_registry, feed_store, provider = _build_agent(config, workspace)
+    (
+        agent_loop,
+        bus,
+        tools,
+        push_tool,
+        session_manager,
+        scheduler,
+        feed_registry,
+        feed_store,
+        provider,
+    ) = _build_agent(config, workspace)
 
     from channels.ipc_server import IPCServerChannel
+
     ipc = IPCServerChannel(bus, config.channels.socket)
     await ipc.start()
     print(f"Agent 已启动  |  CLI 连接地址: {config.channels.socket}")
@@ -121,19 +176,42 @@ async def serve(config_path: str = "config.json") -> None:
     tg_channel = None
     if config.channels.telegram:
         from channels.telegram_channel import TelegramChannel
+
         tg = config.channels.telegram
-        tg_channel = TelegramChannel(token=tg.token, bus=bus, session_manager=session_manager, allow_from=tg.allow_from)
+        tg_channel = TelegramChannel(
+            token=tg.token,
+            bus=bus,
+            session_manager=session_manager,
+            allow_from=tg.allow_from,
+        )
         await tg_channel.start()
-        push_tool.register_channel("telegram", text=tg_channel.send, file=tg_channel.send_file, image=tg_channel.send_image)
+        push_tool.register_channel(
+            "telegram",
+            text=tg_channel.send,
+            file=tg_channel.send_file,
+            image=tg_channel.send_image,
+        )
         print(f"Telegram Bot 已启动")
 
     qq_channel = None
     if config.channels.qq:
         from channels.qq_channel import QQChannel
+
         qq = config.channels.qq
-        qq_channel = QQChannel(bot_uin=qq.bot_uin, bus=bus, session_manager=session_manager, allow_from=qq.allow_from, groups=qq.groups)
+        qq_channel = QQChannel(
+            bot_uin=qq.bot_uin,
+            bus=bus,
+            session_manager=session_manager,
+            allow_from=qq.allow_from,
+            groups=qq.groups,
+        )
         await qq_channel.start()
-        push_tool.register_channel("qq", text=qq_channel.send, file=qq_channel.send_file, image=qq_channel.send_image)
+        push_tool.register_channel(
+            "qq",
+            text=qq_channel.send,
+            file=qq_channel.send_file,
+            image=qq_channel.send_image,
+        )
         print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
 
     tasks = [
@@ -148,12 +226,16 @@ async def serve(config_path: str = "config.json") -> None:
     if config.proactive.enabled:
         proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
         schedule_store = ScheduleStore(workspace / "schedule.json")
+        # skill_actions_path 若未在 config 中配置，自动 fallback 到 workspace 默认路径
+        proactive_cfg = config.proactive
+        if proactive_cfg.skill_actions_enabled and not proactive_cfg.skill_actions_path:
+            proactive_cfg.skill_actions_path = str(workspace / "skill_actions.json")
         proactive_loop = ProactiveLoop(
             feed_registry=feed_registry,
             session_manager=session_manager,
             provider=provider,
             push_tool=push_tool,
-            config=config.proactive,
+            config=proactive_cfg,
             model=config.model,
             max_tokens=config.max_tokens,
             state_store=proactive_state,
@@ -162,10 +244,17 @@ async def serve(config_path: str = "config.json") -> None:
             schedule=schedule_store,
         )
         tasks.append(proactive_loop.run())
-        if config.proactive.feed_poller_enabled and proactive_loop.feed_buffer is not None:
-            feed_poller = FeedPoller(feed_registry, proactive_loop.feed_buffer, config.proactive)
+        if (
+            config.proactive.feed_poller_enabled
+            and proactive_loop.feed_buffer is not None
+        ):
+            feed_poller = FeedPoller(
+                feed_registry, proactive_loop.feed_buffer, config.proactive
+            )
             tasks.append(feed_poller.run())
-            print(f"FeedPoller 已启动  |  间隔={config.proactive.feed_poller_interval_seconds}s")
+            print(
+                f"FeedPoller 已启动  |  间隔={config.proactive.feed_poller_interval_seconds}s"
+            )
 
     # 记忆质量优化（定期合并 PENDING → MEMORY）
     if config.memory_optimizer_enabled:
@@ -175,8 +264,10 @@ async def serve(config_path: str = "config.json") -> None:
             model=config.model,
         )
         interval = config.memory_optimizer_interval_seconds
-        tasks.append(MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run())
-        print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval/3600:.1f}h)")
+        tasks.append(
+            MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()
+        )
+        print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
     else:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
 
@@ -192,6 +283,7 @@ async def serve(config_path: str = "config.json") -> None:
 
 # ── 客户端 ────────────────────────────────────────────────────────
 
+
 def connect_cli(config_path: str = "config.json") -> None:
     socket_path = Config.load(config_path).channels.socket
     try:
@@ -200,6 +292,7 @@ def connect_cli(config_path: str = "config.json") -> None:
         print(exc)
         print("回退到纯文本 CLI。")
         from channels.cli import CLIClient
+
         asyncio.run(CLIClient(socket_path).run())
         return
 
@@ -218,7 +311,9 @@ if __name__ == "__main__":
         config_path = args[idx + 1]
 
     if not Path(config_path).exists():
-        print(f"找不到配置文件 {config_path!r}，请先复制 config.example.json 为 config.json。")
+        print(
+            f"找不到配置文件 {config_path!r}，请先复制 config.example.json 为 config.json。"
+        )
         sys.exit(1)
 
     if "cli" in args:

@@ -47,7 +47,12 @@ class FeedSubscribeTool(Tool):
             },
             "url": {
                 "type": "string",
-                "description": "RSS/Atom feed 地址",
+                "description": "RSS/Atom feed 地址，或 novel-kb 类型时填 file:///path/to/kb",
+            },
+            "source_type": {
+                "type": "string",
+                "description": "信息源类型，默认 rss；novel-kb 表示本地小说阅读进度",
+                "enum": ["rss", "novel-kb"],
             },
             "note": {
                 "type": "string",
@@ -63,6 +68,7 @@ class FeedSubscribeTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         name: str = kwargs.get("name", "").strip()
         url: str = kwargs.get("url", "").strip()
+        source_type: str = kwargs.get("source_type", "rss").strip() or "rss"
         note: str | None = kwargs.get("note")
 
         if not name:
@@ -75,9 +81,9 @@ class FeedSubscribeTool(Tool):
             if s.url == url:
                 return f"已经订阅过该地址：{s.name!r}（id: {s.id[:8]}），无需重复添加"
 
-        sub = FeedSubscription.new(type="rss", name=name, url=url, note=note)
+        sub = FeedSubscription.new(type=source_type, name=name, url=url, note=note)
         self._store.add(sub)
-        return f"已订阅 {name!r}（{url}），下次主动巡检时开始收集"
+        return f"已订阅 {name!r}（类型={source_type} {url}），下次主动巡检时开始收集"
 
 
 class FeedUnsubscribeTool(Tool):
@@ -803,7 +809,8 @@ class FeedManageTool(Tool):
                 "description": "操作类型",
             },
             "name": {"type": "string", "description": "订阅名称或用于取消订阅的名称关键词"},
-            "url": {"type": "string", "description": "已知 RSS/Atom URL（subscribe 时可选）"},
+            "url": {"type": "string", "description": "已知 RSS/Atom URL，或 novel-kb 时填 file:///path/to/kb"},
+            "source_type": {"type": "string", "description": "信息源类型：rss（默认）或 novel-kb", "enum": ["rss", "novel-kb"]},
             "page_url": {"type": "string", "description": "网页地址（discover/preview/subscribe）"},
             "note": {"type": "string", "description": "订阅备注（subscribe 可选）"},
             "validate_feed": {"type": "boolean", "description": "是否校验 feed（默认 true）"},
@@ -892,7 +899,11 @@ class FeedManageTool(Tool):
                 return "错误：subscribe 需要 name"
             url = str(kwargs.get("url", "")).strip()
             if url:
-                return await self._sub_tool.execute(name=name, url=url, note=kwargs.get("note"))
+                return await self._sub_tool.execute(
+                    name=name, url=url,
+                    source_type=kwargs.get("source_type", "rss"),
+                    note=kwargs.get("note"),
+                )
             page_url = str(kwargs.get("page_url", "")).strip()
             if not page_url:
                 return "错误：subscribe 需要 url 或 page_url"
