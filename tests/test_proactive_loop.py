@@ -387,6 +387,24 @@ async def test_reflect_contains_energy_context(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reflect_prompt_requires_direct_opinion_not_counter_question(tmp_path):
+    """proactive 文案应强调直接表达观点，避免“你怎么看”式收尾。"""
+    provider = _DummyProvider()
+    provider.chat = AsyncMock(
+        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+    )
+
+    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
+    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
+
+    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
+
+    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
+    assert "直接表达你的判断/观点" in user_prompt
+    assert "你怎么看/你觉得呢/你怎么想/要不要我继续" in user_prompt
+
+
+@pytest.mark.asyncio
 async def test_reflect_contains_crisis_hint_when_energy_very_low(tmp_path):
     """电量极低（危机模式）时，prompt 里应包含危机提示。"""
     provider = _DummyProvider()

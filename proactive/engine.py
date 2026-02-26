@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol
 
 from feeds.base import FeedItem
@@ -52,6 +54,8 @@ class ProactiveEngine:
         anyaction: AnyActionGate | None = None,
         message_deduper: Any | None = None,
         skill_action_runner: SkillActionRunner | None = None,
+        light_provider: Any | None = None,
+        light_model: str = "",
     ) -> None:
         self._cfg = cfg
         self._state = state
@@ -63,6 +67,8 @@ class ProactiveEngine:
         self._anyaction = anyaction
         self._message_deduper = message_deduper
         self._skill_action_runner = skill_action_runner
+        self._light_provider = light_provider
+        self._light_model = light_model
 
     async def tick(self) -> float | None:
         """执行一次主动判断循环。
@@ -440,6 +446,7 @@ class ProactiveEngine:
                     self._state.mark_semantic_items(
                         self._decide.semantic_entries(new_items)
                     )
+                    await self._try_skill_action(now_utc=now_utc)
                     return base_score
             sent = await self._act.send(decision_message)
             if sent:
@@ -454,8 +461,8 @@ class ProactiveEngine:
                 # delivery 去重：仅 chat 类 action 有 session_key
                 if session_key:
                     self._state.mark_delivery(session_key, delivery_key)
-                logger.info("[proactive] 已发送成功并标记本轮条目为 seen")
-                logger.info("[proactive] selected_action=chat")
+                logger.debug("[proactive] 已发送成功并标记本轮条目为 seen")
+                logger.debug("[proactive] selected_action=chat")
             else:
                 logger.info("[proactive] 本轮发送未成功，不标记 seen，后续可再次尝试")
                 logger.info("[proactive] selected_action=idle reason=send_failed")
@@ -492,12 +499,45 @@ class ProactiveEngine:
         # 消耗 anyaction 配额（与 chat 共享）
         if self._cfg.anyaction_enabled and self._anyaction:
             self._anyaction.record_action(now_utc=now_utc)
-        success = await self._skill_action_runner.run(action)
+        success, stdout_str = await self._skill_action_runner.run(action)
         logger.info(
             "[proactive] skill_action 完成 id=%s success=%s",
             action.id,
             success,
         )
+        # 成功后从 stdout JSON 里读 proactive_text 并直接发送
+        if success and stdout_str:
+            await self._try_send_proactive_text(action.id, stdout_str)
+
+    async def _try_send_proactive_text(self, action_id: str, stdout_str: str) -> None:
+        """解析 skill action stdout，若有 proactive_text 字段则直接发送。
+        各 skill action 自行负责生成 proactive_text，engine 不关心内容如何生成。
+        """
+        try:
+            data = json.loads(stdout_str)
+        except Exception:
+            logger.debug(
+                "[proactive] skill_reaction: stdout 非 JSON，跳过 id=%s", action_id
+            )
+            return
+        proactive_text = (data.get("proactive_text") or "").strip()
+        if not proactive_text:
+            logger.debug(
+                "[proactive] skill_reaction: 无 proactive_text 字段，跳过 id=%s",
+                action_id,
+            )
+            return
+        logger.info(
+            "[proactive] skill_reaction 发送 proactive_text id=%s chars=%d",
+            action_id,
+            len(proactive_text),
+        )
+        try:
+            await self._act.send(proactive_text)
+        except Exception as e:
+            logger.warning(
+                "[proactive] skill_reaction: 发送失败 id=%s error=%s", action_id, e
+            )
 
 
 def _feature_final_score(

@@ -231,14 +231,14 @@ class ProactiveLoop:
         self._schedule = schedule
         self._rng = rng
         self._feed_store = feed_store
+        self._light_provider = light_provider or provider
+        self._light_model = light_model or (config.model or model)
 
         # ── SourceScorer（动态配额）──
         if source_scorer is not None:
             # 外部传入（由 main.py 构建，同时共享给 FeedManageTool）
             self._source_scorer: SourceScorer | None = source_scorer
         elif config.source_scorer_enabled:
-            _light_provider = light_provider or provider
-            _light_model = light_model or (config.model or model)
             # 缓存路径：优先用 config 指定，否则用 state 同目录
             if config.source_scorer_cache_path:
                 _cache_path = Path(config.source_scorer_cache_path).expanduser()
@@ -247,13 +247,13 @@ class ProactiveLoop:
             else:
                 _cache_path = Path("source_scores.json")
             self._source_scorer = SourceScorer(
-                light_provider=_light_provider,
-                light_model=_light_model,
+                light_provider=self._light_provider,
+                light_model=self._light_model,
                 cache_path=_cache_path,
             )
             logger.info(
                 "[proactive] SourceScorer 已初始化 model=%s cache=%s total_budget=%d",
-                _light_model,
+                self._light_model,
                 _cache_path,
                 config.source_scorer_total_budget,
             )
@@ -400,6 +400,8 @@ class ProactiveLoop:
             anyaction=self._anyaction,
             message_deduper=self._message_deduper,
             skill_action_runner=self._build_skill_action_runner(),
+            light_provider=self._light_provider,
+            light_model=self._light_model,
         )
 
     def _build_skill_action_runner(self) -> SkillActionRunner | None:

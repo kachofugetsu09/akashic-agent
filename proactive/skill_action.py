@@ -165,10 +165,10 @@ class SkillActionRunner:
         chosen = self._rng.choices(candidates, weights=weights, k=1)[0]
         return chosen
 
-    async def run(self, action: SkillActionDef) -> bool:
+    async def run(self, action: SkillActionDef) -> tuple[bool, str]:
         """
         异步执行 action 的 shell 命令。
-        返回 True 表示成功（退出码 0），False 表示失败或超时。
+        返回 (True, stdout_str) 表示成功（退出码 0），(False, "") 表示失败或超时。
         执行后无论成功失败都更新配额记录。
         """
         now = datetime.now(timezone.utc)
@@ -199,7 +199,7 @@ class SkillActionRunner:
                 )
                 self._record_run(action.id, now, success=False)
                 self._save_state()
-                return False
+                return False, ""
 
             rc = proc.returncode
             stdout_str = (stdout or b"").decode("utf-8", errors="replace").strip()
@@ -215,7 +215,7 @@ class SkillActionRunner:
                     logger.debug("[skill_action] stdout: %s", stdout_str[:500])
                 self._record_run(action.id, now, success=True)
                 self._save_state()
-                return True
+                return True, stdout_str
             else:
                 logger.warning(
                     "[skill_action] 执行失败 id=%s rc=%d stderr=%r",
@@ -225,12 +225,12 @@ class SkillActionRunner:
                 )
                 self._record_run(action.id, now, success=False)
                 self._save_state()
-                return False
+                return False, ""
         except Exception as e:
             logger.exception("[skill_action] 执行异常 id=%s error=%s", action.id, e)
             self._record_run(action.id, now, success=False)
             self._save_state()
-            return False
+            return False, ""
 
     def available_count(self) -> int:
         """返回当前有多少个 action 处于可用状态（供调试日志）。"""

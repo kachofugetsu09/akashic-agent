@@ -71,7 +71,7 @@ class SourceScorer:
             min_per_source=min_per_source,
             max_per_source=max_per_source,
         )
-        logger.info(
+        logger.debug(
             "[source_scorer] 配额分配完成 total_budget=%d sources=%d limits=%s",
             total_budget,
             len(enabled),
@@ -128,7 +128,7 @@ class SourceScorer:
         cached_scores: dict[str, float] = self._cache.get("scores", {})
 
         if current_hash == cached_hash and cached_scores:
-            logger.info(
+            logger.debug(
                 "[source_scorer] 命中缓存 hash=%s sources=%d",
                 current_hash[:8],
                 len(subs),

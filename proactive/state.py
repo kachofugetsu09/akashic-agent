@@ -89,7 +89,7 @@ class ProactiveStateStore:
                 added += 1
             source_map[item_id] = ts
         self._save()
-        logger.info(
+        logger.debug(
             "[proactive.state] 已记录已见条目 count=%d newly_added=%d ts=%s",
             len(entries),
             added,
@@ -321,7 +321,7 @@ class ProactiveStateStore:
                     del self._state["rejection_cooldown"][source_key]
 
         self._save()
-        logger.info(
+        logger.debug(
             "[proactive.state] cleanup 完成 removed_seen=%d removed_delivery=%d removed_semantic=%d removed_cooldown=%d",
             removed_seen,
             removed_delivery,
@@ -353,4 +353,4 @@ class ProactiveStateStore:
             json.dumps(self._state, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        logger.info("[proactive.state] 状态已保存 path=%s", self.path)
+        logger.debug("[proactive.state] 状态已保存 path=%s", self.path)
