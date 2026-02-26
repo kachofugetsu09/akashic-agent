@@ -79,7 +79,7 @@ class FeedPoller:
             )
             evicted = self._buffer.evict_expired()
             added = self._buffer.add(items)
-            logger.info(
+            logger.debug(
                 "[feed_poller] poll 完成 fetched=%d added=%d evicted=%d buffer_total=%d stats=%s",
                 len(items),
                 added,
@@ -111,7 +111,7 @@ class FeedPoller:
                 min_per_source=getattr(self._cfg, "source_scorer_min_per_source", 2),
                 max_per_source=getattr(self._cfg, "source_scorer_max_per_source", 20),
             )
-            logger.info(
+            logger.debug(
                 "[feed_poller] source_scorer 配额: %s",
                 {k[:8]: v for k, v in limits.items()},
             )
