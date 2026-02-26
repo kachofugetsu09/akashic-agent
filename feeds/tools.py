@@ -798,6 +798,7 @@ class FeedManageTool(Tool):
     name = "feed_manage"
     description = (
         "统一管理信息流订阅：发现候选页面、预览、订阅、取消订阅、列出订阅。"
+        "当用户询问“我有哪些订阅/信息来源”时，优先使用 action=list。"
         "用 action 控制行为，减少工具数量同时保留灵活性。"
     )
     parameters = {
@@ -922,6 +923,7 @@ class FeedQueryTool(Tool):
     name = "feed_query"
     description = (
         "查询订阅信息流：latest（最近条目）、search（关键词过滤）、summary（订阅概况）。"
+        "若需要完整订阅清单，请改用 feed_manage(action=list)。"
     )
     parameters = {
         "type": "object",
@@ -977,8 +979,20 @@ class FeedQueryTool(Tool):
         items.sort(key=lambda x: x.published_at or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
 
         if action == "summary":
-            names = "、".join(sorted({i.source_name for i in items if i.source_name})[:10]) or "（无）"
-            return f"订阅概况：sources={len(subs)} items={len(items)} 来源={names}"
+            source_names = sorted({i.source_name for i in items if i.source_name})
+            if not source_names:
+                names = "（无）"
+            else:
+                # summary 默认尽量给全量来源名，减少模型“脑补补全”的空间。
+                max_names = 50
+                shown = source_names[:max_names]
+                names = "、".join(shown)
+                if len(source_names) > max_names:
+                    names += f" …（其余 {len(source_names) - max_names} 个省略）"
+            return (
+                f"订阅概况：sources={len(subs)} items={len(items)} 来源={names}。"
+                "如需逐条订阅 URL 与启用状态，请使用 feed_manage(action=list)。"
+            )
 
         if action == "search":
             if not keyword:

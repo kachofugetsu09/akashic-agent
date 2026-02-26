@@ -2,6 +2,7 @@ import asyncio
 import json
 import json_repair
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,302 @@ logger = logging.getLogger(__name__)
 
 # 内部注入的反思提示，不应持久化到 session
 _REFLECT_PROMPT = "根据上述工具执行结果，决定下一步操作。"
+
+_RISKY_ASSERTION_TOKENS = (
+    "正在进行",
+    "已开始",
+    "已经开始",
+    "已结束",
+    "已经结束",
+    "一定会",
+    "必然",
+    "肯定会",
+)
+
+_INFERENCE_MARKERS = ("我猜", "我推断", "我觉得", "我不确定", "可能", "也许", "似乎", "大概")
+
+_PROFILE_CLAIM_TOKENS = (
+    "你之前",
+    "你一直",
+    "你是",
+    "你有",
+    "你喜欢",
+    "你偏好",
+    "你会对",
+    "你更想",
+    "你不喜欢",
+    "你的库里",
+    "你玩过",
+)
+
+_NATURAL_INFERENCE_PREFIXES = (
+    "我觉得，",
+    "我感觉，",
+    "我猜，",
+    "我推测，",
+    "可能，",
+)
+
+
+def _needs_inference_tone_pass(text: str) -> bool:
+    return any(token in text for token in _RISKY_ASSERTION_TOKENS)
+
+
+def _truncate_for_prompt(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    keep_head = int(limit * 0.7)
+    keep_tail = max(0, limit - keep_head)
+    return text[:keep_head] + "\n...（中间截断）...\n" + text[-keep_tail:]
+
+
+def _build_inference_tone_prompt(numbered_lines: str, evidence_block: str) -> str:
+    return f"""你是语气校准助手。你的任务是：避免把“推断”写成“事实”。
+
+规则（严格执行）：
+1. 只做“行级判定”：指出哪些行需要加“我推测/我觉得/我猜”语气前缀。
+2. 若该行已有推断语气（如“我不确定/可能/我觉得/我猜”），不要选它。
+3. 若【工具结果】有直接证据支持该行断言，不要选它。
+4. 你不能改写原文内容，只能返回行号数组。
+5. 输出严格 JSON：{{"prefix_line_numbers":[整数行号,...]}}；若无需修改，返回空数组。
+
+{evidence_block}
+
+【待校准回复（带行号）】：
+{numbered_lines}
+
+只输出 JSON："""
+
+
+def _has_inference_marker(text: str) -> bool:
+    return any(marker in text for marker in _INFERENCE_MARKERS)
+
+
+def _has_profile_claim_candidate(text: str) -> bool:
+    if "你" not in text:
+        return False
+    return any(token in text for token in _PROFILE_CLAIM_TOKENS)
+
+
+def _split_line_prefix(raw: str) -> tuple[str, str]:
+    leading = len(raw) - len(raw.lstrip(" "))
+    head = raw[:leading]
+    rest = raw[leading:]
+
+    for bullet in ("- ", "* ", "• "):
+        if rest.startswith(bullet):
+            return head + bullet, rest[len(bullet) :]
+
+    idx = 0
+    while idx < len(rest) and rest[idx].isdigit():
+        idx += 1
+    if idx > 0 and rest[idx : idx + 2] == ". ":
+        return head + rest[: idx + 2], rest[idx + 2 :]
+
+    return head, rest
+
+
+def _apply_inference_prefix_by_line_numbers(
+    response: str, prefix_line_numbers: list[int]
+) -> str:
+    if not response.strip() or not prefix_line_numbers:
+        return response
+
+    line_no_set = {int(n) for n in prefix_line_numbers if isinstance(n, int) and n > 0}
+    if not line_no_set:
+        return response
+
+    lines = response.splitlines()
+    out: list[str] = []
+    for i, raw in enumerate(lines, start=1):
+        if i not in line_no_set:
+            out.append(raw)
+            continue
+
+        if not raw.strip():
+            out.append(raw)
+            continue
+
+        prefix, body = _split_line_prefix(raw)
+        body_stripped = body.strip()
+        if _has_inference_marker(body_stripped):
+            out.append(raw)
+            continue
+
+        out.append(f"{prefix}我推测，{body}")
+    return "\n".join(out)
+
+
+def _apply_line_replacement_by_numbers(
+    response: str,
+    replace_line_numbers: list[int],
+) -> str:
+    """对指定行做“语气降级”，而不是整行替换。"""
+    if not response.strip() or not replace_line_numbers:
+        return response
+    line_no_set = {
+        int(n) for n in replace_line_numbers if isinstance(n, int) and n > 0
+    }
+    if not line_no_set:
+        return response
+
+    lines = response.splitlines()
+    out: list[str] = []
+    for i, raw in enumerate(lines, start=1):
+        if i not in line_no_set:
+            out.append(raw)
+            continue
+        prefix, body = _split_line_prefix(raw)
+        body_stripped = body.strip()
+        if _has_inference_marker(body_stripped):
+            out.append(raw)
+            continue
+        marker = _NATURAL_INFERENCE_PREFIXES[(i - 1) % len(_NATURAL_INFERENCE_PREFIXES)]
+        out.append(f"{prefix}{marker}{body}")
+    return "\n".join(out)
+
+
+def _build_session_window_block(session_window: list[dict], max_lines: int = 12) -> str:
+    if not session_window:
+        return "【会话窗口】（无）"
+    lines: list[str] = []
+    for m in session_window[-max_lines:]:
+        role = str(m.get("role", "user"))
+        content = m.get("content", "")
+        if isinstance(content, str) and content.strip():
+            lines.append(f"{role}: {content.strip()[:220]}")
+    return "【会话窗口】\n" + ("\n".join(lines) if lines else "（无）")
+
+
+def _build_memory_block(memory_snapshot: str) -> str:
+    if not memory_snapshot.strip():
+        return "【记忆】（无）"
+    return "【记忆】\n" + _truncate_for_prompt(memory_snapshot, 2200)
+
+
+def _build_skills_block(skills_snapshot: str) -> str:
+    if not skills_snapshot.strip():
+        return "【可用技能】（无）"
+    return "【可用技能】\n" + _truncate_for_prompt(skills_snapshot, 3000)
+
+
+def _format_tool_result_for_self_check(name: str, result: str) -> str:
+    raw = str(result or "")
+    if name == "shell":
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                exit_code = parsed.get("exit_code")
+                output = str(parsed.get("output", "")).strip()
+                if output:
+                    return f"exit_code={exit_code}\n{output}"
+                return f"exit_code={exit_code}"
+        except Exception:
+            pass
+    return raw
+
+
+def _build_verification_feedback_prompt(
+    response: str,
+    tools_used: list[str],
+    tool_evidence: str,
+    session_window: list[dict],
+    memory_snapshot: str,
+    skills_snapshot: str,
+) -> str:
+    tool_block = (
+        f"【工具证据】\n{tool_evidence}" if tool_evidence else "【工具证据】（无）"
+    )
+    used = "、".join(tools_used) if tools_used else "（无）"
+    session_block = _build_session_window_block(session_window)
+    memory_block = _build_memory_block(memory_snapshot)
+    skills_block = _build_skills_block(skills_snapshot)
+    skill_catalog = _extract_skill_catalog(skills_snapshot)
+    if skill_catalog:
+        catalog_lines = [
+            f"- {it['name']} | {it['description']} | {it['location']}"
+            for it in skill_catalog[:20]
+        ]
+        skill_catalog_block = "【技能目录】\n" + "\n".join(catalog_lines)
+    else:
+        skill_catalog_block = "【技能目录】（无）"
+    return f"""你是“回复风险评估器”。
+
+目标：判断当前回复是否需要：
+1) 追加一次工具验证步骤；
+2) 将部分无证据断言降级成“推测语气”。
+
+判定规则：
+1. 若存在“可验证但未验证”的断言（尤其用户画像/兴趣/拥有关系），且有可行技能/工具路径，则 needs_verification=true。
+2. 若存在“证据不足但不必强行验证”的断言，则 needs_tone_downgrade=true，并建议改成“我觉得/我猜/可能/感觉”等自然推测语气。
+3. 若两者都不需要，两个字段都为 false。
+
+若需要验证，feedback 要明确：
+- 先尝试读取匹配技能说明（read_file）
+- 再尝试调用对应工具验证（例如 shell），并尽量遵循技能中的步骤
+- 验证失败时必须明确不确定，不得强断言
+- 从【技能目录】中选最相关技能名放入 suggested_skill_names（可空，可多个）
+- 若断言是“用户兴趣/拥有关系/画像推断”，优先选“用户状态验证类技能”（inventory/profile/history），不要选仅做资讯拉取的技能
+
+若需要降级语气，tone_reasons 中要给出“为什么应降级”的简短理由（1-3条）。
+
+输出严格 JSON：
+{{"needs_verification":true|false,"needs_tone_downgrade":true|false,"feedback":"...","suggested_skill_names":["skill-a","skill-b"],"tone_reasons":["理由1","理由2"]}}
+
+【已使用工具】{used}
+{tool_block}
+{session_block}
+{memory_block}
+{skills_block}
+{skill_catalog_block}
+
+【当前回复】
+{response}
+
+只输出 JSON："""
+
+
+def _extract_skill_catalog(skills_snapshot: str) -> list[dict[str, str]]:
+    if not skills_snapshot.strip():
+        return []
+    out: list[dict[str, str]] = []
+    for block in re.findall(r"<skill\b.*?>.*?</skill>", skills_snapshot, flags=re.S):
+        name_m = re.search(r"<name>(.*?)</name>", block, flags=re.S)
+        desc_m = re.search(r"<description>(.*?)</description>", block, flags=re.S)
+        loc_m = re.search(r"<location>(.*?)</location>", block, flags=re.S)
+        if not name_m:
+            continue
+        out.append(
+            {
+                "name": name_m.group(1).strip(),
+                "description": (desc_m.group(1).strip() if desc_m else ""),
+                "location": (loc_m.group(1).strip() if loc_m else ""),
+            }
+        )
+    return out
+
+
+def _looks_like_feed_source_query(session_window: list[dict]) -> bool:
+    if not session_window:
+        return False
+    user_texts = [
+        str(m.get("content", ""))
+        for m in session_window[-4:]
+        if str(m.get("role", "")) == "user"
+    ]
+    text = "\n".join(user_texts).lower()
+    if not text.strip():
+        return False
+    keywords = (
+        "订阅",
+        "信息源",
+        "来源",
+        "feed",
+        "rss",
+        "都有哪些",
+        "清单",
+    )
+    return any(k in text for k in keywords)
 
 
 class AgentLoop:
@@ -170,7 +467,120 @@ class AgentLoop:
             final_content = "I've completed processing but have no response to give."
 
         # Self-Check Pass：始终验证回复中的事实声明
-        final_content = await self._self_check(final_content, tool_chain)
+        session_window = [
+            {"role": m.get("role", "user"), "content": m.get("content", "")}
+            for m in session.messages[-self.memory_window :]
+        ]
+        memory_snapshot = self.context.memory.read_long_term()
+        skills_snapshot = self.context.skills.build_skills_summary()
+        final_content, verification_directive = await self._self_check(
+            final_content,
+            tool_chain,
+            tools_used=tools_used,
+            session_window=session_window,
+            memory_snapshot=memory_snapshot,
+            skills_snapshot=skills_snapshot,
+        )
+
+        if verification_directive:
+            verification_feedback = str(verification_directive.get("feedback", "")).strip()
+            need_verification = bool(verification_directive.get("needs_verification", False))
+            need_tone_downgrade = bool(verification_directive.get("needs_tone_downgrade", False))
+            suggested_skills = verification_directive.get("suggested_skill_names", [])
+            if not isinstance(suggested_skills, list):
+                suggested_skills = []
+            suggested_skills = [str(s).strip() for s in suggested_skills if str(s).strip()]
+            tone_reasons = verification_directive.get("tone_reasons", [])
+            if not isinstance(tone_reasons, list):
+                tone_reasons = []
+            tone_reasons = [str(r).strip() for r in tone_reasons if str(r).strip()]
+
+            logger.info(
+                "Self-Check 请求追加验证回合：%s",
+                verification_feedback[:200],
+            )
+            skill_catalog = _extract_skill_catalog(skills_snapshot)
+            hint_lines: list[str] = []
+            if suggested_skills:
+                for name in suggested_skills[:3]:
+                    hit = next((s for s in skill_catalog if s.get("name") == name), None)
+                    if hit:
+                        hint_lines.append(f"- {name}: {hit.get('location', '')}")
+                    else:
+                        hint_lines.append(f"- {name}")
+            skills_hint = (
+                "优先尝试以下技能：\n" + "\n".join(hint_lines)
+                if hint_lines
+                else "若技能目录中有匹配技能，请优先 read_file 读取其 SKILL.md。"
+            )
+            tone_hint = ""
+            if need_tone_downgrade:
+                reason_block = "\n".join(f"- {r}" for r in tone_reasons[:3]) or "- 存在证据不足的强断言"
+                tone_hint = (
+                    "【语气降级建议】\n"
+                    "以下内容建议改为推测语气（我觉得/我猜/可能/感觉），不要当成确定事实：\n"
+                    f"{reason_block}\n"
+                )
+
+            action_hint = ""
+            if need_verification:
+                action_hint += (
+                    "请先尝试调用工具完成验证，再给最终答复。"
+                    "尽量按技能说明中的步骤执行，不要自创无关验证路径。"
+                    "只有拿到有效验证结果时，才能写“已验证/验证完成”；否则必须明确说明不确定。"
+                )
+            if need_tone_downgrade:
+                action_hint += (
+                    "若当前证据不足，不要硬断言；请自然改成推测语气，避免新增事实。"
+                )
+            if not action_hint:
+                action_hint = "请根据 self-check 建议优化最终答复，不要新增事实。"
+            retry_messages = self.context.build_messages(
+                history=session.get_history(max_messages=self.memory_window),
+                current_message=msg.content,
+                media=msg.media if msg.media else None,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                message_timestamp=msg.timestamp,
+            )
+            retry_messages.append({"role": "assistant", "content": final_content})
+            retry_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "【内部质量反馈（不要原样对用户复述）】\n"
+                        f"{verification_feedback}\n"
+                        f"{skills_hint}\n"
+                        f"{tone_hint}"
+                        f"{action_hint}\n\n"
+                        "【最终输出要求（面向用户）】\n"
+                        "1) 直接回答用户原问题，不要复盘内部流程。\n"
+                        "2) 禁止出现“验证完成/最终修正版/作废/第三步/去伪存真”等内部措辞。\n"
+                        "3) 不要长篇自我纠错叙事；只保留结论、依据与必要的不确定性。\n"
+                        "4) 语气自然口语，简洁，优先给用户可用结论。"
+                    ),
+                }
+            )
+
+            retry_content, retry_tools_used, retry_tool_chain = await self._run_agent_loop(
+                retry_messages
+            )
+            final_content = retry_content
+            if retry_tools_used:
+                tools_used.extend(retry_tools_used)
+            if retry_tool_chain:
+                tool_chain.extend(retry_tool_chain)
+
+            # 验证回合后再做一次收尾核查，但不再触发额外验证回合，避免循环。
+            final_content, _ = await self._self_check(
+                final_content,
+                tool_chain,
+                tools_used=tools_used,
+                session_window=session_window,
+                memory_snapshot=memory_snapshot,
+                skills_snapshot=skills_snapshot,
+                allow_verification_feedback=False,
+            )
 
         preview = (
             final_content[:120] + "..." if len(final_content) > 120 else final_content
@@ -278,14 +688,25 @@ class AgentLoop:
         logger.warning(f"已达到最大迭代次数 {self.max_iterations}")
         return "（已达到最大迭代次数）", tools_used, tool_chain
 
-    async def _self_check(self, response: str, tool_chain: list[dict]) -> str:
-        """Self-Check Pass：核查回复中的事实声明是否有工具结果或常识支撑，修正无依据的断言。"""
-        _MAX_RESULT = 600
+    async def _self_check(
+        self,
+        response: str,
+        tool_chain: list[dict],
+        tools_used: list[str],
+        session_window: list[dict],
+        memory_snapshot: str,
+        skills_snapshot: str,
+        allow_verification_feedback: bool = True,
+    ) -> tuple[str, dict | None]:
+        """Self-Check Pass：只做风险评估与建议，不直接改写回复正文。"""
+        _MAX_RESULT = 900
         lines: list[str] = []
         for iter_group in tool_chain:
             for call in iter_group.get("calls", []):
                 name = call.get("name", "tool")
-                result = call.get("result", "")
+                result = _format_tool_result_for_self_check(
+                    name, str(call.get("result", ""))
+                )
                 if len(result) > _MAX_RESULT:
                     result = result[:_MAX_RESULT] + "…（已截断）"
                 lines.append(f"[{name}]\n{result}")
@@ -303,22 +724,194 @@ class AgentLoop:
                 "无需查证的常识不改。"
             )
 
-        prompt = f"""你是事实核查助手，核查下方【回复】中的具体事实声明是否有可信来源支撑。
+        session_block = _build_session_window_block(session_window)
+        memory_block = _build_memory_block(memory_snapshot)
+        skills_block = _build_skills_block(skills_snapshot)
 
-规则（严格执行）：
-1. 有【工具结果】明确支撑的内容 → 原样保留
-2. 具体数字、名称、版本、价格、状态、时间、事件结论若无工具结果支撑 → 改为"我不确定"或删除{no_tool_rule}
-3. 一般性措辞、问候、建议语气、无需查证的常识 → 不改
-4. 不添加任何新信息
-5. 输出与原回复完全相同的语言和风格，不加任何解释或注释
+        _ = no_tool_rule, evidence_block, session_block, memory_block, skills_block
+        candidate = response
+        verification_directive = None
+        if allow_verification_feedback:
+            verification_directive = await self._verification_feedback_check(
+                candidate,
+                tools_used=tools_used,
+                tool_evidence=tool_evidence,
+                session_window=session_window,
+                memory_snapshot=memory_snapshot,
+                skills_snapshot=skills_snapshot,
+            )
+        return candidate, verification_directive
 
-{evidence_block}
+    async def _verification_feedback_check(
+        self,
+        response: str,
+        tools_used: list[str],
+        tool_evidence: str,
+        session_window: list[dict],
+        memory_snapshot: str,
+        skills_snapshot: str,
+    ) -> dict | None:
+        """让 self-check 告诉主循环：是否应追加一次“先验证再回答”的回合。"""
+        if not response.strip():
+            return None
+        prompt = _build_verification_feedback_prompt(
+            response=response,
+            tools_used=tools_used,
+            tool_evidence=tool_evidence,
+            session_window=session_window,
+            memory_snapshot=memory_snapshot,
+            skills_snapshot=skills_snapshot,
+        )
+        try:
+            judged = await self.light_provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+                model=self.light_model,
+                max_tokens=512,
+            )
+            text = (judged.content or "").strip()
+            if not text:
+                return None
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            parsed = json_repair.loads(text)
+            if not isinstance(parsed, dict):
+                return None
+            need = bool(parsed.get("needs_verification"))
+            need_tone_downgrade = bool(parsed.get("needs_tone_downgrade"))
+            feedback = str(parsed.get("feedback", "")).strip()
+            suggested = parsed.get("suggested_skill_names", [])
+            if not isinstance(suggested, list):
+                suggested = []
+            suggested_names = [
+                str(it).strip() for it in suggested if isinstance(it, (str, int, float))
+            ]
+            tone_reasons = parsed.get("tone_reasons", [])
+            if not isinstance(tone_reasons, list):
+                tone_reasons = []
+            tone_reasons = [
+                str(it).strip() for it in tone_reasons if isinstance(it, (str, int, float))
+            ]
+            if not need and not need_tone_downgrade:
+                return None
 
-【待核查的回复】：
-{response}
+            if _looks_like_feed_source_query(session_window):
+                # 订阅来源查询优先走 feed 工具，避免被 RSSHub 路由类技能带偏。
+                suggested_names = [
+                    s for s in suggested_names if "rsshub-route-finder" not in s.lower()
+                ]
+                feed_guidance = (
+                    "这是订阅来源/清单问题：优先调用 "
+                    "feed_manage(action=list) 获取完整订阅列表，必要时再用 "
+                    "feed_query(action=summary|catalog) 交叉核对；"
+                    "不要先读取 RSSHub 路由技能。"
+                )
+                feedback = f"{feed_guidance} {feedback}".strip()
+                need = True
 
-直接输出核查后的回复正文："""
+            if not feedback:
+                if need:
+                    feedback = (
+                        "检测到证据不足但可验证的断言。"
+                        "请先 read_file 读取相关 SKILL.md，再调用对应工具验证后回答；"
+                        "若验证失败，明确说不确定。"
+                    )
+                else:
+                    feedback = "检测到证据不足的强断言，建议降级为自然推测语气。"
+            return {
+                "needs_verification": need,
+                "needs_tone_downgrade": need_tone_downgrade,
+                "feedback": feedback[:400],
+                "suggested_skill_names": suggested_names[:4],
+                "tone_reasons": tone_reasons[:4],
+            }
+        except Exception as e:
+            logger.warning(f"Verification feedback check 失败，忽略追加验证: {e}")
+            return None
 
+    async def _inference_tone_check(self, response: str, tool_evidence: str) -> str:
+        """LLM 语气校准：将无证据断言降级为显式推断语气。"""
+        if not response.strip():
+            return response
+        if not _needs_inference_tone_pass(response):
+            return response
+
+        if tool_evidence:
+            evidence_block = f"【工具结果】（可信事实来源）：\n{tool_evidence}"
+        else:
+            evidence_block = "【工具结果】：（本次无工具调用，无任何外部事实来源）"
+
+        lines = response.splitlines()
+        numbered_lines = "\n".join(f"{i}. {line}" for i, line in enumerate(lines, start=1))
+        prompt = _build_inference_tone_prompt(numbered_lines, evidence_block)
+        try:
+            tuned = await self.light_provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+                model=self.light_model,
+                max_tokens=self.max_tokens,
+            )
+            content = (tuned.content or "").strip()
+            if not content:
+                return response
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            parsed = json_repair.loads(content)
+            nums = parsed.get("prefix_line_numbers", []) if isinstance(parsed, dict) else []
+            if isinstance(nums, list):
+                return _apply_inference_prefix_by_line_numbers(response, nums)
+        except Exception as e:
+            logger.warning(f"Inference tone check 失败，返回原始回复: {e}")
+        return response
+
+    async def _profile_grounding_check(
+        self,
+        response: str,
+        tool_evidence: str,
+        session_window: list[dict],
+        memory_snapshot: str,
+        skills_snapshot: str,
+    ) -> str:
+        """LLM 用户画像落地校验：阻止无依据的“你如何/你之前如何”断言。"""
+        if not response.strip():
+            return response
+        if not _has_profile_claim_candidate(response):
+            return response
+
+        if tool_evidence:
+            tool_block = f"【工具结果】\n{tool_evidence}"
+        else:
+            tool_block = "【工具结果】（无）"
+
+        history_block = _build_session_window_block(session_window)
+        memory_block = _build_memory_block(memory_snapshot)
+        skills_block = _build_skills_block(skills_snapshot)
+
+        lines = response.splitlines()
+        numbered_lines = "\n".join(f"{i}. {line}" for i, line in enumerate(lines, start=1))
+        prompt = f"""你是用户画像事实校验器。
+
+任务：识别【待校验回复】中“关于用户本人”的断言行（例如“你之前提过X”“你喜欢Y”“你有Z”）。
+若该断言在【会话窗口】【记忆】【工具结果】中没有直接依据，标记该行需要“降级为推测语气”。
+如果用户偏好有明确限定词（如“开放世界RPG”），而回复把更宽泛类别（如“RPG”）当成完全匹配，也视为需要替换。
+若【可用技能】中存在可用于验证该断言的技能，而回复未验证就下结论，也视为需要替换。
+
+输出要求：
+- 只输出 JSON：{{"replace_line_numbers":[整数行号,...]}}
+- 若都可被证据支持，则输出空数组。
+- 不要改写原文，不要输出解释。
+- 你标出的行会被系统自动改成“自然推测语气”，不要把所有行都标上。
+
+{history_block}
+
+{memory_block}
+
+{tool_block}
+{skills_block}
+
+【待校验回复（带行号）】
+{numbered_lines}
+"""
         try:
             checked = await self.light_provider.chat(
                 messages=[{"role": "user", "content": prompt}],
@@ -326,11 +919,21 @@ class AgentLoop:
                 model=self.light_model,
                 max_tokens=self.max_tokens,
             )
-            corrected = (checked.content or "").strip()
-            if corrected:
-                return corrected
+            text = (checked.content or "").strip()
+            if not text:
+                return response
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            parsed = json_repair.loads(text)
+            nums = (
+                parsed.get("replace_line_numbers", [])
+                if isinstance(parsed, dict)
+                else []
+            )
+            if isinstance(nums, list):
+                return _apply_line_replacement_by_numbers(response, nums)
         except Exception as e:
-            logger.warning(f"Self-Check Pass 失败，返回原始回复: {e}")
+            logger.warning(f"Profile grounding check 失败，返回原始回复: {e}")
         return response
 
     async def _consolidate_memory_bg(self, session, key: str) -> None:
