@@ -111,6 +111,9 @@ class MemoryStore:
         """Phase-2 成功：merge 已完成，删除快照。"""
         if self._snapshot_path.exists():
             self._snapshot_path.unlink()
+        # 保持 PENDING.md 常驻，避免“已归档后文件消失”带来的状态歧义
+        if not self.pending_file.exists():
+            self.pending_file.touch()
 
     def rollback_pending_snapshot(self) -> None:
         """Phase-2 失败：将快照内容合并回 PENDING.md，不丢失任何数据。

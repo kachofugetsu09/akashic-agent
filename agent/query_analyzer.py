@@ -70,19 +70,32 @@ class QueryAnalyzer:
         message: str,
         history: list[dict[str, Any]],
         message_timestamp: datetime | None = None,
+        selectable_history_len: int | None = None,
+        forced_recent_count: int = 0,
     ) -> QueryAnalysis:
         history_len = len(history)
+        selectable_len = history_len if selectable_history_len is None else max(
+            0, min(int(selectable_history_len), history_len)
+        )
         if self._is_obvious_chitchat(message):
             return QueryAnalysis(
                 required_evidence=[],
                 relevant_sops=[],
-                history_pointers=self._default_history_pointers(history_len, keep_recent=6),
-                keep_recent=min(6, history_len) if history_len > 0 else 0,
+                history_pointers=self._default_history_pointers(
+                    selectable_len, keep_recent=6
+                ),
+                keep_recent=min(6, selectable_len) if selectable_len > 0 else 0,
                 reasoning="heuristic: obvious chitchat",
                 is_chitchat=True,
             )
 
-        user_prompt = self._build_user_prompt(message, history, message_timestamp)
+        user_prompt = self._build_user_prompt(
+            message,
+            history,
+            message_timestamp,
+            selectable_history_len=selectable_len,
+            forced_recent_count=forced_recent_count,
+        )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": _ANALYZER_SYSTEM_PROMPT},
             *history,
@@ -126,17 +139,28 @@ class QueryAnalyzer:
 
             raw = self._parse_json(resp.content or "")
             if isinstance(raw, dict):
-                return self._normalize(raw, message, history_len=history_len)
+                return self._normalize(
+                    raw,
+                    message,
+                    history_len=history_len,
+                    selectable_history_len=selectable_len,
+                )
             break
 
         logger.warning("[query_analyzer] fallback to default policy")
-        return self._fallback_analysis(message, history_len=history_len)
+        return self._fallback_analysis(
+            message,
+            history_len=history_len,
+            selectable_history_len=selectable_len,
+        )
 
     def _build_user_prompt(
         self,
         message: str,
         history: list[dict[str, Any]],
         message_timestamp: datetime | None,
+        selectable_history_len: int,
+        forced_recent_count: int,
     ) -> str:
         tools = json.dumps(self._tool_schemas, ensure_ascii=False)
         all_tools = json.dumps(self._build_tool_summary(self._all_tool_schemas), ensure_ascii=False)
@@ -149,8 +173,10 @@ class QueryAnalyzer:
             "## 本轮时间锚点（必须作为时间判断基准）\n"
             f"{ts}\n\n"
             "## 历史窗口说明\n"
-            "你拿到的是“旧上下文候选集”，主循环会额外强制带上最近 5 条对话。\n"
-            "因此你的任务是只从当前候选集中挑选 extra context。\n\n"
+            "你拿到的是“完整历史”（含最近对话），但最近尾部是主循环保底只读区，不属于 extra 候选。\n"
+            f"- 可用于 extra 筛选的编号范围：1..{selectable_history_len}\n"
+            f"- 主循环保底区（只读，不可指示为 extra）：{selectable_history_len + 1}..{len(history)}"
+            f"（最近 {forced_recent_count} 条）\n\n"
             "## 目录索引入口（优先阅读）\n"
             f"{index_entries}\n\n"
             "## 工作区现状（实时派生）\n"
@@ -377,6 +403,7 @@ class QueryAnalyzer:
         raw: dict[str, Any],
         message: str,
         history_len: int,
+        selectable_history_len: int,
     ) -> QueryAnalysis:
         required: list[dict[str, str]] = []
         seen: set[tuple[str, str]] = set()
@@ -403,10 +430,12 @@ class QueryAnalyzer:
                 raw_sops.append(s.strip())
         is_chitchat = bool(raw.get("is_chitchat", False))
         reasoning = str(raw.get("reasoning", "")).strip()
-        keep_recent = self._sanitize_keep_recent(raw.get("keep_recent"), history_len)
+        keep_recent = self._sanitize_keep_recent(
+            raw.get("keep_recent"), selectable_history_len
+        )
         pointers = self._normalize_history_pointers(
             raw.get("history_pointers"),
-            history_len=history_len,
+            history_len=selectable_history_len,
             keep_recent=keep_recent,
         )
         target_files = self._normalize_target_files(raw.get("target_files"))
@@ -448,9 +477,16 @@ class QueryAnalyzer:
             is_chitchat=is_chitchat,
         )
 
-    def _fallback_analysis(self, message: str, history_len: int) -> QueryAnalysis:
-        keep_recent = min(8, history_len) if history_len > 0 else 0
-        pointers = self._default_history_pointers(history_len, keep_recent=keep_recent)
+    def _fallback_analysis(
+        self,
+        message: str,
+        history_len: int,
+        selectable_history_len: int,
+    ) -> QueryAnalysis:
+        keep_recent = min(8, selectable_history_len) if selectable_history_len > 0 else 0
+        pointers = self._default_history_pointers(
+            selectable_history_len, keep_recent=keep_recent
+        )
         if self._is_obvious_chitchat(message):
             return QueryAnalysis(
                 required_evidence=[],

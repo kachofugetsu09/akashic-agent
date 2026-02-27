@@ -268,18 +268,11 @@ class AgentLoop:
         if not blocks:
             return []
 
-        keep_recent = max(0, min(int(analysis.keep_recent), n))
         selected_blocks: set[int] = set()
 
         for idx in analysis.history_pointers:
             if isinstance(idx, int) and 0 <= idx < n and idx in index_to_block:
                 selected_blocks.add(index_to_block[idx])
-
-        if keep_recent > 0:
-            for idx in range(n - keep_recent, n):
-                bid = index_to_block.get(idx)
-                if bid is not None:
-                    selected_blocks.add(bid)
 
         if not selected_blocks:
             tail_blocks = min(8, len(blocks))
@@ -368,10 +361,13 @@ class AgentLoop:
         analyzer_scope, recent_tail = self._split_history_for_analyzer(
             analysis_history, recent_count=_RECENT_CONTEXT_COUNT
         )
+        # Analyzer 可读完整历史（含 recent_tail），但只能为旧上下文区间提供指针。
         analysis = await self.query_analyzer.analyze(
             msg.content,
-            analyzer_scope,
+            analysis_history,
             message_timestamp=msg.timestamp,
+            selectable_history_len=len(analyzer_scope),
+            forced_recent_count=len(recent_tail),
         )
         extra_history = self._assemble_main_history(
             analyzer_scope,
