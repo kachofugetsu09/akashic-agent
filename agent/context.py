@@ -28,10 +28,15 @@ class ContextBuilder:
         # 核心identity
         parts.append(self._get_identity(message_timestamp))
 
-        # memory上下文
+        # 用户长期记忆
         memory = self.memory.get_memory_context()
         if memory:
             parts.append(memory)
+
+        # Akashic 自我认知（人格/关系理解）
+        self_content = self.memory.read_self()
+        if self_content:
+            parts.append(f"## Akashic 自我认知\n\n{self_content}")
 
         # 技能渐进式加载：
         # 第一步：always 技能 + 本轮显式请求的技能 → 直接内嵌完整正文
@@ -100,6 +105,8 @@ request_time={now_iso}
 ## 工作区
 - 根目录：{workspace_path}
 - 长期记忆：{workspace_path}/memory/MEMORY.md
+- 自我认知：{workspace_path}/memory/SELF.md
+- 短期状态：{workspace_path}/memory/NOW.md（进行中事项/日程/待问问题；坐标类数据须用工具实时查询，不可直接信任）
 - 历史日志：{workspace_path}/memory/HISTORY.md（支持 grep 搜索）
 - 知识库：{workspace_path}/kb/
 - SOP 索引：{workspace_path}/sop/README.md

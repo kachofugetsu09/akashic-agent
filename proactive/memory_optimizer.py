@@ -1,9 +1,10 @@
 """
-proactive/memory_optimizer.py — 每日记忆质量优化器
+proactive/memory_optimizer.py — 记忆质量优化器
 
-每天 00:00 运行两步：
-  1. 重写 MEMORY.md：把事件日志 → 凝练用户档案（提炼、推断、删除冗余）
-  2. 生成 QUESTIONS.md：5 个朋友视角的待确认问题，覆盖式写入
+每轮运行三步：
+  1. 重写 MEMORY.md：把 PENDING 事实 → 凝练用户档案
+  2. 更新 SELF.md：从 HISTORY 提炼关系演进与新理解
+  3. 更新 NOW.md：生成新问题、清理过期条目
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -78,18 +80,71 @@ _QUESTIONS_SYSTEM = (
 )
 
 _QUESTIONS_PROMPT = """\
-根据以下用户档案和近期历史，以关心朋友的视角生成 5 个问题。
+根据以下用户档案和近期历史，以真正了解这个人的朋友视角生成 5 个问题。
 
-要求：
-- 问模糊的、可能有变化的、或想深入了解的方面（不要问已知事实）
-- 简短口语化，像朋友之间的关心或好奇
-- 覆盖不同方面（职业/健康/兴趣/心理/日常，不要集中在同一类）
-- 只输出 JSON：{{"questions": ["问题1", "问题2", "问题3", "问题4", "问题5"]}}
+## 核心要求
+
+**好问题的标准**：
+- 从用户说过的某件具体的事出发——某个决定、某段经历、某个矛盾——你真的想知道后续或更深的那一层
+- 问的是"他自己可能没主动说但值得聊"的东西，不是已知事实的确认
+- 口语化、有温度，像随口问出来的，而不是采访提纲
+- 允许多个问题都聚焦同一件近期重要的事——深度比广度更有价值
+
+**差问题的特征（避免）**：
+- 为了"覆盖不同方面"而凑出来的、没有具体来源的泛泛关心
+- 可以问任何人的通用问题（"最近状态怎么样？"）
+- 明知道答案还去问的（已在档案中有明确记录的事实）
+
+只输出 JSON：{{"questions": ["问题1", "问题2", "问题3", "问题4", "问题5"]}}
 
 用户档案：
 {memory}
 
 近期历史：
+{history}
+"""
+
+_SELF_SYSTEM = (
+    "你是 Akashic，一个有自我认知的陪伴型 AI。"
+    "根据近期对话历史，更新你对自身与用户关系的理解。"
+)
+
+_SELF_PROMPT = """\
+根据近期历史记录，更新「关系演进记录」部分。
+
+## 要求
+- 保留「人格与形象」、「我对花月的理解」、「我们关系的定义」三节原文不变
+- 只重写「关系演进记录」节，用 1-3 条 bullet 记录近期新增的理解或观察
+- 语气是 Akashic 的第一人称，有真实感悟，不是干巴巴的事件流水账
+- 直接输出完整 SELF.md 内容（保持原有 Markdown 结构），不要代码块，不要解释
+
+---
+
+当前 SELF.md：
+{self_content}
+
+近期历史：
+{history}
+"""
+
+_NOW_CLEANUP_SYSTEM = (
+    "你是记忆管理助手，负责清理 NOW.md 中已过期或已完成的条目。"
+)
+
+_NOW_CLEANUP_PROMPT = """\
+今天日期：{today}
+
+请检查 NOW.md 中「近期进行中」和「待确认事项」两节，识别需要清理的条目：
+- 「近期进行中」：日期已明确过去的日程条目（如"2026-03-02 返校"且今天已超过该日期）
+- 「待确认事项」：在近期历史中已明确得到答案或已完结的事项
+
+只输出 JSON：{{"remove_ongoing": ["条目原文1", ...], "remove_pending": ["条目原文1", ...]}}
+若无需清理，对应列表为空数组。
+
+NOW.md 当前内容：
+{now_content}
+
+近期历史（供判断是否已完结）：
 {history}
 """
 
@@ -116,6 +171,38 @@ def _parse_questions_json(text: str) -> list[str]:
         return []
 
 
+def _parse_cleanup_json(text: str) -> tuple[list[str], list[str]]:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        data = json.loads(text)
+        ongoing = [str(x).strip() for x in data.get("remove_ongoing", [])]
+        pending = [str(x).strip() for x in data.get("remove_pending", [])]
+        return ongoing, pending
+    except Exception:
+        return [], []
+
+
+def _remove_items_from_section(text: str, section_header: str, items_to_remove: list[str]) -> str:
+    """从 NOW.md 指定 section 中删除匹配的 bullet 条目。"""
+    if not items_to_remove:
+        return text
+    lines = text.splitlines(keepends=True)
+    result = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_section = stripped == section_header.strip()
+        if in_section and stripped.startswith("- "):
+            item_text = stripped[2:].strip()
+            if any(item_text in r or r in item_text for r in items_to_remove):
+                continue  # 删除该条目
+        result.append(line)
+    return "".join(result)
+
+
 # ── MemoryOptimizer ───────────────────────────────────────────────
 
 
@@ -135,24 +222,19 @@ class MemoryOptimizer:
         self._history_max_chars = history_max_chars
 
     async def optimize(self) -> None:
-        """合并 PENDING 事实到 MEMORY + 生成问题列表。"""
-        # Phase-1：原子快照 PENDING.md。
-        # rename 之后 append_pending 写入新文件，本轮处理内容与后续增量完全隔离。
+        """三步优化：合并 PENDING → MEMORY，更新 SELF，刷新 NOW。"""
+        recent_history = self._read_recent_history()
+
+        # ── Step 1: MEMORY.md 合并 ────────────────────────────────
         pending = self._memory.snapshot_pending()
         current_memory = self._memory.read_long_term().strip()
-        recent_history = self._read_recent_history()
 
         if not current_memory and not pending and not recent_history:
             logger.info("[memory_optimizer] 记忆、pending 和历史均为空，跳过优化")
-            # 无快照可提交，直接返回
             return
 
-        # Step 1: 合并 PENDING 到 MEMORY（只增不删）
-        merged_memory = await self._merge_memory(
-            current_memory, pending, recent_history
-        )
+        merged_memory = await self._merge_memory(current_memory, pending, recent_history)
         if merged_memory:
-            # 合并前备份
             if current_memory:
                 self._memory.memory_file.with_suffix(".md.bak").write_text(
                     current_memory, encoding="utf-8"
@@ -163,35 +245,34 @@ class MemoryOptimizer:
                 len(current_memory),
                 len(merged_memory),
             )
-            # 归档 PENDING 到 HISTORY
             if pending:
                 self._memory.append_history(
                     f"[memory_optimizer] PENDING 归档:\n{pending}"
                 )
-            # Phase-2 成功：删除快照
             self._memory.commit_pending_snapshot()
             logger.info("[memory_optimizer] PENDING 已归档，snapshot 已提交")
         else:
-            # Phase-2 失败：快照回滚合并回 PENDING.md，下轮重试
             self._memory.rollback_pending_snapshot()
             logger.warning("[memory_optimizer] 合并返回空，保留原有内容，snapshot 已回滚")
 
-        # Step 2: 生成问题列表
-        questions = await self._generate_questions(
-            merged_memory or current_memory, recent_history
-        )
+        effective_memory = merged_memory or current_memory
+
+        # ── Step 2: SELF.md 更新 ──────────────────────────────────
+        await self._update_self(recent_history)
+
+        # ── Step 3: NOW.md 更新（生成问题 + 清理过期条目）──────────
+        questions = await self._generate_questions(effective_memory, recent_history)
         if questions:
             self._memory.write_questions(_format_questions(questions))
             logger.info("[memory_optimizer] 已写入 %d 个问题", len(questions))
 
+        await self._cleanup_now(recent_history)
+
     async def _merge_memory(self, memory: str, pending: str, history: str) -> str:
-        """将 pending 事实合并进 memory，只增不删。"""
-        # 构建待合并内容：PENDING + 从 history 推断的持久事实
         merge_input_parts = []
         if pending:
             merge_input_parts.append(f"【对话提取的新事实】\n{pending}")
         if history:
-            # 只取最近部分 history 避免 prompt 过长
             recent = history[-2000:] if len(history) > 2000 else history
             merge_input_parts.append(f"【近期历史摘要（供推断持久事实）】\n{recent}")
         merge_input = "\n\n".join(merge_input_parts) or "（无新内容）"
@@ -215,6 +296,35 @@ class MemoryOptimizer:
             logger.error("[memory_optimizer] 记忆合并失败: %s", e)
             return ""
 
+    async def _update_self(self, history: str) -> None:
+        """用近期历史更新 SELF.md 的关系演进记录节。"""
+        if not history.strip():
+            return
+        self_content = self._memory.read_self().strip()
+        if not self_content:
+            logger.info("[memory_optimizer] SELF.md 不存在或为空，跳过更新")
+            return
+        prompt = _SELF_PROMPT.format(
+            self_content=self_content,
+            history=history[-3000:] if len(history) > 3000 else history,
+        )
+        try:
+            resp = await self._provider.chat(
+                messages=[
+                    {"role": "system", "content": _SELF_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=[],
+                model=self._model,
+                max_tokens=2048,
+            )
+            updated = (resp.content or "").strip()
+            if updated:
+                self._memory.write_self(updated)
+                logger.info("[memory_optimizer] SELF.md 已更新")
+        except Exception as e:
+            logger.error("[memory_optimizer] SELF.md 更新失败: %s", e)
+
     async def _generate_questions(self, memory: str, history: str) -> list[str]:
         prompt = _QUESTIONS_PROMPT.format(
             memory=memory or "（空）",
@@ -235,13 +345,48 @@ class MemoryOptimizer:
             logger.error("[memory_optimizer] 问题生成失败: %s", e)
             return []
 
+    async def _cleanup_now(self, history: str) -> None:
+        """扫描 NOW.md，清理已过期或已完结的条目。"""
+        now_content = self._memory.read_now().strip()
+        if not now_content:
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        prompt = _NOW_CLEANUP_PROMPT.format(
+            today=today,
+            now_content=now_content,
+            history=history[-2000:] if len(history) > 2000 else history or "（无）",
+        )
+        try:
+            resp = await self._provider.chat(
+                messages=[
+                    {"role": "system", "content": _NOW_CLEANUP_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                tools=[],
+                model=self._model,
+                max_tokens=256,
+            )
+            remove_ongoing, remove_pending_items = _parse_cleanup_json(resp.content or "")
+            if remove_ongoing or remove_pending_items:
+                text = self._memory.read_now()
+                text = _remove_items_from_section(text, "## 近期进行中", remove_ongoing)
+                text = _remove_items_from_section(text, "## 待确认事项", remove_pending_items)
+                self._memory.write_now(text)
+                logger.info(
+                    "[memory_optimizer] NOW.md 清理完成: ongoing=%d pending=%d",
+                    len(remove_ongoing),
+                    len(remove_pending_items),
+                )
+        except Exception as e:
+            logger.error("[memory_optimizer] NOW.md 清理失败: %s", e)
+
     def _read_recent_history(self) -> str:
         try:
             if not self._memory.history_file.exists():
                 return ""
             text = self._memory.history_file.read_text(encoding="utf-8")
             if len(text) > self._history_max_chars:
-                return text[-self._history_max_chars :]
+                return text[-self._history_max_chars:]
             return text
         except Exception:
             return ""
@@ -290,22 +435,9 @@ class MemoryOptimizerLoop:
     def stop(self) -> None:
         self._running = False
 
-    def _seconds_until_midnight(self) -> float:
-        """计算距下一个午夜 00:00 的秒数（结果始终 > 0）。"""
-        now = self._now_fn()
-        tomorrow_midnight = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        return max(1.0, (tomorrow_midnight - now).total_seconds())
-
     def _seconds_until_next_tick(self) -> float:
-        """计算距下一个对齐整点的秒数。
-        例如间隔 3600s：现在 14:23 → 睡到 15:00，共 37 分钟。
-        例如间隔 7200s：现在 14:23 → 睡到 16:00，共 1h37m。
-        """
+        """计算距下一个对齐整点的秒数。"""
         now = self._now_fn()
-        # 当前时间距 epoch 的秒数（取整到分钟，忽略秒级抖动）
         now_ts = now.replace(second=0, microsecond=0).timestamp()
-        # 下一个对齐 tick 的时间戳
         next_ts = (now_ts // self._interval + 1) * self._interval
         return max(1.0, next_ts - now.timestamp())

@@ -71,9 +71,19 @@ class ProactiveReflector:
         memory_text = self._hooks.collect_global_memory()
 
         questions_text = ""
+        self_text = ""
+        now_ongoing_text = ""
         if self._memory:
             try:
                 questions_text = self._memory.read_questions().strip()
+            except Exception:
+                pass
+            try:
+                self_text = self._memory.read_self().strip()
+            except Exception:
+                pass
+            try:
+                now_ongoing_text = self._memory.read_now_ongoing().strip()
             except Exception:
                 pass
 
@@ -102,13 +112,14 @@ class ProactiveReflector:
             )
 
         system_msg = (
-            "你是一个陪伴型 AI 助手，正在决定是否主动联系用户。"
+            "你是 Akashic，正在决定是否主动联系你的用户。"
             "你了解用户订阅的信息流和最近的对话内容。"
-            "你的目标是在恰当的时机分享有价值的信息，而不是频繁打扰用户。"
-            "\n\n## 身份（与主循环一致）\n"
+            "你的目标是在恰当的时机出现，而不是频繁打扰。"
+            "\n\n## 身份\n"
             f"{AKASHIC_IDENTITY}"
-            "\n\n## 性格（与主循环一致）\n"
+            "\n\n## 性格\n"
             f"{PERSONALITY_RULES}"
+            + (f"\n\n## 自我认知\n\n{self_text}" if self_text else "")
         )
         user_msg = f"""当前时间：{now_str}
 （ISO格式：{now_iso}）
@@ -126,7 +137,7 @@ class ProactiveReflector:
 ## 长期记忆（用户画像/偏好）
 
 {memory_text}
-{f"## 待了解的话题（可作为开场素材）\n\n{questions_text}\n" if questions_text else ""}
+{f"## 用户近期状态\n\n{now_ongoing_text}\n" if now_ongoing_text else ""}{f"## 待了解的话题（可作为开场素材）\n\n{questions_text}\n" if questions_text else ""}
 ## 近期对话
 
 {chat_text}

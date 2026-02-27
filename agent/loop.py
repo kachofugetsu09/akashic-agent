@@ -146,6 +146,7 @@ class AgentLoop:
                 current_message=msg.content,
                 media=msg.media if msg.media else None,
                 skill_names=skill_names,
+                relevant_sops=analysis.relevant_sops if analysis else None,
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 message_timestamp=msg.timestamp,
@@ -594,7 +595,7 @@ class AgentLoop:
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中提取需要长期记住的新事实，返回 JSON。
 
-JSON 包含以下三个键：
+JSON 包含以下四个键：
 
 1. "history_entry"：2-5 句话的事件摘要，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
 
@@ -609,9 +610,17 @@ JSON 包含以下三个键：
      - [用户画像] 用户确认正在准备秋招
      - [硬件与环境] 新增显示器：Dell U2723D
 
-3. "answered_question_indices"：从待了解问题列表中，本次对话**已得到解答**的问题序号列表（1-based int）。若无则返回 []。
+3. "corrections"：本次对话中发现**现有档案记录有误或已过时**的内容，格式为带 [纠正] 标注的 bullet 列表。
+   规则：
+   - 仅当对话中有明确信息（用户纠正/工具实测/新事实与档案矛盾）时才写
+   - 必须同时写出旧值和新值，便于 optimizer 合并时识别需要覆盖的内容
+   - 若无需纠正，返回空字符串 ""
+   - 格式示例：
+     - [纠正] 显示器型号：档案记录 Dell U2723D → 实际为 LG 27GP950
 
-## 当前用户档案（用于查重，不要重复已有内容）
+4. "answered_question_indices"：从待了解问题列表中，本次对话**已得到解答**的问题序号列表（1-based int）。若无则返回 []。
+
+## 当前用户档案（用于查重）
 {current_memory or "（空）"}
 
 ## 待了解的问题
@@ -660,6 +669,12 @@ JSON 包含以下三个键：
                 memory.append_pending(new_facts)
                 logger.info(
                     f"Memory consolidation: appended {len(new_facts.splitlines())} new facts to PENDING"
+                )
+            corrections = result.get("corrections", "")
+            if corrections and isinstance(corrections, str) and corrections.strip():
+                memory.append_pending(corrections)
+                logger.info(
+                    f"Memory consolidation: appended {len(corrections.splitlines())} corrections to PENDING"
                 )
             answered = result.get("answered_question_indices", [])
             if answered and isinstance(answered, list):

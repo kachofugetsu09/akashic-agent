@@ -142,6 +142,7 @@ class QueryAnalyzer:
         all_tools = json.dumps(self._build_tool_summary(self._all_tool_schemas), ensure_ascii=False)
         history_index = self._build_history_index_guide(history)
         editable_docs = self._build_editable_docs_index()
+        index_entries = self._build_index_entry_points()
         ts = self._format_time_anchor(message_timestamp)
         return (
             "请根据当前会话上下文和用户消息做 pre-flight 分析。\n\n"
@@ -150,8 +151,8 @@ class QueryAnalyzer:
             "## 历史窗口说明\n"
             "你拿到的是“旧上下文候选集”，主循环会额外强制带上最近 5 条对话。\n"
             "因此你的任务是只从当前候选集中挑选 extra context。\n\n"
-            "## SOP 入口（优先阅读）\n"
-            f"{self.workspace / 'sop' / 'README.md'}\n\n"
+            "## 目录索引入口（优先阅读）\n"
+            f"{index_entries}\n\n"
             "## 工作区现状（实时派生）\n"
             f"{self._derive_workspace_state()}\n\n"
             "## 可编辑文档索引（用于规则/SOP修改）\n"
@@ -177,6 +178,18 @@ class QueryAnalyzer:
             '  "reasoning": "一句话"\n'
             "}\n"
         )
+
+    def _build_index_entry_points(self) -> str:
+        entries: list[str] = []
+        sop_readme = self.workspace / "sop" / "README.md"
+        skills_readme = self.workspace / "skills" / "README.md"
+        if sop_readme.exists():
+            entries.append(f"- SOP 索引: {sop_readme}")
+        if skills_readme.exists():
+            entries.append(f"- Skills 索引: {skills_readme}")
+        if not entries:
+            return "（无 README 索引，按可编辑文档索引与目录结构判断）"
+        return "\n".join(entries)
 
     @staticmethod
     def _format_time_anchor(message_timestamp: datetime | None) -> str:
@@ -384,10 +397,10 @@ class QueryAnalyzer:
             seen.add(key)
             required.append({"tool": tool, "hint": hint})
 
-        sops: list[str] = []
+        raw_sops: list[str] = []
         for s in raw.get("relevant_sops") or []:
-            if isinstance(s, str) and s.strip() and s.strip() not in sops:
-                sops.append(s.strip())
+            if isinstance(s, str) and s.strip() and s.strip() not in raw_sops:
+                raw_sops.append(s.strip())
         is_chitchat = bool(raw.get("is_chitchat", False))
         reasoning = str(raw.get("reasoning", "")).strip()
         keep_recent = self._sanitize_keep_recent(raw.get("keep_recent"), history_len)
@@ -398,24 +411,11 @@ class QueryAnalyzer:
         )
         target_files = self._normalize_target_files(raw.get("target_files"))
 
-        if self._looks_like_fiction_query(message):
-            if not any(e.get("tool") == "shell" for e in required):
-                required.insert(
-                    0,
-                    {
-                        "tool": "shell",
-                        "hint": "先执行 kb_lookup.py 判断是否有对应知识库；若有再 qa_task.py 查询。",
-                    },
-                )
-            if "novel-reader" not in sops:
-                sops.append("novel-reader")
-            is_chitchat = False
-
         required = self._normalize_required_evidence(required)
 
-        # 只保留真实 skill 名称，避免把 SOP 文件名误当 skill 注入
+        # 只保留真实 skill 名称，并做轻量归一化（兼容别名/路径形式）
         valid_skills = self._list_workspace_skills()
-        sops = [s for s in sops if s in valid_skills]
+        sops = self._normalize_relevant_sops(raw_sops, valid_skills)
 
         # 文档编辑任务：若已给 target_files 但未给工具步骤，补 read/write 提示
         if target_files and not required and not is_chitchat:
@@ -461,24 +461,53 @@ class QueryAnalyzer:
                 is_chitchat=True,
             )
         required: list[dict[str, str]] = []
-        sops = ["novel-reader"] if self._looks_like_fiction_query(message) else []
-        if self._looks_like_fiction_query(message):
-            required.insert(
-                0,
-                {
-                    "tool": "shell",
-                    "hint": "先执行 kb_lookup.py 判断是否有对应知识库；若有再 qa_task.py 查询。",
-                },
-            )
         return QueryAnalysis(
             required_evidence=required,
-            relevant_sops=sops,
+            relevant_sops=[],
             history_pointers=pointers,
             keep_recent=keep_recent,
             target_files=[],
             reasoning="fallback: non-chitchat requires evidence",
             is_chitchat=False,
         )
+
+    def _normalize_relevant_sops(
+        self,
+        raw_sops: list[str],
+        valid_skills: set[str],
+    ) -> list[str]:
+        if not raw_sops or not valid_skills:
+            return []
+
+        norm_index: dict[str, str] = {}
+        for name in valid_skills:
+            norm_index[self._norm_token(name)] = name
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in raw_sops:
+            candidate = item.strip()
+            mapped: str | None = None
+            if candidate in valid_skills:
+                mapped = candidate
+            else:
+                mapped = norm_index.get(self._norm_token(candidate))
+                if not mapped:
+                    path_match = re.search(
+                        r"/skills/([a-zA-Z0-9_-]+)/SKILL\.md$",
+                        candidate,
+                    )
+                    if path_match:
+                        path_name = path_match.group(1)
+                        mapped = path_name if path_name in valid_skills else None
+            if mapped and mapped not in seen:
+                seen.add(mapped)
+                out.append(mapped)
+        return out
+
+    @staticmethod
+    def _norm_token(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", text.lower())
 
     @staticmethod
     def _normalize_required_evidence(
@@ -583,26 +612,6 @@ class QueryAnalyzer:
         if pure in greetings:
             return True
         return len(pure) <= 4 and pure in greetings
-
-    @staticmethod
-    def _looks_like_fiction_query(message: str) -> bool:
-        text = message.lower()
-        keywords = (
-            "剧情",
-            "角色",
-            "结局",
-            "路线",
-            "世界观",
-            "台词",
-            "春",
-            "haru",
-            "2236",
-            "小说",
-            "视觉小说",
-            "番剧",
-            "游戏剧情",
-        )
-        return any(k in text for k in keywords)
 
     def _list_workspace_skills(self) -> set[str]:
         skills_dir = self.workspace / "skills"
