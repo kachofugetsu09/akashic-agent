@@ -38,12 +38,21 @@ class ContextBuilder:
         if self_content:
             parts.append(f"## Akashic 自我认知\n\n{self_content}")
 
+        # SOP 索引（最高优先级，永远注入）
+        sop_readme = self.workspace / "sop" / "README.md"
+        if sop_readme.exists():
+            try:
+                sop_index = sop_readme.read_text(encoding="utf-8").strip()
+                parts.append(f"# SOP 规范索引（最高优先级）\n\n{sop_index}")
+            except Exception:
+                pass
+
         # 技能渐进式加载：
         # 第一步：always 技能 + 本轮显式请求的技能 → 直接内嵌完整正文
         always_skills = self.skills.get_always_skills()
         skills_to_load: list[str] = []
         seen: set[str] = set()
-        for name in [*always_skills, *(skill_names or []), *(relevant_sops or [])]:
+        for name in [*always_skills, *(skill_names or [])]:
             if name in seen:
                 continue
             seen.add(name)
@@ -52,6 +61,11 @@ class ContextBuilder:
             always_content = self.skills.load_skills_for_context(skills_to_load)
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
+
+        # relevant_sops 是 QueryAnalyzer 产出的 SOP 文件路径列表，按需注入正文片段
+        sop_content = self._load_relevant_sops_for_context(relevant_sops or [])
+        if sop_content:
+            parts.append(f"# Relevant SOPs\n\n{sop_content}")
 
         # 第二步：其余技能注入摘要（名称/描述/路径/可用状态），
         # 模型识别到任务匹配时，通过 read_file 读取对应 SKILL.md 获取完整指令
@@ -72,6 +86,35 @@ class ContextBuilder:
 {skills_summary}""")
 
         return "\n\n---\n\n".join(parts)
+
+    def _load_relevant_sops_for_context(self, sop_paths: list[str]) -> str:
+        if not sop_paths:
+            return ""
+        sop_root = (self.workspace / "sop").resolve()
+        blocks: list[str] = []
+        seen: set[str] = set()
+        for raw in sop_paths:
+            if not raw:
+                continue
+            p = Path(raw).expanduser()
+            try:
+                p = p.resolve()
+            except Exception:
+                continue
+            if str(p) in seen:
+                continue
+            if not p.exists() or not p.is_file() or p.suffix.lower() != ".md":
+                continue
+            # 只允许加载 workspace/sop 下的文件，防止越界注入。
+            if sop_root not in p.parents:
+                continue
+            try:
+                content = p.read_text(encoding="utf-8").strip()
+            except Exception:
+                continue
+            seen.add(str(p))
+            blocks.append(f"## {p.name}\n\n{content}")
+        return "\n\n---\n\n".join(blocks)
 
     def _get_identity(self, message_timestamp: "datetime | None" = None) -> str:
         # 确保时区感知，naive datetime 转换为本地时区

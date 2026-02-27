@@ -37,12 +37,12 @@ _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 
 # 每轮对话开始前注入的初始自检提示，不应持久化到 session
 _PRE_FLIGHT_PROMPT = """【回复前必须完成以下自检，无需在回复中说明】
+0. 【SOP 优先级最高，强制执行】系统 prompt 中已包含 SOP 规范索引。执行任何实质性操作前，先判断当前任务是否匹配某个 SOP；若匹配，必须先 read_file 读取该 SOP 全文并严格遵守，再继续后续步骤。禁止在未阅读匹配 SOP 的情况下直接执行操作。
 1. 用户是否要求执行某项操作，且该操作与 # Skills 中某个技能的描述明确匹配？若是，禁止在未调用工具的情况下直接回答——必须先 read_file 读取对应 SKILL.md，再按指令执行工具，最后基于工具返回结果作答。（注意：用户只是询问技能列表/能力范围，不触发此规则，直接根据摘要回答即可。）
 2. 用户问的内容是否需要实时/当前数据（订阅列表、天气、最新动态、用户状态等）？若需要，同样禁止凭记忆直接回答，必须本轮调用工具获取。
-3. 遇到“现在/当前/最新/今天/是否已发生”等时间敏感判断，先以 request_time 锚定时间，再给结论；若缺少可核验事实，明确说不确定。
-4. 若用户在提出“以后请这样做/新增规则/修改 SOP”，先 read_file `sop/README.md` 确认目录索引，再决定读取或编辑具体 SOP 文件。
-5. 回答允许做合理联想，但必须显式标注推测语气，不得冒充事实；必要时给出“待确认”。
-6. 确认以上规则均满足后，才允许输出最终回复。"""
+3. 遇到”现在/当前/最新/今天/是否已发生”等时间敏感判断，先以 request_time 锚定时间，再给结论；若缺少可核验事实，明确说不确定。
+4. 回答允许做合理联想，但必须显式标注推测语气，不得冒充事实；必要时给出”待确认”。
+5. 确认以上规则均满足后，才允许输出最终回复。"""
 
 
 class AgentLoop:
@@ -454,6 +454,36 @@ class AgentLoop:
             "所有时间相关判断必须与该锚点一致；无法验证时必须明确不确定。\n\n"
             + _PRE_FLIGHT_PROMPT
         )
+        # 将前置分析器的取证建议注入预检提示，主模型必须按顺序执行后再作答
+        if analysis and analysis.required_evidence:
+            evidence_lines = "\n".join(
+                f"- [{e.get('tool', 'tool')}] {e.get('hint', '')}"
+                for e in analysis.required_evidence
+            )
+            preflight_prompt += (
+                "\n\n【前置分析器取证建议（高优先级，请按顺序执行，收集事实依据后再作答）】\n"
+                + evidence_lines
+            )
+        if analysis and analysis.relevant_sops:
+            sop_lines = "\n".join(f"- {s}" for s in analysis.relevant_sops)
+            preflight_prompt += (
+                "\n\n【前置分析器判定本轮相关 SOP，必须优先 read_file 读取并遵循】\n"
+                + sop_lines
+            )
+        # target_files 中的 SOP 文件：注入必读提示，是否修改由 agent 根据用户意图判断
+        if analysis and analysis.target_files:
+            sop_targets = [
+                t for t in analysis.target_files
+                if "/sop/" in t and t.endswith(".md") and not t.endswith("README.md")
+            ]
+            if sop_targets:
+                sop_lines = "\n".join(f"- {t}" for t in sop_targets)
+                preflight_prompt += (
+                    "\n\n【本轮涉及以下 SOP 文件，必须先 read_file 读取】\n"
+                    + sop_lines
+                    + "\n若用户要求修改/改进/优化该 SOP，读取后按要求改写并 write_file 写回；"
+                    "若用户是要执行某项操作，读取后按规范行动。"
+                )
         messages = messages + [{"role": "user", "content": preflight_prompt}]
         first_tool_choice = "required" if (analysis and analysis.needs_tool) else "auto"
 

@@ -22,7 +22,7 @@ _ANALYZER_SYSTEM_PROMPT = """你是 QueryAnalyzer（前置分析器）。
 硬规则：
 1. 你必须输出 history_pointers（历史消息编号，1-based），用于挑选 extra context。
 2. required_evidence 是“建议”，不是“强制指令”；可以为空。
-3. relevant_sops 是“参考”，不是“必须加载”。
+3. relevant_sops 是“建议相关 SOP”；命中后系统会自动补充 read_file 取证建议。
 4. 只输出 JSON，不要 markdown，不要解释。
 """
 
@@ -196,7 +196,7 @@ class QueryAnalyzer:
             "返回 JSON（无 markdown）：\n"
             "{\n"
             '  "required_evidence": [{"tool": "shell", "hint": "具体提示"}],\n'
-            '  "relevant_sops": ["skill-name"],\n'
+            '  "relevant_sops": ["/abs/path/to/sop.md" 或 "novel-kb-query.md"],\n'
             '  "target_files": ["/abs/path/to/file.md"],\n'
             '  "history_pointers": [1, 4, 9],\n'
             '  "keep_recent": 8,\n'
@@ -210,7 +210,11 @@ class QueryAnalyzer:
         sop_readme = self.workspace / "sop" / "README.md"
         skills_readme = self.workspace / "skills" / "README.md"
         if sop_readme.exists():
-            entries.append(f"- SOP 索引: {sop_readme}")
+            try:
+                content = sop_readme.read_text(encoding="utf-8")
+                entries.append(f"SOP 索引（{sop_readme}）:\n{content}")
+            except Exception:
+                entries.append(f"- SOP 索引: {sop_readme}")
         if skills_readme.exists():
             entries.append(f"- Skills 索引: {skills_readme}")
         if not entries:
@@ -442,22 +446,28 @@ class QueryAnalyzer:
 
         required = self._normalize_required_evidence(required)
 
-        # 只保留真实 skill 名称，并做轻量归一化（兼容别名/路径形式）
-        valid_skills = self._list_workspace_skills()
-        sops = self._normalize_relevant_sops(raw_sops, valid_skills)
+        # 只保留真实 SOP 文件路径，并做轻量归一化（兼容文件名/路径形式）
+        valid_sops = self._list_workspace_sops()
+        sops = self._normalize_relevant_sops(raw_sops, valid_sops)
 
-        # 文档编辑任务：若已给 target_files 但未给工具步骤，补 read/write 提示
+        # SOP 相关任务：target_files 中的 SOP 文件始终补 read_file 提示（不受 required 是否为空影响）
+        # 是否还需要 write_file 由 agent 根据用户意图自行判断，此处不强制添加
+        seen_hints: set[tuple[str, str]] = {(e["tool"], e["hint"]) for e in required}
+        for sop_path in sops:
+            r_hint = f"读取 {sop_path} 了解并遵循对应规范。"
+            if ("read_file", r_hint) not in seen_hints:
+                required.append({"tool": "read_file", "hint": r_hint})
+                seen_hints.add(("read_file", r_hint))
+        for doc_path in target_files:
+            if "/sop/" in doc_path and doc_path.endswith(".md") and not doc_path.endswith("README.md"):
+                r_hint = f"读取 {doc_path} 了解相关规范或当前内容。"
+                if ("read_file", r_hint) not in seen_hints:
+                    required.append({"tool": "read_file", "hint": r_hint})
+                    seen_hints.add(("read_file", r_hint))
+
+        # 非 SOP 文档编辑任务：若 required 仍为空且有 target_files，补 read/write 提示
         if target_files and not required and not is_chitchat:
             primary = target_files[0]
-            required = []
-            if "/sop/" in primary:
-                sop_readme = self.workspace / "sop" / "README.md"
-                required.append(
-                    {
-                        "tool": "read_file",
-                        "hint": f"先读取 {sop_readme} 确认 SOP 目录索引，再定位目标文件。",
-                    }
-                )
             required.extend(
                 [
                     {"tool": "read_file", "hint": f"先读取 {primary} 并定位需要改动的段落。"},
@@ -510,32 +520,47 @@ class QueryAnalyzer:
     def _normalize_relevant_sops(
         self,
         raw_sops: list[str],
-        valid_skills: set[str],
+        valid_sops: set[str],
     ) -> list[str]:
-        if not raw_sops or not valid_skills:
+        if not raw_sops or not valid_sops:
             return []
 
-        norm_index: dict[str, str] = {}
-        for name in valid_skills:
-            norm_index[self._norm_token(name)] = name
+        by_token: dict[str, str] = {}
+        by_name: dict[str, str] = {}
+        for path in valid_sops:
+            p = Path(path)
+            name = p.name
+            stem = p.stem
+            # 文件名与 stem 两种 token 都支持，便于模型给出简写。
+            by_token[self._norm_token(name)] = path
+            by_token[self._norm_token(stem)] = path
+            by_name[name] = path
 
         out: list[str] = []
         seen: set[str] = set()
         for item in raw_sops:
             candidate = item.strip()
             mapped: str | None = None
-            if candidate in valid_skills:
+            if not candidate:
+                continue
+
+            # 1) 绝对路径直接命中
+            if candidate in valid_sops:
                 mapped = candidate
             else:
-                mapped = norm_index.get(self._norm_token(candidate))
-                if not mapped:
-                    path_match = re.search(
-                        r"/skills/([a-zA-Z0-9_-]+)/SKILL\.md$",
-                        candidate,
-                    )
-                    if path_match:
-                        path_name = path_match.group(1)
-                        mapped = path_name if path_name in valid_skills else None
+                # 2) 支持 "~" 路径与路径归一化
+                try:
+                    expanded = str(Path(candidate).expanduser().resolve())
+                except Exception:
+                    expanded = candidate
+                if expanded in valid_sops:
+                    mapped = expanded
+                else:
+                    # 3) 文件名/简写匹配（novel-kb-query.md / novel-kb-query）
+                    name = Path(candidate).name
+                    mapped = by_name.get(name) or by_token.get(self._norm_token(name))
+                    if not mapped:
+                        mapped = by_token.get(self._norm_token(candidate))
             if mapped and mapped not in seen:
                 seen.add(mapped)
                 out.append(mapped)
@@ -649,15 +674,21 @@ class QueryAnalyzer:
             return True
         return len(pure) <= 4 and pure in greetings
 
-    def _list_workspace_skills(self) -> set[str]:
-        skills_dir = self.workspace / "skills"
-        if not skills_dir.exists():
-            return set()
-        names: set[str] = set()
-        for d in skills_dir.iterdir():
-            if d.is_dir():
-                names.add(d.name)
-        return names
+    def _list_workspace_sops(self) -> set[str]:
+        docs: set[str] = set()
+        sop_dir = self.workspace / "sop"
+        if not sop_dir.exists():
+            return docs
+        for p in sop_dir.glob("*.md"):
+            if not p.is_file():
+                continue
+            if p.name.lower() == "readme.md":
+                continue
+            try:
+                docs.add(str(p.resolve()))
+            except Exception:
+                docs.add(str(p))
+        return docs
 
     def _editable_doc_paths(self) -> set[str]:
         docs: set[str] = set()

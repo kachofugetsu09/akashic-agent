@@ -221,6 +221,9 @@ class MemoryOptimizer:
         self._max_tokens = max_tokens
         self._history_max_chars = history_max_chars
 
+    # 各步骤之间的间隔（秒），避免短时间内连续请求触发 limit_burst_rate
+    _STEP_DELAY_SECONDS: int = 15
+
     async def optimize(self) -> None:
         """三步优化：合并 PENDING → MEMORY，更新 SELF，刷新 NOW。"""
         recent_history = self._read_recent_history()
@@ -258,14 +261,17 @@ class MemoryOptimizer:
         effective_memory = merged_memory or current_memory
 
         # ── Step 2: SELF.md 更新 ──────────────────────────────────
+        await asyncio.sleep(self._STEP_DELAY_SECONDS)
         await self._update_self(recent_history)
 
         # ── Step 3: NOW.md 更新（生成问题 + 清理过期条目）──────────
+        await asyncio.sleep(self._STEP_DELAY_SECONDS)
         questions = await self._generate_questions(effective_memory, recent_history)
         if questions:
             self._memory.write_questions(_format_questions(questions))
             logger.info("[memory_optimizer] 已写入 %d 个问题", len(questions))
 
+        await asyncio.sleep(self._STEP_DELAY_SECONDS)
         await self._cleanup_now(recent_history)
 
     async def _merge_memory(self, memory: str, pending: str, history: str) -> str:
