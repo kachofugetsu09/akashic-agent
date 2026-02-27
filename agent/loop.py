@@ -10,6 +10,7 @@ from agent.context import ContextBuilder
 from agent.memory import MemoryStore
 from agent.query_analyzer import QueryAnalysis, QueryAnalyzer
 from bus.events import InboundMessage, OutboundMessage
+from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from agent.provider import ContentSafetyError, LLMProvider
 from agent.tools.registry import ToolRegistry
@@ -65,6 +66,7 @@ class AgentLoop:
         presence: PresenceStore | None = None,
         light_model: str = "",
         light_provider: LLMProvider | None = None,
+        processing_state: ProcessingState | None = None,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -89,6 +91,7 @@ class AgentLoop:
         self._presence = presence
         self._running = False
         self._consolidating: set[str] = set()  # 正在后台压缩的 session key
+        self._processing_state = processing_state
 
     async def run(self) -> None:
         self._running = True
@@ -163,7 +166,8 @@ class AgentLoop:
                     else:
                         session.messages = session.messages[-window:]
                     session.last_consolidated = 0
-                    self.session_manager.save(session)
+                    # 持有写锁全量重写，防止与后台 consolidation save_async 竞争
+                    await self.session_manager.save_async(session)
                 return result
             except ContentSafetyError:
                 if attempt < len(_SAFETY_RETRY_RATIOS) - 1:
@@ -179,6 +183,11 @@ class AgentLoop:
                     return "你的消息触发了安全审查，无法处理。", [], []
 
         return "（安全重试异常）", [], []
+
+    @property
+    def processing_state(self) -> ProcessingState | None:
+        """暴露被动处理信号，供 ProactiveLoop 注入 passive_busy_fn。"""
+        return self._processing_state
 
     def stop(self) -> None:
         self._running = False
@@ -327,6 +336,17 @@ class AgentLoop:
         logger.info(f"Processing message from {msg.channel}:{msg.sender}: {preview}")
 
         key = session_key or msg.session_key
+        if self._processing_state:
+            self._processing_state.enter(key)
+        try:
+            return await self._process_inner(msg, key)
+        finally:
+            if self._processing_state:
+                self._processing_state.exit(key)
+
+    async def _process_inner(
+        self, msg: InboundMessage, key: str
+    ) -> OutboundMessage:
         session = self.session_manager.get_or_create(key)
 
         # 超过记忆窗口时后台压缩（不阻塞当前消息处理）
@@ -400,7 +420,8 @@ class AgentLoop:
             tools_used=tools_used if tools_used else None,
             tool_chain=tool_chain if tool_chain else None,
         )
-        self.session_manager.save(session)
+        # 普通对话只追加 2 条消息，避免全量重写阻塞事件循环
+        await self.session_manager.append_messages(session, session.messages[-2:])
 
         return OutboundMessage(
             channel=msg.channel,
@@ -516,7 +537,8 @@ class AgentLoop:
         """后台异步压缩，完成后持久化 last_consolidated 并释放锁。"""
         try:
             await self._consolidate_memory(session)
-            self.session_manager.save(session)
+            # consolidation 更新了 last_consolidated，需全量重写 metadata
+            await self.session_manager.save_async(session)
         finally:
             self._consolidating.discard(key)
 
@@ -548,7 +570,10 @@ class AgentLoop:
                     f"Session {session.key}: No new messages to consolidate (last_consolidated={session.last_consolidated}, total={len(session.messages)})"
                 )
                 return
-            old_messages = session.messages[session.last_consolidated : -keep_count]
+            # 在所有 await 之前捕获边界索引，避免 LLM call 期间新消息追加后
+            # 用错误的 len(session.messages) 回写 last_consolidated。
+            consolidate_up_to = len(session.messages) - keep_count
+            old_messages = session.messages[session.last_consolidated : consolidate_up_to]
             if not old_messages:
                 return
             logger.info(
@@ -650,7 +675,8 @@ JSON 包含以下三个键：
             if archive_all:
                 session.last_consolidated = 0
             else:
-                session.last_consolidated = len(session.messages) - keep_count
+                # 使用 await 前捕获的边界，而非 await 后可能已增长的长度
+                session.last_consolidated = consolidate_up_to
             logger.info(
                 f"Memory consolidation done: {len(session.messages)} messages, last_consolidated={session.last_consolidated}"
             )

@@ -11,6 +11,7 @@ import logging
 import sys
 from pathlib import Path
 
+from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from agent.config import Config
 from agent.loop import AgentLoop
@@ -130,6 +131,7 @@ def _build_agent(
 
     session_manager = SessionManager(workspace)
     presence = PresenceStore(workspace / "presence.json")
+    processing_state = ProcessingState()
     loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -142,6 +144,7 @@ def _build_agent(
         presence=presence,
         light_model=config.light_model,
         light_provider=light_provider,
+        processing_state=processing_state,
     )
 
     # Wire agent_loop back into scheduler (circular dependency resolved here)
@@ -273,6 +276,7 @@ async def serve(config_path: str = "config.json") -> None:
             light_provider=light_provider,
             light_model=config.light_model,
             feed_store=feed_store,
+            passive_busy_fn=agent_loop.processing_state.is_busy if agent_loop.processing_state else None,
         )
         # 将 SourceScorer 注入 FeedManageTool，使 subscribe/unsubscribe 可触发增量打分
         if proactive_loop._source_scorer is not None:

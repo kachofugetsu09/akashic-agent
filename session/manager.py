@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -114,11 +115,18 @@ class Session:
         self.last_consolidated = 0
 
 class SessionManager:
+    # 每 N 次增量追加后触发一次全量重写，以刷新 metadata 首行（updated_at / last_consolidated）
+    _METADATA_REFRESH_EVERY: int = 10
+
     def __init__(self,workspace: Path):
         self.workspace = workspace
         self.session_dir = workspace / "sessions"
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, Session] = {}
+        # per-session 写锁，防止全量重写与增量追加在 executor 中交错
+        self._write_locks: dict[str, asyncio.Lock] = {}
+        # 记录各 session 自上次全量重写后的追加次数
+        self._append_counts: dict[str, int] = {}
 
     def _get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
@@ -172,10 +180,18 @@ class SessionManager:
             logging.warning(f"Failed to load {key}: {e}")
             return None
 
-    def save(self,session: Session) -> None:
-        path = self._get_session_path(session.key)
-        session.updated_at = datetime.now()
+    # ── per-session 写锁 ──────────────────────────────────────────────────────
 
+    def _lock(self, key: str) -> asyncio.Lock:
+        if key not in self._write_locks:
+            self._write_locks[key] = asyncio.Lock()
+        return self._write_locks[key]
+
+    # ── 同步底层实现（无锁，仅供 executor 或非 async 上下文调用）────────────────
+
+    def _write_full(self, session: Session) -> None:
+        """全量重写 JSONL，刷新 metadata 首行（last_consolidated / updated_at）。"""
+        path = self._get_session_path(session.key)
         with open(path, "w") as f:
             metadata_line = {
                 "_type": "metadata",
@@ -183,14 +199,56 @@ class SessionManager:
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
                 "last_consolidated": session.last_consolidated,
-                "metadata": session.metadata
+                "metadata": session.metadata,
             }
-            # 先写入元数据
             f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
             for msg in session.messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-
         self._cache[session.key] = session
+
+    def _write_append(self, session: Session, messages: list[dict]) -> None:
+        """追加消息行（不重写 metadata 首行，速度快）。"""
+        path = self._get_session_path(session.key)
+        with open(path, "a") as f:
+            for msg in messages:
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        self._cache[session.key] = session
+
+    # ── 公共 API ──────────────────────────────────────────────────────────────
+
+    def save(self, session: Session) -> None:
+        """同步全量重写（兼容非 async 上下文，如 CLI / 安全重试降级）。
+
+        不持 asyncio 锁，仅在确认无并发写操作时调用（例如启动/关闭路径）。
+        """
+        session.updated_at = datetime.now()
+        self._append_counts[session.key] = 0
+        self._write_full(session)
+
+    async def save_async(self, session: Session) -> None:
+        """异步全量重写，持有 per-session 写锁，用于 consolidation 和 proactive 写入。"""
+        session.updated_at = datetime.now()
+        async with self._lock(session.key):
+            self._append_counts[session.key] = 0
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._write_full, session)
+
+    async def append_messages(self, session: Session, messages: list[dict]) -> None:
+        """增量追加消息（普通对话路径），持有 per-session 写锁。
+
+        每 _METADATA_REFRESH_EVERY 次触发一次全量重写，保持 metadata 首行时效。
+        """
+        session.updated_at = datetime.now()
+        msgs_copy = list(messages)
+        async with self._lock(session.key):
+            cnt = self._append_counts.get(session.key, 0) + 1
+            loop = asyncio.get_event_loop()
+            if cnt >= self._METADATA_REFRESH_EVERY:
+                self._append_counts[session.key] = 0
+                await loop.run_in_executor(None, self._write_full, session)
+            else:
+                self._append_counts[session.key] = cnt
+                await loop.run_in_executor(None, self._write_append, session, msgs_copy)
 
     def invalidate(self, key: str) -> None:
         """Remove a session from the in-memory cache."""

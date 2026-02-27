@@ -1,7 +1,10 @@
+import logging
 import re
 from pathlib import Path
 
 from utils.helpers import ensure_dir
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryStore:
@@ -18,6 +21,8 @@ class MemoryStore:
         # 确保 PENDING.md 始终存在，避免首次运行时找不到文件
         if not self.pending_file.exists():
             self.pending_file.touch()
+        # 崩溃恢复：启动时若遗留 snapshot，回滚合并
+        self._recover_pending_snapshot()
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():
@@ -48,6 +53,55 @@ class MemoryStore:
     def clear_pending(self) -> None:
         """optimizer 归档后清空 PENDING.md。"""
         self.pending_file.write_text("", encoding="utf-8")
+
+    # ── 两阶段提交（供 MemoryOptimizer 使用）──────────────────────────────────
+
+    @property
+    def _snapshot_path(self) -> Path:
+        return self.pending_file.with_name("PENDING.snapshot.md")
+
+    def snapshot_pending(self) -> str:
+        """Phase-1：原子移走 PENDING.md，返回其内容。
+
+        rename 之后 append_pending 会写入新建的 PENDING.md，
+        与本次快照完全隔离，不会丢失后续增量。
+        调用前会自动处理上次崩溃遗留的 snapshot。
+        """
+        self._recover_pending_snapshot()
+        if not self.pending_file.exists() or self.pending_file.stat().st_size == 0:
+            return ""
+        # POSIX rename 是原子操作：rename 完成后新追加写入全新的 PENDING.md
+        self.pending_file.rename(self._snapshot_path)
+        return self._snapshot_path.read_text(encoding="utf-8")
+
+    def commit_pending_snapshot(self) -> None:
+        """Phase-2 成功：merge 已完成，删除快照。"""
+        if self._snapshot_path.exists():
+            self._snapshot_path.unlink()
+
+    def rollback_pending_snapshot(self) -> None:
+        """Phase-2 失败：将快照内容合并回 PENDING.md，不丢失任何数据。
+
+        快照（较旧）在前，运行期新追加（较新）在后。
+        """
+        if not self._snapshot_path.exists():
+            return
+        snap_text = self._snapshot_path.read_text(encoding="utf-8")
+        new_text = (
+            self.pending_file.read_text(encoding="utf-8")
+            if self.pending_file.exists()
+            else ""
+        )
+        merged = snap_text.rstrip() + "\n" + new_text if new_text.strip() else snap_text
+        self.pending_file.write_text(merged, encoding="utf-8")
+        self._snapshot_path.unlink()
+        logger.info("[memory] PENDING snapshot 已回滚合并")
+
+    def _recover_pending_snapshot(self) -> None:
+        """启动时或 snapshot_pending 前调用，处理上次崩溃遗留的快照。"""
+        if self._snapshot_path.exists():
+            logger.warning("[memory] 检测到遗留 PENDING.snapshot.md，执行崩溃回滚")
+            self.rollback_pending_snapshot()
 
     def get_memory_context(self) -> str:
         long_term = self.read_long_term()

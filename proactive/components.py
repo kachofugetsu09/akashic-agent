@@ -221,7 +221,7 @@ class ProactiveSender:
                 proactive=True,
                 tools_used=["message_push"],
             )
-            self._sessions.save(session)
+            await self._sessions.save_async(session)
             if self._presence:
                 self._presence.record_proactive_sent(key)
             logger.info(f"[proactive] 已发送主动消息并写入会话 → {channel}:{chat_id}")

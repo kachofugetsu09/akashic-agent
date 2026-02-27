@@ -109,7 +109,7 @@ class TelegramChannel:
             self.user_map[username] = chat_id_str
             session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id_str}")
             session.metadata["username"] = username
-            self._session_manager.save(session)
+            await self._session_manager.save_async(session)
 
         await self._safe_send_typing(context, chat.id)
 
@@ -145,7 +145,7 @@ class TelegramChannel:
             self.user_map[username] = chat_id_str
             session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id_str}")
             session.metadata["username"] = username
-            self._session_manager.save(session)
+            await self._session_manager.save_async(session)
 
         await self._safe_send_typing(context, chat.id)
 

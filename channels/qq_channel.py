@@ -201,7 +201,7 @@ class QQChannel:
         session = self._session_manager.get_or_create(f"{_CHANNEL}:{user_id}")
         if "user_id" not in session.metadata:
             session.metadata["user_id"] = user_id
-            self._session_manager.save(session)
+            await self._session_manager.save_async(session)
         media = await _download_to_temp(img_urls or [])
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
@@ -218,7 +218,7 @@ class QQChannel:
         session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id}")
         if "group_id" not in session.metadata:
             session.metadata["group_id"] = group_id
-            self._session_manager.save(session)
+            await self._session_manager.save_async(session)
         media = await _download_to_temp(img_urls or [])
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,

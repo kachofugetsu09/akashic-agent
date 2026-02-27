@@ -21,7 +21,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent.provider import LLMProvider
 from agent.memory import MemoryStore
@@ -215,6 +215,7 @@ class ProactiveLoop:
         light_model: str = "",
         feed_store: Any | None = None,
         source_scorer: SourceScorer | None = None,
+        passive_busy_fn: Callable[[str], bool] | None = None,
     ) -> None:
         self._feeds = feed_registry
         self._sessions = session_manager
@@ -233,6 +234,7 @@ class ProactiveLoop:
         self._feed_store = feed_store
         self._light_provider = light_provider or provider
         self._light_model = light_model or (config.model or model)
+        self._passive_busy_fn = passive_busy_fn
 
         # ── SourceScorer（动态配额）──
         if source_scorer is not None:
@@ -402,6 +404,7 @@ class ProactiveLoop:
             skill_action_runner=self._build_skill_action_runner(),
             light_provider=self._light_provider,
             light_model=self._light_model,
+            passive_busy_fn=self._passive_busy_fn,
         )
 
     def _build_skill_action_runner(self) -> SkillActionRunner | None:

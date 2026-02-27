@@ -136,12 +136,15 @@ class MemoryOptimizer:
 
     async def optimize(self) -> None:
         """合并 PENDING 事实到 MEMORY + 生成问题列表。"""
+        # Phase-1：原子快照 PENDING.md。
+        # rename 之后 append_pending 写入新文件，本轮处理内容与后续增量完全隔离。
+        pending = self._memory.snapshot_pending()
         current_memory = self._memory.read_long_term().strip()
-        pending = self._memory.read_pending().strip()
         recent_history = self._read_recent_history()
 
         if not current_memory and not pending and not recent_history:
             logger.info("[memory_optimizer] 记忆、pending 和历史均为空，跳过优化")
+            # 无快照可提交，直接返回
             return
 
         # Step 1: 合并 PENDING 到 MEMORY（只增不删）
@@ -160,15 +163,18 @@ class MemoryOptimizer:
                 len(current_memory),
                 len(merged_memory),
             )
-            # 归档 PENDING 到 HISTORY，清空
+            # 归档 PENDING 到 HISTORY
             if pending:
                 self._memory.append_history(
                     f"[memory_optimizer] PENDING 归档:\n{pending}"
                 )
-                self._memory.clear_pending()
-                logger.info("[memory_optimizer] PENDING 已归档并清空")
+            # Phase-2 成功：删除快照
+            self._memory.commit_pending_snapshot()
+            logger.info("[memory_optimizer] PENDING 已归档，snapshot 已提交")
         else:
-            logger.warning("[memory_optimizer] 合并返回空，保留原有内容")
+            # Phase-2 失败：快照回滚合并回 PENDING.md，下轮重试
+            self._memory.rollback_pending_snapshot()
+            logger.warning("[memory_optimizer] 合并返回空，保留原有内容，snapshot 已回滚")
 
         # Step 2: 生成问题列表
         questions = await self._generate_questions(

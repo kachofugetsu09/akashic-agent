@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from feeds.base import FeedItem
 from proactive.energy import (
@@ -56,6 +56,7 @@ class ProactiveEngine:
         skill_action_runner: SkillActionRunner | None = None,
         light_provider: Any | None = None,
         light_model: str = "",
+        passive_busy_fn: Callable[[str], bool] | None = None,
     ) -> None:
         self._cfg = cfg
         self._state = state
@@ -69,6 +70,8 @@ class ProactiveEngine:
         self._skill_action_runner = skill_action_runner
         self._light_provider = light_provider
         self._light_model = light_model
+        # 可选：AgentLoop 注入的被动处理信号，用于跳过与被动回复并发的主动发送
+        self._passive_busy_fn = passive_busy_fn
 
     async def tick(self) -> float | None:
         """执行一次主动判断循环。
@@ -448,6 +451,14 @@ class ProactiveEngine:
                     )
                     await self._try_skill_action(now_utc=now_utc)
                     return base_score
+            # 目标会话正在处理被动回复时跳过，避免两条助手消息并发出现
+            if session_key and self._passive_busy_fn and self._passive_busy_fn(session_key):
+                logger.info(
+                    "[proactive] 目标会话 %s 正在处理被动回复，跳过本轮发送"
+                    " selected_action=idle reason=passive_busy",
+                    session_key,
+                )
+                return base_score
             sent = await self._act.send(decision_message)
             if sent:
                 # 配额记录：动作成功即消耗，与 session_key 无关
