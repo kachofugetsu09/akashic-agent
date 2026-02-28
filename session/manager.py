@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import json
 import logging
+import mimetypes
 import re
 from dataclasses import field, dataclass
 from datetime import datetime
@@ -11,6 +13,28 @@ from typing import Any
 _RECENT_TOOL_ROUNDS = 3
 _CLEARED = "[已清除]"
 _INFERENCE_TAG = "[以下为推演内容，本轮未调用工具，不可作为事实依据]\n"
+
+
+def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict]":
+    """重建带图片的用户消息。文件仍存在则内联 base64，否则降级为文字占位符。"""
+    images = []
+    for path in media_paths:
+        p = Path(path)
+        if not p.is_file():
+            continue
+        mime, _ = mimetypes.guess_type(p)
+        if not mime or not mime.startswith("image/"):
+            continue
+        try:
+            b64 = base64.b64encode(p.read_bytes()).decode()
+            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        except Exception:
+            continue
+    if not images:
+        # 文件已不存在，用文字标记保留上下文线索
+        prefix = f"[图片×{len(media_paths)}] " if len(media_paths) > 1 else "[图片] "
+        return prefix + text if text else prefix.strip()
+    return images + [{"type": "text", "text": text}]
 
 
 def _safe_filename(key: str) -> str:
@@ -31,7 +55,7 @@ class Session:
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0  # Number of messages already consolidated to files
 
-    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
+    def add_message(self, role: str, content: str, media: list[str] | None = None, **kwargs: Any) -> None:
         """Add a message to session."""
         msg = {
             "role": role,
@@ -39,6 +63,8 @@ class Session:
             "timestamp": datetime.now().isoformat(),
             **kwargs
         }
+        if media:
+            msg["media"] = list(media)
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
@@ -67,7 +93,10 @@ class Session:
             is_recent = i >= recent_boundary
 
             if role == "user":
-                out.append({"role": "user", "content": m.get("content", "")})
+                text = m.get("content", "")
+                media_paths = m.get("media") or []
+                user_content = _rebuild_user_content(text, media_paths) if media_paths else text
+                out.append({"role": "user", "content": user_content})
 
             elif role == "assistant":
                 tool_chain: list[dict] = m.get("tool_chain") or []

@@ -35,6 +35,8 @@ from agent.tools.skill_action_tool import (
     SkillActionUnregisterTool,
     SkillActionListTool,
 )
+from agent.mcp.registry import McpServerRegistry
+from agent.mcp.manage_tools import McpAddTool, McpRemoveTool, McpListTool
 from session.manager import SessionManager
 from feeds.store import FeedStore
 from feeds.registry import FeedRegistry
@@ -77,6 +79,7 @@ def _build_agent(
     LLMProvider,
     LLMProvider | None,
     "FeedManageTool",
+    McpServerRegistry,
 ]:
     bus = MessageBus()
     tools = ToolRegistry()
@@ -155,6 +158,15 @@ def _build_agent(
     tools.register(ListSchedulesTool(scheduler))
     tools.register(CancelScheduleTool(scheduler))
 
+    # MCP server 管理
+    mcp_registry = McpServerRegistry(
+        config_path=workspace / "mcp_servers.json",
+        tool_registry=tools,
+    )
+    tools.register(McpAddTool(mcp_registry))
+    tools.register(McpRemoveTool(mcp_registry))
+    tools.register(McpListTool(mcp_registry))
+
     # Feed store + registry
     feed_store = FeedStore(workspace / "feeds.json")
     feed_registry = FeedRegistry(feed_store)
@@ -178,6 +190,7 @@ def _build_agent(
         provider,
         light_provider,
         feed_manage_tool,
+        mcp_registry,
     )
 
 
@@ -196,7 +209,9 @@ async def serve(config_path: str = "config.json") -> None:
         provider,
         light_provider,
         feed_manage_tool,
+        mcp_registry,
     ) = _build_agent(config, workspace)
+    await mcp_registry.load_and_connect_all()
 
     from channels.ipc_server import IPCServerChannel
 

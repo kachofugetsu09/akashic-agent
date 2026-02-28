@@ -82,7 +82,7 @@ class AgentLoop:
             provider=self.light_provider,
             model=self.light_model,
             workspace=workspace,
-            tool_schemas=self.tools.get_schemas(),
+            get_tool_schemas=self.tools.get_schemas,
             tool_executor=self.tools.execute,
         )
         self.max_iterations = max_iterations
@@ -410,7 +410,7 @@ class AgentLoop:
 
         if self._presence:
             self._presence.record_user_message(key)
-        session.add_message("user", msg.content)
+        session.add_message("user", msg.content, media=msg.media if msg.media else None)
         session.add_message(
             "assistant",
             final_content,

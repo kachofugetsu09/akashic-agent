@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 import json_repair
 
@@ -22,7 +22,7 @@ _ANALYZER_SYSTEM_PROMPT = """你是 QueryAnalyzer（前置分析器）。
 硬规则：
 1. 你必须输出 history_pointers（历史消息编号，1-based），用于挑选 extra context。
 2. required_evidence 是“建议”，不是“强制指令”；可以为空。
-3. relevant_sops 是“建议相关 SOP”；命中后系统会自动补充 read_file 取证建议。
+3. relevant_sops 只填你确信与本次用户请求直接相关的 SOP；填入后系统会强制 read_file 读取并注入主循环，产生不可撤销的额外开销。不确定是否相关时，留空即可，主循环会自行判断。
 4. 只输出 JSON，不要 markdown，不要解释。
 """
 
@@ -48,7 +48,7 @@ class QueryAnalyzer:
         provider: LLMProvider,
         model: str,
         workspace: Path,
-        tool_schemas: list[dict[str, Any]],
+        get_tool_schemas: Callable[[], Sequence[dict[str, Any]]],
         tool_executor: Callable[[str, dict[str, Any]], Awaitable[str]],
         max_iterations: int = 4,
         max_tokens: int = 768,
@@ -59,8 +59,9 @@ class QueryAnalyzer:
         self._tool_executor = tool_executor
         self._max_iterations = max_iterations
         self._max_tokens = max_tokens
-        self._all_tool_schemas = tool_schemas
-        self._tool_schemas = self._filter_tool_schemas(tool_schemas)
+        self._get_tool_schemas = get_tool_schemas
+        initial_schemas = list(get_tool_schemas())
+        self._tool_schemas = self._filter_tool_schemas(initial_schemas)
         self._tool_names = {
             s.get("function", {}).get("name", "") for s in self._tool_schemas
         }
@@ -163,7 +164,7 @@ class QueryAnalyzer:
         forced_recent_count: int,
     ) -> str:
         tools = json.dumps(self._tool_schemas, ensure_ascii=False)
-        all_tools = json.dumps(self._build_tool_summary(self._all_tool_schemas), ensure_ascii=False)
+        all_tools = json.dumps(self._build_tool_summary(list(self._get_tool_schemas())), ensure_ascii=False)
         history_index = self._build_history_index_guide(history)
         editable_docs = self._build_editable_docs_index()
         index_entries = self._build_index_entry_points()

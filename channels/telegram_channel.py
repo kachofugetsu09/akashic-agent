@@ -114,11 +114,22 @@ class TelegramChannel:
         await self._safe_send_typing(context, chat.id)
 
         inbound_text, reply_meta = _build_inbound_text_with_reply(msg.text, msg.reply_to_message)
+        reply_media: list[str] = []
+        if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
+            try:
+                tg_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)
+                tmp = tempfile.mktemp(suffix=".jpg", prefix="akasic_tg_reply_")
+                await tg_file.download_to_drive(tmp)
+                reply_media.append(tmp)
+                logger.info(f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={tmp}")
+            except Exception as e:
+                logger.warning(f"[telegram] 被回复图片下载失败  chat_id={chat.id}  err={e}")
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=str(user.id),
             chat_id=str(chat.id),
             content=inbound_text,
+            media=reply_media,
             metadata={
                 "username": user.username or "",
                 **reply_meta,
@@ -157,12 +168,22 @@ class TelegramChannel:
 
         caption_text = msg.caption or ""
         inbound_text, reply_meta = _build_inbound_text_with_reply(caption_text, msg.reply_to_message)
+        media = [tmp]
+        if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
+            try:
+                reply_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)
+                reply_tmp = tempfile.mktemp(suffix=".jpg", prefix="akasic_tg_reply_")
+                await reply_file.download_to_drive(reply_tmp)
+                media.append(reply_tmp)
+                logger.info(f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={reply_tmp}")
+            except Exception as e:
+                logger.warning(f"[telegram] 被回复图片下载失败  chat_id={chat.id}  err={e}")
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=str(user.id),
             chat_id=str(chat.id),
             content=inbound_text,
-            media=[tmp],
+            media=media,
             metadata={
                 "username": user.username or "",
                 **reply_meta,
@@ -247,8 +268,11 @@ def _build_inbound_text_with_reply(
 
     reply_text = (reply_msg.text or reply_msg.caption or "").strip()
     if not reply_text:
-        # 保守处理：非文本被回复消息只保留结构化元信息，不污染正文。
-        return text, {"reply_to_message_id": int(reply_msg.message_id)}
+        # 被回复消息无文字：若含图片则用占位符，否则只保留元信息
+        if getattr(reply_msg, "photo", None):
+            reply_text = "[图片]"
+        else:
+            return text, {"reply_to_message_id": int(reply_msg.message_id)}
 
     reply_sender = ""
     from_user = getattr(reply_msg, "from_user", None)
