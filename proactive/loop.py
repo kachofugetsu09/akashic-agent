@@ -311,7 +311,7 @@ class ProactiveLoop:
                 format_items=_format_items,
                 format_recent=_format_recent,
                 parse_decision=_parse_decision,
-                collect_global_memory=self._collect_global_memory,
+                collect_global_memory=self._build_context_block,
                 sample_random_memory=self._sample_random_memory,
                 target_session_key=self._target_session_key,
                 on_reflect_error=lambda e: _Decision(
@@ -334,7 +334,7 @@ class ProactiveLoop:
             max_tokens=self._max_tokens,
             format_items=_format_items,
             format_recent=_format_recent,
-            collect_global_memory=self._collect_global_memory,
+            collect_global_memory=self._build_context_block,
         )
         self._message_composer = ProactiveMessageComposer(
             provider=self._provider,
@@ -342,7 +342,7 @@ class ProactiveLoop:
             max_tokens=self._max_tokens,
             format_items=_format_items,
             format_recent=_format_recent,
-            collect_global_memory=self._collect_global_memory,
+            collect_global_memory=self._build_context_block,
         )
         quota_path = (
             (self._state.path.parent / "proactive_quota.json")
@@ -569,6 +569,27 @@ class ProactiveLoop:
             logger.warning("[proactive] 读取全局记忆失败: %s", e)
             return "（读取全局记忆失败）"
 
+    def _read_agents_md(self) -> str:
+        # 与全局记忆开关保持一致：禁用 memory 时不注入 AGENTS 导航
+        if not self._cfg.use_global_memory:
+            return ""
+        try:
+            agents_md = self._sessions.workspace / "AGENTS.md"
+            if not agents_md.is_file():
+                return ""
+            content = agents_md.read_text(encoding="utf-8").strip()[:3000]
+            return content
+        except Exception as e:
+            logger.warning("[proactive] 读取 AGENTS.md 失败: %s", e)
+            return ""
+
+    def _build_context_block(self) -> str:
+        parts = [self._collect_global_memory()]
+        agents = self._read_agents_md()
+        if agents:
+            parts.append(f"## Workspace 导航（AGENTS.md）\n{agents}")
+        return "\n\n".join(p for p in parts if p)
+
     async def _send(self, message: str) -> bool:
         return await self._sender.send(message)
 
@@ -605,7 +626,11 @@ def _format_recent(msgs: list[dict]) -> str:
     for m in msgs[-20:]:  # 最多展示最近 20 条，完整内容不截断
         role = "用户" if m["role"] == "user" else "助手"
         content = str(m.get("content", ""))
-        lines.append(f"{role}: {content}")
+        ts = str(m.get("timestamp", "")).strip()
+        if ts:
+            lines.append(f"[{ts}] {role}: {content}")
+        else:
+            lines.append(f"{role}: {content}")
     return "\n".join(lines)
 
 

@@ -595,8 +595,7 @@ class ProactiveMessageDeduper:
 class ProactiveMessageComposer:
     """特征模式下的消息生成器：只负责生成 message，不做是否发送决策。
 
-    具备工具调用能力（read_file / web_fetch / web_search），最多 10 轮迭代，
-    以避免直接依赖截断 memory 导致的幻觉。
+    工具能力保持只读（read_file / web_fetch / web_search），避免主动链路拥有写入能力。
     """
 
     # PRE_FLIGHT：生成前强制自检，对齐主循环策略
@@ -605,7 +604,7 @@ class ProactiveMessageComposer:
         "1. 消息中是否涉及用户的实时状态数据（游戏时长、健康指标、订阅源列表等）？"
         "若涉及，必须先调用对应工具获取真实数据，禁止凭记忆臆断。\n"
         "2. 消息中是否有可能已过期的事实（如某游戏发布日期、某 DLC 上线状态）？"
-        "若不确定，先用 web_search 确认，或用推测语气表达。\n"
+        "若不确定，优先用 web_search/web_fetch 校验；仍无证据时用推测语气，避免给出具体日期。\n"
         "3. 若两条均不适用，直接生成消息即可。"
     )
 
@@ -634,7 +633,7 @@ class ProactiveMessageComposer:
         self._format_recent = format_recent
         self._collect_global_memory = collect_global_memory
         self._max_tool_iterations = max_tool_iterations
-        # 工具实例（无路径限制，composer 有查询任意文件和网络的权限）
+        # 工具实例：只读（不写文件、不执行系统动作）
         self._tools: list[Tool] = [
             ReadFileTool(),
             WebFetchTool(),
@@ -669,7 +668,7 @@ class ProactiveMessageComposer:
 
         system_msg = (
             "你是陪伴型助手。系统已经决定可以主动发送消息给用户。\n"
-            "你可以调用工具查询实时数据（文件/网页/搜索）以确保消息内容准确。\n"
+            "你只能调用只读工具 read_file / web_fetch / web_search；不能写文件，不能执行外部动作。\n"
             "最终只输出一条自然、简短、可直接发送给用户的中文消息，不超过120字。\n"
             "消息要自然表达你的判断，不要用“你怎么看/你觉得呢”等征求看法的反问句收尾。\n"
             "除非必须让用户做明确选择，否则不要主动提问。\n"

@@ -171,7 +171,11 @@ class DefaultSensePort:
             session = self._sessions.get_or_create(key)
             msgs = session.messages[-self._cfg.recent_chat_messages :]
             return [
-                {"role": m["role"], "content": str(m.get("content", ""))[:200]}
+                {
+                    "role": m["role"],
+                    "content": str(m.get("content", ""))[:200],
+                    "timestamp": str(m.get("timestamp", "")),
+                }
                 for m in msgs
                 if m.get("role") in ("user", "assistant") and m.get("content")
             ]
