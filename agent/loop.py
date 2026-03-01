@@ -640,52 +640,94 @@ class AgentLoop:
         for m in old_messages:
             if not m.get("content"):
                 continue
+            role = m["role"].upper()
+            # 跳过纯工具结果消息（role=tool），它们是内部往返，不是对话内容
+            if m["role"] == "tool":
+                continue
             lines.append(
-                f"[{m.get('timestamp', '?')[:16]}] {m['role'].upper()}: {m['content']}"
+                f"[{m.get('timestamp', '?')[:16]}] {role}: {m['content']}"
             )
         conversation = "\n".join(lines)
         current_memory = memory.read_long_term()
         current_questions = memory.read_questions()
+        current_ongoing = memory.read_now_ongoing()
 
-        prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中提取需要长期记住的新事实，返回 JSON。
+        prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
 
-JSON 包含以下四个键：
+## 字段说明
 
-1. "history_entry"：2-5 句话的事件摘要，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
+### 1. "history_entry" → HISTORY.md
+2-5 句事件摘要，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
 
-2. "new_facts"：本次对话中出现的**新持久化事实**，格式为带分类标注的 bullet 列表。
-   规则：
-   - 只写现有档案中**没有**的新信息（对照下方档案查重）
-   - 只写持久性事实：姓名/设备/账号/偏好/技能/项目经历/游戏数据等
-   - 不写一次性操作记录（"帮用户执行了X"、"已完成Y"）
-   - 不写对话本身的过程描述
-   - 若无新事实，返回空字符串 ""
-   - 格式示例：
-     - [用户画像] 用户确认正在准备秋招
-     - [硬件与环境] 新增显示器：Dell U2723D
+### 2. "user_facts" → MEMORY.md 候选缓冲
+只写用户的**稳定持久事实**，格式为带分类标注的 bullet 列表（对照下方用户档案查重，只写新增内容）。
 
-3. "corrections"：本次对话中发现**现有档案记录有误或已过时**的内容，格式为带 [纠正] 标注的 bullet 列表。
-   规则：
-   - 仅当对话中有明确信息（用户纠正/工具实测/新事实与档案矛盾）时才写
-   - 必须同时写出旧值和新值，便于 optimizer 合并时识别需要覆盖的内容
-   - 若无需纠正，返回空字符串 ""
-   - 格式示例：
-     - [纠正] 显示器型号：档案记录 Dell U2723D → 实际为 LG 27GP950
+✓ 写：用户身份/设备/账号/凭证/技能/经历/偏好/立场/游戏数据
+✓ 写：用户对知识库内容（小说/游戏/作品）的情感倾向——但用指针格式，不复制内容本体
+✗ 不写：工具或系统的限制、bug、API 状态（不是用户事实）
+✗ 不写：一次性操作记录（"用户执行了X"、"已完成Y"）
+✗ 不写：对话过程描述
+✗ 不写：短期/临时状态（改用 now_updates 字段）
+✗ 不写：agent 行为规则（改用 behavior_updates 字段）
+✗ 不写：某次任务的操作性细节（配置参数、具体数值、当次选择的方案）——这些不是用户画像
+✗ 不写：知识库内容本体（世界观细节、剧情、角色设定）——内容留在 KB 文件，这里只存用户反应
 
-4. "answered_question_indices"：从待了解问题列表中，本次对话**已得到解答**的问题序号列表（1-based int）。若无则返回 []。
+判断标准："如果同一个用户开始一段新对话，这条信息还有意义吗？"若否，不写。
 
-5. "behavior_updates"：本次对话中用户明确要求改变未来行为的规则（"记住/以后/下次"触发）。
-   格式：JSON 数组，每项 {{"summary": "...", "memory_type": "procedure|preference",
-   "tool_requirement": null或"工具名", "steps": [], "persist_file": null或"文件名"}}
-   若无则返回 []
+**知识库内容的指针化格式**（用户对 KB 内容有明确情感/立场时使用）：
+`用户 [情感/立场描述] [内容简称] -> [KB文件路径]`
+格式示例：
+- [2236偏好] 用户最喜爱的设定：正三角形（具体举例非抽象隐喻）-> ~/.akasic/workspace/kb/2236/summaries/chunks/hime_ending-chunk-0003.source.md
+- [2236偏好] 用户对伸司的评价从负面反转为认可其悲剧性 -> ~/.akasic/workspace/kb/2236/summaries/chunks/common-chunk-0039.source.md
 
-6. "events"：保留空列表 []（history_entry 已足够，events 由 history_entry 自动转换）
+若无新事实，返回 ""。
+普通格式示例：
+- [账号与凭证] UCD Moodle Token: xxxxx (User ID: 22578)
+- [偏好] 用户偏好按课程单独分配日历颜色
 
-## 当前用户档案（用于查重）
+### 3. "corrections" → 覆盖 MEMORY.md 错误记录
+仅当对话中有明确信息推翻档案现有记录时才写，必须同时写旧值和新值。若无需纠正，返回 ""。
+✗ 不写：工具加载失败/报错（属于运行时故障，不代表用户现实状态发生改变）
+✗ 不写：单次工具调用返回异常（需用户本人明确确认才算纠正）
+格式示例：
+- [纠正] 主力机显示器：档案记录 Dell U2723D → 用户确认实际为 LG 27GP950
+
+### 4. "now_updates" → 直接更新 NOW.md"近期进行中"
+包含两个子字段（均为字符串列表）：
+- "add_ongoing"：新增到"近期进行中"的条目（自然语言一句话，不带 bullet 符号）
+  - 只写需要跨对话持续追踪的进行中状态，如"正在阅读《西历2236》TE线"
+  - 不写技术坐标（chunk 号等）
+  - 不写已完成的事项
+- "remove_ongoing_keywords"：要从"近期进行中"删除的条目关键词（模糊匹配，命中即删）
+
+均无变化时两者返回 []。
+
+### 5. "self_insights" → SELF.md 候选洞察
+agent 从本次对话中发现的用户**行为模式新规律**，格式为带 [SELF] 标注的 bullet 列表。
+必须是跨对话可泛化的规律，不是描述这次发生了什么。若无新洞察，返回 []。
+格式示例：
+- [SELF] 用户在涉及日程/课表时要求精确时间，拒绝模糊描述
+- [SELF] 用户对工具调用中间步骤不感兴趣，只关心最终结论
+
+### 6. "answered_question_indices" → 清理 NOW.md 问题列表
+本次对话中已得到答复的问题序号（1-based int 列表）。无则返回 []。
+
+### 7. "behavior_updates" → memory2 DB
+用户明确要求改变 agent 未来行为的规则（"记住/以后/下次"等触发词才写）。
+格式：JSON 数组，每项 {{"summary": "...", "memory_type": "procedure|preference",
+"tool_requirement": null或"工具名", "steps": [], "persist_file": null或"文件名"}}
+若无则返回 []。
+
+---
+
+## 当前用户档案（用于 user_facts 查重）
 {current_memory or "（空）"}
 
-## 待了解的问题
+## 待了解的问题（用于 answered_question_indices）
 {current_questions or "（无）"}
+
+## 当前进行中事项（用于 now_updates 去重）
+{current_ongoing or "（无）"}
 
 ## 待处理对话
 {conversation}
@@ -723,13 +765,13 @@ JSON 包含以下四个键：
 
             if "history_entry" in result:
                 memory.append_history(result["history_entry"])
-            # 增量事实写入 PENDING.md，不触碰 MEMORY.md
-            # MEMORY.md 由夜间 MemoryOptimizer 统一合并维护
-            new_facts = result.get("new_facts", "")
-            if new_facts and isinstance(new_facts, str) and new_facts.strip():
-                memory.append_pending(new_facts)
+
+            # user_facts / corrections → PENDING.md（MemoryOptimizer 稍后合并到 MEMORY.md）
+            user_facts = result.get("user_facts", "")
+            if user_facts and isinstance(user_facts, str) and user_facts.strip():
+                memory.append_pending(user_facts)
                 logger.info(
-                    f"Memory consolidation: appended {len(new_facts.splitlines())} new facts to PENDING"
+                    f"Memory consolidation: appended {len(user_facts.splitlines())} user_facts to PENDING"
                 )
             corrections = result.get("corrections", "")
             if corrections and isinstance(corrections, str) and corrections.strip():
@@ -737,6 +779,38 @@ JSON 包含以下四个键：
                 logger.info(
                     f"Memory consolidation: appended {len(corrections.splitlines())} corrections to PENDING"
                 )
+
+            # self_insights → PENDING.md 带 [SELF] 标记，供 Optimizer 路由到 SELF.md
+            self_insights = result.get("self_insights", [])
+            if self_insights and isinstance(self_insights, list):
+                insight_lines = [
+                    s if s.strip().startswith("[SELF]") else f"[SELF] {s.strip()}"
+                    for s in self_insights
+                    if isinstance(s, str) and s.strip()
+                ]
+                if insight_lines:
+                    memory.append_pending("\n".join(insight_lines))
+                    logger.info(
+                        f"Memory consolidation: appended {len(insight_lines)} self_insights to PENDING"
+                    )
+
+            # now_updates → 直接写入 NOW.md，不经过 PENDING
+            now_updates = result.get("now_updates", {})
+            if isinstance(now_updates, dict):
+                add_ongoing = now_updates.get("add_ongoing", [])
+                remove_kws = now_updates.get("remove_ongoing_keywords", [])
+                if (add_ongoing or remove_kws):
+                    try:
+                        memory.update_now_ongoing(
+                            add=[s for s in add_ongoing if isinstance(s, str)],
+                            remove_keywords=[s for s in remove_kws if isinstance(s, str)],
+                        )
+                        logger.info(
+                            f"Memory consolidation: now_updates add={add_ongoing} remove={remove_kws}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Memory consolidation: now_updates 写入失败: {e}")
+
             answered = result.get("answered_question_indices", [])
             if answered and isinstance(answered, list):
                 indices = [

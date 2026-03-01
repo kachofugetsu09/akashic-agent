@@ -69,6 +69,45 @@ class MemoryStore:
         """从 NOW.md 提取 '## 近期进行中' section 正文（不含标题行）。"""
         return self._extract_now_section(self.read_now(), "## 近期进行中")
 
+    def update_now_ongoing(
+        self,
+        add: list[str],
+        remove_keywords: list[str],
+    ) -> None:
+        """更新 NOW.md 中 '## 近期进行中' section。
+
+        add: 新增条目（自然语言，不带 bullet 符号也可）。
+        remove_keywords: 含该关键词的行将被删除（大小写不敏感）。
+        """
+        if not add and not remove_keywords:
+            return
+        text = self.read_now()
+        before, lines, after = self._split_now_section(text, "## 近期进行中")
+
+        # 删除匹配关键词的行
+        if remove_keywords:
+            kws_lower = [kw.lower() for kw in remove_keywords if kw.strip()]
+            lines = [l for l in lines if not any(kw in l.lower() for kw in kws_lower)]
+
+        # 追加新条目（按内容去重）
+        existing = " ".join(lines).lower()
+        for item in add:
+            item_clean = item.strip().lstrip("- ").strip()
+            if item_clean and item_clean.lower() not in existing:
+                lines.append(f"- {item_clean}")
+                existing += " " + item_clean.lower()
+
+        section_body = "\n".join(lines)
+        section = f"## 近期进行中\n\n{section_body}" if section_body else "## 近期进行中"
+
+        parts = []
+        if before.strip():
+            parts.append(before.rstrip())
+        parts.append(section)
+        if after.strip():
+            parts.append(after.strip())
+        self.write_now("\n\n".join(parts) + "\n")
+
     # ── pending facts (conversation → optimizer buffer) ───────────
 
     def read_pending(self) -> str:
@@ -199,6 +238,33 @@ class MemoryStore:
         if not m:
             return ""
         return m.group(1).strip()
+
+    def _split_now_section(
+        self, text: str, header: str
+    ) -> tuple[str, list[str], str]:
+        """将 NOW.md 拆成 (section 前内容, section 正文行列表, section 后内容)。
+
+        返回的行列表已过滤空行，适合直接 append / filter 后重组。
+        若 header 不存在，section 内容返回空列表，after 为空。
+        """
+        pattern = re.compile(r"^" + re.escape(header) + r"\s*$", re.MULTILINE)
+        m = pattern.search(text)
+        if not m:
+            return text, [], ""
+
+        before = text[: m.start()]
+        rest = text[m.end() :]
+
+        next_section = re.search(r"^## ", rest, re.MULTILINE)
+        if next_section:
+            body = rest[: next_section.start()]
+            after = rest[next_section.start() :]
+        else:
+            body = rest
+            after = ""
+
+        lines = [l for l in body.splitlines() if l.strip()]
+        return before, lines, after
 
     def _split_now_questions(self, text: str) -> tuple[str, list[str], str]:
         """把 NOW.md 文本拆成 (questions_section 之前的内容, 问题列表, section 之后的内容)。"""
