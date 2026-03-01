@@ -6,6 +6,32 @@ from typing import Any
 from agent.tools.base import Tool
 
 
+def _read_xlsx(file_path: Path) -> str:
+    import openpyxl
+    wb = openpyxl.load_workbook(file_path, data_only=True)
+    parts = []
+    for sheet in wb.sheetnames:
+        ws = wb[sheet]
+        parts.append(f"## Sheet: {sheet}")
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c) if c is not None else "" for c in row]
+            if any(cells):
+                parts.append("\t".join(cells))
+    return "\n".join(parts)
+
+
+def _read_xls(file_path: Path) -> str:
+    import xlrd
+    wb = xlrd.open_workbook(str(file_path))
+    parts = []
+    for sheet in wb.sheets():
+        parts.append(f"## Sheet: {sheet.name}")
+        for row_idx in range(sheet.nrows):
+            cells = [str(sheet.cell_value(row_idx, col)) for col in range(sheet.ncols)]
+            parts.append("\t".join(cells))
+    return "\n".join(parts)
+
+
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     """解析路径（展开 ~ 并取绝对路径），可选限制在允许目录内。"""
     resolved = Path(path).expanduser().resolve()
@@ -48,6 +74,12 @@ class ReadFileTool(Tool):
                 return f"错误：文件不存在：{path}"
             if not file_path.is_file():
                 return f"错误：路径不是文件：{path}"
+
+            suffix = file_path.suffix.lower()
+            if suffix == ".xlsx":
+                return _read_xlsx(file_path)
+            if suffix == ".xls":
+                return _read_xls(file_path)
 
             return file_path.read_text(encoding="utf-8")
         except PermissionError as e:

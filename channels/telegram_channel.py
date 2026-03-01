@@ -4,8 +4,9 @@ Telegram Channel
 将 Telegram Bot 接入 MessageBus，支持 allowFrom 白名单。
 """
 import logging
-import tempfile
 import asyncio
+import time
+from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -20,6 +21,14 @@ from session.manager import SessionManager
 logger = logging.getLogger(__name__)
 
 _CHANNEL = "telegram"
+_UPLOAD_DIR = Path.home() / ".akasic" / "workspace" / "uploads"
+
+
+def _upload_path(prefix: str, suffix: str) -> Path:
+    """在持久化目录中生成唯一文件路径。"""
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time() * 1000)
+    return _UPLOAD_DIR / f"{prefix}{ts}{suffix}"
 
 
 class TelegramChannel:
@@ -40,6 +49,9 @@ class TelegramChannel:
         )
         self._app.add_handler(
             MessageHandler(filters.PHOTO & ~filters.COMMAND, self._on_photo)
+        )
+        self._app.add_handler(
+            MessageHandler(filters.Document.ALL & ~filters.COMMAND, self._on_document)
         )
         bus.subscribe_outbound(_CHANNEL, self._on_response)
         # username.lower() → chat_id，启动时从 session 重建，运行时实时更新
@@ -125,12 +137,25 @@ class TelegramChannel:
         if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
             try:
                 tg_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)
-                tmp = tempfile.mktemp(suffix=".jpg", prefix="akasic_tg_reply_")
+                tmp = _upload_path("reply_photo_", ".jpg")
                 await tg_file.download_to_drive(tmp)
-                reply_media.append(tmp)
+                reply_media.append(str(tmp))
                 logger.info(f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={tmp}")
             except Exception as e:
                 logger.warning(f"[telegram] 被回复图片下载失败  chat_id={chat.id}  err={e}")
+        if msg.reply_to_message and getattr(msg.reply_to_message, "document", None):
+            try:
+                rdoc = msg.reply_to_message.document
+                suffix = ""
+                if rdoc.file_name and "." in rdoc.file_name:
+                    suffix = "." + rdoc.file_name.rsplit(".", 1)[-1]
+                tg_file = await context.bot.get_file(rdoc.file_id)
+                tmp = _upload_path("reply_doc_", suffix)
+                await tg_file.download_to_drive(tmp)
+                reply_media.append(str(tmp))
+                logger.info(f"[telegram] 下载被回复文件  chat_id={chat.id}  filename={rdoc.file_name!r}  tmp={tmp}")
+            except Exception as e:
+                logger.warning(f"[telegram] 被回复文件下载失败  chat_id={chat.id}  err={e}")
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=str(user.id),
@@ -167,11 +192,11 @@ class TelegramChannel:
 
         await self._safe_send_typing(context, chat.id)
 
-        # 下载最高分辨率的图片到临时文件
+        # 下载最高分辨率的图片到持久化目录
         tg_file = await context.bot.get_file(msg.photo[-1].file_id)
-        tmp = tempfile.mktemp(suffix=".jpg", prefix="akasic_tg_")
+        tmp = _upload_path("photo_", ".jpg")
         await tg_file.download_to_drive(tmp)
-        logger.info(f"[telegram] 收到图片  chat_id={chat.id}  user=@{user.username or user.id}  tmp={tmp}")
+        logger.info(f"[telegram] 收到图片  chat_id={chat.id}  user=@{user.username or user.id}  path={tmp}")
 
         caption_text = msg.caption or ""
         inbound_text, reply_meta = _build_inbound_text_with_reply(caption_text, msg.reply_to_message)
@@ -179,9 +204,9 @@ class TelegramChannel:
         if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
             try:
                 reply_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)
-                reply_tmp = tempfile.mktemp(suffix=".jpg", prefix="akasic_tg_reply_")
+                reply_tmp = _upload_path("reply_photo_", ".jpg")
                 await reply_file.download_to_drive(reply_tmp)
-                media.append(reply_tmp)
+                media.append(str(reply_tmp))
                 logger.info(f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={reply_tmp}")
             except Exception as e:
                 logger.warning(f"[telegram] 被回复图片下载失败  chat_id={chat.id}  err={e}")
@@ -193,6 +218,60 @@ class TelegramChannel:
             media=media,
             metadata={
                 "username": user.username or "",
+                **reply_meta,
+            },
+        ))
+
+    async def _on_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        msg = update.effective_message
+        chat = update.effective_chat
+        user = update.effective_user
+
+        if not msg or not msg.document or not user:
+            return
+
+        if not self._is_allowed(user):
+            logger.warning(
+                f"[telegram] 拒绝未授权用户  id={user.id}  username=@{user.username}"
+            )
+            return
+
+        if user.username:
+            username = user.username.lower()
+            chat_id_str = str(chat.id)
+            self.user_map[username] = chat_id_str
+            session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id_str}")
+            session.metadata["username"] = username
+            await self._session_manager.save_async(session)
+
+        await self._safe_send_typing(context, chat.id)
+
+        doc = msg.document
+        suffix = ""
+        if doc.file_name and "." in doc.file_name:
+            suffix = "." + doc.file_name.rsplit(".", 1)[-1]
+        tg_file = await context.bot.get_file(doc.file_id)
+        tmp = _upload_path("doc_", suffix)
+        await tg_file.download_to_drive(tmp)
+        logger.info(
+            f"[telegram] 收到文件  chat_id={chat.id}  user=@{user.username or user.id}"
+            f"  filename={doc.file_name!r}  tmp={tmp}"
+        )
+
+        caption_text = msg.caption or ""
+        inbound_text, reply_meta = _build_inbound_text_with_reply(caption_text, msg.reply_to_message)
+        if doc.file_name:
+            inbound_text = f"[文件: {doc.file_name}]\n{inbound_text}".strip()
+        await self._bus.publish_inbound(InboundMessage(
+            channel=_CHANNEL,
+            sender=str(user.id),
+            chat_id=str(chat.id),
+            content=inbound_text,
+            media=[str(tmp)],
+            metadata={
+                "username": user.username or "",
+                "document_filename": doc.file_name or "",
+                "document_mime_type": doc.mime_type or "",
                 **reply_meta,
             },
         ))
@@ -212,11 +291,11 @@ class TelegramChannel:
         """发送文本消息（供 MessagePushTool 调用）"""
         await send_markdown(self._app.bot, self._resolve_chat_id(chat_id), message)
 
-    async def send_file(self, chat_id: str, file_path: str, name: str | None = None) -> None:
-        """发送文件"""
+    async def send_file(self, chat_id: str, file_path: str, name: str | None = None, caption: str | None = None) -> None:
+        """发送文件，可附带说明文字"""
         cid = int(self._resolve_chat_id(chat_id))
         with open(file_path, "rb") as f:
-            await self._app.bot.send_document(chat_id=cid, document=f, filename=name)
+            await self._app.bot.send_document(chat_id=cid, document=f, filename=name, caption=caption)
 
     async def send_image(self, chat_id: str, image: str) -> None:
         """发送图片（本地路径或 URL）"""
