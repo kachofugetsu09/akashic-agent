@@ -3,13 +3,11 @@ TDD for proactive/energy.py
 
 测试覆盖：
   - compute_energy: 多时间尺度衰减
-  - urge_base: 二次冲动函数
   - time_weight: 昼夜节律
-  - next_tick_interval: 自适应心跳间隔
+  - random_weight: 随机扰动
 """
 from datetime import datetime, timezone, timedelta
-import pytest
-from proactive.energy import compute_energy, urge_base, time_weight, next_tick_interval
+from proactive.energy import compute_energy, time_weight
 
 
 def _ago(minutes: float) -> datetime:
@@ -70,42 +68,6 @@ def test_energy_accepts_custom_decay_params():
     assert e < 0.01
 
 
-# ── urge_base ────────────────────────────────────────────────────
-
-def test_urge_is_zero_when_energy_above_threshold():
-    assert urge_base(0.20) == 0.0
-    assert urge_base(0.50) == 0.0
-    assert urge_base(1.00) == 0.0
-
-
-def test_urge_is_zero_exactly_at_threshold():
-    assert urge_base(0.20, cool_threshold=0.20) == 0.0
-
-
-def test_urge_is_one_when_energy_is_zero():
-    assert urge_base(0.0) == 1.0
-
-
-def test_urge_is_quarter_at_half_threshold():
-    """E = θ/2 → urge = 0.25（二次曲线中点）。"""
-    theta = 0.20
-    e = theta / 2
-    u = urge_base(e, cool_threshold=theta)
-    assert abs(u - 0.25) < 1e-9
-
-
-def test_urge_rises_as_energy_drops():
-    energies = [0.19, 0.15, 0.10, 0.05, 0.01, 0.0]
-    urges = [urge_base(e) for e in energies]
-    for a, b in zip(urges, urges[1:]):
-        assert a < b, f"urge should increase as energy drops: {a} < {b}"
-
-
-def test_urge_clamps_at_one_for_negative_energy():
-    """防御：负电量也不超过 1.0。"""
-    assert urge_base(-0.1) == 1.0
-
-
 # ── time_weight ───────────────────────────────────────────────────
 
 def test_time_weight_is_one_during_daytime(
@@ -131,52 +93,6 @@ def test_time_weight_custom_quiet_window():
     assert time_weight(3, quiet_start=2, quiet_end=4) == 0.0
     assert time_weight(5, quiet_start=2, quiet_end=4) == 1.0
     assert time_weight(1, quiet_start=2, quiet_end=4) == 1.0
-
-
-# ── next_tick_interval ────────────────────────────────────────────
-# jitter=0 关掉随机，验证档位逻辑；带 jitter 时验证落在合理范围内
-
-def test_tick_interval_high_when_energy_above_half():
-    assert next_tick_interval(0.60, tick_jitter=0) == 7200
-
-
-def test_tick_interval_normal_when_energy_between_cool_and_half():
-    assert next_tick_interval(0.30, tick_jitter=0) == 1800
-
-
-def test_tick_interval_low_when_energy_below_cool_threshold():
-    assert next_tick_interval(0.15, tick_jitter=0) == 900
-
-
-def test_tick_interval_crisis_when_energy_below_crisis_threshold():
-    assert next_tick_interval(0.03, tick_jitter=0) == 600
-
-
-def test_tick_interval_crisis_at_zero_energy():
-    assert next_tick_interval(0.0, tick_jitter=0) == 600
-
-
-def test_tick_interval_jitter_stays_within_range():
-    import random
-    rng = random.Random(42)
-    base = 600
-    jitter = 0.3
-    for _ in range(50):
-        v = next_tick_interval(0.0, tick_crisis=base, tick_jitter=jitter, rng=rng)
-        assert int(base * (1 - jitter)) <= v <= int(base * (1 + jitter)) + 1
-
-
-def test_tick_interval_jitter_zero_returns_exact():
-    assert next_tick_interval(0.60, tick_high=7200, tick_jitter=0.0) == 7200
-
-
-def test_tick_interval_decreases_as_energy_drops():
-    intervals = [
-        next_tick_interval(e)
-        for e in [0.80, 0.40, 0.15, 0.02]
-    ]
-    for a, b in zip(intervals, intervals[1:]):
-        assert a >= b, f"interval should not increase as energy drops: {a} >= {b}"
 
 
 # ── random_weight ─────────────────────────────────────────────────
@@ -209,39 +125,3 @@ def test_random_weight_roughly_centered():
     weights = [random_weight() for _ in range(2000)]
     mean = sum(weights) / len(weights)
     assert 0.9 <= mean <= 1.1, f"mean={mean:.3f} unexpectedly off-center"
-
-
-# ── content_weight ────────────────────────────────────────────────
-
-from proactive.energy import content_weight
-
-
-def test_content_weight_zero_when_no_content_no_crisis():
-    assert content_weight(new_items=0, has_memory=False, is_crisis=False) == 0.0
-
-
-def test_content_weight_positive_with_new_items():
-    w = content_weight(new_items=3, has_memory=False, is_crisis=False)
-    assert w > 0.0
-
-
-def test_content_weight_positive_with_memory_only():
-    w = content_weight(new_items=0, has_memory=True, is_crisis=False)
-    assert w > 0.0
-
-
-def test_content_weight_at_least_one_in_crisis():
-    w = content_weight(new_items=0, has_memory=False, is_crisis=True)
-    assert w >= 1.0
-
-
-def test_content_weight_crisis_boosts_even_with_content():
-    w_normal = content_weight(new_items=2, has_memory=True, is_crisis=False)
-    w_crisis = content_weight(new_items=2, has_memory=True, is_crisis=True)
-    assert w_crisis >= w_normal
-
-
-def test_content_weight_more_items_more_weight():
-    w_few = content_weight(new_items=1, has_memory=False, is_crisis=False)
-    w_many = content_weight(new_items=5, has_memory=False, is_crisis=False)
-    assert w_many >= w_few

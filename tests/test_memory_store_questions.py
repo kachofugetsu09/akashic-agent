@@ -1,92 +1,64 @@
-"""TDD for MemoryStore questions file methods."""
-import pytest
+"""Tests for current MemoryStore behavior."""
+
 from agent.memory import MemoryStore
 
-QUESTIONS_MD = """\
-## 想了解的问题
 
-1. 睡眠最近有改善吗？
-2. 离职 Shopee 后找到新方向了吗？
-3. Unity 项目还在推进吗？
-4. 对 AI 写代码这件事现在怎么看？
-5. Elden Ring DLC 打完了吗？
-"""
-
-
-def test_read_questions_empty_when_no_file(tmp_path):
+def test_pending_file_created_on_init(tmp_path):
     store = MemoryStore(tmp_path)
-    assert store.read_questions() == ""
+    assert store.pending_file.exists()
 
 
-def test_write_and_read_questions(tmp_path):
+def test_snapshot_and_commit_clear_snapshot_file(tmp_path):
     store = MemoryStore(tmp_path)
-    store.write_questions(QUESTIONS_MD)
-    assert store.read_questions() == QUESTIONS_MD
+    store.append_pending("- fact A")
+
+    snap = store.snapshot_pending()
+    assert "fact A" in snap
+    assert store._snapshot_path.exists()
+
+    store.commit_pending_snapshot()
+    assert not store._snapshot_path.exists()
+    assert store.pending_file.exists()
 
 
-def test_write_questions_overwrites_not_appends(tmp_path):
+def test_snapshot_and_rollback_merges_new_pending(tmp_path):
     store = MemoryStore(tmp_path)
-    store.write_questions("旧内容")
-    store.write_questions("新内容")
-    assert store.read_questions() == "新内容"
-    assert "旧" not in store.read_questions()
+    store.append_pending("- old")
+
+    _ = store.snapshot_pending()
+    store.append_pending("- new")
+    store.rollback_pending_snapshot()
+
+    pending = store.read_pending()
+    assert "- old" in pending
+    assert "- new" in pending
 
 
-def test_remove_single_question_by_index(tmp_path):
+def test_update_now_ongoing_add_and_remove_by_keyword(tmp_path):
     store = MemoryStore(tmp_path)
-    store.write_questions(QUESTIONS_MD)
-    store.remove_questions_by_indices([1])
-    result = store.read_questions()
-    assert "睡眠" not in result           # 问题1已删
-    assert "离职 Shopee" in result        # 问题2仍在
-    assert "1." in result                 # 重新编号后还有1.
+    store.write_now("## 近期进行中\n\n- 任务A\n\n## 待确认事项\n\n- 问题1\n")
+
+    store.update_now_ongoing(add=["任务B"], remove_keywords=["任务A"])
+
+    now_text = store.read_now()
+    assert "任务A" not in now_text
+    assert "- 任务B" in now_text
 
 
-def test_remove_multiple_questions(tmp_path):
+def test_read_now_ongoing_extracts_section_body(tmp_path):
     store = MemoryStore(tmp_path)
-    store.write_questions(QUESTIONS_MD)
-    store.remove_questions_by_indices([1, 3])
-    result = store.read_questions()
-    assert "睡眠" not in result           # 问题1已删
-    assert "离职 Shopee" in result        # 问题2仍在
-    assert "Unity" not in result          # 问题3已删
-    assert "AI 写代码" in result          # 问题4仍在
+    store.write_now("## 近期进行中\n\n- A\n- B\n\n## 待确认事项\n\n- C\n")
+
+    ongoing = store.read_now_ongoing()
+
+    assert "- A" in ongoing
+    assert "- B" in ongoing
+    assert "- C" not in ongoing
 
 
-def test_remaining_questions_renumbered(tmp_path):
+def test_get_memory_context_empty_and_nonempty(tmp_path):
     store = MemoryStore(tmp_path)
-    store.write_questions(QUESTIONS_MD)
-    store.remove_questions_by_indices([2])   # 删问题2
-    result = store.read_questions()
-    lines = [l for l in result.splitlines() if l.strip()]
-    numbered = [l for l in lines if l.startswith(("1.", "2.", "3.", "4."))]
-    # 剩4题，编号应连续1-4
-    assert any(l.startswith("1.") for l in numbered)
-    assert any(l.startswith("4.") for l in numbered)
-    assert not any(l.startswith("5.") for l in numbered)
+    assert store.get_memory_context() == ""
 
-
-def test_remove_nonexistent_index_is_noop(tmp_path):
-    store = MemoryStore(tmp_path)
-    store.write_questions(QUESTIONS_MD)
-    store.remove_questions_by_indices([99])
-    # 原内容不变（问题数量相同）
-    result = store.read_questions()
-    assert "睡眠" in result
-    assert "Elden Ring" in result
-
-
-def test_remove_all_questions(tmp_path):
-    store = MemoryStore(tmp_path)
-    store.write_questions(QUESTIONS_MD)
-    store.remove_questions_by_indices([1, 2, 3, 4, 5])
-    result = store.read_questions()
-    # 所有问题都删了，不应有编号行
-    numbered = [l for l in result.splitlines() if l.strip().startswith(("1.", "2."))]
-    assert numbered == []
-
-
-def test_remove_from_empty_file_is_noop(tmp_path):
-    store = MemoryStore(tmp_path)
-    store.remove_questions_by_indices([1])   # 不应抛异常
-    assert store.read_questions() == ""
+    store.write_long_term("- user profile")
+    assert store.get_memory_context().startswith("## Long-term Memory")

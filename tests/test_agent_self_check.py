@@ -1,29 +1,43 @@
-from agent.loop import (
-    _apply_inference_prefix_by_line_numbers,
-    _build_inference_tone_prompt,
-    _needs_inference_tone_pass,
-)
+from pathlib import Path
+from unittest.mock import MagicMock
+
+from agent.loop import AgentLoop
 
 
-def test_inference_tone_pass_detects_risky_assertion():
-    assert _needs_inference_tone_pass("看起来赛事正在进行中。") is True
-
-
-def test_inference_tone_pass_ignores_safe_sentence():
-    assert _needs_inference_tone_pass("我不确定，可能快开始了。") is False
-
-
-def test_build_inference_tone_prompt_contains_required_rules():
-    prompt = _build_inference_tone_prompt(
-        "1. 赛事正在进行中。",
-        "【工具结果】：仅显示开幕对阵公告",
+def _make_loop(tmp_path: Path) -> AgentLoop:
+    return AgentLoop(
+        bus=MagicMock(),
+        provider=MagicMock(),
+        tools=MagicMock(),
+        session_manager=MagicMock(),
+        workspace=tmp_path,
     )
-    assert "prefix_line_numbers" in prompt
-    assert "只做“行级判定”" in prompt
 
 
-def test_apply_inference_prefix_by_line_numbers():
-    response = "1. ESL Pro League S23 正在进行中\n2. PGL Cluj-Napoca 我不确定"
-    got = _apply_inference_prefix_by_line_numbers(response, [1, 2])
-    assert got.splitlines()[0].startswith("1. 我推测")
-    assert got.splitlines()[1].endswith("我不确定")
+def test_collect_skill_mentions_returns_unique_existing_names(tmp_path):
+    loop = _make_loop(tmp_path)
+    loop.context.skills.list_skills = MagicMock(
+        return_value=[
+            {"name": "feed-manage"},
+            {"name": "refactor"},
+        ]
+    )
+
+    got = loop._collect_skill_mentions("请用 $feed-manage 然后 $refactor 再来一次 $feed-manage")
+
+    assert got == ["feed-manage", "refactor"]
+
+
+def test_collect_skill_mentions_ignores_unknown_skill(tmp_path):
+    loop = _make_loop(tmp_path)
+    loop.context.skills.list_skills = MagicMock(return_value=[{"name": "known"}])
+
+    got = loop._collect_skill_mentions("$known $unknown")
+
+    assert got == ["known"]
+
+
+def test_format_request_time_anchor_contains_iso_and_label():
+    text = AgentLoop._format_request_time_anchor(None)
+    assert text.startswith("request_time=")
+    assert "(" in text and ")" in text

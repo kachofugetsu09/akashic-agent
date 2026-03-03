@@ -15,7 +15,11 @@ def _utc(**kwargs) -> datetime:
 
 
 class _DummyFeedRegistry:
-    async def fetch_all(self, limit_per_source: int = 3):
+    async def fetch_all(
+        self,
+        limit_per_source: int = 3,
+        per_source_limits: dict[str, int] | None = None,
+    ):
         return []
 
 
@@ -987,6 +991,8 @@ async def test_llm_rejection_writes_rejection_cooldown(tmp_path):
     sense.last_user_at.return_value = None
     sense.target_session_key.return_value = "telegram:123"
     sense.quiet_hours.return_value = (23, 8, 0.0)
+    sense.refresh_sleep_context.return_value = False
+    sense.sleep_context.return_value = None
 
     # decide: reflect 返回 should_send=False
     from proactive.loop import _Decision

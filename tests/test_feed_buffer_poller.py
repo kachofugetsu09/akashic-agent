@@ -266,6 +266,8 @@ class TestScenario4SemanticDupeNotMarkedSeen:
         sense.last_user_at.return_value = None
         sense.target_session_key.return_value = "telegram:123"
         sense.quiet_hours.return_value = (23, 8, 0.0)
+        sense.refresh_sleep_context.return_value = False
+        sense.sleep_context.return_value = None
 
         # Config mock：only_new_items_trigger=True + presence=None + no memory → 早退，不进 LLM
         cfg = MagicMock()
