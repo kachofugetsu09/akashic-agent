@@ -442,18 +442,84 @@ class ProactiveLoop:
             else None
         )
         registry = SkillActionRegistry(skill_path)
+
+        workspace = getattr(self._sessions, "workspace", None)
+        agent_tasks_dir = (Path(workspace) / "agent-tasks") if workspace else None
+        if agent_tasks_dir:
+            agent_tasks_dir.mkdir(parents=True, exist_ok=True)
+
+        subagent_factory = self._build_subagent_factory()
+
         runner = SkillActionRunner(
             registry,
             rng=self._rng,
             state_path=state_path,
+            subagent_factory=subagent_factory,
+            agent_tasks_dir=agent_tasks_dir,
         )
         enabled_count = len(registry.list_enabled())
         logger.info(
-            "[proactive] skill_action_runner 已初始化 path=%s enabled_actions=%d",
+            "[proactive] skill_action_runner 已初始化 path=%s enabled_actions=%d subagent_factory=%s",
             skill_path,
             enabled_count,
+            "yes" if subagent_factory else "no",
         )
         return runner
+
+    def _build_subagent_factory(self):
+        """返回一个工厂函数：接收 action_id，构造对应子目录隔离的 SubAgent。"""
+        from agent.subagent import SubAgent
+        from agent.tools.filesystem import ListDirTool, ReadFileTool, WriteFileTool
+        from agent.tools.notify_owner import NotifyOwnerTool
+        from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
+        from agent.tools.web_fetch import WebFetchTool
+        from agent.tools.web_search import WebSearchTool
+        from proactive.skill_action import _AGENT_SYSTEM_PROMPT
+
+        workspace = getattr(self._sessions, "workspace", None)
+        if workspace is None:
+            logger.warning("[proactive] 无法获取 workspace，SubAgent 不可用")
+            return None
+        agent_tasks_dir = Path(workspace) / "agent-tasks"
+        agent_tasks_dir.mkdir(parents=True, exist_ok=True)
+        shared_dir = agent_tasks_dir / "shared"
+        shared_dir.mkdir(parents=True, exist_ok=True)
+
+        channel = self._cfg.default_channel or ""
+        chat_id = self._cfg.default_chat_id or ""
+        provider = self._provider
+        model = self._model
+        max_tokens = self._max_tokens
+        push = self._push
+        # task_notes.db 共享，按 namespace(action_id) 隔离
+        db_path = agent_tasks_dir / "task_notes.db"
+        shell_tool = _build_sandboxed_shell(agent_tasks_dir)
+
+        def factory(action_id: str, shared_config_dir: str = str(shared_dir)) -> SubAgent:
+            action_dir = agent_tasks_dir / action_id
+            action_dir.mkdir(parents=True, exist_ok=True)
+            tools = [
+                WebSearchTool(),
+                WebFetchTool(),
+                ReadFileTool(),
+                ListDirTool(),
+                WriteFileTool(allowed_dir=agent_tasks_dir),  # 可写整个 agent-tasks/
+                shell_tool,
+                TaskNoteTool(db_path),
+                TaskRecallTool(db_path),
+                TaskDoneTool(action_dir),
+                NotifyOwnerTool(push, channel, chat_id),
+            ]
+            return SubAgent(
+                provider=provider,
+                model=model,
+                tools=tools,
+                system_prompt=_AGENT_SYSTEM_PROMPT,
+                max_iterations=20,
+                max_tokens=max_tokens,
+            )
+
+        return factory
 
     async def run(self) -> None:
         self._running = True
@@ -781,6 +847,43 @@ def _build_tfidf_vectors(texts: list[str], n: int) -> list[dict[str, float]]:
             vec[tok] = (cnt / total) * idf
         vectors.append(vec)
     return vectors
+
+
+def _build_sandboxed_shell(workspace_dir: Path):
+    """构造 firejail 沙箱化的 ShellTool；firejail 不可用时降级为原始 ShellTool。"""
+    import shutil
+    from agent.tools.shell import ShellTool
+
+    if not shutil.which("firejail"):
+        logger.warning("[proactive] firejail 未找到，SubAgent 使用未沙箱化的 ShellTool")
+        return ShellTool()
+
+    class _FirejailShellTool(ShellTool):
+        """将命令包裹在 firejail 沙箱中执行：屏蔽敏感目录。
+
+        非 root 下无法做完整 fs 隔离，改用 --blacklist 精确屏蔽：
+        - ~/.ssh / ~/.gnupg：私钥
+        网络保持开放，agent 可在 shell 内 pip install / 调用 API。
+        workspace 及其他项目目录保持可访问（agent 需要读 KB 等文件）。
+        """
+
+        async def execute(self, **kwargs):
+            import shlex as _shlex
+            command = kwargs.get("command", "").strip()
+            if not command:
+                import json
+                return json.dumps({"error": "命令不能为空"}, ensure_ascii=False)
+            sandboxed = (
+                "firejail --quiet "
+                "--blacklist=~/.ssh "
+                "--blacklist=~/.gnupg "
+                f"-- bash -c {_shlex.quote(command)}"
+            )
+            kwargs["command"] = sandboxed
+            return await super().execute(**kwargs)
+
+    logger.info("[proactive] SubAgent ShellTool 已启用 firejail 沙箱 dir=%s", workspace_dir)
+    return _FirejailShellTool()
 
 
 def _cosine_sparse(a: dict[str, float], b: dict[str, float]) -> float:

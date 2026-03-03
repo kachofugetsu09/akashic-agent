@@ -11,7 +11,7 @@ from agent.context import ContextBuilder
 from bus.events import InboundMessage, OutboundMessage
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from agent.provider import ContentSafetyError, LLMProvider
+from agent.provider import ContentSafetyError, ContextLengthError, LLMProvider
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 from proactive.presence import PresenceStore
@@ -201,6 +201,16 @@ class AgentLoop:
                 else:
                     logger.warning("安全拦截：所有窗口均失败，当前消息本身可能违规")
                     return "你的消息触发了安全审查，无法处理。", [], []
+            except ContextLengthError:
+                if attempt < len(_SAFETY_RETRY_RATIOS) - 1:
+                    next_window = int(total_history * _SAFETY_RETRY_RATIOS[attempt + 1])
+                    logger.warning(
+                        f"上下文超长 (attempt={attempt + 1})，"
+                        f"缩小历史窗口重试 {window} → {next_window}"
+                    )
+                else:
+                    logger.warning("上下文超长：所有窗口均失败，清空历史后仍超长")
+                    return "上下文过长无法处理，请尝试新建对话。", [], []
 
         return "（安全重试异常）", [], []
 

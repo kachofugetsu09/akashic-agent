@@ -382,7 +382,7 @@ class ProactiveItemFilter:
 
             if best_sim >= threshold:
                 duplicate_entries.append((p["source_key"], p["item_id"]))
-                logger.info(
+                logger.debug(
                     "[proactive] 语义去重命中，过滤 item source=%s item_id=%s sim=%.4f",
                     p["source_key"],
                     p["item_id"][:16],
@@ -396,7 +396,7 @@ class ProactiveItemFilter:
             accepted_meta.append(
                 {"source_key": p["source_key"], "item_id": p["item_id"]}
             )
-        logger.info(
+        logger.debug(
             "[proactive] 语义去重结果 keep=%d duplicate=%d history_candidates=%d",
             len(keep_items),
             len(duplicate_entries),

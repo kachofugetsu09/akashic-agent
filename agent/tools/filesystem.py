@@ -47,8 +47,11 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     return resolved
 
 
+_READ_MAX_CHARS = 10_000   # 默认单次最多返回 10K 字符，大文件须分页读取
+
+
 class ReadFileTool(Tool):
-    """读取文件内容。"""
+    """读取文件内容，支持按行分页，超大文件自动截断。"""
 
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = allowed_dir
@@ -59,7 +62,11 @@ class ReadFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "读取指定路径文件的完整内容。"
+        return (
+            "读取文件内容。超过 10K 字符时自动截断并提示总行数，"
+            "可用 offset/limit 参数分页读取（offset=起始行，limit=读取行数）。"
+            "对于大文件，先用 offset=0 limit=30 预览前几行，再决定读哪段。"
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -68,13 +75,28 @@ class ReadFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "要读取的文件路径"
-                }
+                    "description": "要读取的文件路径",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "起始行号（0-based），默认 0",
+                    "minimum": 0,
+                    "default": 0,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "最多读取行数，默认不限（受 80K 字符上限约束）",
+                    "minimum": 1,
+                },
             },
-            "required": ["path"]
+            "required": ["path"],
         }
 
     async def execute(self, path: str, **kwargs: Any) -> str:
+        offset: int = int(kwargs.get("offset", 0))
+        limit: int | None = kwargs.get("limit")
+        if limit is not None:
+            limit = int(limit)
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():
@@ -88,7 +110,35 @@ class ReadFileTool(Tool):
             if suffix == ".xls":
                 return _read_xls(file_path)
 
-            return file_path.read_text(encoding="utf-8")
+            lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            total_lines = len(lines)
+
+            # 按行分页
+            sliced = lines[offset:] if limit is None else lines[offset: offset + limit]
+            text = "".join(sliced)
+
+            # 字符上限截断
+            truncated_by_chars = False
+            if len(text) > _READ_MAX_CHARS:
+                text = text[:_READ_MAX_CHARS]
+                truncated_by_chars = True
+
+            suffix_note = ""
+            end_line = offset + len(sliced)
+            if truncated_by_chars:
+                suffix_note = (
+                    f"\n\n[已截断：文件共 {total_lines} 行，"
+                    f"本次返回前 {_READ_MAX_CHARS} 字符。"
+                    f"用 offset={end_line} 继续读取。]"
+                )
+            elif offset > 0 or limit is not None:
+                suffix_note = (
+                    f"\n\n[第 {offset+1}–{end_line} 行 / 共 {total_lines} 行]"
+                )
+            elif total_lines > len(sliced):
+                suffix_note = f"\n\n[共 {total_lines} 行]"
+
+            return text + suffix_note
         except PermissionError as e:
             return f"错误：{e}"
         except Exception as e:

@@ -20,9 +20,23 @@ _SAFETY_ERROR_CODES = {
     "content_policy_violation",  # OpenAI
 }
 
+_CONTEXT_LENGTH_KEYWORDS = (
+    "range of input length",       # DashScope / Qwen
+    "context_length_exceeded",     # OpenAI
+    "maximum context length",      # OpenAI
+    "string too long",             # 通用
+    "reduce the length",           # 通用
+    "too many tokens",             # 通用
+    "invalid_parameter_error",     # DashScope 超长
+)
+
 
 class ContentSafetyError(Exception):
     """LLM provider 因内容安全审查拒绝请求"""
+
+
+class ContextLengthError(Exception):
+    """LLM provider 因上下文超长拒绝请求"""
 
 
 @dataclass
@@ -104,6 +118,8 @@ class LLMProvider:
                 last_err = e
                 if self._is_safety_error(e):
                     raise ContentSafetyError(str(e)) from e
+                if self._is_context_length_error(e):
+                    raise ContextLengthError(str(e)) from e
                 retryable = self._is_retryable(e)
                 exhausted = attempt >= self._max_retries
                 if (not retryable) or exhausted:
@@ -125,6 +141,11 @@ class LLMProvider:
     def _is_safety_error(err: Exception) -> bool:
         text = str(err)
         return any(code in text for code in _SAFETY_ERROR_CODES)
+
+    @staticmethod
+    def _is_context_length_error(err: Exception) -> bool:
+        text = str(err).lower()
+        return any(kw in text for kw in _CONTEXT_LENGTH_KEYWORDS)
 
     @staticmethod
     def _is_retryable(err: Exception) -> bool:

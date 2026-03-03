@@ -1,8 +1,10 @@
 """
 WebFetch 工具
 """
+import ipaddress
 import json
 from typing import Any
+from urllib.parse import urlparse
 
 import html2text
 import httpx
@@ -60,9 +62,12 @@ class WebFetchTool(Tool):
         fmt: str = kwargs.get("format", "markdown")
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
 
-        # URL 安全校验（对应 OpenCode：仅允许 http/https）
+        # URL 安全校验
         if not url.startswith(("http://", "https://")):
             return _err(url, "URL 必须以 http:// 或 https:// 开头")
+        ssrf_err = _validate_url_target(url)
+        if ssrf_err:
+            return _err(url, ssrf_err)
 
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
@@ -125,6 +130,22 @@ class WebFetchTool(Tool):
 
 def _err(url: str, msg: str) -> str:
     return json.dumps({"error": msg, "url": url}, ensure_ascii=False)
+
+
+def _validate_url_target(url: str) -> str | None:
+    """SSRF 防护：拒绝内网/回环/保留地址。"""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return "URL 缺少主机名"
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+            return f"禁止访问内网/本地地址：{host}"
+    except ValueError:
+        if host.endswith(".local") or host.endswith(".localhost"):
+            return f"禁止访问本地域名：{host}"
+    return None
 
 
 def _to_markdown(raw_html: str) -> str:
