@@ -38,10 +38,12 @@ _REFLECT_PROMPT_WARN = (
     "禁止把工具调用失败的原因写进最终回复，遇到失败时换个方式或跳过该步骤。"
 )
 _REFLECT_PROMPT_LAST = (
-    "这是最后一步，步骤预算已耗尽。按顺序完成以下两件事：\n"
-    "1. 调用 task_note 记录当前进度（已完成的步骤、结果路径、待续事项）\n"
-    "2. 调用 notify_owner 发送消息（说明已完成的步骤和当前结果）\n"
-    "哪怕任务未完全完成，也要如实汇报当前进度，不得声称已完成。"
+    "⚠️ 步骤预算将在下一步耗尽。请立即优先完成核心目标，"
+    "系统随后会强制调用 task_note / notify_owner 进行收尾。"
+)
+_CLEANUP_PROMPT = (
+    "步骤预算已耗尽，进入强制收尾阶段。\n"
+    "你必须调用 {tool_name}，如实汇报当前进度（已完成的步骤、产出路径、未完成的原因）。"
 )
 _WARN_THRESHOLD = 5  # 剩余步数 <= 此值时开始提示
 
@@ -62,14 +64,16 @@ class SubAgent:
         tools: list[Tool],
         *,
         system_prompt: str = "",
-        max_iterations: int = 15,
-        max_tokens: int = 4096,
+        max_iterations: int = 30,
+        max_tokens: int = 8192,
+        mandatory_exit_tools: list[str] = (),
     ) -> None:
         self._provider = provider
         self._model = model
         self._system_prompt = system_prompt
         self._max_iterations = max_iterations
         self._max_tokens = max_tokens
+        self._mandatory_exit_tools = list(mandatory_exit_tools)
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         self._tool_schemas: list[dict[str, Any]] = [
             {
@@ -158,4 +162,56 @@ class SubAgent:
             messages.append({"role": "user", "content": reflect})
 
         logger.warning("[subagent] 已达到最大迭代次数 %d", self._max_iterations)
+        if self._mandatory_exit_tools:
+            await self._run_mandatory_exit(messages)
         return ""
+
+    async def _run_mandatory_exit(self, messages: list[dict[str, Any]]) -> None:
+        """强制收尾：逐个调用 mandatory_exit_tools 中的工具。"""
+        for tool_name in self._mandatory_exit_tools:
+            if tool_name not in self._tool_map:
+                continue
+            prompt = _CLEANUP_PROMPT.format(tool_name=tool_name)
+            messages.append({"role": "user", "content": prompt})
+            try:
+                response = await self._provider.chat(
+                    messages=messages,
+                    tools=self._tool_schemas,
+                    model=self._model,
+                    max_tokens=self._max_tokens,
+                    tool_choice={"type": "function", "function": {"name": tool_name}},
+                )
+            except Exception as e:
+                logger.error("[subagent] mandatory_exit %s 调用失败: %s", tool_name, e)
+                continue
+
+            if not response.tool_calls:
+                continue
+
+            tc = response.tool_calls[0]
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": response.content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                            },
+                        }
+                    ],
+                }
+            )
+            tool = self._tool_map.get(tc.name)
+            if tool:
+                try:
+                    result = await tool.execute(**tc.arguments)
+                except Exception as e:
+                    result = f"工具执行出错: {e}"
+                logger.info("[subagent] mandatory_exit %s 结果: %s", tc.name, str(result)[:120])
+            else:
+                result = f"未知工具: {tc.name}"
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})

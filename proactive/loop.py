@@ -517,6 +517,8 @@ class ProactiveLoop:
                 system_prompt=_AGENT_SYSTEM_PROMPT,
                 max_iterations=20,
                 max_tokens=max_tokens,
+                # 不再强制 task_done：避免步骤预算耗尽时误标“已完成”(.done)
+                mandatory_exit_tools=["task_note", "notify_owner"],
             )
 
         return factory

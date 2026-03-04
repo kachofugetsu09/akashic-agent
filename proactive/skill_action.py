@@ -117,7 +117,11 @@ class SkillActionRegistry:
         self._actions = [
             SkillActionDef.from_dict(a)
             for a in raw.get("actions", [])
-            if a.get("id") and (a.get("command") or a.get("task_prompt"))
+            if a.get("id") and (
+                a.get("command")
+                or a.get("task_prompt")
+                or a.get("action_type") == "agent"  # agent 类型可用 TASK.md 代替 task_prompt
+            )
         ]
         self._mtime = mtime
         logger.info(
@@ -143,11 +147,19 @@ _AGENT_SYSTEM_PROMPT = (
     "你是一个自主后台 Agent，在用户空闲时执行预先设定的任务。\n"
     "你有固定的工具集，专注完成分配的任务。\n"
     "\n"
+    "## 任务文档（TASK.md）\n"
+    "每次开始前，用 read_file 读取工作目录下的 TASK.md，了解：\n"
+    "  - 任务目标和约束\n"
+    "  - 用户补充说明（用户在对话中追加的新指令，优先级最高）\n"
+    "  - 历史运行记录（上次做到哪、产出了什么）\n"
+    "任务结束时（无论完成与否），用 edit_file 在 TASK.md 的「## 运行历史」区块追加本次记录：\n"
+    "  ### 第N次 (YYYY-MM-DD) — [完成/未完成]\n"
+    "  - 本次完成的步骤\n"
+    "  - 产出文件路径\n"
+    "  - 下次需要继续的事项\n"
+    "\n"
     "## 进度管理\n"
-    "每次开始任务前，先调用 task_recall(namespace=任务ID) 查看上次进度。\n"
-    "完成重要步骤时，用 task_note(namespace=任务ID, key=..., value=...) 记录检查点，\n"
-    "例如：已找到的资料列表、已完成的阶段、中间结果路径等。\n"
-    "这样下次运行可以从断点继续，而不是重头再来。\n"
+    "完成重要步骤时，用 task_note(namespace=任务ID, key=..., value=...) 记录结构化检查点。\n"
     "任务彻底完成后，调用 task_done(summary=...) 标记完成，之后该任务将不再自动触发。\n"
     "未完成时不要调用 task_done，让任务下次继续跑。\n"
     "\n"
@@ -233,19 +245,37 @@ class SkillActionRunner:
             self._record_run(action.id, now, success=False)
             self._save_state()
             return False, ""
-        if not action.task_prompt.strip():
-            logger.warning("[skill_action] agent 任务 task_prompt 为空 id=%s", action.id)
+
+        # 决定任务入口：优先读 TASK.md，回退到 task_prompt
+        task_md_path = (
+            self._agent_tasks_dir / action.id / "TASK.md"
+            if self._agent_tasks_dir else None
+        )
+        has_task_md = task_md_path is not None and task_md_path.exists()
+
+        if not has_task_md and not action.task_prompt.strip():
+            logger.warning("[skill_action] agent 任务无 TASK.md 且 task_prompt 为空 id=%s", action.id)
             self._record_run(action.id, now, success=False)
             self._save_state()
             return False, ""
+
         try:
             subagent = self._subagent_factory(action.id)
-            augmented_prompt = (
-                f"[任务ID: {action.id}]\n"
-                f"[工作目录: agent-tasks/{action.id}/]\n"
-                f"[共享配置目录: agent-tasks/shared/ — 内含 API keys 等公共配置，可用 read_file 读取]\n\n"
-                f"{action.task_prompt}"
-            )
+            if has_task_md:
+                augmented_prompt = (
+                    f"[任务ID: {action.id}]\n"
+                    f"[工作目录: agent-tasks/{action.id}/]\n"
+                    f"[共享配置目录: agent-tasks/shared/ — 内含 API keys 等公共配置]\n\n"
+                    f"请先用 read_file 读取 agent-tasks/{action.id}/TASK.md，"
+                    f"了解任务目标、用户最新补充说明和历史进度，然后继续执行。"
+                )
+            else:
+                augmented_prompt = (
+                    f"[任务ID: {action.id}]\n"
+                    f"[工作目录: agent-tasks/{action.id}/]\n"
+                    f"[共享配置目录: agent-tasks/shared/ — 内含 API keys 等公共配置]\n\n"
+                    f"{action.task_prompt}"
+                )
             result = await subagent.run(augmented_prompt)
             success = bool(result)
             logger.info(

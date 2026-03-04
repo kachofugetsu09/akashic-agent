@@ -38,7 +38,10 @@ from agent.tools.skill_action_tool import (
     SkillActionListTool,
     SkillActionRegisterTool,
     SkillActionResetTool,
+    SkillActionRestartTool,
+    SkillActionStatusTool,
     SkillActionUnregisterTool,
+    SkillActionUpdateTool,
 )
 from agent.tools.fitbit import FitbitHealthSnapshotTool, FitbitSleepReportTool
 from agent.tools.update_now import UpdateNowTool
@@ -206,9 +209,13 @@ def build_core_runtime(
 
     skill_actions_path = workspace / "skill_actions.json"
     agent_tasks_dir = workspace / "agent-tasks"
-    tools.register(SkillActionRegisterTool(skill_actions_path))
+    db_path = agent_tasks_dir / "task_notes.db"
+    tools.register(SkillActionRegisterTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir))
     tools.register(SkillActionUnregisterTool(skill_actions_path))
     tools.register(SkillActionListTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir))
+    tools.register(SkillActionStatusTool(agent_tasks_dir))
+    tools.register(SkillActionUpdateTool(agent_tasks_dir))
+    tools.register(SkillActionRestartTool(agent_tasks_dir, db_path=db_path))
     tools.register(SkillActionResetTool(agent_tasks_dir))
 
     _fitbit_url = getattr(config.proactive, "fitbit_url", "http://127.0.0.1:18765")
