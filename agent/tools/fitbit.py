@@ -90,7 +90,18 @@ class FitbitHealthSnapshotTool(Tool):
             lines.append(f"  持续自：{since}")
 
         lines.append("注：Fitbit 数据含设备→手机→云端同步延迟，约 15-30 分钟。")
-        return "\n".join(lines)
+        result = {
+            "available": True,
+            "data_lag_min": lag,
+            "last_updated": updated,
+            "heart_rate": hr,
+            "spo2": spo2,
+            "steps": steps,
+            "sleep_state": state,
+            "sleep_prob": prob,
+        }
+        summary_text = "\n".join(lines)
+        return json.dumps(result, ensure_ascii=False) + "\n\n" + summary_text
 
 
 class FitbitSleepReportTool(Tool):

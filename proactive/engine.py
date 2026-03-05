@@ -348,6 +348,17 @@ class ProactiveEngine:
             len(ctx.recent),
         )
 
+        high_events = [e for e in ctx.health_events if e.get("severity") == "high"]
+        if high_events:
+            ctx.force_reflect = True
+            if ctx.pre_score < self._cfg.score_pre_threshold:
+                logger.info(
+                    "[proactive] health fast-path: pre_score=%.3f 低于阈值但存在 %d 个 high 事件，强制继续",
+                    ctx.pre_score,
+                    len(high_events),
+                )
+                return None
+
         # 2. 过低则跳过 chat，尝试 skill action
         if ctx.pre_score < self._cfg.score_pre_threshold:
             logger.info(
@@ -463,7 +474,7 @@ class ProactiveEngine:
             if self._presence and ctx.session_key
             else None
         )
-        ctx.force_reflect = (
+        ctx.force_reflect = ctx.force_reflect or (
             ctx.energy < 0.05
             or (
                 self._presence is not None
@@ -562,19 +573,6 @@ class ProactiveEngine:
             },
             "candidate_items": len(ctx.new_items),
             "fresh_items_24h": ctx.fresh_items_24h,
-            "fitbit_sleep": {
-                "state": ctx.sleep_ctx.state
-                if ctx.sleep_ctx is not None
-                else "unavailable",
-                "prob": ctx.sleep_ctx.prob if ctx.sleep_ctx is not None else None,
-                "prob_source": ctx.sleep_ctx.prob_source
-                if ctx.sleep_ctx is not None
-                else "unavailable",
-                "data_lag_min": ctx.sleep_ctx.data_lag_min
-                if ctx.sleep_ctx is not None
-                else None,
-                "sleep_modifier": round(ctx.sleep_mod, 2),
-            },
         }
         # 只有 StatEngine 检测到事件时才向 LLM 暴露健康信息
         if ctx.health_events:
@@ -774,11 +772,11 @@ class ProactiveEngine:
             # delivery 去重：仅 chat 类 action 有 session_key
             if ctx.session_key:
                 self._state.mark_delivery(ctx.session_key, delivery_key)
-            # 健康事件 ACK：只消费 high 级别事件
-            if ctx.high_events:
+            # 健康事件 ACK：发送成功后消费本轮全部事件（high + medium）
+            if ctx.health_events:
                 acked_ids = [
                     e["id"]
-                    for e in ctx.high_events
+                    for e in ctx.health_events
                     if isinstance(e, dict) and e.get("id")
                 ]
                 if acked_ids:
@@ -786,7 +784,7 @@ class ProactiveEngine:
                         acked_ids
                     )
                     logger.info(
-                        "[proactive] acknowledged %d high 健康事件 ids=%s",
+                        "[proactive] acknowledged %d 健康事件 ids=%s",
                         len(acked_ids),
                         acked_ids,
                     )

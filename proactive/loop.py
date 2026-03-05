@@ -311,6 +311,9 @@ class ProactiveLoop:
             build_tfidf_vectors_fn=_build_tfidf_vectors,
             cosine_fn=_cosine_sparse,
         )
+        _fitbit_url = (
+            self._cfg.fitbit_url if getattr(self._cfg, "fitbit_enabled", False) else ""
+        )
         self._reflector = ProactiveReflector(
             provider=self._provider,
             model=self._model,
@@ -318,6 +321,7 @@ class ProactiveLoop:
             cfg=self._cfg,
             memory_store=self._memory,
             presence=self._presence,
+            fitbit_url=_fitbit_url,
             hooks=ReflectHooks(
                 format_items=_format_items,
                 format_recent=_format_recent,
@@ -354,6 +358,7 @@ class ProactiveLoop:
             format_items=_format_items,
             format_recent=_format_recent,
             collect_global_memory=self._build_context_block,
+            fitbit_url=_fitbit_url,
         )
         quota_path = (
             (self._state.path.parent / "proactive_quota.json")
