@@ -5,6 +5,7 @@ RSS/Atom 信息源。支持 RSS 2.0 和 Atom 1.0 格式。
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 _TIMEOUT = 15.0
 _MAX_CONTENT = 300  # 正文截断字数
+_FETCH_RETRY_DELAYS_S = (0.3, 0.8)
+_MAX_FETCH_TOTAL_SECONDS = 20.0
 
 
 class RSSFeedSource(FeedSource):
@@ -55,51 +58,198 @@ class RSSFeedSource(FeedSource):
                 return []
         if "xcancel.com" in self._sub.url:
             return await self._fetch_via_curl(limit)
-        async with httpx.AsyncClient(
-            timeout=_TIMEOUT,
-            follow_redirects=True,
-            headers={
-                "User-Agent": "FreshRSS/1.24.0",
-                "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
-            },
-        ) as client:
-            resp = await client.get(self._sub.url)
-            resp.raise_for_status()
-            return self._parse(resp.text, limit)
+
+        attempts = len(_FETCH_RETRY_DELAYS_S) + 1
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _MAX_FETCH_TOTAL_SECONDS
+        last_err: Exception | None = None
+        parse_retried = False
+        for attempt in range(1, attempts + 1):
+            remaining = _remaining_budget(deadline, loop)
+            if remaining <= 0:
+                break
+            try:
+                async with httpx.AsyncClient(
+                    timeout=min(_TIMEOUT, remaining),
+                    follow_redirects=True,
+                    headers={
+                        "User-Agent": "FreshRSS/1.24.0",
+                        "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+                    },
+                ) as client:
+                    resp = await client.get(self._sub.url)
+                    resp.raise_for_status()
+                    return self._parse(resp.text, limit, raise_on_parse_error=True)
+            except ET.ParseError as e:
+                last_err = e
+                if parse_retried or attempt >= attempts:
+                    break
+                parse_retried = True
+                delay = _FETCH_RETRY_DELAYS_S[attempt - 1]
+                sleep_s = min(delay, _remaining_budget(deadline, loop))
+                if _remaining_budget(deadline, loop) <= 0:
+                    break
+                logger.warning(
+                    "RSS 解析失败 [%s] attempt=%d/%d err=%r，%.1fs 后重试一次",
+                    self._sub.name,
+                    attempt,
+                    attempts,
+                    str(e),
+                    sleep_s,
+                )
+                if sleep_s > 0:
+                    await asyncio.sleep(sleep_s)
+            except Exception as e:
+                last_err = e
+                if not _is_retryable_http_error(e):
+                    break
+                if attempt >= attempts:
+                    break
+                delay = _FETCH_RETRY_DELAYS_S[attempt - 1]
+                sleep_s = min(delay, _remaining_budget(deadline, loop))
+                if _remaining_budget(deadline, loop) <= 0:
+                    break
+                logger.warning(
+                    "http 请求失败 [%s] attempt=%d/%d err_type=%s err=%r，%.1fs 后重试",
+                    self._sub.name,
+                    attempt,
+                    attempts,
+                    type(e).__name__,
+                    str(e),
+                    sleep_s,
+                )
+                if sleep_s > 0:
+                    await asyncio.sleep(sleep_s)
+
+        logger.warning(
+            "http 请求最终失败 [%s] attempts=%d err_type=%s err=%r",
+            self._sub.name,
+            attempts,
+            type(last_err).__name__ if last_err else "Unknown",
+            str(last_err) if last_err else "",
+        )
+        return []
 
     async def _fetch_via_curl(self, limit: int) -> list[FeedItem]:
         """对 xcancel 等需要特定 TLS 指纹的源，使用系统 curl 获取。"""
-        import asyncio
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "curl",
-                "-s",
-                "-L",
-                "--max-time",
-                str(int(_TIMEOUT)),
-                "-A",
-                "FreshRSS/1.24.0",
-                "-H",
-                "Accept: */*",
-                self._sub.url,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=_TIMEOUT + 5
-            )
-            if proc.returncode != 0:
-                logger.warning(
-                    f"curl 请求失败 [{self._sub.name}] rc={proc.returncode} err={stderr.decode()[:200]}"
+        url = self._sub.url or ""
+        attempts = len(_FETCH_RETRY_DELAYS_S) + 1
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _MAX_FETCH_TOTAL_SECONDS
+        last_err: str = ""
+        parse_retried = False
+        for attempt in range(1, attempts + 1):
+            remaining = _remaining_budget(deadline, loop)
+            if remaining <= 0:
+                break
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "curl",
+                    "-sS",
+                    "-L",
+                    "--max-time",
+                    str(max(1, int(min(_TIMEOUT, remaining)))),
+                    "-A",
+                    "FreshRSS/1.24.0",
+                    "-H",
+                    "Accept: */*",
+                    url,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                return []
-            return self._parse(stdout.decode("utf-8", errors="replace"), limit)
-        except Exception as e:
-            logger.warning(f"curl 子进程异常 [{self._sub.name}]: {e}")
-            return []
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=min(_TIMEOUT + 5, remaining + 2)
+                )
+                if proc.returncode == 0:
+                    try:
+                        return self._parse(
+                            stdout.decode("utf-8", errors="replace"),
+                            limit,
+                            raise_on_parse_error=True,
+                        )
+                    except ET.ParseError as e:
+                        last_err = f"parse_error: {e}"
+                        if parse_retried or attempt >= attempts:
+                            break
+                        parse_retried = True
+                        delay = _FETCH_RETRY_DELAYS_S[attempt - 1]
+                        sleep_s = min(delay, _remaining_budget(deadline, loop))
+                        if _remaining_budget(deadline, loop) <= 0:
+                            break
+                        logger.warning(
+                            "curl 响应解析失败 [%s] attempt=%d/%d err=%r，%.1fs 后重试一次",
+                            self._sub.name,
+                            attempt,
+                            attempts,
+                            str(e),
+                            sleep_s,
+                        )
+                        if sleep_s > 0:
+                            await asyncio.sleep(sleep_s)
+                        continue
 
-    def _parse(self, xml_text: str, limit: int) -> list[FeedItem]:
+                err_text = stderr.decode("utf-8", errors="replace").strip()
+                rc = int(proc.returncode or 0)
+                last_err = f"rc={rc} err={err_text[:300]}"
+                if not _is_retryable_curl_code(rc):
+                    break
+                if attempt >= attempts:
+                    break
+                delay = _FETCH_RETRY_DELAYS_S[attempt - 1]
+                sleep_s = min(delay, _remaining_budget(deadline, loop))
+                if _remaining_budget(deadline, loop) <= 0:
+                    break
+                logger.warning(
+                    "curl 请求失败 [%s] attempt=%d/%d %s，%.1fs 后重试",
+                    self._sub.name,
+                    attempt,
+                    attempts,
+                    last_err,
+                    sleep_s,
+                )
+                if sleep_s > 0:
+                    await asyncio.sleep(sleep_s)
+            except Exception as e:
+                if isinstance(e, asyncio.TimeoutError) and proc is not None:
+                    try:
+                        proc.kill()
+                        await proc.communicate()
+                    except Exception:
+                        pass
+                last_err = f"{type(e).__name__}: {e}"
+                if attempt >= attempts:
+                    break
+                delay = _FETCH_RETRY_DELAYS_S[attempt - 1]
+                sleep_s = min(delay, _remaining_budget(deadline, loop))
+                if _remaining_budget(deadline, loop) <= 0:
+                    break
+                logger.warning(
+                    "curl 子进程异常 [%s] attempt=%d/%d err=%s，%.1fs 后重试",
+                    self._sub.name,
+                    attempt,
+                    attempts,
+                    last_err,
+                    sleep_s,
+                )
+                if sleep_s > 0:
+                    await asyncio.sleep(sleep_s)
+
+        logger.warning(
+            "curl 请求最终失败 [%s] attempts=%d %s",
+            self._sub.name,
+            attempts,
+            last_err,
+        )
+        return []
+
+    def _parse(
+        self,
+        xml_text: str,
+        limit: int,
+        *,
+        raise_on_parse_error: bool = False,
+    ) -> list[FeedItem]:
         xml_text = _normalize_xml_text(xml_text)
         if _is_xcancel_whitelist_feed(xml_text):
             logger.warning(
@@ -109,6 +259,8 @@ class RSSFeedSource(FeedSource):
         try:
             root = ET.fromstring(xml_text)
         except ET.ParseError as e:
+            if raise_on_parse_error:
+                raise
             logger.warning(f"RSS parse error [{self._sub.name}]: {e}")
             return []
 
@@ -226,3 +378,22 @@ def _normalize_xml_text(text: str) -> str:
 def _is_xcancel_whitelist_feed(text: str) -> bool:
     lower = text.lower()
     return "rss reader not yet whitelisted" in lower
+
+
+def _is_retryable_http_error(err: Exception) -> bool:
+    if isinstance(err, httpx.TimeoutException):
+        return True
+    if isinstance(err, httpx.TransportError):
+        return True
+    if isinstance(err, httpx.HTTPStatusError):
+        code = err.response.status_code
+        return code in {408, 409, 425, 429, 500, 502, 503, 504}
+    return False
+
+
+def _is_retryable_curl_code(return_code: int) -> bool:
+    return return_code in {6, 7, 18, 28, 35, 47, 52, 55, 56}
+
+
+def _remaining_budget(deadline: float, loop: asyncio.AbstractEventLoop) -> float:
+    return max(0.0, deadline - loop.time())

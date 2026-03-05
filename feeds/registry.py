@@ -81,7 +81,12 @@ class FeedRegistry:
         items: list[FeedItem] = []
         for (src, _), result in zip(sources, results):
             if isinstance(result, Exception):
-                logger.warning(f"FeedRegistry: {src.name!r} 拉取失败: {result}")
+                logger.warning(
+                    "FeedRegistry: %r 拉取失败 err_type=%s err=%r",
+                    src.name,
+                    type(result).__name__,
+                    str(result),
+                )
             else:
                 items.extend(result)  # type: ignore[arg-type]
 
