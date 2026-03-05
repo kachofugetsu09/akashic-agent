@@ -460,6 +460,14 @@ class ProactiveLoop:
             state_path=state_path,
             subagent_factory=subagent_factory,
             agent_tasks_dir=agent_tasks_dir,
+            memory_retrieve_fn=(
+                self._memory.retrieve_related if self._memory is not None else None
+            ),
+            memory_format_fn=(
+                self._memory.format_injection_block
+                if self._memory is not None
+                else None
+            ),
         )
         enabled_count = len(registry.list_enabled())
         logger.info(
@@ -500,8 +508,11 @@ class ProactiveLoop:
         shell_tool = _build_sandboxed_shell(agent_tasks_dir)
 
         def factory(
-            action_id: str, shared_config_dir: str = str(shared_dir)
+            action_id: str,
+            system_prompt_override: str = _AGENT_SYSTEM_PROMPT,
+            shared_config_dir: str = str(shared_dir),
         ) -> SubAgent:
+            assert system_prompt_override is not None
             action_dir = agent_tasks_dir / action_id
             action_dir.mkdir(parents=True, exist_ok=True)
             tools = [
@@ -520,7 +531,7 @@ class ProactiveLoop:
                 provider=provider,
                 model=model,
                 tools=tools,
-                system_prompt=_AGENT_SYSTEM_PROMPT,
+                system_prompt=system_prompt_override,
                 max_iterations=40,
                 max_tokens=max_tokens,
                 # 不再强制 task_done：避免步骤预算耗尽时误标“已完成”(.done)

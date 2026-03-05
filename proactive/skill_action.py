@@ -17,8 +17,9 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
+from agent.persona import AKASHIC_IDENTITY
 from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
 from infra.persistence.json_store import atomic_save_json, load_json
 
@@ -146,8 +147,9 @@ class SkillActionRegistry:
 
 
 _AGENT_SYSTEM_PROMPT = (
-    "你是一个自主后台 Agent，在用户空闲时执行预先设定的任务。\n"
-    "你有固定的工具集，专注完成分配的任务。\n"
+    "你是 Akashic，正在用户空闲时执行预先设定的后台任务。\n"
+    f"身份基线：{AKASHIC_IDENTITY}\n"
+    "你有固定的工具集，专注完成分配的任务；通过 notify_owner 对用户汇报时，保持这个身份语气。\n"
     "\n"
     "## 多轮持久任务机制（最重要，必须理解）\n"
     "你的任务是**跨多次运行**逐步完成的，每次运行有步骤预算上限（约 40 步）。\n"
@@ -223,8 +225,12 @@ class SkillActionRunner:
         *,
         rng: _random_module.Random | None = None,
         state_path: Optional[Path] = None,
-        subagent_factory: Optional[Callable[[str], "SubAgent"]] = None,
+        subagent_factory: Optional[Callable[..., "SubAgent"]] = None,
         agent_tasks_dir: Optional[Path] = None,  # 用于检查 .done 文件
+        memory_retrieve_fn: Optional[
+            Callable[[str, list[str] | None], Awaitable[list[dict]]]
+        ] = None,
+        memory_format_fn: Optional[Callable[[list[dict]], str]] = None,
     ) -> None:
         self._registry = registry
         self._rng = rng or _random_module.Random()
@@ -232,6 +238,8 @@ class SkillActionRunner:
         self._state_path = state_path
         self._subagent_factory = subagent_factory
         self._agent_tasks_dir = agent_tasks_dir
+        self._memory_retrieve_fn = memory_retrieve_fn
+        self._memory_format_fn = memory_format_fn
         self._load_state()
 
     # ── 公开接口 ──────────────────────────────────────────────────
@@ -302,7 +310,8 @@ class SkillActionRunner:
             return False, ""
 
         try:
-            subagent = self._subagent_factory(action.id)
+            system_prompt = await self._build_system_prompt(action, has_task_md)
+            subagent = self._subagent_factory(action.id, system_prompt)
             if has_task_md:
                 augmented_prompt = (
                     f"[任务ID: {action.id}]\n"
@@ -344,6 +353,51 @@ class SkillActionRunner:
             self._record_run(action.id, now, success=False)
             self._save_state()
             return False, ""
+
+    async def _build_system_prompt(
+        self,
+        action: SkillActionDef,
+        has_task_md: bool,
+    ) -> str:
+        """按 action 相关性注入 procedure/preference 规则。"""
+        if not self._memory_retrieve_fn or not self._memory_format_fn:
+            return self._compose_system_prompt("", has_task_md)
+        query = (action.task_prompt or "").strip()
+        if not query:
+            query = action.name.strip() or action.id
+
+        try:
+            items = await self._memory_retrieve_fn(
+                query,
+                ["procedure", "preference"],
+            )
+            block = (self._memory_format_fn(items) or "").strip()
+            if block:
+                logger.info(
+                    "[skill_action] 注入 memory2 规则 id=%s hits=%d",
+                    action.id,
+                    len(items),
+                )
+            return self._compose_system_prompt(block, has_task_md)
+        except Exception as e:
+            logger.warning(
+                "[skill_action] 注入 memory2 规则失败 id=%s err=%s", action.id, e
+            )
+            return self._compose_system_prompt("", has_task_md)
+
+    @staticmethod
+    def _compose_system_prompt(memory_block: str, has_task_md: bool) -> str:
+        parts: list[str] = []
+        block = (memory_block or "").strip()
+        if block:
+            parts.append(block)
+        if has_task_md:
+            parts.append(
+                "## 任务入口约束\n"
+                "本次任务目录存在 TASK.md。你必须先读 TASK.md，再按其中阶段顺序推进并在运行历史追加记录。"
+            )
+        parts.append(_AGENT_SYSTEM_PROMPT)
+        return "\n\n".join(parts)
 
     async def _run_shell_action(
         self, action: SkillActionDef, now: datetime
