@@ -39,6 +39,10 @@ class MemorizeTool(Tool):
     name = "memorize"
     description = (
         "将重要规则/流程/偏好永久写入记忆。用户说「记住/以后/下次」等时必须调用。"
+        "【勿记录】：时效性事件（发布日期/赛季/已过期日程节点）、"
+        "系统连接状态（管道/Token/服务可用性）、"
+        "生理指标具体数值或推断（心率/血氧基线等，应通过 fitbit_health_snapshot 实时查询）、"
+        "针对单次任务的专项操作规范（应写入对应 SOP 文件）。"
     )
     parameters = {
         "type": "object",

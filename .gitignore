@@ -29,3 +29,4 @@ plugins/
 /scripts/fitbit-monitor/monitor.runtime.log
 /docs/
 /scripts/fitbit-monitor/backups/
+/scripts/fitbit-monitor/stat_events.json
