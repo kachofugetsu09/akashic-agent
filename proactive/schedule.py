@@ -1,17 +1,8 @@
 """
 proactive/schedule.py — 用户作息配置的动态存储。
 
-从独立的 schedule.json 读取 quiet_hours 设置，
+从独立的 schedule.json 读取作息相关设置，
 与 config.json 解耦，允许随时修改而无需重启。
-
-文件格式 (schedule.json):
-{
-  "quiet_hours_start": 23,
-  "quiet_hours_end": 8,
-  "quiet_hours_weight": 0.0
-}
-
-任意字段缺失时回退到 ProactiveConfig 中的默认值。
 """
 from __future__ import annotations
 
@@ -37,12 +28,3 @@ class ScheduleStore:
         except Exception as e:
             logger.warning("[schedule] 读取失败，忽略: %s", e)
             return {}
-
-    def quiet_hours_start(self, default: int) -> int:
-        return int(self.load().get("quiet_hours_start", default))
-
-    def quiet_hours_end(self, default: int) -> int:
-        return int(self.load().get("quiet_hours_end", default))
-
-    def quiet_hours_weight(self, default: float) -> float:
-        return float(self.load().get("quiet_hours_weight", default))

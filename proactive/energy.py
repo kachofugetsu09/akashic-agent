@@ -136,26 +136,6 @@ def next_tick_from_score(
     return max(1, int(base * r))
 
 
-# ── 时间权重 & 随机权重（保留不变）──────────────────────────────────
-
-
-def time_weight(
-    hour: int,
-    quiet_start: int = 23,
-    quiet_end: int = 8,
-    quiet_weight: float = 0.0,
-) -> float:
-    """基于当地小时的昼夜节律权重。
-
-    quiet zone 返回 quiet_weight（默认 0.0 = 完全静默），其余时段返回 1.0。
-    quiet_weight > 0 时静默期仍有小概率触发（如 0.1 = 10% 概率量级）。
-    """
-    if quiet_start > quiet_end:
-        in_quiet = hour >= quiet_start or hour < quiet_end
-    else:
-        in_quiet = quiet_start <= hour < quiet_end
-    return quiet_weight if in_quiet else 1.0
-
 
 def random_weight(rng: _random.Random | None = None) -> float:
     """随机扰动系数，防止行为过于规律可预测。

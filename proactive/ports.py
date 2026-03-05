@@ -17,7 +17,7 @@ from feeds.base import FeedItem
 from feeds.buffer import FeedBuffer
 from feeds.registry import FeedRegistry
 from feeds.store import FeedStore
-from proactive.energy import compute_energy, d_recent, time_weight
+from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
 from proactive.source_scorer import SourceScorer
@@ -46,7 +46,6 @@ class SensePort(Protocol):
     def refresh_sleep_context(self) -> bool: ...
     def acknowledge_health_events(self, event_ids: list[str]) -> None: ...
     def target_session_key(self) -> str: ...
-    def quiet_hours(self) -> tuple[int, int, float]: ...
 
 
 class DecidePort(Protocol):
@@ -149,19 +148,6 @@ class DefaultSensePort:
         chat_id = self._cfg.default_chat_id.strip()
         return f"{channel}:{chat_id}" if channel and chat_id else ""
 
-    def quiet_hours(self) -> tuple[int, int, float]:
-        if self._schedule:
-            return (
-                self._schedule.quiet_hours_start(self._cfg.quiet_hours_start),
-                self._schedule.quiet_hours_end(self._cfg.quiet_hours_end),
-                self._schedule.quiet_hours_weight(self._cfg.quiet_hours_weight),
-            )
-        return (
-            self._cfg.quiet_hours_start,
-            self._cfg.quiet_hours_end,
-            self._cfg.quiet_hours_weight,
-        )
-
     def read_memory_text(self) -> str:
         if not self._memory:
             return ""
@@ -221,14 +207,9 @@ class DefaultSensePort:
         now_utc: datetime,
         recent_msg_count: int,
     ) -> tuple[float, dict[str, float]]:
-        q_start, q_end, q_weight = self.quiet_hours()
-        w_time = time_weight(now_hour, q_start, q_end, q_weight)
-        f_time = max(0.0, min(1.0, w_time))
-
         session_key = self.target_session_key()
         if not self._presence or not session_key:
             return 1.0, {
-                "f_time": f_time,
                 "f_reply": 1.0,
                 "f_activity": 1.0,
                 "f_fatigue": 1.0,
@@ -268,14 +249,12 @@ class DefaultSensePort:
         f_fatigue = 1.0 / (1.0 + sent_24h / soft_cap)
 
         w_sum = (
-            self._cfg.interrupt_weight_time
-            + self._cfg.interrupt_weight_reply
+            self._cfg.interrupt_weight_reply
             + self._cfg.interrupt_weight_activity
             + self._cfg.interrupt_weight_fatigue
         )
         raw = (
-            self._cfg.interrupt_weight_time * f_time
-            + self._cfg.interrupt_weight_reply * f_reply
+            self._cfg.interrupt_weight_reply * f_reply
             + self._cfg.interrupt_weight_activity * f_activity
             + self._cfg.interrupt_weight_fatigue * f_fatigue
         ) / (w_sum if w_sum > 0 else 1.0)
@@ -285,7 +264,6 @@ class DefaultSensePort:
         )
         score = max(self._cfg.interrupt_min_floor, min(1.0, raw + random_delta))
         return score, {
-            "f_time": f_time,
             "f_reply": f_reply,
             "f_activity": f_activity,
             "f_fatigue": f_fatigue,

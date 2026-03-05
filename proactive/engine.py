@@ -331,13 +331,12 @@ class ProactiveEngine:
 
         logger.info(
             "[proactive] pre_score=%.3f interrupt=%.3f factor=%.3f sleep_mod=%.2f"
-            " (time=%.2f reply=%.2f activity=%.2f fatigue=%.2f rand=%+.2f)"
+            " (reply=%.2f activity=%.2f fatigue=%.2f rand=%+.2f)"
             " D_energy=%.3f D_recent=%.3f energy=%.3f msg_count=%d",
             ctx.pre_score,
             ctx.interruptibility,
             ctx.interrupt_factor,
             ctx.sleep_mod,
-            ctx.interrupt_detail["f_time"],
             ctx.interrupt_detail["f_reply"],
             ctx.interrupt_detail["f_activity"],
             ctx.interrupt_detail["f_fatigue"],
@@ -528,12 +527,6 @@ class ProactiveEngine:
     async def _stage_decide(self, ctx: DecisionContext) -> float | None:
         """构建决策信号，调用 LLM 评分或生成消息，填充 ctx.should_send / decision_message。"""
         # 1. 构建 decision_signals 结构
-        q_start, q_end, q_weight = self._sense.quiet_hours()
-        in_quiet = (
-            (ctx.now_hour >= q_start or ctx.now_hour < q_end)
-            if q_start > q_end
-            else (q_start <= ctx.now_hour < q_end)
-        )
         mins_since_last_user = (
             int((ctx.now_utc - ctx.target_last_user).total_seconds() / 60)
             if ctx.target_last_user
@@ -550,16 +543,12 @@ class ProactiveEngine:
             and ctx.target_last_user > ctx.last_proactive_at
         )
         ctx.decision_signals = {
-            "quiet_window_local": f"{q_start:02d}:00-{q_end:02d}:00",
-            "in_quiet_hours": in_quiet,
-            "quiet_hours_weight": q_weight,
             "minutes_since_last_user": mins_since_last_user,
             "minutes_since_last_proactive": mins_since_last_proactive,
             "user_replied_after_last_proactive": replied_after_last_proactive,
             "proactive_sent_24h": ctx.sent_24h,
             "interruptibility": round(ctx.interruptibility, 3),
             "interrupt_breakdown": {
-                "time": round(ctx.interrupt_detail["f_time"], 3),
                 "reply": round(ctx.interrupt_detail["f_reply"], 3),
                 "activity": round(ctx.interrupt_detail["f_activity"], 3),
                 "fatigue": round(ctx.interrupt_detail["f_fatigue"], 3),

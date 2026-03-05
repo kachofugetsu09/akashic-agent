@@ -186,7 +186,6 @@ class Config:
                 decision_score_random_strength=float(
                     p.get("decision_score_random_strength", 0.0)
                 ),
-                interrupt_weight_time=float(p.get("interrupt_weight_time", 0.25)),
                 interrupt_weight_reply=float(p.get("interrupt_weight_reply", 0.35)),
                 interrupt_weight_activity=float(
                     p.get("interrupt_weight_activity", 0.25)
@@ -212,9 +211,6 @@ class Config:
                 ),
                 interrupt_min_floor=float(p.get("interrupt_min_floor", 0.08)),
                 # ── 静默时间窗口（本地时间）──
-                quiet_hours_start=int(p.get("quiet_hours_start", 23)),
-                quiet_hours_end=int(p.get("quiet_hours_end", 10)),
-                quiet_hours_weight=float(p.get("quiet_hours_weight", 0.0)),
                 # ── tick 间隔（秒，由 base_score 驱动）──
                 tick_interval_s0=int(p.get("tick_interval_s0", 4800)),
                 tick_interval_s1=int(p.get("tick_interval_s1", 2400)),

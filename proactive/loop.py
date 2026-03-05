@@ -93,7 +93,6 @@ class ProactiveConfig:
     score_pre_threshold: float = 0.05  # pre_score 低于此值直接跳过（省 feed 拉取）
     decision_score_random_strength: float = 0.0  # 最终发送分数随机扰动幅度（0=关闭）
     # ── Interruptibility（非硬拦截，作为软权重）──
-    interrupt_weight_time: float = 0.25
     interrupt_weight_reply: float = 0.35
     interrupt_weight_activity: float = 0.25
     interrupt_weight_fatigue: float = 0.15
@@ -104,10 +103,6 @@ class ProactiveConfig:
     interrupt_fatigue_soft_cap: float = 6.0
     interrupt_random_strength: float = 0.12
     interrupt_min_floor: float = 0.08
-    # ── 昼夜节律 ──
-    quiet_hours_start: int = 23  # 静默开始（本地时间）
-    quiet_hours_end: int = 10  # 静默结束（本地时间）
-    quiet_hours_weight: float = 0.0  # 静默时段权重，0=完全不发，0.1=低概率仍可发
     # ── tick 间隔（由 base_score 驱动）──
     tick_interval_s0: int = 4800  # base_score ≤ 0.20 → ~80 min
     tick_interval_s1: int = 2400  # base_score > 0.20 → ~40 min
