@@ -6,6 +6,7 @@ Telegram Channel
 import logging
 import asyncio
 import time
+from collections import deque
 from pathlib import Path
 
 from telegram import Update
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _CHANNEL = "telegram"
 _UPLOAD_DIR = Path.home() / ".akasic" / "workspace" / "uploads"
+_SEEN_MSG_MAXSIZE = 500  # 滑动窗口大小，防止内存无限增长
 
 
 def _upload_path(prefix: str, suffix: str) -> Path:
@@ -43,6 +45,9 @@ class TelegramChannel:
         self._bus = bus
         self._session_manager = session_manager
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
+        # message_id 去重：防止 Telegram 重投导致同一消息被处理两次
+        self._seen_msg_ids: set[str] = set()
+        self._seen_msg_order: deque[str] = deque()
         self._app = Application.builder().token(token).build()
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
@@ -115,6 +120,18 @@ class TelegramChannel:
             )
             return
 
+        # 去重：同一 (chat_id, message_id) 只处理一次，防止 Telegram 重投
+        msg_key = f"{chat.id}:{msg.message_id}"
+        if msg_key in self._seen_msg_ids:
+            logger.warning(
+                f"[telegram] 重复消息已忽略  chat_id={chat.id}  message_id={msg.message_id}"
+            )
+            return
+        self._seen_msg_ids.add(msg_key)
+        self._seen_msg_order.append(msg_key)
+        if len(self._seen_msg_order) > _SEEN_MSG_MAXSIZE:
+            self._seen_msg_ids.discard(self._seen_msg_order.popleft())
+
         preview = msg.text[:60] + "..." if len(msg.text) > 60 else msg.text
         logger.info(
             f"[telegram] 收到消息  chat_id={chat.id}  "
@@ -181,6 +198,17 @@ class TelegramChannel:
                 f"[telegram] 拒绝未授权用户  id={user.id}  username=@{user.username}"
             )
             return
+
+        msg_key = f"{chat.id}:{msg.message_id}"
+        if msg_key in self._seen_msg_ids:
+            logger.warning(
+                f"[telegram] 重复图片消息已忽略  chat_id={chat.id}  message_id={msg.message_id}"
+            )
+            return
+        self._seen_msg_ids.add(msg_key)
+        self._seen_msg_order.append(msg_key)
+        if len(self._seen_msg_order) > _SEEN_MSG_MAXSIZE:
+            self._seen_msg_ids.discard(self._seen_msg_order.popleft())
 
         if user.username:
             username = user.username.lower()

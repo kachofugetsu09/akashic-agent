@@ -15,6 +15,7 @@ from agent.provider import ContentSafetyError, ContextLengthError, LLMProvider
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 from proactive.presence import PresenceStore
+from memory2.post_response_worker import PostResponseMemoryWorker
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 
 【自检，无需在回复中说明，只用于内部决策】
-1. 用户原始消息是否对 **agent（你）** 明确表达行为偏好/操作规范（要求 agent 以后遇到 X 就做 Y），且本轮尚未调用 memorize？注意：描述第三方行为规律、用户自述观察/印象，均不属于此类。若确认是对 agent 的指令，立即调用 memorize，不得推迟到回复后。
+1. 用户原始消息是否对 **agent（你）** 明确表达行为偏好/操作规范（要求 agent 以后遇到 X 就做 Y）？注意：描述第三方行为规律、用户自述观察/印象，均不属于此类。用户明确说「记住/以后/下次」时，可调用 memorize 做即时确认；其余隐式偏好由后台流程自动提取。
 2. 当前任务是否有匹配的技能尚未读取 SKILL.md？若有，必须先 read_file 读取完整指令再继续。
 2. 即将输出的结论是否有本轮工具返回的事实支撑？无支撑时允许合理推断，但必须显式标注“我推测/可能/更像是”，并保持可追溯到本轮事实；禁止把推断写成事实。
 3. 涉及用户状态/数据/画像的陈述，若未经本轮工具验证，禁止以事实语气输出。
@@ -43,7 +44,8 @@ _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 # 每轮对话开始前注入的初始自检提示，不应持久化到 session
 _PRE_FLIGHT_PROMPT = """【回复前必须完成以下自检，无需在回复中说明】
 0. 【SOP 优先级最高，强制执行】系统 prompt 中已通过向量检索注入了本轮相关 SOP 内容（见”【强制约束】”和”【流程规范】”段），直接参照执行，**无需再 read_file 读取 SOP 文件**。仅当用户明确要求新增/修改 SOP 时，才需要 read_file 读取对应文件。
-1. 用户是否在对 **agent（你）** 表达行为偏好或操作规范——即明确要求 agent 以后按某种方式行动？判断标志：**主语必须是"你/agent"**，且含「记住/以后/下次/每次/你要/你最好/帮我…」等显式指令词。以下情况**不触发 memorize**：① 用户在描述第三方（大厂/竞品/他人）的行为规律；② 用户在陈述自己的观察/印象（"我印象里…""我觉得…"）；③ 纯粹的讨论/提问/知识分享。若满足触发条件，**必须在本轮第一个工具调用中先执行 memorize**，写入该规则/偏好，再执行其他操作。禁止跳过 memorize 直接执行任务。
+1. 用户是否在对 **agent（你）** 表达行为偏好或操作规范——即明确要求 agent 以后按某种方式行动？判断标志：**主语必须是"你/agent"**，且含「记住/以后/下次/每次/你要/你最好/帮我…」等显式指令词。以下情况**不触发 memorize**：① 用户在描述第三方（大厂/竞品/他人）的行为规律；② 用户在陈述自己的观察/印象（"我印象里…""我觉得…"）；③ 纯粹的讨论/提问/知识分享。用户明确说「记住/以后/下次」时，可调用 memorize 工具即时确认；隐式偏好由系统后台自动提取，无需手动 memorize。
+1a. 用户是否在指出 agent 某个**现有行为/流程有误或需要废弃**（如"你之前X是错的/忘掉之前的X/X不对"）？若是，必须：① 承认该问题；② 主动追问正确的做法是什么（"那正确的流程/方式是？"）。后台会自动清除旧的错误记忆，但需要用户提供新的正确方式才能写入替代规则。
 2. 用户是否要求执行某项操作，且该操作与 # Skills 中某个技能的描述明确匹配？若是，禁止在未调用工具的情况下直接回答——必须先 read_file 读取对应 SKILL.md，再按指令执行工具，最后基于工具返回结果作答。（注意：用户只是询问技能列表/能力范围，不触发此规则，直接根据摘要回答即可。）
 3. 用户问的内容是否需要实时/当前数据（订阅列表、天气、最新动态、用户状态等）？若需要，同样禁止凭记忆直接回答，必须本轮调用工具获取。
 4. 遇到”现在/当前/最新/今天/是否已发生”等时间敏感判断，先以 request_time 锚定时间，再给结论；若缺少可核验事实，明确说不确定。
@@ -111,6 +113,16 @@ class AgentLoop:
         self._consolidating: set[str] = set()  # 正在后台压缩的 session key
         self._processing_state = processing_state
         self._disable_full_memory = disable_full_memory
+
+        if memorizer and retriever:
+            self._post_mem_worker = PostResponseMemoryWorker(
+                memorizer=memorizer,
+                retriever=retriever,
+                light_provider=light_provider or provider,
+                light_model=light_model or model,
+            )
+        else:
+            self._post_mem_worker = None
 
         # 1. Build or accept a unified MemoryPort
         if memory_port is not None:
@@ -353,6 +365,16 @@ class AgentLoop:
         # 普通对话只追加 2 条消息，避免全量重写阻塞事件循环
         await self.session_manager.append_messages(session, session.messages[-2:])
 
+        if self._post_mem_worker:
+            asyncio.create_task(
+                self._post_mem_worker.run(
+                    user_msg=msg.content,
+                    agent_response=final_content,
+                    tool_chain=tool_chain,
+                    source_ref=f"{key}@post_response",
+                )
+            )
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -543,6 +565,7 @@ class AgentLoop:
         """
 
         memory = self._memory_port
+        consolidate_up_to = len(session.messages)
         if archive_all:
             old_messages = list(session.messages)
             keep_count = 0
@@ -603,7 +626,7 @@ class AgentLoop:
 ✗ 不写：一次性操作记录（"用户执行了X"、"已完成Y"）
 ✗ 不写：对话过程描述
 ✗ 不写：短期/临时状态（由 agent 通过 update_now 工具实时维护）
-✗ 不写：agent 行为规则（改用 behavior_updates 字段）
+✗ 不写：面向 agent 的执行流程、工具顺序、SOP 条款（此类应放在 SOP 或行为记忆，不放用户画像）
 ✗ 不写：某次任务的操作性细节（配置参数、具体数值、当次选择的方案）——这些不是用户画像
 ✗ 不写：知识库内容本体（世界观细节、剧情、角色设定）——内容留在 KB 文件，这里只存用户反应
 
@@ -633,12 +656,6 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
 格式示例：
 - [SELF] 用户在涉及日程/课表时要求精确时间，拒绝模糊描述
 - [SELF] 用户对工具调用中间步骤不感兴趣，只关心最终结论
-
-### 5. "behavior_updates" → memory2 DB
-用户明确要求改变 agent 未来行为的规则（"记住/以后/下次"等触发词才写）。
-格式：JSON 数组，每项 {{"summary": "...", "memory_type": "procedure|preference",
-"tool_requirement": null或"工具名", "steps": [], "persist_file": null或"文件名"}}
-若无则返回 []。
 
 ---
 
@@ -711,7 +728,6 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
                     )
 
             # memory v2 写入（非阻塞）：通过 MemoryPort 统一写口
-            behavior_updates = result.get("behavior_updates", [])
             history_entry = result.get("history_entry", "")
             _source_ref = (
                 f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
@@ -721,9 +737,7 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
             asyncio.create_task(
                 self._memory_port.save_from_consolidation(
                     history_entry=history_entry,
-                    behavior_updates=behavior_updates
-                    if isinstance(behavior_updates, list)
-                    else [],
+                    behavior_updates=[],
                     source_ref=_source_ref,
                     scope_channel=getattr(session, "_channel", ""),
                     scope_chat_id=getattr(session, "_chat_id", ""),

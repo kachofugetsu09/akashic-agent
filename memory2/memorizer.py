@@ -1,6 +1,7 @@
 """
 Memory v2 写入器：将 consolidation 结果保存到 SQLite
 """
+
 from __future__ import annotations
 
 import logging
@@ -50,37 +51,23 @@ class Memorizer:
                 result = await self.save_item(
                     summary=history_entry.strip(),
                     memory_type="event",
-                    extra={"scope_channel": scope_channel, "scope_chat_id": scope_chat_id},
+                    extra={
+                        "scope_channel": scope_channel,
+                        "scope_chat_id": scope_chat_id,
+                    },
                     source_ref=source_ref,
                 )
                 logger.info(f"memory2 event saved: {result}")
             except Exception as e:
                 logger.warning(f"memory2 event save 失败: {e}")
 
-        # 2. behavior_updates → procedure / preference
-        for update in behavior_updates:
-            if not isinstance(update, dict):
-                continue
-            summary = update.get("summary", "").strip()
-            if not summary:
-                continue
-            mtype = update.get("memory_type", "procedure")
-            if mtype not in ("procedure", "preference", "event", "profile"):
-                mtype = "procedure"
-            extra = {
-                "tool_requirement": update.get("tool_requirement"),
-                "steps": update.get("steps") or [],
-                "persist_file": update.get("persist_file"),
-                "scope_channel": scope_channel,
-                "scope_chat_id": scope_chat_id,
-            }
-            try:
-                result = await self.save_item(
-                    summary=summary,
-                    memory_type=mtype,
-                    extra=extra,
-                    source_ref=source_ref,
-                )
-                logger.info(f"memory2 behavior_update saved ({mtype}): {result}")
-            except Exception as e:
-                logger.warning(f"memory2 behavior_update save 失败: {e}")
+        # 2. behavior_updates 统一由 post-response worker 处理，避免与 consolidation 重复写入
+        if behavior_updates:
+            logger.info(
+                "memory2 consolidation skip behavior_updates (%d): handled by post-response worker",
+                len(behavior_updates),
+            )
+
+    def supersede_batch(self, ids: list[str]) -> None:
+        self._store.mark_superseded_batch(ids)
+        logger.info(f"memory2 superseded {len(ids)} items: {ids}")

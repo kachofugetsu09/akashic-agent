@@ -111,6 +111,8 @@ class MemoryPort(Protocol):
         scope_chat_id: str,
     ) -> None: ...
 
+    def supersede_batch(self, ids: list[str]) -> None: ...
+
 
 # ── Adapter ───────────────────────────────────────────────────────────────────
 
@@ -276,6 +278,10 @@ class DefaultMemoryPort:
             )
         except Exception as e:
             logger.warning("[memory_port] save_from_consolidation failed: %s", e)
+
+    def supersede_batch(self, ids: list[str]) -> None:
+        if self._memorizer:
+            self._memorizer.supersede_batch(ids)
 
     # ── pass-through: expose v1 store for MemoryOptimizer ─────────
 

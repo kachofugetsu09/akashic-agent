@@ -36,7 +36,7 @@ class McpServerRegistry:
         """启动时读取持久化配置，重连所有 server。"""
         for name, cfg in self._load_raw_configs().items():
             try:
-                await self._connect(name, cfg["command"], cfg.get("env"))
+                await self._connect(name, cfg["command"], cfg.get("env"), cfg.get("cwd"))
             except Exception as e:
                 logger.error("[mcp] 重连 %r 失败: %s", name, e)
 
@@ -45,11 +45,12 @@ class McpServerRegistry:
         name: str,
         command: list[str],
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> str:
         if name in self._clients:
             return f"MCP server {name!r} 已存在。如需更新，请先 mcp_remove 再重新添加。"
         try:
-            tool_names = await self._connect(name, command, env)
+            tool_names = await self._connect(name, command, env, cwd)
         except Exception as e:
             return f"连接 MCP server {name!r} 失败：{e}"
         self._save()
@@ -77,9 +78,9 @@ class McpServerRegistry:
         return "\n".join(lines)
 
     async def _connect(
-        self, name: str, command: list[str], env: dict[str, str] | None
+        self, name: str, command: list[str], env: dict[str, str] | None, cwd: str | None = None
     ) -> list[str]:
-        client = McpClient(name=name, command=command, env=env)
+        client = McpClient(name=name, command=command, env=env, cwd=cwd)
         tool_infos = await client.connect()
         tool_names = []
         for info in tool_infos:
@@ -102,7 +103,7 @@ class McpServerRegistry:
 
     def _save(self) -> None:
         servers = {
-            name: {"command": client.command, "env": client.env}
+            name: {"command": client.command, "env": client.env, "cwd": client.cwd}
             for name, client in self._clients.items()
         }
         try:

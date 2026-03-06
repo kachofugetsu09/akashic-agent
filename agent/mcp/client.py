@@ -19,6 +19,15 @@ class McpToolInfo:
     input_schema: dict[str, Any]
 
 
+def _infer_cwd(command: list[str]) -> str | None:
+    """从 command 中找第一个绝对路径文件，返回其父目录作为 cwd。"""
+    for arg in command:
+        p = Path(arg)
+        if p.is_absolute() and p.is_file():
+            return str(p.parent)
+    return None
+
+
 class McpClient:
     """启动并管理一个 stdio MCP server 子进程，处理 JSON-RPC 通信。"""
 
@@ -27,10 +36,13 @@ class McpClient:
         name: str,
         command: list[str],
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> None:
         self.name = name
         self.command = command
         self.env = env or {}
+        # cwd 未指定时从 command 中推断，避免子进程继承 agent 工作目录
+        self.cwd = cwd or _infer_cwd(command)
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._tool_infos: list[McpToolInfo] = []
@@ -42,13 +54,14 @@ class McpClient:
     async def connect(self) -> list[McpToolInfo]:
         """启动子进程，完成握手，获取工具列表。"""
         proc_env = {**os.environ, **self.env}
-        logger.info("[mcp] 启动 %r: %s", self.name, self.command)
+        logger.info("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
         self._process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
+            cwd=self.cwd,
         )
         asyncio.create_task(self._drain_stderr())
 

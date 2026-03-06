@@ -1,6 +1,7 @@
 """
 Memory v2 SQLite 存储层
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -13,8 +14,6 @@ from pathlib import Path
 
 import numpy as np
 
-from memory2.models import MemoryItem
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_items (
     id            TEXT PRIMARY KEY,
@@ -26,6 +25,7 @@ CREATE TABLE IF NOT EXISTS memory_items (
     extra_json    TEXT,
     source_ref    TEXT,
     happened_at   TEXT,
+    status        TEXT NOT NULL DEFAULT 'active',
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -51,6 +51,17 @@ class MemoryStore2:
         self._db.executescript(SCHEMA)
         self._db.commit()
 
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(memory_items)")}
+        if "status" not in cols:
+            self._db.execute(
+                "ALTER TABLE memory_items ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+            )
+            self._db.commit()
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS ix_items_status ON memory_items (status)"
+        )
+        self._db.commit()
+
     def upsert_item(
         self,
         memory_type: str,
@@ -63,16 +74,23 @@ class MemoryStore2:
         """写入或强化一条记忆。返回 'new:id' 或 'reinforced:id'"""
         chash = _content_hash(summary, memory_type)
         existing = self._db.execute(
-            "SELECT id FROM memory_items WHERE content_hash=? AND memory_type=?",
+            "SELECT id, status FROM memory_items WHERE content_hash=? AND memory_type=?",
             (chash, memory_type),
         ).fetchone()
         if existing:
-            self._db.execute(
-                "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=? WHERE id=?",
-                (_now_iso(), existing[0]),
-            )
+            row_id, status = existing
+            if status == "superseded":
+                self._db.execute(
+                    "UPDATE memory_items SET status='active', reinforcement=reinforcement+1, updated_at=? WHERE id=?",
+                    (_now_iso(), row_id),
+                )
+            else:
+                self._db.execute(
+                    "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=? WHERE id=?",
+                    (_now_iso(), row_id),
+                )
             self._db.commit()
-            return f"reinforced:{existing[0]}"
+            return f"reinforced:{row_id}"
 
         item_id = hashlib.md5(f"{chash}{time.time()}".encode()).hexdigest()[:12]
         self._db.execute(
@@ -96,11 +114,30 @@ class MemoryStore2:
         self._db.commit()
         return f"new:{item_id}"
 
-    def get_all_with_embedding(self) -> list[tuple]:
+    def mark_superseded(self, item_id: str) -> None:
+        """将指定条目标记为已退休。"""
+        self._db.execute(
+            "UPDATE memory_items SET status='superseded', updated_at=? WHERE id=?",
+            (_now_iso(), item_id),
+        )
+        self._db.commit()
+
+    def mark_superseded_batch(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        now = _now_iso()
+        self._db.executemany(
+            "UPDATE memory_items SET status='superseded', updated_at=? WHERE id=?",
+            [(now, item_id) for item_id in ids],
+        )
+        self._db.commit()
+
+    def get_all_with_embedding(self, include_superseded: bool = False) -> list[tuple]:
         """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at)]"""
+        where = "" if include_superseded else "AND status='active'"
         rows = self._db.execute(
             "SELECT id, memory_type, summary, embedding, extra_json, happened_at "
-            "FROM memory_items WHERE embedding IS NOT NULL"
+            f"FROM memory_items WHERE embedding IS NOT NULL {where}"
         ).fetchall()
         result = []
         for row_id, mtype, summary, emb_json, extra_json, happened_at in rows:
@@ -115,9 +152,10 @@ class MemoryStore2:
         top_k: int = 8,
         memory_types: list[str] | None = None,
         score_threshold: float = 0.0,
+        include_superseded: bool = False,
     ) -> list[dict]:
         """cosine similarity 检索，返回 top-k 结果"""
-        rows = self.get_all_with_embedding()
+        rows = self.get_all_with_embedding(include_superseded=include_superseded)
         if not rows:
             return []
 
