@@ -18,12 +18,12 @@ import base64
 import html
 import logging
 import re
-import tempfile
 from pathlib import Path
 
-from agent.config import QQGroupConfig
+from agent.config_models import QQGroupConfig
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
+from channels.base import AttachmentStore, SessionIdentityIndex
 from channels.group_filter import DefaultGroupFilter, GroupMessageFilter, strip_at_segments
 from core.net.http import HttpRequester, RequestBudget, get_default_http_requester
 from session.manager import SessionManager
@@ -50,11 +50,13 @@ def _extract_cq_images(raw: str) -> tuple[str, list[str]]:
 async def _download_to_temp(
     urls: list[str],
     requester: HttpRequester,
+    attachments: AttachmentStore | None = None,
 ) -> list[str]:
     """下载图片到临时文件，返回本地路径列表"""
     if not urls:
         return []
     paths: list[str] = []
+    attachment_store = attachments or AttachmentStore()
     ext_map = {
         "image/jpeg": ".jpg", "image/png": ".png",
         "image/gif": ".gif", "image/webp": ".webp",
@@ -71,13 +73,12 @@ async def _download_to_temp(
             resp.raise_for_status()
             ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
             ext = ext_map.get(ct, ".jpg")
-            with tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=ext,
+            path = attachment_store.write_bytes(
+                resp.content,
                 prefix="akasic_qq_",
-            ) as tmp:
-                tmp.write(resp.content)
-                paths.append(tmp.name)
+                suffix=ext,
+            )
+            paths.append(str(path))
         except Exception as e:
             logger.warning(f"[qq] 图片下载失败  url={url[:80]}  错误: {e}")
     return paths
@@ -102,6 +103,12 @@ class QQChannel:
         self._session_manager = session_manager
         self._bot_uin = bot_uin
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
+        self._attachments = AttachmentStore()
+        self._identity_index = SessionIdentityIndex(
+            session_manager,
+            channel=_CHANNEL,
+            metadata_key="user_id",
+        )
 
         # group_id → QQGroupConfig
         self._groups: dict[str, QQGroupConfig] = {g.group_id: g for g in (groups or [])}
@@ -129,7 +136,7 @@ class QQChannel:
         ncatbot_config.plugin.plugins_dir = str(_NCATBOT_DIR / "plugins")
 
         # username（QQ 号字符串）→ chat_id 映射，供主动推送工具使用
-        self.user_map: dict[str, str] = {}
+        self.user_map = self._identity_index.mapping
 
     def _is_allowed(self, user_id: str) -> bool:
         if not self._allow_from:
@@ -138,6 +145,7 @@ class QQChannel:
 
     async def start(self) -> None:
         self._main_loop = asyncio.get_running_loop()
+        self._identity_index.rebuild()
 
         @self._bot.on_private_message()
         async def _(event) -> None:
@@ -212,11 +220,12 @@ class QQChannel:
 
     async def _handle_private(self, user_id: str, content: str, img_urls: list[str] | None = None) -> None:
         """私聊入站：chat_id = user_id"""
-        session = self._session_manager.get_or_create(f"{_CHANNEL}:{user_id}")
-        if "user_id" not in session.metadata:
-            session.metadata["user_id"] = user_id
-            await self._session_manager.save_async(session)
-        media = await _download_to_temp(img_urls or [], self._http_requester)
+        await self._identity_index.remember(user_id, user_id)
+        media = await _download_to_temp(
+            img_urls or [],
+            self._http_requester,
+            self._attachments,
+        )
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=user_id,
@@ -233,7 +242,11 @@ class QQChannel:
         if "group_id" not in session.metadata:
             session.metadata["group_id"] = group_id
             await self._session_manager.save_async(session)
-        media = await _download_to_temp(img_urls or [], self._http_requester)
+        media = await _download_to_temp(
+            img_urls or [],
+            self._http_requester,
+            self._attachments,
+        )
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=user_id,

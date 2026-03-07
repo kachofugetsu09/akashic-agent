@@ -10,7 +10,8 @@ from core.net.http import (
     configure_default_shared_http_resources,
 )
 from feeds.base import FeedItem
-from proactive.loop import ProactiveConfig, ProactiveLoop, _parse_decision
+from proactive.config import ProactiveConfig
+from proactive.loop import ProactiveLoop, _parse_decision
 from proactive.presence import PresenceStore
 from session.manager import SessionManager
 

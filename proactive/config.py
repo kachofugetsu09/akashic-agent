@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from proactive.interest import InterestFilterConfig
+
+
+@dataclass
+class ProactiveConfig:
+    enabled: bool = False
+    interval_seconds: int = 1800
+    threshold: float = 0.70
+    items_per_source: int = 3
+    recent_chat_messages: int = 20
+    model: str = ""
+    default_channel: str = "telegram"
+    default_chat_id: str = ""
+    dedupe_seen_ttl_hours: int = 24 * 14
+    delivery_dedupe_hours: int = 24
+    semantic_dedupe_enabled: bool = True
+    semantic_dedupe_threshold: float = 0.90
+    semantic_dedupe_window_hours: int = 72
+    semantic_dedupe_max_candidates: int = 200
+    semantic_dedupe_ngram: int = 3
+    semantic_dedupe_text_max_chars: int = 240
+    use_global_memory: bool = True
+    global_memory_max_chars: int = 3000
+    interest_filter: InterestFilterConfig = field(default_factory=InterestFilterConfig)
+    score_weight_energy: float = 0.40
+    score_weight_content: float = 0.40
+    score_weight_recent: float = 0.20
+    score_content_halfsat: float = 3.0
+    score_recent_scale: float = 10.0
+    score_llm_threshold: float = 0.40
+    score_pre_threshold: float = 0.05
+    decision_score_random_strength: float = 0.0
+    interrupt_weight_reply: float = 0.35
+    interrupt_weight_activity: float = 0.25
+    interrupt_weight_fatigue: float = 0.15
+    interrupt_activity_decay_minutes: float = 180.0
+    interrupt_reply_decay_minutes: float = 120.0
+    interrupt_no_reply_decay_minutes: float = 360.0
+    interrupt_fatigue_window_hours: int = 24
+    interrupt_fatigue_soft_cap: float = 6.0
+    interrupt_random_strength: float = 0.12
+    interrupt_min_floor: float = 0.08
+    tick_interval_s0: int = 4800
+    tick_interval_s1: int = 2400
+    tick_interval_s2: int = 1080
+    tick_interval_s3: int = 420
+    tick_jitter: float = 0.3
+    anyaction_enabled: bool = False
+    anyaction_daily_max_actions: int = 24
+    anyaction_min_interval_seconds: int = 300
+    anyaction_reset_hour_local: int = 12
+    anyaction_timezone: str = "Asia/Shanghai"
+    anyaction_probability_min: float = 0.03
+    anyaction_probability_max: float = 0.45
+    anyaction_idle_scale_minutes: float = 240.0
+    feature_scoring_enabled: bool = False
+    feature_send_threshold: float = 0.52
+    feature_weight_topic_continuity: float = 0.24
+    feature_weight_interest_match: float = 0.24
+    feature_weight_content_novelty: float = 0.20
+    feature_weight_reconnect_value: float = 0.16
+    feature_weight_message_readiness: float = 0.16
+    feature_weight_disturb_risk: float = 0.70
+    feature_weight_interrupt_penalty: float = 0.30
+    feature_weight_d_recent_bonus: float = 0.10
+    feature_weight_d_content_bonus: float = 0.10
+    feature_weight_d_energy_bonus: float = 0.08
+    memory_retrieval_enabled: bool = True
+    memory_top_k_procedure: int = 4
+    memory_top_k_history: int = 6
+    memory_query_max_recent_messages: int = 3
+    memory_query_max_items: int = 3
+    memory_history_gate_enabled: bool = True
+    memory_scope_fallback_to_global: bool = False
+    memory_trace_enabled: bool = True
+    message_dedupe_enabled: bool = True
+    message_dedupe_recent_n: int = 5
+    llm_reject_cooldown_hours: int = 12
+    feed_poller_enabled: bool = False
+    feed_poller_interval_seconds: int = 300
+    feed_poller_fetch_limit: int = 20
+    feed_poller_buffer_ttl_hours: int = 48
+    feed_poller_buffer_max_per_source: int = 100
+    feed_poller_read_limit: int = 50
+    skill_actions_enabled: bool = False
+    skill_actions_path: str = ""
+    fitbit_enabled: bool = False
+    fitbit_url: str = "http://127.0.0.1:18765"
+    fitbit_poll_seconds: int = 300
+    fitbit_monitor_path: str = ""
+    source_scorer_enabled: bool = False
+    source_scorer_total_budget: int = 60
+    source_scorer_min_per_source: int = 2
+    source_scorer_max_per_source: int = 20
+    source_scorer_cache_path: str = ""

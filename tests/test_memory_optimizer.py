@@ -6,6 +6,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock
 
 from agent.memory import MemoryStore
+from core.memory.port import DefaultMemoryPort
 from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
 
 
@@ -21,7 +22,7 @@ def _provider_with_responses(*responses: str) -> object:
 
 
 def test_optimize_skips_when_memory_pending_history_all_empty(tmp_path):
-    memory = MemoryStore(tmp_path)
+    memory = DefaultMemoryPort(MemoryStore(tmp_path))
     provider = types.SimpleNamespace()
     provider.chat = AsyncMock()
 
@@ -32,7 +33,7 @@ def test_optimize_skips_when_memory_pending_history_all_empty(tmp_path):
 
 
 def test_optimize_rewrites_memory_from_first_llm_call(tmp_path):
-    memory = MemoryStore(tmp_path)
+    memory = DefaultMemoryPort(MemoryStore(tmp_path))
     memory.write_long_term("old profile")
 
     provider = _provider_with_responses("## 用户画像\n- 新版本\n")
@@ -43,7 +44,7 @@ def test_optimize_rewrites_memory_from_first_llm_call(tmp_path):
 
 
 def test_optimize_rolls_back_snapshot_when_merge_returns_empty(tmp_path):
-    memory = MemoryStore(tmp_path)
+    memory = DefaultMemoryPort(MemoryStore(tmp_path))
     memory.write_long_term("old profile")
     memory.append_pending("- pending fact")
 
@@ -52,11 +53,11 @@ def test_optimize_rolls_back_snapshot_when_merge_returns_empty(tmp_path):
     asyncio.run(optimizer.optimize())
 
     assert "pending fact" in memory.read_pending()
-    assert not memory._snapshot_path.exists()
+    assert not memory._store._snapshot_path.exists()
 
 
 def test_optimize_updates_self_when_self_and_history_exist(tmp_path):
-    memory = MemoryStore(tmp_path)
+    memory = DefaultMemoryPort(MemoryStore(tmp_path))
     memory.write_long_term("old")
     memory.write_self("## 原 SELF")
     memory.append_history("[2026-03-03 10:00] USER: hi")

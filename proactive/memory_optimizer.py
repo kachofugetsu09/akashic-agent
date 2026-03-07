@@ -51,7 +51,7 @@ _MERGE_PROMPT = """\
 - 同一事件的多次更新记录 → 只保留最终状态
 
 **动态数据改写为工具调用指引**（不存具体值，只记录获取方式）：
-- 订阅源列表 → 不列具体源名称，改写为："当前订阅源可通过 `feed_list` 工具获取"
+ - 订阅源列表 → 不列具体源名称，改写为："当前订阅源可通过 `feed_manage(action=list)` 工具获取"
 - feed 分数/配额 → 改写为："source 分数存于 `~/.akasic/workspace/source_scores.json`"
 - 健康/运动数据（含心率、血氧、睡眠、步数等任何生理指标的具体数值或基线推断）→ 不存数值，改写为："实时数据通过 `fitbit_health_snapshot` 工具查询"
 - Steam 游戏时长 → 改写为："游戏数据通过 Steam API 获取（API Key 存于 `STEAM_API_KEY`）"
@@ -184,13 +184,6 @@ class MemoryOptimizer:
         max_tokens: int = 16384,
         history_max_chars: int = 6000,
     ) -> None:
-        # Auto-wrap bare MemoryStore in DefaultMemoryPort for backward compat
-        from agent.memory import MemoryStore as _MemoryStore
-
-        if isinstance(memory, _MemoryStore):
-            from core.memory.port import DefaultMemoryPort
-
-            memory = DefaultMemoryPort(memory)
         self._memory = memory
         self._provider = provider
         self._model = model

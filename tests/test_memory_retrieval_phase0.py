@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import main
+from bootstrap import app as bootstrap_app
 from agent.config import Config
 from agent.loop import AgentLoop
 from agent.memory import MemoryStore
@@ -238,7 +238,7 @@ async def test_build_memory_runtime_v2_enabled_returns_worker_and_port(tmp_path:
     tools = ToolRegistry()
     http_resources = SharedHttpResources()
     try:
-        runtime = main.build_memory_runtime(
+        runtime = bootstrap_app.build_memory_runtime(
             config,
             tmp_path,
             tools,

@@ -19,7 +19,7 @@ from feeds.registry import FeedRegistry
 from feeds.buffer import FeedBuffer
 
 if TYPE_CHECKING:
-    from proactive.loop import ProactiveConfig
+    from proactive.config import ProactiveConfig
     from proactive.source_scorer import SourceScorer
     from feeds.store import FeedStore
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from feeds.base import FeedItem
+from proactive.config import ProactiveConfig
 from proactive.engine import ProactiveEngine
-from proactive.loop import ProactiveConfig
 from proactive.ports import DefaultMemoryRetrievalPort, ProactiveRetrievedMemory
 from proactive.state import ProactiveStateStore
 from proactive.components import build_proactive_memory_query

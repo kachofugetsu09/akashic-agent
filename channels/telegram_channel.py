@@ -5,9 +5,6 @@ Telegram Channel
 """
 import logging
 import asyncio
-import time
-from collections import deque
-from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -16,21 +13,14 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
+from channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
 from channels.telegram_utils import send_markdown
 from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
 _CHANNEL = "telegram"
-_UPLOAD_DIR = Path.home() / ".akasic" / "workspace" / "uploads"
 _SEEN_MSG_MAXSIZE = 500  # 滑动窗口大小，防止内存无限增长
-
-
-def _upload_path(prefix: str, suffix: str) -> Path:
-    """在持久化目录中生成唯一文件路径。"""
-    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    ts = int(time.time() * 1000)
-    return _UPLOAD_DIR / f"{prefix}{ts}{suffix}"
 
 
 class TelegramChannel:
@@ -45,9 +35,14 @@ class TelegramChannel:
         self._bus = bus
         self._session_manager = session_manager
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
-        # message_id 去重：防止 Telegram 重投导致同一消息被处理两次
-        self._seen_msg_ids: set[str] = set()
-        self._seen_msg_order: deque[str] = deque()
+        self._message_deduper = MessageDeduper(_SEEN_MSG_MAXSIZE)
+        self._attachments = AttachmentStore()
+        self._identity_index = SessionIdentityIndex(
+            session_manager,
+            channel=_CHANNEL,
+            metadata_key="username",
+            normalizer=lambda value: value.lower(),
+        )
         self._app = Application.builder().token(token).build()
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
@@ -59,8 +54,7 @@ class TelegramChannel:
             MessageHandler(filters.Document.ALL & ~filters.COMMAND, self._on_document)
         )
         bus.subscribe_outbound(_CHANNEL, self._on_response)
-        # username.lower() → chat_id，启动时从 session 重建，运行时实时更新
-        self.user_map: dict[str, str] = {}
+        self.user_map = self._identity_index.mapping
         self._polling_conflict_task: asyncio.Task[None] | None = None
 
     @property
@@ -90,11 +84,7 @@ class TelegramChannel:
 
     def _rebuild_user_map(self) -> None:
         """扫描已有 session 文件，从 metadata 重建 username → chat_id 索引。"""
-        self.user_map.clear()
-        for entry in self._session_manager.get_channel_metadata(_CHANNEL):
-            username = entry["metadata"].get("username", "").lower()
-            if username:
-                self.user_map[username] = entry["chat_id"]
+        self._identity_index.rebuild()
         logger.debug(f"[telegram] user_map 重建完成: {self.user_map}")
 
     def _is_allowed(self, user) -> bool:
@@ -105,6 +95,10 @@ class TelegramChannel:
             str(user.id) in self._allow_from
             or (user.username and user.username.lower() in {u.lower() for u in self._allow_from})
         )
+
+    async def _remember_username(self, chat_id: str, username: str | None) -> None:
+        if username:
+            await self._identity_index.remember(username, chat_id)
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         msg = update.effective_message
@@ -122,15 +116,11 @@ class TelegramChannel:
 
         # 去重：同一 (chat_id, message_id) 只处理一次，防止 Telegram 重投
         msg_key = f"{chat.id}:{msg.message_id}"
-        if msg_key in self._seen_msg_ids:
+        if self._message_deduper.seen(msg_key):
             logger.warning(
                 f"[telegram] 重复消息已忽略  chat_id={chat.id}  message_id={msg.message_id}"
             )
             return
-        self._seen_msg_ids.add(msg_key)
-        self._seen_msg_order.append(msg_key)
-        if len(self._seen_msg_order) > _SEEN_MSG_MAXSIZE:
-            self._seen_msg_ids.discard(self._seen_msg_order.popleft())
 
         preview = msg.text[:60] + "..." if len(msg.text) > 60 else msg.text
         logger.info(
@@ -139,13 +129,8 @@ class TelegramChannel:
         )
 
         # 更新内存索引 + 持久化到 session.metadata
-        if user.username:
-            username = user.username.lower()
-            chat_id_str = str(chat.id)
-            self.user_map[username] = chat_id_str
-            session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id_str}")
-            session.metadata["username"] = username
-            await self._session_manager.save_async(session)
+        chat_id_str = str(chat.id)
+        await self._remember_username(chat_id_str, user.username)
 
         await self._safe_send_typing(context, chat.id)
 
@@ -154,7 +139,7 @@ class TelegramChannel:
         if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
             try:
                 tg_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)
-                tmp = _upload_path("reply_photo_", ".jpg")
+                tmp = self._attachments.create_path("reply_photo_", ".jpg")
                 await tg_file.download_to_drive(tmp)
                 reply_media.append(str(tmp))
                 logger.info(f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={tmp}")
@@ -167,7 +152,7 @@ class TelegramChannel:
                 if rdoc.file_name and "." in rdoc.file_name:
                     suffix = "." + rdoc.file_name.rsplit(".", 1)[-1]
                 tg_file = await context.bot.get_file(rdoc.file_id)
-                tmp = _upload_path("reply_doc_", suffix)
+                tmp = self._attachments.create_path("reply_doc_", suffix)
                 await tg_file.download_to_drive(tmp)
                 reply_media.append(str(tmp))
                 logger.info(f"[telegram] 下载被回复文件  chat_id={chat.id}  filename={rdoc.file_name!r}  tmp={tmp}")
@@ -200,29 +185,20 @@ class TelegramChannel:
             return
 
         msg_key = f"{chat.id}:{msg.message_id}"
-        if msg_key in self._seen_msg_ids:
+        if self._message_deduper.seen(msg_key):
             logger.warning(
                 f"[telegram] 重复图片消息已忽略  chat_id={chat.id}  message_id={msg.message_id}"
             )
             return
-        self._seen_msg_ids.add(msg_key)
-        self._seen_msg_order.append(msg_key)
-        if len(self._seen_msg_order) > _SEEN_MSG_MAXSIZE:
-            self._seen_msg_ids.discard(self._seen_msg_order.popleft())
 
-        if user.username:
-            username = user.username.lower()
-            chat_id_str = str(chat.id)
-            self.user_map[username] = chat_id_str
-            session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id_str}")
-            session.metadata["username"] = username
-            await self._session_manager.save_async(session)
+        chat_id_str = str(chat.id)
+        await self._remember_username(chat_id_str, user.username)
 
         await self._safe_send_typing(context, chat.id)
 
         # 下载最高分辨率的图片到持久化目录
         tg_file = await context.bot.get_file(msg.photo[-1].file_id)
-        tmp = _upload_path("photo_", ".jpg")
+        tmp = self._attachments.create_path("photo_", ".jpg")
         await tg_file.download_to_drive(tmp)
         logger.info(f"[telegram] 收到图片  chat_id={chat.id}  user=@{user.username or user.id}  path={tmp}")
 
@@ -232,7 +208,7 @@ class TelegramChannel:
         if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
             try:
                 reply_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)
-                reply_tmp = _upload_path("reply_photo_", ".jpg")
+                reply_tmp = self._attachments.create_path("reply_photo_", ".jpg")
                 await reply_file.download_to_drive(reply_tmp)
                 media.append(str(reply_tmp))
                 logger.info(f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={reply_tmp}")
@@ -264,13 +240,8 @@ class TelegramChannel:
             )
             return
 
-        if user.username:
-            username = user.username.lower()
-            chat_id_str = str(chat.id)
-            self.user_map[username] = chat_id_str
-            session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id_str}")
-            session.metadata["username"] = username
-            await self._session_manager.save_async(session)
+        chat_id_str = str(chat.id)
+        await self._remember_username(chat_id_str, user.username)
 
         await self._safe_send_typing(context, chat.id)
 
@@ -279,7 +250,7 @@ class TelegramChannel:
         if doc.file_name and "." in doc.file_name:
             suffix = "." + doc.file_name.rsplit(".", 1)[-1]
         tg_file = await context.bot.get_file(doc.file_id)
-        tmp = _upload_path("doc_", suffix)
+        tmp = self._attachments.create_path("doc_", suffix)
         await tg_file.download_to_drive(tmp)
         logger.info(
             f"[telegram] 收到文件  chat_id={chat.id}  user=@{user.username or user.id}"
@@ -307,7 +278,7 @@ class TelegramChannel:
     def _resolve_chat_id(self, chat_id: str) -> str:
         resolved = chat_id.lstrip("@").lower()
         if not resolved.lstrip("-").isdigit():
-            resolved = self.user_map.get(resolved)
+            resolved = self._identity_index.resolve(resolved)
             if not resolved:
                 raise ValueError(
                     f"找不到用户 {chat_id!r} 的 chat_id，该用户需先给 bot 发一条消息。"
