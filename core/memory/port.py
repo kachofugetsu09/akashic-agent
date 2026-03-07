@@ -101,6 +101,9 @@ class MemoryPort(Protocol):
         query: str,
         memory_types: list[str] | None = None,
         top_k: int | None = None,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
     ) -> list[dict]: ...
 
     def format_injection_block(self, items: list[dict]) -> str: ...
@@ -267,6 +270,9 @@ class DefaultMemoryPort:
         query: str,
         memory_types: list[str] | None = None,
         top_k: int | None = None,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
     ) -> list[dict]:
         """Embed query and return top-k memory items; empty list if no retriever."""
         if not self._retriever:
@@ -276,6 +282,9 @@ class DefaultMemoryPort:
                 query,
                 memory_types=memory_types,
                 top_k=top_k,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=require_scope_match,
             )
         except Exception as e:
             logger.warning("[memory_port] retrieve_related failed: %s", e)

@@ -5,6 +5,7 @@ import logging
 import math
 import random as _random_module
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
@@ -17,6 +18,7 @@ from feeds.base import FeedItem
 from feeds.buffer import FeedBuffer
 from feeds.registry import FeedRegistry
 from feeds.store import FeedStore
+from proactive.components import build_proactive_memory_query
 from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
@@ -55,6 +57,7 @@ class DecidePort(Protocol):
         items: list[FeedItem],
         recent: list[dict],
         decision_signals: dict[str, object],
+        retrieved_memory_block: str = "",
     ) -> dict[str, float | str] | None: ...
     async def compose_message(
         self,
@@ -62,6 +65,7 @@ class DecidePort(Protocol):
         items: list[FeedItem],
         recent: list[dict],
         decision_signals: dict[str, object],
+        retrieved_memory_block: str = "",
     ) -> str: ...
     async def reflect(
         self,
@@ -71,6 +75,7 @@ class DecidePort(Protocol):
         urge: float = 0.0,
         is_crisis: bool = False,
         decision_signals: dict[str, object] | None = None,
+        retrieved_memory_block: str = "",
     ) -> Any: ...
     def randomize_decision(self, decision: Any) -> tuple[Any, float]: ...
     def resolve_evidence_item_ids(
@@ -83,6 +88,239 @@ class DecidePort(Protocol):
 
 class ActPort(Protocol):
     async def send(self, message: str) -> bool: ...
+
+
+@dataclass
+class ProactiveRetrievedMemory:
+    query: str = ""
+    block: str = ""
+    item_ids: list[str] = field(default_factory=list)
+    items: list[dict] = field(default_factory=list)
+    procedure_hits: int = 0
+    history_hits: int = 0
+    history_channel_open: bool = False
+    history_gate_reason: str = "disabled"
+    history_scope_mode: str = "disabled"
+    fallback_reason: str = ""
+
+    @classmethod
+    def empty(cls, fallback_reason: str = "") -> "ProactiveRetrievedMemory":
+        return cls(fallback_reason=fallback_reason)
+
+
+class MemoryRetrievalPort(Protocol):
+    async def retrieve_proactive_context(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        items: list[FeedItem],
+        recent: list[dict],
+        decision_signals: dict[str, object],
+        is_crisis: bool,
+    ) -> ProactiveRetrievedMemory: ...
+
+
+class DefaultMemoryRetrievalPort:
+    """Event-only proactive retrieval with fail-open behavior."""
+
+    def __init__(
+        self,
+        *,
+        cfg: Any,
+        memory: "MemoryPort | None",
+        item_id_fn: Callable[[FeedItem], str],
+        trace_writer: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        self._cfg = cfg
+        self._memory = memory
+        self._item_id = item_id_fn
+        self._trace_writer = trace_writer
+
+    async def retrieve_proactive_context(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        items: list[FeedItem],
+        recent: list[dict],
+        decision_signals: dict[str, object],
+        is_crisis: bool,
+    ) -> ProactiveRetrievedMemory:
+        if (
+            not getattr(self._cfg, "memory_retrieval_enabled", True)
+            or self._memory is None
+        ):
+            result = ProactiveRetrievedMemory.empty("retrieval_disabled")
+            self._trace(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                result=result,
+                candidate_items=items,
+            )
+            return result
+
+        try:
+            query = build_proactive_memory_query(
+                items=items,
+                recent=recent,
+                decision_signals=decision_signals,
+                is_crisis=is_crisis,
+                max_items=max(1, int(getattr(self._cfg, "memory_query_max_items", 3))),
+                max_recent=max(
+                    1,
+                    int(getattr(self._cfg, "memory_query_max_recent_messages", 3)),
+                ),
+            )
+            history_open, history_reason = self._decide_history_gate(
+                items=items,
+                recent=recent,
+                decision_signals=decision_signals,
+                is_crisis=is_crisis,
+            )
+
+            p_query = f"{query} 操作规范 用户偏好"
+            p_items = await self._memory.retrieve_related(
+                p_query,
+                memory_types=["procedure", "preference"],
+                top_k=max(1, int(getattr(self._cfg, "memory_top_k_procedure", 4))),
+            )
+
+            h_items: list[dict] = []
+            history_scope_mode = "disabled"
+            if history_open:
+                if channel and chat_id:
+                    scoped_items = await self._memory.retrieve_related(
+                        query,
+                        memory_types=["event"],
+                        top_k=max(1, int(getattr(self._cfg, "memory_top_k_history", 6))),
+                        scope_channel=channel,
+                        scope_chat_id=chat_id,
+                        require_scope_match=True,
+                    )
+                    if scoped_items:
+                        h_items = scoped_items
+                        history_scope_mode = "scoped"
+                if not h_items and bool(
+                    getattr(self._cfg, "memory_scope_fallback_to_global", False)
+                ):
+                    h_items = await self._memory.retrieve_related(
+                        query,
+                        memory_types=["event"],
+                        top_k=max(1, int(getattr(self._cfg, "memory_top_k_history", 6))),
+                        require_scope_match=False,
+                    )
+                    history_scope_mode = "global-fallback"
+
+            merged = self._dedupe_items(p_items + h_items)
+            selected = self._memory.select_for_injection(merged)
+            block, ids = self._memory.format_injection_with_ids(selected)
+
+            result = ProactiveRetrievedMemory(
+                query=query,
+                block=block,
+                item_ids=ids,
+                items=selected,
+                procedure_hits=len(p_items),
+                history_hits=len(h_items),
+                history_channel_open=history_open,
+                history_gate_reason=history_reason,
+                history_scope_mode=history_scope_mode,
+            )
+            self._trace(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                result=result,
+                candidate_items=items,
+            )
+            return result
+        except Exception:
+            logger.exception("[proactive.memory] retrieve_proactive_context failed")
+            result = ProactiveRetrievedMemory.empty("retrieve_exception")
+            self._trace(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                result=result,
+                candidate_items=items,
+            )
+            return result
+
+    def _decide_history_gate(
+        self,
+        *,
+        items: list[FeedItem],
+        recent: list[dict],
+        decision_signals: dict[str, object],
+        is_crisis: bool,
+    ) -> tuple[bool, str]:
+        if not bool(getattr(self._cfg, "memory_history_gate_enabled", True)):
+            return True, "gate_disabled"
+        if is_crisis:
+            return True, "crisis"
+        if any((it.title or "").strip() for it in items):
+            return True, "has_topic_items"
+        if isinstance(decision_signals.get("health_events"), list) and decision_signals.get(
+            "health_events"
+        ):
+            return True, "health_events"
+        recent_texts = [
+            str(m.get("content", "")).strip()
+            for m in recent[-3:]
+            if str(m.get("content", "")).strip()
+        ]
+        if len(recent_texts) >= 2 or sum(len(t) for t in recent_texts) >= 40:
+            return True, "recent_continuity"
+        return False, "insufficient_topic_signal"
+
+    def _dedupe_items(self, items: list[dict]) -> list[dict]:
+        seen: set[str] = set()
+        out: list[dict] = []
+        for item in items:
+            item_id = str(item.get("id", "") or "")
+            if item_id:
+                if item_id in seen:
+                    continue
+                seen.add(item_id)
+            out.append(item)
+        return out
+
+    def _trace(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        result: ProactiveRetrievedMemory,
+        candidate_items: list[FeedItem],
+    ) -> None:
+        if not bool(getattr(self._cfg, "memory_trace_enabled", True)):
+            return
+        if not self._trace_writer:
+            return
+        payload = {
+            "session_key": session_key,
+            "channel": channel,
+            "chat_id": chat_id,
+            "memory_query": result.query,
+            "history_channel_open": result.history_channel_open,
+            "history_gate_reason": result.history_gate_reason,
+            "history_scope_mode": result.history_scope_mode,
+            "procedure_hits": result.procedure_hits,
+            "history_hits": result.history_hits,
+            "injected_item_ids": result.item_ids,
+            "injected_block_preview": (result.block or "")[:240],
+            "candidate_item_ids": [self._item_id(item) for item in candidate_items[:5]],
+            "fallback_reason": result.fallback_reason,
+        }
+        try:
+            self._trace_writer(payload)
+        except Exception:
+            logger.exception("[proactive.memory] trace writer failed")
 
 
 class DefaultSensePort:
@@ -366,6 +604,7 @@ class DefaultDecidePort:
         items: list[FeedItem],
         recent: list[dict],
         decision_signals: dict[str, object],
+        retrieved_memory_block: str = "",
     ) -> dict[str, float | str] | None:
         if not self._feature_scorer:
             return None
@@ -373,6 +612,7 @@ class DefaultDecidePort:
             items=items,
             recent=recent,
             decision_signals=decision_signals,
+            retrieved_memory_block=retrieved_memory_block,
         )
 
     async def compose_message(
@@ -381,6 +621,7 @@ class DefaultDecidePort:
         items: list[FeedItem],
         recent: list[dict],
         decision_signals: dict[str, object],
+        retrieved_memory_block: str = "",
     ) -> str:
         if not self._message_composer:
             return ""
@@ -388,6 +629,7 @@ class DefaultDecidePort:
             items=items,
             recent=recent,
             decision_signals=decision_signals,
+            retrieved_memory_block=retrieved_memory_block,
         )
 
     async def reflect(
@@ -398,6 +640,7 @@ class DefaultDecidePort:
         urge: float = 0.0,
         is_crisis: bool = False,
         decision_signals: dict[str, object] | None = None,
+        retrieved_memory_block: str = "",
     ) -> Any:
         return await self._reflector.reflect(
             items=items,
@@ -406,6 +649,7 @@ class DefaultDecidePort:
             urge=urge,
             is_crisis=is_crisis,
             decision_signals=decision_signals,
+            retrieved_memory_block=retrieved_memory_block,
         )
 
     def randomize_decision(self, decision: Any) -> tuple[Any, float]:

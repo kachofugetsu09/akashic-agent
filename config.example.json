@@ -88,7 +88,16 @@
 
     "_comment_memory": "── 记忆注入 ──",
     "use_global_memory": true,
-    "global_memory_max_chars": 3000
+    "global_memory_max_chars": 3000,
+    "_comment_memory_retrieval": "── 主动链路 memory2 召回 ──",
+    "memory_retrieval_enabled": true,
+    "memory_top_k_procedure": 4,
+    "memory_top_k_history": 6,
+    "memory_query_max_recent_messages": 3,
+    "memory_query_max_items": 3,
+    "memory_history_gate_enabled": true,
+    "memory_scope_fallback_to_global": false,
+    "memory_trace_enabled": true
   },
 
   "_provider_presets": {

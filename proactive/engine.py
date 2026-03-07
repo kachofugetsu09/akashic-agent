@@ -18,7 +18,13 @@ from proactive.energy import (
 from proactive.interest import select_interesting_items
 from proactive.presence import PresenceStore
 from proactive.anyaction import AnyActionGate
-from proactive.ports import ActPort, DecidePort, SensePort
+from proactive.ports import (
+    ActPort,
+    DecidePort,
+    MemoryRetrievalPort,
+    ProactiveRetrievedMemory,
+    SensePort,
+)
 from proactive.state import ProactiveStateStore
 from proactive.skill_action import SkillActionRunner
 
@@ -112,6 +118,13 @@ class DecisionContext:
     decision: Any = None
     decision_message: str = ""
     should_send: bool = False
+    memory_query: str = ""
+    retrieved_memory_block: str = ""
+    retrieved_memory_item_ids: list[str] = field(default_factory=list)
+    history_channel_open: bool = False
+    history_gate_reason: str = "disabled"
+    history_scope_mode: str = "disabled"
+    memory_fallback_reason: str = ""
 
     # Stage 7 — act
     high_events: list[dict] = field(default_factory=list)
@@ -133,6 +146,7 @@ class ProactiveEngine:
         sense: SensePort,
         decide: DecidePort,
         act: ActPort,
+        memory_retrieval: MemoryRetrievalPort | None = None,
         anyaction: AnyActionGate | None = None,
         message_deduper: Any | None = None,
         skill_action_runner: SkillActionRunner | None = None,
@@ -147,6 +161,7 @@ class ProactiveEngine:
         self._sense = sense
         self._decide = decide
         self._act = act
+        self._memory_retrieval = memory_retrieval
         self._anyaction = anyaction
         self._message_deduper = message_deduper
         self._skill_action_runner = skill_action_runner
@@ -576,12 +591,37 @@ class ProactiveEngine:
             ctx.sleep_ctx.state if ctx.sleep_ctx is not None else "unavailable",
         )
 
+        channel = ""
+        chat_id = ""
+        if ctx.session_key and ":" in ctx.session_key:
+            channel, chat_id = ctx.session_key.split(":", 1)
+        if self._memory_retrieval is not None:
+            retrieved = await self._memory_retrieval.retrieve_proactive_context(
+                session_key=ctx.session_key,
+                channel=channel,
+                chat_id=chat_id,
+                items=ctx.new_items,
+                recent=ctx.recent,
+                decision_signals=ctx.decision_signals,
+                is_crisis=ctx.is_crisis,
+            )
+        else:
+            retrieved = ProactiveRetrievedMemory.empty("retrieval_disabled")
+        ctx.memory_query = retrieved.query
+        ctx.retrieved_memory_block = retrieved.block
+        ctx.retrieved_memory_item_ids = retrieved.item_ids
+        ctx.history_channel_open = retrieved.history_channel_open
+        ctx.history_gate_reason = retrieved.history_gate_reason
+        ctx.history_scope_mode = retrieved.history_scope_mode
+        ctx.memory_fallback_reason = retrieved.fallback_reason
+
         # 2. feature scoring 路径
         if self._cfg.feature_scoring_enabled:
             features = await self._decide.score_features(
                 items=ctx.new_items,
                 recent=ctx.recent,
                 decision_signals=ctx.decision_signals,
+                retrieved_memory_block=ctx.retrieved_memory_block,
             )
             ctx.feature_payload = features or {}
             feature_final_base = _feature_final_score(
@@ -620,6 +660,7 @@ class ProactiveEngine:
                 items=ctx.new_items,
                 recent=ctx.recent,
                 decision_signals=ctx.decision_signals,
+                retrieved_memory_block=ctx.retrieved_memory_block,
             )
             ctx.should_send = bool(ctx.decision_message.strip()) and (
                 ctx.feature_final_score is not None
@@ -645,6 +686,7 @@ class ProactiveEngine:
                 urge=ctx.draw_score,
                 is_crisis=ctx.is_crisis,
                 decision_signals=ctx.decision_signals,
+                retrieved_memory_block=ctx.retrieved_memory_block,
             )
             ctx.decision, decision_delta = self._decide.randomize_decision(ctx.decision)
             logger.info(

@@ -50,6 +50,7 @@ from proactive.engine import ProactiveEngine
 from proactive.item_id import compute_item_id, compute_source_key, normalize_url
 from proactive.memory_sampler import sample_memory_chunks
 from proactive.ports import DefaultDecidePort, DefaultSensePort
+from proactive.ports import DefaultMemoryRetrievalPort
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
 from proactive.source_scorer import SourceScorer
@@ -131,6 +132,15 @@ class ProactiveConfig:
     feature_weight_d_recent_bonus: float = 0.10
     feature_weight_d_content_bonus: float = 0.10
     feature_weight_d_energy_bonus: float = 0.08
+    # ── 主动记忆召回 ──
+    memory_retrieval_enabled: bool = True
+    memory_top_k_procedure: int = 4
+    memory_top_k_history: int = 6
+    memory_query_max_recent_messages: int = 3
+    memory_query_max_items: int = 3
+    memory_history_gate_enabled: bool = True
+    memory_scope_fallback_to_global: bool = False
+    memory_trace_enabled: bool = True
     # ── 发送前消息语义去重 ──
     message_dedupe_enabled: bool = (
         True  # 发送前用 LLM 检测是否与近期 proactive 消息重复
@@ -407,6 +417,12 @@ class ProactiveLoop:
             feature_scorer=self._feature_scorer,
             message_composer=self._message_composer,
         )
+        self._memory_retrieval = DefaultMemoryRetrievalPort(
+            cfg=self._cfg,
+            memory=self._memory,
+            item_id_fn=_item_id,
+            trace_writer=self._trace_proactive_memory_retrieve,
+        )
         self._message_deduper = (
             ProactiveMessageDeduper(
                 provider=self._provider,
@@ -424,6 +440,7 @@ class ProactiveLoop:
             sense=self._sense,
             decide=self._decide,
             act=self._sender,
+            memory_retrieval=self._memory_retrieval,
             anyaction=self._anyaction,
             message_deduper=self._message_deduper,
             skill_action_runner=self._build_skill_action_runner(),
@@ -431,6 +448,7 @@ class ProactiveLoop:
             light_model=self._light_model,
             passive_busy_fn=self._passive_busy_fn,
         )
+        self._trace_proactive_config_snapshot()
 
     def _build_skill_action_runner(self) -> SkillActionRunner | None:
         """构造 SkillActionRunner，若未配置则返回 None。"""
@@ -570,14 +588,20 @@ class ProactiveLoop:
     def _next_interval(self, base_score: float | None = None) -> int:
         """根据 base_score 返回自适应等待秒数。无 presence 时回退固定间隔。"""
         if not self._presence:
-            return self._cfg.interval_seconds
+            interval = self._cfg.interval_seconds
+            self._trace_proactive_rate_decision(
+                base_score=base_score,
+                interval=interval,
+                mode="fixed_no_presence",
+            )
+            return interval
         # base_score 由 _tick 传入；首次启动时用电量估算一个初始值
         if base_score is None:
             session_key = self._target_session_key()
             last_user_at = self._presence.get_last_user_at(session_key)
             energy = compute_energy(last_user_at)
             base_score = d_energy(energy) * self._cfg.score_weight_energy
-        return next_tick_from_score(
+        interval = next_tick_from_score(
             base_score,
             tick_s3=self._cfg.tick_interval_s3,
             tick_s2=self._cfg.tick_interval_s2,
@@ -586,6 +610,12 @@ class ProactiveLoop:
             tick_jitter=self._cfg.tick_jitter,
             rng=self._rng,
         )
+        self._trace_proactive_rate_decision(
+            base_score=base_score,
+            interval=interval,
+            mode="adaptive",
+        )
+        return interval
 
     def _target_session_key(self) -> str:
         return self._sense.target_session_key()
@@ -776,6 +806,77 @@ class ProactiveLoop:
 
     async def _send(self, message: str) -> bool:
         return await self._sender.send(message)
+
+    def _trace_proactive_memory_retrieve(self, payload: dict[str, Any]) -> None:
+        try:
+            memory_dir = self._sessions.workspace / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            trace_file = memory_dir / "proactive_memory_retrieve_trace.jsonl"
+            line = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                **payload,
+            }
+            with trace_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning("[proactive] write proactive memory trace failed: %s", e)
+
+    def _trace_proactive_config_snapshot(self) -> None:
+        payload = {
+            "enabled": self._cfg.enabled,
+            "feature_scoring_enabled": self._cfg.feature_scoring_enabled,
+            "threshold": self._cfg.threshold,
+            "feature_send_threshold": self._cfg.feature_send_threshold,
+            "score_llm_threshold": self._cfg.score_llm_threshold,
+            "score_pre_threshold": self._cfg.score_pre_threshold,
+            "tick_interval_s0": self._cfg.tick_interval_s0,
+            "tick_interval_s1": self._cfg.tick_interval_s1,
+            "tick_interval_s2": self._cfg.tick_interval_s2,
+            "tick_interval_s3": self._cfg.tick_interval_s3,
+            "tick_jitter": self._cfg.tick_jitter,
+            "anyaction_enabled": self._cfg.anyaction_enabled,
+            "anyaction_min_interval_seconds": self._cfg.anyaction_min_interval_seconds,
+            "anyaction_probability_min": self._cfg.anyaction_probability_min,
+            "anyaction_probability_max": self._cfg.anyaction_probability_max,
+            "memory_retrieval_enabled": self._cfg.memory_retrieval_enabled,
+            "memory_top_k_procedure": self._cfg.memory_top_k_procedure,
+            "memory_top_k_history": self._cfg.memory_top_k_history,
+            "memory_history_gate_enabled": self._cfg.memory_history_gate_enabled,
+        }
+        self._append_trace_line("proactive_config_trace.jsonl", payload)
+
+    def _trace_proactive_rate_decision(
+        self,
+        *,
+        base_score: float | None,
+        interval: int,
+        mode: str,
+    ) -> None:
+        payload = {
+            "mode": mode,
+            "base_score": round(base_score, 4) if base_score is not None else None,
+            "interval_seconds": int(interval),
+            "threshold": self._cfg.threshold,
+            "feature_send_threshold": self._cfg.feature_send_threshold,
+            "score_llm_threshold": self._cfg.score_llm_threshold,
+            "tick_interval_s0": self._cfg.tick_interval_s0,
+            "tick_interval_s1": self._cfg.tick_interval_s1,
+            "tick_interval_s2": self._cfg.tick_interval_s2,
+            "tick_interval_s3": self._cfg.tick_interval_s3,
+            "tick_jitter": self._cfg.tick_jitter,
+        }
+        self._append_trace_line("proactive_rate_trace.jsonl", payload)
+
+    def _append_trace_line(self, filename: str, payload: dict[str, Any]) -> None:
+        try:
+            memory_dir = self._sessions.workspace / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            trace_file = memory_dir / filename
+            line = {"ts": datetime.now(timezone.utc).isoformat(), **payload}
+            with trace_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning("[proactive] write trace %s failed: %s", filename, e)
 
 
 # ── helpers ──────────────────────────────────────────────────────

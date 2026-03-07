@@ -57,6 +57,9 @@ class Retriever:
         query: str,
         memory_types: list[str] | None = None,
         top_k: int | None = None,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
     ) -> list[dict]:
         """embed query → cosine search → 返回命中条目列表"""
         query_vec = await self._embedder.embed(query)
@@ -66,6 +69,9 @@ class Retriever:
             top_k=actual_top_k,
             memory_types=memory_types,
             score_threshold=self._score_threshold,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+            require_scope_match=require_scope_match,
         )
         logger.debug(f"memory2 retrieve: query={query[:60]!r} hits={len(items)}")
         return items

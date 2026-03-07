@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
@@ -27,6 +28,66 @@ logger = logging.getLogger(__name__)
 
 _TOOL_LOOP_REPEAT_LIMIT = 3
 _SUMMARY_MAX_TOKENS = 384
+
+
+def build_proactive_memory_query(
+    *,
+    items: list[FeedItem],
+    recent: list[dict],
+    decision_signals: dict[str, object],
+    is_crisis: bool,
+    max_items: int = 3,
+    max_recent: int = 3,
+) -> str:
+    """Build a compact query for proactive memory retrieval."""
+    lines: list[str] = ["主动触达主题"]
+
+    lines.append("候选内容：")
+    for item in items[: max(1, int(max_items))]:
+        title = (item.title or "").strip() or "(无标题)"
+        snippet = re.sub(r"\s+", " ", (item.content or "").strip())[:120]
+        source = (item.source_name or "").strip()
+        source_type = (item.source_type or "").strip().lower()
+        source_key = f"{source_type}:{source.lower()}" if source_type or source else ""
+        domain = ""
+        if item.url:
+            try:
+                domain = (urlsplit(item.url).netloc or "").strip().lower()
+            except Exception:
+                domain = ""
+        lines.append(f"- {title}" + (f"（{source}）" if source else ""))
+        if source_key:
+            lines.append(f"  来源标签: {source_key}")
+        if domain:
+            lines.append(f"  来源域名: {domain}")
+        if snippet:
+            lines.append(f"  {snippet}")
+
+    lines.append("近期对话：")
+    for msg in recent[-max(1, int(max_recent)) :]:
+        role = "用户" if str(msg.get("role", "")) == "user" else "助手"
+        text = re.sub(r"\s+", " ", str(msg.get("content", "")).strip())[:120]
+        if text:
+            lines.append(f"- {role}: {text}")
+
+    health_events = decision_signals.get("health_events")
+    if isinstance(health_events, list) and health_events:
+        lines.append("健康事件：")
+        for event in health_events[:2]:
+            message = re.sub(
+                r"\s+",
+                " ",
+                str((event or {}).get("message", "")).strip(),
+            )[:120]
+            if message:
+                lines.append(f"- {message}")
+
+    lines.append("触达目标：")
+    lines.append("- 基于当前内容生成自然主动消息")
+    lines.append("- 优先遵循用户偏好与过往事件")
+    if is_crisis:
+        lines.append("- 当前是重连场景，优先自然开场")
+    return "\n".join(lines)
 
 
 def _tool_call_signature(tool_calls) -> str:
@@ -83,6 +144,7 @@ class ProactiveReflector:
         urge: float = 0.0,
         is_crisis: bool = False,
         decision_signals: dict[str, object] | None = None,
+        retrieved_memory_block: str = "",
     ) -> Any:
         now = datetime.now().astimezone()
         now_str = now.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -153,6 +215,7 @@ class ProactiveReflector:
 ## 长期记忆（用户画像/偏好）
 
 {memory_text}
+{f"## 相关记忆（本次触达召回）\n\n{retrieved_memory_block}\n" if retrieved_memory_block else ""}
 {f"## 用户近期状态\n\n{now_ongoing_text}\n" if now_ongoing_text else ""}
 ## 近期对话
 
@@ -219,7 +282,8 @@ evidence_item_ids 从订阅信息流里挑选支持你判断的 item_id（可为
                     model=self._model,
                     max_tokens=self._max_tokens,
                 )
-                if not resp.tool_calls:
+                tool_calls = getattr(resp, "tool_calls", []) or []
+                if not tool_calls:
                     break
 
                 messages.append(
@@ -237,11 +301,11 @@ evidence_item_ids 从订阅信息流里挑选支持你判断的 item_id（可为
                                     ),
                                 },
                             }
-                            for tc in resp.tool_calls
+                            for tc in tool_calls
                         ],
                     }
                 )
-                for tc in resp.tool_calls:
+                for tc in tool_calls:
                     tool = active_tool_map.get(tc.name)
                     result = (
                         await tool.execute(**tc.arguments)
@@ -511,6 +575,7 @@ class ProactiveFeatureScorer:
         items: list[FeedItem],
         recent: list[dict],
         decision_signals: dict[str, object],
+        retrieved_memory_block: str = "",
     ) -> dict[str, float | str]:
         now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
         feed_text = self._format_items(items) or "（暂无订阅内容）"
@@ -536,6 +601,7 @@ class ProactiveFeatureScorer:
 
 ## 长期记忆
 {memory_text}
+{f"## 相关记忆（本次触达召回）\n{retrieved_memory_block}\n" if retrieved_memory_block else ""}
 
 ## 近期对话
 {chat_text}
@@ -751,6 +817,7 @@ class ProactiveMessageComposer:
         items: list[FeedItem],
         recent: list[dict],
         decision_signals: dict[str, object],
+        retrieved_memory_block: str = "",
     ) -> str:
         now = datetime.now().astimezone()
         now_str = now.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -786,6 +853,7 @@ class ProactiveMessageComposer:
 {feed_text}
 ## 长期记忆
 {memory_text}
+{f"## 相关记忆（本次触达召回）\n{retrieved_memory_block}\n" if retrieved_memory_block else ""}
 ## 近期对话
 {chat_text}
 
@@ -823,8 +891,9 @@ class ProactiveMessageComposer:
                     model=self._model,
                     max_tokens=self._max_tokens,
                 )
+                tool_calls = getattr(resp, "tool_calls", []) or []
 
-                if not resp.tool_calls:
+                if not tool_calls:
                     # 无工具调用，最终消息
                     result = (resp.content or "").strip()
                     logger.info(
@@ -834,7 +903,7 @@ class ProactiveMessageComposer:
                     )
                     return result
 
-                signature = _tool_call_signature(resp.tool_calls)
+                signature = _tool_call_signature(tool_calls)
                 if signature and signature == last_tool_signature:
                     repeat_count += 1
                 else:
@@ -869,12 +938,12 @@ class ProactiveMessageComposer:
                                     ),
                                 },
                             }
-                            for tc in resp.tool_calls
+                            for tc in tool_calls
                         ],
                     }
                 )
 
-                for tc in resp.tool_calls:
+                for tc in tool_calls:
                     tool = active_tool_map.get(tc.name)
                     if tool:
                         logger.info(

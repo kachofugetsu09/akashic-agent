@@ -239,6 +239,9 @@ class MemoryStore2:
         memory_types: list[str] | None = None,
         score_threshold: float = 0.0,
         include_superseded: bool = False,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
     ) -> list[dict]:
         """cosine similarity 检索，返回 top-k 结果"""
         rows = self.get_all_with_embedding(include_superseded=include_superseded)
@@ -247,6 +250,16 @@ class MemoryStore2:
 
         if memory_types:
             rows = [r for r in rows if r[1] in memory_types]
+
+        if require_scope_match:
+            s_channel = (scope_channel or "").strip()
+            s_chat = (scope_chat_id or "").strip()
+            rows = [
+                r
+                for r in rows
+                if str((r[4] or {}).get("scope_channel", "")).strip() == s_channel
+                and str((r[4] or {}).get("scope_chat_id", "")).strip() == s_chat
+            ]
 
         if not rows:
             return []

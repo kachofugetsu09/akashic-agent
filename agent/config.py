@@ -288,6 +288,24 @@ class Config:
                 feature_weight_d_energy_bonus=float(
                     p.get("feature_weight_d_energy_bonus", 0.08)
                 ),
+                memory_retrieval_enabled=bool(
+                    p.get("memory_retrieval_enabled", True)
+                ),
+                memory_top_k_procedure=max(
+                    1, int(p.get("memory_top_k_procedure", 4))
+                ),
+                memory_top_k_history=max(1, int(p.get("memory_top_k_history", 6))),
+                memory_query_max_recent_messages=max(
+                    1, int(p.get("memory_query_max_recent_messages", 3))
+                ),
+                memory_query_max_items=max(1, int(p.get("memory_query_max_items", 3))),
+                memory_history_gate_enabled=bool(
+                    p.get("memory_history_gate_enabled", True)
+                ),
+                memory_scope_fallback_to_global=bool(
+                    p.get("memory_scope_fallback_to_global", False)
+                ),
+                memory_trace_enabled=bool(p.get("memory_trace_enabled", True)),
                 message_dedupe_enabled=bool(p.get("message_dedupe_enabled", True)),
                 message_dedupe_recent_n=int(p.get("message_dedupe_recent_n", 5)),
                 # ── LLM 拒绝冷却 ──
