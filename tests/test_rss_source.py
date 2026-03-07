@@ -2,6 +2,7 @@ import asyncio
 
 import httpx
 
+from core.net.http import HttpRequester, RequestBudget, RetryPolicy
 from feeds.base import FeedSubscription
 from feeds.rss import RSSFeedSource
 
@@ -9,6 +10,17 @@ from feeds.rss import RSSFeedSource
 def _make_source(name: str = "test") -> RSSFeedSource:
     sub = FeedSubscription.new(type="rss", name=name, url="https://example.com/rss")
     return RSSFeedSource(sub)
+
+
+def _make_requester(handler) -> HttpRequester:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return HttpRequester(
+        client=client,
+        retry_policy=RetryPolicy(max_attempts=2, base_delay_s=0.0, max_delay_s=0.0),
+        default_timeout_s=1.0,
+        default_budget=RequestBudget(total_timeout_s=2.0),
+        sleep=lambda _: asyncio.sleep(0),
+    )
 
 
 def test_parse_rss_with_leading_whitespace_before_xml_decl():
@@ -92,114 +104,85 @@ def test_fetch_via_curl_retries_then_succeeds(monkeypatch):
 
 def test_fetch_http_retries_then_succeeds(monkeypatch):
     sub = FeedSubscription.new(type="rss", name="http", url="https://example.com/rss")
-    source = RSSFeedSource(sub)
 
     xml_ok = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><item><title>B</title><link>https://e/b</link><description>ok</description></item></channel></rss>"""
 
-    class _Resp:
-        text = xml_ok
+    calls = {"count": 0}
 
-        def raise_for_status(self):
-            return None
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ReadTimeout("timeout", request=request)
+        return httpx.Response(200, request=request, text=xml_ok)
 
-    class _Client:
-        calls = 0
+    requester = _make_requester(_handler)
+    source = RSSFeedSource(sub, requester=requester)
 
-        def __init__(self, **kwargs) -> None:
-            pass
+    async def _run():
+        try:
+            return await source.fetch(limit=5)
+        finally:
+            await requester.client.aclose()
 
-        async def __aenter__(self):
-            return self
+    items = asyncio.run(_run())
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url: str):
-            _Client.calls += 1
-            if _Client.calls == 1:
-                raise httpx.ReadTimeout("", request=None)
-            return _Resp()
-
-    monkeypatch.setattr("feeds.rss._FETCH_RETRY_DELAYS_S", (0.0,))
-    monkeypatch.setattr("feeds.rss.httpx.AsyncClient", _Client)
-
-    items = asyncio.run(source.fetch(limit=5))
-
-    assert _Client.calls == 2
+    assert calls["count"] == 2
     assert len(items) == 1
     assert items[0].title == "B"
 
 
 def test_fetch_http_non_retryable_status_fails_fast(monkeypatch):
     sub = FeedSubscription.new(type="rss", name="http", url="https://example.com/rss")
-    source = RSSFeedSource(sub)
+    calls = {"count": 0}
 
-    class _Client:
-        calls = 0
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        return httpx.Response(404, request=request, text="not found")
 
-        def __init__(self, **kwargs) -> None:
-            pass
+    requester = _make_requester(_handler)
+    source = RSSFeedSource(sub, requester=requester)
 
-        async def __aenter__(self):
-            return self
+    async def _run():
+        try:
+            return await source.fetch(limit=5)
+        finally:
+            await requester.client.aclose()
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url: str):
-            _Client.calls += 1
-            req = httpx.Request("GET", url)
-            resp = httpx.Response(404, request=req)
-            raise httpx.HTTPStatusError("not found", request=req, response=resp)
-
-    monkeypatch.setattr("feeds.rss._FETCH_RETRY_DELAYS_S", (0.0, 0.0))
-    monkeypatch.setattr("feeds.rss.httpx.AsyncClient", _Client)
-
-    items = asyncio.run(source.fetch(limit=5))
+    items = asyncio.run(_run())
 
     assert items == []
-    assert _Client.calls == 1
+    assert calls["count"] == 1
 
 
 def test_fetch_http_parse_error_retries_once(monkeypatch):
     sub = FeedSubscription.new(type="rss", name="http", url="https://example.com/rss")
-    source = RSSFeedSource(sub)
 
     xml_ok = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><item><title>C</title><link>https://e/c</link><description>ok</description></item></channel></rss>"""
 
-    class _Resp:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-        def raise_for_status(self):
-            return None
-
-    class _Client:
-        calls = 0
-
-        def __init__(self, **kwargs) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url: str):
-            _Client.calls += 1
-            if _Client.calls == 1:
-                return _Resp("<rss><channel><item>")
-            return _Resp(xml_ok)
-
     monkeypatch.setattr("feeds.rss._FETCH_RETRY_DELAYS_S", (0.0, 0.0))
-    monkeypatch.setattr("feeds.rss.httpx.AsyncClient", _Client)
 
-    items = asyncio.run(source.fetch(limit=5))
+    calls = {"count": 0}
 
-    assert _Client.calls == 2
+    def _handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(200, request=request, text="<rss><channel><item>")
+        return httpx.Response(200, request=request, text=xml_ok)
+
+    requester = _make_requester(_handler)
+    source = RSSFeedSource(sub, requester=requester)
+
+    async def _run():
+        try:
+            return await source.fetch(limit=5)
+        finally:
+            await requester.client.aclose()
+
+    items = asyncio.run(_run())
+
+    assert calls["count"] == 2
     assert len(items) == 1
     assert items[0].title == "C"
 

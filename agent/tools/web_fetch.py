@@ -8,11 +8,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 import html2text
-import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
 
 from agent.tools.base import Tool
+from core.net.http import (
+    HttpRequester,
+    RequestBudget,
+    get_default_http_requester,
+)
 
 _MAX_BYTES = 5 * 1024 * 1024  # 5MB，与 OpenCode 一致
 _DEFAULT_TIMEOUT = 30  # 秒
@@ -59,6 +63,9 @@ class WebFetchTool(Tool):
         "required": ["url"],
     }
 
+    def __init__(self, requester: HttpRequester | None = None) -> None:
+        self._requester = requester or get_default_http_requester("external_default")
+
     async def execute(self, **kwargs: Any) -> str:
         url: str = kwargs["url"]
         fmt: str = kwargs.get("format", "markdown")
@@ -72,22 +79,25 @@ class WebFetchTool(Tool):
             return _err(url, ssrf_err)
 
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True, timeout=timeout
-            ) as client:
-                resp = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": _USER_AGENT,
-                        "Accept": _ACCEPT.get(fmt, "*/*"),
-                        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    },
-                )
-        except httpx.TimeoutException:
-            return _err(url, f"请求超时（>{timeout}s）")
-        except httpx.ConnectError:
-            return _err(url, "无法建立连接")
-        except httpx.RequestError as e:
+            resp = await self._requester.get(
+                url,
+                follow_redirects=True,
+                timeout_s=timeout,
+                budget=RequestBudget(total_timeout_s=float(timeout)),
+                headers={
+                    "User-Agent": _USER_AGENT,
+                    "Accept": _ACCEPT.get(fmt, "*/*"),
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            )
+        except Exception as e:
+            import httpx
+            if isinstance(e, httpx.TimeoutException):
+                return _err(url, f"请求超时（>{timeout}s）")
+            if isinstance(e, httpx.ConnectError):
+                return _err(url, "无法建立连接")
+            if isinstance(e, httpx.RequestError):
+                return _err(url, f"请求失败：{e}")
             return _err(url, f"请求失败：{e}")
 
         if resp.status_code != 200:

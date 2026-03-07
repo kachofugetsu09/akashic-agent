@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import httpx
+from core.net.http import HttpRequester, RequestBudget, get_default_http_requester
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +20,12 @@ class Embedder:
         base_url: str,
         api_key: str,
         model: str = "text-embedding-v3",
+        requester: HttpRequester | None = None,
     ) -> None:
         self._url = base_url.rstrip("/") + "/embeddings"
         self._key = api_key
         self._model = model
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._requester = requester or get_default_http_requester("external_default")
 
     async def embed(self, text: str) -> list[float]:
         """单条 embed"""
@@ -38,13 +39,15 @@ class Embedder:
 
         for i in range(0, len(truncated), self.MAX_BATCH):
             batch = truncated[i : i + self.MAX_BATCH]
-            resp = await self._client.post(
+            resp = await self._requester.post(
                 self._url,
                 headers={
                     "Authorization": f"Bearer {self._key}",
                     "Content-Type": "application/json",
                 },
                 json={"model": self._model, "input": batch},
+                timeout_s=30.0,
+                budget=RequestBudget(total_timeout_s=40.0),
             )
             resp.raise_for_status()
             data = resp.json()["data"]
@@ -57,4 +60,4 @@ class Embedder:
         return results
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        return None

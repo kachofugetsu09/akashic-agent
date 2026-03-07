@@ -4,6 +4,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.memory import MemoryStore
+from core.net.http import (
+    SharedHttpResources,
+    clear_default_shared_http_resources,
+    configure_default_shared_http_resources,
+)
 from feeds.base import FeedItem
 from proactive.loop import ProactiveConfig, ProactiveLoop, _parse_decision
 from proactive.presence import PresenceStore
@@ -49,6 +54,17 @@ def _build_loop(tmp_path, push_tool, chat_id: str = "7674283004", default_channe
 class _Resp:
     def __init__(self, content: str) -> None:
         self.content = content
+
+
+@pytest.fixture(autouse=True)
+async def _shared_http_resources():
+    resources = SharedHttpResources()
+    configure_default_shared_http_resources(resources)
+    try:
+        yield
+    finally:
+        clear_default_shared_http_resources(resources)
+        await resources.aclose()
 
 
 def test_parse_decision_string_false_is_false():

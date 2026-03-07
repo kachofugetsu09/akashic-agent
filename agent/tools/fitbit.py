@@ -11,6 +11,11 @@ import json
 from typing import Any
 
 from agent.tools.base import Tool
+from core.net.http import (
+    HttpRequester,
+    RequestBudget,
+    get_default_http_requester,
+)
 
 
 def _fmt_duration(minutes: int | None) -> str:
@@ -36,17 +41,26 @@ class FitbitHealthSnapshotTool(Tool):
         "required": [],
     }
 
-    def __init__(self, monitor_url: str = "http://127.0.0.1:18765") -> None:
+    def __init__(
+        self,
+        monitor_url: str = "http://127.0.0.1:18765",
+        requester: HttpRequester | None = None,
+    ) -> None:
         self._url = monitor_url.rstrip("/")
+        self._requester = requester or get_default_http_requester("local_service")
+
+    def with_requester(self, requester: HttpRequester) -> "FitbitHealthSnapshotTool":
+        self._requester = requester
+        return self
 
     async def execute(self, **kwargs: Any) -> str:
-        import httpx
-
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.get(f"{self._url}/api/data")
-                r.raise_for_status()
-                data = r.json()
+            r = await self._requester.get(
+                f"{self._url}/api/data",
+                budget=RequestBudget(total_timeout_s=5.0),
+            )
+            r.raise_for_status()
+            data = r.json()
         except Exception as e:
             return f"[fitbit_health_snapshot] 无法连接 Fitbit monitor：{e}"
 
@@ -127,23 +141,32 @@ class FitbitSleepReportTool(Tool):
         "required": [],
     }
 
-    def __init__(self, monitor_url: str = "http://127.0.0.1:18765") -> None:
+    def __init__(
+        self,
+        monitor_url: str = "http://127.0.0.1:18765",
+        requester: HttpRequester | None = None,
+    ) -> None:
         self._url = monitor_url.rstrip("/")
+        self._requester = requester or get_default_http_requester("local_service")
+
+    def with_requester(self, requester: HttpRequester) -> "FitbitSleepReportTool":
+        self._requester = requester
+        return self
 
     async def execute(self, **kwargs: Any) -> str:
-        import httpx
-
         days = int(kwargs.get("days", 7))
 
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                r = await client.get(
-                    f"{self._url}/api/sleep_report", params={"days": days}
-                )
-                if r.status_code == 401:
-                    return "[fitbit_sleep_report] Fitbit 未授权，请先完成 OAuth 授权。"
-                r.raise_for_status()
-                data = r.json()
+            r = await self._requester.get(
+                f"{self._url}/api/sleep_report",
+                params={"days": days},
+                budget=RequestBudget(total_timeout_s=20.0),
+                timeout_s=20.0,
+            )
+            if r.status_code == 401:
+                return "[fitbit_sleep_report] Fitbit 未授权，请先完成 OAuth 授权。"
+            r.raise_for_status()
+            data = r.json()
         except Exception as e:
             return f"[fitbit_sleep_report] 无法连接 Fitbit monitor：{e}"
 

@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 import main
+from core.net.http import SharedHttpResources
 
 
 def _write_config(path: Path, socket_path: Path) -> None:
@@ -36,8 +38,8 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     original_build_core_runtime = main.build_core_runtime
     observed: dict[str, object] = {}
 
-    def _patched_build_core_runtime(config, workspace):
-        runtime = original_build_core_runtime(config, workspace)
+    def _patched_build_core_runtime(config, workspace, http_resources):
+        runtime = original_build_core_runtime(config, workspace, http_resources)
         (
             agent_loop,
             bus,
@@ -66,6 +68,7 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         scheduler.run = _scheduler_run  # type: ignore[assignment]
         observed["scheduler"] = scheduler
         observed["bus"] = bus
+        observed["http_resources"] = http_resources
         return runtime
 
     monkeypatch.setattr(main, "build_core_runtime", _patched_build_core_runtime)
@@ -76,6 +79,7 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     assert socket_path.exists() is False
     assert "scheduler" in observed
     assert "bus" in observed
+    assert cast(SharedHttpResources, observed["http_resources"]).closed is True
 
 
 @pytest.mark.asyncio

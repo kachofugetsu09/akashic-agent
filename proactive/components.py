@@ -19,6 +19,7 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.filesystem import ReadFileTool
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
+from core.net.http import get_default_http_requester
 from feeds.base import FeedItem
 from proactive.presence import PresenceStore
 from proactive.state import ProactiveStateStore
@@ -131,7 +132,16 @@ class ProactiveReflector:
         self._hooks = hooks
         self._fitbit_url = fitbit_url
         self._fitbit_tools: list[Tool] = (
-            [FitbitHealthSnapshotTool(fitbit_url), FitbitSleepReportTool(fitbit_url)]
+            [
+                FitbitHealthSnapshotTool(
+                    fitbit_url,
+                    requester=get_default_http_requester("local_service"),
+                ),
+                FitbitSleepReportTool(
+                    fitbit_url,
+                    requester=get_default_http_requester("local_service"),
+                ),
+            ]
             if fitbit_url
             else []
         )
@@ -788,14 +798,23 @@ class ProactiveMessageComposer:
         self._collect_global_memory = collect_global_memory
         self._max_tool_iterations = max_tool_iterations
         self._fitbit_tools: list[Tool] = (
-            [FitbitHealthSnapshotTool(fitbit_url), FitbitSleepReportTool(fitbit_url)]
+            [
+                FitbitHealthSnapshotTool(
+                    fitbit_url,
+                    requester=get_default_http_requester("local_service"),
+                ),
+                FitbitSleepReportTool(
+                    fitbit_url,
+                    requester=get_default_http_requester("local_service"),
+                ),
+            ]
             if fitbit_url
             else []
         )
         # 工具实例：只读（不写文件、不执行系统动作）
         self._tools: list[Tool] = [
             ReadFileTool(),
-            WebFetchTool(),
+            WebFetchTool(get_default_http_requester("external_default")),
             WebSearchTool(),
         ]
         self._tool_schemas = [

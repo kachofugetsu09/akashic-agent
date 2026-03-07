@@ -62,6 +62,11 @@ from proactive.schedule import ScheduleStore
 from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
 from core.memory.runtime import MemoryRuntime
 from memory2.post_response_worker import PostResponseMemoryWorker
+from core.net.http import (
+    SharedHttpResources,
+    clear_default_shared_http_resources,
+    configure_default_shared_http_resources,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -134,12 +139,17 @@ async def _run_cleanup_steps(
         raise first_error
 
 
+async def _noop_async() -> None:
+    return None
+
+
 def build_memory_runtime(
     config: Config,
     workspace: Path,
     tools: ToolRegistry,
     provider: LLMProvider,
     light_provider: LLMProvider | None,
+    http_resources: SharedHttpResources,
 ) -> MemoryRuntime:
     """
     初始化 memory v2（向量检索体系），并注册相关工具。
@@ -177,6 +187,7 @@ def build_memory_runtime(
         base_url=config.light_base_url or config.base_url or "",
         api_key=config.light_api_key or config.api_key,
         model=config.memory_v2.embed_model,
+        requester=http_resources.external_default,
     )
     memorizer = Memorizer(mem2_store, embedder)
     retriever = Retriever(
@@ -226,6 +237,7 @@ def build_memory_runtime(
 def build_core_runtime(
     config: Config,
     workspace: Path,
+    http_resources: SharedHttpResources,
 ) -> tuple[
     AgentLoop,
     MessageBus,
@@ -255,7 +267,7 @@ def build_core_runtime(
     tools = ToolRegistry()
     tools.register(ShellTool())
     tools.register(WebSearchTool())
-    tools.register(WebFetchTool())
+    tools.register(WebFetchTool(http_resources.external_default))
     tools.register(ReadFileTool())
     tools.register(ListDirTool())
     push_tool = MessagePushTool()
@@ -279,8 +291,18 @@ def build_core_runtime(
 
     _fitbit_url = getattr(config.proactive, "fitbit_url", "http://127.0.0.1:18765")
     if getattr(config.proactive, "fitbit_enabled", False):
-        tools.register(FitbitHealthSnapshotTool(_fitbit_url))
-        tools.register(FitbitSleepReportTool(_fitbit_url))
+        tools.register(
+            FitbitHealthSnapshotTool(
+                _fitbit_url,
+                requester=http_resources.local_service,
+            )
+        )
+        tools.register(
+            FitbitSleepReportTool(
+                _fitbit_url,
+                requester=http_resources.local_service,
+            )
+        )
 
     # 2. 构建 providers
     provider, light_provider = build_providers(config)
@@ -292,6 +314,7 @@ def build_core_runtime(
         tools,
         provider,
         light_provider,
+        http_resources,
     )
     tools.register(UpdateNowTool(memory_runtime.port))
 
@@ -364,6 +387,7 @@ def build_core_runtime(
 def build_feed_runtime(
     workspace: Path,
     tools: ToolRegistry,
+    http_resources: SharedHttpResources,
 ) -> tuple[FeedRegistry, FeedStore, FeedManageTool]:
     """
     构建订阅系统：FeedStore、FeedRegistry 与相关工具。
@@ -378,7 +402,10 @@ def build_feed_runtime(
     feed_registry = FeedRegistry(feed_store)
 
     # 2. 注册内置 source 类型
-    feed_registry.register_source_type("rss", lambda sub: RSSFeedSource(sub))
+    feed_registry.register_source_type(
+        "rss",
+        lambda sub: RSSFeedSource(sub, requester=http_resources.feed_fetcher),
+    )
     feed_registry.register_source_type("novel-kb", lambda sub: NovelKBFeedSource(sub))
 
     # 3. 注册 Feed 工具（scorer 由 proactive runtime 稍后注入）
@@ -487,127 +514,142 @@ async def serve(config_path: str = "config.json") -> None:
     config = Config.load(config_path)
     print(f"[DEBUG] config_path={config_path} route_intention={config.memory_v2.route_intention_enabled}", flush=True)
     workspace = Path.home() / ".akasic" / "workspace"
-
-    # 2. 构建核心运行时
-    (
-        agent_loop,
-        bus,
-        tools,
-        push_tool,
-        session_manager,
-        scheduler,
-        provider,
-        light_provider,
-        mcp_registry,
-        memory_runtime,
-        presence,
-    ) = build_core_runtime(config, workspace)
-    await mcp_registry.load_and_connect_all()
-
-    # 3. 构建订阅系统
-    feed_registry, feed_store, feed_manage_tool = build_feed_runtime(workspace, tools)
-
-    # 4. 启动 IPC 服务
-    from channels.ipc_server import IPCServerChannel
-
-    ipc = IPCServerChannel(bus, config.channels.socket)
-    await ipc.start()
-    print(f"Agent 已启动  |  CLI 连接地址: {config.channels.socket}")
-
-    # 5. 启动各渠道
+    http_resources = SharedHttpResources()
+    configure_default_shared_http_resources(http_resources)
+    ipc = None
     tg_channel = None
-    if config.channels.telegram:
-        from channels.telegram_channel import TelegramChannel
-
-        tg = config.channels.telegram
-        tg_channel = TelegramChannel(
-            token=tg.token,
-            bus=bus,
-            session_manager=session_manager,
-            allow_from=tg.allow_from,
-        )
-        await tg_channel.start()
-        push_tool.register_channel(
-            "telegram",
-            text=tg_channel.send,
-            file=tg_channel.send_file,
-            image=tg_channel.send_image,
-        )
-        print(f"Telegram Bot 已启动")
-
     qq_channel = None
-    if config.channels.qq:
-        from channels.qq_channel import QQChannel
-
-        qq = config.channels.qq
-        qq_channel = QQChannel(
-            bot_uin=qq.bot_uin,
-            bus=bus,
-            session_manager=session_manager,
-            allow_from=qq.allow_from,
-            groups=qq.groups,
-        )
-        await qq_channel.start()
-        push_tool.register_channel(
-            "qq",
-            text=qq_channel.send,
-            file=qq_channel.send_file,
-            image=qq_channel.send_image,
-        )
-        print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
-
-    # 6. 组装并发任务
-    tasks = [
-        agent_loop.run(),
-        bus.dispatch_outbound(),
-        scheduler.run(),
-    ]
-
-    proactive_tasks, proactive_loop = build_proactive_runtime(
-        config,
-        workspace,
-        feed_registry=feed_registry,
-        feed_store=feed_store,
-        feed_manage_tool=feed_manage_tool,
-        session_manager=session_manager,
-        provider=provider,
-        light_provider=light_provider,
-        push_tool=push_tool,
-        memory_store=memory_runtime.port,
-        presence=presence,
-        agent_loop=agent_loop,
-    )
-    tasks.extend(proactive_tasks)
-
-    # 将 ProactiveLoop 注入 IPC server，以支持手动触发 skill action
-    if proactive_loop is not None:
-        ipc.set_proactive_loop(proactive_loop)
-
-    # 7. 启动记忆优化器
-    if config.memory_optimizer_enabled:
-        mem_optimizer = MemoryOptimizer(
-            memory=memory_runtime.port,
-            provider=provider,
-            model=config.model,
-        )
-        interval = config.memory_optimizer_interval_seconds
-        tasks.append(
-            MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()
-        )
-        print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
-    else:
-        print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
-
-    # 8. 运行直到退出，清理资源
+    memory_runtime = None
     try:
+        # 2. 构建核心运行时
+        (
+            agent_loop,
+            bus,
+            tools,
+            push_tool,
+            session_manager,
+            scheduler,
+            provider,
+            light_provider,
+            mcp_registry,
+            memory_runtime,
+            presence,
+        ) = build_core_runtime(config, workspace, http_resources)
+        await mcp_registry.load_and_connect_all()
+
+        # 3. 构建订阅系统
+        feed_registry, feed_store, feed_manage_tool = build_feed_runtime(
+            workspace,
+            tools,
+            http_resources,
+        )
+
+        # 4. 启动 IPC 服务
+        from channels.ipc_server import IPCServerChannel
+
+        ipc = IPCServerChannel(bus, config.channels.socket)
+        await ipc.start()
+        print(f"Agent 已启动  |  CLI 连接地址: {config.channels.socket}")
+
+        # 5. 启动各渠道
+        if config.channels.telegram:
+            from channels.telegram_channel import TelegramChannel
+
+            tg = config.channels.telegram
+            tg_channel = TelegramChannel(
+                token=tg.token,
+                bus=bus,
+                session_manager=session_manager,
+                allow_from=tg.allow_from,
+            )
+            await tg_channel.start()
+            push_tool.register_channel(
+                "telegram",
+                text=tg_channel.send,
+                file=tg_channel.send_file,
+                image=tg_channel.send_image,
+            )
+            print(f"Telegram Bot 已启动")
+
+        if config.channels.qq:
+            from channels.qq_channel import QQChannel
+
+            qq = config.channels.qq
+            qq_channel = QQChannel(
+                bot_uin=qq.bot_uin,
+                bus=bus,
+                session_manager=session_manager,
+                allow_from=qq.allow_from,
+                groups=qq.groups,
+                http_requester=http_resources.external_default,
+            )
+            await qq_channel.start()
+            push_tool.register_channel(
+                "qq",
+                text=qq_channel.send,
+                file=qq_channel.send_file,
+                image=qq_channel.send_image,
+            )
+            print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
+
+        # 6. 组装并发任务
+        tasks = [
+            agent_loop.run(),
+            bus.dispatch_outbound(),
+            scheduler.run(),
+        ]
+
+        proactive_tasks, proactive_loop = build_proactive_runtime(
+            config,
+            workspace,
+            feed_registry=feed_registry,
+            feed_store=feed_store,
+            feed_manage_tool=feed_manage_tool,
+            session_manager=session_manager,
+            provider=provider,
+            light_provider=light_provider,
+            push_tool=push_tool,
+            memory_store=memory_runtime.port,
+            presence=presence,
+            agent_loop=agent_loop,
+        )
+        tasks.extend(proactive_tasks)
+
+        # 将 ProactiveLoop 注入 IPC server，以支持手动触发 skill action
+        if proactive_loop is not None:
+            ipc.set_proactive_loop(proactive_loop)
+
+        # 7. 启动记忆优化器
+        if config.memory_optimizer_enabled:
+            mem_optimizer = MemoryOptimizer(
+                memory=memory_runtime.port,
+                provider=provider,
+                model=config.model,
+            )
+            interval = config.memory_optimizer_interval_seconds
+            tasks.append(
+                MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()
+            )
+            print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
+        else:
+            print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
+
+        # 8. 运行直到退出，清理资源
         await asyncio.gather(*tasks)
     finally:
-        await _run_cleanup_steps(
-            ("ipc.stop", ipc.stop),
-            ("telegram.stop", tg_channel.stop if tg_channel else (lambda: asyncio.sleep(0))),
-            ("qq.stop", qq_channel.stop if qq_channel else (lambda: asyncio.sleep(0))),
-            ("memory_runtime.aclose", memory_runtime.aclose),
-        )
+        try:
+            await _run_cleanup_steps(
+                ("ipc.stop", ipc.stop if ipc else _noop_async),
+                ("telegram.stop", tg_channel.stop if tg_channel else _noop_async),
+                ("qq.stop", qq_channel.stop if qq_channel else _noop_async),
+                (
+                    "memory_runtime.aclose",
+                    memory_runtime.aclose if memory_runtime else _noop_async,
+                ),
+                ("http_resources.aclose", http_resources.aclose),
+            )
+        finally:
+            clear_default_shared_http_resources(http_resources)
 
 
 # ── 客户端 ────────────────────────────────────────────────────────

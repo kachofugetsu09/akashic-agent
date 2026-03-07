@@ -17,6 +17,11 @@ from urllib.parse import unquote, urlparse
 import httpx
 
 from core.common.timekit import parse_iso as _parse_iso
+from core.net.http import (
+    HttpRequester,
+    RequestBudget,
+    get_default_http_requester,
+)
 from feeds.base import FeedItem, FeedSource, FeedSubscription
 
 logger = logging.getLogger(__name__)
@@ -31,8 +36,13 @@ _MAX_FETCH_TOTAL_SECONDS = 20.0
 class RSSFeedSource(FeedSource):
     """RSS 2.0 / Atom 1.0 信息源。"""
 
-    def __init__(self, sub: FeedSubscription) -> None:
+    def __init__(
+        self,
+        sub: FeedSubscription,
+        requester: HttpRequester | None = None,
+    ) -> None:
         self._sub = sub
+        self._requester = requester
 
     @property
     def name(self) -> str:
@@ -59,72 +69,48 @@ class RSSFeedSource(FeedSource):
         if "xcancel.com" in self._sub.url:
             return await self._fetch_via_curl(limit)
 
-        attempts = len(_FETCH_RETRY_DELAYS_S) + 1
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + _MAX_FETCH_TOTAL_SECONDS
-        last_err: Exception | None = None
+        return await self._fetch_http(limit)
+
+    async def _fetch_http(self, limit: int) -> list[FeedItem]:
+        requester = self._requester or get_default_http_requester("feed_fetcher")
         parse_retried = False
-        for attempt in range(1, attempts + 1):
-            remaining = _remaining_budget(deadline, loop)
-            if remaining <= 0:
-                break
+        last_err: Exception | None = None
+        for attempt in range(1, 3):
             try:
-                async with httpx.AsyncClient(
-                    timeout=min(_TIMEOUT, remaining),
+                resp = await requester.get(
+                    self._sub.url or "",
                     follow_redirects=True,
+                    timeout_s=_TIMEOUT,
+                    budget=RequestBudget(total_timeout_s=_MAX_FETCH_TOTAL_SECONDS),
                     headers={
                         "User-Agent": "FreshRSS/1.24.0",
                         "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
                     },
-                ) as client:
-                    resp = await client.get(self._sub.url)
-                    resp.raise_for_status()
-                    return self._parse(resp.text, limit, raise_on_parse_error=True)
+                )
+                resp.raise_for_status()
+                return self._parse(resp.text, limit, raise_on_parse_error=True)
             except ET.ParseError as e:
                 last_err = e
-                if parse_retried or attempt >= attempts:
+                if parse_retried or attempt >= 2:
                     break
                 parse_retried = True
-                delay = _FETCH_RETRY_DELAYS_S[attempt - 1]
-                sleep_s = min(delay, _remaining_budget(deadline, loop))
-                if _remaining_budget(deadline, loop) <= 0:
-                    break
+                delay = _FETCH_RETRY_DELAYS_S[min(attempt - 1, len(_FETCH_RETRY_DELAYS_S) - 1)]
                 logger.warning(
-                    "RSS 解析失败 [%s] attempt=%d/%d err=%r，%.1fs 后重试一次",
+                    "RSS 解析失败 [%s] attempt=%d/2 err=%r，%.1fs 后重试一次",
                     self._sub.name,
                     attempt,
-                    attempts,
                     str(e),
-                    sleep_s,
+                    delay,
                 )
-                if sleep_s > 0:
-                    await asyncio.sleep(sleep_s)
+                if delay > 0:
+                    await asyncio.sleep(delay)
             except Exception as e:
                 last_err = e
-                if not _is_retryable_http_error(e):
-                    break
-                if attempt >= attempts:
-                    break
-                delay = _FETCH_RETRY_DELAYS_S[attempt - 1]
-                sleep_s = min(delay, _remaining_budget(deadline, loop))
-                if _remaining_budget(deadline, loop) <= 0:
-                    break
-                logger.warning(
-                    "http 请求失败 [%s] attempt=%d/%d err_type=%s err=%r，%.1fs 后重试",
-                    self._sub.name,
-                    attempt,
-                    attempts,
-                    type(e).__name__,
-                    str(e),
-                    sleep_s,
-                )
-                if sleep_s > 0:
-                    await asyncio.sleep(sleep_s)
+                break
 
         logger.warning(
-            "http 请求最终失败 [%s] attempts=%d err_type=%s err=%r",
+            "http 请求最终失败 [%s] err_type=%s err=%r",
             self._sub.name,
-            attempts,
             type(last_err).__name__ if last_err else "Unknown",
             str(last_err) if last_err else "",
         )

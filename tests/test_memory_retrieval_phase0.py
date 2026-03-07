@@ -16,6 +16,7 @@ from agent.tools.update_now import UpdateNowTool
 from agent.tools.registry import ToolRegistry
 from core.memory.port import DefaultMemoryPort
 from core.memory.runtime import MemoryRuntime
+from core.net.http import SharedHttpResources
 from memory2.retriever import Retriever
 from session.manager import Session
 
@@ -235,21 +236,26 @@ async def test_build_memory_runtime_v2_enabled_returns_worker_and_port(tmp_path:
     config.memory_v2.enabled = True
 
     tools = ToolRegistry()
-    runtime = main.build_memory_runtime(
-        config,
-        tmp_path,
-        tools,
-        cast(Any, MagicMock()),
-        None,
-    )
+    http_resources = SharedHttpResources()
+    try:
+        runtime = main.build_memory_runtime(
+            config,
+            tmp_path,
+            tools,
+            cast(Any, MagicMock()),
+            None,
+            http_resources,
+        )
 
-    assert runtime.port is not None
-    assert runtime.post_response_worker is not None
-    assert runtime.sop_indexer is not None
-    schema_names = {schema["function"]["name"] for schema in tools.get_schemas()}
-    assert "memorize" in schema_names
+        assert runtime.port is not None
+        assert runtime.post_response_worker is not None
+        assert runtime.sop_indexer is not None
+        schema_names = {schema["function"]["name"] for schema in tools.get_schemas()}
+        assert "memorize" in schema_names
 
-    await runtime.aclose()
+        await runtime.aclose()
+    finally:
+        await http_resources.aclose()
 
 
 @pytest.mark.asyncio

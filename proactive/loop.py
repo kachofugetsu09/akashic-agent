@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
+from core.net.http import get_default_http_requester
 from feeds.base import FeedItem
 from feeds.buffer import FeedBuffer
 from feeds.registry import FeedRegistry
@@ -529,7 +530,7 @@ class ProactiveLoop:
             action_dir.mkdir(parents=True, exist_ok=True)
             tools = [
                 WebSearchTool(),
-                WebFetchTool(),
+                WebFetchTool(get_default_http_requester("external_default")),
                 ReadFileTool(allowed_dir=agent_tasks_dir),  # 相对路径基于 agent-tasks/
                 ListDirTool(allowed_dir=agent_tasks_dir),  # 相对路径基于 agent-tasks/
                 WriteFileTool(allowed_dir=agent_tasks_dir),  # 可写整个 agent-tasks/

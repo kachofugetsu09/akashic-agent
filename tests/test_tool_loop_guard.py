@@ -3,12 +3,19 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.loop import AgentLoop
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.subagent import SubAgent
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from core.net.http import (
+    SharedHttpResources,
+    clear_default_shared_http_resources,
+    configure_default_shared_http_resources,
+)
 from core.memory.port import DefaultMemoryPort
 from proactive.components import ProactiveMessageComposer
 
@@ -76,6 +83,17 @@ class _StrictProvider(_FakeProvider):
         messages = kwargs.get("messages") or []
         _assert_no_unresolved_tool_calls(messages)
         return await super().chat(**kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _shared_http_resources():
+    resources = SharedHttpResources()
+    configure_default_shared_http_resources(resources)
+    try:
+        yield
+    finally:
+        clear_default_shared_http_resources(resources)
+        asyncio.run(resources.aclose())
 
 
 class _ExitTool(Tool):
