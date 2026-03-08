@@ -1,10 +1,13 @@
 import asyncio
 import logging
+from collections import OrderedDict
 
 from agent.loop_constants import _SAFETY_RETRY_RATIOS
 from agent.provider import ContentSafetyError, ContextLengthError
 
 logger = logging.getLogger("agent.loop")
+
+_LRU_CAPACITY = 5  # 非核心工具 carry-forward 上限
 
 
 class AgentLoopSafetyRetryMixin:
@@ -21,6 +24,15 @@ class AgentLoopSafetyRetryMixin:
             max_messages=self.memory_window
         )
         total_history = len(source_history)
+
+        # 跨请求工具发现缓存：从 LRU 取上一轮实际调用过的工具
+        preloaded: set[str] | None = None
+        if getattr(self, "_tool_search_enabled", False):
+            preloaded = set(self._unlocked_tools.get(session.key, {}).keys())
+            logger.info(
+                "[tool_search] LRU preloaded=%s",
+                sorted(preloaded) if preloaded else "[]",
+            )
 
         for attempt, ratio in enumerate(_SAFETY_RETRY_RATIOS):
             window = int(total_history * ratio)
@@ -41,9 +53,10 @@ class AgentLoopSafetyRetryMixin:
                 retrieved_memory_block=retrieved_memory_block,
             )
             try:
-                result = await self._run_agent_loop(
+                content, tools_used, tool_chain, _ = await self._run_agent_loop(
                     initial_messages,
                     request_time=msg.timestamp,
+                    preloaded_tools=preloaded,
                 )
                 if attempt > 0:
                     logger.warning(
@@ -55,7 +68,12 @@ class AgentLoopSafetyRetryMixin:
                         session.messages = session.messages[-window:]
                     session.last_consolidated = 0
                     await self.session_manager.save_async(session)
-                return result
+
+                # 把本轮实际调用的非核心工具写入 LRU
+                if getattr(self, "_tool_search_enabled", False) and tools_used:
+                    self._update_lru(session.key, tools_used)
+
+                return content, tools_used, tool_chain
             except ContentSafetyError:
                 if attempt < len(_SAFETY_RETRY_RATIOS) - 1:
                     next_window = int(total_history * _SAFETY_RETRY_RATIOS[attempt + 1])
@@ -78,3 +96,21 @@ class AgentLoopSafetyRetryMixin:
                     return "上下文过长无法处理，请尝试新建对话。", [], []
 
         return "（安全重试异常）", [], []
+
+    def _update_lru(self, session_key: str, tools_used: list[str]) -> None:
+        """将本轮实际调用的非核心工具写入 LRU，超出容量时驱逐最久未用的。"""
+        always_on = self.tools.get_always_on_names()
+        skip = always_on | {"tool_search"}
+
+        lru: OrderedDict[str, None] = self._unlocked_tools.setdefault(
+            session_key, OrderedDict()
+        )
+        for name in tools_used:
+            if name in skip:
+                continue
+            if name in lru:
+                lru.move_to_end(name)
+            else:
+                lru[name] = None
+            while len(lru) > _LRU_CAPACITY:
+                lru.popitem(last=False)

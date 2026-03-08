@@ -23,6 +23,8 @@ from agent.tools.skill_action_tool import (
     SkillActionUnregisterTool,
     SkillActionUpdateTool,
 )
+from agent.tools.list_tools import ListToolsTool
+from agent.tools.tool_search import ToolSearchTool
 from agent.tools.update_now import UpdateNowTool
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
@@ -48,29 +50,113 @@ def build_core_runtime(
 ) -> tuple:
     bus = MessageBus()
     tools = ToolRegistry()
-    tools.register(ShellTool())
-    tools.register(WebSearchTool())
-    tools.register(WebFetchTool(http_resources.external_default))
-    tools.register(ReadFileTool())
-    tools.register(ListDirTool())
+
+    # 元工具：始终可见，不暴露在搜索结果里
+    tools.register(
+        ToolSearchTool(tools),
+        always_on=True,
+        tags=["meta"],
+        risk="read-only",
+    )
+    tools.register(
+        ListToolsTool(tools),
+        always_on=True,
+        tags=["meta"],
+        risk="read-only",
+    )
+    tools.register(
+        ShellTool(),
+        tags=["system"],
+        risk="external-side-effect",
+        search_keywords=["终端", "命令", "bash", "运行命令", "执行脚本", "shell"],
+    )
+    tools.register(
+        WebSearchTool(),
+        always_on=True,
+        tags=["web"],
+        risk="read-only",
+        search_keywords=["搜索", "网络搜索", "谷歌", "bing", "查资料"],
+    )
+    tools.register(
+        WebFetchTool(http_resources.external_default),
+        always_on=True,
+        tags=["web"],
+        risk="read-only",
+        search_keywords=["网页", "抓取网页", "读取网址", "fetch", "浏览网页"],
+    )
+    tools.register(
+        ReadFileTool(),
+        always_on=True,
+        tags=["filesystem"],
+        risk="read-only",
+        search_keywords=["读文件", "查看文件", "文件内容", "read"],
+    )
+    tools.register(
+        ListDirTool(),
+        always_on=True,
+        tags=["filesystem"],
+        risk="read-only",
+        search_keywords=["查看目录", "列出文件", "ls", "目录内容", "浏览目录", "dir"],
+    )
     push_tool = MessagePushTool()
-    tools.register(push_tool)
+    tools.register(
+        push_tool,
+        tags=["message"],
+        risk="external-side-effect",
+        search_keywords=["推送消息", "发送消息", "通知用户", "给用户发消息", "push"],
+    )
 
     skill_actions_path = workspace / "skill_actions.json"
     agent_tasks_dir = workspace / "agent-tasks"
     db_path = agent_tasks_dir / "task_notes.db"
     tools.register(
-        SkillActionRegisterTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir)
+        SkillActionRegisterTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir),
+        tags=["skill", "task"],
+        risk="write",
+        search_keywords=["注册技能", "创建技能", "添加skill", "新建技能"],
     )
-    tools.register(SkillActionUnregisterTool(skill_actions_path))
     tools.register(
-        SkillActionListTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir)
+        SkillActionUnregisterTool(skill_actions_path),
+        tags=["skill", "task"],
+        risk="write",
+        search_keywords=["删除技能", "注销技能", "移除skill"],
     )
-    tools.register(SkillActionStatusTool(agent_tasks_dir))
-    tools.register(SkillActionUpdateTool(agent_tasks_dir))
-    tools.register(SkillActionRestartTool(agent_tasks_dir, db_path=db_path))
-    tools.register(SkillActionResetTool(agent_tasks_dir))
-    tools.register(SkillActionRewriteTool(agent_tasks_dir, db_path=db_path))
+    tools.register(
+        SkillActionListTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir),
+        tags=["skill", "task"],
+        risk="read-only",
+        search_keywords=["技能列表", "查看技能", "skill列表", "有哪些技能"],
+    )
+    tools.register(
+        SkillActionStatusTool(agent_tasks_dir),
+        tags=["skill", "task"],
+        risk="read-only",
+        search_keywords=["技能状态", "任务进度", "skill状态", "任务运行情况"],
+    )
+    tools.register(
+        SkillActionUpdateTool(agent_tasks_dir),
+        tags=["skill", "task"],
+        risk="write",
+        search_keywords=["更新技能", "修改技能", "skill更新"],
+    )
+    tools.register(
+        SkillActionRestartTool(agent_tasks_dir, db_path=db_path),
+        tags=["skill", "task"],
+        risk="write",
+        search_keywords=["重启技能", "重新运行skill", "skill重启"],
+    )
+    tools.register(
+        SkillActionResetTool(agent_tasks_dir),
+        tags=["skill", "task"],
+        risk="write",
+        search_keywords=["重置技能", "清空技能状态", "skill重置"],
+    )
+    tools.register(
+        SkillActionRewriteTool(agent_tasks_dir, db_path=db_path),
+        tags=["skill", "task"],
+        risk="write",
+        search_keywords=["重写技能", "重构skill", "skill重写"],
+    )
 
     fitbit_url = getattr(config.proactive, "fitbit_url", "http://127.0.0.1:18765")
     if getattr(config.proactive, "fitbit_enabled", False):
@@ -78,13 +164,19 @@ def build_core_runtime(
             FitbitHealthSnapshotTool(
                 fitbit_url,
                 requester=http_resources.local_service,
-            )
+            ),
+            tags=["health", "fitbit"],
+            risk="read-only",
+            search_keywords=["健康数据", "运动数据", "fitbit", "心率", "步数", "卡路里"],
         )
         tools.register(
             FitbitSleepReportTool(
                 fitbit_url,
                 requester=http_resources.local_service,
-            )
+            ),
+            tags=["health", "fitbit"],
+            risk="read-only",
+            search_keywords=["睡眠报告", "睡眠数据", "睡眠质量", "fitbit", "sleep"],
         )
 
     provider, light_provider = build_providers(config)
@@ -96,7 +188,12 @@ def build_core_runtime(
         light_provider,
         http_resources,
     )
-    tools.register(UpdateNowTool(memory_runtime.port))
+    tools.register(
+        UpdateNowTool(memory_runtime.port),
+        tags=["memory"],
+        risk="write",
+        search_keywords=["更新记忆", "同步记忆", "刷新知识库", "memory更新"],
+    )
 
     scheduler = SchedulerService(
         store_path=workspace / "schedules.json",
@@ -128,20 +225,51 @@ def build_core_runtime(
         memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
         memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
         memory_runtime=memory_runtime,
+        tool_search_enabled=config.tool_search_enabled,
     )
 
     scheduler.agent_loop = loop
-    tools.register(ScheduleTool(scheduler))
-    tools.register(ListSchedulesTool(scheduler))
-    tools.register(CancelScheduleTool(scheduler))
+    tools.register(
+        ScheduleTool(scheduler),
+        tags=["scheduling"],
+        risk="write",
+        search_keywords=["定时任务", "设置提醒", "计划任务", "cron", "延时执行", "timer"],
+    )
+    tools.register(
+        ListSchedulesTool(scheduler),
+        tags=["scheduling"],
+        risk="read-only",
+        search_keywords=["查看定时任务", "定时列表", "提醒列表", "有哪些计划"],
+    )
+    tools.register(
+        CancelScheduleTool(scheduler),
+        tags=["scheduling"],
+        risk="write",
+        search_keywords=["取消定时", "删除提醒", "取消任务", "cancel schedule"],
+    )
 
     mcp_registry = McpServerRegistry(
         config_path=workspace / "mcp_servers.json",
         tool_registry=tools,
     )
-    tools.register(McpAddTool(mcp_registry))
-    tools.register(McpRemoveTool(mcp_registry))
-    tools.register(McpListTool(mcp_registry))
+    tools.register(
+        McpAddTool(mcp_registry),
+        tags=["mcp", "system"],
+        risk="external-side-effect",
+        search_keywords=["添加MCP", "连接MCP", "注册MCP服务器", "mcp add"],
+    )
+    tools.register(
+        McpRemoveTool(mcp_registry),
+        tags=["mcp", "system"],
+        risk="write",
+        search_keywords=["删除MCP", "移除MCP服务器", "mcp remove"],
+    )
+    tools.register(
+        McpListTool(mcp_registry),
+        tags=["mcp", "system"],
+        risk="read-only",
+        search_keywords=["MCP列表", "查看MCP服务器", "mcp list"],
+    )
 
     return (
         loop,
@@ -172,6 +300,16 @@ def build_feed_runtime(
     feed_registry.register_source_type("novel-kb", lambda sub: NovelKBFeedSource(sub))
 
     feed_manage_tool = FeedManageTool(feed_store)
-    tools.register(feed_manage_tool)
-    tools.register(FeedQueryTool(feed_store, feed_registry))
+    tools.register(
+        feed_manage_tool,
+        tags=["feed"],
+        risk="write",
+        search_keywords=["RSS订阅", "订阅管理", "添加订阅", "删除订阅", "feed管理"],
+    )
+    tools.register(
+        FeedQueryTool(feed_store, feed_registry),
+        tags=["feed"],
+        risk="read-only",
+        search_keywords=["查询订阅", "读取订阅", "RSS内容", "feed查询", "订阅内容"],
+    )
     return feed_registry, feed_store, feed_manage_tool

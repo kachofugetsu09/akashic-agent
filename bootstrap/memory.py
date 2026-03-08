@@ -30,8 +30,18 @@ def build_memory_runtime(
 
     store = MemoryStore(workspace)
     if not config.memory_v2.enabled:
-        tools.register(WriteFileTool())
-        tools.register(EditFileTool())
+        tools.register(
+            WriteFileTool(),
+            tags=["filesystem", "memory"],
+            risk="write",
+            search_keywords=["写文件", "保存文件", "创建文件", "写入文件", "新建文件"],
+        )
+        tools.register(
+            EditFileTool(),
+            tags=["filesystem", "memory"],
+            risk="write",
+            search_keywords=["编辑文件", "修改文件", "更新文件", "patch文件"],
+        )
         return MemoryRuntime(port=DefaultMemoryPort(store))
 
     db_path = (
@@ -73,10 +83,26 @@ def build_memory_runtime(
         light_provider=light_provider or provider,
         light_model=config.light_model or config.model,
     )
-    tools.register(MemorizeTool(port))
+    tools.register(
+        MemorizeTool(port),
+        always_on=True,
+        tags=["memory"],
+        risk="write",
+        search_keywords=["记忆", "存储知识", "记录信息", "备忘", "memorize"],
+    )
     sop_indexer = SopIndexer(mem2_store, embedder, workspace / "sop")
-    tools.register(WriteFileTool(sop_indexer=sop_indexer))
-    tools.register(EditFileTool(sop_indexer=sop_indexer))
+    tools.register(
+        WriteFileTool(sop_indexer=sop_indexer),
+        tags=["filesystem", "memory"],
+        risk="write",
+        search_keywords=["写文件", "保存文件", "创建文件", "写入文件", "新建文件"],
+    )
+    tools.register(
+        EditFileTool(sop_indexer=sop_indexer),
+        tags=["filesystem", "memory"],
+        risk="write",
+        search_keywords=["编辑文件", "修改文件", "更新文件", "patch文件"],
+    )
 
     return MemoryRuntime(
         port=port,

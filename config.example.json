@@ -11,6 +11,8 @@
   "system_prompt": "You are Akasic, a helpful AI assistant with access to tools. Always respond in the same language the user uses.",
   "max_tokens": 8192,
   "max_iterations": 10,
+  "_comment_tool_search": "按需暴露工具：开启后 agent 默认只看到少量核心工具，其余需通过 tool_search 解锁",
+  "tool_search_enabled": false,
 
   "channels": {
     "_comment": "不配置 telegram 则只启动 IPC server（供 CLI 客户端连接）",

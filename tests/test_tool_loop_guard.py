@@ -150,7 +150,7 @@ def test_agent_loop_breaks_on_repeated_same_signature_and_returns_summary(tmp_pa
     )
     loop = _make_agent_loop(tmp_path, provider, tool)
 
-    final, tools_used, _ = asyncio.run(
+    final, tools_used, _, _vn = asyncio.run(
         loop._run_agent_loop([{"role": "user", "content": "test"}])
     )
 
@@ -172,7 +172,7 @@ def test_agent_loop_does_not_false_positive_when_args_change(tmp_path):
     )
     loop = _make_agent_loop(tmp_path, provider, tool)
 
-    final, _, _ = asyncio.run(
+    final, _, _, _vn = asyncio.run(
         loop._run_agent_loop([{"role": "user", "content": "test"}])
     )
 
@@ -193,7 +193,7 @@ def test_agent_loop_max_iterations_returns_progress_summary_not_template(tmp_pat
     loop = _make_agent_loop(tmp_path, provider, tool)
     loop.max_iterations = 1
 
-    final, _, _ = asyncio.run(
+    final, _, _, _vn = asyncio.run(
         loop._run_agent_loop([{"role": "user", "content": "test"}])
     )
 
@@ -283,7 +283,7 @@ def test_agent_loop_does_not_trigger_on_two_repeats_only(tmp_path):
     )
     loop = _make_agent_loop(tmp_path, provider, tool)
 
-    final, _, _ = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
+    final, _, _, _vn = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
 
     assert final == "final"
     assert len(tool.calls) == 2
@@ -325,7 +325,7 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
         memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
     )
 
-    final, _, _ = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
+    final, _, _, _vn = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
 
     assert final == "ok"
     assert len(t1.calls) == 2
@@ -397,7 +397,7 @@ def test_agent_loop_summary_path_keeps_tool_chain_closed(tmp_path):
     )
     loop = _make_agent_loop(tmp_path, provider, tool)
 
-    final, _, _ = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
+    final, _, _, _vn = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
 
     assert "已总结" in final
     assert len(tool.calls) == 2

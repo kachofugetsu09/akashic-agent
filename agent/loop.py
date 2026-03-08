@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -65,6 +66,7 @@ class AgentLoop(
         memory_port: "MemoryPort | None" = None,
         post_mem_worker: PostResponseMemoryWorker | None = None,
         memory_runtime: "MemoryRuntime | None" = None,
+        tool_search_enabled: bool = False,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -94,6 +96,11 @@ class AgentLoop(
         if memory_port is None:
             raise ValueError("AgentLoop requires memory_port or memory_runtime")
 
+        self._tool_search_enabled = bool(tool_search_enabled)
+        # 进程内 LRU 缓存：session_key → 最近实际调用的非核心工具（容量 5）
+        # 只记录 agent 真正调用过的工具，发现未用的不写入
+        # 重启后清空（重新搜索一次即可恢复），不写入 session 持久化
+        self._unlocked_tools: dict[str, OrderedDict[str, None]] = {}
         self._post_mem_worker = post_mem_worker
         self._memory_port = memory_port
         self.context = ContextBuilder(workspace, memory=self._memory_port)

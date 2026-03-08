@@ -337,6 +337,7 @@ def load_config(path: str | Path = "config.json") -> Config:
         light_api_key=_resolve(data.get("light_api_key", "")),
         light_base_url=data.get("light_base_url", ""),
         memory_v2=memory_v2,
+        tool_search_enabled=bool(data.get("tool_search_enabled", False)),
     )
 
 

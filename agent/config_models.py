@@ -74,6 +74,7 @@ class Config:
     light_api_key: str = ""
     light_base_url: str = ""
     memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
+    tool_search_enabled: bool = False
 
 
 __all__ = [
