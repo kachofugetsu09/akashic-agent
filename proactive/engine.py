@@ -123,6 +123,8 @@ class DecisionContext:
     decision: Any = None
     decision_message: str = ""
     should_send: bool = False
+    compose_items: list[FeedItem] = field(default_factory=list)
+    compose_entries: list[tuple[str, str]] = field(default_factory=list)
     state_summary_tag: str = "none"
     source_refs: list[ProactiveSourceRef] = field(default_factory=list)
     memory_query: str = ""
@@ -504,15 +506,12 @@ class ProactiveEngine:
             if self._presence and ctx.session_key
             else None
         )
-        ctx.force_reflect = ctx.force_reflect or (
+        presence_force_reflect = self._presence is not None and (
             ctx.energy < 0.05
-            or (
-                self._presence is not None
-                and bool(ctx.session_key)
-                and ctx.target_last_user is None
-            )
+            or (bool(ctx.session_key) and ctx.target_last_user is None)
             or (ctx.energy < 0.20 and ctx.has_memory)
         )
+        ctx.force_reflect = ctx.force_reflect or presence_force_reflect
         ctx.is_crisis = ctx.energy < 0.05
         ctx.sent_24h = (
             self._state.count_deliveries_in_window(ctx.session_key, 24, now=ctx.now_utc)
@@ -525,6 +524,11 @@ class ProactiveEngine:
             if item.published_at
             and (ctx.now_utc - item.published_at).total_seconds() <= 24 * 3600
         )
+
+        if not ctx.new_items and not ctx.health_events and not ctx.force_reflect:
+            logger.info("[proactive] 无候选信息且无健康事件，跳过本轮反思")
+            logger.info("[proactive] selected_action=idle reason=no_candidates")
+            return ctx.base_score
 
         logger.info(
             "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"
@@ -633,6 +637,10 @@ class ProactiveEngine:
 
         # 2. feature scoring 路径
         if self._cfg.feature_scoring_enabled:
+            ctx.compose_items = ctx.new_items[:1]
+            ctx.compose_entries = self._entries_for_items(
+                ctx.compose_items, ctx.new_entries
+            )
             features = await self._decide.score_features(
                 items=ctx.new_items,
                 recent=ctx.recent,
@@ -672,7 +680,7 @@ class ProactiveEngine:
         # 3. LLM 生成/反思
         if self._cfg.feature_scoring_enabled:
             ctx.decision_message = await self._decide.compose_message(
-                items=ctx.new_items,
+                items=ctx.compose_items,
                 recent=ctx.recent,
                 decision_signals=ctx.decision_signals,
                 retrieved_memory_block=ctx.retrieved_memory_block,
@@ -723,7 +731,10 @@ class ProactiveEngine:
 
     async def _stage_act(self, ctx: DecisionContext) -> None:
         """去重检查、发送消息、标记已发送状态。"""
-        evidence_source_items = ctx.new_items or ctx.items
+        evidence_source_items = ctx.compose_items or ctx.new_items or ctx.items
+        evidence_source_entries = ctx.compose_entries or self._entries_for_items(
+            evidence_source_items, ctx.new_entries
+        )
         evidence_ids = self._decide.resolve_evidence_item_ids(
             ctx.decision
             if ctx.decision is not None
@@ -732,7 +743,7 @@ class ProactiveEngine:
         )
         evidence_items, evidence_entries = self._resolve_evidence_entries(
             evidence_source_items,
-            ctx.new_entries,
+            evidence_source_entries,
             evidence_ids,
         )
         ctx.source_refs = self._build_source_refs(evidence_items)
@@ -741,7 +752,10 @@ class ProactiveEngine:
             logger.info("[proactive] 决定不主动发送")
             logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
             self._state.mark_rejection_cooldown(
-                evidence_entries or self._primary_candidate_entries(ctx.new_entries),
+                evidence_entries
+                or self._primary_candidate_entries(
+                    evidence_source_entries or ctx.new_entries
+                ),
                 hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
             )
             await self._try_skill_action(now_utc=ctx.now_utc)
@@ -804,7 +818,10 @@ class ProactiveEngine:
                     ctx.state_summary_tag,
                 )
                 self._state.mark_rejection_cooldown(
-                    evidence_entries or self._primary_candidate_entries(ctx.new_entries),
+                    evidence_entries
+                    or self._primary_candidate_entries(
+                        evidence_source_entries or ctx.new_entries
+                    ),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
                 await self._try_skill_action(now_utc=ctx.now_utc)
@@ -816,7 +833,10 @@ class ProactiveEngine:
                     rewritten_tag,
                 )
                 self._state.mark_rejection_cooldown(
-                    evidence_entries or self._primary_candidate_entries(ctx.new_entries),
+                    evidence_entries
+                    or self._primary_candidate_entries(
+                        evidence_source_entries or ctx.new_entries
+                    ),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
                 await self._try_skill_action(now_utc=ctx.now_utc)
@@ -837,7 +857,10 @@ class ProactiveEngine:
                 )
                 logger.info("[proactive] selected_action=idle reason=message_dedupe")
                 self._state.mark_rejection_cooldown(
-                    evidence_entries or self._primary_candidate_entries(ctx.new_entries),
+                    evidence_entries
+                    or self._primary_candidate_entries(
+                        evidence_source_entries or ctx.new_entries
+                    ),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
                 await self._try_skill_action(now_utc=ctx.now_utc)
@@ -1151,6 +1174,20 @@ class ProactiveEngine:
             )
             seen.add(item_id)
         return selected_items, selected_entries
+
+    def _entries_for_items(
+        self,
+        items: list[FeedItem],
+        entries: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        entry_by_id: dict[str, str] = {}
+        for source_key, item_id in entries:
+            entry_by_id.setdefault(item_id, source_key)
+        selected: list[tuple[str, str]] = []
+        for item in items:
+            item_id = self._item_id_for(item)
+            selected.append((entry_by_id.get(item_id, compute_source_key(item)), item_id))
+        return selected
 
     def _primary_candidate_entries(
         self, entries: list[tuple[str, str]]

@@ -153,6 +153,97 @@ async def test_send_success_consumes_only_evidence_item(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_feature_mode_uses_same_item_for_message_and_source_ref(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    items = [
+        FeedItem(
+            source_name="A9VG (Bilibili)",
+            source_type="rss",
+            title="失物招领有限公司",
+            content="A9VG live",
+            url="https://t.bilibili.com/1",
+            author=None,
+            published_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        ),
+        FeedItem(
+            source_name="PC Gamer UK - Games",
+            source_type="rss",
+            title="Banquet for Fools",
+            content="Banquet for Fools is bursting with strange ideas.",
+            url="https://www.pcgamer.com/banquet-for-fools",
+            author=None,
+            published_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        ),
+    ]
+    entries = [(compute_source_key(item), compute_item_id(item)) for item in items]
+    captured: dict[str, object] = {}
+
+    class _FeatureDecide:
+        async def score_features(self, **kw):
+            return {
+                "topic_continuity": 0.8,
+                "interest_match": 0.9,
+                "content_novelty": 0.7,
+                "reconnect_value": 0.7,
+                "disturb_risk": 0.1,
+                "message_readiness": 0.8,
+                "confidence": 0.9,
+            }
+
+        async def compose_message(self, **kw):
+            feed_items = kw["items"]
+            captured["items"] = feed_items
+            assert len(feed_items) == 1
+            item = feed_items[0]
+            return f"刚看到 {item.source_name} 提到 {item.title}"
+
+        async def reflect(self, *a, **kw):
+            raise AssertionError("feature mode 不应走 reflect")
+
+        def randomize_decision(self, d):
+            return d, 0.0
+
+        def resolve_evidence_item_ids(self, d, items):
+            valid = [compute_item_id(item) for item in items]
+            return valid[:1]
+
+        def build_delivery_key(self, ids, msg):
+            return "|".join(ids) or "no-evidence"
+
+        def semantic_entries(self, items):
+            return []
+
+        def item_id_for(self, item):
+            return compute_item_id(item)
+
+    act = MagicMock(send=AsyncMock(return_value=True))
+    engine = ProactiveEngine(
+        cfg=_cfg(
+            feature_scoring_enabled=True,
+            feature_send_threshold=0.0,
+            pending_queue_enabled=False,
+        ),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense(items, entries),
+        decide=_FeatureDecide(),
+        act=act,
+    )
+
+    await engine.tick()
+
+    send_message, send_meta = act.send.await_args.args
+    composed_items = captured["items"]
+    assert len(composed_items) == 1
+    assert composed_items[0].source_name == "A9VG (Bilibili)"
+    assert "A9VG (Bilibili)" in send_message
+    assert send_meta.evidence_item_ids == [compute_item_id(items[0])]
+    assert send_meta.source_refs[0].source_name == "A9VG (Bilibili)"
+    assert send_meta.source_refs[0].title == "失物招领有限公司"
+
+
+@pytest.mark.asyncio
 async def test_same_state_summary_is_blocked_within_current_silence(tmp_path):
     state = ProactiveStateStore(tmp_path / "state.json")
     item = _item("A", "https://example.com/a", minutes_ago=1)
