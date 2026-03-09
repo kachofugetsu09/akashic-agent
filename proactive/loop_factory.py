@@ -56,7 +56,7 @@ class ProactiveLoopFactoryMixin:
         return runner
 
     def _build_subagent_factory(self):
-        from agent.subagent_profiles import (
+        from agent.background.subagent_profiles import (
             SubagentRuntime,
             build_skill_action_spec,
         )

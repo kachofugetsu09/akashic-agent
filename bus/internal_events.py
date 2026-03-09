@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from agent.delegation_policy import SpawnDecision, SpawnDecisionMeta
+from agent.policies.delegation import SpawnDecision, SpawnDecisionMeta
 from bus.events import InboundMessage
 
 SPAWN_COMPLETED = "spawn_completed"

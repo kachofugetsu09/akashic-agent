@@ -12,7 +12,7 @@ from core.net.http import (
 )
 from feeds.base import FeedItem
 from proactive.config import ProactiveConfig
-from proactive.engine import DecisionContext, ProactiveEngine, _STOP_NONE
+from proactive.engine import DecisionContext, GateResult, ProactiveEngine, _STOP_NONE
 from proactive.loop import ProactiveLoop, _parse_decision
 from proactive.ports import ProactiveSendMeta, ProactiveSourceRef
 from proactive.presence import PresenceStore
@@ -76,6 +76,24 @@ def test_parse_decision_string_false_is_false():
         '{"score": 0.9, "should_send": "false", "message": "hello", "reasoning": "r"}'
     )
     assert d.should_send is False
+
+
+def test_decision_context_groups_fields_into_snapshots():
+    ctx = DecisionContext()
+
+    ctx.energy = 0.6
+    ctx.new_items = []
+    ctx.base_score = 0.4
+    ctx.decision_message = "hi"
+    ctx.state_summary_tag = "none"
+    ctx.session_key = "telegram:1"
+
+    assert ctx.sense is not None and ctx.sense.energy == 0.6
+    assert ctx.fetch is not None and ctx.fetch.new_items == []
+    assert ctx.score is not None and ctx.score.base_score == 0.4
+    assert ctx.decide is not None and ctx.decide.decision_message == "hi"
+    assert ctx.act is not None and ctx.act.state_summary_tag == "none"
+    assert ctx.state.session_key == "telegram:1"
 
 
 @pytest.mark.asyncio
@@ -354,6 +372,37 @@ async def test_engine_stage_decide_returns_structured_feature_reject_result():
     assert result.feature_final_score == ctx.feature_final_score
     assert result.history_gate_reason == "disabled"
     assert result.history_scope_mode == "disabled"
+
+
+def test_engine_stage_trace_writer_emits_strategy_envelope():
+    emitted: list[dict] = []
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._stage_trace_writer = emitted.append
+
+    engine._trace_stage_result(
+        DecisionContext(),
+        stage="gate",
+        result=GateResult(proceed=True, stop_result=None, reason_code="pass"),
+    )
+
+    assert emitted[0]["trace_type"] == "proactive_stage"
+    assert emitted[0]["subject"]["kind"] == "global"
+    assert emitted[0]["payload"]["stage"] == "gate"
+    assert emitted[0]["payload"]["result"]["reason_code"] == "pass"
+
+
+def test_engine_stage_trace_writer_serializes_stop_none_sentinel():
+    emitted: list[dict] = []
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._stage_trace_writer = emitted.append
+
+    engine._trace_stage_result(
+        DecisionContext(),
+        stage="gate",
+        result=GateResult(proceed=False, stop_result=_STOP_NONE, reason_code="scheduler_reject"),
+    )
+
+    assert isinstance(emitted[0]["payload"]["result"]["stop_result"], str)
 
 
 @pytest.mark.asyncio
@@ -983,6 +1032,7 @@ async def test_sent_without_session_key_still_marks_items_seen(tmp_path):
     cfg = ProactiveConfig(
         enabled=True, default_channel="", default_chat_id="",
         anyaction_enabled=False,
+        feature_scoring_enabled=False,
     )
     engine = ProactiveEngine(
         cfg=cfg, state=state, presence=None, rng=None,

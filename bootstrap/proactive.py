@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.config_models import Config
-from agent.loop import AgentLoop
+from agent.looping import AgentLoop
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
 from feeds.registry import FeedRegistry

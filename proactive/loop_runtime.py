@@ -263,6 +263,11 @@ class ProactiveLoopRuntimeMixin:
             light_provider=self._light_provider,
             light_model=self._light_model,
             passive_busy_fn=self._passive_busy_fn,
+            stage_trace_writer=(
+                lambda payload: self._append_trace_line(
+                    "proactive_strategy_trace.jsonl", payload
+                )
+            ),
         )
 
     def _log_runtime_config(self) -> None:

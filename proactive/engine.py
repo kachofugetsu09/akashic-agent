@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
@@ -32,6 +32,7 @@ from proactive.ports import (
 )
 from proactive.state import ProactiveStateStore
 from proactive.skill_action import SkillActionRunner
+from core.common.strategy_trace import build_strategy_trace_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,18 @@ class _PseudoDecision:
         self.evidence_item_ids: list[str] = []
 
 
+def _json_safe(value: Any) -> Any:
+    if value is _STOP_NONE:
+        return "STOP_NONE"
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return repr(value)
+
+
 def _sleep_policy_note(state: str, available: bool, prob: float | None = None) -> str:
     if not available:
         return "fitbit_unavailable: 不调整 chat/idle 概率"
@@ -68,20 +81,20 @@ def _sleep_policy_note(state: str, available: bool, prob: float | None = None) -
 
 
 # ---------------------------------------------------------------------------
-# DecisionContext — carries state across tick() stages (replaces scattered locals)
+# DecisionContext — carries state across tick() stages via engine state + snapshots
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class DecisionContext:
-    """每轮 tick 的决策上下文，阶段间传递，禁止裸 dict 穿越边界。"""
-
+class EngineState:
     now_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    session_key: str = ""
+    target_last_user: datetime | None = None
+    last_proactive_at: datetime | None = None
 
-    # Stage 1 — gate
-    gate_passed: bool = True
 
-    # Stage 2 — sense
+@dataclass
+class SenseSnapshot:
     sleep_ctx: Any = None
     health_events: list[dict] = field(default_factory=list)
     energy: float = 0.0
@@ -91,44 +104,39 @@ class DecisionContext:
     interrupt_detail: dict[str, float] = field(default_factory=dict)
     interrupt_factor: float = 1.0
     sleep_mod: float = 1.0
-    de: float = 0.0  # d_energy
-    dr: float = 0.0  # d_recent
-    sense_result: "SenseResult | None" = None
+    de: float = 0.0
+    dr: float = 0.0
 
-    # Stage 3 — pre-score
-    pre_score: float = 0.0
 
-    # Stage 4 — fetch & filter
+@dataclass
+class FetchSnapshot:
     items: list[FeedItem] = field(default_factory=list)
     new_items: list[FeedItem] = field(default_factory=list)
     new_entries: list[tuple[str, str]] = field(default_factory=list)
     semantic_duplicate_entries: list[tuple[str, str]] = field(default_factory=list)
     has_memory: bool = False
-    fetch_result: "FetchFilterResult | None" = None
 
-    # Stage 5 — score
-    dc: float = 0.0  # d_content
+
+@dataclass
+class ScoreSnapshot:
+    pre_score: float = 0.0
+    dc: float = 0.0
     base_score: float = 0.0
     draw_score: float = 0.0
     force_reflect: bool = False
-    session_key: str = ""
-    target_last_user: datetime | None = None
-    last_proactive_at: datetime | None = None
     is_crisis: bool = False
     fresh_items_24h: int = 0
     sent_24h: int = 0
 
-    # Stage 6 — decide
+
+@dataclass
+class DecideSnapshot:
     decision_signals: dict[str, object] = field(default_factory=dict)
     feature_payload: dict[str, float | str] = field(default_factory=dict)
     feature_final_score: float | None = None
     decision: Any = None
     decision_message: str = ""
     should_send: bool = False
-    compose_items: list[FeedItem] = field(default_factory=list)
-    compose_entries: list[tuple[str, str]] = field(default_factory=list)
-    state_summary_tag: str = "none"
-    source_refs: list[ProactiveSourceRef] = field(default_factory=list)
     memory_query: str = ""
     retrieved_memory_block: str = ""
     retrieved_memory_item_ids: list[str] = field(default_factory=list)
@@ -137,8 +145,146 @@ class DecisionContext:
     history_scope_mode: str = "disabled"
     memory_fallback_reason: str = ""
 
-    # Stage 7 — act
+
+@dataclass
+class ActSnapshot:
+    compose_items: list[FeedItem] = field(default_factory=list)
+    compose_entries: list[tuple[str, str]] = field(default_factory=list)
+    state_summary_tag: str = "none"
+    source_refs: list[ProactiveSourceRef] = field(default_factory=list)
     high_events: list[dict] = field(default_factory=list)
+
+
+_CTX_FIELD_MAP: dict[str, tuple[str, str]] = {
+    "now_utc": ("state", "now_utc"),
+    "session_key": ("state", "session_key"),
+    "target_last_user": ("state", "target_last_user"),
+    "last_proactive_at": ("state", "last_proactive_at"),
+    "sleep_ctx": ("sense", "sleep_ctx"),
+    "health_events": ("sense", "health_events"),
+    "energy": ("sense", "energy"),
+    "now_hour": ("sense", "now_hour"),
+    "recent": ("sense", "recent"),
+    "interruptibility": ("sense", "interruptibility"),
+    "interrupt_detail": ("sense", "interrupt_detail"),
+    "interrupt_factor": ("sense", "interrupt_factor"),
+    "sleep_mod": ("sense", "sleep_mod"),
+    "de": ("sense", "de"),
+    "dr": ("sense", "dr"),
+    "items": ("fetch", "items"),
+    "new_items": ("fetch", "new_items"),
+    "new_entries": ("fetch", "new_entries"),
+    "semantic_duplicate_entries": ("fetch", "semantic_duplicate_entries"),
+    "has_memory": ("fetch", "has_memory"),
+    "pre_score": ("score", "pre_score"),
+    "dc": ("score", "dc"),
+    "base_score": ("score", "base_score"),
+    "draw_score": ("score", "draw_score"),
+    "force_reflect": ("score", "force_reflect"),
+    "is_crisis": ("score", "is_crisis"),
+    "fresh_items_24h": ("score", "fresh_items_24h"),
+    "sent_24h": ("score", "sent_24h"),
+    "decision_signals": ("decide", "decision_signals"),
+    "feature_payload": ("decide", "feature_payload"),
+    "feature_final_score": ("decide", "feature_final_score"),
+    "decision": ("decide", "decision"),
+    "decision_message": ("decide", "decision_message"),
+    "should_send": ("decide", "should_send"),
+    "memory_query": ("decide", "memory_query"),
+    "retrieved_memory_block": ("decide", "retrieved_memory_block"),
+    "retrieved_memory_item_ids": ("decide", "retrieved_memory_item_ids"),
+    "history_channel_open": ("decide", "history_channel_open"),
+    "history_gate_reason": ("decide", "history_gate_reason"),
+    "history_scope_mode": ("decide", "history_scope_mode"),
+    "memory_fallback_reason": ("decide", "memory_fallback_reason"),
+    "compose_items": ("act", "compose_items"),
+    "compose_entries": ("act", "compose_entries"),
+    "state_summary_tag": ("act", "state_summary_tag"),
+    "source_refs": ("act", "source_refs"),
+    "high_events": ("act", "high_events"),
+}
+
+_CTX_SNAPSHOT_FACTORIES = {
+    "sense": SenseSnapshot,
+    "fetch": FetchSnapshot,
+    "score": ScoreSnapshot,
+    "decide": DecideSnapshot,
+    "act": ActSnapshot,
+}
+
+
+@dataclass
+class DecisionContext:
+    """每轮 tick 的决策上下文，优先使用 state/snapshot，保留旧字段兼容访问。"""
+
+    state: EngineState = field(default_factory=EngineState)
+    sense: SenseSnapshot | None = None
+    fetch: FetchSnapshot | None = None
+    score: ScoreSnapshot | None = None
+    decide: DecideSnapshot | None = None
+    act: ActSnapshot | None = None
+
+    # Stage 1 — gate
+    gate_passed: bool = True
+    sense_result: "SenseResult | None" = None
+    fetch_result: "FetchFilterResult | None" = None
+
+    def ensure_sense(self) -> SenseSnapshot:
+        if self.sense is None:
+            self.sense = SenseSnapshot()
+        return self.sense
+
+    def ensure_fetch(self) -> FetchSnapshot:
+        if self.fetch is None:
+            self.fetch = FetchSnapshot()
+        return self.fetch
+
+    def ensure_score(self) -> ScoreSnapshot:
+        if self.score is None:
+            self.score = ScoreSnapshot()
+        return self.score
+
+    def ensure_decide(self) -> DecideSnapshot:
+        if self.decide is None:
+            self.decide = DecideSnapshot()
+        return self.decide
+
+    def ensure_act(self) -> ActSnapshot:
+        if self.act is None:
+            self.act = ActSnapshot()
+        return self.act
+
+    def __getattr__(self, name: str) -> Any:
+        mapping = _CTX_FIELD_MAP.get(name)
+        if mapping is None:
+            raise AttributeError(name)
+        container_name, field_name = mapping
+        if container_name == "state":
+            return getattr(self.state, field_name)
+        container = getattr(self, container_name)
+        if container is None:
+            container = _CTX_SNAPSHOT_FACTORIES[container_name]()
+            object.__setattr__(self, container_name, container)
+        return getattr(container, field_name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        mapping = _CTX_FIELD_MAP.get(name)
+        if mapping is None:
+            object.__setattr__(self, name, value)
+            return
+        container_name, field_name = mapping
+        if container_name == "state":
+            state = self.__dict__.get("state")
+            if state is None:
+                state = EngineState()
+                object.__setattr__(self, "state", state)
+            setattr(state, field_name, value)
+            return
+        container = self.__dict__.get(container_name)
+        if container is None:
+            container = _CTX_SNAPSHOT_FACTORIES[container_name]()
+            object.__setattr__(self, container_name, container)
+        setattr(container, field_name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +377,7 @@ class ProactiveEngine:
         light_provider: Any | None = None,
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
+        stage_trace_writer: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._cfg = cfg
         self._state = state
@@ -247,6 +394,7 @@ class ProactiveEngine:
         self._light_model = light_model
         # 可选：AgentLoop 注入的被动处理信号，用于跳过与被动回复并发的主动发送
         self._passive_busy_fn = passive_busy_fn
+        self._stage_trace_writer = stage_trace_writer
 
     async def tick(self) -> float | None:
         """执行一次主动判断循环。
@@ -268,29 +416,35 @@ class ProactiveEngine:
 
         # 1. gate
         gate_result = await self._stage_gate(ctx)
+        self._trace_stage_result(ctx, stage="gate", result=gate_result)
         if not gate_result.proceed:
             if gate_result.stop_result is _STOP_NONE:
                 return None
             return gate_result.stop_result  # type: ignore[return-value]
 
         # 2. sense
-        self._stage_sense(ctx)
+        sense_result = self._stage_sense(ctx)
+        self._trace_stage_result(ctx, stage="sense", result=sense_result)
 
         # 3. pre-score
         pre_result = await self._stage_pre_score(ctx)
+        self._trace_stage_result(ctx, stage="pre_score", result=pre_result)
         if not pre_result.proceed:
             return pre_result.return_score
 
         # 4. fetch & filter
-        await self._stage_fetch_filter(ctx)
+        fetch_result = await self._stage_fetch_filter(ctx)
+        self._trace_stage_result(ctx, stage="fetch_filter", result=fetch_result)
 
         # 5. score
         score_result = await self._stage_score(ctx)
+        self._trace_stage_result(ctx, stage="score", result=score_result)
         if not score_result.proceed:
             return score_result.return_score
 
         # 6. decide
         decide_result = await self._stage_decide(ctx)
+        self._trace_stage_result(ctx, stage="decide", result=decide_result)
         if not decide_result.proceed:
             return decide_result.return_score
 
@@ -357,70 +511,71 @@ class ProactiveEngine:
 
     def _stage_sense(self, ctx: DecisionContext) -> SenseResult:
         """采集睡眠上下文、能量、打扰度等环境信号，填充 ctx。"""
+        sense = ctx.ensure_sense()
         # 1. 刷新睡眠上下文
         refreshed = bool(getattr(self._sense, "refresh_sleep_context", lambda: False)())
         if refreshed:
             logger.debug("[proactive] fitbit 上下文已在本轮决策前主动刷新")
-        ctx.sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
+        sense.sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
 
         # 2. 提取健康事件
         health_events: list[dict] = (
-            getattr(ctx.sleep_ctx, "health_events", [])
-            if ctx.sleep_ctx is not None
+            getattr(sense.sleep_ctx, "health_events", [])
+            if sense.sleep_ctx is not None
             else []
         )
-        ctx.health_events = health_events if isinstance(health_events, list) else []
+        sense.health_events = health_events if isinstance(health_events, list) else []
 
         # 3. 采集能量 & 打扰度
-        ctx.energy = self._sense.compute_energy()
-        ctx.now_hour = datetime.now().hour
-        ctx.recent = self._sense.collect_recent()
-        ctx.de = d_energy(ctx.energy)
-        ctx.dr = d_recent(len(ctx.recent), self._cfg.score_recent_scale)
-        ctx.interruptibility, ctx.interrupt_detail = (
+        sense.energy = self._sense.compute_energy()
+        sense.now_hour = datetime.now().hour
+        sense.recent = self._sense.collect_recent()
+        sense.de = d_energy(sense.energy)
+        sense.dr = d_recent(len(sense.recent), self._cfg.score_recent_scale)
+        sense.interruptibility, sense.interrupt_detail = (
             self._sense.compute_interruptibility(
-                now_hour=ctx.now_hour,
-                now_utc=ctx.now_utc,
-                recent_msg_count=len(ctx.recent),
+                now_hour=sense.now_hour,
+                now_utc=ctx.state.now_utc,
+                recent_msg_count=len(sense.recent),
             )
         )
-        ctx.interrupt_factor = 0.6 + 0.4 * ctx.interruptibility
+        sense.interrupt_factor = 0.6 + 0.4 * sense.interruptibility
 
         # 4. Fitbit 睡眠修正
-        ctx.sleep_mod = (
-            ctx.sleep_ctx.sleep_modifier if ctx.sleep_ctx is not None else 1.0
+        sense.sleep_mod = (
+            sense.sleep_ctx.sleep_modifier if sense.sleep_ctx is not None else 1.0
         )
-        if ctx.sleep_mod != 1.0:
-            ctx.interrupt_factor *= ctx.sleep_mod
+        if sense.sleep_mod != 1.0:
+            sense.interrupt_factor *= sense.sleep_mod
 
         sleep_state = (
-            ctx.sleep_ctx.state if ctx.sleep_ctx is not None else "unavailable"
+            sense.sleep_ctx.state if sense.sleep_ctx is not None else "unavailable"
         )
         sleep_available = bool(
-            ctx.sleep_ctx is not None and getattr(ctx.sleep_ctx, "available", False)
+            sense.sleep_ctx is not None and getattr(sense.sleep_ctx, "available", False)
         )
         logger.info(
             "[proactive][sleep-policy] state=%s available=%s prob=%s lag=%s sleep_mod=%.2f policy=%s",
             sleep_state,
             sleep_available,
-            (ctx.sleep_ctx.prob if ctx.sleep_ctx is not None else None),
-            (ctx.sleep_ctx.data_lag_min if ctx.sleep_ctx is not None else None),
-            ctx.sleep_mod,
+            (sense.sleep_ctx.prob if sense.sleep_ctx is not None else None),
+            (sense.sleep_ctx.data_lag_min if sense.sleep_ctx is not None else None),
+            sense.sleep_mod,
             _sleep_policy_note(
                 sleep_state,
                 sleep_available,
-                (ctx.sleep_ctx.prob if ctx.sleep_ctx is not None else None),
+                (sense.sleep_ctx.prob if sense.sleep_ctx is not None else None),
             ),
         )
         ctx.sense_result = SenseResult(
             sleep_state=sleep_state,
             sleep_available=sleep_available,
-            health_event_count=len(ctx.health_events),
-            energy=ctx.energy,
-            recent_count=len(ctx.recent),
-            interruptibility=ctx.interruptibility,
-            interrupt_factor=ctx.interrupt_factor,
-            sleep_mod=ctx.sleep_mod,
+            health_event_count=len(sense.health_events),
+            energy=sense.energy,
+            recent_count=len(sense.recent),
+            interruptibility=sense.interruptibility,
+            interrupt_factor=sense.interrupt_factor,
+            sleep_mod=sense.sleep_mod,
         )
         return ctx.sense_result
 
@@ -430,43 +585,45 @@ class ProactiveEngine:
 
     async def _stage_pre_score(self, ctx: DecisionContext) -> PreScoreResult:
         """计算 pre_score；过低时尝试 skill action 后提前返回。"""
+        sense = ctx.ensure_sense()
+        score = ctx.ensure_score()
         # 1. 计算加权 pre_score
         w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
-        ctx.pre_score = (
+        score.pre_score = (
             (
-                self._cfg.score_weight_energy * ctx.de
-                + self._cfg.score_weight_recent * ctx.dr
+                self._cfg.score_weight_energy * sense.de
+                + self._cfg.score_weight_recent * sense.dr
             )
             / w_sum
             if w_sum > 0
             else 0.0
-        ) * ctx.interrupt_factor
+        ) * sense.interrupt_factor
 
         logger.info(
             "[proactive] pre_score=%.3f interrupt=%.3f factor=%.3f sleep_mod=%.2f"
             " (reply=%.2f activity=%.2f fatigue=%.2f rand=%+.2f)"
             " D_energy=%.3f D_recent=%.3f energy=%.3f msg_count=%d",
-            ctx.pre_score,
-            ctx.interruptibility,
-            ctx.interrupt_factor,
-            ctx.sleep_mod,
-            ctx.interrupt_detail["f_reply"],
-            ctx.interrupt_detail["f_activity"],
-            ctx.interrupt_detail["f_fatigue"],
-            ctx.interrupt_detail["random_delta"],
-            ctx.de,
-            ctx.dr,
-            ctx.energy,
-            len(ctx.recent),
+            score.pre_score,
+            sense.interruptibility,
+            sense.interrupt_factor,
+            sense.sleep_mod,
+            sense.interrupt_detail["f_reply"],
+            sense.interrupt_detail["f_activity"],
+            sense.interrupt_detail["f_fatigue"],
+            sense.interrupt_detail["random_delta"],
+            sense.de,
+            sense.dr,
+            sense.energy,
+            len(sense.recent),
         )
 
-        high_events = [e for e in ctx.health_events if e.get("severity") == "high"]
+        high_events = [e for e in sense.health_events if e.get("severity") == "high"]
         if high_events:
-            ctx.force_reflect = True
-            if ctx.pre_score < self._cfg.score_pre_threshold:
+            score.force_reflect = True
+            if score.pre_score < self._cfg.score_pre_threshold:
                 logger.info(
                     "[proactive] health fast-path: pre_score=%.3f 低于阈值但存在 %d 个 high 事件，强制继续",
-                    ctx.pre_score,
+                    score.pre_score,
                     len(high_events),
                 )
                 return PreScoreResult(
@@ -476,16 +633,16 @@ class ProactiveEngine:
                 )
 
         # 2. 过低则跳过 chat，尝试 skill action
-        if ctx.pre_score < self._cfg.score_pre_threshold:
+        if score.pre_score < self._cfg.score_pre_threshold:
             logger.info(
                 "[proactive] pre_score 过低（%.3f < %.2f），跳过 chat，尝试 skill action",
-                ctx.pre_score,
+                score.pre_score,
                 self._cfg.score_pre_threshold,
             )
-            await self._try_skill_action(now_utc=ctx.now_utc)
+            await self._try_skill_action(now_utc=ctx.state.now_utc)
             return PreScoreResult(
                 proceed=False,
-                return_score=ctx.pre_score,
+                return_score=score.pre_score,
                 reason_code="below_threshold",
             )
 
@@ -501,23 +658,24 @@ class ProactiveEngine:
 
     async def _stage_fetch_filter(self, ctx: DecisionContext) -> FetchFilterResult:
         """拉取 feed 条目，去重，应用兴趣筛选，填充 ctx.new_items 等。"""
+        fetch = ctx.ensure_fetch()
         # 1. 拉取原始条目
-        ctx.items = await self._sense.fetch_items(self._cfg.items_per_source)
-        logger.info("[proactive] 拉取到 %d 条信息", len(ctx.items))
+        fetch.items = await self._sense.fetch_items(self._cfg.items_per_source)
+        logger.info("[proactive] 拉取到 %d 条信息", len(fetch.items))
 
         # 2. 基础去重（seen / semantic）
-        discovered_items, discovered_entries, ctx.semantic_duplicate_entries = (
-            self._sense.filter_new_items(ctx.items)
+        discovered_items, discovered_entries, fetch.semantic_duplicate_entries = (
+            self._sense.filter_new_items(fetch.items)
         )
         logger.info(
             "[proactive] 去重后剩余新信息 %d 条（过滤重复 %d 条）",
             len(discovered_items),
-            len(ctx.items) - len(discovered_items),
+            len(fetch.items) - len(discovered_items),
         )
-        if ctx.semantic_duplicate_entries:
+        if fetch.semantic_duplicate_entries:
             logger.info(
                 "[proactive] 语义重复条目 count=%d 不写入 seen_items，72h 窗口自然抑制",
-                len(ctx.semantic_duplicate_entries),
+                len(fetch.semantic_duplicate_entries),
             )
 
         # 3. memory 兴趣筛选
@@ -541,7 +699,7 @@ class ProactiveEngine:
                 logger.info(
                     "[proactive] memory 兴趣筛选 old=%d kept=%d min_score=%.2f top=%s",
                     old_count,
-                    len(ctx.new_items),
+                    len(filtered_items),
                     self._cfg.interest_filter.min_score,
                     top_preview or "-",
                 )
@@ -554,30 +712,30 @@ class ProactiveEngine:
                 discovered_items,
                 max_per_source=self._cfg_int("pending_max_per_source", 20),
                 max_total=self._cfg_int("pending_max_total", 200),
-                now=ctx.now_utc,
+                now=ctx.state.now_utc,
             )
-            ctx.new_items, ctx.new_entries = self._select_pending_candidates(
-                now=ctx.now_utc,
+            fetch.new_items, fetch.new_entries = self._select_pending_candidates(
+                now=ctx.state.now_utc,
                 limit=self._cfg_int("pending_candidate_limit", 3),
             )
             logger.info(
                 "[proactive] pending 选出候选=%d pending_stats=%s",
-                len(ctx.new_items),
+                len(fetch.new_items),
                 self._state.pending_stats(),
             )
         else:
-            ctx.new_items = discovered_items
-            ctx.new_entries = discovered_entries
+            fetch.new_items = discovered_items
+            fetch.new_entries = discovered_entries
 
         # 4. 全局记忆检查（影响 force_reflect 判断）
-        ctx.has_memory = self._sense.has_global_memory()
+        fetch.has_memory = self._sense.has_global_memory()
         ctx.fetch_result = FetchFilterResult(
-            total_items=len(ctx.items),
+            total_items=len(fetch.items),
             discovered_count=len(discovered_items),
-            selected_count=len(ctx.new_items),
-            semantic_duplicate_count=len(ctx.semantic_duplicate_entries),
+            selected_count=len(fetch.new_items),
+            semantic_duplicate_count=len(fetch.semantic_duplicate_entries),
             pending_enabled=pending_enabled,
-            has_memory=ctx.has_memory,
+            has_memory=fetch.has_memory,
         )
         return ctx.fetch_result
 
@@ -587,110 +745,113 @@ class ProactiveEngine:
 
     async def _stage_score(self, ctx: DecisionContext) -> ScoreResult:
         """计算 base_score / draw_score；未过门槛时提前返回。"""
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        score = ctx.ensure_score()
         # 1. 计算 base_score / draw_score
-        ctx.dc = d_content(len(ctx.new_items), self._cfg.score_content_halfsat)
-        ctx.base_score = (
+        score.dc = d_content(len(fetch.new_items), self._cfg.score_content_halfsat)
+        score.base_score = (
             composite_score(
-                ctx.de,
-                ctx.dc,
-                ctx.dr,
+                sense.de,
+                score.dc,
+                sense.dr,
                 self._cfg.score_weight_energy,
                 self._cfg.score_weight_content,
                 self._cfg.score_weight_recent,
             )
-            * ctx.interrupt_factor
+            * sense.interrupt_factor
         )
         w_random = random_weight(rng=self._rng)
-        ctx.draw_score = ctx.base_score * w_random
+        score.draw_score = score.base_score * w_random
 
         # 2. 采集 presence 信号
-        ctx.session_key = self._sense.target_session_key()
-        ctx.target_last_user = (
-            self._presence.get_last_user_at(ctx.session_key)
-            if self._presence and ctx.session_key
+        ctx.state.session_key = self._sense.target_session_key()
+        ctx.state.target_last_user = (
+            self._presence.get_last_user_at(ctx.state.session_key)
+            if self._presence and ctx.state.session_key
             else None
         )
-        ctx.last_proactive_at = (
-            self._presence.get_last_proactive_at(ctx.session_key)
-            if self._presence and ctx.session_key
+        ctx.state.last_proactive_at = (
+            self._presence.get_last_proactive_at(ctx.state.session_key)
+            if self._presence and ctx.state.session_key
             else None
         )
         presence_force_reflect = self._presence is not None and (
-            ctx.energy < 0.05
-            or (bool(ctx.session_key) and ctx.target_last_user is None)
-            or (ctx.energy < 0.20 and ctx.has_memory)
+            sense.energy < 0.05
+            or (bool(ctx.state.session_key) and ctx.state.target_last_user is None)
+            or (sense.energy < 0.20 and fetch.has_memory)
         )
-        ctx.force_reflect = ctx.force_reflect or presence_force_reflect
-        ctx.is_crisis = ctx.energy < 0.05
-        ctx.sent_24h = (
-            self._state.count_deliveries_in_window(ctx.session_key, 24, now=ctx.now_utc)
-            if ctx.session_key
+        score.force_reflect = score.force_reflect or presence_force_reflect
+        score.is_crisis = sense.energy < 0.05
+        score.sent_24h = (
+            self._state.count_deliveries_in_window(ctx.state.session_key, 24, now=ctx.state.now_utc)
+            if ctx.state.session_key
             else 0
         )
-        ctx.fresh_items_24h = sum(
+        score.fresh_items_24h = sum(
             1
-            for item in ctx.new_items
+            for item in fetch.new_items
             if item.published_at
-            and (ctx.now_utc - item.published_at).total_seconds() <= 24 * 3600
+            and (ctx.state.now_utc - item.published_at).total_seconds() <= 24 * 3600
         )
 
-        if not ctx.new_items and not ctx.health_events and not ctx.force_reflect:
+        if not fetch.new_items and not sense.health_events and not score.force_reflect:
             logger.info("[proactive] 无候选信息且无健康事件，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=no_candidates")
             return ScoreResult(
                 proceed=False,
-                return_score=ctx.base_score,
+                return_score=score.base_score,
                 reason_code="no_candidates",
-                base_score=ctx.base_score,
-                draw_score=ctx.draw_score,
-                force_reflect=ctx.force_reflect,
+                base_score=score.base_score,
+                draw_score=score.draw_score,
+                force_reflect=score.force_reflect,
             )
 
         logger.info(
             "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"
             "  interrupt=%.3f W_random=%.2f → draw_score=%.3f 阈值=%.2f force_reflect=%s",
-            ctx.base_score,
-            ctx.de,
-            ctx.dc,
-            ctx.dr,
-            ctx.interruptibility,
+            score.base_score,
+            sense.de,
+            score.dc,
+            sense.dr,
+            sense.interruptibility,
             w_random,
-            ctx.draw_score,
+            score.draw_score,
             self._cfg.score_llm_threshold,
-            ctx.force_reflect,
+            score.force_reflect,
         )
 
         # 4. 判断是否过 LLM 门槛
-        if ctx.draw_score < self._cfg.score_llm_threshold and not ctx.force_reflect:
+        if score.draw_score < self._cfg.score_llm_threshold and not score.force_reflect:
             logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=draw_score")
-            await self._try_skill_action(now_utc=ctx.now_utc)
+            await self._try_skill_action(now_utc=ctx.state.now_utc)
             return ScoreResult(
                 proceed=False,
-                return_score=ctx.base_score,
+                return_score=score.base_score,
                 reason_code="draw_score_below_threshold",
-                base_score=ctx.base_score,
-                draw_score=ctx.draw_score,
-                force_reflect=ctx.force_reflect,
+                base_score=score.base_score,
+                draw_score=score.draw_score,
+                force_reflect=score.force_reflect,
             )
-        if ctx.draw_score < self._cfg.score_llm_threshold and ctx.force_reflect:
+        if score.draw_score < self._cfg.score_llm_threshold and score.force_reflect:
             logger.info("[proactive] draw_score 未过门槛，但命中兜底条件，继续反思")
             return ScoreResult(
                 proceed=True,
                 return_score=None,
                 reason_code="draw_score_force_reflect",
-                base_score=ctx.base_score,
-                draw_score=ctx.draw_score,
-                force_reflect=ctx.force_reflect,
+                base_score=score.base_score,
+                draw_score=score.draw_score,
+                force_reflect=score.force_reflect,
             )
 
         return ScoreResult(
             proceed=True,
             return_score=None,
             reason_code="continue",
-            base_score=ctx.base_score,
-            draw_score=ctx.draw_score,
-            force_reflect=ctx.force_reflect,
+            base_score=score.base_score,
+            draw_score=score.draw_score,
+            force_reflect=score.force_reflect,
         )
 
     # ------------------------------------------------------------------
@@ -699,188 +860,193 @@ class ProactiveEngine:
 
     async def _stage_decide(self, ctx: DecisionContext) -> DecideResult:
         """构建决策信号，调用 LLM 评分或生成消息，填充 ctx.should_send / decision_message。"""
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        score = ctx.ensure_score()
+        decide = ctx.ensure_decide()
+        act = ctx.ensure_act()
         # 1. 构建 decision_signals 结构
         mins_since_last_user = (
-            int((ctx.now_utc - ctx.target_last_user).total_seconds() / 60)
-            if ctx.target_last_user
+            int((ctx.state.now_utc - ctx.state.target_last_user).total_seconds() / 60)
+            if ctx.state.target_last_user
             else None
         )
         mins_since_last_proactive = (
-            int((ctx.now_utc - ctx.last_proactive_at).total_seconds() / 60)
-            if ctx.last_proactive_at
+            int((ctx.state.now_utc - ctx.state.last_proactive_at).total_seconds() / 60)
+            if ctx.state.last_proactive_at
             else None
         )
         replied_after_last_proactive = bool(
-            ctx.target_last_user
-            and ctx.last_proactive_at
-            and ctx.target_last_user > ctx.last_proactive_at
+            ctx.state.target_last_user
+            and ctx.state.last_proactive_at
+            and ctx.state.target_last_user > ctx.state.last_proactive_at
         )
-        ctx.decision_signals = {
+        decide.decision_signals = {
             "minutes_since_last_user": mins_since_last_user,
             "minutes_since_last_proactive": mins_since_last_proactive,
             "user_replied_after_last_proactive": replied_after_last_proactive,
-            "proactive_sent_24h": ctx.sent_24h,
-            "interruptibility": round(ctx.interruptibility, 3),
+            "proactive_sent_24h": score.sent_24h,
+            "interruptibility": round(sense.interruptibility, 3),
             "interrupt_breakdown": {
-                "reply": round(ctx.interrupt_detail["f_reply"], 3),
-                "activity": round(ctx.interrupt_detail["f_activity"], 3),
-                "fatigue": round(ctx.interrupt_detail["f_fatigue"], 3),
+                "reply": round(sense.interrupt_detail["f_reply"], 3),
+                "activity": round(sense.interrupt_detail["f_activity"], 3),
+                "fatigue": round(sense.interrupt_detail["f_fatigue"], 3),
             },
             "scores": {
-                "pre_score": round(ctx.pre_score, 3),
-                "base_score": round(ctx.base_score, 3),
-                "draw_score": round(ctx.draw_score, 3),
+                "pre_score": round(score.pre_score, 3),
+                "base_score": round(score.base_score, 3),
+                "draw_score": round(score.draw_score, 3),
                 "llm_threshold": round(self._cfg.score_llm_threshold, 3),
                 "send_threshold": round(self._cfg.threshold, 3),
             },
-            "candidate_items": len(ctx.new_items),
-            "fresh_items_24h": ctx.fresh_items_24h,
+            "candidate_items": len(fetch.new_items),
+            "fresh_items_24h": score.fresh_items_24h,
         }
         # 只有 StatEngine 检测到事件时才向 LLM 暴露健康信息
-        if ctx.health_events:
-            ctx.decision_signals["health_events"] = ctx.health_events
-        ctx.high_events = [
-            e for e in ctx.health_events if str((e or {}).get("severity", "")) == "high"
+        if sense.health_events:
+            decide.decision_signals["health_events"] = sense.health_events
+        act.high_events = [
+            e for e in sense.health_events if str((e or {}).get("severity", "")) == "high"
         ]
         logger.info(
             "[proactive] fitbit_signal events=%d high=%d sleep_state=%s",
-            len(ctx.health_events),
-            len(ctx.high_events),
-            ctx.sleep_ctx.state if ctx.sleep_ctx is not None else "unavailable",
+            len(sense.health_events),
+            len(act.high_events),
+            sense.sleep_ctx.state if sense.sleep_ctx is not None else "unavailable",
         )
 
         channel = ""
         chat_id = ""
-        if ctx.session_key and ":" in ctx.session_key:
-            channel, chat_id = ctx.session_key.split(":", 1)
+        if ctx.state.session_key and ":" in ctx.state.session_key:
+            channel, chat_id = ctx.state.session_key.split(":", 1)
         if self._memory_retrieval is not None:
             retrieved = await self._memory_retrieval.retrieve_proactive_context(
-                session_key=ctx.session_key,
+                session_key=ctx.state.session_key,
                 channel=channel,
                 chat_id=chat_id,
-                items=ctx.new_items,
-                recent=ctx.recent,
-                decision_signals=ctx.decision_signals,
-                is_crisis=ctx.is_crisis,
+                items=fetch.new_items,
+                recent=sense.recent,
+                decision_signals=decide.decision_signals,
+                is_crisis=score.is_crisis,
             )
         else:
             retrieved = ProactiveRetrievedMemory.empty("retrieval_disabled")
-        ctx.memory_query = retrieved.query
-        ctx.retrieved_memory_block = retrieved.block
-        ctx.retrieved_memory_item_ids = retrieved.item_ids
-        ctx.history_channel_open = retrieved.history_channel_open
-        ctx.history_gate_reason = retrieved.history_gate_reason
-        ctx.history_scope_mode = retrieved.history_scope_mode
-        ctx.memory_fallback_reason = retrieved.fallback_reason
+        decide.memory_query = retrieved.query
+        decide.retrieved_memory_block = retrieved.block
+        decide.retrieved_memory_item_ids = retrieved.item_ids
+        decide.history_channel_open = retrieved.history_channel_open
+        decide.history_gate_reason = retrieved.history_gate_reason
+        decide.history_scope_mode = retrieved.history_scope_mode
+        decide.memory_fallback_reason = retrieved.fallback_reason
 
         # 2. feature scoring 路径
         if self._cfg.feature_scoring_enabled:
-            ctx.compose_items = ctx.new_items[:1]
-            ctx.compose_entries = self._entries_for_items(
-                ctx.compose_items, ctx.new_entries
+            act.compose_items = fetch.new_items[:1]
+            act.compose_entries = self._entries_for_items(
+                act.compose_items, fetch.new_entries
             )
             features = await self._decide.score_features(
-                items=ctx.new_items,
-                recent=ctx.recent,
-                decision_signals=ctx.decision_signals,
-                retrieved_memory_block=ctx.retrieved_memory_block,
+                items=fetch.new_items,
+                recent=sense.recent,
+                decision_signals=decide.decision_signals,
+                retrieved_memory_block=decide.retrieved_memory_block,
             )
-            ctx.feature_payload = features or {}
+            decide.feature_payload = features or {}
             feature_final_base = _feature_final_score(
                 cfg=self._cfg,
-                features=ctx.feature_payload,
-                de=ctx.de,
-                dc=ctx.dc,
-                dr=ctx.dr,
-                interruptibility=ctx.interruptibility,
+                features=decide.feature_payload,
+                de=sense.de,
+                dc=score.dc,
+                dr=sense.dr,
+                interruptibility=sense.interruptibility,
             )
             health_bonus = _health_priority_bonus(
-                alert_count=len(ctx.health_events),
-                notify_count=len(ctx.high_events),
+                alert_count=len(sense.health_events),
+                notify_count=len(act.high_events),
             )
-            ctx.feature_final_score = min(1.0, feature_final_base + health_bonus)
+            decide.feature_final_score = min(1.0, feature_final_base + health_bonus)
             logger.info(
                 "[proactive] feature_score enabled base=%.3f health_bonus=%.3f final=%.3f threshold=%.3f features=%s",
                 feature_final_base,
                 health_bonus,
-                ctx.feature_final_score,
+                decide.feature_final_score,
                 self._cfg.feature_send_threshold,
-                ctx.feature_payload,
+                decide.feature_payload,
             )
-            if ctx.feature_final_score < self._cfg.feature_send_threshold:
+            if decide.feature_final_score < self._cfg.feature_send_threshold:
                 logger.info("[proactive] selected_action=idle reason=feature_score")
                 self._state.mark_rejection_cooldown(
-                    self._primary_candidate_entries(ctx.new_entries),
+                    self._primary_candidate_entries(fetch.new_entries),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
                 return DecideResult(
                     proceed=False,
-                    return_score=ctx.base_score,
+                    return_score=score.base_score,
                     reason_code="feature_score_reject",
                     should_send=False,
                     decision_message="",
                     decision_mode="feature",
-                    feature_final_score=ctx.feature_final_score,
-                    history_gate_reason=ctx.history_gate_reason,
-                    history_scope_mode=ctx.history_scope_mode,
+                    feature_final_score=decide.feature_final_score,
+                    history_gate_reason=decide.history_gate_reason,
+                    history_scope_mode=decide.history_scope_mode,
                 )
 
         # 3. LLM 生成/反思
         if self._cfg.feature_scoring_enabled:
-            ctx.decision_message = await self._decide.compose_message(
-                items=ctx.compose_items,
-                recent=ctx.recent,
-                decision_signals=ctx.decision_signals,
-                retrieved_memory_block=ctx.retrieved_memory_block,
+            decide.decision_message = await self._decide.compose_message(
+                items=act.compose_items,
+                recent=sense.recent,
+                decision_signals=decide.decision_signals,
+                retrieved_memory_block=decide.retrieved_memory_block,
             )
-            ctx.should_send = bool(ctx.decision_message.strip()) and (
-                ctx.feature_final_score is not None
-                and ctx.feature_final_score >= self._cfg.feature_send_threshold
+            decide.should_send = bool(decide.decision_message.strip()) and (
+                decide.feature_final_score is not None
+                and decide.feature_final_score >= self._cfg.feature_send_threshold
             )
             logger.info(
                 "[proactive] feature_mode compose_len=%d should_send=%s reasons={topic:%r,interest:%r,novel:%r,reconnect:%r,disturb:%r,readiness:%r,conf:%r}",
-                len(ctx.decision_message),
-                ctx.should_send,
-                ctx.feature_payload.get("topic_continuity_reason", ""),
-                ctx.feature_payload.get("interest_match_reason", ""),
-                ctx.feature_payload.get("content_novelty_reason", ""),
-                ctx.feature_payload.get("reconnect_value_reason", ""),
-                ctx.feature_payload.get("disturb_risk_reason", ""),
-                ctx.feature_payload.get("message_readiness_reason", ""),
-                ctx.feature_payload.get("confidence_reason", ""),
+                len(decide.decision_message),
+                decide.should_send,
+                decide.feature_payload.get("topic_continuity_reason", ""),
+                decide.feature_payload.get("interest_match_reason", ""),
+                decide.feature_payload.get("content_novelty_reason", ""),
+                decide.feature_payload.get("reconnect_value_reason", ""),
+                decide.feature_payload.get("disturb_risk_reason", ""),
+                decide.feature_payload.get("message_readiness_reason", ""),
+                decide.feature_payload.get("confidence_reason", ""),
             )
         else:
-            ctx.decision = await self._decide.reflect(
-                ctx.new_items,
-                ctx.recent,
-                energy=ctx.energy,
-                urge=ctx.draw_score,
-                is_crisis=ctx.is_crisis,
-                decision_signals=ctx.decision_signals,
-                retrieved_memory_block=ctx.retrieved_memory_block,
+            decide.decision = await self._decide.reflect(
+                fetch.new_items,
+                sense.recent,
+                energy=sense.energy,
+                urge=score.draw_score,
+                is_crisis=score.is_crisis,
+                decision_signals=decide.decision_signals,
+                retrieved_memory_block=decide.retrieved_memory_block,
             )
-            ctx.decision, decision_delta = self._decide.randomize_decision(ctx.decision)
+            decide.decision, decision_delta = self._decide.randomize_decision(decide.decision)
             logger.info(
-                f"[proactive] score={ctx.decision.score:.2f}  "
+                f"[proactive] score={decide.decision.score:.2f}  "
                 f"score_delta={decision_delta:+.2f}  "
-                f"send={ctx.decision.should_send}  "
-                f"reasoning={ctx.decision.reasoning[:80]!r}"
+                f"send={decide.decision.should_send}  "
+                f"reasoning={decide.decision.reasoning[:80]!r}"
             )
-            ctx.should_send = (
-                ctx.decision.should_send and ctx.decision.score >= self._cfg.threshold
+            decide.should_send = (
+                decide.decision.should_send and decide.decision.score >= self._cfg.threshold
             )
-            ctx.decision_message = ctx.decision.message
+            decide.decision_message = decide.decision.message
 
         return DecideResult(
             proceed=True,
             return_score=None,
             reason_code="continue",
-            should_send=ctx.should_send,
-            decision_message=ctx.decision_message,
+            should_send=decide.should_send,
+            decision_message=decide.decision_message,
             decision_mode="feature" if self._cfg.feature_scoring_enabled else "reflect",
-            feature_final_score=ctx.feature_final_score,
-            history_gate_reason=ctx.history_gate_reason,
-            history_scope_mode=ctx.history_scope_mode,
+            feature_final_score=decide.feature_final_score,
+            history_gate_reason=decide.history_gate_reason,
+            history_scope_mode=decide.history_scope_mode,
         )
 
     # ------------------------------------------------------------------
@@ -889,14 +1055,18 @@ class ProactiveEngine:
 
     async def _stage_act(self, ctx: DecisionContext) -> None:
         """去重检查、发送消息、标记已发送状态。"""
-        evidence_source_items = ctx.compose_items or ctx.new_items or ctx.items
-        evidence_source_entries = ctx.compose_entries or self._entries_for_items(
-            evidence_source_items, ctx.new_entries
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        decide = ctx.ensure_decide()
+        act = ctx.ensure_act()
+        evidence_source_items = act.compose_items or fetch.new_items or fetch.items
+        evidence_source_entries = act.compose_entries or self._entries_for_items(
+            evidence_source_items, fetch.new_entries
         )
         evidence_ids = self._decide.resolve_evidence_item_ids(
-            ctx.decision
-            if ctx.decision is not None
-            else _PseudoDecision(message=ctx.decision_message),
+            decide.decision
+            if decide.decision is not None
+            else _PseudoDecision(message=decide.decision_message),
             evidence_source_items,
         )
         evidence_items, evidence_entries = self._resolve_evidence_entries(
@@ -904,38 +1074,38 @@ class ProactiveEngine:
             evidence_source_entries,
             evidence_ids,
         )
-        ctx.source_refs = self._build_source_refs(evidence_items)
+        act.source_refs = self._build_source_refs(evidence_items)
 
-        if not ctx.should_send:
+        if not decide.should_send:
             logger.info("[proactive] 决定不主动发送")
             logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
             self._state.mark_rejection_cooldown(
                 evidence_entries
                 or self._primary_candidate_entries(
-                    evidence_source_entries or ctx.new_entries
+                    evidence_source_entries or fetch.new_entries
                 ),
                 hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
             )
-            await self._try_skill_action(now_utc=ctx.now_utc)
+            await self._try_skill_action(now_utc=ctx.state.now_utc)
             return
 
         # 1. 解析证据 & 构建 delivery_key
         channel = (self._cfg.default_channel or "").strip()
         chat_id = self._cfg.default_chat_id.strip()
-        ctx.session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
+        ctx.state.session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
         delivery_key = self._decide.build_delivery_key(
-            evidence_ids, ctx.decision_message
+            evidence_ids, decide.decision_message
         )
         logger.info(
             "[proactive] 发送前去重检查 session=%s evidence_count=%d delivery_key=%s",
-            ctx.session_key or "（未配置）",
+            ctx.state.session_key or "（未配置）",
             len(evidence_ids),
             delivery_key[:16],
         )
 
         # 2. delivery 去重
-        if ctx.session_key and self._state.is_delivery_duplicate(
-            session_key=ctx.session_key,
+        if ctx.state.session_key and self._state.is_delivery_duplicate(
+            session_key=ctx.state.session_key,
             delivery_key=delivery_key,
             window_hours=self._cfg.delivery_dedupe_hours,
         ):
@@ -954,38 +1124,38 @@ class ProactiveEngine:
         recent_proactive = self._sense.collect_recent_proactive(
             getattr(self._cfg, "message_dedupe_recent_n", 5)
         )
-        ctx.state_summary_tag = await self._classify_state_summary_tag(
-            ctx.decision_message
+        act.state_summary_tag = await self._classify_state_summary_tag(
+            decide.decision_message
         )
         if (
-            ctx.state_summary_tag != "none"
+            act.state_summary_tag != "none"
             and self._seen_state_summary_in_current_silence(
-                ctx.state_summary_tag,
+                act.state_summary_tag,
                 recent_proactive,
-                ctx.target_last_user,
+                ctx.state.target_last_user,
             )
         ):
             rewritten = await self._rewrite_without_repeated_state(
-                ctx.decision_message,
-                ctx.state_summary_tag,
-                ctx.source_refs,
+                decide.decision_message,
+                act.state_summary_tag,
+                act.source_refs,
             )
             if not rewritten:
                 logger.info(
                     "[proactive] 当前沉默周期内 state_summary_tag=%s 已出现，且重写失败，跳过发送",
-                    ctx.state_summary_tag,
+                    act.state_summary_tag,
                 )
                 self._state.mark_rejection_cooldown(
                     evidence_entries
                     or self._primary_candidate_entries(
-                        evidence_source_entries or ctx.new_entries
+                        evidence_source_entries or fetch.new_entries
                     ),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
-                await self._try_skill_action(now_utc=ctx.now_utc)
+                await self._try_skill_action(now_utc=ctx.state.now_utc)
                 return
             rewritten_tag = await self._classify_state_summary_tag(rewritten)
-            if rewritten_tag == ctx.state_summary_tag and rewritten_tag != "none":
+            if rewritten_tag == act.state_summary_tag and rewritten_tag != "none":
                 logger.info(
                     "[proactive] state_summary_tag=%s 重写后仍重复，跳过发送",
                     rewritten_tag,
@@ -993,21 +1163,21 @@ class ProactiveEngine:
                 self._state.mark_rejection_cooldown(
                     evidence_entries
                     or self._primary_candidate_entries(
-                        evidence_source_entries or ctx.new_entries
+                        evidence_source_entries or fetch.new_entries
                     ),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
-                await self._try_skill_action(now_utc=ctx.now_utc)
+                await self._try_skill_action(now_utc=ctx.state.now_utc)
                 return
-            ctx.decision_message = rewritten
-            ctx.state_summary_tag = rewritten_tag
+            decide.decision_message = rewritten
+            act.state_summary_tag = rewritten_tag
 
         # 4. message 语义去重
         if self._message_deduper is not None:
             is_dup, dup_reason = await self._message_deduper.is_duplicate(
-                ctx.decision_message,
+                decide.decision_message,
                 recent_proactive,
-                ctx.state_summary_tag,
+                act.state_summary_tag,
             )
             if is_dup:
                 logger.info(
@@ -1017,57 +1187,55 @@ class ProactiveEngine:
                 self._state.mark_rejection_cooldown(
                     evidence_entries
                     or self._primary_candidate_entries(
-                        evidence_source_entries or ctx.new_entries
+                        evidence_source_entries or fetch.new_entries
                     ),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
-                await self._try_skill_action(now_utc=ctx.now_utc)
+                await self._try_skill_action(now_utc=ctx.state.now_utc)
                 return
 
         # 5. 被动处理并发检查
         if (
-            ctx.session_key
+            ctx.state.session_key
             and self._passive_busy_fn
-            and self._passive_busy_fn(ctx.session_key)
+            and self._passive_busy_fn(ctx.state.session_key)
         ):
             logger.info(
                 "[proactive] 目标会话 %s 正在处理被动回复，跳过本轮发送"
                 " selected_action=idle reason=passive_busy",
-                ctx.session_key,
+                ctx.state.session_key,
             )
             return
 
         # 6. 发送
         sent = await self._act.send(
-            ctx.decision_message,
+            decide.decision_message,
             ProactiveSendMeta(
                 evidence_item_ids=evidence_ids,
-                source_refs=ctx.source_refs,
-                state_summary_tag=ctx.state_summary_tag,
+                source_refs=act.source_refs,
+                state_summary_tag=act.state_summary_tag,
             ),
         )
         if sent:
             # 配额记录：动作成功即消耗，与 session_key 无关
             if self._cfg.anyaction_enabled and self._anyaction:
-                self._anyaction.record_action(now_utc=ctx.now_utc)
+                self._anyaction.record_action(now_utc=ctx.state.now_utc)
             # item 标记：全局去重，不依赖 session
             self._state.mark_items_seen(evidence_entries)
             self._state.remove_pending_items(evidence_entries)
             self._state.mark_semantic_items(self._decide.semantic_entries(evidence_items))
             # delivery 去重：仅 chat 类 action 有 session_key
-            if ctx.session_key:
-                self._state.mark_delivery(ctx.session_key, delivery_key)
+            if ctx.state.session_key:
+                self._state.mark_delivery(ctx.state.session_key, delivery_key)
             # 健康事件 ACK：发送成功后消费本轮全部事件（high + medium）
-            if ctx.health_events:
+            if sense.health_events:
                 acked_ids = [
                     e["id"]
-                    for e in ctx.health_events
+                    for e in sense.health_events
                     if isinstance(e, dict) and e.get("id")
                 ]
                 if acked_ids:
-                    getattr(self._sense, "acknowledge_health_events", lambda _: None)(
-                        acked_ids
-                    )
+                    getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
                     logger.info(
                         "[proactive] acknowledged %d 健康事件 ids=%s",
                         len(acked_ids),
@@ -1082,6 +1250,33 @@ class ProactiveEngine:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _trace_stage_result(
+        self,
+        ctx: DecisionContext,
+        *,
+        stage: str,
+        result: object,
+    ) -> None:
+        if self._stage_trace_writer is None:
+            return
+        payload = {
+            "stage": stage,
+            "result": _json_safe(asdict(result)) if is_dataclass(result) else {},
+            "session_key": ctx.state.session_key,
+        }
+        try:
+            self._stage_trace_writer(
+                build_strategy_trace_envelope(
+                    trace_type="proactive_stage",
+                    source="proactive.engine",
+                    subject_kind="global",
+                    subject_id=f"proactive-stage:{stage}",
+                    payload=payload,
+                )
+            )
+        except Exception:
+            logger.exception("[proactive] stage trace write failed stage=%s", stage)
 
     async def _try_skill_action(self, *, now_utc: datetime) -> None:
         """在 chat idle 时，尝试从注册的 skill actions 中随机抽取并执行一个。"""

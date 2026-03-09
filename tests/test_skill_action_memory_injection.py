@@ -19,6 +19,17 @@ class _FakeSubAgent:
         return "done"
 
 
+class _IncompleteSubAgent(_FakeSubAgent):
+    def __init__(self, system_prompt: str) -> None:
+        super().__init__(system_prompt)
+        self.last_exit_reason = "forced_summary"
+
+
+class _ErrorSubAgent(_FakeSubAgent):
+    async def run(self, prompt: str) -> str:
+        raise RuntimeError("boom")
+
+
 def test_skill_action_injects_only_procedure_preference_rules():
     called: dict = {}
     captured: dict = {}
@@ -141,3 +152,45 @@ def test_skill_action_empty_task_prompt_uses_action_name_and_keeps_query_clean(
     assert called["types"] == ["procedure", "preference"]
     assert called["query"] == "name fallback"
     assert "任务存在 TASK.md" not in called["query"]
+
+
+def test_skill_action_agent_runtime_marks_incomplete_as_failure():
+    def _factory(action_id: str, system_prompt_override: str):
+        return _IncompleteSubAgent(system_prompt_override)
+
+    runner = SkillActionRunner(
+        cast(Any, _RegistryStub()),
+        subagent_factory=cast(Any, _factory),
+    )
+    action = SkillActionDef(
+        id="a4",
+        name="partial action",
+        action_type="agent",
+        task_prompt="调研并整理结论",
+    )
+
+    ok, out = asyncio.run(runner.run(action))
+
+    assert ok is False
+    assert out == "done"
+
+
+def test_skill_action_agent_runtime_keeps_empty_failure_output():
+    def _factory(action_id: str, system_prompt_override: str):
+        return _ErrorSubAgent(system_prompt_override)
+
+    runner = SkillActionRunner(
+        cast(Any, _RegistryStub()),
+        subagent_factory=cast(Any, _factory),
+    )
+    action = SkillActionDef(
+        id="a5",
+        name="error action",
+        action_type="agent",
+        task_prompt="调研并整理结论",
+    )
+
+    ok, out = asyncio.run(runner.run(action))
+
+    assert ok is False
+    assert out == ""

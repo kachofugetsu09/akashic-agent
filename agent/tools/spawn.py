@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.delegation_policy import DelegationPolicy
-from agent.subagent_manager import SubagentManager
+from agent.background.subagent_manager import SubagentManager
+from agent.policies.delegation import DelegationPolicy
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 import logging

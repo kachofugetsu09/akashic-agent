@@ -5,6 +5,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from core.common.strategy_trace import build_strategy_trace_envelope
+
 logger = logging.getLogger("proactive.loop")
 
 
@@ -15,7 +17,14 @@ class ProactiveLoopTraceMixin:
             memory_dir.mkdir(parents=True, exist_ok=True)
             trace_file = memory_dir / "proactive_memory_retrieve_trace.jsonl"
             line = {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                **build_strategy_trace_envelope(
+                    trace_type="proactive_stage",
+                    source="proactive.memory",
+                    subject_kind="global",
+                    subject_id="proactive-memory",
+                    payload=payload,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                ),
                 **payload,
             }
             with trace_file.open("a", encoding="utf-8") as f:
@@ -74,7 +83,22 @@ class ProactiveLoopTraceMixin:
             memory_dir = self._sessions.workspace / "memory"
             memory_dir.mkdir(parents=True, exist_ok=True)
             trace_file = memory_dir / filename
-            line = {"ts": datetime.now(timezone.utc).isoformat(), **payload}
+            if "trace_type" in payload and "payload" in payload and "subject" in payload:
+                line = payload
+            else:
+                trace_type = "proactive_config" if "config" in filename else "proactive_rate"
+                source = "proactive.config" if trace_type == "proactive_config" else "proactive.rate"
+                line = {
+                    **build_strategy_trace_envelope(
+                        trace_type=trace_type,  # type: ignore[arg-type]
+                        source=source,
+                        subject_kind="global",
+                        subject_id=filename.removesuffix(".jsonl"),
+                        payload=payload,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                    ),
+                    **payload,
+                }
             with trace_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(line, ensure_ascii=False) + "\n")
         except Exception as e:

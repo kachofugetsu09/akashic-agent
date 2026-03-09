@@ -14,12 +14,17 @@ import logging
 import random as _random_module
 import shlex
 import subprocess
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from agent.persona import AKASHIC_IDENTITY
+from agent.background.runtime import (
+    AgentBackgroundJobRunner,
+    AgentBackgroundJobSpec,
+)
 from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
 from infra.persistence.json_store import atomic_save_json, load_json
 
@@ -311,7 +316,7 @@ class SkillActionRunner:
 
         try:
             system_prompt = await self._build_system_prompt(action, has_task_md)
-            subagent = self._subagent_factory(action.id, system_prompt)
+            subagent_factory = lambda: self._subagent_factory(action.id, system_prompt)
             if has_task_md:
                 augmented_prompt = (
                     f"[任务ID: {action.id}]\n"
@@ -333,19 +338,32 @@ class SkillActionRunner:
                     f"2. 结合进度检查点，执行以下任务：\n\n"
                     f"{action.task_prompt}"
                 )
-            result = await subagent.run(augmented_prompt)
-            exit_reason = getattr(subagent, "last_exit_reason", "completed")
-            success = bool(result) and exit_reason == "completed"
+            job_result = await AgentBackgroundJobRunner(subagent_factory).run(
+                AgentBackgroundJobSpec(
+                    job_id=uuid.uuid4().hex[:8],
+                    job_kind="skill_action_agent",
+                    label=action.name,
+                    task=augmented_prompt,
+                    max_iterations=40,
+                    completion_mode="direct_notify",
+                    persistence_mode="task_dir",
+                ),
+                on_exception=lambda e: logger.exception(
+                    "[skill_action] agent 任务异常 id=%s error=%s", action.id, e
+                ),
+                error_result_summary="",
+            )
+            success = bool(job_result.result_summary) and job_result.status == "completed"
             logger.info(
                 "[skill_action] agent 任务完成 id=%s success=%s exit_reason=%s result_len=%d",
                 action.id,
                 success,
-                exit_reason,
-                len(result),
+                job_result.exit_reason,
+                len(job_result.result_summary),
             )
             self._record_run(action.id, now, success=success)
             self._save_state()
-            return success, result
+            return success, job_result.result_summary
         except Exception as e:
             logger.exception(
                 "[skill_action] agent 任务异常 id=%s error=%s", action.id, e

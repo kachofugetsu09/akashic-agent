@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent.background.subagent_manager import SubagentManager
 from agent.config_models import Config
-from agent.loop import AgentLoop
+from agent.policies.delegation import DelegationPolicy
+from agent.looping import AgentLoop
 from agent.mcp.manage_tools import McpAddTool, McpListTool, McpRemoveTool
 from agent.mcp.registry import McpServerRegistry
 from agent.scheduler import LatencyTracker, SchedulerService
-from agent.delegation_policy import DelegationPolicy
 from agent.tool_bundles import build_fitbit_tools, build_readonly_research_tools
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
@@ -35,7 +36,6 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
-from agent.subagent_manager import SubagentManager
 from feeds.novel import NovelKBFeedSource
 from feeds.registry import FeedRegistry
 from feeds.rss import RSSFeedSource
