@@ -186,6 +186,9 @@ class AgentLoop(
             _ = started
 
     async def _process_inner(self, msg: InboundMessage, key: str) -> OutboundMessage:
+        if self._is_spawn_completion(msg):
+            return await self._process_spawn_completion(msg, key)
+
         session = self.session_manager.get_or_create(key)
         skill_mentions = self._collect_skill_mentions(msg.content)
         if skill_mentions:
@@ -372,3 +375,80 @@ class AgentLoop(
         )
         response = await self._process(msg, session_key=session_key)
         return response.content if response else ""
+
+    @staticmethod
+    def _is_spawn_completion(msg: InboundMessage) -> bool:
+        md = msg.metadata if isinstance(msg.metadata, dict) else {}
+        return md.get("internal_event") == "spawn_completed"
+
+    async def _process_spawn_completion(
+        self, msg: InboundMessage, key: str
+    ) -> OutboundMessage:
+        session = self.session_manager.get_or_create(key)
+        spawn_md = (
+            (msg.metadata or {}).get("spawn", {})
+            if isinstance(msg.metadata, dict)
+            else {}
+        )
+        label = str(spawn_md.get("label", "") or "后台任务")
+        task = str(spawn_md.get("task", "") or "").strip()
+        status = str(spawn_md.get("status", "") or "incomplete").strip()
+        result = str(spawn_md.get("result", "") or "").strip()
+        exit_reason = str(spawn_md.get("exit_reason", "") or "").strip()
+
+        current_message = (
+            "[后台任务已完成]\n"
+            f"任务标签: {label}\n"
+            f"原始任务: {task or '（未提供）'}\n"
+            f"状态: {status}\n"
+            f"执行结果:\n{result or '（无结果）'}\n\n"
+            "请基于当前会话上下文，用自然中文向用户汇报这次后台任务的结果。\n"
+            "不要提及 subagent、spawn、内部事件、job_id。\n"
+            "如果状态是 incomplete，说明目前做到哪里、接下来还差什么。\n"
+            "如果状态是 error，只说明用户需要知道的失败结论，不暴露内部技术细节。\n"
+            "必要时你可以读取结果里提到的文件来补充说明。"
+        )
+
+        self._set_tool_context(msg.channel, msg.chat_id)
+        initial_messages = self.context.build_messages(
+            history=session.get_history(max_messages=self.memory_window),
+            current_message=current_message,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            message_timestamp=msg.timestamp,
+        )
+        final_content, tools_used, tool_chain, _ = await self._run_agent_loop(
+            initial_messages,
+            request_time=msg.timestamp,
+            preloaded_tools=None,
+        )
+        if final_content is None:
+            final_content = "后台任务已完成。"
+
+        marker = f"[后台任务完成] {label} ({status})"
+        if exit_reason:
+            marker += f" [{exit_reason}]"
+        session.add_message("user", marker)
+        session.add_message(
+            "assistant",
+            final_content,
+            tools_used=tools_used if tools_used else None,
+            tool_chain=tool_chain if tool_chain else None,
+        )
+        self._update_session_runtime_metadata(
+            session,
+            tools_used=tools_used,
+            tool_chain=tool_chain,
+        )
+        await self.session_manager.append_messages(session, session.messages[-2:])
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=final_content,
+            metadata={
+                **(msg.metadata or {}),
+                "tools_used": tools_used,
+                "tool_chain": tool_chain,
+            },
+        )

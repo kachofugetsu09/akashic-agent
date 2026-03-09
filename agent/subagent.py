@@ -56,6 +56,16 @@ _INCOMPLETE_SUMMARY_PROMPT = (
     "必须覆盖：1) 已完成内容；2) 当前未完成点；3) 下一步计划。\n"
     "禁止输出模板句“已达到最大迭代次数”。"
 )
+_FORCED_FINAL_SUMMARY_PROMPT = (
+    "你已用完任务执行预算，禁止再调用工具。\n"
+    "现在必须直接输出中文最终总结，供主 agent 回传给用户。\n"
+    "必须覆盖：1) 已完成内容；2) 当前未完成内容；3) 产出文件路径（如果有）；4) 下一步建议。\n"
+    "禁止：继续规划工具调用；说“需要继续调用工具”；输出“已达到最大迭代次数”等模板句。"
+)
+_FORCED_FINAL_SUMMARY_FALLBACK = (
+    "这次后台任务已先停在当前进度。我已经完成了一部分关键步骤，"
+    "但还有剩余工作未收束；下一次可从当前检查点继续推进。"
+)
 
 
 def _tool_call_signature(tool_calls) -> str:
@@ -253,10 +263,9 @@ class SubAgent:
             messages.append({"role": "user", "content": reflect})
 
         logger.warning("[subagent] 已达到最大迭代次数 %d", self._max_iterations)
-        self.last_exit_reason = "max_iterations"
         if self._mandatory_exit_tools:
             await self._run_mandatory_exit(messages)
-        return await self._summarize_incomplete_progress(
+        return await self._force_final_summary(
             messages,
             reason="max_iterations",
             iteration=self._max_iterations,
@@ -286,6 +295,34 @@ class SubAgent:
         except Exception as e:
             logger.warning("[subagent] 生成收尾总结失败: %s", e)
         return "本轮步骤预算已用完：已完成部分关键步骤，但仍有未完成项，下一轮将从当前检查点继续推进。"
+
+    async def _force_final_summary(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        reason: str,
+        iteration: int,
+    ) -> str:
+        prompt = (
+            f"[结束原因] {reason}\n"
+            f"[已执行任务轮次] {iteration}\n\n"
+            + _FORCED_FINAL_SUMMARY_PROMPT
+        )
+        try:
+            resp = await self._provider.chat(
+                messages=messages + [{"role": "user", "content": prompt}],
+                tools=[],
+                model=self._model,
+                max_tokens=min(_SUMMARY_MAX_TOKENS, self._max_tokens),
+            )
+            text = (resp.content or "").strip()
+            if text:
+                self.last_exit_reason = "forced_summary"
+                return text
+        except Exception as e:
+            logger.warning("[subagent] 强制最终总结失败: %s", e)
+        self.last_exit_reason = "forced_summary_fallback"
+        return _FORCED_FINAL_SUMMARY_FALLBACK
 
     async def _run_mandatory_exit(self, messages: list[dict[str, Any]]) -> None:
         """强制收尾：逐个调用 mandatory_exit_tools 中的工具。"""

@@ -13,6 +13,7 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
 from agent.tools.shell import ShellTool
+from agent.tools.spawn import SpawnTool
 from agent.tools.skill_action_tool import (
     SkillActionListTool,
     SkillActionRegisterTool,
@@ -34,6 +35,7 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
+from agent.subagent_manager import SubagentManager
 from feeds.novel import NovelKBFeedSource
 from feeds.registry import FeedRegistry
 from feeds.rss import RSSFeedSource
@@ -180,6 +182,21 @@ def build_core_runtime(
         )
 
     provider, light_provider = build_providers(config)
+    subagent_manager = SubagentManager(
+        provider=provider,
+        workspace=workspace,
+        bus=bus,
+        model=config.model,
+        max_tokens=config.max_tokens,
+        fetch_requester=http_resources.external_default,
+    )
+    tools.register(
+        SpawnTool(subagent_manager, tools),
+        always_on=True,
+        tags=["meta", "background"],
+        risk="write",
+        search_keywords=["后台", "长任务", "异步", "继续处理", "spawn", "阻塞", "后台执行"],
+    )
     memory_runtime: MemoryRuntime = build_memory_runtime(
         config,
         workspace,

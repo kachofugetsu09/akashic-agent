@@ -349,9 +349,37 @@ def test_subagent_max_iterations_returns_summary_and_reason():
 
     result = asyncio.run(subagent.run("do work"))
 
-    assert subagent.last_exit_reason == "max_iterations"
+    assert subagent.last_exit_reason == "forced_summary"
     assert "最大迭代" not in result
     assert "下一步" in result
+    assert provider.calls[-1]["tools"] == []
+
+
+def test_subagent_max_iterations_summary_failure_uses_fallback():
+    tool = _DummyTool("dummy")
+
+    class _SummaryFailProvider(_FakeProvider):
+        async def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return LLMResponse(
+                    content="",
+                    tool_calls=[ToolCall("s1", "dummy", {"x": 1})],
+                )
+            raise RuntimeError("summary failed")
+
+    provider = _SummaryFailProvider([])
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[tool],
+        max_iterations=1,
+    )
+
+    result = asyncio.run(subagent.run("do work"))
+
+    assert subagent.last_exit_reason == "forced_summary_fallback"
+    assert "当前进度" in result or "关键步骤" in result
 
 
 def test_composer_breaks_on_repeated_same_signature_and_summarizes():
