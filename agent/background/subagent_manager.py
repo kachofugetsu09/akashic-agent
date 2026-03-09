@@ -26,6 +26,7 @@ from prompts.background import build_spawn_subagent_prompt
 logger = logging.getLogger(__name__)
 
 _RESULT_MAX_CHARS = 12_000
+_SPAWN_MAX_ITERATIONS = 50
 
 
 class SubagentManager:
@@ -125,7 +126,7 @@ class SubagentManager:
                 job_kind="conversation_spawn",
                 label=label,
                 task=task,
-                max_iterations=20,
+                max_iterations=_SPAWN_MAX_ITERATIONS,
                 completion_mode="message_bus",
                 persistence_mode="ephemeral",
             ),
@@ -167,7 +168,7 @@ class SubagentManager:
             workspace=self._workspace,
             fetch_requester=self._fetch_requester,
             system_prompt=self._build_subagent_prompt(),
-            max_iterations=20,
+            max_iterations=_SPAWN_MAX_ITERATIONS,
         )
         return spec.build(self._runtime)
 

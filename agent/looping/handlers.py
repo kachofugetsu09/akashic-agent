@@ -290,15 +290,22 @@ class InternalEventHandler:
         result = event.result.strip()
         exit_reason = event.exit_reason.strip()
 
+        if status == "completed":
+            header = "[后台任务已完成]"
+        elif status == "incomplete":
+            header = "[后台任务未全部完成]"
+        else:
+            header = "[后台任务出错]"
+
         current_message = (
-            "[后台任务已完成]\n"
+            f"{header}\n"
             f"任务标签: {label}\n"
             f"原始任务: {task or '（未提供）'}\n"
             f"状态: {status}\n"
             f"执行结果:\n{result or '（无结果）'}\n\n"
             "请基于当前会话上下文，用自然中文向用户汇报这次后台任务的结果。\n"
             "不要提及 subagent、spawn、内部事件、job_id。\n"
-            "如果状态是 incomplete，说明目前做到哪里、接下来还差什么。\n"
+            "如果状态是 incomplete，明确告诉用户任务尚未完成，说明目前做到哪里、接下来还差什么。\n"
             "如果状态是 error，只说明用户需要知道的失败结论，不暴露内部技术细节。\n"
             "必要时你可以读取结果里提到的文件来补充说明。"
         )
@@ -317,7 +324,12 @@ class InternalEventHandler:
             preloaded_tools=None,
         )
         if final_content is None:
-            final_content = "后台任务已完成。"
+            if status == "completed":
+                final_content = "后台任务已完成。"
+            elif status == "incomplete":
+                final_content = "后台任务未全部完成，部分工作尚未收尾。"
+            else:
+                final_content = "后台任务执行出错。"
 
         marker = f"[后台任务完成] {label} ({status})"
         if exit_reason:
