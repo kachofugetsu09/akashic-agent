@@ -436,6 +436,32 @@ def test_composer_prompt_allows_standalone_interest_based_opening():
     assert "也可以直接从最相关的那条信息流自然起题" in user_prompt
 
 
+def test_composer_prompt_requires_source_name_and_clickable_url_when_citing():
+    provider = _FakeProvider([LLMResponse(content="给用户的最终消息", tool_calls=[])])
+    composer = ProactiveMessageComposer(
+        provider=cast(Any, provider),
+        model="m",
+        max_tokens=256,
+        format_items=lambda _: "1. 测试标题 [TestFeed]\n测试内容\n原文链接: https://example.com/post",
+        format_recent=lambda _: "",
+        collect_global_memory=lambda: "",
+        max_tool_iterations=2,
+    )
+
+    result = asyncio.run(
+        composer.compose_message(items=[], recent=[], decision_signals={})
+    )
+
+    assert result == "给用户的最终消息"
+    system_prompt = provider.calls[0]["messages"][0]["content"]
+    user_prompt = provider.calls[0]["messages"][1]["content"]
+    preflight_prompt = provider.calls[0]["messages"][2]["content"]
+    assert "附上一个可点击的原文 URL" in system_prompt
+    assert "系统不会替你自动补来源" in system_prompt
+    assert "最好附上一个最关键的 URL" in user_prompt
+    assert "优先在正文自然带上“来源名 + URL”" in preflight_prompt
+
+
 def test_agent_loop_summary_path_keeps_tool_chain_closed(tmp_path):
     tool = _DummyTool("dummy")
     provider = _StrictProvider(

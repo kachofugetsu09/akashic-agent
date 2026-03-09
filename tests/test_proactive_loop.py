@@ -429,6 +429,25 @@ async def test_reflect_prompt_discourages_repeating_user_state_summary(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_reflect_prompt_requires_evidence_and_exact_source(tmp_path):
+    provider = _DummyProvider()
+    provider.chat = AsyncMock(
+        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+    )
+
+    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
+    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
+
+    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
+
+    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
+    assert "只有在你能指出消息依据的确切证据时" in user_prompt
+    assert "若你找不到确切证据或来源不清，应降低 score，并把 should_send 设为 false" in user_prompt
+    assert "优先自然带上“来源名 + 可点击原文链接”" in user_prompt
+    assert "系统不会在发送前替你自动补来源" in user_prompt
+
+
+@pytest.mark.asyncio
 async def test_reflect_contains_crisis_hint_when_energy_very_low(tmp_path):
     """电量极低（危机模式）时，prompt 里应包含危机提示。"""
     provider = _DummyProvider()
