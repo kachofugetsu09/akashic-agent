@@ -59,8 +59,8 @@ class ProactiveConfig:
     anyaction_idle_scale_minutes: float = 240.0
     feature_scoring_enabled: bool = False
     feature_send_threshold: float = 0.52
-    feature_weight_topic_continuity: float = 0.24
-    feature_weight_interest_match: float = 0.24
+    feature_weight_topic_continuity: float = 0.16
+    feature_weight_interest_match: float = 0.32
     feature_weight_content_novelty: float = 0.20
     feature_weight_reconnect_value: float = 0.16
     feature_weight_message_readiness: float = 0.16
@@ -80,6 +80,11 @@ class ProactiveConfig:
     message_dedupe_enabled: bool = True
     message_dedupe_recent_n: int = 5
     llm_reject_cooldown_hours: int = 12
+    pending_queue_enabled: bool = True
+    pending_item_ttl_hours: int = 24
+    pending_candidate_limit: int = 3
+    pending_max_per_source: int = 20
+    pending_max_total: int = 200
     feed_poller_enabled: bool = False
     feed_poller_interval_seconds: int = 300
     feed_poller_fetch_limit: int = 20

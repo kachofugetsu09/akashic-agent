@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from feeds.base import FeedItem
+from proactive.item_id import compute_item_id, compute_source_key
 from proactive.energy import (
     composite_score,
     d_content,
@@ -242,6 +243,7 @@ class ProactiveEngine:
             rejection_cooldown_ttl_hours=getattr(
                 self._cfg, "llm_reject_cooldown_hours", 0
             ),
+            pending_ttl_hours=self._cfg_int("pending_item_ttl_hours", 24),
         )
 
         # 2. anyaction gate 判定
@@ -396,13 +398,13 @@ class ProactiveEngine:
         logger.info("[proactive] 拉取到 %d 条信息", len(ctx.items))
 
         # 2. 基础去重（seen / semantic）
-        ctx.new_items, ctx.new_entries, ctx.semantic_duplicate_entries = (
+        discovered_items, discovered_entries, ctx.semantic_duplicate_entries = (
             self._sense.filter_new_items(ctx.items)
         )
         logger.info(
             "[proactive] 去重后剩余新信息 %d 条（过滤重复 %d 条）",
-            len(ctx.new_items),
-            len(ctx.items) - len(ctx.new_items),
+            len(discovered_items),
+            len(ctx.items) - len(discovered_items),
         )
         if ctx.semantic_duplicate_entries:
             logger.info(
@@ -411,18 +413,18 @@ class ProactiveEngine:
             )
 
         # 3. memory 兴趣筛选
-        if self._cfg.interest_filter.enabled and ctx.new_items:
+        if self._cfg.interest_filter.enabled and discovered_items:
             memory_text = self._sense.read_memory_text()
             if memory_text:
                 filtered_items, ranked = select_interesting_items(
-                    ctx.new_items, memory_text, self._cfg.interest_filter
+                    discovered_items, memory_text, self._cfg.interest_filter
                 )
-                keep_ids = {self._decide.item_id_for(item) for item in filtered_items}
-                old_count = len(ctx.new_items)
-                ctx.new_items = filtered_items
-                ctx.new_entries = [
+                keep_ids = {self._item_id_for(item) for item in filtered_items}
+                old_count = len(discovered_items)
+                discovered_items = filtered_items
+                discovered_entries = [
                     (source_key, item_id)
-                    for source_key, item_id in ctx.new_entries
+                    for source_key, item_id in discovered_entries
                     if item_id in keep_ids
                 ]
                 top_preview = ", ".join(
@@ -437,6 +439,27 @@ class ProactiveEngine:
                 )
             else:
                 logger.info("[proactive] memory 兴趣筛选跳过：memory 为空")
+
+        pending_enabled = bool(getattr(self._cfg, "pending_queue_enabled", True))
+        if pending_enabled:
+            self._state.upsert_pending_items(
+                discovered_items,
+                max_per_source=self._cfg_int("pending_max_per_source", 20),
+                max_total=self._cfg_int("pending_max_total", 200),
+                now=ctx.now_utc,
+            )
+            ctx.new_items, ctx.new_entries = self._select_pending_candidates(
+                now=ctx.now_utc,
+                limit=self._cfg_int("pending_candidate_limit", 3),
+            )
+            logger.info(
+                "[proactive] pending 选出候选=%d pending_stats=%s",
+                len(ctx.new_items),
+                self._state.pending_stats(),
+            )
+        else:
+            ctx.new_items = discovered_items
+            ctx.new_entries = discovered_entries
 
         # 4. 全局记忆检查（影响 force_reflect 判断）
         ctx.has_memory = self._sense.has_global_memory()
@@ -634,9 +657,8 @@ class ProactiveEngine:
             )
             if ctx.feature_final_score < self._cfg.feature_send_threshold:
                 logger.info("[proactive] selected_action=idle reason=feature_score")
-                # Fix C：feature_score 拒绝 = LLM 已评估，写拒绝冷却防止短期重入
                 self._state.mark_rejection_cooldown(
-                    ctx.new_entries,
+                    self._primary_candidate_entries(ctx.new_entries),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
                 return ctx.base_score
@@ -695,12 +717,24 @@ class ProactiveEngine:
 
     async def _stage_act(self, ctx: DecisionContext) -> None:
         """去重检查、发送消息、标记已发送状态。"""
+        evidence_source_items = ctx.new_items or ctx.items
+        evidence_ids = self._decide.resolve_evidence_item_ids(
+            ctx.decision
+            if ctx.decision is not None
+            else _PseudoDecision(message=ctx.decision_message),
+            evidence_source_items,
+        )
+        evidence_items, evidence_entries = self._resolve_evidence_entries(
+            evidence_source_items,
+            ctx.new_entries,
+            evidence_ids,
+        )
+
         if not ctx.should_send:
             logger.info("[proactive] 决定不主动发送")
             logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
-            # Fix C：LLM 已评估并拒绝，写拒绝冷却防止短期内重复进 LLM
             self._state.mark_rejection_cooldown(
-                ctx.new_entries,
+                evidence_entries or self._primary_candidate_entries(ctx.new_entries),
                 hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
             )
             await self._try_skill_action(now_utc=ctx.now_utc)
@@ -710,16 +744,6 @@ class ProactiveEngine:
         channel = (self._cfg.default_channel or "").strip()
         chat_id = self._cfg.default_chat_id.strip()
         ctx.session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
-        # new_items 为空并不代表本轮没有相关 feed 证据：同一条 item 在上一轮发送后，
-        # 本轮仍可能从 feed 拉到，但会在 seen filter 中被剔除。这里回退到原始 items，
-        # 保持 delivery_key 在相邻 tick 间稳定，避免重复主动发送同一条内容。
-        evidence_source_items = ctx.new_items or ctx.items
-        evidence_ids = self._decide.resolve_evidence_item_ids(
-            ctx.decision
-            if ctx.decision is not None
-            else _PseudoDecision(message=ctx.decision_message),
-            evidence_source_items,
-        )
         delivery_key = self._decide.build_delivery_key(
             evidence_ids, ctx.decision_message
         )
@@ -737,12 +761,12 @@ class ProactiveEngine:
             window_hours=self._cfg.delivery_dedupe_hours,
         ):
             logger.info("[proactive] 命中发送去重，跳过发送")
-            self._state.mark_items_seen(ctx.new_entries)
-            self._state.mark_semantic_items(
-                self._decide.semantic_entries(ctx.new_items)
-            )
+            self._state.mark_items_seen(evidence_entries)
+            self._state.remove_pending_items(evidence_entries)
+            self._state.mark_semantic_items(self._decide.semantic_entries(evidence_items))
             logger.info(
-                "[proactive] 已按去重命中标记本轮条目为 seen（视为已送达过同等内容）"
+                "[proactive] 已按去重命中消费证据条目 count=%d",
+                len(evidence_entries),
             )
             logger.info("[proactive] selected_action=idle reason=delivery_dedupe")
             return
@@ -760,9 +784,9 @@ class ProactiveEngine:
                     "[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason
                 )
                 logger.info("[proactive] selected_action=idle reason=message_dedupe")
-                # Fix B：message_dedupe 误判率较高，只写 semantic_items（72h 软抑制）
-                self._state.mark_semantic_items(
-                    self._decide.semantic_entries(ctx.new_items)
+                self._state.mark_rejection_cooldown(
+                    evidence_entries or self._primary_candidate_entries(ctx.new_entries),
+                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
                 await self._try_skill_action(now_utc=ctx.now_utc)
                 return
@@ -787,10 +811,9 @@ class ProactiveEngine:
             if self._cfg.anyaction_enabled and self._anyaction:
                 self._anyaction.record_action(now_utc=ctx.now_utc)
             # item 标记：全局去重，不依赖 session
-            self._state.mark_items_seen(ctx.new_entries)
-            self._state.mark_semantic_items(
-                self._decide.semantic_entries(ctx.new_items)
-            )
+            self._state.mark_items_seen(evidence_entries)
+            self._state.remove_pending_items(evidence_entries)
+            self._state.mark_semantic_items(self._decide.semantic_entries(evidence_items))
             # delivery 去重：仅 chat 类 action 有 session_key
             if ctx.session_key:
                 self._state.mark_delivery(ctx.session_key, delivery_key)
@@ -879,6 +902,88 @@ class ProactiveEngine:
             logger.warning(
                 "[proactive] skill_reaction: 发送失败 id=%s error=%s", action_id, e
             )
+
+    def _select_pending_candidates(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> tuple[list[FeedItem], list[tuple[str, str]]]:
+        items = self._state.list_pending_candidates(limit=0, now=now)
+        selected_items: list[FeedItem] = []
+        selected_entries: list[tuple[str, str]] = []
+        stale_entries: list[tuple[str, str]] = []
+        cooldown_hours = getattr(self._cfg, "llm_reject_cooldown_hours", 0)
+        for item in items:
+            source_key = compute_source_key(item)
+            item_id = self._item_id_for(item)
+            if self._state.is_item_seen(
+                source_key=source_key,
+                item_id=item_id,
+                ttl_hours=self._cfg.dedupe_seen_ttl_hours,
+                now=now,
+            ):
+                stale_entries.append((source_key, item_id))
+                continue
+            if cooldown_hours > 0 and self._state.is_rejection_cooled(
+                source_key=source_key,
+                item_id=item_id,
+                ttl_hours=cooldown_hours,
+                now=now,
+            ):
+                continue
+            selected_items.append(item)
+            selected_entries.append((source_key, item_id))
+            if limit > 0 and len(selected_items) >= limit:
+                break
+        if stale_entries:
+            self._state.remove_pending_items(stale_entries)
+        return selected_items, selected_entries
+
+    def _resolve_evidence_entries(
+        self,
+        items: list[FeedItem],
+        entries: list[tuple[str, str]],
+        evidence_ids: list[str],
+    ) -> tuple[list[FeedItem], list[tuple[str, str]]]:
+        if not evidence_ids:
+            return [], []
+        entry_by_id = {item_id: source_key for source_key, item_id in entries}
+        wanted = set(evidence_ids)
+        selected_items: list[FeedItem] = []
+        selected_entries: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in items:
+            item_id = self._item_id_for(item)
+            if item_id not in wanted or item_id in seen:
+                continue
+            selected_items.append(item)
+            selected_entries.append(
+                (entry_by_id.get(item_id, compute_source_key(item)), item_id)
+            )
+            seen.add(item_id)
+        return selected_items, selected_entries
+
+    def _primary_candidate_entries(
+        self, entries: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        return entries[:1]
+
+    def _cfg_int(self, name: str, default: int) -> int:
+        try:
+            value = int(getattr(self._cfg, name, default))
+        except Exception:
+            value = default
+        return max(1, value)
+
+    def _item_id_for(self, item: FeedItem) -> str:
+        try:
+            item_id = self._decide.item_id_for(item)
+            if isinstance(item_id, str) and item_id.strip():
+                return item_id
+        except Exception:
+            pass
+        return compute_item_id(item)
 
 
 def _feature_final_score(

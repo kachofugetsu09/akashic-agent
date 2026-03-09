@@ -1,0 +1,291 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from feeds.base import FeedItem
+from proactive.config import ProactiveConfig
+from proactive.engine import ProactiveEngine
+from proactive.item_id import compute_item_id, compute_source_key
+from proactive.state import ProactiveStateStore
+
+
+def _item(title: str, url: str, minutes_ago: int = 0) -> FeedItem:
+    return FeedItem(
+        source_name="Feed",
+        source_type="rss",
+        title=title,
+        content=f"{title} content",
+        url=url,
+        author=None,
+        published_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+    )
+
+
+def _interruptibility():
+    return (
+        0.8,
+        {
+            "f_reply": 0.8,
+            "f_activity": 0.8,
+            "f_fatigue": 0.8,
+            "random_delta": 0.0,
+        },
+    )
+
+
+def _sense(items, entries):
+    sense = MagicMock()
+    sense.compute_energy.return_value = 0.5
+    sense.collect_recent.return_value = []
+    sense.collect_recent_proactive.return_value = []
+    sense.compute_interruptibility.return_value = _interruptibility()
+    sense.fetch_items = AsyncMock(return_value=items)
+    sense.filter_new_items.return_value = (items, entries, [])
+    sense.read_memory_text.return_value = ""
+    sense.has_global_memory.return_value = False
+    sense.last_user_at.return_value = None
+    sense.target_session_key.return_value = "telegram:123"
+    sense.quiet_hours.return_value = (23, 8, 0.0)
+    sense.refresh_sleep_context.return_value = False
+    sense.sleep_context.return_value = None
+    return sense
+
+
+def _cfg(**overrides) -> ProactiveConfig:
+    cfg = ProactiveConfig(
+        enabled=True,
+        default_channel="telegram",
+        default_chat_id="123",
+        threshold=0.5,
+        score_pre_threshold=0.0,
+        score_llm_threshold=0.0,
+        pending_queue_enabled=True,
+        pending_candidate_limit=3,
+        llm_reject_cooldown_hours=12,
+    )
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
+    return cfg
+
+
+class _Decide:
+    def __init__(self, evidence_ids: list[str], *, should_send: bool, score: float = 0.9):
+        self._evidence_ids = evidence_ids
+        self.reflect = AsyncMock(return_value=self._decision(should_send, score))
+        self.score_features = AsyncMock(return_value=None)
+        self.compose_message = AsyncMock(return_value="")
+
+    def _decision(self, should_send: bool, score: float):
+        class _D:
+            pass
+
+        d = _D()
+        d.score = score
+        d.should_send = should_send
+        d.message = "ping" if should_send else ""
+        d.reasoning = "ok"
+        d.evidence_item_ids = list(self._evidence_ids)
+        return d
+
+    def randomize_decision(self, d):
+        return d, 0.0
+
+    def resolve_evidence_item_ids(self, d, items):
+        valid = [compute_item_id(item) for item in items]
+        for evidence_id in self._evidence_ids:
+            if evidence_id in valid:
+                return [evidence_id]
+        return valid[:1]
+
+    def build_delivery_key(self, ids, msg):
+        return "|".join(ids) or "no-evidence"
+
+    def semantic_entries(self, items):
+        return [
+            {
+                "source_key": compute_source_key(item),
+                "item_id": compute_item_id(item),
+                "text": item.title or "",
+            }
+            for item in items
+        ]
+
+    def item_id_for(self, item):
+        return compute_item_id(item)
+
+
+@pytest.mark.asyncio
+async def test_send_success_consumes_only_evidence_item(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    items = [
+        _item("A", "https://example.com/a", minutes_ago=3),
+        _item("B", "https://example.com/b", minutes_ago=2),
+        _item("C", "https://example.com/c", minutes_ago=1),
+    ]
+    entries = [(compute_source_key(item), compute_item_id(item)) for item in items]
+    evidence_id = compute_item_id(items[1])
+
+    engine = ProactiveEngine(
+        cfg=_cfg(),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense(items, entries),
+        decide=_Decide([evidence_id], should_send=True),
+        act=MagicMock(send=AsyncMock(return_value=True)),
+    )
+
+    await engine.tick()
+
+    assert state.is_item_seen(entries[1][0], entries[1][1], ttl_hours=336)
+    assert not state.is_item_seen(entries[0][0], entries[0][1], ttl_hours=336)
+    assert not state.is_item_seen(entries[2][0], entries[2][1], ttl_hours=336)
+    assert state.pending_stats()[entries[0][0]] == 2
+
+
+@pytest.mark.asyncio
+async def test_pending_item_survives_when_feed_no_longer_returns_it(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    pending_item = _item("Backlog", "https://example.com/backlog", minutes_ago=10)
+    pending_entry = (compute_source_key(pending_item), compute_item_id(pending_item))
+    state.upsert_pending_items([pending_item], now=datetime.now(timezone.utc))
+
+    decide = _Decide([pending_entry[1]], should_send=False, score=0.2)
+    engine = ProactiveEngine(
+        cfg=_cfg(llm_reject_cooldown_hours=0),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense([], []),
+        decide=decide,
+        act=MagicMock(send=AsyncMock(return_value=False)),
+    )
+
+    await engine.tick()
+
+    decide.reflect.assert_awaited()
+    reflect_items = decide.reflect.await_args.args[0]
+    assert [compute_item_id(item) for item in reflect_items] == [pending_entry[1]]
+    assert state.pending_stats()[pending_entry[0]] == 1
+    assert not state.is_item_seen(*pending_entry, ttl_hours=336)
+
+
+@pytest.mark.asyncio
+async def test_delivery_dedupe_consumes_only_evidence_item(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    items = [
+        _item("A", "https://example.com/a", minutes_ago=2),
+        _item("B", "https://example.com/b", minutes_ago=1),
+    ]
+    state.upsert_pending_items(items)
+    evidence_id = compute_item_id(items[0])
+    state.mark_delivery("telegram:123", evidence_id)
+    entries = [(compute_source_key(item), compute_item_id(item)) for item in items]
+
+    act = MagicMock(send=AsyncMock(return_value=True))
+    engine = ProactiveEngine(
+        cfg=_cfg(),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense([], []),
+        decide=_Decide([evidence_id], should_send=True),
+        act=act,
+    )
+
+    await engine.tick()
+
+    act.send.assert_not_called()
+    assert state.is_item_seen(entries[0][0], entries[0][1], ttl_hours=336)
+    assert not state.is_item_seen(entries[1][0], entries[1][1], ttl_hours=336)
+    assert state.pending_stats()[entries[1][0]] == 1
+
+
+@pytest.mark.asyncio
+async def test_message_dedupe_keeps_pending_and_writes_cooldown(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    item = _item("A", "https://example.com/a", minutes_ago=1)
+    entry = (compute_source_key(item), compute_item_id(item))
+
+    message_deduper = MagicMock()
+    message_deduper.is_duplicate = AsyncMock(return_value=(True, "dup"))
+    engine = ProactiveEngine(
+        cfg=_cfg(),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense([item], [entry]),
+        decide=_Decide([entry[1]], should_send=True),
+        act=MagicMock(send=AsyncMock(return_value=True)),
+        message_deduper=message_deduper,
+    )
+
+    await engine.tick()
+
+    assert state.pending_stats()[entry[0]] == 1
+    assert state.is_rejection_cooled(entry[0], entry[1], ttl_hours=12)
+    assert not state.is_item_seen(entry[0], entry[1], ttl_hours=336)
+
+
+@pytest.mark.asyncio
+async def test_should_send_false_keeps_pending_and_writes_cooldown(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    item = _item("A", "https://example.com/a", minutes_ago=1)
+    entry = (compute_source_key(item), compute_item_id(item))
+
+    engine = ProactiveEngine(
+        cfg=_cfg(),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense([item], [entry]),
+        decide=_Decide([entry[1]], should_send=False, score=0.2),
+        act=MagicMock(send=AsyncMock(return_value=False)),
+    )
+
+    await engine.tick()
+
+    assert state.pending_stats()[entry[0]] == 1
+    assert state.is_rejection_cooled(entry[0], entry[1], ttl_hours=12)
+    assert not state.is_item_seen(entry[0], entry[1], ttl_hours=336)
+
+
+def test_pending_cleanup_expires_old_items(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    old_item = _item("Old", "https://example.com/old", minutes_ago=60 * 25)
+    entry = (compute_source_key(old_item), compute_item_id(old_item))
+    state.upsert_pending_items([old_item])
+
+    state.cleanup(
+        seen_ttl_hours=336,
+        delivery_ttl_hours=24,
+        semantic_ttl_hours=72,
+        pending_ttl_hours=24,
+    )
+
+    assert state.pending_stats().get(entry[0], 0) == 0
+
+
+def test_state_loads_old_version_without_pending_items(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "seen_items": {},
+                "deliveries": {},
+                "semantic_items": [],
+                "rejection_cooldown": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = ProactiveStateStore(path)
+
+    assert state._state["version"] == 4
+    assert state._state["pending_items"] == {}

@@ -661,12 +661,18 @@ class DefaultDecidePort:
     def resolve_evidence_item_ids(
         self, decision: Any, items: list[FeedItem]
     ) -> list[str]:
-        valid = {self._item_id(i) for i in items}
-        selected = [x for x in getattr(decision, "evidence_item_ids", []) if x in valid]
+        valid_order = [self._item_id(i) for i in items]
+        valid = set(valid_order)
+        seen: set[str] = set()
+        selected: list[str] = []
+        for raw in getattr(decision, "evidence_item_ids", []) or []:
+            item_id = str(raw)
+            if item_id in valid and item_id not in seen:
+                selected.append(item_id)
+                seen.add(item_id)
         if selected:
-            return sorted(set(selected))
-        fallback = sorted(valid)
-        return fallback[:5]
+            return selected[:1]
+        return valid_order[:1]
 
     def build_delivery_key(self, item_ids: list[str], message: str) -> str:
         if item_ids:

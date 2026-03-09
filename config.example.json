@@ -83,7 +83,14 @@
     "memory_query_max_items": 3,
     "memory_history_gate_enabled": true,
     "memory_scope_fallback_to_global": false,
-    "memory_trace_enabled": true
+    "memory_trace_enabled": true,
+
+    "_comment_pending": "── 待发队列（pending backlog）──",
+    "pending_queue_enabled": true,
+    "pending_item_ttl_hours": 24,
+    "pending_candidate_limit": 3,
+    "pending_max_per_source": 20,
+    "pending_max_total": 200
   },
 
   "_provider_presets": {

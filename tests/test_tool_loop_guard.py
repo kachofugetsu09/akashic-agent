@@ -385,6 +385,29 @@ def test_composer_breaks_on_repeated_same_signature_and_summarizes():
     assert len(tool.calls) == 2
 
 
+def test_composer_prompt_allows_standalone_interest_based_opening():
+    provider = _FakeProvider([LLMResponse(content="给用户的最终消息", tool_calls=[])])
+    composer = ProactiveMessageComposer(
+        provider=cast(Any, provider),
+        model="m",
+        max_tokens=256,
+        format_items=lambda _: "",
+        format_recent=lambda _: "",
+        collect_global_memory=lambda: "",
+        max_tool_iterations=2,
+    )
+
+    result = asyncio.run(
+        composer.compose_message(items=[], recent=[], decision_signals={})
+    )
+
+    assert result == "给用户的最终消息"
+    system_prompt = provider.calls[0]["messages"][0]["content"]
+    user_prompt = provider.calls[0]["messages"][1]["content"]
+    assert "不必强行承接近期对话" in system_prompt
+    assert "也可以直接从最相关的那条信息流自然起题" in user_prompt
+
+
 def test_agent_loop_summary_path_keeps_tool_chain_closed(tmp_path):
     tool = _DummyTool("dummy")
     provider = _StrictProvider(

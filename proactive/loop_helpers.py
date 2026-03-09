@@ -128,7 +128,7 @@ def _normalize_url(url: str | None) -> str:
 
 def _resolve_evidence_item_ids(decision: _Decision, items: list[FeedItem]) -> list[str]:
     if decision.evidence_item_ids:
-        return decision.evidence_item_ids
+        return decision.evidence_item_ids[:1]
     if not items:
         return []
     return [_item_id(item) for item in items[:1]]

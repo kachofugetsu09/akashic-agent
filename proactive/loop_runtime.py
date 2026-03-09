@@ -267,13 +267,18 @@ class ProactiveLoopRuntimeMixin:
 
     def _log_runtime_config(self) -> None:
         logger.info(
-            "[proactive] 去重配置 seen_ttl=%dh delivery_window=%dh semantic_enabled=%s semantic_threshold=%.2f semantic_window=%dh ngram=%d use_global_memory=%s memory_max_chars=%d",
+            "[proactive] 去重配置 seen_ttl=%dh delivery_window=%dh semantic_enabled=%s semantic_threshold=%.2f semantic_window=%dh ngram=%d pending_enabled=%s pending_ttl=%dh pending_limit=%d pending_max_per_source=%d pending_max_total=%d use_global_memory=%s memory_max_chars=%d",
             self._cfg.dedupe_seen_ttl_hours,
             self._cfg.delivery_dedupe_hours,
             self._cfg.semantic_dedupe_enabled,
             self._cfg.semantic_dedupe_threshold,
             self._cfg.semantic_dedupe_window_hours,
             self._cfg.semantic_dedupe_ngram,
+            self._cfg.pending_queue_enabled,
+            self._cfg.pending_item_ttl_hours,
+            self._cfg.pending_candidate_limit,
+            self._cfg.pending_max_per_source,
+            self._cfg.pending_max_total,
             self._cfg.use_global_memory,
             self._cfg.global_memory_max_chars,
         )

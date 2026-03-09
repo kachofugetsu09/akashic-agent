@@ -1,12 +1,13 @@
 """
 ProactiveStateStore — 主动消息流的去重状态持久化。
 
-状态文件包含四类信息：
+状态文件包含五类信息：
 1) seen_items: 每个 source 下已处理过的 item_id（长 TTL，14天）
 2) deliveries: 每个 session 下已发送过的 delivery_key
 3) semantic_items: 语义去重历史（文本与时间戳，72h TTL）
 4) rejection_cooldown: LLM 拒绝后的软冷却（可配置 TTL，默认 12h）
    独立于 seen_items，防止拒绝误判造成永久压制。
+5) pending_items: 已发现但尚未被真正消费的候选条目 backlog
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
+from feeds.base import FeedItem
 from infra.persistence.json_store import load_json, save_json
+from proactive.item_id import compute_item_id, compute_source_key
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +31,13 @@ class ProactiveStateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._state = self._load()
         logger.info(
-            "[proactive.state] 初始化完成 path=%s seen_sources=%d delivery_sessions=%d semantic_items=%d reject_cool=%d",
+            "[proactive.state] 初始化完成 path=%s seen_sources=%d delivery_sessions=%d semantic_items=%d reject_cool=%d pending_sources=%d",
             self.path,
             len(self._state["seen_items"]),
             len(self._state["deliveries"]),
             len(self._state["semantic_items"]),
             sum(len(v) for v in self._state["rejection_cooldown"].values()),
+            len(self._state["pending_items"]),
         )
 
     def is_item_seen(
@@ -211,6 +215,101 @@ class ProactiveStateStore:
             ts,
         )
 
+    # ── pending backlog ───────────────────────────────────────────
+
+    def upsert_pending_items(
+        self,
+        items: list[FeedItem],
+        *,
+        max_per_source: int = 20,
+        max_total: int = 200,
+        now: datetime | None = None,
+    ) -> None:
+        if not items:
+            logger.info("[proactive.state] upsert_pending_items: items 为空，跳过")
+            return
+        now = now or _utcnow()
+        ts = now.isoformat()
+        inserted = 0
+        updated = 0
+        for item in items:
+            source_key = compute_source_key(item)
+            item_id = compute_item_id(item)
+            source_map = self._state["pending_items"].setdefault(source_key, {})
+            record = source_map.get(item_id)
+            if record is None:
+                source_map[item_id] = {
+                    "payload": self._serialize_item(item),
+                    "first_seen_at": ts,
+                    "last_seen_at": ts,
+                }
+                inserted += 1
+                continue
+            record["payload"] = self._serialize_item(item)
+            record["last_seen_at"] = ts
+            updated += 1
+        self._enforce_pending_limits(
+            max_per_source=max_per_source,
+            max_total=max_total,
+        )
+        self._save()
+        logger.info(
+            "[proactive.state] pending upsert inserted=%d updated=%d total=%d",
+            inserted,
+            updated,
+            sum(len(v) for v in self._state["pending_items"].values()),
+        )
+
+    def list_pending_candidates(
+        self,
+        limit: int,
+        now: datetime | None = None,
+    ) -> list[FeedItem]:
+        now = now or _utcnow()
+        rows: list[tuple[datetime, datetime, FeedItem]] = []
+        for source_map in self._state["pending_items"].values():
+            for record in source_map.values():
+                payload = record.get("payload") or {}
+                item = self._deserialize_item(payload)
+                if item is None:
+                    continue
+                published_at = item.published_at or datetime.min.replace(
+                    tzinfo=timezone.utc
+                )
+                first_seen_at = _parse_iso(str(record.get("first_seen_at", ""))) or now
+                rows.append((published_at, first_seen_at, item))
+        rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        picked = rows[:limit] if limit > 0 else rows
+        return [item for _, _, item in picked]
+
+    def remove_pending_items(
+        self,
+        entries: list[tuple[str, str]],
+    ) -> None:
+        if not entries:
+            logger.info("[proactive.state] remove_pending_items: entries 为空，跳过")
+            return
+        removed = 0
+        for source_key, item_id in entries:
+            source_map = self._state["pending_items"].get(source_key)
+            if source_map is None or item_id not in source_map:
+                continue
+            del source_map[item_id]
+            removed += 1
+            if not source_map:
+                del self._state["pending_items"][source_key]
+        if removed <= 0:
+            logger.info("[proactive.state] remove_pending_items: 无匹配项")
+            return
+        self._save()
+        logger.info("[proactive.state] pending 已移除 count=%d", removed)
+
+    def pending_stats(self) -> dict[str, int]:
+        return {
+            source_key: len(source_map)
+            for source_key, source_map in self._state["pending_items"].items()
+        }
+
     # ── rejection_cooldown ────────────────────────────────────────
 
     def is_rejection_cooled(
@@ -263,11 +362,13 @@ class ProactiveStateStore:
         delivery_ttl_hours: int,
         semantic_ttl_hours: int,
         rejection_cooldown_ttl_hours: int = 0,
+        pending_ttl_hours: int = 24,
     ) -> None:
         now = _utcnow()
         seen_cutoff = now - timedelta(hours=max(seen_ttl_hours, 1))
         delivery_cutoff = now - timedelta(hours=max(delivery_ttl_hours, 1))
         semantic_cutoff = now - timedelta(hours=max(semantic_ttl_hours, 1))
+        pending_cutoff = now - timedelta(hours=max(pending_ttl_hours, 1))
 
         removed_seen = 0
         for source_key in list(self._state["seen_items"].keys()):
@@ -317,13 +418,29 @@ class ProactiveStateStore:
                 if not source_map:
                     del self._state["rejection_cooldown"][source_key]
 
+        removed_pending = 0
+        for source_key in list(self._state["pending_items"].keys()):
+            source_map = self._state["pending_items"][source_key]
+            for item_id in list(source_map.keys()):
+                record = source_map[item_id] or {}
+                payload = record.get("payload") or {}
+                item_ts = _parse_iso(payload.get("published_at")) or _parse_iso(
+                    str(record.get("first_seen_at", ""))
+                )
+                if item_ts is None or item_ts < pending_cutoff:
+                    del source_map[item_id]
+                    removed_pending += 1
+            if not source_map:
+                del self._state["pending_items"][source_key]
+
         self._save()
         logger.debug(
-            "[proactive.state] cleanup 完成 removed_seen=%d removed_delivery=%d removed_semantic=%d removed_cooldown=%d",
+            "[proactive.state] cleanup 完成 removed_seen=%d removed_delivery=%d removed_semantic=%d removed_cooldown=%d removed_pending=%d",
             removed_seen,
             removed_delivery,
             removed_semantic,
             removed_cooldown,
+            removed_pending,
         )
 
     def _load(self) -> dict[str, Any]:
@@ -331,24 +448,129 @@ class ProactiveStateStore:
         raw = load_json(self.path, default=None, domain="proactive.state")
         if raw is None:
             return {
-                "version": 3,
+                "version": 4,
                 "seen_items": {},
                 "deliveries": {},
                 "semantic_items": [],
                 "rejection_cooldown": {},
+                "pending_items": {},
             }
 
         # 2. 规范化字段（向后兼容）
         state: dict[str, Any] = {
-            "version": int(raw.get("version", 2)),
+            "version": int(raw.get("version", 3)),
             "seen_items": dict(raw.get("seen_items", {})),
             "deliveries": dict(raw.get("deliveries", {})),
             "semantic_items": list(raw.get("semantic_items", [])),
             "rejection_cooldown": dict(raw.get("rejection_cooldown", {})),
+            "pending_items": self._normalize_pending_items(raw.get("pending_items", {})),
         }
+        state["version"] = 4
         logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)
         return state
 
     def _save(self) -> None:
         save_json(self.path, self._state, domain="proactive.state")
         logger.debug("[proactive.state] 状态已保存 path=%s", self.path)
+
+    def _serialize_item(self, item: FeedItem) -> dict[str, Any]:
+        return {
+            "source_name": item.source_name,
+            "source_type": item.source_type,
+            "title": item.title,
+            "content": item.content,
+            "url": item.url,
+            "author": item.author,
+            "published_at": item.published_at.isoformat() if item.published_at else None,
+        }
+
+    def _deserialize_item(self, payload: dict[str, Any]) -> FeedItem | None:
+        try:
+            published_at = _parse_iso(payload.get("published_at"))
+            return FeedItem(
+                source_name=str(payload.get("source_name", "")),
+                source_type=str(payload.get("source_type", "")),
+                title=payload.get("title"),
+                content=str(payload.get("content", "")),
+                url=payload.get("url"),
+                author=payload.get("author"),
+                published_at=published_at,
+            )
+        except Exception:
+            return None
+
+    def _normalize_pending_items(self, raw_pending: Any) -> dict[str, dict[str, dict[str, Any]]]:
+        if not isinstance(raw_pending, dict):
+            return {}
+        normalized: dict[str, dict[str, dict[str, Any]]] = {}
+        for source_key, source_map in raw_pending.items():
+            if not isinstance(source_map, dict):
+                continue
+            source_key_str = str(source_key)
+            norm_source: dict[str, dict[str, Any]] = {}
+            for item_id, record in source_map.items():
+                if not isinstance(record, dict):
+                    continue
+                payload = record.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                norm_source[str(item_id)] = {
+                    "payload": payload,
+                    "first_seen_at": str(record.get("first_seen_at", "")),
+                    "last_seen_at": str(record.get("last_seen_at", "")),
+                }
+            if norm_source:
+                normalized[source_key_str] = norm_source
+        return normalized
+
+    def _enforce_pending_limits(
+        self,
+        *,
+        max_per_source: int,
+        max_total: int,
+    ) -> None:
+        max_per_source = max(max_per_source, 1)
+        max_total = max(max_total, 1)
+
+        # 先按 source 限流，优先保留发布时间/首次发现时间较新的条目。
+        for source_key in list(self._state["pending_items"].keys()):
+            source_map = self._state["pending_items"][source_key]
+            rows: list[tuple[datetime, datetime, str]] = []
+            for item_id, record in source_map.items():
+                item = self._deserialize_item(record.get("payload") or {})
+                if item is None:
+                    continue
+                published_at = item.published_at or datetime.min.replace(
+                    tzinfo=timezone.utc
+                )
+                first_seen_at = _parse_iso(str(record.get("first_seen_at", ""))) or (
+                    datetime.min.replace(tzinfo=timezone.utc)
+                )
+                rows.append((published_at, first_seen_at, item_id))
+            rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
+            for _, _, item_id in rows[max_per_source:]:
+                del source_map[item_id]
+            if not source_map:
+                del self._state["pending_items"][source_key]
+
+        rows_all: list[tuple[datetime, datetime, str, str]] = []
+        for source_key, source_map in self._state["pending_items"].items():
+            for item_id, record in source_map.items():
+                item = self._deserialize_item(record.get("payload") or {})
+                if item is None:
+                    continue
+                published_at = item.published_at or datetime.min.replace(
+                    tzinfo=timezone.utc
+                )
+                first_seen_at = _parse_iso(str(record.get("first_seen_at", ""))) or (
+                    datetime.min.replace(tzinfo=timezone.utc)
+                )
+                rows_all.append((published_at, first_seen_at, source_key, item_id))
+        rows_all.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        for _, _, source_key, item_id in rows_all[max_total:]:
+            source_map = self._state["pending_items"].get(source_key)
+            if source_map is None:
+                continue
+            source_map.pop(item_id, None)
+            if not source_map:
+                del self._state["pending_items"][source_key]

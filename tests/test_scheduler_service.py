@@ -226,6 +226,44 @@ async def test_every_soft_p90_updates_affect_next_trigger(
     assert len(tracker._samples) == 1
 
 
+async def test_every_soft_cron_pretrigger_advances_past_current_boundary(
+    tmp_path, mock_push, mock_loop
+):
+    """SOFT cron jobs should not re-fire the same nominal boundary."""
+
+    now_ref = {"value": datetime(2025, 6, 1, 7, 59, 40, tzinfo=timezone.utc)}
+    svc = SchedulerService(
+        store_path=tmp_path / "jobs.json",
+        push_tool=mock_push,
+        agent_loop=mock_loop,
+        tracker=LatencyTracker(default=25.0),
+        _now_fn=lambda: now_ref["value"],
+    )
+    fire_at = datetime(2025, 6, 1, 8, 0, 0, tzinfo=timezone.utc)
+    job = make_job(
+        trigger="every",
+        tier="soft",
+        fire_at=fire_at,
+        cron_expr="0 8 * * *",
+        timezone_="UTC",
+        message=None,
+        prompt="查询北京天气",
+    )
+    svc._jobs[job.id] = job
+
+    await svc._tick()
+    await drain_tasks()
+
+    assert mock_loop.process_direct.call_count == 1
+    assert svc._jobs[job.id].fire_at > fire_at
+
+    now_ref["value"] = datetime(2025, 6, 1, 7, 59, 46, tzinfo=timezone.utc)
+    await svc._tick()
+    await drain_tasks()
+
+    assert mock_loop.process_direct.call_count == 1
+
+
 # ── Misfire handling ─────────────────────────────────────────────
 
 def test_misfire_within_grace_loaded(tmp_path, mock_push, mock_loop, fixed_now):

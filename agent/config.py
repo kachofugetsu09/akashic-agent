@@ -204,10 +204,10 @@ def load_config(path: str | Path = "config.json") -> Config:
             feature_scoring_enabled=bool(p.get("feature_scoring_enabled", False)),
             feature_send_threshold=float(p.get("feature_send_threshold", 0.52)),
             feature_weight_topic_continuity=float(
-                p.get("feature_weight_topic_continuity", 0.24)
+                p.get("feature_weight_topic_continuity", 0.16)
             ),
             feature_weight_interest_match=float(
-                p.get("feature_weight_interest_match", 0.24)
+                p.get("feature_weight_interest_match", 0.32)
             ),
             feature_weight_content_novelty=float(
                 p.get("feature_weight_content_novelty", 0.20)
@@ -250,6 +250,15 @@ def load_config(path: str | Path = "config.json") -> Config:
             llm_reject_cooldown_hours=max(
                 0, int(p.get("llm_reject_cooldown_hours", 12))
             ),
+            pending_queue_enabled=bool(p.get("pending_queue_enabled", True)),
+            pending_item_ttl_hours=max(1, int(p.get("pending_item_ttl_hours", 24))),
+            pending_candidate_limit=max(
+                1, int(p.get("pending_candidate_limit", 3))
+            ),
+            pending_max_per_source=max(
+                1, int(p.get("pending_max_per_source", 20))
+            ),
+            pending_max_total=max(1, int(p.get("pending_max_total", 200))),
             feed_poller_enabled=bool(p.get("feed_poller_enabled", False)),
             feed_poller_interval_seconds=max(
                 5, int(p.get("feed_poller_interval_seconds", 300))

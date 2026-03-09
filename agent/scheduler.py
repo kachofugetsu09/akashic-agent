@@ -390,7 +390,12 @@ class SchedulerService:
             self._in_flight.discard(job.id)
             now = self._now()
             if job.trigger == "every":
-                job.fire_at = self._advance_every(job, now)
+                # SOFT recurring jobs may execute before nominal fire_at.
+                # Reschedule strictly after the later of "now" and the nominal
+                # boundary, otherwise cron jobs can re-fire the same occurrence
+                # repeatedly until wall clock passes fire_at.
+                reschedule_after = max(now, job.fire_at) + timedelta(microseconds=1)
+                job.fire_at = self._advance_every(job, reschedule_after)
                 self._jobs[job.id] = job
             else:
                 self._jobs.pop(job.id, None)

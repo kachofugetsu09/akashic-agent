@@ -319,6 +319,24 @@ async def test_reflect_prompt_requires_direct_opinion_not_counter_question(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_reflect_prompt_allows_interest_based_new_topic(tmp_path):
+    """即使与近期对话无关，只要符合长期兴趣，也允许自然开启新话题。"""
+    provider = _DummyProvider()
+    provider.chat = AsyncMock(
+        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+    )
+
+    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
+    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
+
+    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
+
+    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
+    assert "只是加分项，不是前置条件" in user_prompt
+    assert "长期兴趣高度匹配" in user_prompt
+
+
+@pytest.mark.asyncio
 async def test_reflect_contains_crisis_hint_when_energy_very_low(tmp_path):
     """电量极低（危机模式）时，prompt 里应包含危机提示。"""
     provider = _DummyProvider()
