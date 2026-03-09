@@ -155,6 +155,16 @@ class ActSnapshot:
     high_events: list[dict] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class EvidenceBundle:
+    source_items: list[FeedItem]
+    source_entries: list[tuple[str, str]]
+    evidence_items: list[FeedItem]
+    evidence_entries: list[tuple[str, str]]
+    evidence_item_ids: list[str]
+    source_refs: list[ProactiveSourceRef]
+
+
 _CTX_FIELD_MAP: dict[str, tuple[str, str]] = {
     "now_utc": ("state", "now_utc"),
     "session_key": ("state", "session_key"),
@@ -745,10 +755,185 @@ class ProactiveEngine:
 
     async def _stage_score(self, ctx: DecisionContext) -> ScoreResult:
         """计算 base_score / draw_score；未过门槛时提前返回。"""
+        w_random = self._compute_score_snapshot(ctx)
+        self._refresh_presence_state(ctx)
+        result = self._build_score_result(ctx, w_random=w_random)
+        if result.reason_code == "draw_score_below_threshold":
+            logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
+            logger.info("[proactive] selected_action=idle reason=draw_score")
+            await self._try_skill_action(now_utc=ctx.state.now_utc)
+        return result
+
+    # ------------------------------------------------------------------
+    # Stage 6 — decide: build decision_signals, run LLM scoring/compose
+    # ------------------------------------------------------------------
+
+    async def _stage_decide(self, ctx: DecisionContext) -> DecideResult:
+        """构建决策信号，调用 LLM 评分或生成消息，填充 ctx.should_send / decision_message。"""
+        self._populate_decision_signals(ctx)
+        await self._retrieve_decision_memory(ctx)
+        if self._cfg.feature_scoring_enabled:
+            self._prepare_feature_compose_candidates(ctx)
+            return await self._run_feature_decision(ctx)
+        await self._run_reflect_decision(ctx)
+        return self._build_continue_decide_result(ctx, decision_mode="reflect")
+
+    # ------------------------------------------------------------------
+    # Stage 7 — act: dedup checks, send, mark state
+    # ------------------------------------------------------------------
+
+    async def _stage_act(self, ctx: DecisionContext) -> None:
+        """去重检查、发送消息、标记已发送状态。"""
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        decide = ctx.ensure_decide()
+        act = ctx.ensure_act()
+        evidence = self._build_evidence_bundle(ctx)
+        act.source_refs = evidence.source_refs
+
+        if not decide.should_send:
+            logger.info("[proactive] 决定不主动发送")
+            logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
+            await self._reject_and_try_skill_action(ctx, evidence)
+            return
+
+        # 1. 解析证据 & 构建 delivery_key
+        channel = (self._cfg.default_channel or "").strip()
+        chat_id = self._cfg.default_chat_id.strip()
+        ctx.state.session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
+        delivery_key = self._decide.build_delivery_key(
+            evidence.evidence_item_ids, decide.decision_message
+        )
+        logger.info(
+            "[proactive] 发送前去重检查 session=%s evidence_count=%d delivery_key=%s",
+            ctx.state.session_key or "（未配置）",
+            len(evidence.evidence_item_ids),
+            delivery_key[:16],
+        )
+
+        # 2. delivery 去重
+        if ctx.state.session_key and self._state.is_delivery_duplicate(
+            session_key=ctx.state.session_key,
+            delivery_key=delivery_key,
+            window_hours=self._cfg.delivery_dedupe_hours,
+        ):
+            logger.info("[proactive] 命中发送去重，跳过发送")
+            self._consume_evidence_entries(evidence)
+            logger.info(
+                "[proactive] 已按去重命中消费证据条目 count=%d",
+                len(evidence.evidence_entries),
+            )
+            logger.info("[proactive] selected_action=idle reason=delivery_dedupe")
+            return
+
+        # 3. 同一沉默周期内的用户状态总结防复读
+        recent_proactive = self._sense.collect_recent_proactive(
+            getattr(self._cfg, "message_dedupe_recent_n", 5)
+        )
+        act.state_summary_tag = await self._classify_state_summary_tag(
+            decide.decision_message
+        )
+        if (
+            act.state_summary_tag != "none"
+            and self._seen_state_summary_in_current_silence(
+                act.state_summary_tag,
+                recent_proactive,
+                ctx.state.target_last_user,
+            )
+        ):
+            rewritten = await self._rewrite_without_repeated_state(
+                decide.decision_message,
+                act.state_summary_tag,
+                act.source_refs,
+            )
+            if not rewritten:
+                logger.info(
+                    "[proactive] 当前沉默周期内 state_summary_tag=%s 已出现，且重写失败，跳过发送",
+                    act.state_summary_tag,
+                )
+                await self._reject_and_try_skill_action(ctx, evidence)
+                return
+            rewritten_tag = await self._classify_state_summary_tag(rewritten)
+            if rewritten_tag == act.state_summary_tag and rewritten_tag != "none":
+                logger.info(
+                    "[proactive] state_summary_tag=%s 重写后仍重复，跳过发送",
+                    rewritten_tag,
+                )
+                await self._reject_and_try_skill_action(ctx, evidence)
+                return
+            decide.decision_message = rewritten
+            act.state_summary_tag = rewritten_tag
+
+        # 4. message 语义去重
+        if self._message_deduper is not None:
+            is_dup, dup_reason = await self._message_deduper.is_duplicate(
+                decide.decision_message,
+                recent_proactive,
+                act.state_summary_tag,
+            )
+            if is_dup:
+                logger.info(
+                    "[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason
+                )
+                logger.info("[proactive] selected_action=idle reason=message_dedupe")
+                await self._reject_and_try_skill_action(ctx, evidence)
+                return
+
+        # 5. 被动处理并发检查
+        if (
+            ctx.state.session_key
+            and self._passive_busy_fn
+            and self._passive_busy_fn(ctx.state.session_key)
+        ):
+            logger.info(
+                "[proactive] 目标会话 %s 正在处理被动回复，跳过本轮发送"
+                " selected_action=idle reason=passive_busy",
+                ctx.state.session_key,
+            )
+            return
+
+        # 6. 发送
+        sent = await self._act.send(
+            decide.decision_message,
+            ProactiveSendMeta(
+                evidence_item_ids=evidence.evidence_item_ids,
+                source_refs=act.source_refs,
+                state_summary_tag=act.state_summary_tag,
+            ),
+        )
+        if sent:
+            # 配额记录：动作成功即消耗，与 session_key 无关
+            if self._cfg.anyaction_enabled and self._anyaction:
+                self._anyaction.record_action(now_utc=ctx.state.now_utc)
+            # item 标记：全局去重，不依赖 session
+            self._consume_evidence_entries(evidence)
+            # delivery 去重：仅 chat 类 action 有 session_key
+            if ctx.state.session_key:
+                self._state.mark_delivery(ctx.state.session_key, delivery_key)
+            # 健康事件 ACK：发送成功后消费本轮全部事件（high + medium）
+            if sense.health_events:
+                acked_ids = [
+                    e["id"]
+                    for e in sense.health_events
+                    if isinstance(e, dict) and e.get("id")
+                ]
+                if acked_ids:
+                    getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
+                    logger.info(
+                        "[proactive] acknowledged %d 健康事件 ids=%s",
+                        len(acked_ids),
+                        acked_ids,
+                    )
+            logger.debug("[proactive] 已发送成功并标记本轮条目为 seen")
+            logger.debug("[proactive] selected_action=chat")
+        else:
+            logger.info("[proactive] 本轮发送未成功，不标记 seen，后续可再次尝试")
+            logger.info("[proactive] selected_action=idle reason=send_failed")
+
+    def _compute_score_snapshot(self, ctx: DecisionContext) -> float:
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
-        # 1. 计算 base_score / draw_score
         score.dc = d_content(len(fetch.new_items), self._cfg.score_content_halfsat)
         score.base_score = (
             composite_score(
@@ -763,8 +948,12 @@ class ProactiveEngine:
         )
         w_random = random_weight(rng=self._rng)
         score.draw_score = score.base_score * w_random
+        return w_random
 
-        # 2. 采集 presence 信号
+    def _refresh_presence_state(self, ctx: DecisionContext) -> None:
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        score = ctx.ensure_score()
         ctx.state.session_key = self._sense.target_session_key()
         ctx.state.target_last_user = (
             self._presence.get_last_user_at(ctx.state.session_key)
@@ -784,7 +973,11 @@ class ProactiveEngine:
         score.force_reflect = score.force_reflect or presence_force_reflect
         score.is_crisis = sense.energy < 0.05
         score.sent_24h = (
-            self._state.count_deliveries_in_window(ctx.state.session_key, 24, now=ctx.state.now_utc)
+            self._state.count_deliveries_in_window(
+                ctx.state.session_key,
+                24,
+                now=ctx.state.now_utc,
+            )
             if ctx.state.session_key
             else 0
         )
@@ -795,6 +988,10 @@ class ProactiveEngine:
             and (ctx.state.now_utc - item.published_at).total_seconds() <= 24 * 3600
         )
 
+    def _build_score_result(self, ctx: DecisionContext, *, w_random: float) -> ScoreResult:
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        score = ctx.ensure_score()
         if not fetch.new_items and not sense.health_events and not score.force_reflect:
             logger.info("[proactive] 无候选信息且无健康事件，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=no_candidates")
@@ -806,7 +1003,6 @@ class ProactiveEngine:
                 draw_score=score.draw_score,
                 force_reflect=score.force_reflect,
             )
-
         logger.info(
             "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"
             "  interrupt=%.3f W_random=%.2f → draw_score=%.3f 阈值=%.2f force_reflect=%s",
@@ -820,12 +1016,7 @@ class ProactiveEngine:
             self._cfg.score_llm_threshold,
             score.force_reflect,
         )
-
-        # 4. 判断是否过 LLM 门槛
         if score.draw_score < self._cfg.score_llm_threshold and not score.force_reflect:
-            logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
-            logger.info("[proactive] selected_action=idle reason=draw_score")
-            await self._try_skill_action(now_utc=ctx.state.now_utc)
             return ScoreResult(
                 proceed=False,
                 return_score=score.base_score,
@@ -844,7 +1035,6 @@ class ProactiveEngine:
                 draw_score=score.draw_score,
                 force_reflect=score.force_reflect,
             )
-
         return ScoreResult(
             proceed=True,
             return_score=None,
@@ -854,18 +1044,12 @@ class ProactiveEngine:
             force_reflect=score.force_reflect,
         )
 
-    # ------------------------------------------------------------------
-    # Stage 6 — decide: build decision_signals, run LLM scoring/compose
-    # ------------------------------------------------------------------
-
-    async def _stage_decide(self, ctx: DecisionContext) -> DecideResult:
-        """构建决策信号，调用 LLM 评分或生成消息，填充 ctx.should_send / decision_message。"""
+    def _populate_decision_signals(self, ctx: DecisionContext) -> None:
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
-        # 1. 构建 decision_signals 结构
         mins_since_last_user = (
             int((ctx.state.now_utc - ctx.state.target_last_user).total_seconds() / 60)
             if ctx.state.target_last_user
@@ -902,7 +1086,6 @@ class ProactiveEngine:
             "candidate_items": len(fetch.new_items),
             "fresh_items_24h": score.fresh_items_24h,
         }
-        # 只有 StatEngine 检测到事件时才向 LLM 暴露健康信息
         if sense.health_events:
             decide.decision_signals["health_events"] = sense.health_events
         act.high_events = [
@@ -915,6 +1098,11 @@ class ProactiveEngine:
             sense.sleep_ctx.state if sense.sleep_ctx is not None else "unavailable",
         )
 
+    async def _retrieve_decision_memory(self, ctx: DecisionContext) -> None:
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        score = ctx.ensure_score()
+        decide = ctx.ensure_decide()
         channel = ""
         chat_id = ""
         if ctx.state.session_key and ":" in ctx.state.session_key:
@@ -939,313 +1127,193 @@ class ProactiveEngine:
         decide.history_scope_mode = retrieved.history_scope_mode
         decide.memory_fallback_reason = retrieved.fallback_reason
 
-        # 2. feature scoring 路径
-        if self._cfg.feature_scoring_enabled:
-            act.compose_items = fetch.new_items[:1]
-            act.compose_entries = self._entries_for_items(
-                act.compose_items, fetch.new_entries
-            )
-            features = await self._decide.score_features(
-                items=fetch.new_items,
-                recent=sense.recent,
-                decision_signals=decide.decision_signals,
-                retrieved_memory_block=decide.retrieved_memory_block,
-            )
-            decide.feature_payload = features or {}
-            feature_final_base = _feature_final_score(
-                cfg=self._cfg,
-                features=decide.feature_payload,
-                de=sense.de,
-                dc=score.dc,
-                dr=sense.dr,
-                interruptibility=sense.interruptibility,
-            )
-            health_bonus = _health_priority_bonus(
-                alert_count=len(sense.health_events),
-                notify_count=len(act.high_events),
-            )
-            decide.feature_final_score = min(1.0, feature_final_base + health_bonus)
-            logger.info(
-                "[proactive] feature_score enabled base=%.3f health_bonus=%.3f final=%.3f threshold=%.3f features=%s",
-                feature_final_base,
-                health_bonus,
-                decide.feature_final_score,
-                self._cfg.feature_send_threshold,
-                decide.feature_payload,
-            )
-            if decide.feature_final_score < self._cfg.feature_send_threshold:
-                logger.info("[proactive] selected_action=idle reason=feature_score")
-                self._state.mark_rejection_cooldown(
-                    self._primary_candidate_entries(fetch.new_entries),
-                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-                )
-                return DecideResult(
-                    proceed=False,
-                    return_score=score.base_score,
-                    reason_code="feature_score_reject",
-                    should_send=False,
-                    decision_message="",
-                    decision_mode="feature",
-                    feature_final_score=decide.feature_final_score,
-                    history_gate_reason=decide.history_gate_reason,
-                    history_scope_mode=decide.history_scope_mode,
-                )
+    def _prepare_feature_compose_candidates(self, ctx: DecisionContext) -> None:
+        fetch = ctx.ensure_fetch()
+        act = ctx.ensure_act()
+        act.compose_items = fetch.new_items[:1]
+        act.compose_entries = self._entries_for_items(act.compose_items, fetch.new_entries)
 
-        # 3. LLM 生成/反思
-        if self._cfg.feature_scoring_enabled:
-            decide.decision_message = await self._decide.compose_message(
-                items=act.compose_items,
-                recent=sense.recent,
-                decision_signals=decide.decision_signals,
-                retrieved_memory_block=decide.retrieved_memory_block,
+    async def _run_feature_decision(self, ctx: DecisionContext) -> DecideResult:
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        score = ctx.ensure_score()
+        decide = ctx.ensure_decide()
+        act = ctx.ensure_act()
+        features = await self._decide.score_features(
+            items=fetch.new_items,
+            recent=sense.recent,
+            decision_signals=decide.decision_signals,
+            retrieved_memory_block=decide.retrieved_memory_block,
+        )
+        decide.feature_payload = features or {}
+        feature_final_base = _feature_final_score(
+            cfg=self._cfg,
+            features=decide.feature_payload,
+            de=sense.de,
+            dc=score.dc,
+            dr=sense.dr,
+            interruptibility=sense.interruptibility,
+        )
+        health_bonus = _health_priority_bonus(
+            alert_count=len(sense.health_events),
+            notify_count=len(act.high_events),
+        )
+        decide.feature_final_score = min(1.0, feature_final_base + health_bonus)
+        logger.info(
+            "[proactive] feature_score enabled base=%.3f health_bonus=%.3f final=%.3f threshold=%.3f features=%s",
+            feature_final_base,
+            health_bonus,
+            decide.feature_final_score,
+            self._cfg.feature_send_threshold,
+            decide.feature_payload,
+        )
+        if decide.feature_final_score < self._cfg.feature_send_threshold:
+            logger.info("[proactive] selected_action=idle reason=feature_score")
+            self._state.mark_rejection_cooldown(
+                self._primary_candidate_entries(fetch.new_entries),
+                hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
             )
-            decide.should_send = bool(decide.decision_message.strip()) and (
-                decide.feature_final_score is not None
-                and decide.feature_final_score >= self._cfg.feature_send_threshold
+            return DecideResult(
+                proceed=False,
+                return_score=score.base_score,
+                reason_code="feature_score_reject",
+                should_send=False,
+                decision_message="",
+                decision_mode="feature",
+                feature_final_score=decide.feature_final_score,
+                history_gate_reason=decide.history_gate_reason,
+                history_scope_mode=decide.history_scope_mode,
             )
-            logger.info(
-                "[proactive] feature_mode compose_len=%d should_send=%s reasons={topic:%r,interest:%r,novel:%r,reconnect:%r,disturb:%r,readiness:%r,conf:%r}",
-                len(decide.decision_message),
-                decide.should_send,
-                decide.feature_payload.get("topic_continuity_reason", ""),
-                decide.feature_payload.get("interest_match_reason", ""),
-                decide.feature_payload.get("content_novelty_reason", ""),
-                decide.feature_payload.get("reconnect_value_reason", ""),
-                decide.feature_payload.get("disturb_risk_reason", ""),
-                decide.feature_payload.get("message_readiness_reason", ""),
-                decide.feature_payload.get("confidence_reason", ""),
-            )
-        else:
-            decide.decision = await self._decide.reflect(
-                fetch.new_items,
-                sense.recent,
-                energy=sense.energy,
-                urge=score.draw_score,
-                is_crisis=score.is_crisis,
-                decision_signals=decide.decision_signals,
-                retrieved_memory_block=decide.retrieved_memory_block,
-            )
-            decide.decision, decision_delta = self._decide.randomize_decision(decide.decision)
-            logger.info(
-                f"[proactive] score={decide.decision.score:.2f}  "
-                f"score_delta={decision_delta:+.2f}  "
-                f"send={decide.decision.should_send}  "
-                f"reasoning={decide.decision.reasoning[:80]!r}"
-            )
-            decide.should_send = (
-                decide.decision.should_send and decide.decision.score >= self._cfg.threshold
-            )
-            decide.decision_message = decide.decision.message
+        decide.decision_message = await self._decide.compose_message(
+            items=act.compose_items,
+            recent=sense.recent,
+            decision_signals=decide.decision_signals,
+            retrieved_memory_block=decide.retrieved_memory_block,
+        )
+        decide.should_send = bool(decide.decision_message.strip()) and (
+            decide.feature_final_score is not None
+            and decide.feature_final_score >= self._cfg.feature_send_threshold
+        )
+        logger.info(
+            "[proactive] feature_mode compose_len=%d should_send=%s reasons={topic:%r,interest:%r,novel:%r,reconnect:%r,disturb:%r,readiness:%r,conf:%r}",
+            len(decide.decision_message),
+            decide.should_send,
+            decide.feature_payload.get("topic_continuity_reason", ""),
+            decide.feature_payload.get("interest_match_reason", ""),
+            decide.feature_payload.get("content_novelty_reason", ""),
+            decide.feature_payload.get("reconnect_value_reason", ""),
+            decide.feature_payload.get("disturb_risk_reason", ""),
+            decide.feature_payload.get("message_readiness_reason", ""),
+            decide.feature_payload.get("confidence_reason", ""),
+        )
+        return self._build_continue_decide_result(ctx, decision_mode="feature")
 
+    async def _run_reflect_decision(self, ctx: DecisionContext) -> None:
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        score = ctx.ensure_score()
+        decide = ctx.ensure_decide()
+        decide.decision = await self._decide.reflect(
+            fetch.new_items,
+            sense.recent,
+            energy=sense.energy,
+            urge=score.draw_score,
+            is_crisis=score.is_crisis,
+            decision_signals=decide.decision_signals,
+            retrieved_memory_block=decide.retrieved_memory_block,
+        )
+        decide.decision, decision_delta = self._decide.randomize_decision(decide.decision)
+        logger.info(
+            f"[proactive] score={decide.decision.score:.2f}  "
+            f"score_delta={decision_delta:+.2f}  "
+            f"send={decide.decision.should_send}  "
+            f"reasoning={decide.decision.reasoning[:80]!r}"
+        )
+        decide.should_send = (
+            decide.decision.should_send and decide.decision.score >= self._cfg.threshold
+        )
+        decide.decision_message = decide.decision.message
+
+    def _build_continue_decide_result(
+        self,
+        ctx: DecisionContext,
+        *,
+        decision_mode: Literal["feature", "reflect"],
+    ) -> DecideResult:
+        decide = ctx.ensure_decide()
         return DecideResult(
             proceed=True,
             return_score=None,
             reason_code="continue",
             should_send=decide.should_send,
             decision_message=decide.decision_message,
-            decision_mode="feature" if self._cfg.feature_scoring_enabled else "reflect",
+            decision_mode=decision_mode,
             feature_final_score=decide.feature_final_score,
             history_gate_reason=decide.history_gate_reason,
             history_scope_mode=decide.history_scope_mode,
         )
 
-    # ------------------------------------------------------------------
-    # Stage 7 — act: dedup checks, send, mark state
-    # ------------------------------------------------------------------
-
-    async def _stage_act(self, ctx: DecisionContext) -> None:
-        """去重检查、发送消息、标记已发送状态。"""
-        sense = ctx.ensure_sense()
+    def _build_evidence_bundle(self, ctx: DecisionContext) -> EvidenceBundle:
         fetch = ctx.ensure_fetch()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
-        evidence_source_items = act.compose_items or fetch.new_items or fetch.items
-        evidence_source_entries = act.compose_entries or self._entries_for_items(
-            evidence_source_items, fetch.new_entries
+        source_items = act.compose_items or fetch.new_items or fetch.items
+        source_entries = act.compose_entries or self._entries_for_items(
+            source_items,
+            fetch.new_entries,
         )
-        evidence_ids = self._decide.resolve_evidence_item_ids(
+        evidence_item_ids = self._decide.resolve_evidence_item_ids(
             decide.decision
             if decide.decision is not None
             else _PseudoDecision(message=decide.decision_message),
-            evidence_source_items,
+            source_items,
         )
         evidence_items, evidence_entries = self._resolve_evidence_entries(
-            evidence_source_items,
-            evidence_source_entries,
-            evidence_ids,
+            source_items,
+            source_entries,
+            evidence_item_ids,
         )
-        act.source_refs = self._build_source_refs(evidence_items)
-
-        if not decide.should_send:
-            logger.info("[proactive] 决定不主动发送")
-            logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
-            self._state.mark_rejection_cooldown(
-                evidence_entries
-                or self._primary_candidate_entries(
-                    evidence_source_entries or fetch.new_entries
-                ),
-                hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-            )
-            await self._try_skill_action(now_utc=ctx.state.now_utc)
-            return
-
-        # 1. 解析证据 & 构建 delivery_key
-        channel = (self._cfg.default_channel or "").strip()
-        chat_id = self._cfg.default_chat_id.strip()
-        ctx.state.session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
-        delivery_key = self._decide.build_delivery_key(
-            evidence_ids, decide.decision_message
-        )
-        logger.info(
-            "[proactive] 发送前去重检查 session=%s evidence_count=%d delivery_key=%s",
-            ctx.state.session_key or "（未配置）",
-            len(evidence_ids),
-            delivery_key[:16],
+        return EvidenceBundle(
+            source_items=source_items,
+            source_entries=source_entries,
+            evidence_items=evidence_items,
+            evidence_entries=evidence_entries,
+            evidence_item_ids=evidence_item_ids,
+            source_refs=self._build_source_refs(evidence_items),
         )
 
-        # 2. delivery 去重
-        if ctx.state.session_key and self._state.is_delivery_duplicate(
-            session_key=ctx.state.session_key,
-            delivery_key=delivery_key,
-            window_hours=self._cfg.delivery_dedupe_hours,
-        ):
-            logger.info("[proactive] 命中发送去重，跳过发送")
-            self._state.mark_items_seen(evidence_entries)
-            self._state.remove_pending_items(evidence_entries)
-            self._state.mark_semantic_items(self._decide.semantic_entries(evidence_items))
-            logger.info(
-                "[proactive] 已按去重命中消费证据条目 count=%d",
-                len(evidence_entries),
-            )
-            logger.info("[proactive] selected_action=idle reason=delivery_dedupe")
-            return
-
-        # 3. 同一沉默周期内的用户状态总结防复读
-        recent_proactive = self._sense.collect_recent_proactive(
-            getattr(self._cfg, "message_dedupe_recent_n", 5)
+    def _candidate_entries_for_rejection(
+        self,
+        ctx: DecisionContext,
+        evidence: EvidenceBundle,
+    ) -> list[tuple[str, str]]:
+        fetch = ctx.ensure_fetch()
+        return evidence.evidence_entries or self._primary_candidate_entries(
+            evidence.source_entries or fetch.new_entries
         )
-        act.state_summary_tag = await self._classify_state_summary_tag(
-            decide.decision_message
+
+    def _reject_current_candidates(self, entries: list[tuple[str, str]]) -> None:
+        self._state.mark_rejection_cooldown(
+            entries,
+            hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
         )
-        if (
-            act.state_summary_tag != "none"
-            and self._seen_state_summary_in_current_silence(
-                act.state_summary_tag,
-                recent_proactive,
-                ctx.state.target_last_user,
-            )
-        ):
-            rewritten = await self._rewrite_without_repeated_state(
-                decide.decision_message,
-                act.state_summary_tag,
-                act.source_refs,
-            )
-            if not rewritten:
-                logger.info(
-                    "[proactive] 当前沉默周期内 state_summary_tag=%s 已出现，且重写失败，跳过发送",
-                    act.state_summary_tag,
-                )
-                self._state.mark_rejection_cooldown(
-                    evidence_entries
-                    or self._primary_candidate_entries(
-                        evidence_source_entries or fetch.new_entries
-                    ),
-                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-                )
-                await self._try_skill_action(now_utc=ctx.state.now_utc)
-                return
-            rewritten_tag = await self._classify_state_summary_tag(rewritten)
-            if rewritten_tag == act.state_summary_tag and rewritten_tag != "none":
-                logger.info(
-                    "[proactive] state_summary_tag=%s 重写后仍重复，跳过发送",
-                    rewritten_tag,
-                )
-                self._state.mark_rejection_cooldown(
-                    evidence_entries
-                    or self._primary_candidate_entries(
-                        evidence_source_entries or fetch.new_entries
-                    ),
-                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-                )
-                await self._try_skill_action(now_utc=ctx.state.now_utc)
-                return
-            decide.decision_message = rewritten
-            act.state_summary_tag = rewritten_tag
 
-        # 4. message 语义去重
-        if self._message_deduper is not None:
-            is_dup, dup_reason = await self._message_deduper.is_duplicate(
-                decide.decision_message,
-                recent_proactive,
-                act.state_summary_tag,
-            )
-            if is_dup:
-                logger.info(
-                    "[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason
-                )
-                logger.info("[proactive] selected_action=idle reason=message_dedupe")
-                self._state.mark_rejection_cooldown(
-                    evidence_entries
-                    or self._primary_candidate_entries(
-                        evidence_source_entries or fetch.new_entries
-                    ),
-                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-                )
-                await self._try_skill_action(now_utc=ctx.state.now_utc)
-                return
-
-        # 5. 被动处理并发检查
-        if (
-            ctx.state.session_key
-            and self._passive_busy_fn
-            and self._passive_busy_fn(ctx.state.session_key)
-        ):
-            logger.info(
-                "[proactive] 目标会话 %s 正在处理被动回复，跳过本轮发送"
-                " selected_action=idle reason=passive_busy",
-                ctx.state.session_key,
-            )
-            return
-
-        # 6. 发送
-        sent = await self._act.send(
-            decide.decision_message,
-            ProactiveSendMeta(
-                evidence_item_ids=evidence_ids,
-                source_refs=act.source_refs,
-                state_summary_tag=act.state_summary_tag,
-            ),
+    async def _reject_and_try_skill_action(
+        self,
+        ctx: DecisionContext,
+        evidence: EvidenceBundle,
+    ) -> None:
+        self._reject_current_candidates(
+            self._candidate_entries_for_rejection(ctx, evidence)
         )
-        if sent:
-            # 配额记录：动作成功即消耗，与 session_key 无关
-            if self._cfg.anyaction_enabled and self._anyaction:
-                self._anyaction.record_action(now_utc=ctx.state.now_utc)
-            # item 标记：全局去重，不依赖 session
-            self._state.mark_items_seen(evidence_entries)
-            self._state.remove_pending_items(evidence_entries)
-            self._state.mark_semantic_items(self._decide.semantic_entries(evidence_items))
-            # delivery 去重：仅 chat 类 action 有 session_key
-            if ctx.state.session_key:
-                self._state.mark_delivery(ctx.state.session_key, delivery_key)
-            # 健康事件 ACK：发送成功后消费本轮全部事件（high + medium）
-            if sense.health_events:
-                acked_ids = [
-                    e["id"]
-                    for e in sense.health_events
-                    if isinstance(e, dict) and e.get("id")
-                ]
-                if acked_ids:
-                    getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
-                    logger.info(
-                        "[proactive] acknowledged %d 健康事件 ids=%s",
-                        len(acked_ids),
-                        acked_ids,
-                    )
-            logger.debug("[proactive] 已发送成功并标记本轮条目为 seen")
-            logger.debug("[proactive] selected_action=chat")
-        else:
-            logger.info("[proactive] 本轮发送未成功，不标记 seen，后续可再次尝试")
-            logger.info("[proactive] selected_action=idle reason=send_failed")
+        await self._try_skill_action(now_utc=ctx.state.now_utc)
+
+    def _consume_evidence_entries(self, evidence: EvidenceBundle) -> None:
+        self._state.mark_items_seen(evidence.evidence_entries)
+        self._state.remove_pending_items(evidence.evidence_entries)
+        self._state.mark_semantic_items(
+            self._decide.semantic_entries(evidence.evidence_items)
+        )
 
     # ------------------------------------------------------------------
     # Helpers

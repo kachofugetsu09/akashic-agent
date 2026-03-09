@@ -267,6 +267,50 @@ async def test_engine_stage_score_returns_snapshot_fields_for_no_candidates():
 
 
 @pytest.mark.asyncio
+async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        score_content_halfsat=3.0,
+        score_weight_energy=1.0,
+        score_weight_content=1.0,
+        score_weight_recent=1.0,
+        score_llm_threshold=0.95,
+    )
+    engine._rng = None
+    engine._sense = SimpleNamespace(target_session_key=lambda: "")
+    engine._presence = None
+    engine._state = SimpleNamespace()
+    engine._try_skill_action = AsyncMock()
+    ctx = DecisionContext()
+    ctx.now_utc = datetime.now(timezone.utc)
+    ctx.de = 0.2
+    ctx.dr = 0.1
+    ctx.interrupt_factor = 1.0
+    ctx.interruptibility = 1.0
+    ctx.new_items = [
+        FeedItem(
+            source_name="Test",
+            source_type="rss",
+            title="A",
+            content="body",
+            url="https://example.com/a",
+            author=None,
+            published_at=None,
+        )
+    ]
+    ctx.health_events = []
+    ctx.force_reflect = False
+    ctx.energy = 0.3
+    ctx.has_memory = False
+
+    result = await engine._stage_score(ctx)
+
+    assert result.proceed is False
+    assert result.reason_code == "draw_score_below_threshold"
+    engine._try_skill_action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_engine_stage_fetch_filter_returns_structured_snapshot():
     items = [
         FeedItem(
@@ -372,6 +416,90 @@ async def test_engine_stage_decide_returns_structured_feature_reject_result():
     assert result.feature_final_score == ctx.feature_final_score
     assert result.history_gate_reason == "disabled"
     assert result.history_scope_mode == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidates():
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        feature_scoring_enabled=True,
+        feature_send_threshold=0.4,
+        threshold=0.7,
+        score_llm_threshold=0.6,
+        llm_reject_cooldown_hours=0,
+        feature_weight_topic_continuity=1.0,
+        feature_weight_interest_match=1.0,
+        feature_weight_content_novelty=1.0,
+        feature_weight_reconnect_value=1.0,
+        feature_weight_message_readiness=1.0,
+        feature_weight_disturb_risk=0.0,
+        feature_weight_interrupt_penalty=0.0,
+        feature_weight_d_recent_bonus=0.0,
+        feature_weight_d_content_bonus=0.0,
+        feature_weight_d_energy_bonus=0.0,
+    )
+    item = FeedItem(
+        source_name="Test",
+        source_type="rss",
+        title="A",
+        content="body",
+        url="https://example.com/a",
+        author=None,
+        published_at=None,
+    )
+    engine._decide = SimpleNamespace(
+        score_features=AsyncMock(
+            return_value={
+                "topic_continuity": 1.0,
+                "interest_match": 1.0,
+                "content_novelty": 1.0,
+                "reconnect_value": 1.0,
+                "disturb_risk": 0.0,
+                "message_readiness": 1.0,
+                "confidence": 1.0,
+                "topic_continuity_reason": "r1",
+                "interest_match_reason": "r2",
+                "content_novelty_reason": "r3",
+                "reconnect_value_reason": "r4",
+                "disturb_risk_reason": "r5",
+                "message_readiness_reason": "r6",
+                "confidence_reason": "r7",
+            }
+        ),
+        compose_message=AsyncMock(return_value="hello proactive"),
+        item_id_for=lambda _: "item-1",
+    )
+    engine._memory_retrieval = None
+    engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
+    ctx = DecisionContext()
+    ctx.session_key = "telegram:1"
+    ctx.now_utc = datetime.now(timezone.utc)
+    ctx.new_items = [item]
+    ctx.new_entries = [("rss:test", "item-1")]
+    ctx.recent = []
+    ctx.health_events = []
+    ctx.high_events = []
+    ctx.interruptibility = 1.0
+    ctx.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
+    ctx.pre_score = 0.2
+    ctx.base_score = 0.3
+    ctx.draw_score = 0.3
+    ctx.dc = 0.1
+    ctx.de = 0.1
+    ctx.dr = 0.1
+    ctx.is_crisis = False
+    ctx.sent_24h = 0
+    ctx.fresh_items_24h = 0
+
+    result = await engine._stage_decide(ctx)
+
+    assert result.proceed is True
+    assert result.decision_mode == "feature"
+    assert result.should_send is True
+    assert result.decision_message == "hello proactive"
+    assert ctx.compose_items == [item]
+    assert ctx.compose_entries == [("rss:test", "item-1")]
+    engine._decide.compose_message.assert_awaited_once()
 
 
 def test_engine_stage_trace_writer_emits_strategy_envelope():
@@ -1033,6 +1161,8 @@ async def test_sent_without_session_key_still_marks_items_seen(tmp_path):
         enabled=True, default_channel="", default_chat_id="",
         anyaction_enabled=False,
         feature_scoring_enabled=False,
+        score_pre_threshold=0.0,
+        score_llm_threshold=0.0,
     )
     engine = ProactiveEngine(
         cfg=cfg, state=state, presence=None, rng=None,
