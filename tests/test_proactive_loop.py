@@ -80,13 +80,18 @@ def test_parse_decision_string_false_is_false():
 
 def test_decision_context_groups_fields_into_snapshots():
     ctx = DecisionContext()
+    sense = ctx.ensure_sense()
+    fetch = ctx.ensure_fetch()
+    score = ctx.ensure_score()
+    decide = ctx.ensure_decide()
+    act = ctx.ensure_act()
 
-    ctx.energy = 0.6
-    ctx.new_items = []
-    ctx.base_score = 0.4
-    ctx.decision_message = "hi"
-    ctx.state_summary_tag = "none"
-    ctx.session_key = "telegram:1"
+    sense.energy = 0.6
+    fetch.new_items = []
+    score.base_score = 0.4
+    decide.decision_message = "hi"
+    act.state_summary_tag = "none"
+    ctx.state.session_key = "telegram:1"
 
     assert ctx.sense is not None and ctx.sense.energy == 0.6
     assert ctx.fetch is not None and ctx.fetch.new_items == []
@@ -166,25 +171,27 @@ async def test_engine_stage_pre_score_returns_structured_below_threshold_result(
     )
     engine._try_skill_action = AsyncMock()
     ctx = DecisionContext()
-    ctx.de = 0.1
-    ctx.dr = 0.1
-    ctx.interrupt_factor = 1.0
-    ctx.interruptibility = 1.0
-    ctx.interrupt_detail = {
+    sense = ctx.ensure_sense()
+    score = ctx.ensure_score()
+    sense.de = 0.1
+    sense.dr = 0.1
+    sense.interrupt_factor = 1.0
+    sense.interruptibility = 1.0
+    sense.interrupt_detail = {
         "f_reply": 1.0,
         "f_activity": 1.0,
         "f_fatigue": 1.0,
         "random_delta": 0.0,
     }
-    ctx.sleep_mod = 1.0
-    ctx.energy = 0.2
-    ctx.recent = []
-    ctx.health_events = []
+    sense.sleep_mod = 1.0
+    sense.energy = 0.2
+    sense.recent = []
+    sense.health_events = []
 
     result = await engine._stage_pre_score(ctx)
 
     assert result.proceed is False
-    assert result.return_score == ctx.pre_score
+    assert result.return_score == score.pre_score
     assert result.reason_code == "below_threshold"
     engine._try_skill_action.assert_awaited_once()
 
@@ -226,8 +233,7 @@ async def test_engine_stage_sense_returns_structured_snapshot():
     assert result.energy == 0.2
     assert result.recent_count == 1
     assert result.interruptibility == 0.75
-    assert result.interrupt_factor == ctx.interrupt_factor
-    assert ctx.sense_result == result
+    assert result.interrupt_factor == ctx.ensure_sense().interrupt_factor
 
 
 @pytest.mark.asyncio
@@ -246,23 +252,26 @@ async def test_engine_stage_score_returns_snapshot_fields_for_no_candidates():
     engine._state = SimpleNamespace()
     engine._try_skill_action = AsyncMock()
     ctx = DecisionContext()
-    ctx.de = 0.2
-    ctx.dr = 0.1
-    ctx.interrupt_factor = 1.0
-    ctx.interruptibility = 1.0
-    ctx.new_items = []
-    ctx.health_events = []
-    ctx.force_reflect = False
-    ctx.energy = 0.3
-    ctx.has_memory = False
+    sense = ctx.ensure_sense()
+    fetch = ctx.ensure_fetch()
+    score = ctx.ensure_score()
+    sense.de = 0.2
+    sense.dr = 0.1
+    sense.interrupt_factor = 1.0
+    sense.interruptibility = 1.0
+    fetch.new_items = []
+    sense.health_events = []
+    score.force_reflect = False
+    sense.energy = 0.3
+    fetch.has_memory = False
 
     result = await engine._stage_score(ctx)
 
     assert result.proceed is False
     assert result.reason_code == "no_candidates"
-    assert result.return_score == ctx.base_score
-    assert result.base_score == ctx.base_score
-    assert result.draw_score == ctx.draw_score
+    assert result.return_score == score.base_score
+    assert result.base_score == score.base_score
+    assert result.draw_score == score.draw_score
     assert result.force_reflect is False
 
 
@@ -282,12 +291,15 @@ async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
     engine._state = SimpleNamespace()
     engine._try_skill_action = AsyncMock()
     ctx = DecisionContext()
-    ctx.now_utc = datetime.now(timezone.utc)
-    ctx.de = 0.2
-    ctx.dr = 0.1
-    ctx.interrupt_factor = 1.0
-    ctx.interruptibility = 1.0
-    ctx.new_items = [
+    sense = ctx.ensure_sense()
+    fetch = ctx.ensure_fetch()
+    score = ctx.ensure_score()
+    ctx.state.now_utc = datetime.now(timezone.utc)
+    sense.de = 0.2
+    sense.dr = 0.1
+    sense.interrupt_factor = 1.0
+    sense.interruptibility = 1.0
+    fetch.new_items = [
         FeedItem(
             source_name="Test",
             source_type="rss",
@@ -298,10 +310,10 @@ async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
             published_at=None,
         )
     ]
-    ctx.health_events = []
-    ctx.force_reflect = False
-    ctx.energy = 0.3
-    ctx.has_memory = False
+    sense.health_events = []
+    score.force_reflect = False
+    sense.energy = 0.3
+    fetch.has_memory = False
 
     result = await engine._stage_score(ctx)
 
@@ -345,9 +357,8 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
     assert result.semantic_duplicate_count == 0
     assert result.pending_enabled is False
     assert result.has_memory is True
-    assert ctx.fetch_result == result
-    assert ctx.new_items == items
-    assert ctx.new_entries == entries
+    assert ctx.ensure_fetch().new_items == items
+    assert ctx.ensure_fetch().new_entries == entries
 
 
 @pytest.mark.asyncio
@@ -387,24 +398,28 @@ async def test_engine_stage_decide_returns_structured_feature_reject_result():
     engine._memory_retrieval = None
     engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
     ctx = DecisionContext()
-    ctx.session_key = "telegram:1"
-    ctx.now_utc = datetime.now(timezone.utc)
-    ctx.new_items = []
-    ctx.new_entries = []
-    ctx.recent = []
-    ctx.health_events = []
-    ctx.high_events = []
-    ctx.interruptibility = 1.0
-    ctx.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
-    ctx.pre_score = 0.2
-    ctx.base_score = 0.3
-    ctx.draw_score = 0.3
-    ctx.dc = 0.1
-    ctx.de = 0.1
-    ctx.dr = 0.1
-    ctx.is_crisis = False
-    ctx.sent_24h = 0
-    ctx.fresh_items_24h = 0
+    sense = ctx.ensure_sense()
+    fetch = ctx.ensure_fetch()
+    score = ctx.ensure_score()
+    act = ctx.ensure_act()
+    ctx.state.session_key = "telegram:1"
+    ctx.state.now_utc = datetime.now(timezone.utc)
+    fetch.new_items = []
+    fetch.new_entries = []
+    sense.recent = []
+    sense.health_events = []
+    act.high_events = []
+    sense.interruptibility = 1.0
+    sense.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
+    score.pre_score = 0.2
+    score.base_score = 0.3
+    score.draw_score = 0.3
+    score.dc = 0.1
+    sense.de = 0.1
+    sense.dr = 0.1
+    score.is_crisis = False
+    score.sent_24h = 0
+    score.fresh_items_24h = 0
 
     result = await engine._stage_decide(ctx)
 
@@ -413,7 +428,7 @@ async def test_engine_stage_decide_returns_structured_feature_reject_result():
     assert result.should_send is False
     assert result.decision_message == ""
     assert result.decision_mode == "feature"
-    assert result.feature_final_score == ctx.feature_final_score
+    assert result.feature_final_score == ctx.ensure_decide().feature_final_score
     assert result.history_gate_reason == "disabled"
     assert result.history_scope_mode == "disabled"
 
@@ -472,24 +487,28 @@ async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidat
     engine._memory_retrieval = None
     engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
     ctx = DecisionContext()
-    ctx.session_key = "telegram:1"
-    ctx.now_utc = datetime.now(timezone.utc)
-    ctx.new_items = [item]
-    ctx.new_entries = [("rss:test", "item-1")]
-    ctx.recent = []
-    ctx.health_events = []
-    ctx.high_events = []
-    ctx.interruptibility = 1.0
-    ctx.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
-    ctx.pre_score = 0.2
-    ctx.base_score = 0.3
-    ctx.draw_score = 0.3
-    ctx.dc = 0.1
-    ctx.de = 0.1
-    ctx.dr = 0.1
-    ctx.is_crisis = False
-    ctx.sent_24h = 0
-    ctx.fresh_items_24h = 0
+    sense = ctx.ensure_sense()
+    fetch = ctx.ensure_fetch()
+    score = ctx.ensure_score()
+    act = ctx.ensure_act()
+    ctx.state.session_key = "telegram:1"
+    ctx.state.now_utc = datetime.now(timezone.utc)
+    fetch.new_items = [item]
+    fetch.new_entries = [("rss:test", "item-1")]
+    sense.recent = []
+    sense.health_events = []
+    act.high_events = []
+    sense.interruptibility = 1.0
+    sense.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
+    score.pre_score = 0.2
+    score.base_score = 0.3
+    score.draw_score = 0.3
+    score.dc = 0.1
+    sense.de = 0.1
+    sense.dr = 0.1
+    score.is_crisis = False
+    score.sent_24h = 0
+    score.fresh_items_24h = 0
 
     result = await engine._stage_decide(ctx)
 
@@ -497,8 +516,8 @@ async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidat
     assert result.decision_mode == "feature"
     assert result.should_send is True
     assert result.decision_message == "hello proactive"
-    assert ctx.compose_items == [item]
-    assert ctx.compose_entries == [("rss:test", "item-1")]
+    assert ctx.ensure_act().compose_items == [item]
+    assert ctx.ensure_act().compose_entries == [("rss:test", "item-1")]
     engine._decide.compose_message.assert_awaited_once()
 
 

@@ -85,34 +85,6 @@ def d_recent(msg_count: int, scale: float = 10.0) -> float:
     return min(1.0, math.log1p(max(0, msg_count)) / math.log1p(max(scale, 1.0)))
 
 
-def time_weight(
-    hour: int,
-    *,
-    quiet_start: int = 23,
-    quiet_end: int = 8,
-) -> float:
-    """[兼容保留] 按本地小时返回昼夜权重。
-
-    默认 quiet_start=23, quiet_end=8，表示 23:00-07:59 为静默时段。
-    非跨午夜窗口同样支持，例如 quiet_start=2, quiet_end=4 表示 02:00-03:59。
-    """
-    hour = int(hour) % 24
-    quiet_start = int(quiet_start) % 24
-    quiet_end = int(quiet_end) % 24
-
-    if quiet_start == quiet_end:
-        return 1.0
-
-    if quiet_start < quiet_end:
-        in_quiet = quiet_start <= hour < quiet_end
-    else:
-        in_quiet = hour >= quiet_start or hour < quiet_end
-    return 0.0 if in_quiet else 1.0
-
-
-# ── 合成得分 ───────────────────────────────────────────────────────
-
-
 def composite_score(
     de: float,
     dc: float,
@@ -121,10 +93,7 @@ def composite_score(
     w_c: float = 0.40,
     w_r: float = 0.20,
 ) -> float:
-    """三维加权合成，结果裁剪至 [0, 1]。
-
-    time_weight 由调用方在外部乘入，保持此函数纯粹。
-    """
+    """三维加权合成，结果裁剪至 [0, 1]。"""
     raw = w_e * de + w_c * dc + w_r * dr
     return max(0.0, min(1.0, raw))
 
@@ -171,59 +140,3 @@ def random_weight(rng: _random.Random | None = None) -> float:
     r = rng or _random
     sample = r.betavariate(2, 2)   # [0, 1]，均值 0.5
     return 0.5 + sample            # [0.5, 1.5]
-
-
-# ── 旧函数（保留向后兼容，不再由主流程调用）─────────────────────────
-
-
-def urge_base(energy: float, cool_threshold: float = 0.20) -> float:
-    """[已废弃] 电量低于 cool_threshold 时冲动二次上升。保留兼容。"""
-    energy = max(0.0, energy)
-    if energy >= cool_threshold:
-        return 0.0
-    return min(1.0, ((cool_threshold - energy) / cool_threshold) ** 2)
-
-
-def content_weight(
-    new_items: int,
-    has_memory: bool,
-    is_crisis: bool,
-) -> float:
-    """[已废弃] 旧版内容权重。保留兼容。"""
-    if is_crisis:
-        base = min(1.0 + new_items * 0.2 + (0.3 if has_memory else 0.0), 2.0)
-        return max(base, 1.0)
-    w = 0.0
-    if new_items > 0:
-        w += min(new_items * 0.3, 1.0)
-    if has_memory:
-        w += 0.3
-    return w
-
-
-def next_tick_interval(
-    energy: float,
-    *,
-    cool_threshold: float = 0.20,
-    crisis_threshold: float = 0.05,
-    tick_high: int = 7200,
-    tick_normal: int = 1800,
-    tick_low: int = 900,
-    tick_crisis: int = 600,
-    tick_jitter: float = 0.3,
-    rng: _random.Random | None = None,
-) -> int:
-    """[已废弃] 旧版 energy 驱动的 tick 间隔。保留兼容。"""
-    if energy > 0.50:
-        base = tick_high
-    elif energy > cool_threshold:
-        base = tick_normal
-    elif energy > crisis_threshold:
-        base = tick_low
-    else:
-        base = tick_crisis
-
-    if tick_jitter <= 0:
-        return base
-    r = (rng or _random).uniform(1 - tick_jitter, 1 + tick_jitter)
-    return max(1, int(base * r))

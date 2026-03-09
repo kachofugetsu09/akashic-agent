@@ -165,67 +165,9 @@ class EvidenceBundle:
     source_refs: list[ProactiveSourceRef]
 
 
-_CTX_FIELD_MAP: dict[str, tuple[str, str]] = {
-    "now_utc": ("state", "now_utc"),
-    "session_key": ("state", "session_key"),
-    "target_last_user": ("state", "target_last_user"),
-    "last_proactive_at": ("state", "last_proactive_at"),
-    "sleep_ctx": ("sense", "sleep_ctx"),
-    "health_events": ("sense", "health_events"),
-    "energy": ("sense", "energy"),
-    "now_hour": ("sense", "now_hour"),
-    "recent": ("sense", "recent"),
-    "interruptibility": ("sense", "interruptibility"),
-    "interrupt_detail": ("sense", "interrupt_detail"),
-    "interrupt_factor": ("sense", "interrupt_factor"),
-    "sleep_mod": ("sense", "sleep_mod"),
-    "de": ("sense", "de"),
-    "dr": ("sense", "dr"),
-    "items": ("fetch", "items"),
-    "new_items": ("fetch", "new_items"),
-    "new_entries": ("fetch", "new_entries"),
-    "semantic_duplicate_entries": ("fetch", "semantic_duplicate_entries"),
-    "has_memory": ("fetch", "has_memory"),
-    "pre_score": ("score", "pre_score"),
-    "dc": ("score", "dc"),
-    "base_score": ("score", "base_score"),
-    "draw_score": ("score", "draw_score"),
-    "force_reflect": ("score", "force_reflect"),
-    "is_crisis": ("score", "is_crisis"),
-    "fresh_items_24h": ("score", "fresh_items_24h"),
-    "sent_24h": ("score", "sent_24h"),
-    "decision_signals": ("decide", "decision_signals"),
-    "feature_payload": ("decide", "feature_payload"),
-    "feature_final_score": ("decide", "feature_final_score"),
-    "decision": ("decide", "decision"),
-    "decision_message": ("decide", "decision_message"),
-    "should_send": ("decide", "should_send"),
-    "memory_query": ("decide", "memory_query"),
-    "retrieved_memory_block": ("decide", "retrieved_memory_block"),
-    "retrieved_memory_item_ids": ("decide", "retrieved_memory_item_ids"),
-    "history_channel_open": ("decide", "history_channel_open"),
-    "history_gate_reason": ("decide", "history_gate_reason"),
-    "history_scope_mode": ("decide", "history_scope_mode"),
-    "memory_fallback_reason": ("decide", "memory_fallback_reason"),
-    "compose_items": ("act", "compose_items"),
-    "compose_entries": ("act", "compose_entries"),
-    "state_summary_tag": ("act", "state_summary_tag"),
-    "source_refs": ("act", "source_refs"),
-    "high_events": ("act", "high_events"),
-}
-
-_CTX_SNAPSHOT_FACTORIES = {
-    "sense": SenseSnapshot,
-    "fetch": FetchSnapshot,
-    "score": ScoreSnapshot,
-    "decide": DecideSnapshot,
-    "act": ActSnapshot,
-}
-
-
 @dataclass
 class DecisionContext:
-    """每轮 tick 的决策上下文，优先使用 state/snapshot，保留旧字段兼容访问。"""
+    """每轮 tick 的决策上下文，只通过 state 和各 stage snapshot 显式访问。"""
 
     state: EngineState = field(default_factory=EngineState)
     sense: SenseSnapshot | None = None
@@ -233,11 +175,6 @@ class DecisionContext:
     score: ScoreSnapshot | None = None
     decide: DecideSnapshot | None = None
     act: ActSnapshot | None = None
-
-    # Stage 1 — gate
-    gate_passed: bool = True
-    sense_result: "SenseResult | None" = None
-    fetch_result: "FetchFilterResult | None" = None
 
     def ensure_sense(self) -> SenseSnapshot:
         if self.sense is None:
@@ -263,38 +200,6 @@ class DecisionContext:
         if self.act is None:
             self.act = ActSnapshot()
         return self.act
-
-    def __getattr__(self, name: str) -> Any:
-        mapping = _CTX_FIELD_MAP.get(name)
-        if mapping is None:
-            raise AttributeError(name)
-        container_name, field_name = mapping
-        if container_name == "state":
-            return getattr(self.state, field_name)
-        container = getattr(self, container_name)
-        if container is None:
-            container = _CTX_SNAPSHOT_FACTORIES[container_name]()
-            object.__setattr__(self, container_name, container)
-        return getattr(container, field_name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        mapping = _CTX_FIELD_MAP.get(name)
-        if mapping is None:
-            object.__setattr__(self, name, value)
-            return
-        container_name, field_name = mapping
-        if container_name == "state":
-            state = self.__dict__.get("state")
-            if state is None:
-                state = EngineState()
-                object.__setattr__(self, "state", state)
-            setattr(state, field_name, value)
-            return
-        container = self.__dict__.get(container_name)
-        if container is None:
-            container = _CTX_SNAPSHOT_FACTORIES[container_name]()
-            object.__setattr__(self, container_name, container)
-        setattr(container, field_name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +493,6 @@ class ProactiveEngine:
             interrupt_factor=sense.interrupt_factor,
             sleep_mod=sense.sleep_mod,
         )
-        ctx.sense_result = result
         return result
 
     # ------------------------------------------------------------------
@@ -751,7 +655,6 @@ class ProactiveEngine:
             pending_enabled=pending_enabled,
             has_memory=fetch.has_memory,
         )
-        ctx.fetch_result = result
         return result
 
     # ------------------------------------------------------------------

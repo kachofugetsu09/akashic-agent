@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent.looping.core import AgentLoop
 from agent.memory import MemoryStore
+from agent.policies.history_route import DecisionMeta, RouteDecision
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
@@ -85,12 +86,10 @@ def test_route_gate_no_retrieve_when_high_confidence_no_retrieve():
         ),
         memory_route_intention_enabled=True,
     )
-    needs, rewritten, reason, _ = asyncio.run(
-        loop._decide_history_retrieval(user_msg="你好", metadata={})
-    )
-    assert needs is False
-    assert rewritten == "q"
-    assert reason == "ok"
+    decision = asyncio.run(loop._decide_history_route(user_msg="你好", metadata={}))
+    assert decision.needs_history is False
+    assert decision.rewritten_query == "q"
+    assert loop._trace_route_reason(decision) == "ok"
 
 
 def test_route_gate_fail_open_on_low_confidence():
@@ -100,11 +99,9 @@ def test_route_gate_fail_open_on_low_confidence():
         ),
         memory_route_intention_enabled=True,
     )
-    needs, _, reason, _ = asyncio.run(
-        loop._decide_history_retrieval(user_msg="你好", metadata={})
-    )
-    assert needs is True
-    assert reason == "ok"
+    decision = asyncio.run(loop._decide_history_route(user_msg="你好", metadata={}))
+    assert decision.needs_history is True
+    assert loop._trace_route_reason(decision) == "ok"
 
 
 def test_route_gate_supports_fenced_json_payload():
@@ -114,12 +111,12 @@ def test_route_gate_supports_fenced_json_payload():
         ),
         memory_route_intention_enabled=True,
     )
-    needs, rewritten, reason, _ = asyncio.run(
-        loop._decide_history_retrieval(user_msg="我之前喜欢什么游戏", metadata={})
+    decision = asyncio.run(
+        loop._decide_history_route(user_msg="我之前喜欢什么游戏", metadata={})
     )
-    assert needs is False
-    assert rewritten == "偏好"
-    assert reason == "ok"
+    assert decision.needs_history is False
+    assert decision.rewritten_query == "偏好"
+    assert loop._trace_route_reason(decision) == "ok"
 
 
 def test_route_decision_exposes_structured_meta():
@@ -192,15 +189,26 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
         await asyncio.sleep(0.12)
         return []
 
-    async def _slow_route(*args, **kwargs):
-        await asyncio.sleep(0.12)
-        return False, "q", "ok", 120
-
     loop._memory_port = MagicMock()
     loop._memory_port.retrieve_related = AsyncMock(side_effect=_slow_retrieve)
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
-    loop._decide_history_retrieval = _slow_route  # type: ignore[assignment]
+
+    async def _slow_route_decision(*args, **kwargs):
+        await asyncio.sleep(0.12)
+        return RouteDecision(
+            needs_history=False,
+            rewritten_query="q",
+            fail_open=False,
+            latency_ms=120,
+            meta=DecisionMeta(
+                source="llm",
+                confidence="high",
+                reason_code="llm_no_retrieve",
+            ),
+        )
+
+    loop._decide_history_route = _slow_route_decision  # type: ignore[assignment]
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
     start = time.perf_counter()
     asyncio.run(loop._process_inner(msg, msg.session_key))
@@ -229,7 +237,19 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
     loop._memory_port.retrieve_related = AsyncMock(return_value=[])
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
-    loop._decide_history_retrieval = AsyncMock(return_value=(False, "q", "ok", 0))
+    loop._decide_history_route = AsyncMock(
+        return_value=RouteDecision(
+            needs_history=False,
+            rewritten_query="q",
+            fail_open=False,
+            latency_ms=0,
+            meta=DecisionMeta(
+                source="llm",
+                confidence="high",
+                reason_code="llm_no_retrieve",
+            ),
+        )
+    )
     scheduled_after_append: list[bool] = []
     real_create_task = asyncio.create_task
 

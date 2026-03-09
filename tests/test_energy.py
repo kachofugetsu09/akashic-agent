@@ -3,11 +3,10 @@ TDD for proactive/energy.py
 
 测试覆盖：
   - compute_energy: 多时间尺度衰减
-  - time_weight: 昼夜节律
   - random_weight: 随机扰动
 """
 from datetime import datetime, timezone, timedelta
-from proactive.energy import compute_energy, time_weight
+from proactive.energy import compute_energy
 
 
 def _ago(minutes: float) -> datetime:
@@ -66,33 +65,6 @@ def test_energy_accepts_custom_decay_params():
     last = now - timedelta(minutes=30)
     e = compute_energy(last, now, tau1_min=1.0, tau2_min=2.0, tau3_min=5.0)
     assert e < 0.01
-
-
-# ── time_weight ───────────────────────────────────────────────────
-
-def test_time_weight_is_one_during_daytime(
-    # 默认 quiet 23:00-08:00，9~22 全段白天
-):
-    for hour in range(9, 23):
-        w = time_weight(hour)
-        assert w == 1.0, f"hour={hour} should be 1.0, got {w}"
-
-
-def test_time_weight_is_zero_in_deep_quiet_hours():
-    for hour in [0, 1, 2, 3, 4, 5, 6, 7]:
-        w = time_weight(hour)
-        assert w == 0.0, f"hour={hour} should be 0.0, got {w}"
-
-
-def test_time_weight_is_zero_at_quiet_start():
-    assert time_weight(23) == 0.0
-
-
-def test_time_weight_custom_quiet_window():
-    # 仅 2:00-4:00 静音，其他时间全开
-    assert time_weight(3, quiet_start=2, quiet_end=4) == 0.0
-    assert time_weight(5, quiet_start=2, quiet_end=4) == 1.0
-    assert time_weight(1, quiet_start=2, quiet_end=4) == 1.0
 
 
 # ── random_weight ─────────────────────────────────────────────────

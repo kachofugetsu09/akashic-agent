@@ -5,7 +5,7 @@ from pathlib import Path
 from agent.background.subagent_manager import SubagentManager
 from agent.config_models import Config
 from agent.policies.delegation import DelegationPolicy
-from agent.looping import AgentLoop
+from agent.looping.core import AgentLoop
 from agent.mcp.manage_tools import McpAddTool, McpListTool, McpRemoveTool
 from agent.mcp.registry import McpServerRegistry
 from agent.scheduler import LatencyTracker, SchedulerService
