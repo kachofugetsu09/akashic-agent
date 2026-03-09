@@ -329,7 +329,7 @@ class ProactiveEngine:
         logger.info("[proactive] tick 开始")
         ctx = DecisionContext()
 
-        # 1. gate
+        # 1. 先做 gate，决定这一轮是否连主动判断资格都没有。
         gate_result = await self._stage_gate(ctx)
         self._trace_stage_result(ctx, stage="gate", result=gate_result)
         if not gate_result.proceed:
@@ -337,33 +337,33 @@ class ProactiveEngine:
                 return None
             return gate_result.stop_result  # type: ignore[return-value]
 
-        # 2. sense
+        # 2. 采集环境信号，把睡眠/能量/近期上下文写入 ctx.sense。
         sense_result = self._stage_sense(ctx)
         self._trace_stage_result(ctx, stage="sense", result=sense_result)
 
-        # 3. pre-score
+        # 3. 做一轮轻量预评分，过低时直接早退，避免后续昂贵路径。
         pre_result = await self._stage_pre_score(ctx)
         self._trace_stage_result(ctx, stage="pre_score", result=pre_result)
         if not pre_result.proceed:
             return pre_result.return_score
 
-        # 4. fetch & filter
+        # 4. 拉 feed 并做去重/兴趣筛选，得到本轮候选条目。
         fetch_result = await self._stage_fetch_filter(ctx)
         self._trace_stage_result(ctx, stage="fetch_filter", result=fetch_result)
 
-        # 5. score
+        # 5. 计算 base_score / draw_score，判断是否值得进入 LLM 决策。
         score_result = await self._stage_score(ctx)
         self._trace_stage_result(ctx, stage="score", result=score_result)
         if not score_result.proceed:
             return score_result.return_score
 
-        # 6. decide
+        # 6. 进入 decide，生成 decision_signals，并走 feature 或 reflect 模式。
         decide_result = await self._stage_decide(ctx)
         self._trace_stage_result(ctx, stage="decide", result=decide_result)
         if not decide_result.proceed:
             return decide_result.return_score
 
-        # 7. act
+        # 7. 真正执行发送、副作用落地和状态标记。
         await self._stage_act(ctx)
         return ctx.ensure_score().base_score
 
@@ -379,7 +379,7 @@ class ProactiveEngine:
           stop_result=0.0            — quota_exhausted，tick 应返回 0.0
           stop_result=_STOP_NONE     — min_interval/probability 拒绝，tick 应返回 None
         """
-        # 1. 清理过期条目
+        # 1. 先清理 state store 里的过期痕迹，避免本轮判断用到脏状态。
         self._state.cleanup(
             seen_ttl_hours=self._cfg.dedupe_seen_ttl_hours,
             delivery_ttl_hours=self._cfg.delivery_dedupe_hours,
@@ -392,7 +392,7 @@ class ProactiveEngine:
             pending_ttl_hours=self._cfg_int("pending_item_ttl_hours", 24),
         )
 
-        # 2. anyaction gate 判定
+        # 2. 再跑 anyaction gate，决定今天额度/最小间隔/概率是否允许继续。
         if not (self._cfg.anyaction_enabled and self._anyaction):
             return GateResult(proceed=True, stop_result=None, reason_code="pass")
 
@@ -428,13 +428,13 @@ class ProactiveEngine:
         """采集睡眠上下文、能量、打扰度等环境信号，填充 ctx。"""
         state = ctx.state
         sense = ctx.ensure_sense()
-        # 1. 刷新睡眠上下文
+        # 1. 先刷新睡眠上下文，确保 Fitbit 相关信号是本轮最新值。
         refreshed = bool(getattr(self._sense, "refresh_sleep_context", lambda: False)())
         if refreshed:
             logger.debug("[proactive] fitbit 上下文已在本轮决策前主动刷新")
         sense.sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
 
-        # 2. 提取健康事件
+        # 2. 从睡眠上下文中抽取健康事件，后面 pre-score / act 都会用到。
         health_events: list[dict] = (
             getattr(sense.sleep_ctx, "health_events", [])
             if sense.sleep_ctx is not None
@@ -442,7 +442,7 @@ class ProactiveEngine:
         )
         sense.health_events = health_events if isinstance(health_events, list) else []
 
-        # 3. 采集能量 & 打扰度
+        # 3. 采集能量、近期消息和 interruptibility，形成 score 的基础输入。
         sense.energy = self._sense.compute_energy()
         sense.now_hour = datetime.now().hour
         sense.recent = self._sense.collect_recent()
@@ -457,7 +457,7 @@ class ProactiveEngine:
         )
         sense.interrupt_factor = 0.6 + 0.4 * sense.interruptibility
 
-        # 4. Fitbit 睡眠修正
+        # 4. 用睡眠修正项微调 interrupt_factor，避免深睡时仍然太激进。
         sense.sleep_mod = (
             sense.sleep_ctx.sleep_modifier if sense.sleep_ctx is not None else 1.0
         )
@@ -504,7 +504,7 @@ class ProactiveEngine:
         state = ctx.state
         sense = ctx.ensure_sense()
         score = ctx.ensure_score()
-        # 1. 计算加权 pre_score
+        # 1. 用 energy/recent 两个轻量信号先算 pre_score，尽量早决定要不要继续。
         w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
         score.pre_score = (
             (
@@ -549,7 +549,7 @@ class ProactiveEngine:
                     reason_code="health_fast_path",
                 )
 
-        # 2. 过低则跳过 chat，尝试 skill action
+        # 2. 如果 pre_score 太低，就不再进入 LLM 路径，直接尝试 skill action 兜底。
         if score.pre_score < self._cfg.score_pre_threshold:
             logger.info(
                 "[proactive] pre_score 过低（%.3f < %.2f），跳过 chat，尝试 skill action",
@@ -577,11 +577,11 @@ class ProactiveEngine:
         """拉取 feed 条目，去重，应用兴趣筛选，填充 ctx.new_items 等。"""
         state = ctx.state
         fetch = ctx.ensure_fetch()
-        # 1. 拉取原始条目
+        # 1. 先从 feed 拉原始条目，后续所有筛选都基于这批候选。
         fetch.items = await self._sense.fetch_items(self._cfg.items_per_source)
         logger.info("[proactive] 拉取到 %d 条信息", len(fetch.items))
 
-        # 2. 基础去重（seen / semantic）
+        # 2. 先做 seen / semantic 去重，避免重复条目进入后续决策。
         discovered_items, discovered_entries, fetch.semantic_duplicate_entries = (
             self._sense.filter_new_items(fetch.items)
         )
@@ -596,7 +596,7 @@ class ProactiveEngine:
                 len(fetch.semantic_duplicate_entries),
             )
 
-        # 3. memory 兴趣筛选
+        # 3. 如果开启兴趣筛选，再用 memory 对候选做一次收缩。
         if self._cfg.interest_filter.enabled and discovered_items:
             memory_text = self._sense.read_memory_text()
             if memory_text:
@@ -645,7 +645,7 @@ class ProactiveEngine:
             fetch.new_items = discovered_items
             fetch.new_entries = discovered_entries
 
-        # 4. 全局记忆检查（影响 force_reflect 判断）
+        # 4. 最后补充全局记忆命中状态，供后面的 force_reflect 判断使用。
         fetch.has_memory = self._sense.has_global_memory()
         result = FetchFilterResult(
             total_items=len(fetch.items),
@@ -664,9 +664,13 @@ class ProactiveEngine:
     async def _stage_score(self, ctx: DecisionContext) -> ScoreResult:
         """计算 base_score / draw_score；未过门槛时提前返回。"""
         state = ctx.state
+        # 1. 先把 score snapshot 算完整，保证 base/draw_score 都落在 ctx.score。
         w_random = self._compute_score_snapshot(ctx)
+        # 2. 再刷新 presence 相关状态，把 target 会话和近 24h 统计补齐。
         self._refresh_presence_state(ctx)
+        # 3. 基于完整 snapshot 生成 ScoreResult，决定本轮是否继续。
         result = self._build_score_result(ctx, w_random=w_random)
+        # 4. draw_score 不够但又值得跑 skill action 时，在这里统一做兜底。
         if result.reason_code == "draw_score_below_threshold":
             logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=draw_score")
@@ -679,12 +683,16 @@ class ProactiveEngine:
 
     async def _stage_decide(self, ctx: DecisionContext) -> DecideResult:
         """构建决策信号，调用 LLM 评分或生成消息，填充 ctx.should_send / decision_message。"""
+        # 1. 先把决策所需的显式 signals 组好，后续 feature/reflect 共用。
         self._populate_decision_signals(ctx)
+        # 2. 再补记忆检索结果，把 memory block 和 route 元信息挂到 decide snapshot。
         await self._retrieve_decision_memory(ctx)
+        # 3. feature 模式走“评分 + compose”的闭环；否则走 reflect 模式。
         if self._cfg.feature_scoring_enabled:
             self._prepare_feature_compose_candidates(ctx)
             return await self._run_feature_decision(ctx)
         await self._run_reflect_decision(ctx)
+        # 4. 两条分支最后都统一落成 DecideResult，交给 act 阶段消费。
         return self._build_continue_decide_result(ctx, decision_mode="reflect")
 
     # ------------------------------------------------------------------
@@ -699,13 +707,14 @@ class ProactiveEngine:
         evidence = self._build_evidence_bundle(ctx)
         act.source_refs = evidence.source_refs
 
+        # 1. 如果 decide 已经判定不发，就只做 rejection / fallback，不进入发送链。
         if not decide.should_send:
             logger.info("[proactive] 决定不主动发送")
             logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
             await self._reject_and_try_skill_action(ctx, evidence)
             return
 
-        # 1. 解析证据 & 构建 delivery_key
+        # 2. 准备本轮 delivery key 和证据集，后面的所有去重都围绕这组输入。
         delivery_key = self._prepare_delivery_attempt(ctx, evidence)
         logger.info(
             "[proactive] 发送前去重检查 session=%s evidence_count=%d delivery_key=%s",
@@ -714,7 +723,7 @@ class ProactiveEngine:
             delivery_key[:16],
         )
 
-        # 2. delivery 去重
+        # 3. 先做 delivery 去重，避免同一组证据重复发到同一会话。
         if state.session_key and self._state.is_delivery_duplicate(
             session_key=state.session_key,
             delivery_key=delivery_key,
@@ -729,7 +738,7 @@ class ProactiveEngine:
             logger.info("[proactive] selected_action=idle reason=delivery_dedupe")
             return
 
-        # 3. 同一沉默周期内的用户状态总结防复读
+        # 4. 再做 state summary 防复读，必要时重写或拒绝这次发送。
         recent_proactive = self._sense.collect_recent_proactive(
             getattr(self._cfg, "message_dedupe_recent_n", 5)
         )
@@ -740,11 +749,11 @@ class ProactiveEngine:
         ):
             return
 
-        # 4. message 语义去重
+        # 5. 再做 message 语义去重，挡住“话术不同但本质重复”的消息。
         if not await self._passes_message_deduper(ctx, evidence, recent_proactive):
             return
 
-        # 5. 被动处理并发检查
+        # 6. 最后检查目标会话是否正忙于被动回复，避免双写并发。
         if (
             state.session_key
             and self._passive_busy_fn
@@ -757,7 +766,7 @@ class ProactiveEngine:
             )
             return
 
-        # 6. 发送
+        # 7. 真正发送；成功后落 delivery/seen/ack，失败则保持可重试状态。
         sent = await self._act.send(
             decide.decision_message,
             ProactiveSendMeta(
@@ -775,10 +784,13 @@ class ProactiveEngine:
             logger.info("[proactive] selected_action=idle reason=send_failed")
 
     def _compute_score_snapshot(self, ctx: DecisionContext) -> float:
+        """把 score 阶段的纯计算部分集中到一个 helper，避免和副作用混在一起。"""
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
+        # 1. 先把内容新鲜度算出来，补全三维 score 输入。
         score.dc = d_content(len(fetch.new_items), self._cfg.score_content_halfsat)
+        # 2. 再合成 base_score，并乘上 interrupt_factor 做当前轮的打扰修正。
         score.base_score = (
             composite_score(
                 sense.de,
@@ -790,14 +802,17 @@ class ProactiveEngine:
             )
             * sense.interrupt_factor
         )
+        # 3. 最后叠加随机扰动，得到 draw_score，供阈值判断使用。
         w_random = random_weight(rng=self._rng)
         score.draw_score = score.base_score * w_random
         return w_random
 
     def _refresh_presence_state(self, ctx: DecisionContext) -> None:
+        """把 score 阶段依赖的 presence / 会话状态拉平到 ctx.state / ctx.score。"""
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
+        # 1. 先解析目标 session，并读取最近用户消息/主动触达时间。
         ctx.state.session_key = self._sense.target_session_key()
         ctx.state.target_last_user = (
             self._presence.get_last_user_at(ctx.state.session_key)
@@ -809,11 +824,13 @@ class ProactiveEngine:
             if self._presence and ctx.state.session_key
             else None
         )
+        # 2. 再计算 presence 兜底条件，决定是否要 force_reflect。
         presence_force_reflect = self._presence is not None and (
             sense.energy < 0.05
             or (bool(ctx.state.session_key) and ctx.state.target_last_user is None)
             or (sense.energy < 0.20 and fetch.has_memory)
         )
+        # 3. 最后补 24h 维度的统计量，供 decide 阶段构建 signals。
         score.force_reflect = score.force_reflect or presence_force_reflect
         score.is_crisis = sense.energy < 0.05
         score.sent_24h = (
@@ -833,9 +850,11 @@ class ProactiveEngine:
         )
 
     def _build_score_result(self, ctx: DecisionContext, *, w_random: float) -> ScoreResult:
+        """把 score 阶段的分支判断统一映射成 ScoreResult。"""
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
+        # 1. 没有候选、没有健康事件、也没有强制兜底时，直接 no_candidates 早退。
         if not fetch.new_items and not sense.health_events and not score.force_reflect:
             logger.info("[proactive] 无候选信息且无健康事件，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=no_candidates")
@@ -847,6 +866,7 @@ class ProactiveEngine:
                 draw_score=score.draw_score,
                 force_reflect=score.force_reflect,
             )
+        # 2. 正常情况下先记录完整 score 诊断信息，便于理解本轮为什么继续/停止。
         logger.info(
             "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"
             "  interrupt=%.3f W_random=%.2f → draw_score=%.3f 阈值=%.2f force_reflect=%s",
@@ -860,6 +880,7 @@ class ProactiveEngine:
             self._cfg.score_llm_threshold,
             score.force_reflect,
         )
+        # 3. draw_score 低于阈值时，区分普通早退和 force_reflect 两条路径。
         if score.draw_score < self._cfg.score_llm_threshold and not score.force_reflect:
             return ScoreResult(
                 proceed=False,
@@ -889,12 +910,14 @@ class ProactiveEngine:
         )
 
     def _populate_decision_signals(self, ctx: DecisionContext) -> None:
+        """把 decide 阶段真正依赖的显式信号集中写入 decide snapshot。"""
         state = ctx.state
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
+        # 1. 先把与“最近是否被打扰过”有关的时间差算出来。
         mins_since_last_user = (
             int((state.now_utc - state.target_last_user).total_seconds() / 60)
             if state.target_last_user
@@ -910,6 +933,7 @@ class ProactiveEngine:
             and state.last_proactive_at
             and state.target_last_user > state.last_proactive_at
         )
+        # 2. 再组织成给 feature / reflect 共用的 decision_signals。
         decide.decision_signals = {
             "minutes_since_last_user": mins_since_last_user,
             "minutes_since_last_proactive": mins_since_last_proactive,
@@ -931,6 +955,7 @@ class ProactiveEngine:
             "candidate_items": len(fetch.new_items),
             "fresh_items_24h": score.fresh_items_24h,
         }
+        # 3. 最后抽取高优先级健康事件，给后面的发送和 ack 路径使用。
         if sense.health_events:
             decide.decision_signals["health_events"] = sense.health_events
         act.high_events = [
@@ -944,6 +969,7 @@ class ProactiveEngine:
         )
 
     async def _retrieve_decision_memory(self, ctx: DecisionContext) -> None:
+        """按当前会话和候选条目补 memory block，不在这里做任何发送决策。"""
         state = ctx.state
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
@@ -951,8 +977,10 @@ class ProactiveEngine:
         decide = ctx.ensure_decide()
         channel = ""
         chat_id = ""
+        # 1. 先从 session_key 中拆出 channel/chat_id，供 proactive memory 检索使用。
         if state.session_key and ":" in state.session_key:
             channel, chat_id = state.session_key.split(":", 1)
+        # 2. 然后跑 retrieval port，把 block 和 route 元信息一次性带回。
         if self._memory_retrieval is not None:
             retrieved = await self._memory_retrieval.retrieve_proactive_context(
                 session_key=state.session_key,
@@ -965,6 +993,7 @@ class ProactiveEngine:
             )
         else:
             retrieved = ProactiveRetrievedMemory.empty("retrieval_disabled")
+        # 3. 最后把检索结果全部落进 decide snapshot，后面不再重复解析。
         decide.memory_query = retrieved.query
         decide.retrieved_memory_block = retrieved.block
         decide.retrieved_memory_item_ids = retrieved.item_ids
@@ -980,17 +1009,20 @@ class ProactiveEngine:
         act.compose_entries = self._entries_for_items(act.compose_items, fetch.new_entries)
 
     async def _run_feature_decision(self, ctx: DecisionContext) -> DecideResult:
+        """feature 模式：先打分，再在通过阈值时 compose_message。"""
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
+        # 1. 先对当前候选打 feature 分数，并缓存原始 feature payload。
         features = await self._decide.score_features(
             items=fetch.new_items,
             recent=sense.recent,
             decision_signals=decide.decision_signals,
             retrieved_memory_block=decide.retrieved_memory_block,
         )
+        # 2. 再合成最终 feature_final_score，并决定是否在这里直接拒绝。
         decide.feature_payload = features or {}
         feature_final_base = _feature_final_score(
             cfg=self._cfg,
@@ -1030,6 +1062,7 @@ class ProactiveEngine:
                 history_gate_reason=decide.history_gate_reason,
                 history_scope_mode=decide.history_scope_mode,
             )
+        # 3. 只有通过 feature gate，才会继续 compose_message 并产出 should_send。
         decide.decision_message = await self._decide.compose_message(
             items=act.compose_items,
             recent=sense.recent,
@@ -1055,10 +1088,12 @@ class ProactiveEngine:
         return self._build_continue_decide_result(ctx, decision_mode="feature")
 
     async def _run_reflect_decision(self, ctx: DecisionContext) -> None:
+        """reflect 模式：直接让 LLM 做反思与消息草拟。"""
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
+        # 1. 先请求 reflect 结果，得到 score / should_send / message / reasoning。
         decide.decision = await self._decide.reflect(
             fetch.new_items,
             sense.recent,
@@ -1068,6 +1103,7 @@ class ProactiveEngine:
             decision_signals=decide.decision_signals,
             retrieved_memory_block=decide.retrieved_memory_block,
         )
+        # 2. 再叠加随机化决策，并用最终阈值决定 should_send。
         decide.decision, decision_delta = self._decide.randomize_decision(decide.decision)
         logger.info(
             f"[proactive] score={decide.decision.score:.2f}  "
@@ -1100,20 +1136,24 @@ class ProactiveEngine:
         )
 
     def _build_evidence_bundle(self, ctx: DecisionContext) -> EvidenceBundle:
+        """统一构建 act 阶段要消费的证据视图，避免 source/evidence 概念混用。"""
         fetch = ctx.ensure_fetch()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
+        # 1. 先确定 source_items/source_entries，它们代表本轮发送候选来源。
         source_items = act.compose_items or fetch.new_items or fetch.items
         source_entries = act.compose_entries or self._entries_for_items(
             source_items,
             fetch.new_entries,
         )
+        # 2. 再从 decision 里解析 evidence ids，缩成真正支撑这次发送的证据集。
         evidence_item_ids = self._decide.resolve_evidence_item_ids(
             decide.decision
             if decide.decision is not None
             else _PseudoDecision(message=decide.decision_message),
             source_items,
         )
+        # 3. 最后把 source/evidence/source_refs 一起打包给 act 阶段使用。
         evidence_items, evidence_entries = self._resolve_evidence_entries(
             source_items,
             source_entries,

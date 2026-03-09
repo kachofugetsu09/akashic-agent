@@ -23,16 +23,20 @@ class ConversationTurnHandler:
         self._loop = loop
 
     async def process(self, msg: InboundMessage, key: str) -> OutboundMessage:
+        """处理一次普通用户消息，把“检索 -> 执行 -> 持久化 -> 回包”串成主路径。"""
         loop = self._loop
         session = loop.session_manager.get_or_create(key)
+        # 1. 先解析 skill 提及和主会话历史，准备这轮上下文。
         skill_mentions = self._collect_skill_mentions(msg)
         main_history = session.get_history(max_messages=loop.memory_window)
+        # 2. 再独立跑 memory 注入，尽量让主执行链只拿最终 block。
         retrieved_block = await self._retrieve_memory_block(
             msg=msg,
             key=key,
             session=session,
             main_history=main_history,
         )
+        # 3. 用会话历史、skill 和 memory block 执行真正的 conversation turn。
         final_content, tools_used, tool_chain = await self._run_conversation_turn(
             msg=msg,
             session=session,
@@ -40,6 +44,7 @@ class ConversationTurnHandler:
             main_history=main_history,
             retrieved_block=retrieved_block,
         )
+        # 4. 最后统一做 session append / memory worker / outbound 组装。
         await self._persist_turn(
             msg=msg,
             key=key,
@@ -70,6 +75,7 @@ class ConversationTurnHandler:
         session,
         main_history: list[dict],
     ) -> str:
+        """为主对话路径准备 memory block，并把 route / injection 细节写入 trace。"""
         loop = self._loop
         retrieved_block = ""
         try:
@@ -79,6 +85,7 @@ class ConversationTurnHandler:
             gate_latency_ms: dict[str, int] = {}
             runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
 
+            # 1. 先并行获取 procedure items 和 history route decision，压缩门控延迟。
             p_query = f"{msg.content} 操作规范"
             recent_turns = loop._format_gate_history(main_history, max_turns=3)
             p_task = asyncio.create_task(
@@ -101,6 +108,7 @@ class ConversationTurnHandler:
             route_reason = loop._trace_route_reason(route_decision_obj)
             route_ms = route_decision_obj.latency_ms
 
+            # 2. 再按 route decision 决定是否继续检索 history items。
             gate_latency_ms["route"] = route_ms
             if route_reason != "ok":
                 fallback_reason = route_reason
@@ -116,6 +124,7 @@ class ConversationTurnHandler:
                     allow_global=True,
                 )
 
+            # 3. 把 procedure/history 合并成最终 injection block，并做 SOP guard 记录。
             injection = build_memory_injection_result(
                 loop._memory_port,
                 procedure_items=p_items,
@@ -144,6 +153,7 @@ class ConversationTurnHandler:
                 and any(item_id in protected_ids for item_id in injected_item_ids)
             )
 
+            # 4. 无论命中还是失败，最后都把 route / retrieve 信息写入 trace。
             loop._trace_memory_retrieve(
                 session_key=key,
                 channel=msg.channel,
@@ -183,8 +193,11 @@ class ConversationTurnHandler:
         main_history: list[dict],
         retrieved_block: str,
     ) -> tuple[str, list[str], list[dict]]:
+        """真正执行一轮 agent 对话，并返回内容、工具使用和 tool_chain。"""
         loop = self._loop
+        # 1. 先把 channel/chat_id 写进 tool context，保证工具知道当前会话来源。
         loop._set_tool_context(msg.channel, msg.chat_id)
+        # 2. 再统一走 safety retry 包装，避免模型输出异常直接打断主流程。
         final_content, tools_used, tool_chain = await loop._run_with_safety_retry(
             msg,
             session,
@@ -193,6 +206,7 @@ class ConversationTurnHandler:
             retrieved_memory_block=retrieved_block,
         )
 
+        # 3. 最后保证 content 至少有一个兜底字符串，避免 assistant 回复为空。
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
         return final_content, tools_used, tool_chain
@@ -207,12 +221,14 @@ class ConversationTurnHandler:
         tools_used: list[str],
         tool_chain: list[dict],
     ) -> None:
+        """把本轮结果统一写回 session、presence 和 post-response worker。"""
         loop = self._loop
         preview = (
             final_content[:120] + "..." if len(final_content) > 120 else final_content
         )
         logger.info(f"Response to {msg.channel}:{msg.sender}: {preview}")
 
+        # 1. 先把 user/assistant 两条消息落到 session 内存对象中。
         if loop._presence:
             loop._presence.record_user_message(key)
         session.add_message("user", msg.content, media=msg.media if msg.media else None)
@@ -222,11 +238,13 @@ class ConversationTurnHandler:
             tools_used=tools_used if tools_used else None,
             tool_chain=tool_chain if tool_chain else None,
         )
+        # 2. 再补 runtime metadata，让后续 memory gate / proactive 能读到这轮工具状态。
         loop._update_session_runtime_metadata(
             session,
             tools_used=tools_used,
             tool_chain=tool_chain,
         )
+        # 3. 最后做持久化 append，并异步调度 consolidation / post-response memory。
         await loop.session_manager.append_messages(session, session.messages[-2:])
         loop._schedule_consolidation_if_needed(session, key)
         loop._schedule_post_response_memory(
