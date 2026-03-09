@@ -3,6 +3,7 @@ from typing import Any, cast
 
 import pytest
 
+from agent.delegation_policy import SpawnDecision, SpawnDecisionMeta
 from agent.provider import LLMResponse
 from agent.subagent_manager import SubagentManager
 from bus.queue import MessageBus
@@ -38,6 +39,15 @@ async def test_subagent_manager_spawn_is_non_blocking(tmp_path):
         label="job",
         origin_channel="telegram",
         origin_chat_id="123",
+        decision=SpawnDecision(
+            should_spawn=True,
+            label="job",
+            meta=SpawnDecisionMeta(
+                source="heuristic",
+                confidence="high",
+                reason_code="long_running",
+            ),
+        ),
     )
 
     assert "已创建后台任务" in text
@@ -76,6 +86,15 @@ async def test_subagent_manager_announces_completion_to_origin_session(tmp_path)
         label="research",
         origin_channel="telegram",
         origin_chat_id="42",
+        decision=SpawnDecision(
+            should_spawn=True,
+            label="research",
+            meta=SpawnDecisionMeta(
+                source="heuristic",
+                confidence="medium",
+                reason_code="context_isolation_needed",
+            ),
+        ),
     )
 
     msg = await asyncio.wait_for(bus.consume_inbound(), timeout=0.2)
@@ -86,3 +105,4 @@ async def test_subagent_manager_announces_completion_to_origin_session(tmp_path)
     assert msg.metadata["internal_event"] == "spawn_completed"
     assert msg.metadata["spawn"]["status"] == "incomplete"
     assert msg.metadata["spawn"]["exit_reason"] == "forced_summary"
+    assert msg.metadata["spawn_decision"]["meta"]["reason_code"] == "context_isolation_needed"

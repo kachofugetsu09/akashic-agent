@@ -5,6 +5,7 @@ import logging
 import uuid
 from pathlib import Path
 
+from agent.delegation_policy import SpawnDecision
 from agent.provider import LLMProvider
 from agent.subagent import SubAgent
 from agent.subagent_profiles import SubagentRuntime, build_spawn_spec
@@ -50,6 +51,7 @@ class SubagentManager:
         label: str | None,
         origin_channel: str,
         origin_chat_id: str,
+        decision: SpawnDecision | None = None,
     ) -> str:
         job_id = uuid.uuid4().hex[:8]
         display_label = (label or task[:30] or job_id).strip()
@@ -60,17 +62,20 @@ class SubagentManager:
                 label=display_label,
                 origin_channel=origin_channel,
                 origin_chat_id=origin_chat_id,
+                decision=decision,
             ),
             name=f"spawn:{job_id}",
         )
         self._running_tasks[job_id] = bg_task
         bg_task.add_done_callback(lambda _: self._running_tasks.pop(job_id, None))
         logger.info(
-            "[spawn] started job_id=%s label=%r origin=%s:%s",
+            "[spawn] started job_id=%s label=%r origin=%s:%s reason=%s confidence=%s",
             job_id,
             display_label,
             origin_channel,
             origin_chat_id,
+            decision.meta.reason_code if decision is not None else "-",
+            decision.meta.confidence if decision is not None else "-",
         )
         return (
             f"已创建后台任务「{display_label}」（job_id={job_id}）。"
@@ -88,6 +93,7 @@ class SubagentManager:
         label: str,
         origin_channel: str,
         origin_chat_id: str,
+        decision: SpawnDecision | None,
     ) -> None:
         try:
             agent = self._build_subagent()
@@ -103,6 +109,7 @@ class SubagentManager:
                 status=status,
                 exit_reason=exit_reason,
                 result=result,
+                decision=decision,
             )
         except Exception as e:
             logger.exception("[spawn] subagent failed job_id=%s err=%s", job_id, e)
@@ -115,6 +122,7 @@ class SubagentManager:
                 status="error",
                 exit_reason="error",
                 result=f"后台任务执行失败：{e}",
+                decision=decision,
             )
 
     def _build_subagent(self) -> SubAgent:
@@ -163,6 +171,7 @@ class SubagentManager:
         status: str,
         exit_reason: str,
         result: str,
+        decision: SpawnDecision | None,
     ) -> None:
         payload_result = result
         if len(payload_result) > _RESULT_MAX_CHARS:
@@ -182,13 +191,15 @@ class SubagentManager:
                 exit_reason=exit_reason,
                 result=payload_result,
             ),
+            decision=decision,
         )
         await self._bus.publish_inbound(msg)
         logger.info(
-            "[spawn] completed job_id=%s status=%s exit_reason=%s route=%s:%s",
+            "[spawn] completed job_id=%s status=%s exit_reason=%s route=%s:%s decision_reason=%s",
             job_id,
             status,
             exit_reason,
             origin_channel,
             origin_chat_id,
+            decision.meta.reason_code if decision is not None else "-",
         )

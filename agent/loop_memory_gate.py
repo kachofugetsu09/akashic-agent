@@ -1,14 +1,9 @@
-import asyncio
 import json
 import logging
 from datetime import datetime
 
-from agent.llm_json import load_json_object_loose
-from agent.loop_constants import (
-    _FLOW_SEQUENCE_PATTERN,
-    _FLOW_TRIGGER_WORDS,
-    _RETRIEVE_TRACE_SUMMARY_MAX,
-)
+from agent.history_route_policy import HistoryRoutePolicy, RouteDecision
+from agent.loop_constants import _RETRIEVE_TRACE_SUMMARY_MAX
 
 logger = logging.getLogger("agent.loop")
 
@@ -121,19 +116,7 @@ class AgentLoopMemoryGateMixin:
 
     @staticmethod
     def _is_flow_execution_state(user_msg: str, metadata: dict[str, object]) -> bool:
-        text = user_msg or ""
-        if any(w in text for w in _FLOW_TRIGGER_WORDS):
-            return True
-        if _FLOW_SEQUENCE_PATTERN.search(text):
-            return True
-        if bool(metadata.get("last_turn_had_task_tool", False)):
-            return True
-        recent_task_tools = metadata.get("recent_task_tools")
-        if isinstance(recent_task_tools, list) and any(
-            isinstance(t, str) and t for t in recent_task_tools
-        ):
-            return True
-        return False
+        return HistoryRoutePolicy.is_flow_execution_state(user_msg, metadata)
 
     @staticmethod
     def _format_gate_history(history: list[dict], max_turns: int = 3) -> str:
@@ -161,66 +144,45 @@ class AgentLoopMemoryGateMixin:
         metadata: dict[str, object],
         recent_history: str = "",
     ) -> tuple[bool, str, str, int]:
-        start = datetime.now()
+        decision = await self._decide_history_route(
+            user_msg=user_msg,
+            metadata=metadata,
+            recent_history=recent_history,
+        )
+        return (
+            decision.needs_history,
+            decision.rewritten_query,
+            self._legacy_route_reason(decision),
+            decision.latency_ms,
+        )
 
-        if not self._memory_route_intention_enabled:
-            latency = int((datetime.now() - start).total_seconds() * 1000)
-            return True, user_msg, "disabled", latency
+    async def _decide_history_route(
+        self,
+        *,
+        user_msg: str,
+        metadata: dict[str, object],
+        recent_history: str = "",
+    ) -> RouteDecision:
+        policy = HistoryRoutePolicy(
+            light_provider=self.light_provider,
+            light_model=self.light_model,
+            enabled=self._memory_route_intention_enabled,
+            llm_timeout_ms=self._memory_gate_llm_timeout_ms,
+            max_tokens=self._memory_gate_max_tokens,
+        )
+        return await policy.decide(
+            user_msg=user_msg,
+            metadata=metadata,
+            recent_history=recent_history,
+        )
 
-        if self._is_flow_execution_state(user_msg, metadata):
-            latency = int((datetime.now() - start).total_seconds() * 1000)
-            return True, user_msg, "flow_execution_state", latency
-
-        history_section = f"\n近期对话摘要：\n{recent_history}\n" if recent_history else ""
-        prompt = f"""判断当前用户消息是否需要检索历史事件记忆。
-{history_section}
-当前消息：{user_msg}
-
-规则：
-- 闲聊、通识问答、无需历史上下文 -> NO_RETRIEVE
-- 涉及历史偏好、过往对话、用户特征 -> RETRIEVE
-
-若 RETRIEVE：rewritten_query 只保留检索主题关键词（如"仁王 游戏偏好"），
-去掉"我之前/之前说过/聊过"等 meta 表述，方便向量检索命中记忆。
-若 NO_RETRIEVE：rewritten_query 返回原文不变。
-
-只返回 JSON：{{"decision":"RETRIEVE|NO_RETRIEVE","rewritten_query":"...","confidence":"high|medium|low"}}"""
-
-        try:
-            timeout_s = max(0.1, self._memory_gate_llm_timeout_ms / 1000.0)
-            resp = await asyncio.wait_for(
-                self.light_provider.chat(
-                    messages=[{"role": "user", "content": prompt}],
-                    tools=[],
-                    model=self.light_model,
-                    max_tokens=self._memory_gate_max_tokens,
-                ),
-                timeout=timeout_s,
-            )
-            text = (resp.content or "").strip()
-            payload = load_json_object_loose(text)
-            decision = (
-                str(payload.get("decision", "")).upper()
-                if payload is not None
-                else ""
-            )
-            rewritten = (
-                str(payload.get("rewritten_query", "")).strip()
-                if payload is not None
-                else ""
-            )
-            confidence = (
-                str(payload.get("confidence", "medium")).lower()
-                if payload is not None
-                else "low"
-            )
-            if confidence not in {"high", "medium", "low"}:
-                confidence = "low"
-            if confidence == "low":
-                decision = "RETRIEVE"
-            needs_history = decision != "NO_RETRIEVE"
-            latency = int((datetime.now() - start).total_seconds() * 1000)
-            return needs_history, (rewritten or user_msg), "ok", latency
-        except Exception:
-            latency = int((datetime.now() - start).total_seconds() * 1000)
-            return True, user_msg, "route_gate_exception", latency
+    @staticmethod
+    def _legacy_route_reason(decision: RouteDecision) -> str:
+        reason_code = decision.meta.reason_code
+        if reason_code == "route_disabled":
+            return "disabled"
+        if reason_code == "flow_execution_state":
+            return "flow_execution_state"
+        if reason_code == "llm_exception_fail_open":
+            return "route_gate_exception"
+        return "ok"

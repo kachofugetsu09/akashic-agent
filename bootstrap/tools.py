@@ -7,6 +7,7 @@ from agent.loop import AgentLoop
 from agent.mcp.manage_tools import McpAddTool, McpListTool, McpRemoveTool
 from agent.mcp.registry import McpServerRegistry
 from agent.scheduler import LatencyTracker, SchedulerService
+from agent.delegation_policy import DelegationPolicy
 from agent.tool_bundles import build_fitbit_tools, build_readonly_research_tools
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
@@ -198,7 +199,7 @@ def build_core_runtime(
         fetch_requester=http_resources.external_default,
     )
     tools.register(
-        SpawnTool(subagent_manager, tools),
+        SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
         always_on=True,
         tags=["meta", "background"],
         risk="write",

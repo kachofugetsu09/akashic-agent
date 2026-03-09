@@ -2,17 +2,28 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.delegation_policy import DelegationPolicy
 from agent.subagent_manager import SubagentManager
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class SpawnTool(Tool):
     """Create a background subagent task bound to the current session."""
 
-    def __init__(self, manager: SubagentManager, tool_registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        manager: SubagentManager,
+        tool_registry: ToolRegistry,
+        policy: DelegationPolicy | None = None,
+    ) -> None:
         self._manager = manager
         self._tool_registry = tool_registry
+        self._policy = policy or DelegationPolicy()
 
     @property
     def name(self) -> str:
@@ -49,9 +60,19 @@ class SpawnTool(Tool):
         chat_id = str(ctx.get("chat_id", "") or "").strip()
         if not channel or not chat_id:
             return "错误：当前会话上下文缺失，无法创建后台任务"
+        decision = self._policy.decide(task=task, label=label)
+        logger.info(
+            "[spawn] decision should_spawn=%s reason=%s confidence=%s source=%s label=%r explicit_call=true",
+            decision.should_spawn,
+            decision.meta.reason_code,
+            decision.meta.confidence,
+            decision.meta.source,
+            decision.label,
+        )
         return await self._manager.spawn(
             task=task,
             label=label,
             origin_channel=channel,
             origin_chat_id=chat_id,
+            decision=decision,
         )

@@ -122,6 +122,40 @@ def test_route_gate_supports_fenced_json_payload():
     assert reason == "ok"
 
 
+def test_route_decision_exposes_structured_meta():
+    loop = _make_loop(
+        _Provider(
+            ['{"decision":"NO_RETRIEVE","rewritten_query":"偏好","confidence":"high"}']
+        ),
+        memory_route_intention_enabled=True,
+    )
+    decision = asyncio.run(
+        loop._decide_history_route(user_msg="我之前喜欢什么游戏", metadata={})
+    )
+    assert decision.needs_history is False
+    assert decision.rewritten_query == "偏好"
+    assert decision.fail_open is False
+    assert decision.meta.source == "llm"
+    assert decision.meta.confidence == "high"
+    assert decision.meta.reason_code == "llm_no_retrieve"
+
+
+def test_route_decision_marks_low_confidence_fail_open():
+    loop = _make_loop(
+        _Provider(
+            ['{"decision":"NO_RETRIEVE","rewritten_query":"q","confidence":"weird"}']
+        ),
+        memory_route_intention_enabled=True,
+    )
+    decision = asyncio.run(loop._decide_history_route(user_msg="你好", metadata={}))
+    assert decision.needs_history is True
+    assert decision.rewritten_query == "q"
+    assert decision.fail_open is True
+    assert decision.meta.source == "llm"
+    assert decision.meta.confidence == "low"
+    assert decision.meta.reason_code == "llm_low_confidence_fail_open"
+
+
 def test_flow_execution_state_not_triggered_by_single_char_xian_zai():
     loop = _make_loop(_Provider(), memory_route_intention_enabled=True)
     assert loop._is_flow_execution_state("我先问个问题", {}) is False

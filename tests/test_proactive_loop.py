@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -11,7 +12,7 @@ from core.net.http import (
 )
 from feeds.base import FeedItem
 from proactive.config import ProactiveConfig
-from proactive.engine import ProactiveEngine
+from proactive.engine import DecisionContext, ProactiveEngine, _STOP_NONE
 from proactive.loop import ProactiveLoop, _parse_decision
 from proactive.ports import ProactiveSendMeta, ProactiveSourceRef
 from proactive.presence import PresenceStore
@@ -113,6 +114,246 @@ async def test_engine_request_light_text_uses_expected_chat_kwargs():
     assert kwargs["tools"] == []
     assert kwargs["model"] == "test-model"
     assert kwargs["max_tokens"] == 77
+
+
+@pytest.mark.asyncio
+async def test_engine_stage_gate_returns_structured_result_for_scheduler_reject():
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        dedupe_seen_ttl_hours=24,
+        delivery_dedupe_hours=24,
+        semantic_dedupe_window_hours=24,
+        anyaction_enabled=True,
+    )
+    engine._state = SimpleNamespace(cleanup=MagicMock())
+    engine._sense = SimpleNamespace(last_user_at=lambda: None)
+    engine._anyaction = SimpleNamespace(
+        should_act=lambda **kwargs: (False, {"reason": "min_interval"})
+    )
+
+    result = await engine._stage_gate(DecisionContext())
+
+    assert result.proceed is False
+    assert result.stop_result is _STOP_NONE
+    assert result.reason_code == "scheduler_reject"
+
+
+@pytest.mark.asyncio
+async def test_engine_stage_pre_score_returns_structured_below_threshold_result():
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        score_weight_energy=1.0,
+        score_weight_recent=1.0,
+        score_pre_threshold=0.5,
+    )
+    engine._try_skill_action = AsyncMock()
+    ctx = DecisionContext()
+    ctx.de = 0.1
+    ctx.dr = 0.1
+    ctx.interrupt_factor = 1.0
+    ctx.interruptibility = 1.0
+    ctx.interrupt_detail = {
+        "f_reply": 1.0,
+        "f_activity": 1.0,
+        "f_fatigue": 1.0,
+        "random_delta": 0.0,
+    }
+    ctx.sleep_mod = 1.0
+    ctx.energy = 0.2
+    ctx.recent = []
+    ctx.health_events = []
+
+    result = await engine._stage_pre_score(ctx)
+
+    assert result.proceed is False
+    assert result.return_score == ctx.pre_score
+    assert result.reason_code == "below_threshold"
+    engine._try_skill_action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_engine_stage_sense_returns_structured_snapshot():
+    sleep_ctx = SimpleNamespace(
+        health_events=[{"severity": "high"}],
+        sleep_modifier=0.5,
+        state="sleeping",
+        available=True,
+        prob=0.8,
+        data_lag_min=5,
+    )
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(score_recent_scale=10)
+    engine._sense = SimpleNamespace(
+        refresh_sleep_context=lambda: True,
+        sleep_context=lambda: sleep_ctx,
+        compute_energy=lambda: 0.2,
+        collect_recent=lambda: [{"role": "user", "content": "hi"}],
+        compute_interruptibility=lambda **kwargs: (
+            0.75,
+            {
+                "f_reply": 0.9,
+                "f_activity": 0.8,
+                "f_fatigue": 1.0,
+                "random_delta": 0.0,
+            },
+        ),
+    )
+    ctx = DecisionContext()
+
+    result = engine._stage_sense(ctx)
+
+    assert result.sleep_state == "sleeping"
+    assert result.sleep_available is True
+    assert result.health_event_count == 1
+    assert result.energy == 0.2
+    assert result.recent_count == 1
+    assert result.interruptibility == 0.75
+    assert result.interrupt_factor == ctx.interrupt_factor
+    assert ctx.sense_result == result
+
+
+@pytest.mark.asyncio
+async def test_engine_stage_score_returns_snapshot_fields_for_no_candidates():
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        score_content_halfsat=3.0,
+        score_weight_energy=1.0,
+        score_weight_content=1.0,
+        score_weight_recent=1.0,
+        score_llm_threshold=0.6,
+    )
+    engine._rng = None
+    engine._sense = SimpleNamespace(target_session_key=lambda: "")
+    engine._presence = None
+    engine._state = SimpleNamespace()
+    engine._try_skill_action = AsyncMock()
+    ctx = DecisionContext()
+    ctx.de = 0.2
+    ctx.dr = 0.1
+    ctx.interrupt_factor = 1.0
+    ctx.interruptibility = 1.0
+    ctx.new_items = []
+    ctx.health_events = []
+    ctx.force_reflect = False
+    ctx.energy = 0.3
+    ctx.has_memory = False
+
+    result = await engine._stage_score(ctx)
+
+    assert result.proceed is False
+    assert result.reason_code == "no_candidates"
+    assert result.return_score == ctx.base_score
+    assert result.base_score == ctx.base_score
+    assert result.draw_score == ctx.draw_score
+    assert result.force_reflect is False
+
+
+@pytest.mark.asyncio
+async def test_engine_stage_fetch_filter_returns_structured_snapshot():
+    items = [
+        FeedItem(
+            source_name="Test",
+            source_type="rss",
+            title="A",
+            content="body",
+            url="https://example.com/a",
+            author=None,
+            published_at=None,
+        )
+    ]
+    entries = [("rss:test", "item-1")]
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        interest_filter=SimpleNamespace(enabled=False),
+        pending_queue_enabled=False,
+        items_per_source=3,
+    )
+    engine._sense = SimpleNamespace(
+        fetch_items=AsyncMock(return_value=items),
+        filter_new_items=lambda raw: (raw, entries, []),
+        has_global_memory=lambda: True,
+    )
+    ctx = DecisionContext()
+
+    result = await engine._stage_fetch_filter(ctx)
+
+    assert result.total_items == 1
+    assert result.discovered_count == 1
+    assert result.selected_count == 1
+    assert result.semantic_duplicate_count == 0
+    assert result.pending_enabled is False
+    assert result.has_memory is True
+    assert ctx.fetch_result == result
+    assert ctx.new_items == items
+    assert ctx.new_entries == entries
+
+
+@pytest.mark.asyncio
+async def test_engine_stage_decide_returns_structured_feature_reject_result():
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        feature_scoring_enabled=True,
+        feature_send_threshold=0.8,
+        threshold=0.7,
+        score_llm_threshold=0.6,
+        llm_reject_cooldown_hours=0,
+        feature_weight_topic_continuity=1.0,
+        feature_weight_interest_match=1.0,
+        feature_weight_content_novelty=1.0,
+        feature_weight_reconnect_value=1.0,
+        feature_weight_message_readiness=1.0,
+        feature_weight_disturb_risk=1.0,
+        feature_weight_interrupt_penalty=1.0,
+        feature_weight_d_recent_bonus=0.0,
+        feature_weight_d_content_bonus=0.0,
+        feature_weight_d_energy_bonus=0.0,
+    )
+    engine._decide = SimpleNamespace(
+        score_features=AsyncMock(
+            return_value={
+                "topic_continuity": 0.1,
+                "interest_match": 0.1,
+                "content_novelty": 0.1,
+                "reconnect_value": 0.1,
+                "disturb_risk": 0.9,
+                "message_readiness": 0.1,
+                "confidence": 0.1,
+            }
+        ),
+        compose_message=AsyncMock(return_value=""),
+    )
+    engine._memory_retrieval = None
+    engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
+    ctx = DecisionContext()
+    ctx.session_key = "telegram:1"
+    ctx.now_utc = datetime.now(timezone.utc)
+    ctx.new_items = []
+    ctx.new_entries = []
+    ctx.recent = []
+    ctx.health_events = []
+    ctx.high_events = []
+    ctx.interruptibility = 1.0
+    ctx.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
+    ctx.pre_score = 0.2
+    ctx.base_score = 0.3
+    ctx.draw_score = 0.3
+    ctx.dc = 0.1
+    ctx.de = 0.1
+    ctx.dr = 0.1
+    ctx.is_crisis = False
+    ctx.sent_24h = 0
+    ctx.fresh_items_24h = 0
+
+    result = await engine._stage_decide(ctx)
+
+    assert result.proceed is False
+    assert result.reason_code == "feature_score_reject"
+    assert result.should_send is False
+    assert result.decision_message == ""
+    assert result.decision_mode == "feature"
+    assert result.feature_final_score == ctx.feature_final_score
+    assert result.history_gate_reason == "disabled"
+    assert result.history_scope_mode == "disabled"
 
 
 @pytest.mark.asyncio

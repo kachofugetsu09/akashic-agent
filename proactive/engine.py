@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from feeds.base import FeedItem
 from proactive.item_id import compute_item_id, compute_source_key
@@ -93,6 +93,7 @@ class DecisionContext:
     sleep_mod: float = 1.0
     de: float = 0.0  # d_energy
     dr: float = 0.0  # d_recent
+    sense_result: "SenseResult | None" = None
 
     # Stage 3 — pre-score
     pre_score: float = 0.0
@@ -103,6 +104,7 @@ class DecisionContext:
     new_entries: list[tuple[str, str]] = field(default_factory=list)
     semantic_duplicate_entries: list[tuple[str, str]] = field(default_factory=list)
     has_memory: bool = False
+    fetch_result: "FetchFilterResult | None" = None
 
     # Stage 5 — score
     dc: float = 0.0  # d_content
@@ -137,6 +139,73 @@ class DecisionContext:
 
     # Stage 7 — act
     high_events: list[dict] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GateResult:
+    proceed: bool
+    stop_result: float | object | None
+    reason_code: Literal["pass", "quota_exhausted", "scheduler_reject"]
+
+
+@dataclass(frozen=True)
+class SenseResult:
+    sleep_state: str
+    sleep_available: bool
+    health_event_count: int
+    energy: float
+    recent_count: int
+    interruptibility: float
+    interrupt_factor: float
+    sleep_mod: float
+
+
+@dataclass(frozen=True)
+class PreScoreResult:
+    proceed: bool
+    return_score: float | None
+    reason_code: Literal["continue", "health_fast_path", "below_threshold"]
+
+
+@dataclass(frozen=True)
+class ScoreResult:
+    proceed: bool
+    return_score: float | None
+    reason_code: Literal[
+        "continue",
+        "no_candidates",
+        "draw_score_below_threshold",
+        "draw_score_force_reflect",
+    ]
+    base_score: float
+    draw_score: float
+    force_reflect: bool
+
+
+@dataclass(frozen=True)
+class FetchFilterResult:
+    total_items: int
+    discovered_count: int
+    selected_count: int
+    semantic_duplicate_count: int
+    pending_enabled: bool
+    has_memory: bool
+
+
+@dataclass(frozen=True)
+class DecideResult:
+    proceed: bool
+    return_score: float | None
+    reason_code: Literal["continue", "feature_score_reject"]
+    should_send: bool
+    decision_message: str
+    decision_mode: Literal["feature", "reflect"]
+    feature_final_score: float | None
+    history_gate_reason: str
+    history_scope_mode: str
 
 
 # ---------------------------------------------------------------------------
@@ -199,31 +268,31 @@ class ProactiveEngine:
 
         # 1. gate
         gate_result = await self._stage_gate(ctx)
-        if gate_result is _STOP_NONE:
-            return None
-        if gate_result is not None:
-            return gate_result  # type: ignore[return-value]
+        if not gate_result.proceed:
+            if gate_result.stop_result is _STOP_NONE:
+                return None
+            return gate_result.stop_result  # type: ignore[return-value]
 
         # 2. sense
         self._stage_sense(ctx)
 
         # 3. pre-score
         pre_result = await self._stage_pre_score(ctx)
-        if pre_result is not None:
-            return pre_result
+        if not pre_result.proceed:
+            return pre_result.return_score
 
         # 4. fetch & filter
         await self._stage_fetch_filter(ctx)
 
         # 5. score
         score_result = await self._stage_score(ctx)
-        if score_result is not None:
-            return score_result
+        if not score_result.proceed:
+            return score_result.return_score
 
         # 6. decide
         decide_result = await self._stage_decide(ctx)
-        if decide_result is not None:
-            return decide_result
+        if not decide_result.proceed:
+            return decide_result.return_score
 
         # 7. act
         await self._stage_act(ctx)
@@ -233,13 +302,13 @@ class ProactiveEngine:
     # Stage 1 — gate: state cleanup + anyaction gate
     # ------------------------------------------------------------------
 
-    async def _stage_gate(self, ctx: DecisionContext) -> float | object | None:
+    async def _stage_gate(self, ctx: DecisionContext) -> GateResult:
         """清理过期状态；若 anyaction gate 拒绝则提前返回退出码。
 
         返回值：
-          None         — gate 通过，继续后续阶段
-          0.0          — quota_exhausted，tick 应返回 0.0
-          _STOP_NONE   — min_interval/probability 拒绝，tick 应返回 None
+          proceed=True               — gate 通过，继续后续阶段
+          stop_result=0.0            — quota_exhausted，tick 应返回 0.0
+          stop_result=_STOP_NONE     — min_interval/probability 拒绝，tick 应返回 None
         """
         # 1. 清理过期条目
         self._state.cleanup(
@@ -256,7 +325,7 @@ class ProactiveEngine:
 
         # 2. anyaction gate 判定
         if not (self._cfg.anyaction_enabled and self._anyaction):
-            return None
+            return GateResult(proceed=True, stop_result=None, reason_code="pass")
 
         should_act, meta = self._anyaction.should_act(
             now_utc=ctx.now_utc,
@@ -268,17 +337,25 @@ class ProactiveEngine:
             )
             reason = meta.get("reason", "")
             if reason == "quota_exhausted":
-                return 0.0  # 今日配额已满，用最长间隔（tick_s0）
-            return _STOP_NONE  # pyright: ignore[reportReturnType]  # min_interval / probability：调度器按能量自算
+                return GateResult(
+                    proceed=False,
+                    stop_result=0.0,
+                    reason_code="quota_exhausted",
+                )
+            return GateResult(
+                proceed=False,
+                stop_result=_STOP_NONE,
+                reason_code="scheduler_reject",
+            )
 
         logger.info("[proactive] gate_result=pass meta=%s", meta)
-        return None
+        return GateResult(proceed=True, stop_result=None, reason_code="pass")
 
     # ------------------------------------------------------------------
     # Stage 2 — sense: collect environment signals
     # ------------------------------------------------------------------
 
-    def _stage_sense(self, ctx: DecisionContext) -> None:
+    def _stage_sense(self, ctx: DecisionContext) -> SenseResult:
         """采集睡眠上下文、能量、打扰度等环境信号，填充 ctx。"""
         # 1. 刷新睡眠上下文
         refreshed = bool(getattr(self._sense, "refresh_sleep_context", lambda: False)())
@@ -335,12 +412,23 @@ class ProactiveEngine:
                 (ctx.sleep_ctx.prob if ctx.sleep_ctx is not None else None),
             ),
         )
+        ctx.sense_result = SenseResult(
+            sleep_state=sleep_state,
+            sleep_available=sleep_available,
+            health_event_count=len(ctx.health_events),
+            energy=ctx.energy,
+            recent_count=len(ctx.recent),
+            interruptibility=ctx.interruptibility,
+            interrupt_factor=ctx.interrupt_factor,
+            sleep_mod=ctx.sleep_mod,
+        )
+        return ctx.sense_result
 
     # ------------------------------------------------------------------
     # Stage 3 — pre-score: quick score before fetching items
     # ------------------------------------------------------------------
 
-    async def _stage_pre_score(self, ctx: DecisionContext) -> float | None:
+    async def _stage_pre_score(self, ctx: DecisionContext) -> PreScoreResult:
         """计算 pre_score；过低时尝试 skill action 后提前返回。"""
         # 1. 计算加权 pre_score
         w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
@@ -381,7 +469,11 @@ class ProactiveEngine:
                     ctx.pre_score,
                     len(high_events),
                 )
-                return None
+                return PreScoreResult(
+                    proceed=True,
+                    return_score=None,
+                    reason_code="health_fast_path",
+                )
 
         # 2. 过低则跳过 chat，尝试 skill action
         if ctx.pre_score < self._cfg.score_pre_threshold:
@@ -391,15 +483,23 @@ class ProactiveEngine:
                 self._cfg.score_pre_threshold,
             )
             await self._try_skill_action(now_utc=ctx.now_utc)
-            return ctx.pre_score
+            return PreScoreResult(
+                proceed=False,
+                return_score=ctx.pre_score,
+                reason_code="below_threshold",
+            )
 
-        return None
+        return PreScoreResult(
+            proceed=True,
+            return_score=None,
+            reason_code="continue",
+        )
 
     # ------------------------------------------------------------------
     # Stage 4 — fetch & filter: pull items, deduplicate, interest filter
     # ------------------------------------------------------------------
 
-    async def _stage_fetch_filter(self, ctx: DecisionContext) -> None:
+    async def _stage_fetch_filter(self, ctx: DecisionContext) -> FetchFilterResult:
         """拉取 feed 条目，去重，应用兴趣筛选，填充 ctx.new_items 等。"""
         # 1. 拉取原始条目
         ctx.items = await self._sense.fetch_items(self._cfg.items_per_source)
@@ -471,12 +571,21 @@ class ProactiveEngine:
 
         # 4. 全局记忆检查（影响 force_reflect 判断）
         ctx.has_memory = self._sense.has_global_memory()
+        ctx.fetch_result = FetchFilterResult(
+            total_items=len(ctx.items),
+            discovered_count=len(discovered_items),
+            selected_count=len(ctx.new_items),
+            semantic_duplicate_count=len(ctx.semantic_duplicate_entries),
+            pending_enabled=pending_enabled,
+            has_memory=ctx.has_memory,
+        )
+        return ctx.fetch_result
 
     # ------------------------------------------------------------------
     # Stage 5 — score: compute base_score / draw_score
     # ------------------------------------------------------------------
 
-    async def _stage_score(self, ctx: DecisionContext) -> float | None:
+    async def _stage_score(self, ctx: DecisionContext) -> ScoreResult:
         """计算 base_score / draw_score；未过门槛时提前返回。"""
         # 1. 计算 base_score / draw_score
         ctx.dc = d_content(len(ctx.new_items), self._cfg.score_content_halfsat)
@@ -528,7 +637,14 @@ class ProactiveEngine:
         if not ctx.new_items and not ctx.health_events and not ctx.force_reflect:
             logger.info("[proactive] 无候选信息且无健康事件，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=no_candidates")
-            return ctx.base_score
+            return ScoreResult(
+                proceed=False,
+                return_score=ctx.base_score,
+                reason_code="no_candidates",
+                base_score=ctx.base_score,
+                draw_score=ctx.draw_score,
+                force_reflect=ctx.force_reflect,
+            )
 
         logger.info(
             "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"
@@ -549,17 +665,39 @@ class ProactiveEngine:
             logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=draw_score")
             await self._try_skill_action(now_utc=ctx.now_utc)
-            return ctx.base_score
+            return ScoreResult(
+                proceed=False,
+                return_score=ctx.base_score,
+                reason_code="draw_score_below_threshold",
+                base_score=ctx.base_score,
+                draw_score=ctx.draw_score,
+                force_reflect=ctx.force_reflect,
+            )
         if ctx.draw_score < self._cfg.score_llm_threshold and ctx.force_reflect:
             logger.info("[proactive] draw_score 未过门槛，但命中兜底条件，继续反思")
+            return ScoreResult(
+                proceed=True,
+                return_score=None,
+                reason_code="draw_score_force_reflect",
+                base_score=ctx.base_score,
+                draw_score=ctx.draw_score,
+                force_reflect=ctx.force_reflect,
+            )
 
-        return None
+        return ScoreResult(
+            proceed=True,
+            return_score=None,
+            reason_code="continue",
+            base_score=ctx.base_score,
+            draw_score=ctx.draw_score,
+            force_reflect=ctx.force_reflect,
+        )
 
     # ------------------------------------------------------------------
     # Stage 6 — decide: build decision_signals, run LLM scoring/compose
     # ------------------------------------------------------------------
 
-    async def _stage_decide(self, ctx: DecisionContext) -> float | None:
+    async def _stage_decide(self, ctx: DecisionContext) -> DecideResult:
         """构建决策信号，调用 LLM 评分或生成消息，填充 ctx.should_send / decision_message。"""
         # 1. 构建 decision_signals 结构
         mins_since_last_user = (
@@ -675,7 +813,17 @@ class ProactiveEngine:
                     self._primary_candidate_entries(ctx.new_entries),
                     hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
                 )
-                return ctx.base_score
+                return DecideResult(
+                    proceed=False,
+                    return_score=ctx.base_score,
+                    reason_code="feature_score_reject",
+                    should_send=False,
+                    decision_message="",
+                    decision_mode="feature",
+                    feature_final_score=ctx.feature_final_score,
+                    history_gate_reason=ctx.history_gate_reason,
+                    history_scope_mode=ctx.history_scope_mode,
+                )
 
         # 3. LLM 生成/反思
         if self._cfg.feature_scoring_enabled:
@@ -723,7 +871,17 @@ class ProactiveEngine:
             )
             ctx.decision_message = ctx.decision.message
 
-        return None
+        return DecideResult(
+            proceed=True,
+            return_score=None,
+            reason_code="continue",
+            should_send=ctx.should_send,
+            decision_message=ctx.decision_message,
+            decision_mode="feature" if self._cfg.feature_scoring_enabled else "reflect",
+            feature_final_score=ctx.feature_final_score,
+            history_gate_reason=ctx.history_gate_reason,
+            history_scope_mode=ctx.history_scope_mode,
+        )
 
     # ------------------------------------------------------------------
     # Stage 7 — act: dedup checks, send, mark state
