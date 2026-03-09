@@ -89,18 +89,17 @@ class ConversationTurnHandler:
                 )
             )
             route_task = asyncio.create_task(
-                loop._decide_history_retrieval(
+                loop._decide_history_route(
                     user_msg=msg.content,
                     metadata=runtime_md,
                     recent_history=recent_turns,
                 )
             )
-            p_items, (
-                needs_history,
-                rewritten_query,
-                route_reason,
-                route_ms,
-            ) = await asyncio.gather(p_task, route_task)
+            p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
+            needs_history = route_decision_obj.needs_history
+            rewritten_query = route_decision_obj.rewritten_query
+            route_reason = loop._trace_route_reason(route_decision_obj)
+            route_ms = route_decision_obj.latency_ms
 
             gate_latency_ms["route"] = route_ms
             if route_reason != "ok":

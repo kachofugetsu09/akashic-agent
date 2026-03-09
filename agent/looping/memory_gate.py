@@ -148,25 +148,6 @@ class AgentLoopMemoryGateMixin:
                 break
         return "\n".join(reversed(turns))
 
-    async def _decide_history_retrieval(
-        self,
-        *,
-        user_msg: str,
-        metadata: dict[str, object],
-        recent_history: str = "",
-    ) -> tuple[bool, str, str, int]:
-        decision = await self._decide_history_route(
-            user_msg=user_msg,
-            metadata=metadata,
-            recent_history=recent_history,
-        )
-        return (
-            decision.needs_history,
-            decision.rewritten_query,
-            self._legacy_route_reason(decision),
-            decision.latency_ms,
-        )
-
     async def _decide_history_route(
         self,
         *,
@@ -188,7 +169,7 @@ class AgentLoopMemoryGateMixin:
         )
 
     @staticmethod
-    def _legacy_route_reason(decision: RouteDecision) -> str:
+    def _trace_route_reason(decision: RouteDecision) -> str:
         reason_code = decision.meta.reason_code
         if reason_code == "route_disabled":
             return "disabled"
