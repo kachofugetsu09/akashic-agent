@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from agent.llm_json import load_json_object_loose
 
@@ -43,6 +44,66 @@ def _parse_consolidation_payload(text: str) -> dict | None:
     return load_json_object_loose(text)
 
 
+@dataclass(frozen=True)
+class ConsolidationWindow:
+    old_messages: list[dict]
+    keep_count: int
+    consolidate_up_to: int
+
+
+def _select_consolidation_window(
+    session,
+    *,
+    memory_window: int,
+    archive_all: bool,
+) -> ConsolidationWindow | None:
+    total_messages = len(session.messages)
+    if archive_all:
+        return ConsolidationWindow(
+            old_messages=list(session.messages),
+            keep_count=0,
+            consolidate_up_to=total_messages,
+        )
+
+    keep_count = memory_window // 2
+    if total_messages <= keep_count:
+        return None
+    if total_messages - session.last_consolidated <= 0:
+        return None
+
+    consolidate_up_to = total_messages - keep_count
+    old_messages = session.messages[session.last_consolidated : consolidate_up_to]
+    if not old_messages:
+        return None
+    return ConsolidationWindow(
+        old_messages=old_messages,
+        keep_count=keep_count,
+        consolidate_up_to=consolidate_up_to,
+    )
+
+
+def _build_consolidation_source_ref(
+    session,
+    *,
+    consolidate_up_to: int,
+    archive_all: bool,
+) -> str:
+    if archive_all:
+        return f"{session.key}@archive_all"
+    return f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
+
+
+def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
+    lines = []
+    for message in old_messages:
+        if not message.get("content") or message.get("role") == "tool":
+            continue
+        role = str(message.get("role", "")).upper()
+        ts = str(message.get("timestamp", "?"))[:16]
+        lines.append(f"[{ts}] {role}: {message['content']}")
+    return "\n".join(lines)
+
+
 class AgentLoopConsolidationMixin:
     def _on_post_mem_task_done(self, task: asyncio.Task, session_key: str) -> None:
         try:
@@ -78,51 +139,41 @@ class AgentLoopConsolidationMixin:
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
         memory = self._memory_port
-        consolidate_up_to = len(session.messages)
+        window = _select_consolidation_window(
+            session,
+            memory_window=self.memory_window,
+            archive_all=archive_all,
+        )
         if archive_all:
-            old_messages = list(session.messages)
-            keep_count = 0
             logger.info(
                 f"Memory consolidation (archive_all): {len(session.messages)} total messages archived"
             )
         else:
-            keep_count = self.memory_window // 2
-            if len(session.messages) <= keep_count:
-                logger.debug(
-                    f"Session {session.key}: No consolidation needed (messages={len(session.messages)}, keep={keep_count})"
-                )
-                return
-            messages_to_process = len(session.messages) - session.last_consolidated
-            if messages_to_process <= 0:
-                logger.debug(
-                    f"Session {session.key}: No new messages to consolidate (last_consolidated={session.last_consolidated}, total={len(session.messages)})"
-                )
-                return
-            consolidate_up_to = len(session.messages) - keep_count
-            old_messages = session.messages[
-                session.last_consolidated : consolidate_up_to
-            ]
-            if not old_messages:
+            if window is None:
+                keep_count = self.memory_window // 2
+                if len(session.messages) <= keep_count:
+                    logger.debug(
+                        f"Session {session.key}: No consolidation needed (messages={len(session.messages)}, keep={keep_count})"
+                    )
+                else:
+                    logger.debug(
+                        f"Session {session.key}: No new messages to consolidate (last_consolidated={session.last_consolidated}, total={len(session.messages)})"
+                    )
                 return
             logger.info(
-                f"Memory consolidation started: {len(session.messages)} total, {len(old_messages)} new to consolidate, {keep_count} keep"
+                f"Memory consolidation started: {len(session.messages)} total, {len(window.old_messages)} new to consolidate, {window.keep_count} keep"
             )
 
-        source_ref = (
-            f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
-            if not archive_all
-            else f"{session.key}@archive_all"
-        )
+        if window is None:
+            # archive_all=False 的早退已在上面处理；这里只是让类型检查和控制流保持明确。
+            return
 
-        lines = []
-        for m in old_messages:
-            if not m.get("content"):
-                continue
-            role = m["role"].upper()
-            if m["role"] == "tool":
-                continue
-            lines.append(f"[{m.get('timestamp', '?')[:16]}] {role}: {m['content']}")
-        conversation = "\n".join(lines)
+        source_ref = _build_consolidation_source_ref(
+            session,
+            consolidate_up_to=window.consolidate_up_to,
+            archive_all=archive_all,
+        )
+        conversation = _format_conversation_for_consolidation(window.old_messages)
         current_memory = await asyncio.to_thread(memory.read_long_term)
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
@@ -188,7 +239,8 @@ class AgentLoopConsolidationMixin:
             result = _parse_consolidation_payload(text)
             if result is None:
                 logger.warning(
-                    f"Memory consolidation: unexpected response type, skipping. Response: {text[:200]}"
+                    "Memory consolidation: unexpected response type, skipping. Response: %r",
+                    text[:200],
                 )
                 return
 
@@ -228,7 +280,7 @@ class AgentLoopConsolidationMixin:
             if archive_all:
                 session.last_consolidated = 0
             else:
-                session.last_consolidated = consolidate_up_to
+                session.last_consolidated = window.consolidate_up_to
             logger.info(
                 f"Memory consolidation done: {len(session.messages)} messages, last_consolidated={session.last_consolidated}"
             )

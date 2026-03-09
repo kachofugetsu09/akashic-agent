@@ -193,39 +193,6 @@ def _format_recent_proactive_entries(recent_proactive: list[object]) -> str:
     return "\n---\n".join(lines)
 
 
-def _message_mentions_source(message: str, source_name: str, url: str | None) -> bool:
-    text = (message or "").strip()
-    if not text:
-        return False
-    if source_name and source_name in text:
-        return True
-    if url and url in text:
-        return True
-    return "来源" in text or "rss" in text.lower()
-
-
-def _ensure_soft_source_attribution(message: str, meta: Any | None) -> str:
-    text = (message or "").strip()
-    if not text or meta is None:
-        return text
-    refs = getattr(meta, "source_refs", None) or []
-    if not refs:
-        return text
-    ref = refs[0]
-    source_name = str(getattr(ref, "source_name", "") or "").strip()
-    source_type = str(getattr(ref, "source_type", "") or "").strip().lower()
-    url = str(getattr(ref, "url", "") or "").strip() or None
-    if not source_name or _message_mentions_source(text, source_name, url):
-        return text
-    if source_type == "rss":
-        suffix = f"我是在 {source_name} 的 RSS 里看到的。"
-    else:
-        suffix = f"这条我是从 {source_name} 看到的。"
-    if text.endswith(("。", "！", "？", ".", "!", "?")):
-        return f"{text}\n{suffix}"
-    return f"{text}。{suffix}"
-
-
 @dataclass
 class ReflectHooks:
     format_items: Callable[[list[FeedItem]], str]
@@ -475,7 +442,7 @@ class ProactiveSender:
         self._presence = presence
 
     async def send(self, message: str, meta: Any | None = None) -> bool:
-        message = _ensure_soft_source_attribution(message, meta)
+        message = (message or "").strip()
         channel = (self._cfg.default_channel or "").strip()
         chat_id = self._cfg.default_chat_id.strip()
         if not channel or not chat_id:

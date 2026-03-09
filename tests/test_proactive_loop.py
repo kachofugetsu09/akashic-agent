@@ -172,7 +172,7 @@ async def test_send_persists_source_refs_and_state_summary_tag(tmp_path):
 
     session = session_manager.get_or_create("telegram:7674283004")
     last = session.messages[-1]
-    assert "HLTV 的 RSS" in last["content"]
+    assert last["content"] == "Rare Atom 这条看起来像是临时补强。"
     assert last["evidence_item_ids"] == ["item-1"]
     assert last["state_summary_tag"] == "none"
     assert last["source_refs"][0]["source_name"] == "HLTV"
