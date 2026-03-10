@@ -259,6 +259,7 @@ def load_config(path: str | Path = "config.json") -> Config:
             fitbit_enabled=bool(p.get("fitbit_enabled", False)),
             fitbit_url=str(p.get("fitbit_url", "http://127.0.0.1:18765")),
             fitbit_poll_seconds=max(1, int(p.get("fitbit_poll_seconds", 300))),
+            sleep_modifier_sleeping=float(p.get("sleep_modifier_sleeping", 0.15)),
             fitbit_monitor_path=str(p.get("fitbit_monitor_path", "")),
             source_scorer_enabled=bool(p.get("source_scorer_enabled", False)),
             source_scorer_total_budget=max(
