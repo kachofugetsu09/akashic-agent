@@ -130,7 +130,11 @@ class AgentLoopMemoryGateMixin:
         return HistoryRoutePolicy.is_flow_execution_state(user_msg, metadata)
 
     @staticmethod
-    def _format_gate_history(history: list[dict], max_turns: int = 3) -> str:
+    def _format_gate_history(
+        history: list[dict],
+        max_turns: int = 3,
+        max_content_len: int | None = 100,
+    ) -> str:
         turns = []
         for msg in reversed(history):
             role = msg.get("role", "")
@@ -141,7 +145,9 @@ class AgentLoopMemoryGateMixin:
                 content = " ".join(
                     c.get("text", "") for c in content if isinstance(c, dict)
                 )
-            content = str(content).strip()[:100]
+            content = str(content).strip()
+            if max_content_len is not None:
+                content = content[:max_content_len]
             if content:
                 turns.append(f"[{role}] {content}")
             if len(turns) >= max_turns * 2:

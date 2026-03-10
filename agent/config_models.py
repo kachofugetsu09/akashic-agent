@@ -50,10 +50,13 @@ class MemoryV2Config:
     inject_max_forced: int = 3
     inject_max_procedure_preference: int = 4
     inject_max_event_profile: int = 2
+    inject_line_max: int = 180
     route_intention_enabled: bool = False
     sop_guard_enabled: bool = True
     gate_llm_timeout_ms: int = 800
     gate_max_tokens: int = 96
+    hyde_enabled: bool = False
+    hyde_timeout_ms: int = 2000
 
 
 @dataclass
@@ -75,6 +78,7 @@ class Config:
     light_base_url: str = ""
     memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
     tool_search_enabled: bool = False
+    spawn_enabled: bool = True
 
 
 __all__ = [

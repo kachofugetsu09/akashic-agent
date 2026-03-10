@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
+    from memory2.hyde_enhancer import HyDEEnhancer
 
 
 @dataclass
@@ -40,6 +41,8 @@ async def retrieve_history_items(
     scope_channel: str = "",
     scope_chat_id: str = "",
     allow_global: bool = True,
+    context: str = "",
+    hyde_enhancer: "HyDEEnhancer | None" = None,
 ) -> tuple[list[dict], str]:
     if prefer_scoped and scope_channel and scope_chat_id:
         scoped_items = await memory.retrieve_related(
@@ -56,14 +59,24 @@ async def retrieve_history_items(
     if not allow_global:
         return [], "disabled"
 
-    global_kwargs: dict[str, Any] = {
-        "memory_types": memory_types,
-        "top_k": top_k,
-    }
+    global_kwargs: dict[str, Any] = {"memory_types": memory_types}
     if prefer_scoped:
         global_kwargs["require_scope_match"] = False
-    items = await memory.retrieve_related(query, **global_kwargs)
-    return items, "global-fallback" if prefer_scoped else "global"
+
+    scope_mode = "global-fallback" if prefer_scoped else "global"
+
+    if hyde_enhancer is not None:
+        items, used_hyde = await hyde_enhancer.augment(
+            raw_query=query,
+            context=context,
+            retrieve_fn=memory.retrieve_related,
+            top_k=top_k,
+            **global_kwargs,
+        )
+        return items, f"{scope_mode}+hyde" if used_hyde else scope_mode
+
+    items = await memory.retrieve_related(query, top_k=top_k, **global_kwargs)
+    return items, scope_mode
 
 
 def build_memory_injection_result(

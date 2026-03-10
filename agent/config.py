@@ -305,10 +305,13 @@ def load_config(path: str | Path = "config.json") -> Config:
             inject_limits.get("procedure_preference", 4)
         ),
         inject_max_event_profile=int(inject_limits.get("event_profile", 4)),
+        inject_line_max=int(inject_limits.get("line_max", 180)),
         route_intention_enabled=bool(mv2.get("route_intention_enabled", False)),
         sop_guard_enabled=bool(mv2.get("sop_guard_enabled", True)),
         gate_llm_timeout_ms=int(mv2.get("gate_llm_timeout_ms", 800)),
         gate_max_tokens=int(mv2.get("gate_max_tokens", 96)),
+        hyde_enabled=bool(mv2.get("hyde_enabled", False)),
+        hyde_timeout_ms=int(mv2.get("hyde_timeout_ms", 2000)),
     )
 
     return Config(
@@ -331,6 +334,7 @@ def load_config(path: str | Path = "config.json") -> Config:
         light_base_url=data.get("light_base_url", ""),
         memory_v2=memory_v2,
         tool_search_enabled=bool(data.get("tool_search_enabled", False)),
+        spawn_enabled=bool(data.get("spawn_enabled", True)),
     )
 
 

@@ -69,6 +69,8 @@ class AgentLoop(
         post_mem_worker: PostResponseMemoryWorker | None = None,
         memory_runtime: "MemoryRuntime | None" = None,
         tool_search_enabled: bool = False,
+        memory_hyde_enabled: bool = False,
+        memory_hyde_timeout_ms: int = 2000,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -99,6 +101,25 @@ class AgentLoop(
             raise ValueError("AgentLoop requires memory_port or memory_runtime")
 
         self._tool_search_enabled = bool(tool_search_enabled)
+
+        if memory_hyde_enabled:
+            if not light_model:
+                logger.warning(
+                    "hyde_enabled=True 但未配置独立 light_model，"
+                    "为避免主模型被额外调用，HyDE 已自动禁用。"
+                    "请在配置中设置 light_model 后重启。"
+                )
+                self._hyde_enhancer: HyDEEnhancer | None = None
+            else:
+                from memory2.hyde_enhancer import HyDEEnhancer
+                self._hyde_enhancer = HyDEEnhancer(
+                    light_provider=self.light_provider,
+                    light_model=self.light_model,
+                    timeout_s=memory_hyde_timeout_ms / 1000.0,
+                )
+        else:
+            self._hyde_enhancer = None
+
         # 进程内 LRU 缓存：session_key → 最近实际调用的非核心工具（容量 5）
         # 只记录 agent 真正调用过的工具，发现未用的不写入
         # 重启后清空（重新搜索一次即可恢复），不写入 session 持久化

@@ -73,6 +73,7 @@ def build_memory_runtime(
         inject_max_forced=config.memory_v2.inject_max_forced,
         inject_max_procedure_preference=config.memory_v2.inject_max_procedure_preference,
         inject_max_event_profile=config.memory_v2.inject_max_event_profile,
+        inject_line_max=config.memory_v2.inject_line_max,
         sop_guard_enabled=config.memory_v2.sop_guard_enabled,
     )
 

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
+
+_WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import parse_spawn_completion
@@ -88,6 +91,12 @@ class ConversationTurnHandler:
             # 1. 先并行获取 procedure items 和 history route decision，压缩门控延迟。
             p_query = f"{msg.content} 操作规范"
             recent_turns = loop._format_gate_history(main_history, max_turns=3)
+            now = datetime.now()
+            date_str = now.strftime(f"%Y-%m-%d {_WEEKDAY_CN[now.weekday()]} %H:%M")
+            hyde_turns = loop._format_gate_history(
+                main_history, max_turns=3, max_content_len=None
+            )
+            hyde_context = f"当前时间：{date_str}\n{hyde_turns}" if hyde_turns else f"当前时间：{date_str}"
             p_task = asyncio.create_task(
                 retrieve_procedure_items(
                     loop._memory_port,
@@ -115,13 +124,16 @@ class ConversationTurnHandler:
             route_decision = "RETRIEVE" if needs_history else "NO_RETRIEVE"
 
             h_items: list[dict] = []
+            h_scope_mode = "disabled"
             if needs_history:
-                h_items, _ = await retrieve_history_items(
+                h_items, h_scope_mode = await retrieve_history_items(
                     loop._memory_port,
                     rewritten_query,
                     memory_types=["event", "profile"],
                     top_k=loop._memory_top_k_history,
                     allow_global=True,
+                    context=hyde_context,
+                    hyde_enhancer=loop._hyde_enhancer,
                 )
 
             # 3. 把 procedure/history 合并成最终 injection block，并做 SOP guard 记录。
@@ -135,8 +147,9 @@ class ConversationTurnHandler:
             injected_item_ids = injection.item_ids
             total_hits = len(p_items) + len(h_items)
             logger.info(
-                "memory2 retrieve: route=%s query=%r p=%d h=%d 命中，筛选后 %d 条注入%s",
+                "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，筛选后 %d 条注入%s",
                 route_decision,
+                h_scope_mode,
                 rewritten_query[:50],
                 len(p_items),
                 len(h_items),

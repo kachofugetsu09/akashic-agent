@@ -30,6 +30,7 @@ class Retriever:
         inject_max_forced: int = 3,
         inject_max_procedure_preference: int = 4,
         inject_max_event_profile: int = 2,
+        inject_line_max: int = 180,
         sop_guard_enabled: bool = True,
     ) -> None:
         self._store = store
@@ -50,6 +51,7 @@ class Retriever:
             1, int(inject_max_procedure_preference)
         )
         self._inject_max_event_profile = max(0, int(inject_max_event_profile))
+        self._inject_line_max = max(60, int(inject_line_max))
         self._sop_guard_enabled = bool(sop_guard_enabled)
 
     async def retrieve(
@@ -110,7 +112,7 @@ class Retriever:
         for item in sorted_items:
             item_id = str(item.get("id", "") or "")
             mtype = item.get("memory_type", "")
-            summary = self._shorten(item.get("summary", ""), self.INJECT_LINE_MAX)
+            summary = self._shorten(item.get("summary", ""), self._inject_line_max)
             if not summary:
                 continue
             extra = item.get("extra_json") or {}

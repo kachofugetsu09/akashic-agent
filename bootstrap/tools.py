@@ -198,13 +198,14 @@ def build_core_runtime(
         max_tokens=config.max_tokens,
         fetch_requester=http_resources.external_default,
     )
-    tools.register(
-        SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
-        always_on=True,
-        tags=["meta", "background"],
-        risk="write",
-        search_keywords=["后台", "长任务", "异步", "继续处理", "spawn", "阻塞", "后台执行"],
-    )
+    if config.spawn_enabled:
+        tools.register(
+            SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
+            always_on=True,
+            tags=["meta", "background"],
+            risk="write",
+            search_keywords=["后台", "长任务", "异步", "继续处理", "spawn", "阻塞", "后台执行"],
+        )
     memory_runtime: MemoryRuntime = build_memory_runtime(
         config,
         workspace,
@@ -251,6 +252,8 @@ def build_core_runtime(
         memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
         memory_runtime=memory_runtime,
         tool_search_enabled=config.tool_search_enabled,
+        memory_hyde_enabled=config.memory_v2.hyde_enabled,
+        memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
     )
 
     scheduler.agent_loop = loop
