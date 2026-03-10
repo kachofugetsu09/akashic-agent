@@ -133,11 +133,23 @@ class ConversationTurnHandler:
             selected_items = injection.selected_items
             retrieved_block = injection.block
             injected_item_ids = injection.item_ids
-            if retrieved_block:
+            total_hits = len(p_items) + len(h_items)
+            logger.info(
+                "memory2 retrieve: route=%s query=%r p=%d h=%d 命中，筛选后 %d 条注入%s",
+                route_decision,
+                rewritten_query[:50],
+                len(p_items),
+                len(h_items),
+                len(selected_items),
+                "" if retrieved_block else "（无内容注入）",
+            )
+            for _item in selected_items:
                 logger.info(
-                    "memory2 retrieve: %d 条命中，筛选后 %d 条注入",
-                    len(p_items) + len(h_items),
-                    len(selected_items),
+                    "memory2 injected: id=%s score=%.3f type=%s summary=%s",
+                    _item.get("id", ""),
+                    float(_item.get("score", 0.0)),
+                    _item.get("memory_type", ""),
+                    str(_item.get("summary", ""))[:60],
                 )
 
             protected_ids = {

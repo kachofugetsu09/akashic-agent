@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class Retriever:
     INJECT_MAX_CHARS = 1200
     INJECT_MAX_FORCED = 3
-    INJECT_MAX_EVENTS = 2
+    INJECT_MAX_EVENTS = 4
     INJECT_LINE_MAX = 180
 
     def __init__(
@@ -165,7 +165,8 @@ class Retriever:
         if events:
             parts.append(
                 (
-                    "## 【相关历史】过往事件\n" + "\n".join(line for _, line in events),
+                    "## 【相关历史】你与当前用户的过往对话（来自记忆检索，时间戳可信，可直接引用，不得自行否定）\n"
+                    + "\n".join(line for _, line in events),
                     [item_id for item_id, _ in events if item_id],
                 )
             )

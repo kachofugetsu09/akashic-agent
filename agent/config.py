@@ -296,7 +296,7 @@ def load_config(path: str | Path = "config.json") -> Config:
         score_threshold=float(mv2.get("score_threshold", 0.45)),
         score_threshold_procedure=float(score_thresholds.get("procedure", 0.60)),
         score_threshold_preference=float(score_thresholds.get("preference", 0.60)),
-        score_threshold_event=float(score_thresholds.get("event", 0.68)),
+        score_threshold_event=float(score_thresholds.get("event", 0.55)),
         score_threshold_profile=float(score_thresholds.get("profile", 0.68)),
         relative_delta=float(mv2.get("relative_delta", 0.06)),
         inject_max_chars=int(inject_limits.get("max_chars", 1200)),
@@ -304,7 +304,7 @@ def load_config(path: str | Path = "config.json") -> Config:
         inject_max_procedure_preference=int(
             inject_limits.get("procedure_preference", 4)
         ),
-        inject_max_event_profile=int(inject_limits.get("event_profile", 2)),
+        inject_max_event_profile=int(inject_limits.get("event_profile", 4)),
         route_intention_enabled=bool(mv2.get("route_intention_enabled", False)),
         sop_guard_enabled=bool(mv2.get("sop_guard_enabled", True)),
         gate_llm_timeout_ms=int(mv2.get("gate_llm_timeout_ms", 800)),

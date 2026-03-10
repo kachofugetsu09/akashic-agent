@@ -180,8 +180,9 @@ class AgentLoopConsolidationMixin:
 
 ## 字段说明
 
-### 1. "history_entry" → HISTORY.md
-2-5 句事件摘要，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
+### 1. "history_entries" → HISTORY.md（数组，每条对应一个独立主题）
+按主题拆分，每个独立话题写一条，1-2 句，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
+不同主题必须拆成独立条目，不得合并。若整段对话只有一个主题，返回只含一条的数组。
 
 ### 2. "pending_items" → PENDING.md 候选缓冲
 只写用户的长期记忆候选，返回对象数组。每个对象格式：
@@ -244,10 +245,20 @@ class AgentLoopConsolidationMixin:
                 )
                 return
 
-            if "history_entry" in result:
+            # 兼容新格式 history_entries（列表）和旧格式 history_entry（字符串）
+            raw_entries = result.get("history_entries")
+            if isinstance(raw_entries, list):
+                history_entries = [e for e in raw_entries if isinstance(e, str) and e.strip()]
+            elif result.get("history_entry"):
+                history_entries = [result["history_entry"]]
+            else:
+                history_entries = []
+
+            if history_entries:
+                combined = "\n".join(history_entries)
                 await asyncio.to_thread(
                     memory.append_history_once,
-                    result["history_entry"],
+                    combined,
                     source_ref=source_ref,
                     kind="history_entry",
                 )
@@ -266,16 +277,24 @@ class AgentLoopConsolidationMixin:
                         len(pending_items.splitlines()),
                     )
 
-            history_entry = result.get("history_entry", "")
-            asyncio.create_task(
-                self._memory_port.save_from_consolidation(
-                    history_entry=history_entry,
-                    behavior_updates=[],
-                    source_ref=source_ref,
-                    scope_channel=getattr(session, "_channel", ""),
-                    scope_chat_id=getattr(session, "_chat_id", ""),
+            scope_channel = getattr(session, "_channel", "")
+            scope_chat_id = getattr(session, "_chat_id", "")
+            for i, entry in enumerate(history_entries):
+                entry_ref = f"{source_ref}#{i}" if len(history_entries) > 1 else source_ref
+                asyncio.create_task(
+                    self._memory_port.save_from_consolidation(
+                        history_entry=entry,
+                        behavior_updates=[],
+                        source_ref=entry_ref,
+                        scope_channel=scope_channel,
+                        scope_chat_id=scope_chat_id,
+                    )
                 )
-            )
+            if history_entries:
+                logger.info(
+                    "Memory consolidation: saved %d history entries to vector store",
+                    len(history_entries),
+                )
 
             if archive_all:
                 session.last_consolidated = 0
