@@ -103,3 +103,9 @@ class ProactiveConfig:
     source_scorer_min_per_source: int = 2
     source_scorer_max_per_source: int = 20
     source_scorer_cache_path: str = ""
+    # 偏好否决门：interest_match 低于阈值时硬拒绝，不进入 compose_message
+    preference_veto_enabled: bool = True
+    preference_interest_veto_threshold: float = 0.15
+    # 偏好专项 RAG
+    preference_retrieval_enabled: bool = True
+    preference_top_k: int = 4

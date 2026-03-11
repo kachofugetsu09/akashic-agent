@@ -144,6 +144,7 @@ class DecideSnapshot:
     history_gate_reason: str = "disabled"
     history_scope_mode: str = "disabled"
     memory_fallback_reason: str = ""
+    preference_block: str = ""  # 偏好专项 RAG 结果，独立字段传给 score_features
 
 
 @dataclass
@@ -1001,6 +1002,7 @@ class ProactiveEngine:
         decide.history_gate_reason = retrieved.history_gate_reason
         decide.history_scope_mode = retrieved.history_scope_mode
         decide.memory_fallback_reason = retrieved.fallback_reason
+        decide.preference_block = retrieved.preference_block
 
     def _prepare_feature_compose_candidates(self, ctx: DecisionContext) -> None:
         fetch = ctx.ensure_fetch()
@@ -1021,6 +1023,7 @@ class ProactiveEngine:
             recent=sense.recent,
             decision_signals=decide.decision_signals,
             retrieved_memory_block=decide.retrieved_memory_block,
+            preference_block=decide.preference_block,
         )
         # 2. 再合成最终 feature_final_score，并决定是否在这里直接拒绝。
         decide.feature_payload = features or {}
@@ -1045,6 +1048,39 @@ class ProactiveEngine:
             self._cfg.feature_send_threshold,
             decide.feature_payload,
         )
+        # 2b. 偏好否决门：interest_match 极低时说明 LLM 认定用户不关注该内容，直接硬拒绝。
+        #      这避免了"虽然你不关心但我还是说"的模式——当偏好明确排斥时不进入 compose_message。
+        if getattr(self._cfg, "preference_veto_enabled", True) and decide.preference_block:
+            raw_interest = decide.feature_payload.get("interest_match", 0.5)
+            try:
+                interest_match_val = float(raw_interest)  # type: ignore[arg-type]
+            except Exception:
+                interest_match_val = 0.5
+            veto_threshold = getattr(self._cfg, "preference_interest_veto_threshold", 0.15)
+            if interest_match_val < veto_threshold:
+                logger.info(
+                    "[proactive] selected_action=idle reason=preference_veto "
+                    "interest_match=%.3f threshold=%.3f preference_block_len=%d",
+                    interest_match_val,
+                    veto_threshold,
+                    len(decide.preference_block),
+                )
+                self._state.mark_rejection_cooldown(
+                    self._primary_candidate_entries(fetch.new_entries),
+                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
+                )
+                return DecideResult(
+                    proceed=False,
+                    return_score=score.base_score,
+                    reason_code="feature_score_reject",
+                    should_send=False,
+                    decision_message="",
+                    decision_mode="feature",
+                    feature_final_score=decide.feature_final_score,
+                    history_gate_reason=decide.history_gate_reason,
+                    history_scope_mode=decide.history_scope_mode,
+                )
+
         if decide.feature_final_score < self._cfg.feature_send_threshold:
             logger.info("[proactive] selected_action=idle reason=feature_score")
             self._state.mark_rejection_cooldown(
@@ -1068,6 +1104,7 @@ class ProactiveEngine:
             recent=sense.recent,
             decision_signals=decide.decision_signals,
             retrieved_memory_block=decide.retrieved_memory_block,
+            preference_block=decide.preference_block,
         )
         decide.should_send = bool(decide.decision_message.strip()) and (
             decide.feature_final_score is not None
@@ -1102,6 +1139,7 @@ class ProactiveEngine:
             is_crisis=score.is_crisis,
             decision_signals=decide.decision_signals,
             retrieved_memory_block=decide.retrieved_memory_block,
+            preference_block=decide.preference_block,
         )
         # 2. 再叠加随机化决策，并用最终阈值决定 should_send。
         decide.decision, decision_delta = self._decide.randomize_decision(decide.decision)

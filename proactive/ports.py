@@ -23,7 +23,7 @@ from memory2.injection_planner import (
     retrieve_history_items,
     retrieve_procedure_items,
 )
-from proactive.components import build_proactive_memory_query
+from proactive.components import build_proactive_memory_query, build_proactive_preference_query
 from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
@@ -88,6 +88,7 @@ class DecidePort(Protocol):
         recent: list[dict],
         decision_signals: dict[str, object],
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> dict[str, float | str] | None: ...
     async def compose_message(
         self,
@@ -96,6 +97,7 @@ class DecidePort(Protocol):
         recent: list[dict],
         decision_signals: dict[str, object],
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> str: ...
     async def reflect(
         self,
@@ -106,6 +108,7 @@ class DecidePort(Protocol):
         is_crisis: bool = False,
         decision_signals: dict[str, object] | None = None,
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> Any: ...
     def randomize_decision(self, decision: Any) -> tuple[Any, float]: ...
     def resolve_evidence_item_ids(
@@ -136,6 +139,7 @@ class ProactiveRetrievedMemory:
     history_gate_reason: str = "disabled"
     history_scope_mode: str = "disabled"
     fallback_reason: str = ""
+    preference_block: str = ""  # 偏好专项 RAG 结果，独立于 procedure+event 的 block
 
     @classmethod
     def empty(cls, fallback_reason: str = "") -> "ProactiveRetrievedMemory":
@@ -246,6 +250,34 @@ class DefaultMemoryRetrievalPort:
                 history_scope_mode=history_scope_mode,
             )
 
+            # 偏好专项 RAG：针对候选 item 来源/话题独立查询 preference 类型记忆。
+            # 目的：检索"用户只关注 Falcons/NiKo 不关心其他战队"之类的明确偏好，
+            # 用于引擎层的偏好否决门（engine preference_veto_enabled）。
+            preference_block = ""
+            pref_query_used = ""
+            pref_hit_count = 0
+            if getattr(self._cfg, "preference_retrieval_enabled", True) and items:
+                try:
+                    pref_query_used = build_proactive_preference_query(
+                        items=items,
+                        max_items=max(1, int(getattr(self._cfg, "memory_query_max_items", 3))),
+                    )
+                    pref_items = await self._memory.retrieve_related(
+                        pref_query_used,
+                        memory_types=["preference"],
+                        top_k=max(1, int(getattr(self._cfg, "preference_top_k", 4))),
+                    )
+                    pref_hit_count = len(pref_items)
+                    if pref_items:
+                        pref_injection = build_memory_injection_result(
+                            self._memory,
+                            procedure_items=pref_items,
+                            history_items=[],
+                        )
+                        preference_block = pref_injection.block
+                except Exception:
+                    logger.warning("[proactive.memory] preference 专项查询失败", exc_info=True)
+
             result = ProactiveRetrievedMemory(
                 query=query,
                 block=injection.block,
@@ -256,6 +288,7 @@ class DefaultMemoryRetrievalPort:
                 history_channel_open=history_open,
                 history_gate_reason=history_reason,
                 history_scope_mode=injection.history_scope_mode,
+                preference_block=preference_block,
             )
             self._trace(
                 session_key=session_key,
@@ -263,6 +296,8 @@ class DefaultMemoryRetrievalPort:
                 chat_id=chat_id,
                 result=result,
                 candidate_items=items,
+                preference_query=pref_query_used,
+                preference_hit_count=pref_hit_count,
             )
             return result
         except Exception:
@@ -312,6 +347,8 @@ class DefaultMemoryRetrievalPort:
         chat_id: str,
         result: ProactiveRetrievedMemory,
         candidate_items: list[FeedItem],
+        preference_query: str = "",
+        preference_hit_count: int = 0,
     ) -> None:
         if not bool(getattr(self._cfg, "memory_trace_enabled", True)):
             return
@@ -331,6 +368,9 @@ class DefaultMemoryRetrievalPort:
             "injected_block_preview": (result.block or "")[:240],
             "candidate_item_ids": [self._item_id(item) for item in candidate_items[:5]],
             "fallback_reason": result.fallback_reason,
+            "preference_query": preference_query,
+            "preference_hit_count": preference_hit_count,
+            "preference_block_preview": (result.preference_block or "")[:120],
         }
         try:
             self._trace_writer(payload)
@@ -662,6 +702,7 @@ class DefaultDecidePort:
         recent: list[dict],
         decision_signals: dict[str, object],
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> dict[str, float | str] | None:
         if not self._feature_scorer:
             return None
@@ -670,6 +711,7 @@ class DefaultDecidePort:
             recent=recent,
             decision_signals=decision_signals,
             retrieved_memory_block=retrieved_memory_block,
+            preference_block=preference_block,
         )
 
     async def compose_message(
@@ -679,6 +721,7 @@ class DefaultDecidePort:
         recent: list[dict],
         decision_signals: dict[str, object],
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> str:
         if not self._message_composer:
             return ""
@@ -687,6 +730,7 @@ class DefaultDecidePort:
             recent=recent,
             decision_signals=decision_signals,
             retrieved_memory_block=retrieved_memory_block,
+            preference_block=preference_block,
         )
 
     async def reflect(
@@ -698,6 +742,7 @@ class DefaultDecidePort:
         is_crisis: bool = False,
         decision_signals: dict[str, object] | None = None,
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> Any:
         return await self._reflector.reflect(
             items=items,
@@ -707,6 +752,7 @@ class DefaultDecidePort:
             is_crisis=is_crisis,
             decision_signals=decision_signals,
             retrieved_memory_block=retrieved_memory_block,
+            preference_block=preference_block,
         )
 
     def randomize_decision(self, decision: Any) -> tuple[Any, float]:

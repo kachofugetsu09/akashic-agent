@@ -272,6 +272,14 @@ def load_config(path: str | Path = "config.json") -> Config:
                 1, int(p.get("source_scorer_max_per_source", 20))
             ),
             source_scorer_cache_path=str(p.get("source_scorer_cache_path", "")),
+            preference_veto_enabled=bool(p.get("preference_veto_enabled", True)),
+            preference_interest_veto_threshold=float(
+                p.get("preference_interest_veto_threshold", 0.15)
+            ),
+            preference_retrieval_enabled=bool(
+                p.get("preference_retrieval_enabled", True)
+            ),
+            preference_top_k=max(1, int(p.get("preference_top_k", 4))),
         )
 
     mv2 = data.get("memory_v2", {})

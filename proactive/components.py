@@ -39,6 +39,35 @@ _TOOL_LOOP_REPEAT_LIMIT = 3
 _SUMMARY_MAX_TOKENS = 384
 
 
+def build_proactive_preference_query(
+    *,
+    items: list[FeedItem],
+    max_items: int = 3,
+) -> str:
+    """构建针对候选 item 来源/话题的偏好专项查询。
+
+    用于独立检索 preference 类型记忆，问题是“用户对这些内容来源的态度/偏好是什么”，
+    而非通用记忆查询。返回的查询字符串应能命中向量库中类似“用户只关注 Falcons 和 NiKo”
+    的偏好记忆。
+    """
+    lines: list[str] = ["用户偏好 兴趣 关注"]
+    seen_sources: set[str] = set()
+    for item in items[: max(1, max_items)]:
+        source = (item.source_name or "").strip()
+        source_type = (item.source_type or "").strip().lower()
+        title = (item.title or "").strip()
+        if source and source not in seen_sources:
+            seen_sources.add(source)
+            lines.append(f"来源: {source}")
+            if source_type:
+                lines.append(f"来源类型: {source_type}:{source.lower()}")
+        if title:
+            snippet = re.sub(r"\s+", " ", title)[:60]
+            lines.append(f"话题: {snippet}")
+    lines.append("用户是否喜欢/关注/不关心该来源或话题")
+    return "\n".join(lines)
+
+
 def build_proactive_memory_query(
     *,
     items: list[FeedItem],
@@ -273,7 +302,22 @@ class ProactiveReflector:
         is_crisis: bool = False,
         decision_signals: dict[str, object] | None = None,
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> Any:
+        # 偏好块作为强约束前置注入 retrieved_memory_block，reflect 模式同样需要遵守。
+        if preference_block:
+            pref_section = (
+                "## 用户偏好（硬约束）\n"
+                + preference_block
+                + "\n"
+                + "若上述偏好明确排斥某来源或话题，不得在消息中提及，"
+                + "禁止出现逆偏好措辞。"
+            )
+            retrieved_memory_block = (
+                pref_section + "\n\n" + retrieved_memory_block
+                if retrieved_memory_block
+                else pref_section
+            )
         prompt_context = _build_proactive_prompt_context(
             items=items,
             recent=recent,
@@ -651,6 +695,7 @@ class ProactiveFeatureScorer:
         recent: list[dict],
         decision_signals: dict[str, object],
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> dict[str, float | str]:
         prompt_context = _build_proactive_prompt_context(
             items=items,
@@ -659,10 +704,18 @@ class ProactiveFeatureScorer:
             format_recent=self._format_recent,
             collect_global_memory=self._collect_global_memory,
         )
+        combined_block = retrieved_memory_block
+        if preference_block:
+            pref_section = "## 用户偏好（强约束）\n" + preference_block
+            combined_block = (
+                pref_section + "\n\n" + retrieved_memory_block
+                if retrieved_memory_block
+                else pref_section
+            )
         system_msg, user_msg = build_feature_scoring_prompt_messages(
             prompt_context=prompt_context,
             decision_signals=decision_signals,
-            retrieved_memory_block=retrieved_memory_block,
+            retrieved_memory_block=combined_block,
         )
         try:
             resp = await self._provider.chat(
@@ -850,6 +903,7 @@ class ProactiveMessageComposer:
         recent: list[dict],
         decision_signals: dict[str, object],
         retrieved_memory_block: str = "",
+        preference_block: str = "",
     ) -> str:
         prompt_context = _build_proactive_prompt_context(
             items=items,
@@ -858,6 +912,16 @@ class ProactiveMessageComposer:
             format_recent=self._format_recent,
             collect_global_memory=self._collect_global_memory,
         )
+
+        preference_constraint = ""
+        if preference_block:
+            preference_constraint = (
+                "## 用户偏好（硬约束，生成时必须遵守）\n"
+                + preference_block
+                + "\n"
+                + "若上述偏好中明确表示不关注某来源、话题或内容，"
+                + "禁止在消息中提及该内容，禁止出现逆偏好措辞。\n"
+            )
 
         system_msg = (
             "你是陪伴型助手。系统已经决定可以主动发送消息给用户。\n"
@@ -872,7 +936,8 @@ class ProactiveMessageComposer:
             "消息不必强行承接近期对话；如果某条信息流本身就很贴合用户兴趣，可以自然地开启一个新话题。\n"
             "如果用户尚未回复最近一次主动关怀，不要重复总结用户当前处境，不要再次使用同类安慰前缀；若本次只是新资讯，直接进入新内容。\n"
             "若你引用了某条信息流里的具体消息，必须确保正文里有证据支撑；找不到确切来源时，不要硬写。\n"
-            "## 身份（与主循环一致）\n"
+            + preference_constraint
+            + "## 身份（与主循环一致）\n"
             f"{AKASHIC_IDENTITY}\n"
             "## 性格（与主循环一致）\n"
             f"{PERSONALITY_RULES}\n"
