@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
 from feeds.base import FeedItem
-from proactive.event import FeedEvent, HealthEvent, ProactiveEvent
+from proactive.event import AlertEvent, ContentEvent, FeedEvent, HealthEvent, ProactiveEvent
 from proactive.item_id import compute_item_id, compute_source_key
 from proactive.energy import (
     composite_score,
@@ -120,7 +120,7 @@ class EngineState:
 @dataclass
 class SenseSnapshot:
     sleep_ctx: Any = None
-    health_events: list[ProactiveEvent] = field(default_factory=list)
+    health_events: list[AlertEvent] = field(default_factory=list)
     energy: float = 0.0
     now_hour: int = 0
     recent: list[dict] = field(default_factory=list)
@@ -135,7 +135,7 @@ class SenseSnapshot:
 @dataclass
 class FetchSnapshot:
     items: list[FeedItem] = field(default_factory=list)
-    new_items: list[FeedEvent] = field(default_factory=list)
+    new_items: list[ContentEvent] = field(default_factory=list)
     new_entries: list[tuple[str, str]] = field(default_factory=list)
     semantic_duplicate_entries: list[tuple[str, str]] = field(default_factory=list)
     has_memory: bool = False
@@ -177,7 +177,7 @@ class ActSnapshot:
     compose_entries: list[tuple[str, str]] = field(default_factory=list)
     state_summary_tag: str = "none"
     source_refs: list[ProactiveSourceRef] = field(default_factory=list)
-    high_events: list[ProactiveEvent] = field(default_factory=list)
+    high_events: list[AlertEvent] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -991,12 +991,15 @@ class ProactiveEngine:
             "candidate_items": len(fetch.new_items),
             "fresh_items_24h": score.fresh_items_24h,
         }
-        # 3. 最后抽取高优先级健康事件，给后面的发送和 ack 路径使用。
-        # 注入 decision_signals 时通过 to_signal_dict() 序列化，不暴露原始对象。
+        # 3. 最后抽取高优先级告警事件，给后面的发送和 ack 路径使用。
+        # alert_events：所有 AlertEvent，供 history gate / memory query 等通用路径使用。
+        # health_events：仅 kind=="health" 的子集，供 Fitbit 工具开关和健康文案约束使用。
         if sense.health_events:
-            decide.decision_signals["health_events"] = [
-                e.to_signal_dict() for e in sense.health_events
-            ]
+            alert_signals = [e.to_signal_dict() for e in sense.health_events]
+            decide.decision_signals["alert_events"] = alert_signals
+            health_signals = [s for s in alert_signals if s.get("kind") == "health"]
+            if health_signals:
+                decide.decision_signals["health_events"] = health_signals
         act.high_events = [e for e in sense.health_events if e.is_urgent()]
         logger.info(
             "[proactive] fitbit_signal events=%d high=%d sleep_state=%s",
@@ -1383,13 +1386,13 @@ class ProactiveEngine:
             self._state.mark_delivery(state.session_key, delivery_key)
         if not sense.health_events:
             return
-        acked_ids = [e.ack_id for e in sense.health_events if e.ack_id]
-        if acked_ids:
-            getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
+        health_ack_ids = [e.ack_id for e in sense.health_events if e.kind == "health" and e.ack_id]
+        if health_ack_ids:
+            getattr(self._sense, "acknowledge_health_events", lambda _: None)(health_ack_ids)
             logger.info(
                 "[proactive] acknowledged %d 健康事件 ids=%s",
-                len(acked_ids),
-                acked_ids,
+                len(health_ack_ids),
+                health_ack_ids,
             )
 
     # ------------------------------------------------------------------
@@ -1771,9 +1774,10 @@ class ProactiveEngine:
         return max(1, value)
 
     @staticmethod
-    def _feed_items(events: list[FeedEvent]) -> list[FeedItem]:
-        """从 FeedEvent 列表中提取原始 FeedItem，供仍接受 FeedItem 的 port 接口使用。"""
-        return [e._raw_feed for e in events if e._raw_feed is not None]
+    def _feed_items(events: list[ContentEvent]) -> list[FeedItem]:
+        """从 ContentEvent 列表中提取 FeedItem 视图，供仍接受 FeedItem 的 port 接口使用。
+        每个事件通过 to_feed_item() 提供视图，不会静默丢弃任何 ContentEvent 子类。"""
+        return [e.to_feed_item() for e in events]
 
     def _item_id_for(self, item: FeedItem) -> str:
         try:

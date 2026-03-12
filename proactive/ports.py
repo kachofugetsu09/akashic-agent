@@ -366,10 +366,10 @@ class DefaultMemoryRetrievalPort:
             return True, "crisis"
         if any((it.title or "").strip() for it in items):
             return True, "has_topic_items"
-        if isinstance(
-            decision_signals.get("health_events"), list
-        ) and decision_signals.get("health_events"):
-            return True, "health_events"
+        # alert_events 涵盖所有告警类型；兼容旧快照中只有 health_events 的情况。
+        _alert_signal = decision_signals.get("alert_events") or decision_signals.get("health_events")
+        if isinstance(_alert_signal, list) and _alert_signal:
+            return True, "alert_events"
         recent_texts = [
             str(m.get("content", "")).strip()
             for m in recent[-3:]

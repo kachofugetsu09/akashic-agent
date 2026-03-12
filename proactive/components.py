@@ -115,14 +115,16 @@ def build_proactive_memory_query(
         if text:
             lines.append(f"- {role}: {text}")
 
-    health_events = decision_signals.get("health_events")
-    if isinstance(health_events, list) and health_events:
-        lines.append("健康事件：")
-        for event in health_events[:2]:
+    # alert_events 包含所有告警类型；health_events 是其健康专属子集。
+    # memory query 使用 alert_events，确保非健康告警（如湿度报警）也能触发相关记忆检索。
+    alert_events = decision_signals.get("alert_events") or decision_signals.get("health_events")
+    if isinstance(alert_events, list) and alert_events:
+        lines.append("告警事件：")
+        for event in alert_events[:2]:
             message = re.sub(
                 r"\s+",
                 " ",
-                str((event or {}).get("message", "")).strip(),
+                str((event or {}).get("message", "") or (event or {}).get("content", "")).strip(),
             )[:120]
             if message:
                 lines.append(f"- {message}")
