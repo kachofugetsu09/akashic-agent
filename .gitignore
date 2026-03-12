@@ -32,3 +32,4 @@ memory/
 /docs/
 /scripts/fitbit-monitor/backups/
 /scripts/fitbit-monitor/stat_events.json
+/.pytest_artifacts/
