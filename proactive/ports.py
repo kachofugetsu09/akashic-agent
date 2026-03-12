@@ -81,7 +81,6 @@ class SensePort(Protocol):
     def has_global_memory(self) -> bool: ...
     def last_user_at(self) -> datetime | None: ...
     def refresh_sleep_context(self) -> bool: ...
-    def acknowledge_health_events(self, event_ids: list[str]) -> None: ...
     def target_session_key(self) -> str: ...
 
 
@@ -468,13 +467,6 @@ class DefaultSensePort:
         except Exception:
             return False
 
-    def acknowledge_health_events(self, event_ids: list[str]) -> None:
-        """通知 fitbit-monitor 已处理事件，防止同一事件反复触发。"""
-        if self._fitbit is None or not event_ids:
-            return
-        ack = getattr(self._fitbit, "acknowledge_events", None)
-        if callable(ack):
-            ack(event_ids)
 
     def target_session_key(self) -> str:
         channel = (self._cfg.default_channel or "").strip()

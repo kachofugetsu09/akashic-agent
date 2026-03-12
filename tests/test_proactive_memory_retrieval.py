@@ -272,9 +272,6 @@ async def test_engine_feature_scoring_receives_retrieved_memory_block(tmp_path):
         def refresh_sleep_context(self):
             return False
 
-        def acknowledge_health_events(self, event_ids):
-            return None
-
         def target_session_key(self):
             return "telegram:123"
 

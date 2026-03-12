@@ -1,6 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import unittest.mock as mock
 
 import pytest
 
@@ -75,6 +76,14 @@ async def _shared_http_resources():
     finally:
         clear_default_shared_http_resources(resources)
         await resources.aclose()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_mcp_alert_sources():
+    with mock.patch("proactive.mcp_sources.fetch_alert_events", return_value=[]), mock.patch(
+        "proactive.mcp_sources.acknowledge_events", return_value=None
+    ):
+        yield
 
 
 def test_parse_decision_string_false_is_false():
@@ -205,7 +214,6 @@ async def test_engine_stage_pre_score_returns_structured_below_threshold_result(
 @pytest.mark.asyncio
 async def test_engine_stage_sense_returns_structured_snapshot():
     sleep_ctx = SimpleNamespace(
-        health_events=[{"severity": "high"}],
         sleep_modifier=0.5,
         state="sleeping",
         available=True,
@@ -231,7 +239,14 @@ async def test_engine_stage_sense_returns_structured_snapshot():
     )
     ctx = DecisionContext()
 
-    result = engine._stage_sense(ctx)
+    fake_mcp_payload = [{
+        "event_id": "test-001", "kind": "alert", "source_type": "health_event",
+        "source_name": "fitbit", "title": "hr_elevated_rest",
+        "content": "心率偏高", "severity": "high", "published_at": None,
+    }]
+    import unittest.mock as mock
+    with mock.patch("proactive.mcp_sources.fetch_alert_events", return_value=fake_mcp_payload):
+        result = engine._stage_sense(ctx)
 
     assert result.sleep_state == "sleeping"
     assert result.sleep_available is True
@@ -529,6 +544,60 @@ async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidat
     assert ctx.ensure_act().compose_items == [item]
     assert ctx.ensure_act().compose_entries == [("rss:test", "item-1")]
     engine._decide.compose_message.assert_awaited_once()
+
+
+def test_populate_decision_signals_keeps_health_subset_by_source_type():
+    from proactive.event import GenericAlertEvent
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(score_llm_threshold=0.6, threshold=0.7)
+    ctx = DecisionContext()
+    sense = ctx.ensure_sense()
+    fetch = ctx.ensure_fetch()
+    score = ctx.ensure_score()
+    decide = ctx.ensure_decide()
+    act = ctx.ensure_act()
+
+    # 1. 构造一条健康告警和一条普通告警，验证 health_events 只保留健康来源子集。
+    sense.health_events = [
+        GenericAlertEvent.from_mcp_payload(
+            {
+                "event_id": "h1",
+                "kind": "alert",
+                "source_type": "health_event",
+                "source_name": "fitbit",
+                "content": "心率偏高",
+                "severity": "high",
+            }
+        ),
+        GenericAlertEvent.from_mcp_payload(
+            {
+                "event_id": "c1",
+                "kind": "alert",
+                "source_type": "calendar_alert",
+                "source_name": "calendar",
+                "content": "10分钟后开会",
+                "severity": "high",
+            }
+        ),
+    ]
+    fetch.new_items = []
+    score.sent_24h = 0
+    score.fresh_items_24h = 0
+    score.pre_score = 0.0
+    score.base_score = 0.0
+    score.draw_score = 0.0
+    sense.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
+    sense.interruptibility = 1.0
+    sense.sleep_ctx = None
+
+    # 2. 填充 decision_signals，并校验 alert/health 两层信号是否符合当前 MCP 语义。
+    engine._populate_decision_signals(ctx)
+
+    assert len(decide.decision_signals["alert_events"]) == 2
+    assert len(decide.decision_signals["health_events"]) == 1
+    assert decide.decision_signals["health_events"][0]["source_type"] == "health_event"
+    assert len(act.high_events) == 2
 
 
 def test_engine_stage_trace_writer_emits_strategy_envelope():

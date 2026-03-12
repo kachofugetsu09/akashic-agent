@@ -161,9 +161,6 @@ def _sense_with_item(item: FeedItem):
         def refresh_sleep_context(self):
             return False
 
-        def acknowledge_health_events(self, event_ids):
-            return None
-
         def target_session_key(self):
             return "telegram:123"
 
@@ -421,9 +418,6 @@ def _base_sense():
 
         def refresh_sleep_context(self):
             return False
-
-        def acknowledge_health_events(self, event_ids):
-            return None
 
         def target_session_key(self):
             return "telegram:123"

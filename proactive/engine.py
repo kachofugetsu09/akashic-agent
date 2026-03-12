@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
 from feeds.base import FeedItem
-from proactive.event import AlertEvent, ContentEvent, FeedEvent, HealthEvent, ProactiveEvent
+from proactive.event import AlertEvent, ContentEvent, FeedEvent, GenericAlertEvent, ProactiveEvent
 from proactive.item_id import compute_item_id, compute_source_key
 from proactive.energy import (
     composite_score,
@@ -459,17 +459,15 @@ class ProactiveEngine:
             logger.debug("[proactive] fitbit 上下文已在本轮决策前主动刷新")
         sense.sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
 
-        # 2. 从睡眠上下文中抽取健康事件，包装成 ProactiveEvent，后面 pre-score / act 都会用到。
-        raw_health: list[dict] = (
-            getattr(sense.sleep_ctx, "health_events", [])
-            if sense.sleep_ctx is not None
-            else []
-        )
-        if not isinstance(raw_health, list):
-            raw_health = []
-        sense.health_events = [
-            HealthEvent.from_dict(e) for e in raw_health if isinstance(e, dict)
-        ]
+        # 2. 从 MCP 配置的告警源拉取 alert 事件。
+        try:
+            from proactive import mcp_sources
+            sense.health_events = [
+                GenericAlertEvent.from_mcp_payload(p)
+                for p in mcp_sources.fetch_alert_events()
+            ]
+        except Exception as _mcp_err:
+            logger.warning("[proactive] MCP alert 拉取失败: %s", _mcp_err)
 
         # 3. 采集能量、近期消息和 interruptibility，形成 score 的基础输入。
         sense.energy = self._sense.compute_energy()
@@ -993,11 +991,13 @@ class ProactiveEngine:
         }
         # 3. 最后抽取高优先级告警事件，给后面的发送和 ack 路径使用。
         # alert_events：所有 AlertEvent，供 history gate / memory query 等通用路径使用。
-        # health_events：仅 kind=="health" 的子集，供 Fitbit 工具开关和健康文案约束使用。
+        # health_events：source_type=="health_event" 的子集，保留给健康相关提示词兼容层。
         if sense.health_events:
             alert_signals = [e.to_signal_dict() for e in sense.health_events]
             decide.decision_signals["alert_events"] = alert_signals
-            health_signals = [s for s in alert_signals if s.get("kind") == "health"]
+            health_signals = [
+                s for s in alert_signals if s.get("source_type") == "health_event"
+            ]
             if health_signals:
                 decide.decision_signals["health_events"] = health_signals
         act.high_events = [e for e in sense.health_events if e.is_urgent()]
@@ -1386,14 +1386,11 @@ class ProactiveEngine:
             self._state.mark_delivery(state.session_key, delivery_key)
         if not sense.health_events:
             return
-        health_ack_ids = [e.ack_id for e in sense.health_events if e.kind == "health" and e.ack_id]
-        if health_ack_ids:
-            getattr(self._sense, "acknowledge_health_events", lambda _: None)(health_ack_ids)
-            logger.info(
-                "[proactive] acknowledged %d 健康事件 ids=%s",
-                len(health_ack_ids),
-                health_ack_ids,
-            )
+        try:
+            from proactive import mcp_sources
+            mcp_sources.acknowledge_events(sense.health_events)
+        except Exception as _ack_err:
+            logger.warning("[proactive] MCP ack 失败: %s", _ack_err)
 
     # ------------------------------------------------------------------
     # Helpers

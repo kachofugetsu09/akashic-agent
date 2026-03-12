@@ -386,9 +386,7 @@ class ProactiveReflector:
             active_tools, active_tool_map = _resolve_active_tool_runtime(
                 base_schemas=[],
                 base_tool_map={},
-                include_fitbit=bool(
-                    decision_signals and decision_signals.get("health_events")
-                ),
+                include_fitbit=True,
                 fitbit_schemas=self._fitbit_tool_schemas,
                 fitbit_tool_map=self._fitbit_tool_map,
             )
@@ -853,8 +851,8 @@ class ProactiveMessageComposer:
         "【生成消息前必须完成以下自检，无需在消息中说明】\n"
         "1. 消息中是否涉及用户的实时状态数据（游戏时长、订阅源列表等）？"
         "若涉及，必须先调用对应工具获取真实数据，禁止凭记忆臆断。\n"
-        "   ⚠️ 健康数据：若 decision_signals 含 health_events，可调用 fitbit_health_snapshot 校验当前实时状态；"
-        "若不含 health_events，禁止调用 fitbit_* 工具，禁止引用健康数值。\n"
+        "   ⚠️ 告警处理：优先围绕 alert_events 中最值得处理的一条告警生成消息；"
+        "若该告警涉及健康来源，可调用 fitbit_health_snapshot 校验当前实时状态。\n"
         "2. 消息中是否有可能已过期的事实（如某游戏发布日期、某 DLC 上线状态）？"
         "若不确定，优先用 web_search/web_fetch 校验；仍无证据时用推测语气，避免给出具体日期。\n"
         "3. 如果消息引用了信息流或网页内容，你是否已经掌握确切来源名与可点击链接？"
@@ -934,13 +932,13 @@ class ProactiveMessageComposer:
 
         system_msg = (
             "你是陪伴型助手。系统已经决定可以主动发送消息给用户。\n"
-            "你只能调用只读工具（read_file / web_fetch / web_search，若存在 health_events 时可额外调用 fitbit_*）；"
+            "你只能调用只读工具（read_file / web_fetch / web_search / fitbit_*）；"
             "不能写文件，不能执行外部动作。\n"
             "最终只输出一条自然、可直接发送给用户的中文消息，不超过400字。\n"
             "消息要自然表达你的判断，不要用“你怎么看/你觉得呢”等征求看法的反问句收尾。\n"
             "除非必须让用户做明确选择，否则不要主动提问。\n"
-            "若决策信号含 health_events，优先围绕健康事件给出关怀，再考虑资讯话题；只能引用 health_events[*].message，不要编造数值。\n"
-            "若决策信号不含 health_events，禁止在消息正文中引用具体健康数值（心率、血氧等）。\n"
+            "若决策信号含 alert_events，优先围绕其中最值得处理的一条告警生成消息，再考虑资讯话题；健康告警、日历告警等来源在告警优先级上同级。\n"
+            "若该告警涉及健康来源，只能引用 health_events[*].message，不要编造数值；若不是健康来源，就基于对应 alert_events[*] 的 content/title/source_name 来写。\n"
             "若有多条候选信息流，一次只围绕一个主题生成消息；同一主题下若有 2-3 条连续更新，优先合并成一条更完整的主动消息，允许自然串联多个进展，不必压成单条快讯。\n"
             "消息不必强行承接近期对话；如果某条信息流本身就很贴合用户兴趣，可以自然地开启一个新话题。\n"
             "如果用户尚未回复最近一次主动关怀，不要重复总结用户当前处境，不要再次使用同类安慰前缀；若本次只是新资讯，直接进入新内容。\n"
@@ -986,7 +984,7 @@ class ProactiveMessageComposer:
         active_tool_schemas, active_tool_map = _resolve_active_tool_runtime(
             base_schemas=self._tool_schemas,
             base_tool_map=self._tool_map,
-            include_fitbit=bool(decision_signals.get("health_events")),
+            include_fitbit=True,
             fitbit_schemas=self._fitbit_tool_schemas,
             fitbit_tool_map=self._fitbit_tool_map,
         )

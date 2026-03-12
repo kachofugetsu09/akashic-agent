@@ -58,9 +58,9 @@ def build_reflect_prompt_messages(
 - 若某条内容与用户长期兴趣高度匹配，即使和近期对话无关，也可以自然开启一个新话题
 - 若有多条候选内容，一次只围绕一个最值得说的主题，不要把多条资讯拼成摘要
 - 电量越低越需要主动联系，危机模式时哪怕简单关心也有价值
-- 若存在 health_events，优先考虑健康提醒；可调用 fitbit_health_snapshot 校验当前实时状态（注意 data_lag_min 判断数据是否新鲜）
-- 若不存在 health_events，禁止在消息正文中引用具体健康数值（心率、血氧等）
-- 提及健康时只转述 health_events[*].message，不编造数值
+- 若存在 alert_events，优先考虑告警类提醒；健康告警、日历告警等来源在告警优先级上同级
+- 若告警涉及健康来源，可调用 fitbit_health_snapshot 校验当前实时状态（注意 data_lag_min 判断数据是否新鲜）
+- 写告警时优先转述对应 alert_events[*] 的 message/content/title/source_name；若是健康告警，可参考 health_events[*].message，但不要编造数值
 - 若最近主动消息已经表达过对用户当前处境的总结、安慰或判断，而用户此后还没有回复，则新消息禁止重复这一层；若本次只是新资讯，直接进入新内容
 
 只输出 JSON，不要其他内容：
@@ -97,9 +97,9 @@ def build_feature_scoring_prompt_messages(
     system_msg = (
         "你是主动触达特征评估器。只输出固定JSON字段。"
         "每个分数字段必须是0到1的小数；同时给每个字段一句简短理由。"
-        "若决策信号含 health_events，健康相关触达优先级高于普通资讯触达。"
+        "若决策信号含 alert_events，告警类触达优先级高于普通资讯触达。"
         "message_readiness_reason 应基于用户整体状态（时间、活跃度、对话节奏等）综合判断，无需引用具体健康数值。"
-        "若决策信号不含 health_events，不得用健康状况作为触达理由。"
+        "若决策信号不含健康来源告警，不得用健康状况作为触达理由。"
         "topic_continuity 代表与近期对话的连续性，它是加分项而不是硬门槛。"
         "如果订阅内容与用户长期兴趣明显匹配，即使与近期对话无关，也可以给出高 interest_match 和合理的 reconnect_value。"
         "不要给最终决策，不要输出额外文本。"

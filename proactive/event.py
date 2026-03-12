@@ -2,23 +2,24 @@
 proactive/event.py — Proactive 信息源统一事件类型。
 
 设计层次：
-- ProactiveEvent  — 抽象基类，定义引擎可调用的统一接口
-- AlertEvent      — 告警通道：紧急事件，bypass 内容评分，需要 ack（如健康告警、传感器报警）
-- ContentEvent    — 内容流通道：参与评分、去重、pending queue（如 RSS、网页内容）
-- HealthEvent     — 来自 Fitbit 的健康事件（AlertEvent）
-- FeedEvent       — 来自订阅信息流的内容条目（ContentEvent）
+- ProactiveEvent     — 抽象基类，定义引擎可调用的统一接口
+- AlertEvent         — 告警通道：紧急事件，bypass 内容评分，需要 ack（如健康告警、传感器报警）
+- ContentEvent       — 内容流通道：参与评分、去重、pending queue（如 RSS、网页内容）
+- GenericAlertEvent  — MCP 通道接入的通用告警事件（kind 由 payload 决定）
+- FeedEvent          — 来自订阅信息流的内容条目（ContentEvent）
 
 扩展原则：
-- 新告警类（湿度计、日历提醒等）继承 AlertEvent，实现 kind / ack_id / from_xxx()
+- 新告警源通过 MCP server 接入，返回标准 schema，engine 统一包装为 GenericAlertEvent
 - 新内容类（网页搜索、novel 等）继承 ContentEvent，实现 kind / from_xxx()
 - 两条引擎通道（Stage 2 / Stage 4）与两个中间类一一对应，新类型归属明确
 - to_signal_dict() 是唯一允许进入 decision_signals / prompt 的序列化口
-- ack_id 只返回上游提供的真实 ID；fallback hash 不可 ack
+- ack_id 只返回上游提供的真实 ID；无 event_id 时用 fallback hash（不可 ack）
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -109,45 +110,58 @@ class AlertEvent(ProactiveEvent, ABC):
         }
 
 
-@dataclass
-class HealthEvent(AlertEvent):
-    """来自 Fitbit 的健康事件。
 
-    event_id 策略：
-    - 优先用上游 event["id"]（字符串非空）
-    - 无 id 时用 severity+message 的 stable hash 作 fallback（ack_id 返回 None）
+@dataclass
+class GenericAlertEvent(AlertEvent):
+    """MCP 通道接入的通用告警事件。
+
+    kind 由 MCP payload 的 kind 字段决定，适用于任何实现了
+    get_proactive_events 标准协议的 MCP server。
     """
 
-    _raw_health: dict = field(default_factory=dict, repr=False)
+    _kind: str = field(default="alert", repr=False)
     _upstream_id: str | None = field(default=None, repr=False)
+    _ack_server: str | None = field(default=None, repr=False)
 
     @property
     def kind(self) -> str:
-        return "health"
+        return self._kind
 
     @property
     def ack_id(self) -> str | None:
         return self._upstream_id
 
     @classmethod
-    def from_dict(cls, event: dict) -> "HealthEvent":
-        upstream_id = str(event.get("id", "")).strip() or None
+    def from_mcp_payload(cls, payload: dict) -> "GenericAlertEvent":
+        """从标准 MCP ProactiveEvent schema dict 构建实例。"""
+        upstream_id = str(payload.get("event_id", "")).strip() or None
         if upstream_id:
             event_id = upstream_id
         else:
-            raw = "|".join([
-                str(event.get("severity", "")).strip().lower(),
-                str(event.get("message", "")).strip().lower()[:200],
-            ])
-            event_id = "hev_" + hashlib.sha1(raw.encode()).hexdigest()[:12]
+            raw = json.dumps(payload, sort_keys=True)
+            event_id = "gev_" + hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+        published_at: datetime | None = None
+        if payload.get("published_at"):
+            try:
+                published_at = datetime.fromisoformat(payload["published_at"])
+            except Exception:
+                pass
+
+        ack_server = str(payload.get("ack_server", "")).strip() or None
+
         return cls(
             event_id=event_id,
-            source_type="health_event",
-            source_name="fitbit",
-            content=str(event.get("message", "")).strip(),
-            severity=str(event.get("severity", "")).strip().lower() or None,
-            _raw_health=event,
+            source_type=str(payload.get("source_type", "")).strip(),
+            source_name=str(payload.get("source_name", "")).strip(),
+            content=str(payload.get("content", "")).strip(),
+            title=payload.get("title"),
+            url=payload.get("url"),
+            published_at=published_at,
+            severity=str(payload.get("severity", "")).strip() or None,
+            _kind=str(payload.get("kind", "alert")).strip(),
             _upstream_id=upstream_id,
+            _ack_server=ack_server,
         )
 
 
