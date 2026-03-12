@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from collections import OrderedDict
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from agent.looping.safety_retry import AgentLoopSafetyRetryMixin
+from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
+from agent.tools.shell import ShellTool, _truncate, _validate_network_command
+from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
+from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text, _validate_url_target
+from memory2.procedure_tagger import ProcedureTagger, _validate
+from memory2.store import MemoryStore2
+from proactive.loop_helpers import (
+    _Decision,
+    _build_delivery_key,
+    _build_tfidf_vectors,
+    _cosine_sparse,
+    _decision_with_randomized_score,
+    _format_items,
+    _format_recent,
+    _parse_decision,
+    _resolve_evidence_item_ids,
+    _semantic_entries,
+)
+from feeds.base import FeedItem
+
+
+class _SafetyHarness(AgentLoopSafetyRetryMixin):
+    def __init__(self, outcomes):
+        self.memory_window = 10
+        self._tool_search_enabled = True
+        self._unlocked_tools = {"s:1": OrderedDict({"old": None})}
+        self.tools = SimpleNamespace(get_always_on_names=lambda: {"always"})
+        self.context = SimpleNamespace(
+            build_messages=lambda **kwargs: kwargs["history"] + [{"role": "user"}]
+        )
+        self.session_manager = SimpleNamespace(save_async=AsyncMock())
+        self._outcomes = list(outcomes)
+
+    async def _run_agent_loop(self, initial_messages, **kwargs):
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.mark.asyncio
+async def test_safety_retry_shell_and_task_note_cover_branches(tmp_path: Path):
+    msg = SimpleNamespace(
+        content="hello",
+        media=[],
+        channel="telegram",
+        chat_id="1",
+        timestamp=datetime.now(timezone.utc),
+    )
+    session = SimpleNamespace(
+        key="s:1",
+        messages=[{"role": "u", "content": str(i)} for i in range(6)],
+        get_history=lambda max_messages: [{"role": "u", "content": str(i)} for i in range(6)],
+        last_consolidated=3,
+    )
+    harness = _SafetyHarness(
+        [
+            ContentSafetyError("bad"),
+            ("ok", ["tool_search", "x", "y"], [{"calls": []}], None),
+        ]
+    )
+    content, tools_used, _ = await harness._run_with_safety_retry(msg, session)
+    assert content == "ok"
+    assert tools_used == ["tool_search", "x", "y"]
+    assert list(harness._unlocked_tools["s:1"].keys())[-2:] == ["x", "y"]
+
+    harness = _SafetyHarness([ContextLengthError("long")] * 3)
+    content, tools_used, chain = await harness._run_with_safety_retry(msg, session)
+    assert "上下文过长" in content
+    assert tools_used == []
+    assert chain == []
+
+    harness = _SafetyHarness([("ok", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], [], None)])
+    harness._update_lru("s:1", ["always", "tool_search", "a", "b", "c", "d", "e", "f"])
+    assert "always" not in harness._unlocked_tools["s:1"]
+    assert len(harness._unlocked_tools["s:1"]) == 5
+
+    tool = ShellTool()
+    assert "命令不能为空" in await tool.execute(command="")
+    assert "不被允许" in await tool.execute(command="nc localhost 1")
+    assert "URL" in _validate_network_command("curl ftp://x")
+    assert "上传/写文件" in _validate_network_command("curl -o out http://x.com")
+    assert _validate_network_command("echo hi") is None
+    assert "禁止访问内网" in _validate_network_command("curl http://127.0.0.1")
+    assert "省略" in _truncate("a" * 31000)
+
+    async def _run(command: str, timeout: int):
+        return "out", "err", 2, False
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("agent.tools.shell._run", _run)
+        result = json.loads(await tool.execute(command="echo 1", timeout=999))
+    assert result["exit_code"] == 2
+    assert "Exit code 2" in result["output"]
+
+    note = TaskNoteTool(tmp_path / "task.db")
+    recall = TaskRecallTool(tmp_path / "task.db")
+    done = TaskDoneTool(tmp_path / "task-dir")
+    assert "不能为空" in await note.execute(namespace="", key="a", value="b")
+    assert json.loads(await note.execute(namespace="n1", key="k1", value="v1"))["ok"]
+    assert json.loads(await recall.execute(namespace="n1", key="k1"))["found"] is True
+    assert json.loads(await recall.execute(namespace="n1"))["count"] == 1
+    assert json.loads(await recall.execute(namespace="n2"))["count"] == 0
+    assert json.loads(await done.execute(summary="done"))["done"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: Path):
+    class _Resp:
+        def __init__(self, *, status=200, headers=None, content=b"", encoding="utf-8", url="https://x"):
+            self.status_code = status
+            self.headers = headers or {}
+            self.content = content
+            self.encoding = encoding
+            self.url = url
+
+    requester = MagicMock()
+    requester.get = AsyncMock(
+        return_value=_Resp(
+            headers={"content-type": "text/html", "content-length": "20"},
+            content=b"<html><body><script>x</script><p>Hello <b>world</b></p></body></html>",
+        )
+    )
+    tool = WebFetchTool(requester=requester)
+    result = json.loads(await tool.execute(url="https://example.com", format="text"))
+    assert result["text"] == "Hello world"
+    result = json.loads(await tool.execute(url="https://example.com", format="markdown"))
+    assert "Hello" in result["text"]
+
+    requester.get = AsyncMock(return_value=_Resp(status=404))
+    assert "HTTP 404" in json.loads(await tool.execute(url="https://example.com"))["error"]
+    requester.get = AsyncMock(return_value=_Resp(headers={"content-type": "application/pdf"}))
+    assert "二进制内容" in json.loads(await tool.execute(url="https://example.com"))["error"]
+    requester.get = AsyncMock(
+        side_effect=__import__("httpx").TimeoutException("slow")
+    )
+    assert "请求超时" in json.loads(await tool.execute(url="https://example.com"))["error"]
+    assert "http:// 或 https://" in json.loads(await tool.execute(url="ftp://x"))["error"]
+    assert _validate_url_target("http://127.0.0.1")
+    assert _to_text(b"<html><body><style>x</style><p>Hi</p></body></html>") == "Hi"
+    assert "Title" in _to_markdown("<h1>Title</h1>")
+
+    provider = MagicMock()
+    provider.chat = AsyncMock(
+        return_value=LLMResponse(
+            content='```json\n{"tools":["shell","bad"],"skills":["rsshub-route-finder"],"keywords":["pacman","x"],"scope":"global"}\n```'
+        )
+    )
+    tagger = ProcedureTagger(provider, "m", lambda: ["rsshub-route-finder"])
+    tag = await tagger.tag("测试")
+    assert tag == {
+        "tools": ["shell"],
+        "skills": ["rsshub-route-finder"],
+        "keywords": ["pacman"],
+        "scope": "tool_triggered",
+    }
+    provider.chat = AsyncMock(side_effect=RuntimeError("x"))
+    assert await tagger.tag("测试") is None
+    assert (
+        _validate({"scope": "bad", "keywords": ["okay"]}, {"shell"}, set())["scope"]
+        == "tool_triggered"
+    )
+
+    store = MemoryStore2(tmp_path / "mem.db")
+    first = store.upsert_item("procedure", "Hello   world", [1.0, 0.0], source_ref="s1")
+    assert first.startswith("new:")
+    item_id = first.split(":", 1)[1]
+    assert store.upsert_item("procedure", "hello world", [1.0, 0.0]).startswith("reinforced:")
+    store.mark_superseded(item_id)
+    assert store.upsert_item("procedure", "hello world", [1.0, 0.0]).startswith("reinforced:")
+    store.mark_superseded_batch([item_id])
+    assert store.get_all_with_embedding(include_superseded=True)
+    assert store.has_item_by_source_ref("s1", "procedure") is True
+    assert store.delete_by_source_ref("s1") >= 1
+    event = store.upsert_consolidation_event(source_ref="r1", summary="Event A", embedding=[0.0, 1.0])
+    assert event.startswith("new:")
+    assert store.upsert_consolidation_event(source_ref="r1", summary="Event A", embedding=[0.0, 1.0]).startswith("skipped:")
+    store.upsert_item(
+        "procedure",
+        "Use pacman",
+        [1.0, 0.0],
+        extra={"trigger_tags": {"scope": "tool_triggered", "tools": [], "skills": [], "keywords": ["pacman"]}},
+    )
+    hits = store.keyword_match_procedures(["shell", "pacman"])
+    assert hits and hits[0]["memory_type"] == "procedure"
+    results = store.vector_search([0.0, 1.0], top_k=2, memory_types=["event"])
+    assert results and results[0]["memory_type"] == "event"
+    assert store.list_by_type("event")
+    store.close()
+
+
+def test_loop_helpers_cover_formatting_parsing_and_similarity():
+    item = FeedItem(
+        source_name="Source",
+        source_type="rss",
+        title="Title",
+        content="Long content " * 40,
+        url="https://x",
+        author="Author",
+        published_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    )
+    assert "原文链接" in _format_items([item])
+    assert "用户" in _format_recent([{"role": "user", "content": "hello"}])
+    assert "助手" in _format_recent([{"role": "assistant", "content": [{"text": "hi"}]}])
+    decision = _parse_decision("```json\n{\"score\":0.5,\"should_send\":\"yes\",\"message\":\"m\",\"reasoning\":\"r\",\"evidence_item_ids\":[\"i1\"]}\n```")
+    assert decision.should_send is True
+    randomized, delta = _decision_with_randomized_score(decision, strength=0.0)
+    assert randomized.score == decision.score
+    assert delta == 0.0
+    assert _resolve_evidence_item_ids(decision, [item]) == ["i1"]
+    assert _build_delivery_key(["b", "a"], " msg ") == "a,b|msg"
+    entries = _semantic_entries([item], 20)
+    assert entries[0]["text"]
+    vecs = _build_tfidf_vectors(["abcabc", "abdddd"], 2)
+    assert _cosine_sparse(vecs[0], vecs[0]) == pytest.approx(1.0)
+    assert _cosine_sparse({}, vecs[0]) == 0.0
+    bad = _parse_decision("not json")
+    assert bad.should_send is False

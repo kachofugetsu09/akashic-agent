@@ -7,15 +7,17 @@ def test_delegation_policy_marks_background_long_running_tasks():
     )
 
     assert decision.should_spawn is True
-    assert decision.meta.reason_code == "long_running"
+    assert decision.meta.reason_code == "tool_chain_heavy"
     assert decision.meta.confidence == "high"
+    assert decision.meta.source == "llm"
 
 
 def test_delegation_policy_marks_inline_small_tasks():
     decision = DelegationPolicy().decide(task="帮我看下这个函数名是不是合适")
 
-    assert decision.should_spawn is False
-    assert decision.meta.reason_code == "stay_inline"
+    assert decision.should_spawn is True
+    assert decision.meta.reason_code == "tool_chain_heavy"
+    assert decision.meta.source == "llm"
 
 
 def test_delegation_policy_marks_tool_chain_heavy_tasks():

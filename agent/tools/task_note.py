@@ -81,6 +81,17 @@ class TaskNoteTool(Tool):
             self._conn = _connect(self._db_path)
         return self._conn
 
+    def close(self) -> None:
+        if self._conn is None:
+            return
+        try:
+            self._conn.close()
+        finally:
+            self._conn = None
+
+    def __del__(self) -> None:
+        self.close()
+
     async def execute(self, **kwargs: Any) -> str:
         namespace = str(kwargs.get("namespace", "")).strip()
         key = str(kwargs.get("key", "")).strip()
@@ -141,6 +152,17 @@ class TaskRecallTool(Tool):
         if self._conn is None:
             self._conn = _connect(self._db_path)
         return self._conn
+
+    def close(self) -> None:
+        if self._conn is None:
+            return
+        try:
+            self._conn.close()
+        finally:
+            self._conn = None
+
+    def __del__(self) -> None:
+        self.close()
 
     async def execute(self, **kwargs: Any) -> str:
         namespace = str(kwargs.get("namespace", "")).strip()

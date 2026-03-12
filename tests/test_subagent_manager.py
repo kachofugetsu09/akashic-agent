@@ -79,7 +79,9 @@ async def test_subagent_manager_announces_completion_to_origin_session(tmp_path)
             assert task == "research this"
             return "已完成检索，剩余整理，下一步继续"
 
-    manager._build_subagent = lambda: _FakeSubAgent()  # type: ignore[assignment]
+    manager._build_subagent = (
+        lambda *, task_dir: _FakeSubAgent()
+    )  # type: ignore[assignment]
 
     await manager.spawn(
         task="research this",

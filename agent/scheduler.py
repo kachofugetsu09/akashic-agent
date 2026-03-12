@@ -106,9 +106,77 @@ def is_cron_expr(s: str) -> bool:
     return len(parts) in (5, 6)
 
 
+def _parse_cron_field(field: str, minimum: int, maximum: int) -> set[int]:
+    values: set[int] = set()
+    for part in field.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        step = 1
+        if "/" in part:
+            part, step_str = part.split("/", 1)
+            step = int(step_str)
+            if step <= 0:
+                raise ValueError(f"无效 cron step: {field!r}")
+        if part == "*":
+            start, end = minimum, maximum
+        elif "-" in part:
+            start_str, end_str = part.split("-", 1)
+            start, end = int(start_str), int(end_str)
+        else:
+            start = end = int(part)
+        if start < minimum or end > maximum or start > end:
+            raise ValueError(f"无效 cron 字段: {field!r}")
+        values.update(range(start, end + 1, step))
+    if not values:
+        raise ValueError(f"无效 cron 字段: {field!r}")
+    return values
+
+
+def _next_cron_fire_fallback(cron_expr: str, tz: str, after: datetime) -> datetime:
+    parts = cron_expr.strip().split()
+    if len(parts) == 5:
+        second_values = {0}
+        minute_s, hour_s, dom_s, month_s, dow_s = parts
+        step = timedelta(minutes=1)
+        current = after.astimezone(ZoneInfo(tz)).replace(second=0, microsecond=0)
+        if current <= after.astimezone(ZoneInfo(tz)):
+            current += step
+    elif len(parts) == 6:
+        second_s, minute_s, hour_s, dom_s, month_s, dow_s = parts
+        second_values = _parse_cron_field(second_s, 0, 59)
+        step = timedelta(seconds=1)
+        current = after.astimezone(ZoneInfo(tz)).replace(microsecond=0) + step
+    else:
+        raise ValueError(f"无效的 cron 表达式: {cron_expr!r}")
+
+    minute_values = _parse_cron_field(minute_s, 0, 59)
+    hour_values = _parse_cron_field(hour_s, 0, 23)
+    dom_values = _parse_cron_field(dom_s, 1, 31)
+    month_values = _parse_cron_field(month_s, 1, 12)
+    dow_values = _parse_cron_field(dow_s.replace("7", "0"), 0, 6)
+
+    for _ in range(366 * 24 * 60 * (60 if len(parts) == 6 else 1)):
+        cron_dow = (current.weekday() + 1) % 7
+        if (
+            current.second in second_values
+            and current.minute in minute_values
+            and current.hour in hour_values
+            and current.day in dom_values
+            and current.month in month_values
+            and cron_dow in dow_values
+        ):
+            return current.astimezone(timezone.utc)
+        current += step
+    raise ValueError(f"无法在合理范围内解析 cron 表达式: {cron_expr!r}")
+
+
 def next_cron_fire(cron_expr: str, tz: str, after: datetime) -> datetime:
     """用 APScheduler CronTrigger 计算 cron 下次触发时间。"""
-    from apscheduler.triggers.cron import CronTrigger
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+    except ModuleNotFoundError:
+        return _next_cron_fire_fallback(cron_expr, tz, after)
 
     # APScheduler 3.x 兼容：优先用 pytz，回退到 ZoneInfo
     try:

@@ -165,7 +165,8 @@ class ContextBuilder:
                 mime, _ = mimetypes.guess_type(p)
                 if not p.is_file() or not mime or not mime.startswith("image/"):
                     continue
-                b64 = base64.b64encode(open(p, "rb").read()).decode()
+                with p.open("rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
                 images.append(
                     {
                         "type": "image_url",

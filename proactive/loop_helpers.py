@@ -73,11 +73,13 @@ def _format_recent(msgs: list[dict]) -> str:
     for m in msgs:
         role = m.get("role", "user")
         name = "用户" if role == "user" else "助手"
-        content = (m.get("content") or "").strip()
+        content = m.get("content") or ""
         if isinstance(content, list):
             content = " ".join(
                 c.get("text", "") for c in content if isinstance(c, dict)
             )
+        else:
+            content = str(content).strip()
         if len(content) > 200:
             content = content[:200] + "..."
         lines.append(f"{name}: {content}")

@@ -67,6 +67,18 @@ class MemoryStore2:
         )
         self._db.commit()
 
+    def close(self) -> None:
+        db = getattr(self, "_db", None)
+        if db is None:
+            return
+        try:
+            db.close()
+        finally:
+            self._db = None
+
+    def __del__(self) -> None:
+        self.close()
+
     def upsert_item(
         self,
         memory_type: str,

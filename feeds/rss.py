@@ -333,7 +333,9 @@ def _text(el: ET.Element, tag: str) -> str | None:
 
 
 def _atom_text(el: ET.Element, tag: str, ns: dict) -> str | None:
-    child = el.find(f"a:{tag}", ns) or el.find(tag)
+    child = el.find(f"a:{tag}", ns)
+    if child is None:
+        child = el.find(tag)
     return child.text.strip() if child is not None and child.text else None
 
 

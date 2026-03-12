@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agent.scheduler import parse_duration, parse_when_at, is_cron_expr
+from agent.scheduler import is_cron_expr, next_cron_fire, parse_duration, parse_when_at
 
 
 class TestParseDuration:
@@ -97,3 +97,15 @@ class TestIsCronExpr:
 
     def test_four_fields_not_cron(self):
         assert is_cron_expr("0 9 * *") is False
+
+
+class TestNextCronFire:
+    def test_fixed_daily_cron_returns_next_boundary(self):
+        after = datetime(2025, 6, 1, 8, 0, 1, tzinfo=timezone.utc)
+        result = next_cron_fire("0 9 * * *", "UTC", after)
+        assert result == datetime(2025, 6, 1, 9, 0, 0, tzinfo=timezone.utc)
+
+    def test_step_cron_advances_to_next_match(self):
+        after = datetime(2025, 6, 1, 8, 1, 0, tzinfo=timezone.utc)
+        result = next_cron_fire("*/5 * * * *", "UTC", after)
+        assert result == datetime(2025, 6, 1, 8, 5, 0, tzinfo=timezone.utc)

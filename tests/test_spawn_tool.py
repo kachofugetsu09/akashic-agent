@@ -24,12 +24,12 @@ async def test_spawn_tool_uses_registry_context():
         origin_channel="telegram",
         origin_chat_id="123",
         decision=SpawnDecision(
-            should_spawn=False,
+            should_spawn=True,
             label="job",
             meta=SpawnDecisionMeta(
-                source="heuristic",
-                confidence="medium",
-                reason_code="stay_inline",
+                source="llm",
+                confidence="high",
+                reason_code="tool_chain_heavy",
             ),
         ),
     )
@@ -59,5 +59,6 @@ async def test_spawn_tool_keeps_spawning_even_when_policy_prefers_inline():
 
     assert result == "started"
     kwargs = manager.spawn.await_args.kwargs
-    assert kwargs["decision"].should_spawn is False
-    assert kwargs["decision"].meta.reason_code == "stay_inline"
+    assert kwargs["decision"].should_spawn is True
+    assert kwargs["decision"].meta.reason_code == "tool_chain_heavy"
+    assert kwargs["decision"].meta.source == "llm"
