@@ -5,6 +5,7 @@ import os
 import pytest
 
 from tests_scenarios.fixtures import (
+    build_rag_with_noise_scenario,
     build_smalltalk_no_retrieve_scenario,
     build_tool_search_schedule_scenario,
 )
@@ -40,4 +41,19 @@ async def test_real_smalltalk_does_not_trigger_retrieve() -> None:
     # 2. 运行场景：真实执行 route gate、memory retrieve 和回答生成。
     result = await runner.run(spec)
     # 3. 校验结果：要求 route decision 为 NO_RETRIEVE，并且没有 history 命中。
+    assert result.passed, result.failure_message()
+
+
+@pytest.mark.asyncio
+@pytest.mark.scenario_mvp
+@pytest.mark.scenario_live
+@pytest.mark.skipif(not _RUN_SCENARIOS, reason="设置 AKASIC_RUN_SCENARIOS=1 后再执行真实场景测试")
+async def test_real_rag_with_related_and_irrelevant_noise() -> None:
+    """验证带相关干扰和不相关噪音时，真实 RAG 仍能召回并使用正确记忆。"""
+    # 1. 构造场景：写入正确记忆、相似错误记忆和不相关噪音，模拟更脏的真实记忆库。
+    spec = build_rag_with_noise_scenario()
+    runner = ScenarioRunner()
+    # 2. 运行场景：真实执行 route gate、history retrieve、memory injection 和回答生成。
+    result = await runner.run(spec)
+    # 3. 校验结果：要求命中 history 检索，并且最终回答稳定落到正确答案而不是噪音。
     assert result.passed, result.failure_message()

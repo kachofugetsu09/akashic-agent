@@ -133,6 +133,7 @@ class ScenarioRunner:
         self._repo_root = Path(__file__).resolve().parent.parent
 
     async def run(self, spec: ScenarioSpec) -> ScenarioResult:
+        session_key = self._resolve_session_key(spec)
         runtime = await self._create_runtime(spec)
         final_content = ""
         session_before: dict[str, Any] = {}
@@ -142,12 +143,12 @@ class ScenarioRunner:
         judge_verdict: ScenarioJudgeVerdict | None = None
         try:
             # 1. 先把 history、memory、memory2 固定种子写进隔离 runtime。
-            await self._seed_runtime(runtime, spec)
-            session_before = self._snapshot_session(runtime.session_manager, spec.session_key)
+            await self._seed_runtime(runtime, spec, session_key=session_key)
+            session_before = self._snapshot_session(runtime.session_manager, session_key)
             # 2. 再发送一条固定消息，真实跑一轮 AgentLoop 主路径。
             outbound = await runtime.loop._process(self._build_message(spec))
             final_content = outbound.content
-            session_after = self._snapshot_session(runtime.session_manager, spec.session_key)
+            session_after = self._snapshot_session(runtime.session_manager, session_key)
             memory_trace = self._load_memory_trace(runtime.workspace)
             # 3. 最后分别执行硬断言和可选 judge，并把结果落盘。
             assertion_errors = self._check_assertions(
@@ -183,11 +184,11 @@ class ScenarioRunner:
             if not session_before:
                 session_before = self._safe_snapshot_session(
                     runtime.session_manager,
-                    spec.session_key,
+                    session_key,
                 )
             session_after = self._safe_snapshot_session(
                 runtime.session_manager,
-                spec.session_key,
+                session_key,
             )
             memory_trace = self._safe_load_memory_trace(runtime.workspace)
             result = ScenarioResult(
@@ -289,13 +290,19 @@ class ScenarioRunner:
         config.memory_v2.db_path = str(workspace / "memory" / "memory2.db")
         return config
 
-    async def _seed_runtime(self, runtime: ScenarioRuntime, spec: ScenarioSpec) -> None:
+    async def _seed_runtime(
+        self,
+        runtime: ScenarioRuntime,
+        spec: ScenarioSpec,
+        *,
+        session_key: str,
+    ) -> None:
         # 1. 先写入 v1 memory 文件，保证 system prompt 能读到测试专用内容。
         runtime.memory_runtime.port.write_long_term(spec.memory.long_term)
         runtime.memory_runtime.port.write_self(spec.memory.self_profile)
         runtime.memory_runtime.port.write_now(spec.memory.now)
         # 2. 再注入固定 session history，保证本轮上下文完全可控。
-        session = runtime.session_manager.get_or_create(spec.session_key)
+        session = runtime.session_manager.get_or_create(session_key)
         session.messages = copy.deepcopy(spec.history)
         session.metadata = {}
         session.last_consolidated = 0
@@ -327,6 +334,12 @@ class ScenarioRunner:
             content=spec.message,
             timestamp=spec.request_time,
         )
+
+    def _resolve_session_key(self, spec: ScenarioSpec) -> str:
+        # 1. 统一使用真实主链路的 channel:chat_id 规则推导 session_key。
+        spec.validate_session_key()
+        # 2. 保留显式字段仅用于兼容和输入校验，不再作为执行时主来源。
+        return spec.derived_session_key
 
     def _snapshot_session(self, manager: SessionManager, session_key: str) -> dict[str, Any]:
         session = manager.get_or_create(session_key)
@@ -373,6 +386,7 @@ class ScenarioRunner:
         memory_trace: dict[str, Any],
     ) -> list[str]:
         errors: list[str] = []
+        normalized_final = _normalize_assert_text(final_content)
         if assertions.route_decision:
             actual = str(memory_trace.get("route_decision", ""))
             if actual != assertions.route_decision:
@@ -390,8 +404,11 @@ class ScenarioRunner:
             if tool_name not in called_tools:
                 errors.append(f"缺少预期工具调用: {tool_name}")
         for needle in assertions.final_contains:
-            if needle not in final_content:
+            if _normalize_assert_text(needle) not in normalized_final:
                 errors.append(f"最终回复缺少关键字: {needle}")
+        for needle in assertions.final_not_contains:
+            if _normalize_assert_text(needle) in normalized_final:
+                errors.append(f"最终回复包含了不应出现的内容: {needle}")
         return errors
 
     async def _run_judge(
@@ -466,7 +483,8 @@ def _scenario_snapshot(spec: ScenarioSpec) -> dict[str, Any]:
         "message": spec.message,
         "channel": spec.channel,
         "chat_id": spec.chat_id,
-        "session_key": spec.session_key,
+        "session_key": spec.session_key or spec.derived_session_key,
+        "derived_session_key": spec.derived_session_key,
         "request_time": spec.request_time.isoformat(),
         "history": spec.history,
         "memory": asdict(spec.memory),
@@ -496,3 +514,15 @@ def _last_user_message(messages: list[dict[str, Any]]) -> str:
             return json.dumps(content, ensure_ascii=False)
         return str(content)
     return ""
+
+
+def _normalize_assert_text(text: str) -> str:
+    return (
+        str(text)
+        .replace(" ", "")
+        .replace("\n", "")
+        .replace("\t", "")
+        .replace("\r", "")
+        .replace("《", "")
+        .replace("》", "")
+    )
