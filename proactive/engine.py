@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
 from feeds.base import FeedItem
+from proactive.event import ProactiveEvent
 from proactive.item_id import compute_item_id, compute_source_key
 from proactive.energy import (
     composite_score,
@@ -119,7 +120,7 @@ class EngineState:
 @dataclass
 class SenseSnapshot:
     sleep_ctx: Any = None
-    health_events: list[dict] = field(default_factory=list)
+    health_events: list[ProactiveEvent] = field(default_factory=list)
     energy: float = 0.0
     now_hour: int = 0
     recent: list[dict] = field(default_factory=list)
@@ -176,7 +177,7 @@ class ActSnapshot:
     compose_entries: list[tuple[str, str]] = field(default_factory=list)
     state_summary_tag: str = "none"
     source_refs: list[ProactiveSourceRef] = field(default_factory=list)
-    high_events: list[dict] = field(default_factory=list)
+    high_events: list[ProactiveEvent] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -458,13 +459,17 @@ class ProactiveEngine:
             logger.debug("[proactive] fitbit 上下文已在本轮决策前主动刷新")
         sense.sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
 
-        # 2. 从睡眠上下文中抽取健康事件，后面 pre-score / act 都会用到。
-        health_events: list[dict] = (
+        # 2. 从睡眠上下文中抽取健康事件，包装成 ProactiveEvent，后面 pre-score / act 都会用到。
+        raw_health: list[dict] = (
             getattr(sense.sleep_ctx, "health_events", [])
             if sense.sleep_ctx is not None
             else []
         )
-        sense.health_events = health_events if isinstance(health_events, list) else []
+        if not isinstance(raw_health, list):
+            raw_health = []
+        sense.health_events = [
+            ProactiveEvent.from_health_dict(e) for e in raw_health if isinstance(e, dict)
+        ]
 
         # 3. 采集能量、近期消息和 interruptibility，形成 score 的基础输入。
         sense.energy = self._sense.compute_energy()
@@ -558,7 +563,7 @@ class ProactiveEngine:
             len(sense.recent),
         )
 
-        high_events = [e for e in sense.health_events if e.get("severity") == "high"]
+        high_events = [e for e in sense.health_events if e.severity == "high"]
         if high_events:
             score.force_reflect = True
             if score.pre_score < self._cfg.score_pre_threshold:
@@ -982,13 +987,12 @@ class ProactiveEngine:
             "fresh_items_24h": score.fresh_items_24h,
         }
         # 3. 最后抽取高优先级健康事件，给后面的发送和 ack 路径使用。
+        # 注入 decision_signals 时通过 to_signal_dict() 序列化，不暴露原始对象。
         if sense.health_events:
-            decide.decision_signals["health_events"] = sense.health_events
-        act.high_events = [
-            e
-            for e in sense.health_events
-            if str((e or {}).get("severity", "")) == "high"
-        ]
+            decide.decision_signals["health_events"] = [
+                e.to_signal_dict() for e in sense.health_events
+            ]
+        act.high_events = [e for e in sense.health_events if e.severity == "high"]
         logger.info(
             "[proactive] fitbit_signal events=%d high=%d sleep_state=%s",
             len(sense.health_events),
@@ -1374,9 +1378,7 @@ class ProactiveEngine:
             self._state.mark_delivery(state.session_key, delivery_key)
         if not sense.health_events:
             return
-        acked_ids = [
-            e["id"] for e in sense.health_events if isinstance(e, dict) and e.get("id")
-        ]
+        acked_ids = [e.ack_id for e in sense.health_events if e.ack_id]
         if acked_ids:
             getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
             logger.info(
