@@ -16,6 +16,7 @@ proactive/event.py — Proactive 信息源统一事件类型。
 from __future__ import annotations
 
 import hashlib
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -25,10 +26,11 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ProactiveEvent:
-    """所有 proactive 信息源事件的基类。
+class ProactiveEvent(ABC):
+    """所有 proactive 信息源事件的抽象基类。
 
     子类必须实现 kind 属性；可选覆盖 is_urgent / ack_id / _extra_signal_fields。
+    直接实例化 ProactiveEvent 会抛出 TypeError，静态分析器和运行时均有保护。
     """
 
     event_id: str       # 去重 & ack 用
@@ -44,9 +46,9 @@ class ProactiveEvent:
     # ------------------------------------------------------------------
 
     @property
+    @abstractmethod
     def kind(self) -> str:
         """事件类型标识，子类必须返回一个稳定的字符串（"health" / "feed" / ...）。"""
-        raise NotImplementedError
 
     @property
     def ack_id(self) -> str | None:

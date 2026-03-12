@@ -11,6 +11,7 @@ from core.net.http import (
     configure_default_shared_http_resources,
 )
 from feeds.base import FeedItem
+from proactive.event import FeedEvent
 from proactive.config import ProactiveConfig
 from proactive.engine import DecisionContext, GateResult, ProactiveEngine, _STOP_NONE
 from proactive.loop import ProactiveLoop, _parse_decision
@@ -362,7 +363,10 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
     assert result.semantic_duplicate_count == 0
     assert result.pending_enabled is False
     assert result.has_memory is True
-    assert ctx.ensure_fetch().new_items == items
+    feed_events = ctx.ensure_fetch().new_items
+    assert len(feed_events) == 1
+    assert isinstance(feed_events[0], FeedEvent)
+    assert feed_events[0]._raw_feed == items[0]
     assert ctx.ensure_fetch().new_entries == entries
 
 
@@ -458,7 +462,7 @@ async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidat
         feature_weight_d_content_bonus=0.0,
         feature_weight_d_energy_bonus=0.0,
     )
-    item = FeedItem(
+    _raw_item = FeedItem(
         source_name="Test",
         source_type="rss",
         title="A",
@@ -467,6 +471,7 @@ async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidat
         author=None,
         published_at=None,
     )
+    item = _raw_item  # compose_items assertion still compares against FeedItem
     engine._decide = SimpleNamespace(
         score_features=AsyncMock(
             return_value={
@@ -498,7 +503,7 @@ async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidat
     act = ctx.ensure_act()
     ctx.state.session_key = "telegram:1"
     ctx.state.now_utc = datetime.now(timezone.utc)
-    fetch.new_items = [item]
+    fetch.new_items = [FeedEvent.from_item(_raw_item, "item-1")]
     fetch.new_entries = [("rss:test", "item-1")]
     sense.recent = []
     sense.health_events = []

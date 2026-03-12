@@ -135,7 +135,7 @@ class SenseSnapshot:
 @dataclass
 class FetchSnapshot:
     items: list[FeedItem] = field(default_factory=list)
-    new_items: list[FeedItem] = field(default_factory=list)
+    new_items: list[FeedEvent] = field(default_factory=list)
     new_entries: list[tuple[str, str]] = field(default_factory=list)
     semantic_duplicate_entries: list[tuple[str, str]] = field(default_factory=list)
     has_memory: bool = False
@@ -661,17 +661,22 @@ class ProactiveEngine:
                 max_total=self._cfg_int("pending_max_total", 200),
                 now=state.now_utc,
             )
-            fetch.new_items, fetch.new_entries = self._select_pending_candidates(
+            raw_pending, fetch.new_entries = self._select_pending_candidates(
                 now=state.now_utc,
                 limit=self._cfg_int("pending_candidate_limit", 3),
             )
+            fetch.new_items = [
+                FeedEvent.from_item(it, self._item_id_for(it)) for it in raw_pending
+            ]
             logger.info(
                 "[proactive] pending 选出候选=%d pending_stats=%s",
                 len(fetch.new_items),
                 self._state.pending_stats(),
             )
         else:
-            fetch.new_items = discovered_items
+            fetch.new_items = [
+                FeedEvent.from_item(it, self._item_id_for(it)) for it in discovered_items
+            ]
             fetch.new_entries = discovered_entries
 
         # 4. 最后补充全局记忆命中状态，供后面的 force_reflect 判断使用。
@@ -1018,7 +1023,7 @@ class ProactiveEngine:
                 session_key=state.session_key,
                 channel=channel,
                 chat_id=chat_id,
-                items=fetch.new_items,
+                items=self._feed_items(fetch.new_items),
                 recent=sense.recent,
                 decision_signals=decide.decision_signals,
                 is_crisis=score.is_crisis,
@@ -1039,7 +1044,7 @@ class ProactiveEngine:
         fetch = ctx.ensure_fetch()
         act = ctx.ensure_act()
         act.compose_items, act.compose_entries = self._select_compose_items(
-            fetch.new_items,
+            self._feed_items(fetch.new_items),
             fetch.new_entries,
         )
 
@@ -1052,7 +1057,7 @@ class ProactiveEngine:
         act = ctx.ensure_act()
         # 1. 先对当前候选打 feature 分数，并缓存原始 feature payload。
         features = await self._decide.score_features(
-            items=fetch.new_items,
+            items=self._feed_items(fetch.new_items),
             recent=sense.recent,
             decision_signals=decide.decision_signals,
             retrieved_memory_block=decide.retrieved_memory_block,
@@ -1170,7 +1175,7 @@ class ProactiveEngine:
         decide = ctx.ensure_decide()
         # 1. 先请求 reflect 结果，得到 score / should_send / message / reasoning。
         decide.decision = await self._decide.reflect(
-            fetch.new_items,
+            self._feed_items(fetch.new_items),
             sense.recent,
             energy=sense.energy,
             urge=score.draw_score,
@@ -1219,7 +1224,7 @@ class ProactiveEngine:
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
         # 1. 先确定 source_items/source_entries，它们代表本轮发送候选来源。
-        source_items = act.compose_items or fetch.new_items or fetch.items
+        source_items = act.compose_items or self._feed_items(fetch.new_items) or fetch.items
         source_entries = act.compose_entries or self._entries_for_items(
             source_items,
             fetch.new_entries,
@@ -1764,6 +1769,11 @@ class ProactiveEngine:
         except Exception:
             value = default
         return max(1, value)
+
+    @staticmethod
+    def _feed_items(events: list[FeedEvent]) -> list[FeedItem]:
+        """从 FeedEvent 列表中提取原始 FeedItem，供仍接受 FeedItem 的 port 接口使用。"""
+        return [e._raw_feed for e in events if e._raw_feed is not None]
 
     def _item_id_for(self, item: FeedItem) -> str:
         try:
