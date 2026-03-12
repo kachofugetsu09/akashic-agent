@@ -1,17 +1,37 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.provider import LLMResponse
+from core.net.http import (
+    SharedHttpResources,
+    clear_default_shared_http_resources,
+    configure_default_shared_http_resources,
+)
 from feeds.base import FeedItem
+from proactive.components import ProactiveMessageComposer
 from proactive.config import ProactiveConfig
 from proactive.engine import ProactiveEngine
 from proactive.item_id import compute_item_id, compute_source_key
 from proactive.ports import RecentProactiveMessage
 from proactive.state import ProactiveStateStore
+from proactive.loop_helpers import _format_items, _format_recent
+
+
+@pytest.fixture(autouse=True)
+def _shared_http_resources():
+    resources = SharedHttpResources()
+    configure_default_shared_http_resources(resources)
+    try:
+        yield
+    finally:
+        clear_default_shared_http_resources(resources)
+        asyncio.run(resources.aclose())
 
 
 def _item(title: str, url: str, minutes_ago: int = 0) -> FeedItem:
@@ -71,6 +91,48 @@ def _cfg(**overrides) -> ProactiveConfig:
     for key, value in overrides.items():
         setattr(cfg, key, value)
     return cfg
+
+
+def _make_feature_decide(captured: dict[str, object]):
+    class _FeatureDecide:
+        async def score_features(self, **kw):
+            return {
+                "topic_continuity": 0.8,
+                "interest_match": 0.9,
+                "content_novelty": 0.7,
+                "reconnect_value": 0.7,
+                "disturb_risk": 0.1,
+                "message_readiness": 0.8,
+                "confidence": 0.9,
+            }
+
+        async def compose_message(self, **kw):
+            # 1. 记录最终进入生成阶段的聚合条目。
+            # 2. 用标题拼接消息，方便断言选中了哪一组。
+            # 3. 不引入额外格式逻辑，保持测试直观。
+            feed_items = kw["items"]
+            captured["items"] = feed_items
+            return " | ".join((item.title or "") for item in feed_items)
+
+        async def reflect(self, *a, **kw):
+            raise AssertionError("feature mode 不应走 reflect")
+
+        def randomize_decision(self, d):
+            return d, 0.0
+
+        def resolve_evidence_item_ids(self, d, items):
+            return [compute_item_id(item) for item in items]
+
+        def build_delivery_key(self, ids, msg):
+            return "|".join(ids) or "no-evidence"
+
+        def semantic_entries(self, items):
+            return []
+
+        def item_id_for(self, item):
+            return compute_item_id(item)
+
+    return _FeatureDecide()
 
 
 class _Decide:
@@ -340,6 +402,180 @@ async def test_feature_mode_groups_same_topic_items_into_one_message(tmp_path):
     assert len(send_meta.evidence_item_ids) == 2
     assert len(send_meta.source_refs) == 2
     assert all("Banquet for Fools" in (ref.title or "") for ref in send_meta.source_refs)
+
+
+@pytest.mark.asyncio
+async def test_feature_mode_keeps_first_item_when_topics_are_all_different(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    items = [
+        _item("Falcons roster update", "https://example.com/falcons", minutes_ago=3),
+        _item("Steam sale starts", "https://example.com/steam", minutes_ago=2),
+        _item("Fitbit battery tips", "https://example.com/fitbit", minutes_ago=1),
+    ]
+    entries = [(compute_source_key(item), compute_item_id(item)) for item in items]
+    captured: dict[str, object] = {}
+
+    act = MagicMock(send=AsyncMock(return_value=True))
+    engine = ProactiveEngine(
+        cfg=_cfg(
+            feature_scoring_enabled=True,
+            feature_send_threshold=0.0,
+            pending_queue_enabled=False,
+        ),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense(items, entries),
+        decide=_make_feature_decide(captured),
+        act=act,
+    )
+
+    await engine.tick()
+
+    send_message, send_meta = act.send.await_args.args
+    composed_items = captured["items"]
+    assert len(composed_items) == 1
+    assert composed_items[0].title == "Falcons roster update"
+    assert send_message == "Falcons roster update"
+    assert len(send_meta.evidence_item_ids) == 1
+    assert send_meta.source_refs[0].title == "Falcons roster update"
+
+
+@pytest.mark.asyncio
+async def test_feature_mode_prefers_larger_same_topic_cluster(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    items = [
+        _item("Falcons roster update", "https://example.com/falcons-1", minutes_ago=5),
+        _item("Falcons map pool changes", "https://example.com/falcons-2", minutes_ago=4),
+        _item("Steam sale starts", "https://example.com/steam-1", minutes_ago=3),
+        _item("Steam sale best RPG picks", "https://example.com/steam-2", minutes_ago=2),
+        _item("Steam sale hidden gems", "https://example.com/steam-3", minutes_ago=1),
+    ]
+    entries = [(compute_source_key(item), compute_item_id(item)) for item in items]
+    captured: dict[str, object] = {}
+
+    act = MagicMock(send=AsyncMock(return_value=True))
+    engine = ProactiveEngine(
+        cfg=_cfg(
+            feature_scoring_enabled=True,
+            feature_send_threshold=0.0,
+            pending_queue_enabled=False,
+        ),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense(items, entries),
+        decide=_make_feature_decide(captured),
+        act=act,
+    )
+
+    await engine.tick()
+
+    send_message, send_meta = act.send.await_args.args
+    composed_items = captured["items"]
+    titles = [item.title for item in composed_items]
+    assert len(composed_items) == 3
+    assert titles == [
+        "Steam sale starts",
+        "Steam sale best RPG picks",
+        "Steam sale hidden gems",
+    ]
+    assert "Falcons roster update" not in send_message
+    assert len(send_meta.evidence_item_ids) == 3
+    assert [ref.title for ref in send_meta.source_refs] == titles
+
+
+@pytest.mark.asyncio
+async def test_real_composer_prompt_contains_only_selected_topic_cluster(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    items = [
+        _item("Falcons roster update", "https://example.com/falcons-1", minutes_ago=5),
+        _item("Falcons map pool changes", "https://example.com/falcons-2", minutes_ago=4),
+        _item("Steam sale starts", "https://example.com/steam-1", minutes_ago=3),
+        _item("Steam sale best RPG picks", "https://example.com/steam-2", minutes_ago=2),
+        _item("Steam sale hidden gems", "https://example.com/steam-3", minutes_ago=1),
+    ]
+    entries = [(compute_source_key(item), compute_item_id(item)) for item in items]
+
+    class _Provider:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return LLMResponse(content="给用户的最终消息", tool_calls=[])
+
+    provider = _Provider()
+    composer = ProactiveMessageComposer(
+        provider=provider,
+        model="test-model",
+        max_tokens=256,
+        format_items=_format_items,
+        format_recent=_format_recent,
+        collect_global_memory=lambda: "",
+        max_tool_iterations=2,
+    )
+
+    class _RealComposerDecide:
+        async def score_features(self, **kw):
+            return {
+                "topic_continuity": 0.8,
+                "interest_match": 0.9,
+                "content_novelty": 0.7,
+                "reconnect_value": 0.7,
+                "disturb_risk": 0.1,
+                "message_readiness": 0.8,
+                "confidence": 0.9,
+            }
+
+        async def compose_message(self, **kw):
+            # 1. 使用真实 ProactiveMessageComposer 生成 prompt。
+            # 2. 让 provider 记录最终注入的 messages。
+            # 3. 返回 provider 的最终文本，保持链路完整。
+            return await composer.compose_message(**kw)
+
+        async def reflect(self, *a, **kw):
+            raise AssertionError("feature mode 不应走 reflect")
+
+        def randomize_decision(self, d):
+            return d, 0.0
+
+        def resolve_evidence_item_ids(self, d, items):
+            return [compute_item_id(item) for item in items]
+
+        def build_delivery_key(self, ids, msg):
+            return "|".join(ids) or "no-evidence"
+
+        def semantic_entries(self, items):
+            return []
+
+        def item_id_for(self, item):
+            return compute_item_id(item)
+
+    act = MagicMock(send=AsyncMock(return_value=True))
+    engine = ProactiveEngine(
+        cfg=_cfg(
+            feature_scoring_enabled=True,
+            feature_send_threshold=0.0,
+            pending_queue_enabled=False,
+        ),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense(items, entries),
+        decide=_RealComposerDecide(),
+        act=act,
+    )
+
+    await engine.tick()
+
+    assert provider.calls, "真实 composer 未调用 provider"
+    user_prompt = provider.calls[0]["messages"][1]["content"]
+    assert "Steam sale starts" in user_prompt
+    assert "Steam sale best RPG picks" in user_prompt
+    assert "Steam sale hidden gems" in user_prompt
+    assert "Falcons roster update" not in user_prompt
+    assert "Falcons map pool changes" not in user_prompt
 
 
 @pytest.mark.asyncio

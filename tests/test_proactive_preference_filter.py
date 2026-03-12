@@ -25,7 +25,12 @@ from __future__ import annotations
 
 import pytest
 
+from agent.memory import MemoryStore
+from core.memory.port import DefaultMemoryPort
 from feeds.base import FeedItem
+from memory2.memorizer import Memorizer
+from memory2.retriever import Retriever
+from memory2.store import MemoryStore2
 from proactive.config import ProactiveConfig
 from proactive.engine import ProactiveEngine, _STOP_NONE
 from proactive.ports import DefaultMemoryRetrievalPort, ProactiveRetrievedMemory
@@ -60,6 +65,101 @@ def _falcons_item() -> FeedItem:
         author=None,
         published_at=None,
     )
+
+
+def _hltv_major_race_item() -> FeedItem:
+    return FeedItem(
+        source_name="HLTV",
+        source_type="rss",
+        title="科隆 Major 名额冲刺分析：B8 势头很猛，Legacy 基本稳了",
+        content=(
+            "刚看到 HLTV 的科隆 Major 名额冲刺分析，B8 势头很猛，Legacy 基本稳了。"
+            "虽然没直接提到 NiKo 和 Falcons 的战况，但大赛前的格局变动总是值得留意。"
+        ),
+        url=(
+            "https://www.hltv.org/news/44056/"
+            "cologne-major-race-update-b8-surge-after-pcc-sign-up-legacy-all-but-confirm-spot-after-epl-run"
+        ),
+        author=None,
+        published_at=None,
+    )
+
+
+class _FakePreferenceEmbedder:
+    _KEYWORDS = (
+        ("hltv", "cs", "counter-strike"),
+        ("falcons", "niko"),
+        ("major", "名额", "冲刺", "科隆", "b8", "legacy", "race", "格局"),
+        ("只想看", "只关注", "不想看", "不关心", "偏好"),
+    )
+
+    async def embed(self, text: str) -> list[float]:
+        raw = (text or "").lower()
+        vector = [float(sum(1 for kw in group if kw in raw)) for group in self._KEYWORDS]
+        norm = sum(v * v for v in vector) ** 0.5
+        if norm <= 0:
+            return [0.0 for _ in vector]
+        return [v / norm for v in vector]
+
+
+def _build_real_preference_memory_port(tmp_path):
+    store = MemoryStore2(tmp_path / "memory2.db")
+    embedder = _FakePreferenceEmbedder()
+    memorizer = Memorizer(store, embedder)
+    retriever = Retriever(
+        store=store,
+        embedder=embedder,
+        score_threshold=0.2,
+        score_thresholds={
+            "procedure": 0.2,
+            "preference": 0.2,
+            "event": 0.2,
+            "profile": 0.2,
+        },
+        relative_delta=0.2,
+    )
+    return DefaultMemoryPort(MemoryStore(tmp_path), memorizer=memorizer, retriever=retriever)
+
+
+def _sense_with_item(item: FeedItem):
+    class _Sense:
+        def compute_energy(self):
+            return 0.5
+
+        def collect_recent(self):
+            return []
+
+        def collect_recent_proactive(self, n=5):
+            return []
+
+        def compute_interruptibility(self, **kw):
+            return 1.0, {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0, "random_delta": 0.0}
+
+        async def fetch_items(self, n):
+            return [item]
+
+        def filter_new_items(self, items):
+            return items, [("rss:hltv", "item1")], []
+
+        def read_memory_text(self):
+            return ""
+
+        def has_global_memory(self):
+            return False
+
+        def last_user_at(self):
+            return None
+
+        def refresh_sleep_context(self):
+            return False
+
+        def acknowledge_health_events(self, event_ids):
+            return None
+
+        def target_session_key(self):
+            return "telegram:123"
+
+    return _Sense()
 
 
 # ---------------------------------------------------------------------------
@@ -853,3 +953,135 @@ def test_config_loader_parses_preference_fields(tmp_path):
     assert p.preference_top_k == 8, (
         f"preference_top_k 未被正确加载: {p.preference_top_k!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_real_vector_retrieval_hits_hltv_major_race_preference(tmp_path):
+    port = _build_real_preference_memory_port(tmp_path)
+    await port.save_item(
+        summary=(
+            "HLTV 的 CS 资讯里，我只想看 NiKo、Falcons 相关消息；"
+            "不想看 B8、Legacy 这种 Major 名额分析。"
+        ),
+        memory_type="preference",
+        extra={},
+        source_ref="pref-major-race",
+    )
+    await port.save_item(
+        summary="更关心 CS2 枪皮和 V 社更新。",
+        memory_type="preference",
+        extra={},
+        source_ref="pref-skins",
+    )
+    retrieval = DefaultMemoryRetrievalPort(
+        cfg=ProactiveConfig(preference_retrieval_enabled=True, preference_top_k=4),
+        memory=port,
+        item_id_fn=lambda _: "item1",
+    )
+
+    # 1. 走真实 query builder + retriever 检索偏好记忆。
+    # 2. 用 HLTV Major 名额分析候选触发 preference RAG。
+    # 3. 断言命中的正是这条场景相关偏好。
+    result = await retrieval.retrieve_proactive_context(
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+        items=[_hltv_major_race_item()],
+        recent=[],
+        decision_signals={},
+        is_crisis=False,
+    )
+
+    assert "NiKo" in result.preference_block
+    assert "Falcons" in result.preference_block
+    assert "B8" in result.preference_block
+    assert "Legacy" in result.preference_block
+
+
+@pytest.mark.asyncio
+async def test_engine_vetoes_hltv_major_race_after_real_vector_retrieval(tmp_path):
+    send_calls: list[str] = []
+    score_inputs: list[dict] = []
+    port = _build_real_preference_memory_port(tmp_path)
+    await port.save_item(
+        summary=(
+            "HLTV 的 CS 资讯里，我只想看 NiKo、Falcons 相关消息；"
+            "不想看 B8、Legacy 这种 Major 名额分析。"
+        ),
+        memory_type="preference",
+        extra={},
+        source_ref="pref-major-race",
+    )
+    retrieval = DefaultMemoryRetrievalPort(
+        cfg=ProactiveConfig(preference_retrieval_enabled=True, preference_top_k=4),
+        memory=port,
+        item_id_fn=lambda _: "item1",
+    )
+
+    class _Decide:
+        async def score_features(self, **kw):
+            score_inputs.append(kw)
+            return {
+                "topic_continuity": 0.8,
+                "interest_match": 0.05,
+                "content_novelty": 0.7,
+                "reconnect_value": 0.6,
+                "disturb_risk": 0.1,
+                "message_readiness": 0.8,
+                "confidence": 0.9,
+            }
+
+        async def compose_message(self, **kw):
+            return "这条本来会发送，但应该先被 veto。"
+
+        async def reflect(self, *a, **kw):
+            raise AssertionError("不应走 reflect")
+
+        def randomize_decision(self, d):
+            return d, 0.0
+
+        def resolve_evidence_item_ids(self, d, items):
+            return []
+
+        def build_delivery_key(self, ids, msg):
+            return "k"
+
+        def semantic_entries(self, items):
+            return []
+
+        def item_id_for(self, item):
+            return "item1"
+
+    class _Act:
+        async def send(self, message, meta=None):
+            send_calls.append(message)
+            return True
+
+    engine = ProactiveEngine(
+        cfg=ProactiveConfig(
+            enabled=True,
+            feature_scoring_enabled=True,
+            feature_send_threshold=0.0,
+            score_llm_threshold=0.0,
+            default_channel="telegram",
+            default_chat_id="123",
+            preference_veto_enabled=True,
+            preference_interest_veto_threshold=0.15,
+        ),
+        state=ProactiveStateStore(tmp_path / "state.json"),
+        presence=None,
+        rng=None,
+        sense=_sense_with_item(_hltv_major_race_item()),
+        decide=_Decide(),
+        act=_Act(),
+        memory_retrieval=retrieval,
+    )
+
+    # 1. 先用真实向量检索拿到偏好 block。
+    # 2. 再让 feature score 给出低 interest_match。
+    # 3. 最后验证 engine 在发送前被 preference_veto 拦下。
+    await engine.tick()
+
+    assert score_inputs
+    assert "NiKo" in score_inputs[0].get("preference_block", "")
+    assert not send_calls

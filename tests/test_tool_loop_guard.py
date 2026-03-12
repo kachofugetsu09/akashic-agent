@@ -551,10 +551,36 @@ def test_composer_prompt_requires_source_name_and_clickable_url_when_citing():
     system_prompt = provider.calls[0]["messages"][0]["content"]
     user_prompt = provider.calls[0]["messages"][1]["content"]
     preflight_prompt = provider.calls[0]["messages"][2]["content"]
-    assert "附上一个可点击的原文 URL" in system_prompt
+    assert "附上可点击的原文 URL" in system_prompt
+    assert "每个被你明确提到的具体进展，都应附上对应链接" in system_prompt
     assert "系统不会替你自动补来源" in system_prompt
-    assert "最好附上一个最关键的 URL" in user_prompt
+    assert "每条被提到的更新都应带上对应链接" in user_prompt
     assert "优先在正文自然带上“来源名 + URL”" in preflight_prompt
+
+
+def test_composer_prompt_allows_longer_aggregated_message():
+    provider = _FakeProvider([LLMResponse(content="给用户的最终消息", tool_calls=[])])
+    composer = ProactiveMessageComposer(
+        provider=cast(Any, provider),
+        model="m",
+        max_tokens=256,
+        format_items=lambda _: "",
+        format_recent=lambda _: "",
+        collect_global_memory=lambda: "",
+        max_tool_iterations=2,
+    )
+
+    result = asyncio.run(
+        composer.compose_message(items=[], recent=[], decision_signals={})
+    )
+
+    assert result == "给用户的最终消息"
+    system_prompt = provider.calls[0]["messages"][0]["content"]
+    user_prompt = provider.calls[0]["messages"][1]["content"]
+    assert "不超过400字" in system_prompt
+    assert "优先合并成一条更完整的主动消息" in system_prompt
+    assert "不超过400字" in user_prompt
+    assert "应优先把 2-3 条自然整合进一条消息里" in user_prompt
 
 
 def test_agent_loop_summary_path_keeps_tool_chain_closed(tmp_path):
