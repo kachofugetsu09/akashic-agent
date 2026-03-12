@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
 from feeds.base import FeedItem
-from proactive.event import ProactiveEvent
+from proactive.event import FeedEvent, HealthEvent, ProactiveEvent
 from proactive.item_id import compute_item_id, compute_source_key
 from proactive.energy import (
     composite_score,
@@ -468,7 +468,7 @@ class ProactiveEngine:
         if not isinstance(raw_health, list):
             raw_health = []
         sense.health_events = [
-            ProactiveEvent.from_health_dict(e) for e in raw_health if isinstance(e, dict)
+            HealthEvent.from_dict(e) for e in raw_health if isinstance(e, dict)
         ]
 
         # 3. 采集能量、近期消息和 interruptibility，形成 score 的基础输入。
@@ -563,7 +563,7 @@ class ProactiveEngine:
             len(sense.recent),
         )
 
-        high_events = [e for e in sense.health_events if e.severity == "high"]
+        high_events = [e for e in sense.health_events if e.is_urgent()]
         if high_events:
             score.force_reflect = True
             if score.pre_score < self._cfg.score_pre_threshold:
@@ -992,7 +992,7 @@ class ProactiveEngine:
             decide.decision_signals["health_events"] = [
                 e.to_signal_dict() for e in sense.health_events
             ]
-        act.high_events = [e for e in sense.health_events if e.severity == "high"]
+        act.high_events = [e for e in sense.health_events if e.is_urgent()]
         logger.info(
             "[proactive] fitbit_signal events=%d high=%d sleep_state=%s",
             len(sense.health_events),
