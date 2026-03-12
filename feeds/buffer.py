@@ -5,6 +5,7 @@ FeedPoller 写入，ProactiveEngine 通过 SensePort 读取。
 不做 seen/delivery 判断，那是 ProactiveStateStore 的职责。
 进程重启后自动由 FeedPoller 重新填充。
 """
+
 from __future__ import annotations
 
 import logging
@@ -65,11 +66,7 @@ class FeedBuffer:
         """
         now = datetime.now(timezone.utc)
         cutoff = now - self._ttl
-        valid = [
-            (item, ts)
-            for item, ts in self._entries.values()
-            if ts >= cutoff
-        ]
+        valid = [(item, ts) for item, ts in self._entries.values() if ts >= cutoff]
         valid.sort(key=lambda x: x[1], reverse=True)
         if n > 0:
             valid = valid[:n]
@@ -101,7 +98,11 @@ class FeedBuffer:
         for iid in expired:
             del self._entries[iid]
         if expired:
-            logger.debug("[feed_buffer] evict_expired count=%d remaining=%d", len(expired), len(self._entries))
+            logger.debug(
+                "[feed_buffer] evict_expired count=%d remaining=%d",
+                len(expired),
+                len(self._entries),
+            )
         return len(expired)
 
     # ── 内部 ──────────────────────────────────────────────────────
@@ -118,5 +119,5 @@ class FeedBuffer:
                 continue
             # 按时间降序排，删掉最旧的
             entries.sort(key=lambda x: x[1], reverse=True)
-            for iid, _ in entries[self._max_per_source:]:
+            for iid, _ in entries[self._max_per_source :]:
                 del self._entries[iid]

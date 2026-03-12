@@ -14,14 +14,13 @@ import asyncio
 import json
 import sys
 
-
 DEFAULT_SOCKET = "/tmp/akasic.sock"
 
 
 async def trigger(socket_path: str, action_id: str | None) -> None:
     try:
         reader, writer = await asyncio.open_unix_connection(socket_path)
-    except (FileNotFoundError, ConnectionRefusedError):
+    except FileNotFoundError, ConnectionRefusedError:
         print(f"[错误] 无法连接到 agent socket: {socket_path}")
         print("请先启动 agent：python main.py")
         sys.exit(1)

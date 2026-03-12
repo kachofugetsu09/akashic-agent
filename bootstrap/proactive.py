@@ -62,9 +62,9 @@ def build_proactive_runtime(
         light_provider=light_provider,
         light_model=config.light_model,
         feed_store=feed_store,
-        passive_busy_fn=agent_loop.processing_state.is_busy
-        if agent_loop.processing_state
-        else None,
+        passive_busy_fn=(
+            agent_loop.processing_state.is_busy if agent_loop.processing_state else None
+        ),
     )
     tasks.append(proactive_loop.run())
 

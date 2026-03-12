@@ -60,13 +60,17 @@ class McpServerRegistry:
         self._config_path = config_path
         self._tool_registry = tool_registry
         self._clients: dict[str, McpClient] = {}
-        self._server_tools: dict[str, list[str]] = {}  # server_name -> 已注册的工具名列表
+        self._server_tools: dict[str, list[str]] = (
+            {}
+        )  # server_name -> 已注册的工具名列表
 
     async def load_and_connect_all(self) -> None:
         """启动时读取持久化配置，重连所有 server。"""
         for name, cfg in self._load_raw_configs().items():
             try:
-                await self._connect(name, cfg["command"], cfg.get("env"), cfg.get("cwd"))
+                await self._connect(
+                    name, cfg["command"], cfg.get("env"), cfg.get("cwd")
+                )
             except Exception as e:
                 logger.error("[mcp] 重连 %r 失败: %s", name, e)
 
@@ -108,7 +112,11 @@ class McpServerRegistry:
         return "\n".join(lines)
 
     async def _connect(
-        self, name: str, command: list[str], env: dict[str, str] | None, cwd: str | None = None
+        self,
+        name: str,
+        command: list[str],
+        env: dict[str, str] | None,
+        cwd: str | None = None,
     ) -> list[str]:
         client = McpClient(name=name, command=command, env=env, cwd=cwd)
         tool_infos = await client.connect()

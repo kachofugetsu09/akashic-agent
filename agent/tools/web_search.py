@@ -1,6 +1,7 @@
 """
 WebSearch 工具 — 基于 Exa MCP 公开端点，无需 API Key
 """
+
 import json
 from typing import Any
 
@@ -81,7 +82,9 @@ class WebSearchTool(Tool):
                 )
                 response.raise_for_status()
         except Exception as e:
-            return json.dumps({"error": f"搜索失败：{e}", "query": query}, ensure_ascii=False)
+            return json.dumps(
+                {"error": f"搜索失败：{e}", "query": query}, ensure_ascii=False
+            )
 
         # 解析 SSE 响应
         text = response.text
@@ -98,4 +101,6 @@ class WebSearchTool(Tool):
                 except json.JSONDecodeError:
                     continue
 
-        return json.dumps({"query": query, "results": [], "count": 0}, ensure_ascii=False)
+        return json.dumps(
+            {"query": query, "results": [], "count": 0}, ensure_ascii=False
+        )

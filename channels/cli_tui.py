@@ -3,6 +3,7 @@ Textual CLI 客户端
 
 连接到运行中的 agent 实例（通过 Unix socket），提供 TUI 交互界面。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -42,7 +43,10 @@ class HeaderBar(Horizontal):
 class FooterBar(Horizontal):
     def compose(self) -> ComposeResult:
         yield Static("Akasic (Textual TUI)", id="footer-left")
-        yield Static("enter send   ctrl+c quit   ctrl+l clear   kitty: Shift+drag copy", id="footer-right")
+        yield Static(
+            "enter send   ctrl+c quit   ctrl+l clear   kitty: Shift+drag copy",
+            id="footer-right",
+        )
 
 
 class CLITextualApp(App[None]):
@@ -134,13 +138,17 @@ class CLITextualApp(App[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="root"):
             yield HeaderBar()
-            yield RichLog(id="log", highlight=False, markup=False, auto_scroll=True, wrap=True)
+            yield RichLog(
+                id="log", highlight=False, markup=False, auto_scroll=True, wrap=True
+            )
             yield Input(placeholder="输入消息并回车发送...", id="input")
             yield FooterBar()
 
     async def on_mount(self) -> None:
         self._write_system_message("正在连接 agent ...")
-        self.run_worker(self._connect_and_receive(), name="socket-worker", exclusive=True)
+        self.run_worker(
+            self._connect_and_receive(), name="socket-worker", exclusive=True
+        )
         self.query_one(Input).focus()
 
     async def on_unmount(self) -> None:
@@ -179,7 +187,7 @@ class CLITextualApp(App[None]):
     async def _connect_and_receive(self) -> None:
         try:
             reader, writer = await asyncio.open_unix_connection(self.socket_path)
-        except (FileNotFoundError, ConnectionRefusedError):
+        except FileNotFoundError, ConnectionRefusedError:
             self._write_system_message(f"无法连接到 agent: {self.socket_path}")
             self._write_system_message("请先启动主进程: python main.py")
             self.connected = False
@@ -214,8 +222,14 @@ class CLITextualApp(App[None]):
                 self._write_system_message(f"RAW: {raw}")
                 continue
 
-            metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-            tool_chain = metadata.get("tool_chain") if isinstance(metadata.get("tool_chain"), list) else []
+            metadata = (
+                data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+            )
+            tool_chain = (
+                metadata.get("tool_chain")
+                if isinstance(metadata.get("tool_chain"), list)
+                else []
+            )
             if tool_chain:
                 self._write_tool_chain(tool_chain)
 
@@ -272,7 +286,11 @@ class CLITextualApp(App[None]):
             for call in calls:
                 name = str(call.get("name", "unknown"))
                 self.stats.tool_calls += 1
-                log.write(Text(f"[{self._ts()}] TOOL {name}  (collapsed)", style="bold #7dff9f"))
+                log.write(
+                    Text(
+                        f"[{self._ts()}] TOOL {name}  (collapsed)", style="bold #7dff9f"
+                    )
+                )
         self._refresh_header()
 
 

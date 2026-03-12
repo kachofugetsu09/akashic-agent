@@ -1,4 +1,5 @@
 """Tests for duration and datetime parsing utilities."""
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -40,6 +41,7 @@ class TestParseWhenAt:
     def test_hhmm_future_today(self):
         # 13:00 is in the future relative to 12:00
         from zoneinfo import ZoneInfo
+
         tz = "Asia/Shanghai"
         ref = datetime(2025, 6, 1, 12, 0, 0, tzinfo=ZoneInfo(tz))
         result = parse_when_at("13:00", tz, _now_fn=lambda: ref)
@@ -49,6 +51,7 @@ class TestParseWhenAt:
 
     def test_hhmm_past_advances_to_tomorrow(self):
         from zoneinfo import ZoneInfo
+
         tz = "Asia/Shanghai"
         ref = datetime(2025, 6, 1, 14, 0, 0, tzinfo=ZoneInfo(tz))
         result = parse_when_at("09:00", tz, _now_fn=lambda: ref)
@@ -68,6 +71,7 @@ class TestParseWhenAt:
 
     def test_timezone_applied_to_hhmm(self):
         from zoneinfo import ZoneInfo
+
         tz = "Asia/Shanghai"
         ref = datetime(2025, 6, 1, 8, 0, 0, tzinfo=ZoneInfo(tz))
         result = parse_when_at("09:00", tz, _now_fn=lambda: ref)

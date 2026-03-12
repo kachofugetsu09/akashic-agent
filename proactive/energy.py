@@ -18,12 +18,12 @@ proactive/energy.py — 动态电量衰减与多维主动冲动计算。
   draw_score = base_score × random_weight()
   draw_score > llm_threshold → 调 LLM 反思
 """
+
 from __future__ import annotations
 
 import math
 import random as _random
 from datetime import datetime, timezone
-
 
 # ── 电量计算（保留，loop.py 仍依赖）────────────────────────────────
 
@@ -46,7 +46,7 @@ def compute_energy(
     t = max(0.0, (now - last_user_at).total_seconds() / 60.0)
     return (
         alpha * math.exp(-t / tau1_min)
-        + beta  * math.exp(-t / tau2_min)
+        + beta * math.exp(-t / tau2_min)
         + gamma * math.exp(-t / tau3_min)
     )
 
@@ -104,10 +104,10 @@ def composite_score(
 def next_tick_from_score(
     base_score: float,
     *,
-    tick_s3: int = 420,    # base_score > 0.70 → ~7 min
-    tick_s2: int = 1080,   # base_score > 0.40 → ~18 min
-    tick_s1: int = 2400,   # base_score > 0.20 → ~40 min
-    tick_s0: int = 4800,   # base_score ≤ 0.20 → ~80 min
+    tick_s3: int = 420,  # base_score > 0.70 → ~7 min
+    tick_s2: int = 1080,  # base_score > 0.40 → ~18 min
+    tick_s1: int = 2400,  # base_score > 0.20 → ~40 min
+    tick_s0: int = 4800,  # base_score ≤ 0.20 → ~80 min
     tick_jitter: float = 0.3,
     rng: _random.Random | None = None,
 ) -> int:
@@ -130,7 +130,6 @@ def next_tick_from_score(
     return max(1, int(base * r))
 
 
-
 def random_weight(rng: _random.Random | None = None) -> float:
     """随机扰动系数，防止行为过于规律可预测。
 
@@ -138,5 +137,5 @@ def random_weight(rng: _random.Random | None = None) -> float:
     均值 ≈ 1.0，标准差适中。
     """
     r = rng or _random
-    sample = r.betavariate(2, 2)   # [0, 1]，均值 0.5
-    return 0.5 + sample            # [0.5, 1.5]
+    sample = r.betavariate(2, 2)  # [0, 1]，均值 0.5
+    return 0.5 + sample  # [0.5, 1.5]

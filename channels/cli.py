@@ -4,6 +4,7 @@ CLI Channel（客户端）
 连接到运行中的 agent 实例（通过 Unix socket），提供交互式命令行界面。
 启动方式：python main.py cli
 """
+
 import asyncio
 import json
 import sys
@@ -22,8 +23,10 @@ class CLIClient:
     async def run(self) -> None:
         try:
             reader, writer = await asyncio.open_unix_connection(self._socket_path)
-        except (FileNotFoundError, ConnectionRefusedError):
-            print(f"无法连接到 agent（{self._socket_path}），请先启动主进程：python main.py")
+        except FileNotFoundError, ConnectionRefusedError:
+            print(
+                f"无法连接到 agent（{self._socket_path}），请先启动主进程：python main.py"
+            )
             return
 
         _print_banner()
@@ -42,7 +45,7 @@ class CLIClient:
                 payload = json.dumps({"content": stripped}, ensure_ascii=False) + "\n"
                 writer.write(payload.encode())
                 await writer.drain()
-        except (KeyboardInterrupt, EOFError):
+        except KeyboardInterrupt, EOFError:
             pass
         finally:
             receive_task.cancel()
@@ -61,6 +64,7 @@ class CLIClient:
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────
+
 
 def _print_banner() -> None:
     print("Akasic Agent CLI  |  输入 exit 退出\n")

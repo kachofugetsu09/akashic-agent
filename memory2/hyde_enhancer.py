@@ -7,6 +7,7 @@ HyDE（Hypothetical Document Embeddings）检索增强。
   3. union dedup：保留 raw 全部结果，追加 hyde 中 raw 没有的条目
   4. 任何步骤失败/超时 → 降级返回 raw 结果，used_hyde=False
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -87,9 +88,7 @@ class HyDEEnhancer:
         raw_task = asyncio.create_task(
             retrieve_fn(raw_query, top_k=top_k, **retrieve_kwargs)
         )
-        hyp_task = asyncio.create_task(
-            self.generate_hypothesis(raw_query, context)
-        )
+        hyp_task = asyncio.create_task(self.generate_hypothesis(raw_query, context))
         raw_hits, hypothesis = await asyncio.gather(raw_task, hyp_task)
 
         if not hypothesis:

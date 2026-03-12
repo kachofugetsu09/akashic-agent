@@ -5,6 +5,7 @@ TDD for proactive/energy.py
   - compute_energy: 多时间尺度衰减
   - random_weight: 随机扰动
 """
+
 from datetime import datetime, timezone, timedelta
 from proactive.energy import compute_energy
 
@@ -14,6 +15,7 @@ def _ago(minutes: float) -> datetime:
 
 
 # ── compute_energy ────────────────────────────────────────────────
+
 
 def test_energy_is_one_at_t_zero():
     now = datetime.now(timezone.utc)

@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SleepContext:
-    state: str              # sleeping | awake | uncertain | unknown
-    prob: float | None      # 0-1，None=无数据
-    prob_source: str        # ml | heuristic | unavailable
+    state: str  # sleeping | awake | uncertain | unknown
+    prob: float | None  # 0-1，None=无数据
+    prob_source: str  # ml | heuristic | unavailable
     data_lag_min: int | None
-    fetched_at: float       # time.time()
-    available: bool         # False=服务不可达或数据过期
+    fetched_at: float  # time.time()
+    available: bool  # False=服务不可达或数据过期
     sleeping_modifier: float = 0.15
     health_events: list[dict[str, Any]] = field(default_factory=list)
 
@@ -39,7 +39,7 @@ class SleepContext:
         不设为 0，保留 chat 的概率可能性。
         """
         if not self.available:
-            return 1.0   # 降级：不影响现有行为
+            return 1.0  # 降级：不影响现有行为
         if self.state == "sleeping":
             return self.sleeping_modifier
         if self.state == "uncertain":
@@ -53,7 +53,7 @@ class SleepContext:
             return 0.50  # 普通 uncertain：chat 概率降约 50%
         if self.state == "awake":
             return 1.0
-        return 0.88      # unknown：轻微保守
+        return 0.88  # unknown：轻微保守
 
     @property
     def has_urgent_health_event(self) -> bool:
@@ -87,7 +87,9 @@ class FitbitSleepProvider:
 
     STALE_SECONDS = 1800  # 缓存超过 30 分钟视为过期
     FAIL_RETRY_SECONDS = 10  # 首次启动/短暂不可达时快速重试，避免 300s 空窗
-    STARTUP_GRACE_SECONDS = 4  # 与 run_fitbit_monitor 并发启动时，给 monitor 预留启动时间
+    STARTUP_GRACE_SECONDS = (
+        4  # 与 run_fitbit_monitor 并发启动时，给 monitor 预留启动时间
+    )
 
     def __init__(
         self,
@@ -137,7 +139,10 @@ class FitbitSleepProvider:
                 self._consecutive_failures = 0
             except Exception as e:
                 self._consecutive_failures += 1
-                if self._consecutive_failures == 1 or self._consecutive_failures % 12 == 0:
+                if (
+                    self._consecutive_failures == 1
+                    or self._consecutive_failures % 12 == 0
+                ):
                     logger.warning(
                         "[fitbit_sleep] 轮询失败（连续 %d 次，%ds 后重试）: %s",
                         self._consecutive_failures,
@@ -159,15 +164,16 @@ class FitbitSleepProvider:
     def acknowledge_events(self, event_ids: list[str]) -> None:
         """通知 fitbit-monitor 服务，事件已被 LLM 处理（fire-and-forget）。"""
         import requests
+
         for eid in event_ids:
             try:
-                r = requests.post(
-                    f"{self._url}/api/agent/acknowledge/{eid}", timeout=3
-                )
+                r = requests.post(f"{self._url}/api/agent/acknowledge/{eid}", timeout=3)
                 r.raise_for_status()
                 logger.debug("[fitbit_sleep] acknowledged event_id=%s", eid)
             except Exception as e:
-                logger.warning("[fitbit_sleep] acknowledge 失败 event_id=%s: %s", eid, e)
+                logger.warning(
+                    "[fitbit_sleep] acknowledge 失败 event_id=%s: %s", eid, e
+                )
 
     def _fetch_once(self, timeout: float | None = None) -> None:
         import requests
@@ -194,7 +200,10 @@ class FitbitSleepProvider:
             self._cached = ctx
         logger.debug(
             "[fitbit_sleep] 已更新 state=%s prob=%s source=%s lag=%s health_events=%d",
-            ctx.state, ctx.prob, ctx.prob_source, ctx.data_lag_min,
+            ctx.state,
+            ctx.prob,
+            ctx.prob_source,
+            ctx.data_lag_min,
             len(ctx.health_events),
         )
 
@@ -250,7 +259,8 @@ async def run_fitbit_monitor(
             env = dict(os.environ)
             env["PYTHONUNBUFFERED"] = "1"
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, str(server_py),
+                sys.executable,
+                str(server_py),
                 cwd=str(server_py.parent),
                 stdout=log_f,
                 stderr=log_f,

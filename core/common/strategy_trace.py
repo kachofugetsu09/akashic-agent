@@ -4,7 +4,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-StrategyTraceType = Literal["route", "proactive_stage", "proactive_config", "proactive_rate", "spawn"]
+StrategyTraceType = Literal[
+    "route", "proactive_stage", "proactive_config", "proactive_rate", "spawn"
+]
 StrategyTraceSubjectKind = Literal["session", "job", "action", "global"]
 
 

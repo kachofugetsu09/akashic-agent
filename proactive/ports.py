@@ -25,7 +25,10 @@ from memory2.injection_planner import (
     retrieve_history_items,
     retrieve_procedure_items,
 )
-from proactive.components import build_proactive_memory_query, build_proactive_preference_query
+from proactive.components import (
+    build_proactive_memory_query,
+    build_proactive_preference_query,
+)
 from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
@@ -230,12 +233,16 @@ class DefaultMemoryRetrievalPort:
             )
             top_k_hist = max(1, int(getattr(self._cfg, "memory_top_k_history", 6)))
             top_k_pref = max(1, int(getattr(self._cfg, "preference_top_k", 4)))
-            pref_enabled = bool(getattr(self._cfg, "preference_retrieval_enabled", True) and items)
+            pref_enabled = bool(
+                getattr(self._cfg, "preference_retrieval_enabled", True) and items
+            )
             pref_query_used = ""
             if pref_enabled:
                 pref_query_used = build_proactive_preference_query(
                     items=items,
-                    max_items=max(1, int(getattr(self._cfg, "memory_query_max_items", 3))),
+                    max_items=max(
+                        1, int(getattr(self._cfg, "memory_query_max_items", 3))
+                    ),
                 )
 
             # preference 是可选路，失败时降级为空并记录，不影响主路径的异常语义。
@@ -256,18 +263,22 @@ class DefaultMemoryRetrievalPort:
             # procedure 和 history 失败时直接抛出，由外层 except 统一处理。
             p_items, h_result, raw_pref_items = await asyncio.gather(
                 retrieve_procedure_items(self._memory, p_query, top_k=top_k_proc),
-                retrieve_history_items(
-                    self._memory,
-                    query,
-                    memory_types=["event"],
-                    top_k=top_k_hist,
-                    prefer_scoped=True,
-                    scope_channel=channel,
-                    scope_chat_id=chat_id,
-                    allow_global=bool(
-                        getattr(self._cfg, "memory_scope_fallback_to_global", False)
-                    ),
-                ) if history_open else asyncio.sleep(0, result=([], "disabled")),
+                (
+                    retrieve_history_items(
+                        self._memory,
+                        query,
+                        memory_types=["event"],
+                        top_k=top_k_hist,
+                        prefer_scoped=True,
+                        scope_channel=channel,
+                        scope_chat_id=chat_id,
+                        allow_global=bool(
+                            getattr(self._cfg, "memory_scope_fallback_to_global", False)
+                        ),
+                    )
+                    if history_open
+                    else asyncio.sleep(0, result=([], "disabled"))
+                ),
                 _safe_pref(),
             )
             h_items: list[dict]
@@ -355,9 +366,9 @@ class DefaultMemoryRetrievalPort:
             return True, "crisis"
         if any((it.title or "").strip() for it in items):
             return True, "has_topic_items"
-        if isinstance(decision_signals.get("health_events"), list) and decision_signals.get(
-            "health_events"
-        ):
+        if isinstance(
+            decision_signals.get("health_events"), list
+        ) and decision_signals.get("health_events"):
             return True, "health_events"
         recent_texts = [
             str(m.get("content", "")).strip()

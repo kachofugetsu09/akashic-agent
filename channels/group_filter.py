@@ -13,6 +13,7 @@
 只需将自定义 filter 传入 QQChannel 即可替换默认行为，
 无需修改 QQChannel 内部逻辑。
 """
+
 from __future__ import annotations
 
 import re
@@ -49,11 +50,15 @@ class DefaultGroupFilter:
         user_id = str(event.user_id)
 
         if group_cfg.allow_from and user_id not in group_cfg.allow_from:
-            logger.debug(f"[group_filter] 拒绝非白名单用户  user_id={user_id}  group={group_cfg.group_id}")
+            logger.debug(
+                f"[group_filter] 拒绝非白名单用户  user_id={user_id}  group={group_cfg.group_id}"
+            )
             return False
 
         if group_cfg.require_at and not _is_at_bot(event.raw_message, self._bot_uin):
-            logger.debug(f"[group_filter] 未被 @ 忽略消息  user_id={user_id}  group={group_cfg.group_id}")
+            logger.debug(
+                f"[group_filter] 未被 @ 忽略消息  user_id={user_id}  group={group_cfg.group_id}"
+            )
             return False
 
         return True

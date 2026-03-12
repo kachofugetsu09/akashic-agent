@@ -95,7 +95,10 @@ class MemorizeTool(Tool):
                 trigger_tags = await self._tagger.tag(summary)
                 if trigger_tags is not None:
                     extra["trigger_tags"] = trigger_tags
-                    logger.info("memorize: trigger_tags generated scope=%s", trigger_tags.get("scope"))
+                    logger.info(
+                        "memorize: trigger_tags generated scope=%s",
+                        trigger_tags.get("scope"),
+                    )
             except Exception as e:
                 logger.warning("memorize: trigger_tags generation failed: %s", e)
         result = await self._memory.save_item(

@@ -4,6 +4,7 @@ proactive/schedule.py — 用户作息配置的动态存储。
 从独立的 schedule.json 读取作息相关设置，
 与 config.json 解耦，允许随时修改而无需重启。
 """
+
 from __future__ import annotations
 
 import json

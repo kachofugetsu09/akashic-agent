@@ -43,7 +43,9 @@ async def test_send_markdown_falls_back_to_plain_text(monkeypatch):
     def fake_convert_with_segments(text):
         raise TypeError("boom")
 
-    monkeypatch.setattr("channels.telegram_utils.convert_with_segments", fake_convert_with_segments)
+    monkeypatch.setattr(
+        "channels.telegram_utils.convert_with_segments", fake_convert_with_segments
+    )
 
     await send_markdown(bot, 456, "line1\nline2")
 

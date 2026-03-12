@@ -180,7 +180,14 @@ def build_core_runtime(
             fitbit_tools["fitbit_health_snapshot"],
             tags=["health", "fitbit"],
             risk="read-only",
-            search_keywords=["健康数据", "运动数据", "fitbit", "心率", "步数", "卡路里"],
+            search_keywords=[
+                "健康数据",
+                "运动数据",
+                "fitbit",
+                "心率",
+                "步数",
+                "卡路里",
+            ],
         )
         tools.register(
             fitbit_tools["fitbit_sleep_report"],
@@ -204,7 +211,15 @@ def build_core_runtime(
             always_on=True,
             tags=["meta", "background"],
             risk="write",
-            search_keywords=["后台", "长任务", "异步", "继续处理", "spawn", "阻塞", "后台执行"],
+            search_keywords=[
+                "后台",
+                "长任务",
+                "异步",
+                "继续处理",
+                "spawn",
+                "阻塞",
+                "后台执行",
+            ],
         )
     memory_runtime: MemoryRuntime = build_memory_runtime(
         config,
@@ -262,7 +277,14 @@ def build_core_runtime(
         ScheduleTool(scheduler),
         tags=["scheduling"],
         risk="write",
-        search_keywords=["定时任务", "设置提醒", "计划任务", "cron", "延时执行", "timer"],
+        search_keywords=[
+            "定时任务",
+            "设置提醒",
+            "计划任务",
+            "cron",
+            "延时执行",
+            "timer",
+        ],
     )
     tools.register(
         ListSchedulesTool(scheduler),

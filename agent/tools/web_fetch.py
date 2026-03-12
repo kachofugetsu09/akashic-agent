@@ -92,6 +92,7 @@ class WebFetchTool(Tool):
             )
         except Exception as e:
             import httpx
+
             if isinstance(e, httpx.TimeoutException):
                 return _err(url, f"请求超时（>{timeout}s）")
             if isinstance(e, httpx.ConnectError):

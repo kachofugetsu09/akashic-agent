@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 import httpx
 
-
 HttpProfile = Literal["external_default", "feed_fetcher", "local_service"]
 
 
@@ -48,7 +47,9 @@ class HttpRequester:
     ) -> httpx.Response:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + (
-            budget.total_timeout_s if budget is not None else self.default_budget.total_timeout_s
+            budget.total_timeout_s
+            if budget is not None
+            else self.default_budget.total_timeout_s
         )
         attempts = max(1, self.retry_policy.max_attempts)
         last_error: Exception | None = None
@@ -78,7 +79,9 @@ class HttpRequester:
                 if not self._should_retry_exception(exc, attempt, attempts):
                     raise
 
-            sleep_s = min(self._backoff_seconds(attempt), max(0.0, deadline - loop.time()))
+            sleep_s = min(
+                self._backoff_seconds(attempt), max(0.0, deadline - loop.time())
+            )
             if sleep_s <= 0:
                 continue
             await self.sleep(sleep_s)
@@ -159,7 +162,9 @@ class SharedHttpResources:
         )
         self.local_service = HttpRequester(
             client=local_client,
-            retry_policy=RetryPolicy(max_attempts=2, base_delay_s=0.15, max_delay_s=0.3),
+            retry_policy=RetryPolicy(
+                max_attempts=2, base_delay_s=0.15, max_delay_s=0.3
+            ),
             default_timeout_s=5.0,
             default_budget=RequestBudget(total_timeout_s=8.0),
         )

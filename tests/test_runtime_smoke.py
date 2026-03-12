@@ -82,7 +82,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         observed["http_resources"] = http_resources
         return runtime
 
-    monkeypatch.setattr(bootstrap_app, "build_core_runtime", _patched_build_core_runtime)
+    monkeypatch.setattr(
+        bootstrap_app, "build_core_runtime", _patched_build_core_runtime
+    )
     monkeypatch.setattr(main.Path, "home", lambda: tmp_path)
 
     await main.serve(str(config_path))

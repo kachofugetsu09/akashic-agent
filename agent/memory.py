@@ -22,6 +22,7 @@ class MemoryStore:
     - NOW.md      : short-term state (ongoing tasks, schedule, open questions)
     - HISTORY.md  : grep-searchable event log, permanent append
     """
+
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
@@ -134,7 +135,9 @@ class MemoryStore:
                 existing += " " + item_clean.lower()
 
         section_body = "\n".join(lines)
-        section = f"## 近期进行中\n\n{section_body}" if section_body else "## 近期进行中"
+        section = (
+            f"## 近期进行中\n\n{section_body}" if section_body else "## 近期进行中"
+        )
 
         parts = []
         if before.strip():
@@ -274,19 +277,19 @@ class MemoryStore:
     def _init_consolidation_db(self) -> None:
         conn = sqlite3.connect(str(self._consolidation_db))
         try:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS consolidation_writes (
+            conn.execute("""CREATE TABLE IF NOT EXISTS consolidation_writes (
                     source_ref TEXT NOT NULL,
                     kind TEXT NOT NULL,
                     payload TEXT,
                     trailing_blank_line INTEGER NOT NULL DEFAULT 0,
                     done_at TEXT NOT NULL,
                     PRIMARY KEY (source_ref, kind)
-                )"""
-            )
+                )""")
             cols = {
                 row[1]
-                for row in conn.execute("PRAGMA table_info(consolidation_writes)").fetchall()
+                for row in conn.execute(
+                    "PRAGMA table_info(consolidation_writes)"
+                ).fetchall()
             }
             if "payload" not in cols:
                 conn.execute("ALTER TABLE consolidation_writes ADD COLUMN payload TEXT")
@@ -403,9 +406,7 @@ class MemoryStore:
             return False
         return False
 
-    def _split_now_section(
-        self, text: str, header: str
-    ) -> tuple[str, list[str], str]:
+    def _split_now_section(self, text: str, header: str) -> tuple[str, list[str], str]:
         """将 NOW.md 拆成 (section 前内容, section 正文行列表, section 后内容)。
 
         返回的行列表已过滤空行，适合直接 append / filter 后重组。

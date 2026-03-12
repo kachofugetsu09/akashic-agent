@@ -4,10 +4,10 @@ TDD for proactive/memory_sampler.py
 随机记忆抽取：把 MEMORY.md 文本切成语义块，随机挑 N 条注入 LLM prompt。
 纯函数，无 I/O，无 LLM。
 """
+
 import random
 import pytest
 from proactive.memory_sampler import split_memory_chunks, sample_memory_chunks
-
 
 MEMORY_MD = """\
 ## 用户偏好
@@ -30,6 +30,7 @@ MEMORY_MD = """\
 
 
 # ── split_memory_chunks ───────────────────────────────────────────
+
 
 def test_split_returns_nonempty_list():
     chunks = split_memory_chunks(MEMORY_MD)
@@ -73,6 +74,7 @@ def test_split_single_line_memory():
 
 # ── sample_memory_chunks ──────────────────────────────────────────
 
+
 def test_sample_returns_requested_count():
     chunks = split_memory_chunks(MEMORY_MD)
     rng = random.Random(1)
@@ -105,7 +107,9 @@ def test_sample_varies_across_different_seeds():
         rng = random.Random(seed)
         r = sample_memory_chunks(MEMORY_MD, n=1, rng=rng)
         results.add(r[0])
-    assert len(results) > 1, "sampling should produce different results with different seeds"
+    assert (
+        len(results) > 1
+    ), "sampling should produce different results with different seeds"
 
 
 def test_sample_n_zero_returns_empty():

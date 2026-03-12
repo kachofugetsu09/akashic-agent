@@ -37,22 +37,27 @@ class _DummyProvider:
         raise RuntimeError("not used in this test")
 
 
-def _build_loop(tmp_path, push_tool, chat_id: str = "7674283004", default_channel: str = "telegram"):
+def _build_loop(
+    tmp_path, push_tool, chat_id: str = "7674283004", default_channel: str = "telegram"
+):
     session_manager = SessionManager(tmp_path)
-    return ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),
-        session_manager=session_manager,
-        provider=_DummyProvider(),
-        push_tool=push_tool,
-        config=ProactiveConfig(
-            enabled=True,
-            default_channel=default_channel,
-            default_chat_id=chat_id,
+    return (
+        ProactiveLoop(
+            feed_registry=_DummyFeedRegistry(),
+            session_manager=session_manager,
+            provider=_DummyProvider(),
+            push_tool=push_tool,
+            config=ProactiveConfig(
+                enabled=True,
+                default_channel=default_channel,
+                default_chat_id=chat_id,
+            ),
+            model="test-model",
+            max_tokens=128,
+            state_path=tmp_path / "proactive_state.json",
         ),
-        model="test-model",
-        max_tokens=128,
-        state_path=tmp_path / "proactive_state.json",
-    ), session_manager
+        session_manager,
+    )
 
 
 class _Resp:
@@ -546,7 +551,9 @@ def test_engine_stage_trace_writer_serializes_stop_none_sentinel():
     engine._trace_stage_result(
         DecisionContext(),
         stage="gate",
-        result=GateResult(proceed=False, stop_result=_STOP_NONE, reason_code="scheduler_reject"),
+        result=GateResult(
+            proceed=False, stop_result=_STOP_NONE, reason_code="scheduler_reject"
+        ),
     )
 
     assert isinstance(emitted[0]["payload"]["result"]["stop_result"], str)
@@ -556,7 +563,9 @@ def test_engine_stage_trace_writer_serializes_stop_none_sentinel():
 async def test_send_uses_configured_channel(tmp_path):
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
-    loop, _ = _build_loop(tmp_path, push_tool, chat_id="7674283004", default_channel="qq")
+    loop, _ = _build_loop(
+        tmp_path, push_tool, chat_id="7674283004", default_channel="qq"
+    )
 
     await loop._send("主动消息")
 
@@ -615,7 +624,9 @@ async def test_send_persists_source_refs_and_state_summary_tag(tmp_path):
     assert last["source_refs"][0]["source_name"] == "HLTV"
     history = session.get_history()
     assert "[proactive_meta]" in history[-1]["content"]
-    assert "HLTV | Rare Atom signs x9 | https://example.com/ra" in history[-1]["content"]
+    assert (
+        "HLTV | Rare Atom signs x9 | https://example.com/ra" in history[-1]["content"]
+    )
 
 
 @pytest.mark.asyncio
@@ -675,7 +686,9 @@ async def test_reflect_includes_global_memory(tmp_path):
 
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.2,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.2,"should_send":false,"message":""}'
+        )
     )
     session_manager = SessionManager(tmp_path)
     loop = ProactiveLoop(
@@ -749,9 +762,12 @@ async def test_tick_skips_llm_when_energy_above_cool_threshold(tmp_path):
 async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
     """72h 未发消息（危机模式），即使没有 feed 和记忆，W_content 托底 → 应调用 LLM。"""
     import random
+
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 72)
@@ -770,7 +786,7 @@ async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
         presence=presence,
-        rng=random.Random(1),   # 固定种子，结果确定
+        rng=random.Random(1),  # 固定种子，结果确定
     )
 
     await loop._tick()
@@ -783,7 +799,9 @@ async def test_tick_calls_llm_when_no_presence_data(tmp_path):
     """无心跳记录（从未收到消息），视作电量为 0，应进入 LLM 反思。"""
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=None)
@@ -799,7 +817,9 @@ async def test_reflect_contains_energy_context(tmp_path):
     """LLM prompt 里应包含电量和冲动信息。"""
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
@@ -817,7 +837,9 @@ async def test_reflect_prompt_requires_direct_opinion_not_counter_question(tmp_p
     """proactive 文案应强调直接表达观点，避免“你怎么看”式收尾。"""
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
@@ -835,7 +857,9 @@ async def test_reflect_prompt_allows_interest_based_new_topic(tmp_path):
     """即使与近期对话无关，只要符合长期兴趣，也允许自然开启新话题。"""
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
@@ -852,7 +876,9 @@ async def test_reflect_prompt_allows_interest_based_new_topic(tmp_path):
 async def test_reflect_prompt_discourages_repeating_user_state_summary(tmp_path):
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
@@ -869,7 +895,9 @@ async def test_reflect_prompt_discourages_repeating_user_state_summary(tmp_path)
 async def test_reflect_prompt_requires_evidence_and_exact_source(tmp_path):
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
@@ -879,7 +907,10 @@ async def test_reflect_prompt_requires_evidence_and_exact_source(tmp_path):
 
     user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
     assert "只有在你能指出消息依据的确切证据时" in user_prompt
-    assert "若你找不到确切证据或来源不清，应降低 score，并把 should_send 设为 false" in user_prompt
+    assert (
+        "若你找不到确切证据或来源不清，应降低 score，并把 should_send 设为 false"
+        in user_prompt
+    )
     assert "优先自然带上“来源名 + 可点击原文链接”" in user_prompt
     assert "系统不会在发送前替你自动补来源" in user_prompt
 
@@ -889,7 +920,9 @@ async def test_reflect_contains_crisis_hint_when_energy_very_low(tmp_path):
     """电量极低（危机模式）时，prompt 里应包含危机提示。"""
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 72)
@@ -910,6 +943,7 @@ async def test_tick_skips_llm_when_no_content_and_no_crisis(tmp_path):
     random_weight∈[0.5, 1.5] 的最大扰动也无法突破阈值，不依赖随机采样结果。
     """
     import random
+
     provider = _DummyProvider()
     provider.chat = AsyncMock()
 
@@ -943,9 +977,12 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
     """电量低 + 有记忆 → W_content > 0 → 进入 LLM。"""
     import random
     from agent.memory import MemoryStore
+
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 24)
@@ -982,9 +1019,12 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
     """no new feed items + low energy + memory 时仍可进入 LLM。"""
     import random
     from agent.memory import MemoryStore
+
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 24)
@@ -995,7 +1035,7 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
     memory.write_long_term("用户喜欢 Python。")
 
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),   # 始终返回空 feed
+        feed_registry=_DummyFeedRegistry(),  # 始终返回空 feed
         session_manager=session_manager,
         provider=provider,
         push_tool=push_tool,
@@ -1020,13 +1060,18 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
 async def test_reflect_always_contains_full_memory(tmp_path):
     """_reflect 应始终注入全量记忆，不论是否危机模式。"""
     from agent.memory import MemoryStore
+
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     memory = MemoryStore(tmp_path)
-    memory.write_long_term("## 偏好\n\n- 喜欢魂类游戏\n- 不喜欢电竞\n\n## 工作\n\n- 用 Python\n")
+    memory.write_long_term(
+        "## 偏好\n\n- 喜欢魂类游戏\n- 不喜欢电竞\n\n## 工作\n\n- 用 Python\n"
+    )
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
 
@@ -1055,13 +1100,18 @@ async def test_reflect_crisis_adds_topic_hint(tmp_path):
     """危机模式应在全量记忆基础上额外注入一条随机话题作为开场提示。"""
     import random
     from agent.memory import MemoryStore
+
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+        return_value=_Resp(
+            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
+        )
     )
 
     memory = MemoryStore(tmp_path)
-    memory.write_long_term("## 偏好\n\n- 喜欢魂类游戏\n- 不喜欢电竞\n\n## 工作\n\n- 用 Python\n")
+    memory.write_long_term(
+        "## 偏好\n\n- 喜欢魂类游戏\n- 不喜欢电竞\n\n## 工作\n\n- 用 Python\n"
+    )
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
 
@@ -1082,7 +1132,9 @@ async def test_reflect_crisis_adds_topic_hint(tmp_path):
     # 全量记忆仍在
     assert "偏好" in prompt_crisis or "工作" in prompt_crisis
     # 额外有话题提示
-    assert "话题" in prompt_crisis or "开场" in prompt_crisis or "开始聊" in prompt_crisis
+    assert (
+        "话题" in prompt_crisis or "开场" in prompt_crisis or "开始聊" in prompt_crisis
+    )
 
 
 @pytest.mark.asyncio
@@ -1143,49 +1195,108 @@ async def test_sent_without_session_key_still_marks_items_seen(tmp_path):
     state.mark_delivery = _track_delivery
 
     item = FeedItem(
-        source_name="S", source_type="rss", title="T",
-        content="c", url="https://x.com/1", author=None, published_at=None,
+        source_name="S",
+        source_type="rss",
+        title="T",
+        content="c",
+        url="https://x.com/1",
+        author=None,
+        published_at=None,
     )
 
     class _Sense:
-        def compute_energy(self): return 0.0
-        def collect_recent(self): return []
-        def collect_recent_proactive(self, n=5): return []
-        def compute_interruptibility(self, **kw): return 1.0, {"f_time":1,"f_reply":1,"f_activity":1,"f_fatigue":1,"random_delta":0}
-        async def fetch_items(self, n): return [item]
-        def filter_new_items(self, items): return items, [("s:s","id1")], []
-        def read_memory_text(self): return ""
-        def has_global_memory(self): return False
-        def last_user_at(self): return None
-        def target_session_key(self): return ""  # 空 session_key
-        def quiet_hours(self): return 23, 10, 0.0
+        def compute_energy(self):
+            return 0.0
+
+        def collect_recent(self):
+            return []
+
+        def collect_recent_proactive(self, n=5):
+            return []
+
+        def compute_interruptibility(self, **kw):
+            return 1.0, {
+                "f_time": 1,
+                "f_reply": 1,
+                "f_activity": 1,
+                "f_fatigue": 1,
+                "random_delta": 0,
+            }
+
+        async def fetch_items(self, n):
+            return [item]
+
+        def filter_new_items(self, items):
+            return items, [("s:s", "id1")], []
+
+        def read_memory_text(self):
+            return ""
+
+        def has_global_memory(self):
+            return False
+
+        def last_user_at(self):
+            return None
+
+        def target_session_key(self):
+            return ""  # 空 session_key
+
+        def quiet_hours(self):
+            return 23, 10, 0.0
 
     class _Decide:
-        async def score_features(self, **kw): return None
-        async def compose_message(self, **kw): return ""
+        async def score_features(self, **kw):
+            return None
+
+        async def compose_message(self, **kw):
+            return ""
+
         async def reflect(self, items, recent, **kw):
             class D:
-                score = 0.9; should_send = True; message = "hi"; reasoning = "ok"; evidence_item_ids = []
+                score = 0.9
+                should_send = True
+                message = "hi"
+                reasoning = "ok"
+                evidence_item_ids = []
+
             return D()
-        def randomize_decision(self, d): return d, 0.0
-        def resolve_evidence_item_ids(self, d, items): return ["id1"]
-        def build_delivery_key(self, ids, msg): return "key1"
-        def semantic_entries(self, items): return [{"source_key":"s:s","item_id":"id1","text":"t"}]
-        def item_id_for(self, item): return "id1"
+
+        def randomize_decision(self, d):
+            return d, 0.0
+
+        def resolve_evidence_item_ids(self, d, items):
+            return ["id1"]
+
+        def build_delivery_key(self, ids, msg):
+            return "key1"
+
+        def semantic_entries(self, items):
+            return [{"source_key": "s:s", "item_id": "id1", "text": "t"}]
+
+        def item_id_for(self, item):
+            return "id1"
 
     class _Act:
-        async def send(self, msg, meta=None): return True  # 发送成功
+        async def send(self, msg, meta=None):
+            return True  # 发送成功
 
     cfg = ProactiveConfig(
-        enabled=True, default_channel="", default_chat_id="",
+        enabled=True,
+        default_channel="",
+        default_chat_id="",
         anyaction_enabled=False,
         feature_scoring_enabled=False,
         score_pre_threshold=0.0,
         score_llm_threshold=0.0,
     )
     engine = ProactiveEngine(
-        cfg=cfg, state=state, presence=None, rng=None,
-        sense=_Sense(), decide=_Decide(), act=_Act(),
+        cfg=cfg,
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_Sense(),
+        decide=_Decide(),
+        act=_Act(),
     )
     await engine.tick()
 
@@ -1208,39 +1319,98 @@ async def test_gate_quota_exhausted_returns_zero(tmp_path):
 
     class _Gate:
         def should_act(self, *, now_utc, last_user_at):
-            return False, {"reason": "quota_exhausted", "used_today": 24, "remaining_today": 0}
-        def record_action(self, *, now_utc): pass
+            return False, {
+                "reason": "quota_exhausted",
+                "used_today": 24,
+                "remaining_today": 0,
+            }
+
+        def record_action(self, *, now_utc):
+            pass
 
     class _Sense:
-        def compute_energy(self): return 0.5
-        def collect_recent(self): return []
-        def collect_recent_proactive(self, n=5): return []
-        def compute_interruptibility(self, **kw): return 1.0, {"f_time":1,"f_reply":1,"f_activity":1,"f_fatigue":1,"random_delta":0}
-        async def fetch_items(self, n): return []
-        def filter_new_items(self, items): return [], [], []
-        def read_memory_text(self): return ""
-        def has_global_memory(self): return False
-        def last_user_at(self): return None
-        def target_session_key(self): return "telegram:123"
-        def quiet_hours(self): return 23, 10, 0.0
+        def compute_energy(self):
+            return 0.5
+
+        def collect_recent(self):
+            return []
+
+        def collect_recent_proactive(self, n=5):
+            return []
+
+        def compute_interruptibility(self, **kw):
+            return 1.0, {
+                "f_time": 1,
+                "f_reply": 1,
+                "f_activity": 1,
+                "f_fatigue": 1,
+                "random_delta": 0,
+            }
+
+        async def fetch_items(self, n):
+            return []
+
+        def filter_new_items(self, items):
+            return [], [], []
+
+        def read_memory_text(self):
+            return ""
+
+        def has_global_memory(self):
+            return False
+
+        def last_user_at(self):
+            return None
+
+        def target_session_key(self):
+            return "telegram:123"
+
+        def quiet_hours(self):
+            return 23, 10, 0.0
 
     class _Decide:
-        async def score_features(self, **kw): return None
-        async def compose_message(self, **kw): return ""
-        async def reflect(self, *a, **kw): raise AssertionError("不应调用")
-        def randomize_decision(self, d): return d, 0.0
-        def resolve_evidence_item_ids(self, d, items): return []
-        def build_delivery_key(self, ids, msg): return ""
-        def semantic_entries(self, items): return []
-        def item_id_for(self, item): return ""
+        async def score_features(self, **kw):
+            return None
+
+        async def compose_message(self, **kw):
+            return ""
+
+        async def reflect(self, *a, **kw):
+            raise AssertionError("不应调用")
+
+        def randomize_decision(self, d):
+            return d, 0.0
+
+        def resolve_evidence_item_ids(self, d, items):
+            return []
+
+        def build_delivery_key(self, ids, msg):
+            return ""
+
+        def semantic_entries(self, items):
+            return []
+
+        def item_id_for(self, item):
+            return ""
 
     class _Act:
-        async def send(self, msg, meta=None): return False
+        async def send(self, msg, meta=None):
+            return False
 
-    cfg = ProactiveConfig(enabled=True, anyaction_enabled=True, default_channel="telegram", default_chat_id="123")
+    cfg = ProactiveConfig(
+        enabled=True,
+        anyaction_enabled=True,
+        default_channel="telegram",
+        default_chat_id="123",
+    )
     engine = ProactiveEngine(
-        cfg=cfg, state=state, presence=None, rng=None,
-        sense=_Sense(), decide=_Decide(), act=_Act(),
+        cfg=cfg,
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_Sense(),
+        decide=_Decide(),
+        act=_Act(),
         anyaction=_Gate(),
     )
     result = await engine.tick()
@@ -1257,39 +1427,99 @@ async def test_gate_min_interval_returns_none(tmp_path):
 
     class _Gate:
         def should_act(self, *, now_utc, last_user_at):
-            return False, {"reason": "min_interval", "used_today": 1, "remaining_today": 23, "seconds_since_last_action": 60}
-        def record_action(self, *, now_utc): pass
+            return False, {
+                "reason": "min_interval",
+                "used_today": 1,
+                "remaining_today": 23,
+                "seconds_since_last_action": 60,
+            }
+
+        def record_action(self, *, now_utc):
+            pass
 
     class _Sense:
-        def compute_energy(self): return 0.5
-        def collect_recent(self): return []
-        def collect_recent_proactive(self, n=5): return []
-        def compute_interruptibility(self, **kw): return 1.0, {"f_time":1,"f_reply":1,"f_activity":1,"f_fatigue":1,"random_delta":0}
-        async def fetch_items(self, n): return []
-        def filter_new_items(self, items): return [], [], []
-        def read_memory_text(self): return ""
-        def has_global_memory(self): return False
-        def last_user_at(self): return None
-        def target_session_key(self): return "telegram:123"
-        def quiet_hours(self): return 23, 10, 0.0
+        def compute_energy(self):
+            return 0.5
+
+        def collect_recent(self):
+            return []
+
+        def collect_recent_proactive(self, n=5):
+            return []
+
+        def compute_interruptibility(self, **kw):
+            return 1.0, {
+                "f_time": 1,
+                "f_reply": 1,
+                "f_activity": 1,
+                "f_fatigue": 1,
+                "random_delta": 0,
+            }
+
+        async def fetch_items(self, n):
+            return []
+
+        def filter_new_items(self, items):
+            return [], [], []
+
+        def read_memory_text(self):
+            return ""
+
+        def has_global_memory(self):
+            return False
+
+        def last_user_at(self):
+            return None
+
+        def target_session_key(self):
+            return "telegram:123"
+
+        def quiet_hours(self):
+            return 23, 10, 0.0
 
     class _Decide:
-        async def score_features(self, **kw): return None
-        async def compose_message(self, **kw): return ""
-        async def reflect(self, *a, **kw): raise AssertionError("不应调用")
-        def randomize_decision(self, d): return d, 0.0
-        def resolve_evidence_item_ids(self, d, items): return []
-        def build_delivery_key(self, ids, msg): return ""
-        def semantic_entries(self, items): return []
-        def item_id_for(self, item): return ""
+        async def score_features(self, **kw):
+            return None
+
+        async def compose_message(self, **kw):
+            return ""
+
+        async def reflect(self, *a, **kw):
+            raise AssertionError("不应调用")
+
+        def randomize_decision(self, d):
+            return d, 0.0
+
+        def resolve_evidence_item_ids(self, d, items):
+            return []
+
+        def build_delivery_key(self, ids, msg):
+            return ""
+
+        def semantic_entries(self, items):
+            return []
+
+        def item_id_for(self, item):
+            return ""
 
     class _Act:
-        async def send(self, msg, meta=None): return False
+        async def send(self, msg, meta=None):
+            return False
 
-    cfg = ProactiveConfig(enabled=True, anyaction_enabled=True, default_channel="telegram", default_chat_id="123")
+    cfg = ProactiveConfig(
+        enabled=True,
+        anyaction_enabled=True,
+        default_channel="telegram",
+        default_chat_id="123",
+    )
     engine = ProactiveEngine(
-        cfg=cfg, state=state, presence=None, rng=None,
-        sense=_Sense(), decide=_Decide(), act=_Act(),
+        cfg=cfg,
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_Sense(),
+        decide=_Decide(),
+        act=_Act(),
         anyaction=_Gate(),
     )
     result = await engine.tick()
@@ -1302,6 +1532,7 @@ async def test_gate_min_interval_returns_none(tmp_path):
 def test_invalid_timezone_raises_when_anyaction_enabled():
     """anyaction_enabled=True 且时区无效 → 配置加载 fail-fast。"""
     from agent.config import _validated_timezone
+
     with pytest.raises(ValueError, match="anyaction_timezone"):
         _validated_timezone("Invalid/Timezone_XYZ", enabled=True)
 
@@ -1309,6 +1540,7 @@ def test_invalid_timezone_raises_when_anyaction_enabled():
 def test_invalid_timezone_ignored_when_anyaction_disabled():
     """anyaction_enabled=False 时，无效时区不报错（功能未启用，副作用不扩大）。"""
     from agent.config import _validated_timezone
+
     result = _validated_timezone("Invalid/Timezone_XYZ", enabled=False)
     assert result == "Invalid/Timezone_XYZ"
 
@@ -1317,16 +1549,19 @@ def test_safe_zone_fallback_on_invalid_timezone():
     """运行时 _safe_zone 遇到无效时区应回退 UTC，不抛异常。"""
     from proactive.anyaction import _safe_zone
     from zoneinfo import ZoneInfo
+
     tz = _safe_zone("Not/A/Real_Zone")
     assert tz == ZoneInfo("UTC")
 
 
 # ── Fix A: delivery_key 不含 message 文本 ──────────────────────────
 
+
 def test_delivery_key_with_evidence_ignores_message():
     """有证据时，delivery_key 只取决于 item_ids，与 message 文本无关。"""
     from proactive.ports import DefaultDecidePort
     from unittest.mock import MagicMock
+
     decide = DefaultDecidePort(
         reflector=MagicMock(),
         randomize_fn=lambda d: (d, 0.0),
@@ -1345,6 +1580,7 @@ def test_delivery_key_empty_ids_uses_time_bucket_and_prefix():
     """空 evidence 时，不同内容不退化到同一 hash。"""
     from proactive.ports import DefaultDecidePort
     from unittest.mock import MagicMock
+
     decide = DefaultDecidePort(
         reflector=MagicMock(),
         randomize_fn=lambda d: (d, 0.0),
@@ -1377,14 +1613,15 @@ def test_rejection_cooldown_mark_and_check(tmp_path):
 
     # 模拟过期
     state._state["rejection_cooldown"]["rss:test"]["u_abc123"] = (
-        (datetime.now(timezone.utc) - timedelta(hours=13)).isoformat()
-    )
+        datetime.now(timezone.utc) - timedelta(hours=13)
+    ).isoformat()
     assert not state.is_rejection_cooled("rss:test", "u_abc123", ttl_hours=12)
 
 
 def test_rejection_cooldown_disabled_when_hours_zero(tmp_path):
     """hours=0 时，mark/check 均为 no-op。"""
     from proactive.state import ProactiveStateStore
+
     state = ProactiveStateStore(tmp_path / "state.json")
     entries = [("rss:test", "u_x")]
     state.mark_rejection_cooldown(entries, hours=0)  # should be no-op
@@ -1399,9 +1636,13 @@ def test_rejection_cooldown_filters_in_next_tick(tmp_path):
     from unittest.mock import MagicMock
 
     item = FeedItem(
-        source_name="test", source_type="rss",
-        title="被拒绝的内容", content="", url="https://example.com/rejected",
-        author=None, published_at=None,
+        source_name="test",
+        source_type="rss",
+        title="被拒绝的内容",
+        content="",
+        url="https://example.com/rejected",
+        author=None,
+        published_at=None,
     )
     source_key = compute_source_key(item)
     item_id = compute_item_id(item)
@@ -1438,9 +1679,13 @@ async def test_llm_rejection_writes_rejection_cooldown(tmp_path):
     from unittest.mock import AsyncMock, MagicMock
 
     item = FeedItem(
-        source_name="src", source_type="rss",
-        title="LLM 拒绝的条目", content="", url="https://example.com/llm-rejected",
-        author=None, published_at=None,
+        source_name="src",
+        source_type="rss",
+        title="LLM 拒绝的条目",
+        content="",
+        url="https://example.com/llm-rejected",
+        author=None,
+        published_at=None,
     )
     source_key = compute_source_key(item)
     item_id = compute_item_id(item)
@@ -1452,7 +1697,13 @@ async def test_llm_rejection_writes_rejection_cooldown(tmp_path):
     sense.collect_recent.return_value = []
     sense.compute_interruptibility.return_value = (
         0.5,
-        {"f_time": 0.5, "f_reply": 0.5, "f_activity": 0.5, "f_fatigue": 0.5, "random_delta": 0.0},
+        {
+            "f_time": 0.5,
+            "f_reply": 0.5,
+            "f_activity": 0.5,
+            "f_fatigue": 0.5,
+            "random_delta": 0.0,
+        },
     )
     sense.fetch_items = AsyncMock(return_value=[item])
     sense.filter_new_items.return_value = (
@@ -1470,10 +1721,13 @@ async def test_llm_rejection_writes_rejection_cooldown(tmp_path):
 
     # decide: reflect 返回 should_send=False
     from proactive.loop import _Decision
+
     decide = MagicMock()
-    decide.reflect = AsyncMock(return_value=_Decision(
-        score=0.2, should_send=False, message="", reasoning="not interesting"
-    ))
+    decide.reflect = AsyncMock(
+        return_value=_Decision(
+            score=0.2, should_send=False, message="", reasoning="not interesting"
+        )
+    )
     decide.randomize_decision.side_effect = lambda d: (d, 0.0)
     decide.semantic_entries.return_value = []
 
@@ -1485,27 +1739,34 @@ async def test_llm_rejection_writes_rejection_cooldown(tmp_path):
     cfg.score_recent_scale = 8.0
     cfg.score_content_halfsat = 2.5
     cfg.score_pre_threshold = 0.01
-    cfg.score_llm_threshold = 0.01   # 很低，确保进 LLM
+    cfg.score_llm_threshold = 0.01  # 很低，确保进 LLM
     cfg.items_per_source = 5
     cfg.interest_filter.enabled = False
     cfg.feature_scoring_enabled = False
-    cfg.threshold = 0.9   # 高 threshold → should_send 不触发
+    cfg.threshold = 0.9  # 高 threshold → should_send 不触发
     cfg.dedupe_seen_ttl_hours = 336
     cfg.delivery_dedupe_hours = 10
     cfg.semantic_dedupe_window_hours = 72
     cfg.llm_reject_cooldown_hours = 12
 
     engine = ProactiveEngine(
-        cfg=cfg, state=state, presence=None,
-        rng=None, sense=sense, decide=decide, act=MagicMock(),
+        cfg=cfg,
+        state=state,
+        presence=None,
+        rng=None,
+        sense=sense,
+        decide=decide,
+        act=MagicMock(),
     )
 
     await engine.tick()
 
     # rejection_cooldown 应写入
-    assert state.is_rejection_cooled(source_key, item_id, ttl_hours=12), \
-        "LLM 拒绝后条目应进入 rejection_cooldown"
+    assert state.is_rejection_cooled(
+        source_key, item_id, ttl_hours=12
+    ), "LLM 拒绝后条目应进入 rejection_cooldown"
 
     # seen_items 不应写入
-    assert not state.is_item_seen(source_key=source_key, item_id=item_id, ttl_hours=336), \
-        "LLM 拒绝后条目不应写入 seen_items（仅软冷却）"
+    assert not state.is_item_seen(
+        source_key=source_key, item_id=item_id, ttl_hours=336
+    ), "LLM 拒绝后条目不应写入 seen_items（仅软冷却）"

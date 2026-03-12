@@ -33,9 +33,7 @@ def extract_action_tokens(tool_name: str, tool_arguments: dict) -> list[str]:
                 if host.startswith("www.") and len(host) > 4:
                     tokens.append(host[4:])
             path_parts = [
-                part.strip().lower()
-                for part in parsed.path.split("/")
-                if part.strip()
+                part.strip().lower() for part in parsed.path.split("/") if part.strip()
             ]
             tokens.extend(path_parts[:3])
     elif tool_name in ("read_file", "write_file", "edit_file", "list_dir"):

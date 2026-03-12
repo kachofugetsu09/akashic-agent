@@ -3,6 +3,7 @@ Telegram Channel
 
 将 Telegram Bot 接入 MessageBus，支持 allowFrom 白名单。
 """
+
 import logging
 import asyncio
 
@@ -91,16 +92,18 @@ class TelegramChannel:
         """检查用户是否在白名单中，白名单为空则允许所有人"""
         if not self._allow_from:
             return True
-        return (
-            str(user.id) in self._allow_from
-            or (user.username and user.username.lower() in {u.lower() for u in self._allow_from})
+        return str(user.id) in self._allow_from or (
+            user.username
+            and user.username.lower() in {u.lower() for u in self._allow_from}
         )
 
     async def _remember_username(self, chat_id: str, username: str | None) -> None:
         if username:
             await self._identity_index.remember(username, chat_id)
 
-    async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _on_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         msg = update.effective_message
         chat = update.effective_chat
         user = update.effective_user
@@ -134,17 +137,23 @@ class TelegramChannel:
 
         await self._safe_send_typing(context, chat.id)
 
-        inbound_text, reply_meta = _build_inbound_text_with_reply(msg.text, msg.reply_to_message)
+        inbound_text, reply_meta = _build_inbound_text_with_reply(
+            msg.text, msg.reply_to_message
+        )
         reply_media: list[str] = []
         if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
             try:
-                tg_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)
+                tg_file = await context.bot.get_file(
+                    msg.reply_to_message.photo[-1].file_id
+                )
                 tmp = self._attachments.create_path("reply_photo_", ".jpg")
                 await tg_file.download_to_drive(tmp)
                 reply_media.append(str(tmp))
                 logger.info(f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={tmp}")
             except Exception as e:
-                logger.warning(f"[telegram] 被回复图片下载失败  chat_id={chat.id}  err={e}")
+                logger.warning(
+                    f"[telegram] 被回复图片下载失败  chat_id={chat.id}  err={e}"
+                )
         if msg.reply_to_message and getattr(msg.reply_to_message, "document", None):
             try:
                 rdoc = msg.reply_to_message.document
@@ -155,22 +164,30 @@ class TelegramChannel:
                 tmp = self._attachments.create_path("reply_doc_", suffix)
                 await tg_file.download_to_drive(tmp)
                 reply_media.append(str(tmp))
-                logger.info(f"[telegram] 下载被回复文件  chat_id={chat.id}  filename={rdoc.file_name!r}  tmp={tmp}")
+                logger.info(
+                    f"[telegram] 下载被回复文件  chat_id={chat.id}  filename={rdoc.file_name!r}  tmp={tmp}"
+                )
             except Exception as e:
-                logger.warning(f"[telegram] 被回复文件下载失败  chat_id={chat.id}  err={e}")
-        await self._bus.publish_inbound(InboundMessage(
-            channel=_CHANNEL,
-            sender=str(user.id),
-            chat_id=str(chat.id),
-            content=inbound_text,
-            media=reply_media,
-            metadata={
-                "username": user.username or "",
-                **reply_meta,
-            },
-        ))
+                logger.warning(
+                    f"[telegram] 被回复文件下载失败  chat_id={chat.id}  err={e}"
+                )
+        await self._bus.publish_inbound(
+            InboundMessage(
+                channel=_CHANNEL,
+                sender=str(user.id),
+                chat_id=str(chat.id),
+                content=inbound_text,
+                media=reply_media,
+                metadata={
+                    "username": user.username or "",
+                    **reply_meta,
+                },
+            )
+        )
 
-    async def _on_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _on_photo(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         msg = update.effective_message
         chat = update.effective_chat
         user = update.effective_user
@@ -200,33 +217,47 @@ class TelegramChannel:
         tg_file = await context.bot.get_file(msg.photo[-1].file_id)
         tmp = self._attachments.create_path("photo_", ".jpg")
         await tg_file.download_to_drive(tmp)
-        logger.info(f"[telegram] 收到图片  chat_id={chat.id}  user=@{user.username or user.id}  path={tmp}")
+        logger.info(
+            f"[telegram] 收到图片  chat_id={chat.id}  user=@{user.username or user.id}  path={tmp}"
+        )
 
         caption_text = msg.caption or ""
-        inbound_text, reply_meta = _build_inbound_text_with_reply(caption_text, msg.reply_to_message)
+        inbound_text, reply_meta = _build_inbound_text_with_reply(
+            caption_text, msg.reply_to_message
+        )
         media = [str(tmp)]
         if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
             try:
-                reply_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)
+                reply_file = await context.bot.get_file(
+                    msg.reply_to_message.photo[-1].file_id
+                )
                 reply_tmp = self._attachments.create_path("reply_photo_", ".jpg")
                 await reply_file.download_to_drive(reply_tmp)
                 media.append(str(reply_tmp))
-                logger.info(f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={reply_tmp}")
+                logger.info(
+                    f"[telegram] 下载被回复图片  chat_id={chat.id}  tmp={reply_tmp}"
+                )
             except Exception as e:
-                logger.warning(f"[telegram] 被回复图片下载失败  chat_id={chat.id}  err={e}")
-        await self._bus.publish_inbound(InboundMessage(
-            channel=_CHANNEL,
-            sender=str(user.id),
-            chat_id=str(chat.id),
-            content=inbound_text,
-            media=media,
-            metadata={
-                "username": user.username or "",
-                **reply_meta,
-            },
-        ))
+                logger.warning(
+                    f"[telegram] 被回复图片下载失败  chat_id={chat.id}  err={e}"
+                )
+        await self._bus.publish_inbound(
+            InboundMessage(
+                channel=_CHANNEL,
+                sender=str(user.id),
+                chat_id=str(chat.id),
+                content=inbound_text,
+                media=media,
+                metadata={
+                    "username": user.username or "",
+                    **reply_meta,
+                },
+            )
+        )
 
-    async def _on_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _on_document(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         msg = update.effective_message
         chat = update.effective_chat
         user = update.effective_user
@@ -258,22 +289,26 @@ class TelegramChannel:
         )
 
         caption_text = msg.caption or ""
-        inbound_text, reply_meta = _build_inbound_text_with_reply(caption_text, msg.reply_to_message)
+        inbound_text, reply_meta = _build_inbound_text_with_reply(
+            caption_text, msg.reply_to_message
+        )
         if doc.file_name:
             inbound_text = f"[文件: {doc.file_name}]\n{inbound_text}".strip()
-        await self._bus.publish_inbound(InboundMessage(
-            channel=_CHANNEL,
-            sender=str(user.id),
-            chat_id=str(chat.id),
-            content=inbound_text,
-            media=[str(tmp)],
-            metadata={
-                "username": user.username or "",
-                "document_filename": doc.file_name or "",
-                "document_mime_type": doc.mime_type or "",
-                **reply_meta,
-            },
-        ))
+        await self._bus.publish_inbound(
+            InboundMessage(
+                channel=_CHANNEL,
+                sender=str(user.id),
+                chat_id=str(chat.id),
+                content=inbound_text,
+                media=[str(tmp)],
+                metadata={
+                    "username": user.username or "",
+                    "document_filename": doc.file_name or "",
+                    "document_mime_type": doc.mime_type or "",
+                    **reply_meta,
+                },
+            )
+        )
 
     def _resolve_chat_id(self, chat_id: str) -> str:
         resolved = chat_id.lstrip("@").lower()
@@ -290,11 +325,19 @@ class TelegramChannel:
         """发送文本消息（供 MessagePushTool 调用）"""
         await send_markdown(self._app.bot, self._resolve_chat_id(chat_id), message)
 
-    async def send_file(self, chat_id: str, file_path: str, name: str | None = None, caption: str | None = None) -> None:
+    async def send_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        name: str | None = None,
+        caption: str | None = None,
+    ) -> None:
         """发送文件，可附带说明文字"""
         cid = int(self._resolve_chat_id(chat_id))
         with open(file_path, "rb") as f:
-            await self._app.bot.send_document(chat_id=cid, document=f, filename=name, caption=caption)
+            await self._app.bot.send_document(
+                chat_id=cid, document=f, filename=name, caption=caption
+            )
 
     async def send_image(self, chat_id: str, image: str) -> None:
         """发送图片（本地路径或 URL）"""
@@ -310,13 +353,17 @@ class TelegramChannel:
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
         await send_markdown(self._app.bot, msg.chat_id, msg.content)
 
-    async def _safe_send_typing(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> None:
+    async def _safe_send_typing(
+        self, context: ContextTypes.DEFAULT_TYPE, chat_id: int
+    ) -> None:
         """发送 typing 状态；失败时指数退避重试，不影响消息主流程。"""
         base_delay = 0.4
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+                await context.bot.send_chat_action(
+                    chat_id=chat_id, action=ChatAction.TYPING
+                )
                 return
             except (TimedOut, NetworkError) as e:
                 if attempt >= max_attempts:
@@ -338,7 +385,11 @@ class TelegramChannel:
                 )
                 await asyncio.sleep(delay)
             except Exception as e:
-                logger.warning("[telegram] send_chat_action 失败，已跳过 typing chat_id=%s err=%s", chat_id, e)
+                logger.warning(
+                    "[telegram] send_chat_action 失败，已跳过 typing chat_id=%s err=%s",
+                    chat_id,
+                    e,
+                )
                 return
 
     def _on_polling_error(self, exc: TelegramError) -> None:
@@ -361,7 +412,9 @@ class TelegramChannel:
             return
         try:
             await self._app.updater.stop()
-            logger.warning("[telegram] polling 已停止；当前进程不再接收 Telegram 消息。")
+            logger.warning(
+                "[telegram] polling 已停止；当前进程不再接收 Telegram 消息。"
+            )
         except Exception as e:
             logger.warning("[telegram] 停止 polling 失败: %s", e)
 

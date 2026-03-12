@@ -46,12 +46,14 @@ class ListToolsTool(Tool):
             meta = self._registry._metadata.get(name)
             if tag and meta and tag not in meta.tags:
                 continue
-            tools.append({
-                "name": name,
-                "summary": tool.description[:80],
-                "tags": meta.tags if meta else [],
-                "risk": meta.risk if meta else "unknown",
-            })
+            tools.append(
+                {
+                    "name": name,
+                    "summary": tool.description[:80],
+                    "tags": meta.tags if meta else [],
+                    "risk": meta.risk if meta else "unknown",
+                }
+            )
 
         return json.dumps(
             {"total": len(tools), "tools": tools},

@@ -502,8 +502,7 @@ ASSISTANT: {agent_response}
                 )
             elif is_positive:
                 summary = (
-                    f"用户明确喜欢《{title}》相关内容；"
-                    "主动消息可优先推送相关内容"
+                    f"用户明确喜欢《{title}》相关内容；" "主动消息可优先推送相关内容"
                 )
             else:
                 continue
@@ -523,7 +522,11 @@ ASSISTANT: {agent_response}
                 text,
             )
             if match:
-                subject = match.group(1).strip().strip("这那种类个些的相关内容作品游戏动漫番剧")
+                subject = (
+                    match.group(1)
+                    .strip()
+                    .strip("这那种类个些的相关内容作品游戏动漫番剧")
+                )
                 if subject:
                     items.append(
                         {
@@ -591,7 +594,9 @@ ASSISTANT: {agent_response}
                         trigger_tags.get("scope"),
                     )
             except Exception as e:
-                logger.warning("post_response_memorize: trigger_tags generation failed: %s", e)
+                logger.warning(
+                    "post_response_memorize: trigger_tags generation failed: %s", e
+                )
         try:
             result = await self._memorizer.save_item(
                 summary=summary,
@@ -630,7 +635,9 @@ ASSISTANT: {agent_response}
             self.TOKENS_CHECK_SUPERSEDE,
         )
         if not ok:
-            logger.debug("post_response check_supersede skipped: token budget exhausted")
+            logger.debug(
+                "post_response check_supersede skipped: token budget exhausted"
+            )
             return [], token_budget
 
         try:

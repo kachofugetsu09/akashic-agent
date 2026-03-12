@@ -1,4 +1,5 @@
 """Shared fixtures and test bootstrap helpers."""
+
 import asyncio
 import sys
 import types
@@ -15,7 +16,9 @@ if "openai" not in sys.modules:
 
     class _DummyChatCompletions:
         async def create(self, *args, **kwargs):
-            raise RuntimeError("openai stub: AsyncOpenAI.chat.completions.create not mocked")
+            raise RuntimeError(
+                "openai stub: AsyncOpenAI.chat.completions.create not mocked"
+            )
 
     class _DummyChat:
         def __init__(self):

@@ -1,6 +1,7 @@
 """
 tests/test_feed_buffer_poller.py — FeedBuffer 和 FeedPoller 单测。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,8 +14,8 @@ from feeds.base import FeedItem
 from feeds.buffer import FeedBuffer
 from proactive.feed_poller import FeedPoller
 
-
 # ── helpers ──────────────────────────────────────────────────────
+
 
 def _make_item(
     title: str,
@@ -49,6 +50,7 @@ def _make_poller_cfg(
 
 # ── FeedBuffer tests ──────────────────────────────────────────────
 
+
 class TestFeedBuffer:
     def test_add_returns_count_and_dedupes(self):
         buf = FeedBuffer()
@@ -66,7 +68,9 @@ class TestFeedBuffer:
 
     def test_get_all_returns_newest_first(self):
         buf = FeedBuffer()
-        items = [_make_item(f"Item{i}", url=f"https://example.com/{i}") for i in range(3)]
+        items = [
+            _make_item(f"Item{i}", url=f"https://example.com/{i}") for i in range(3)
+        ]
         buf.add(items)
         result = buf.get_all()
         # 最后加入的最新，排在最前
@@ -74,14 +78,18 @@ class TestFeedBuffer:
 
     def test_get_all_with_limit(self):
         buf = FeedBuffer()
-        items = [_make_item(f"Item{i}", url=f"https://example.com/{i}") for i in range(10)]
+        items = [
+            _make_item(f"Item{i}", url=f"https://example.com/{i}") for i in range(10)
+        ]
         buf.add(items)
         result = buf.get_all(n=3)
         assert len(result) == 3
 
     def test_get_all_n_zero_returns_all(self):
         buf = FeedBuffer()
-        items = [_make_item(f"Item{i}", url=f"https://example.com/{i}") for i in range(5)]
+        items = [
+            _make_item(f"Item{i}", url=f"https://example.com/{i}") for i in range(5)
+        ]
         buf.add(items)
         assert len(buf.get_all(n=0)) == 5
 
@@ -124,11 +132,13 @@ class TestFeedBuffer:
 
     def test_stats_returns_per_source_counts(self):
         buf = FeedBuffer()
-        buf.add([
-            _make_item("A", url="https://a.com/1", source_name="src1"),
-            _make_item("B", url="https://a.com/2", source_name="src1"),
-            _make_item("C", url="https://b.com/1", source_name="src2"),
-        ])
+        buf.add(
+            [
+                _make_item("A", url="https://a.com/1", source_name="src1"),
+                _make_item("B", url="https://a.com/2", source_name="src1"),
+                _make_item("C", url="https://b.com/1", source_name="src2"),
+            ]
+        )
         stats = buf.stats()
         assert stats["rss:src1"] == 2
         assert stats["rss:src2"] == 1
@@ -140,6 +150,7 @@ class TestFeedBuffer:
 
 
 # ── FeedPoller tests ──────────────────────────────────────────────
+
 
 class TestFeedPoller:
     @pytest.mark.asyncio
@@ -160,7 +171,7 @@ class TestFeedPoller:
             poller.stop()
             try:
                 await asyncio.wait_for(task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except asyncio.CancelledError, asyncio.TimeoutError:
                 task.cancel()
 
         await _run_and_stop()
@@ -218,11 +229,12 @@ class TestFeedPoller:
         task.cancel()
         try:
             await task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError, Exception:
             pass
 
 
 # ── 场景④ 修复验证：semantic_duplicate_entries 不写 seen_items ──
+
 
 class TestScenario4SemanticDupeNotMarkedSeen:
     """
@@ -253,13 +265,19 @@ class TestScenario4SemanticDupeNotMarkedSeen:
         sense.collect_recent.return_value = []
         sense.compute_interruptibility.return_value = (
             0.5,
-            {"f_time": 0.5, "f_reply": 0.5, "f_activity": 0.5, "f_fatigue": 0.5, "random_delta": 0.0},
+            {
+                "f_time": 0.5,
+                "f_reply": 0.5,
+                "f_activity": 0.5,
+                "f_fatigue": 0.5,
+                "random_delta": 0.0,
+            },
         )
         sense.fetch_items = AsyncMock(return_value=[dup_item])
         sense.filter_new_items.return_value = (
-            [],                   # new_items 为空（dup 被过滤）
-            [],                   # new_entries
-            semantic_dup_entries, # semantic_duplicate_entries
+            [],  # new_items 为空（dup 被过滤）
+            [],  # new_entries
+            semantic_dup_entries,  # semantic_duplicate_entries
         )
         sense.read_memory_text.return_value = ""
         sense.has_global_memory.return_value = False
@@ -277,7 +295,7 @@ class TestScenario4SemanticDupeNotMarkedSeen:
         cfg.score_weight_recent = 0.20
         cfg.score_recent_scale = 8.0
         cfg.score_content_halfsat = 2.5
-        cfg.score_pre_threshold = 0.01   # 低阈值，确保 pre_score 通过
+        cfg.score_pre_threshold = 0.01  # 低阈值，确保 pre_score 通过
         cfg.score_llm_threshold = 0.99
         cfg.items_per_source = 5
         cfg.interest_filter.enabled = False

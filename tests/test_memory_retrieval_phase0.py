@@ -63,9 +63,7 @@ def test_memory_v2_top_k_history_compat_from_legacy_fields(tmp_path: Path):
             },
         },
     )
-    with pytest.warns(
-        DeprecationWarning, match=r"memory_v2\.retrieve_top_k"
-    ):
+    with pytest.warns(DeprecationWarning, match=r"memory_v2\.retrieve_top_k"):
         cfg = Config.load(cfg_path)
     assert cfg.memory_v2.top_k_history == 9
     assert cfg.memory_v2.retrieve_top_k == 9

@@ -7,6 +7,7 @@ Shell 工具（Bash 命令执行）
 - 记录执行时长
 - 结构化 JSON 输出（command / exit_code / duration_ms / output）
 """
+
 import asyncio
 import json
 import shlex
@@ -17,28 +18,53 @@ from typing import Any
 
 from agent.tools.base import Tool
 
-_DEFAULT_TIMEOUT = 60   # 秒（OpenCode 默认 1 分钟）
-_MAX_TIMEOUT = 600      # 秒（OpenCode 最大 10 分钟）
-_MAX_OUTPUT = 30_000    # 字符（与 OpenCode MaxOutputLength 一致）
+_DEFAULT_TIMEOUT = 60  # 秒（OpenCode 默认 1 分钟）
+_MAX_TIMEOUT = 600  # 秒（OpenCode 最大 10 分钟）
+_MAX_OUTPUT = 30_000  # 字符（与 OpenCode MaxOutputLength 一致）
 
 # 禁止命令（对应 OpenCode bannedCommands）
-_BANNED = frozenset({
-    "curlie", "axel", "aria2c",
-    "nc", "telnet", "lynx", "w3m", "links",
-    "http-prompt", "chrome", "firefox", "safari",
-})
+_BANNED = frozenset(
+    {
+        "curlie",
+        "axel",
+        "aria2c",
+        "nc",
+        "telnet",
+        "lynx",
+        "w3m",
+        "links",
+        "http-prompt",
+        "chrome",
+        "firefox",
+        "safari",
+    }
+)
 
 # 对网络命令启用额外安全限制
 _NETWORK_CMDS = frozenset({"curl", "wget", "http", "httpie", "xh"})
-_NET_WRITE_FLAGS = frozenset({
-    # curl
-    "-o", "--output", "-O", "--remote-name", "-T", "--upload-file",
-    "-F", "--form", "--form-string",
-    # wget
-    "-O", "--output-document", "--post-file",
-    # httpie/xh
-    "--download", "--output", "--offline", "@",
-})
+_NET_WRITE_FLAGS = frozenset(
+    {
+        # curl
+        "-o",
+        "--output",
+        "-O",
+        "--remote-name",
+        "-T",
+        "--upload-file",
+        "-F",
+        "--form",
+        "--form-string",
+        # wget
+        "-O",
+        "--output-document",
+        "--post-file",
+        # httpie/xh
+        "--download",
+        "--output",
+        "--offline",
+        "@",
+    }
+)
 
 
 class ShellTool(Tool):
@@ -127,6 +153,7 @@ class ShellTool(Tool):
 
 # ── 模块级工具函数 ────────────────────────────────────────────────
 
+
 def _err(msg: str) -> str:
     return json.dumps({"error": msg}, ensure_ascii=False)
 
@@ -165,7 +192,7 @@ def _truncate(content: str) -> str:
     if len(content) <= _MAX_OUTPUT:
         return content
     half = _MAX_OUTPUT // 2
-    middle = content[half: len(content) - half]
+    middle = content[half : len(content) - half]
     skipped_lines = middle.count("\n") + 1
     return (
         f"{content[:half]}\n\n"

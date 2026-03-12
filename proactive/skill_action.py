@@ -288,7 +288,9 @@ class SkillActionRunner:
                 ),
                 error_result_summary="",
             )
-            success = bool(job_result.result_summary) and job_result.status == "completed"
+            success = (
+                bool(job_result.result_summary) and job_result.status == "completed"
+            )
             logger.info(
                 "[skill_action] agent 任务完成 id=%s success=%s exit_reason=%s result_len=%d",
                 action.id,

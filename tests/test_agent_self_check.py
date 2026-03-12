@@ -26,7 +26,9 @@ def test_collect_skill_mentions_returns_unique_existing_names(tmp_path):
         ]
     )
 
-    got = loop._collect_skill_mentions("请用 $feed-manage 然后 $refactor 再来一次 $feed-manage")
+    got = loop._collect_skill_mentions(
+        "请用 $feed-manage 然后 $refactor 再来一次 $feed-manage"
+    )
 
     assert got == ["feed-manage", "refactor"]
 

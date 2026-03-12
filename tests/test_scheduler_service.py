@@ -1,4 +1,5 @@
 """Tests for SchedulerService: tick, execution, misfire, rescheduling."""
+
 import asyncio
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, call
@@ -8,8 +9,8 @@ import pytest
 from agent.scheduler import LatencyTracker, SchedulerService, ScheduledJob
 from tests.conftest import drain_tasks, make_job
 
-
 # ── Helpers ──────────────────────────────────────────────────────
+
 
 def make_service(tmp_path, mock_push, mock_loop, now, tracker=None):
     return SchedulerService(
@@ -23,6 +24,7 @@ def make_service(tmp_path, mock_push, mock_loop, now, tracker=None):
 
 # ── Execution: INSTANT ───────────────────────────────────────────
 
+
 async def test_instant_calls_push_not_ai(tmp_path, mock_push, mock_loop, fixed_now):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(tier="instant", fire_at=fixed_now - timedelta(seconds=1))
@@ -35,7 +37,9 @@ async def test_instant_calls_push_not_ai(tmp_path, mock_push, mock_loop, fixed_n
     mock_loop.process_direct.assert_not_called()
 
 
-async def test_instant_push_receives_correct_args(tmp_path, mock_push, mock_loop, fixed_now):
+async def test_instant_push_receives_correct_args(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
         tier="instant",
@@ -56,7 +60,10 @@ async def test_instant_push_receives_correct_args(tmp_path, mock_push, mock_loop
 
 # ── Execution: SOFT ──────────────────────────────────────────────
 
-async def test_soft_calls_process_direct_not_push_directly(tmp_path, mock_push, mock_loop, fixed_now):
+
+async def test_soft_calls_process_direct_not_push_directly(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     # fire_at - lead (25s) must be <= now; set fire_at far enough in past
     job = make_job(
@@ -79,7 +86,9 @@ async def test_soft_calls_process_direct_not_push_directly(tmp_path, mock_push, 
     assert call_kwargs.kwargs["chat_id"] == "123"
 
 
-async def test_soft_sends_ai_response_via_push(tmp_path, mock_push, mock_loop, fixed_now):
+async def test_soft_sends_ai_response_via_push(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     mock_loop.process_direct = AsyncMock(return_value="北京今天晴，15°C")
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
@@ -115,7 +124,10 @@ async def test_soft_records_latency(tmp_path, mock_push, mock_loop, fixed_now):
 
 # ── Timing: pre-trigger ──────────────────────────────────────────
 
-async def test_soft_not_fired_before_pretrigger(tmp_path, mock_push, mock_loop, fixed_now):
+
+async def test_soft_not_fired_before_pretrigger(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     tracker = LatencyTracker(default=30.0)
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now, tracker)
     # fire_at is 60s in future; pretrigger = fire_at - 30s = now+30s, not yet due
@@ -132,7 +144,9 @@ async def test_soft_not_fired_before_pretrigger(tmp_path, mock_push, mock_loop, 
     mock_loop.process_direct.assert_not_called()
 
 
-async def test_instant_not_fired_before_fire_at(tmp_path, mock_push, mock_loop, fixed_now):
+async def test_instant_not_fired_before_fire_at(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(tier="instant", fire_at=fixed_now + timedelta(seconds=10))
     svc._jobs[job.id] = job
@@ -145,9 +159,12 @@ async def test_instant_not_fired_before_fire_at(tmp_path, mock_push, mock_loop, 
 
 # ── One-shot jobs removed after firing ───────────────────────────
 
+
 async def test_at_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_now):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
-    job = make_job(trigger="at", tier="instant", fire_at=fixed_now - timedelta(seconds=1))
+    job = make_job(
+        trigger="at", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
+    )
     svc._jobs[job.id] = job
 
     await svc._tick()
@@ -158,7 +175,9 @@ async def test_at_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_n
 
 async def test_after_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixed_now):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
-    job = make_job(trigger="after", tier="instant", fire_at=fixed_now - timedelta(seconds=1))
+    job = make_job(
+        trigger="after", tier="instant", fire_at=fixed_now - timedelta(seconds=1)
+    )
     svc._jobs[job.id] = job
 
     await svc._tick()
@@ -169,7 +188,10 @@ async def test_after_job_removed_after_fire(tmp_path, mock_push, mock_loop, fixe
 
 # ── Every: rescheduling ───────────────────────────────────────────
 
-async def test_every_job_rescheduled_after_fire(tmp_path, mock_push, mock_loop, fixed_now):
+
+async def test_every_job_rescheduled_after_fire(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
     job = make_job(
         trigger="every",
@@ -266,6 +288,7 @@ async def test_every_soft_cron_pretrigger_advances_past_current_boundary(
 
 # ── Misfire handling ─────────────────────────────────────────────
 
+
 def test_misfire_within_grace_loaded(tmp_path, mock_push, mock_loop, fixed_now):
     """Jobs missed within 5min grace period are retained for execution."""
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
@@ -313,6 +336,7 @@ def test_every_misfire_advances_to_future(tmp_path, mock_push, mock_loop, fixed_
 
 
 # ── Cancel ───────────────────────────────────────────────────────
+
 
 def test_cancel_job_by_id(tmp_path, mock_push, mock_loop, fixed_now):
     svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)

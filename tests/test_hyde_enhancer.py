@@ -27,7 +27,6 @@ from core.memory.port import DefaultMemoryPort
 from memory2.hyde_enhancer import HyDEEnhancer, _union_dedup
 from memory2.injection_planner import retrieve_history_items
 
-
 # ── 测试工具 ──────────────────────────────────────────────────────────────────
 
 
@@ -88,6 +87,7 @@ def test_hyde_disabled_no_enhancer():
 
 def test_hyde_enabled_without_light_model_is_disabled(caplog):
     import logging
+
     with caplog.at_level(logging.WARNING, logger="agent.loop"):
         loop = _make_loop(light_model="", memory_hyde_enabled=True)
     assert loop._hyde_enhancer is None

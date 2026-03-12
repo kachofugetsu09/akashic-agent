@@ -13,6 +13,7 @@ chat_id 约定：
   2. NcatBot 事件回调运行在独立线程/loop → 用 run_coroutine_threadsafe 桥接到主 loop
   3. 出站消息需跨 loop 调用 API → 使用 run_coroutine_threadsafe 投递回 NcatBot loop
 """
+
 import asyncio
 import base64
 import html
@@ -24,7 +25,11 @@ from agent.config_models import QQGroupConfig
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from channels.base import AttachmentStore, SessionIdentityIndex
-from channels.group_filter import DefaultGroupFilter, GroupMessageFilter, strip_at_segments
+from channels.group_filter import (
+    DefaultGroupFilter,
+    GroupMessageFilter,
+    strip_at_segments,
+)
 from core.net.http import HttpRequester, RequestBudget, get_default_http_requester
 from session.manager import SessionManager
 
@@ -37,13 +42,13 @@ _CHANNEL = "qq"
 _GROUP_PREFIX = "gqq:"
 
 # 匹配 CQ:image 码中的 url 字段
-_CQ_IMAGE_RE = re.compile(r'\[CQ:image[^\]]*?(?:,|\b)url=([^,\]]+)[^\]]*\]')
+_CQ_IMAGE_RE = re.compile(r"\[CQ:image[^\]]*?(?:,|\b)url=([^,\]]+)[^\]]*\]")
 
 
 def _extract_cq_images(raw: str) -> tuple[str, list[str]]:
     """从 CQ 码中提取图片 URL，返回 (纯文本, [url...])"""
     urls = _CQ_IMAGE_RE.findall(raw)
-    text = re.sub(r'\[CQ:image[^\]]*\]', '', raw).strip()
+    text = re.sub(r"\[CQ:image[^\]]*\]", "", raw).strip()
     return text, urls
 
 
@@ -58,8 +63,10 @@ async def _download_to_temp(
     paths: list[str] = []
     attachment_store = attachments or AttachmentStore()
     ext_map = {
-        "image/jpeg": ".jpg", "image/png": ".png",
-        "image/gif": ".gif", "image/webp": ".webp",
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
     }
     for url in urls:
         try:
@@ -114,7 +121,9 @@ class QQChannel:
         self._groups: dict[str, QQGroupConfig] = {g.group_id: g for g in (groups or [])}
 
         # 消息过滤器，默认使用 DefaultGroupFilter
-        self._group_filter: GroupMessageFilter = group_filter or DefaultGroupFilter(bot_uin)
+        self._group_filter: GroupMessageFilter = group_filter or DefaultGroupFilter(
+            bot_uin
+        )
         self._http_requester = http_requester or get_default_http_requester(
             "external_default"
         )
@@ -160,7 +169,9 @@ class QQChannel:
             raw: str = event.raw_message
             text, img_urls = _extract_cq_images(raw)
             preview = text[:60] + "..." if len(text) > 60 else text
-            logger.info(f"[qq] 私聊消息  user_id={user_id}  内容: {preview!r}  图片: {len(img_urls)}")
+            logger.info(
+                f"[qq] 私聊消息  user_id={user_id}  内容: {preview!r}  图片: {len(img_urls)}"
+            )
 
             self.user_map[user_id] = user_id
 
@@ -193,7 +204,9 @@ class QQChannel:
             raw = strip_at_segments(event.raw_message)
             text, img_urls = _extract_cq_images(raw)
             preview = text[:60] + "..." if len(text) > 60 else text
-            logger.info(f"[qq] 群聊消息  group_id={group_id}  user_id={user_id}  内容: {preview!r}  图片: {len(img_urls)}")
+            logger.info(
+                f"[qq] 群聊消息  group_id={group_id}  user_id={user_id}  内容: {preview!r}  图片: {len(img_urls)}"
+            )
 
             asyncio.run_coroutine_threadsafe(
                 self._handle_group(group_id, user_id, text, img_urls),
@@ -218,7 +231,9 @@ class QQChannel:
 
     # ── 入站处理 ──────────────────────────────────────────────────────
 
-    async def _handle_private(self, user_id: str, content: str, img_urls: list[str] | None = None) -> None:
+    async def _handle_private(
+        self, user_id: str, content: str, img_urls: list[str] | None = None
+    ) -> None:
         """私聊入站：chat_id = user_id"""
         await self._identity_index.remember(user_id, user_id)
         media = await _download_to_temp(
@@ -226,16 +241,24 @@ class QQChannel:
             self._http_requester,
             self._attachments,
         )
-        await self._bus.publish_inbound(InboundMessage(
-            channel=_CHANNEL,
-            sender=user_id,
-            chat_id=user_id,
-            content=content,
-            media=media,
-            metadata={"chat_type": "private"},
-        ))
+        await self._bus.publish_inbound(
+            InboundMessage(
+                channel=_CHANNEL,
+                sender=user_id,
+                chat_id=user_id,
+                content=content,
+                media=media,
+                metadata={"chat_type": "private"},
+            )
+        )
 
-    async def _handle_group(self, group_id: str, user_id: str, content: str, img_urls: list[str] | None = None) -> None:
+    async def _handle_group(
+        self,
+        group_id: str,
+        user_id: str,
+        content: str,
+        img_urls: list[str] | None = None,
+    ) -> None:
         """群聊入站：chat_id = gqq:{group_id}，session 按群共享"""
         chat_id = f"{_GROUP_PREFIX}{group_id}"
         session = self._session_manager.get_or_create(f"{_CHANNEL}:{chat_id}")
@@ -247,14 +270,20 @@ class QQChannel:
             self._http_requester,
             self._attachments,
         )
-        await self._bus.publish_inbound(InboundMessage(
-            channel=_CHANNEL,
-            sender=user_id,
-            chat_id=chat_id,
-            content=content,
-            media=media,
-            metadata={"chat_type": "group", "group_id": group_id, "sender_id": user_id},
-        ))
+        await self._bus.publish_inbound(
+            InboundMessage(
+                channel=_CHANNEL,
+                sender=user_id,
+                chat_id=chat_id,
+                content=content,
+                media=media,
+                metadata={
+                    "chat_type": "group",
+                    "group_id": group_id,
+                    "sender_id": user_id,
+                },
+            )
+        )
 
     # ── 出站路由 ──────────────────────────────────────────────────────
 
@@ -262,12 +291,16 @@ class QQChannel:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         try:
             if msg.chat_id.startswith(_GROUP_PREFIX):
-                group_id = msg.chat_id[len(_GROUP_PREFIX):]
+                group_id = msg.chat_id[len(_GROUP_PREFIX) :]
                 logger.info(f"[qq] 群聊回复  group_id={group_id}  内容: {preview!r}")
-                await self._run_on_bot_loop(self._api.send_group_text(int(group_id), msg.content))
+                await self._run_on_bot_loop(
+                    self._api.send_group_text(int(group_id), msg.content)
+                )
             else:
                 logger.info(f"[qq] 私聊回复  user_id={msg.chat_id}  内容: {preview!r}")
-                await self._run_on_bot_loop(self._api.send_private_text(int(msg.chat_id), msg.content))
+                await self._run_on_bot_loop(
+                    self._api.send_private_text(int(msg.chat_id), msg.content)
+                )
         except Exception as e:
             logger.error(f"[qq] 发送失败  chat_id={msg.chat_id}  错误: {e}")
 
@@ -278,21 +311,31 @@ class QQChannel:
         if not self._api:
             raise RuntimeError("QQChannel 尚未启动")
         if chat_id.startswith(_GROUP_PREFIX):
-            group_id = chat_id[len(_GROUP_PREFIX):]
-            await self._run_on_bot_loop(self._api.send_group_text(int(group_id), message))
+            group_id = chat_id[len(_GROUP_PREFIX) :]
+            await self._run_on_bot_loop(
+                self._api.send_group_text(int(group_id), message)
+            )
         else:
-            await self._run_on_bot_loop(self._api.send_private_text(int(chat_id), message))
+            await self._run_on_bot_loop(
+                self._api.send_private_text(int(chat_id), message)
+            )
 
-    async def send_file(self, chat_id: str, file_path: str, name: str | None = None) -> None:
+    async def send_file(
+        self, chat_id: str, file_path: str, name: str | None = None
+    ) -> None:
         """发送文件，自动区分私聊/群聊"""
         if not self._api:
             raise RuntimeError("QQChannel 尚未启动")
         uri = _local_to_base64(file_path) if _is_local(file_path) else file_path
         if chat_id.startswith(_GROUP_PREFIX):
-            group_id = chat_id[len(_GROUP_PREFIX):]
-            await self._run_on_bot_loop(self._api.send_group_file(int(group_id), uri, name))
+            group_id = chat_id[len(_GROUP_PREFIX) :]
+            await self._run_on_bot_loop(
+                self._api.send_group_file(int(group_id), uri, name)
+            )
         else:
-            await self._run_on_bot_loop(self._api.send_private_file(int(chat_id), uri, name))
+            await self._run_on_bot_loop(
+                self._api.send_private_file(int(chat_id), uri, name)
+            )
 
     async def send_image(self, chat_id: str, image: str) -> None:
         """发送图片，自动区分私聊/群聊"""
@@ -300,7 +343,7 @@ class QQChannel:
             raise RuntimeError("QQChannel 尚未启动")
         uri = _local_to_base64(image) if _is_local(image) else image
         if chat_id.startswith(_GROUP_PREFIX):
-            group_id = chat_id[len(_GROUP_PREFIX):]
+            group_id = chat_id[len(_GROUP_PREFIX) :]
             await self._run_on_bot_loop(self._api.send_group_image(int(group_id), uri))
         else:
             await self._run_on_bot_loop(self._api.send_private_image(int(chat_id), uri))

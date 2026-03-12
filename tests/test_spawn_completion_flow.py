@@ -67,7 +67,13 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
     assert response.channel == "telegram"
     assert response.chat_id == "123"
     assert "整理" in response.content
-    assert updated.messages[-2]["content"] == "[后台任务完成] 整理任务 (incomplete) [forced_summary]"
+    assert (
+        updated.messages[-2]["content"]
+        == "[后台任务完成] 整理任务 (incomplete) [forced_summary]"
+    )
     assert updated.messages[-1]["content"] == "我已经整理完后台结果，结论如下。"
-    assert all(m["content"] != "原始后台结果：文件位于 /tmp/report.md" for m in updated.messages)
+    assert all(
+        m["content"] != "原始后台结果：文件位于 /tmp/report.md"
+        for m in updated.messages
+    )
     loop._post_mem_worker.run.assert_not_called()

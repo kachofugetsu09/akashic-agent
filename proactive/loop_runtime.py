@@ -30,7 +30,11 @@ from proactive.loop_helpers import (
     _semantic_text,
     _source_key,
 )
-from proactive.ports import DefaultDecidePort, DefaultMemoryRetrievalPort, DefaultSensePort
+from proactive.ports import (
+    DefaultDecidePort,
+    DefaultMemoryRetrievalPort,
+    DefaultSensePort,
+)
 from proactive.source_scorer import SourceScorer
 from proactive.state import ProactiveStateStore
 

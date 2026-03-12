@@ -259,13 +259,21 @@ def test_subagent_injects_shared_procedure_hint_into_tool_result():
         [
             LLMResponse(
                 content="",
-                tool_calls=[ToolCall("s1", "shell", {"x": 1, "command": "pacman -S jq"})],
+                tool_calls=[
+                    ToolCall("s1", "shell", {"x": 1, "command": "pacman -S jq"})
+                ],
             ),
             LLMResponse(content="done", tool_calls=[]),
         ]
     )
     memory = _HintMemory(
-        [{"id": "p1", "memory_type": "procedure", "summary": "pacman 调用时必须加 --noconfirm"}]
+        [
+            {
+                "id": "p1",
+                "memory_type": "procedure",
+                "summary": "pacman 调用时必须加 --noconfirm",
+            }
+        ]
     )
     subagent = SubAgent(
         provider=cast(Any, provider),
@@ -279,7 +287,9 @@ def test_subagent_injects_shared_procedure_hint_into_tool_result():
 
     assert result == "done"
     assert memory.calls == [["shell", "pacman"]]
-    tool_messages = [m for m in provider.calls[1]["messages"] if m.get("role") == "tool"]
+    tool_messages = [
+        m for m in provider.calls[1]["messages"] if m.get("role") == "tool"
+    ]
     assert len(tool_messages) == 1
     assert "【操作规范提醒】" in tool_messages[0]["content"]
     assert "--noconfirm" in tool_messages[0]["content"]
@@ -291,17 +301,27 @@ def test_subagent_dedupes_repeated_procedure_hint_items():
         [
             LLMResponse(
                 content="",
-                tool_calls=[ToolCall("s1", "shell", {"x": 1, "command": "pacman -S jq"})],
+                tool_calls=[
+                    ToolCall("s1", "shell", {"x": 1, "command": "pacman -S jq"})
+                ],
             ),
             LLMResponse(
                 content="",
-                tool_calls=[ToolCall("s2", "shell", {"x": 2, "command": "pacman -S git"})],
+                tool_calls=[
+                    ToolCall("s2", "shell", {"x": 2, "command": "pacman -S git"})
+                ],
             ),
             LLMResponse(content="done", tool_calls=[]),
         ]
     )
     memory = _HintMemory(
-        [{"id": "p1", "memory_type": "procedure", "summary": "pacman 调用时必须加 --noconfirm"}]
+        [
+            {
+                "id": "p1",
+                "memory_type": "procedure",
+                "summary": "pacman 调用时必须加 --noconfirm",
+            }
+        ]
     )
     subagent = SubAgent(
         provider=cast(Any, provider),
@@ -378,7 +398,9 @@ def test_agent_loop_does_not_trigger_on_two_repeats_only(tmp_path):
     )
     loop = _make_agent_loop(tmp_path, provider, tool)
 
-    final, _, _, _vn = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
+    final, _, _, _vn = asyncio.run(
+        loop._run_agent_loop([{"role": "user", "content": "t"}])
+    )
 
     assert final == "final"
     assert len(tool.calls) == 2
@@ -420,7 +442,9 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
         memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
     )
 
-    final, _, _, _vn = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
+    final, _, _, _vn = asyncio.run(
+        loop._run_agent_loop([{"role": "user", "content": "t"}])
+    )
 
     assert final == "ok"
     assert len(t1.calls) == 2
@@ -595,7 +619,9 @@ def test_agent_loop_summary_path_keeps_tool_chain_closed(tmp_path):
     )
     loop = _make_agent_loop(tmp_path, provider, tool)
 
-    final, _, _, _vn = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))
+    final, _, _, _vn = asyncio.run(
+        loop._run_agent_loop([{"role": "user", "content": "t"}])
+    )
 
     assert "已总结" in final
     assert len(tool.calls) == 2

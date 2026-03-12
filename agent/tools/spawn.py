@@ -8,7 +8,6 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 import logging
 
-
 logger = logging.getLogger(__name__)
 
 

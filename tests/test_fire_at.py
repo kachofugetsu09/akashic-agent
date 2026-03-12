@@ -1,4 +1,5 @@
 """Tests for fire_at and actual_trigger computation."""
+
 from datetime import datetime, timedelta, timezone
 
 import pytest

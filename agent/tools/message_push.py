@@ -1,6 +1,7 @@
 """
 统一消息推送工具，agent 通过 channel + chat_id 向任意已注册渠道发送消息、文件或图片。
 """
+
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -67,7 +68,9 @@ class MessagePushTool(Tool):
             self._senders[channel]["file"] = file
         if image:
             self._senders[channel]["image"] = image
-        logger.debug(f"message_push: 注册渠道 {channel!r}  支持: {list(self._senders[channel])}")
+        logger.debug(
+            f"message_push: 注册渠道 {channel!r}  支持: {list(self._senders[channel])}"
+        )
 
     async def execute(self, **kwargs: Any) -> str:
         channel: str = kwargs["channel"]
@@ -96,6 +99,7 @@ class MessagePushTool(Tool):
                     results.append(f"渠道 {channel!r} 不支持发送文件")
                 else:
                     import os
+
                     name = os.path.basename(file)
                     await senders["file"](chat_id, file, name)
                     logger.info(f"[message_push] {channel}:{chat_id} ← file: {file!r}")
@@ -106,7 +110,9 @@ class MessagePushTool(Tool):
                     results.append(f"渠道 {channel!r} 不支持发送图片")
                 else:
                     await senders["image"](chat_id, image)
-                    logger.info(f"[message_push] {channel}:{chat_id} ← image: {image!r}")
+                    logger.info(
+                        f"[message_push] {channel}:{chat_id} ← image: {image!r}"
+                    )
                     results.append("图片已发送")
 
         except Exception as e:

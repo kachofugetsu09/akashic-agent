@@ -72,8 +72,14 @@ async def retrieve_history_items(
                         require_scope_match=False,
                     )
                 )
-                scoped_items, global_items = await asyncio.gather(scoped_task, global_task)
-                return (scoped_items, "scoped") if scoped_items else (global_items, "global-fallback")
+                scoped_items, global_items = await asyncio.gather(
+                    scoped_task, global_task
+                )
+                return (
+                    (scoped_items, "scoped")
+                    if scoped_items
+                    else (global_items, "global-fallback")
+                )
             else:
                 scoped_items = await scoped_task
                 return (scoped_items, "scoped") if scoped_items else ([], "disabled")

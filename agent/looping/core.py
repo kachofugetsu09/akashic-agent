@@ -116,6 +116,7 @@ class AgentLoop(
                 self._hyde_enhancer: HyDEEnhancer | None = None
             else:
                 from memory2.hyde_enhancer import HyDEEnhancer
+
                 self._hyde_enhancer = HyDEEnhancer(
                     light_provider=self.light_provider,
                     light_model=self.light_model,
@@ -240,7 +241,10 @@ class AgentLoop(
         return is_spawn_completion_message(msg)
 
     def _schedule_consolidation_if_needed(self, session, key: str) -> None:
-        if len(session.messages) > self.memory_window and key not in self._consolidating:
+        if (
+            len(session.messages) > self.memory_window
+            and key not in self._consolidating
+        ):
             self._consolidating.add(key)
             asyncio.create_task(self._consolidate_memory_bg(session, key))
 

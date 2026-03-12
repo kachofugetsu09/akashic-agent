@@ -118,13 +118,9 @@ class AgentLoopToolExecutionMixin:
                         # 工具根本不存在（幻觉）→ 拦截，返回错误
                         if tc.name in self.tools._tools:
                             visible_names.add(tc.name)
-                            logger.info(
-                                "  ↑ 工具 %s 从历史记忆自动解锁", tc.name
-                            )
+                            logger.info("  ↑ 工具 %s 从历史记忆自动解锁", tc.name)
                         else:
-                            logger.warning(
-                                "  ✗ 工具 %s 不存在，拒绝执行", tc.name
-                            )
+                            logger.warning("  ✗ 工具 %s 不存在，拒绝执行", tc.name)
                             result = f"工具 '{tc.name}' 不存在，请调用 tool_search 查找可用工具。"
                             append_tool_result(
                                 messages,
@@ -185,7 +181,12 @@ class AgentLoopToolExecutionMixin:
             else:
                 logger.info(f"LLM 返回最终回复  iteration={iteration + 1}")
                 messages.append({"role": "assistant", "content": response.content})
-                return response.content or "（无响应）", tools_used, tool_chain, visible_names
+                return (
+                    response.content or "（无响应）",
+                    tools_used,
+                    tool_chain,
+                    visible_names,
+                )
 
         logger.warning(f"已达到最大迭代次数 {self.max_iterations}")
         summary = await self._summarize_incomplete_progress(

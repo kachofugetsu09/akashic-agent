@@ -29,8 +29,8 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from core.memory.port import DefaultMemoryPort
 
-
 # ── 工具桩 ────────────────────────────────────────────────────────────────────
+
 
 class _DummyTool(Tool):
     def __init__(self, name: str) -> None:
@@ -66,6 +66,7 @@ class _FakeProvider:
 
 # ── 工厂 ──────────────────────────────────────────────────────────────────────
 
+
 def _make_loop(
     tmp_path: Path,
     provider: _FakeProvider,
@@ -93,14 +94,17 @@ def _base_registry() -> ToolRegistry:
 
 # ── 可见性 / 拦截测试 ─────────────────────────────────────────────────────────
 
+
 class TestVisibilityGuard:
     def test_nonexistent_tool_is_blocked(self, tmp_path):
         """完全不在 registry 里的工具名 → 拦截，不执行，返回错误消息给模型。"""
         reg = _base_registry()
-        provider = _FakeProvider([
-            LLMResponse(content="", tool_calls=[ToolCall("c1", "ghost_tool", {})]),
-            LLMResponse(content="ok", tool_calls=[]),
-        ])
+        provider = _FakeProvider(
+            [
+                LLMResponse(content="", tool_calls=[ToolCall("c1", "ghost_tool", {})]),
+                LLMResponse(content="ok", tool_calls=[]),
+            ]
+        )
         loop = _make_loop(tmp_path, provider, reg)
 
         final, tools_used, _, _ = asyncio.run(
@@ -116,10 +120,12 @@ class TestVisibilityGuard:
         hidden = _DummyTool("hidden_tool")
         reg.register(hidden)  # 不设 always_on
 
-        provider = _FakeProvider([
-            LLMResponse(content="", tool_calls=[ToolCall("c1", "hidden_tool", {})]),
-            LLMResponse(content="done", tool_calls=[]),
-        ])
+        provider = _FakeProvider(
+            [
+                LLMResponse(content="", tool_calls=[ToolCall("c1", "hidden_tool", {})]),
+                LLMResponse(content="done", tool_calls=[]),
+            ]
+        )
         loop = _make_loop(tmp_path, provider, reg)
 
         final, tools_used, _, _ = asyncio.run(
@@ -136,10 +142,12 @@ class TestVisibilityGuard:
         hidden = _DummyTool("hidden_tool")
         reg.register(hidden)
 
-        provider = _FakeProvider([
-            LLMResponse(content="", tool_calls=[ToolCall("c1", "hidden_tool", {})]),
-            LLMResponse(content="done", tool_calls=[]),
-        ])
+        provider = _FakeProvider(
+            [
+                LLMResponse(content="", tool_calls=[ToolCall("c1", "hidden_tool", {})]),
+                LLMResponse(content="done", tool_calls=[]),
+            ]
+        )
         loop = _make_loop(tmp_path, provider, reg, tool_search_enabled=False)
 
         _, tools_used, _, _ = asyncio.run(
@@ -159,18 +167,34 @@ class TestVisibilityGuard:
 
         # tool_search 直接返回匹配结果（模拟 registry.search 找到了 target_tool）
         tool_search_result = json.dumps(
-            {"matched": [{"name": "target_tool", "summary": "...", "why_matched": [], "key_params": [], "tags": [], "risk": "read-only"}]},
+            {
+                "matched": [
+                    {
+                        "name": "target_tool",
+                        "summary": "...",
+                        "why_matched": [],
+                        "key_params": [],
+                        "tags": [],
+                        "risk": "read-only",
+                    }
+                ]
+            },
             ensure_ascii=False,
         )
 
-        provider = _FakeProvider([
-            # 第 1 轮：调用 tool_search
-            LLMResponse(content="", tool_calls=[ToolCall("s1", "tool_search", {"query": "target"})]),
-            # 第 2 轮：调用解锁后的 target_tool
-            LLMResponse(content="", tool_calls=[ToolCall("t1", "target_tool", {})]),
-            # 第 3 轮：返回最终结果
-            LLMResponse(content="all done", tool_calls=[]),
-        ])
+        provider = _FakeProvider(
+            [
+                # 第 1 轮：调用 tool_search
+                LLMResponse(
+                    content="",
+                    tool_calls=[ToolCall("s1", "tool_search", {"query": "target"})],
+                ),
+                # 第 2 轮：调用解锁后的 target_tool
+                LLMResponse(content="", tool_calls=[ToolCall("t1", "target_tool", {})]),
+                # 第 3 轮：返回最终结果
+                LLMResponse(content="all done", tool_calls=[]),
+            ]
+        )
         loop = _make_loop(tmp_path, provider, reg)
 
         final, tools_used, _, _ = asyncio.run(
@@ -193,7 +217,9 @@ class TestVisibilityGuard:
             _responses = [LLMResponse(content="done", tool_calls=[])]
 
             async def chat(self, **kwargs: Any) -> LLMResponse:
-                schemas_seen.append([t["function"]["name"] for t in (kwargs.get("tools") or [])])
+                schemas_seen.append(
+                    [t["function"]["name"] for t in (kwargs.get("tools") or [])]
+                )
                 return self._responses.pop(0)
 
         loop = _make_loop(tmp_path, cast(Any, _CapturingProvider()), reg)
@@ -207,6 +233,7 @@ class TestVisibilityGuard:
 
 
 # ── LRU 测试 ──────────────────────────────────────────────────────────────────
+
 
 class TestLRUCache:
     def _make_loop_for_lru(self, tmp_path: Path) -> AgentLoop:
@@ -250,7 +277,7 @@ class TestLRUCache:
         loop._update_lru("s1", ["tool_5"])
 
         lru = loop._unlocked_tools["s1"]
-        assert "tool_0" in lru   # 刚被刷新，安全
+        assert "tool_0" in lru  # 刚被刷新，安全
         assert "tool_1" not in lru  # 最久未用，被淘汰
         assert "tool_5" in lru
 
@@ -275,16 +302,22 @@ class TestLRUCache:
         reg.register(target)
 
         # 第一请求：调用 remembered_tool（触发 auto-unlock + LRU 写入）
-        provider1 = _FakeProvider([
-            LLMResponse(content="", tool_calls=[ToolCall("c1", "remembered_tool", {})]),
-            LLMResponse(content="done1", tool_calls=[]),
-        ])
+        provider1 = _FakeProvider(
+            [
+                LLMResponse(
+                    content="", tool_calls=[ToolCall("c1", "remembered_tool", {})]
+                ),
+                LLMResponse(content="done1", tool_calls=[]),
+            ]
+        )
         loop = _make_loop(tmp_path, provider1, reg)
 
-        asyncio.run(loop._run_agent_loop(
-            [{"role": "user", "content": "first"}],
-            preloaded_tools=set(),
-        ))
+        asyncio.run(
+            loop._run_agent_loop(
+                [{"role": "user", "content": "first"}],
+                preloaded_tools=set(),
+            )
+        )
         # 手动模拟 _run_with_safety_retry 的 LRU 写入
         loop._update_lru("session1", ["remembered_tool"])
 

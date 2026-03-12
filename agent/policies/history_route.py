@@ -195,7 +195,9 @@ class HistoryRoutePolicy:
 
     @staticmethod
     def _build_prompt(*, user_msg: str, recent_history: str) -> str:
-        history_section = f"\n近期对话摘要：\n{recent_history}\n" if recent_history else ""
+        history_section = (
+            f"\n近期对话摘要：\n{recent_history}\n" if recent_history else ""
+        )
         return f"""判断当前用户消息是否需要检索历史事件记忆。
 {history_section}
 当前消息：{user_msg}

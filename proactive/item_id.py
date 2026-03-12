@@ -4,6 +4,7 @@ proactive/item_id.py — FeedItem 标识计算公共模块。
 统一 item_id / source_key 的计算逻辑，供 FeedBuffer、ProactiveEngine、
 ProactiveItemFilter 等共用，避免各自维护私有副本。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -35,13 +36,15 @@ def compute_item_id(item: FeedItem) -> str:
     url = normalize_url(item.url)
     if url:
         return "u_" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
-    raw = "|".join([
-        (item.source_type or "").strip().lower(),
-        (item.source_name or "").strip().lower(),
-        (item.title or "").strip().lower(),
-        (item.content or "").strip().lower()[:200],
-        item.published_at.isoformat() if item.published_at else "",
-    ])
+    raw = "|".join(
+        [
+            (item.source_type or "").strip().lower(),
+            (item.source_name or "").strip().lower(),
+            (item.title or "").strip().lower(),
+            (item.content or "").strip().lower()[:200],
+            item.published_at.isoformat() if item.published_at else "",
+        ]
+    )
     return "h_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 

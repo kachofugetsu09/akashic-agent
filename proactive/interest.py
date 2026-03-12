@@ -1,6 +1,7 @@
 """
 proactive/interest.py — 基于 memory 的兴趣筛选。
 """
+
 from __future__ import annotations
 
 import math
@@ -13,11 +14,57 @@ from feeds.base import FeedItem
 _TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9+.#-]{1,}|[\u4e00-\u9fff]{2,}")
 
 _STOPWORDS = {
-    "the", "and", "for", "with", "that", "this", "from", "your", "have", "will",
-    "you", "are", "not", "was", "were", "been", "about", "into", "over", "after",
-    "then", "than", "but", "can", "could", "would", "should",
-    "我们", "你们", "他们", "这个", "那个", "以及", "然后", "就是", "还是", "如果", "因为", "所以",
-    "已经", "一些", "一个", "不是", "没有", "可以", "需要", "进行", "相关", "内容", "消息", "信息",
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "your",
+    "have",
+    "will",
+    "you",
+    "are",
+    "not",
+    "was",
+    "were",
+    "been",
+    "about",
+    "into",
+    "over",
+    "after",
+    "then",
+    "than",
+    "but",
+    "can",
+    "could",
+    "would",
+    "should",
+    "我们",
+    "你们",
+    "他们",
+    "这个",
+    "那个",
+    "以及",
+    "然后",
+    "就是",
+    "还是",
+    "如果",
+    "因为",
+    "所以",
+    "已经",
+    "一些",
+    "一个",
+    "不是",
+    "没有",
+    "可以",
+    "需要",
+    "进行",
+    "相关",
+    "内容",
+    "消息",
+    "信息",
 }
 
 
@@ -39,15 +86,21 @@ def _tokenize(text: str, min_len: int = 2) -> list[str]:
     return [w for w in words if len(w) >= min_len and w not in _STOPWORDS]
 
 
-def _build_keyword_weights(memory_text: str, cfg: InterestFilterConfig) -> dict[str, float]:
-    tokens = _tokenize(memory_text[: max(cfg.memory_max_chars, 0)], min_len=cfg.min_token_len)
+def _build_keyword_weights(
+    memory_text: str, cfg: InterestFilterConfig
+) -> dict[str, float]:
+    tokens = _tokenize(
+        memory_text[: max(cfg.memory_max_chars, 0)], min_len=cfg.min_token_len
+    )
     if not tokens:
         return {}
     counts: dict[str, int] = {}
     for token in tokens:
         counts[token] = counts.get(token, 0) + 1
     # 频次压缩，避免单个词权重过高
-    ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)[: max(cfg.keyword_max_count, 1)]
+    ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)[
+        : max(cfg.keyword_max_count, 1)
+    ]
     return {k: 1.0 + math.log1p(v) for k, v in ranked}
 
 

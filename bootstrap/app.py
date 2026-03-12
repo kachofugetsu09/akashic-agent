@@ -30,9 +30,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-async def _run_cleanup_steps(
-    *steps: tuple[str, Callable[[], Awaitable[None]]]
-) -> None:
+async def _run_cleanup_steps(*steps: tuple[str, Callable[[], Awaitable[None]]]) -> None:
     first_error: Exception | None = None
     for name, step in steps:
         try:

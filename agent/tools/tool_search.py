@@ -62,7 +62,9 @@ class ToolSearchTool(Tool):
         **_: Any,
     ) -> str:
         top_k = min(max(1, int(top_k)), 10)
-        results = self._registry.search(query=query, top_k=top_k, allowed_risk=allowed_risk)
+        results = self._registry.search(
+            query=query, top_k=top_k, allowed_risk=allowed_risk
+        )
         if not results:
             return json.dumps(
                 {"matched": [], "tip": "没有找到匹配工具，请换个关键词重试"},

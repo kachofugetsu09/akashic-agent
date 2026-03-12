@@ -105,10 +105,15 @@ async def test_subagent_manager_announces_completion_to_origin_session(tmp_path)
     assert msg.metadata["internal_event"] == "spawn_completed"
     assert msg.metadata["spawn"]["status"] == "incomplete"
     assert msg.metadata["spawn"]["exit_reason"] == "forced_summary"
-    assert msg.metadata["spawn_decision"]["meta"]["reason_code"] == "context_isolation_needed"
+    assert (
+        msg.metadata["spawn_decision"]["meta"]["reason_code"]
+        == "context_isolation_needed"
+    )
 
     trace_path = tmp_path / "memory" / "spawn_trace.jsonl"
-    lines = [line for line in trace_path.read_text(encoding="utf-8").splitlines() if line]
+    lines = [
+        line for line in trace_path.read_text(encoding="utf-8").splitlines() if line
+    ]
     assert len(lines) == 2
     started = __import__("json").loads(lines[0])
     completed = __import__("json").loads(lines[1])

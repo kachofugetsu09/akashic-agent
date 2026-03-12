@@ -50,7 +50,12 @@ def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict
         if mime and mime.startswith("image/") and p.is_file():
             try:
                 b64 = base64.b64encode(p.read_bytes()).decode()
-                images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+                images.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"},
+                    }
+                )
             except Exception:
                 file_refs.append(f"[图片（读取失败）: {p.name}]")
         else:
@@ -69,7 +74,7 @@ def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict
 
 def _safe_filename(key: str) -> str:
     """Convert a session key to a safe filename."""
-    return re.sub(r'[^\w\-]', '_', key)
+    return re.sub(r"[^\w\-]", "_", key)
 
 
 @dataclass
@@ -78,26 +83,28 @@ class Session:
     单次对话中的session,用JSONL格式储存。
     消息是append-only的。
     """
-    key: str # channel:chat_id
-    messages : list[dict[str,Any]] = field(default_factory=list)
+
+    key: str  # channel:chat_id
+    messages: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0  # Number of messages already consolidated to files
 
-    def add_message(self, role: str, content: str, media: list[str] | None = None, **kwargs: Any) -> None:
+    def add_message(
+        self, role: str, content: str, media: list[str] | None = None, **kwargs: Any
+    ) -> None:
         """Add a message to session."""
         msg = {
             "role": role,
             "content": content,
             "timestamp": datetime.now().astimezone().isoformat(),
-            **kwargs
+            **kwargs,
         }
         if media:
             msg["media"] = list(media)
         self.messages.append(msg)
         self.updated_at = datetime.now()
-
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
         """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。
@@ -111,7 +118,9 @@ class Session:
         messages = self.messages[-max_messages:]
 
         # 找到"近期边界"：倒数第 _RECENT_TOOL_ROUNDS 个 assistant 消息的索引
-        assistant_indices = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
+        assistant_indices = [
+            i for i, m in enumerate(messages) if m.get("role") == "assistant"
+        ]
         if len(assistant_indices) > _RECENT_TOOL_ROUNDS:
             recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS]
         else:
@@ -125,7 +134,9 @@ class Session:
             if role == "user":
                 text = m.get("content", "")
                 media_paths = m.get("media") or []
-                user_content = _rebuild_user_content(text, media_paths) if media_paths else text
+                user_content = (
+                    _rebuild_user_content(text, media_paths) if media_paths else text
+                )
                 out.append({"role": "user", "content": user_content})
 
             elif role == "assistant":
@@ -136,33 +147,41 @@ class Session:
                     calls: list[dict] = group.get("calls") or []
                     if not calls:
                         continue
-                    out.append({
-                        "role": "assistant",
-                        "content": group.get("text"),  # 可能为 None
-                        "tool_calls": [
-                            {
-                                "id": c["call_id"],
-                                "type": "function",
-                                "function": {
-                                    "name": c["name"],
-                                    "arguments": json.dumps(
-                                        c.get("arguments", {}), ensure_ascii=False
-                                    ),
-                                },
-                            }
-                            for c in calls
-                        ],
-                    })
+                    out.append(
+                        {
+                            "role": "assistant",
+                            "content": group.get("text"),  # 可能为 None
+                            "tool_calls": [
+                                {
+                                    "id": c["call_id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": c["name"],
+                                        "arguments": json.dumps(
+                                            c.get("arguments", {}), ensure_ascii=False
+                                        ),
+                                    },
+                                }
+                                for c in calls
+                            ],
+                        }
+                    )
                     for c in calls:
-                        out.append({
-                            "role": "tool",
-                            "tool_call_id": c["call_id"],
-                            "content": c["result"] if is_recent else _CLEARED,
-                        })
+                        out.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": c["call_id"],
+                                "content": c["result"] if is_recent else _CLEARED,
+                            }
+                        )
 
                 # 最终文本回复：若该轮没有工具链，标记为推演内容，避免被后续轮次当成事实引用
                 content = m.get("content", "") or ""
-                if not tool_chain and content and not content.startswith(_INFERENCE_TAG):
+                if (
+                    not tool_chain
+                    and content
+                    and not content.startswith(_INFERENCE_TAG)
+                ):
                     content = _INFERENCE_TAG + content
                 if content:
                     content = _append_proactive_meta(content, m)
@@ -175,11 +194,12 @@ class Session:
         self.updated_at = datetime.now()
         self.last_consolidated = 0
 
+
 class SessionManager:
     # 每 N 次增量追加后触发一次全量重写，以刷新 metadata 首行（updated_at / last_consolidated）
     _METADATA_REFRESH_EVERY: int = 10
 
-    def __init__(self,workspace: Path):
+    def __init__(self, workspace: Path):
         self.workspace = workspace
         self.session_dir = workspace / "sessions"
         self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -194,8 +214,7 @@ class SessionManager:
         safe_key = _safe_filename(key)
         return self.session_dir / f"{safe_key}.jsonl"
 
-
-    def get_or_create(self,key:str) -> Session:
+    def get_or_create(self, key: str) -> Session:
         if key in self._cache:
             return self._cache[key]
 
@@ -205,7 +224,7 @@ class SessionManager:
         self._cache[key] = session
         return session
 
-    def _load(self,key: str) -> Session:
+    def _load(self, key: str) -> Session:
         path = self._get_session_path(key)
         if not path.exists():
             return None
@@ -226,7 +245,11 @@ class SessionManager:
 
                     if data.get("_type") == "metadata":
                         metadata = data.get("metadata", {})
-                        created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
+                        created_at = (
+                            datetime.fromisoformat(data["created_at"])
+                            if data.get("created_at")
+                            else None
+                        )
                         last_consolidated = data.get("last_consolidated", 0)
                     else:
                         messages.append(data)
@@ -332,12 +355,14 @@ class SessionManager:
                     if first_line:
                         data = json.loads(first_line)
                         if data.get("_type") == "metadata":
-                            sessions.append({
-                                "key": path.stem.replace("_", ":"),
-                                "created_at": data.get("created_at"),
-                                "updated_at": data.get("updated_at"),
-                                "path": str(path)
-                            })
+                            sessions.append(
+                                {
+                                    "key": path.stem.replace("_", ":"),
+                                    "created_at": data.get("created_at"),
+                                    "updated_at": data.get("updated_at"),
+                                    "path": str(path),
+                                }
+                            )
             except Exception:
                 continue
 
@@ -360,12 +385,16 @@ class SessionManager:
                 if data.get("_type") != "metadata":
                     continue
                 key = data.get("key") or path.stem.replace("_", ":", 1)
-                chat_id = key.split(":", 1)[-1] if ":" in key else path.stem[len(prefix):]
-                results.append({
-                    "key": key,
-                    "chat_id": chat_id,
-                    "metadata": data.get("metadata", {}),
-                })
+                chat_id = (
+                    key.split(":", 1)[-1] if ":" in key else path.stem[len(prefix) :]
+                )
+                results.append(
+                    {
+                        "key": key,
+                        "chat_id": chat_id,
+                        "metadata": data.get("metadata", {}),
+                    }
+                )
             except Exception:
                 continue
         return results

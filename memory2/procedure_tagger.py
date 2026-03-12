@@ -19,17 +19,36 @@ logger = logging.getLogger(__name__)
 
 # 与 scripts/tag_procedures.py 保持一致
 KNOWN_TOOLS = [
-    "read_file", "write_file", "edit_file", "list_dir",
-    "shell", "web_fetch", "web_search", "memorize",
-    "message_push", "notify_owner",
-    "schedule", "cancel_schedule", "list_schedules",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "shell",
+    "web_fetch",
+    "web_search",
+    "memorize",
+    "message_push",
+    "notify_owner",
+    "schedule",
+    "cancel_schedule",
+    "list_schedules",
     "spawn",
-    "skill_action_list", "skill_action_register", "skill_action_reset",
-    "skill_action_restart", "skill_action_rewrite", "skill_action_status",
-    "skill_action_unregister", "skill_action_update",
-    "task_done", "task_note", "task_recall",
-    "list_tools", "tool_search",
-    "update_now", "fitbit_health_snapshot", "fitbit_sleep_report",
+    "skill_action_list",
+    "skill_action_register",
+    "skill_action_reset",
+    "skill_action_restart",
+    "skill_action_rewrite",
+    "skill_action_status",
+    "skill_action_unregister",
+    "skill_action_update",
+    "task_done",
+    "task_note",
+    "task_recall",
+    "list_tools",
+    "tool_search",
+    "update_now",
+    "fitbit_health_snapshot",
+    "fitbit_sleep_report",
 ]
 
 _SYSTEM_PROMPT = "你是一个记忆标注助手，输出严格的 JSON，不加任何额外文字。"
@@ -125,12 +144,15 @@ def _validate(tag: dict, valid_tools: set[str], valid_skills: set[str]) -> dict:
     tools = [t for t in (tag.get("tools") or []) if t in valid_tools]
     skills = [s for s in (tag.get("skills") or []) if s in valid_skills]
     keywords = [
-        k for k in (tag.get("keywords") or [])
+        k
+        for k in (tag.get("keywords") or [])
         if isinstance(k, str) and len(k.strip()) >= 3
     ]
     scope = tag.get("scope", "tool_triggered")
     if scope not in ("tool_triggered", "global"):
-        scope = "global" if not tools and not skills and not keywords else "tool_triggered"
+        scope = (
+            "global" if not tools and not skills and not keywords else "tool_triggered"
+        )
     if scope == "global" and (tools or skills or keywords):
         scope = "tool_triggered"
     return {"tools": tools, "skills": skills, "keywords": keywords, "scope": scope}

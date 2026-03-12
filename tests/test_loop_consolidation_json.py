@@ -67,7 +67,11 @@ def test_format_conversation_for_consolidation_skips_tool_messages():
         [
             {"role": "user", "content": "你好", "timestamp": "2026-03-09T10:00:00"},
             {"role": "tool", "content": "ignored", "timestamp": "2026-03-09T10:01:00"},
-            {"role": "assistant", "content": "收到", "timestamp": "2026-03-09T10:02:00"},
+            {
+                "role": "assistant",
+                "content": "收到",
+                "timestamp": "2026-03-09T10:02:00",
+            },
         ]
     )
 
@@ -86,7 +90,11 @@ def test_format_conversation_for_consolidation_skips_proactive_assistant_message
                 "timestamp": "2026-03-09T10:01:00",
                 "proactive": True,
             },
-            {"role": "assistant", "content": "这是正常回复", "timestamp": "2026-03-09T10:02:00"},
+            {
+                "role": "assistant",
+                "content": "这是正常回复",
+                "timestamp": "2026-03-09T10:02:00",
+            },
         ]
     )
 

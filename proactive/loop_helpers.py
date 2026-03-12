@@ -36,13 +36,16 @@ def _decision_with_randomized_score(
         return decision, 0.0
     delta = (rng or _random_module).uniform(-s, s)
     score = max(0.0, min(1.0, decision.score + delta))
-    return _Decision(
-        score=score,
-        should_send=decision.should_send,
-        message=decision.message,
-        reasoning=decision.reasoning,
-        evidence_item_ids=decision.evidence_item_ids,
-    ), delta
+    return (
+        _Decision(
+            score=score,
+            should_send=decision.should_send,
+            message=decision.message,
+            reasoning=decision.reasoning,
+            evidence_item_ids=decision.evidence_item_ids,
+        ),
+        delta,
+    )
 
 
 def _format_items(items: list[FeedItem]) -> str:

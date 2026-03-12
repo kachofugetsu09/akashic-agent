@@ -85,7 +85,9 @@ def build_memory_runtime(
     tagger = ProcedureTagger(
         provider=light_provider or provider,
         model=config.light_model or config.model,
-        skills_fn=lambda: [s["name"] for s in _skills_loader.list_skills(filter_unavailable=False)],
+        skills_fn=lambda: [
+            s["name"] for s in _skills_loader.list_skills(filter_unavailable=False)
+        ],
     )
 
     post_mem_worker = PostResponseMemoryWorker(

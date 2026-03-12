@@ -56,7 +56,11 @@ class _DummySession:
         return self.messages[-max_messages:]
 
     def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
-        msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat()}
+        msg = {
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }
         msg.update(kwargs)
         if media:
             msg["media"] = list(media)
@@ -74,7 +78,9 @@ def _make_loop(provider: _Provider, **kwargs: Any) -> AgentLoop:
         tools=tools,
         session_manager=MagicMock(),
         workspace=workspace,
-        memory_port=kwargs.pop("memory_port", DefaultMemoryPort(MemoryStore(workspace))),
+        memory_port=kwargs.pop(
+            "memory_port", DefaultMemoryPort(MemoryStore(workspace))
+        ),
         **kwargs,
     )
 
@@ -107,7 +113,9 @@ def test_route_gate_fail_open_on_low_confidence():
 def test_route_gate_supports_fenced_json_payload():
     loop = _make_loop(
         _Provider(
-            ['```json\n{"decision":"NO_RETRIEVE","rewritten_query":"偏好","confidence":"high"}\n```']
+            [
+                '```json\n{"decision":"NO_RETRIEVE","rewritten_query":"偏好","confidence":"high"}\n```'
+            ]
         ),
         memory_route_intention_enabled=True,
     )

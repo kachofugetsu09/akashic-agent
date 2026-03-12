@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 
 # ── Prompts ──────────────────────────────────────────────────────
 
-_MERGE_SYSTEM = "你是一个用户长期记忆整理器，只根据现有 MEMORY.md 与 PENDING.md 合并长期记忆。"
+_MERGE_SYSTEM = (
+    "你是一个用户长期记忆整理器，只根据现有 MEMORY.md 与 PENDING.md 合并长期记忆。"
+)
 
 _MERGE_PROMPT = """\
 今日日期：{today}
@@ -77,7 +79,9 @@ tag 含义：
 {pending}
 """
 
-_SELF_SYSTEM = "你是 Akashic，只能更新 SELF.md 中现有的三个 section，不得新增其他 section。"
+_SELF_SYSTEM = (
+    "你是 Akashic，只能更新 SELF.md 中现有的三个 section，不得新增其他 section。"
+)
 
 _SELF_PROMPT = """\
 你的任务是根据当前 SELF.md 和本轮待合并事实，整理一份新的 SELF.md。

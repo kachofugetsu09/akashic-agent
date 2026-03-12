@@ -1,4 +1,5 @@
 """Tests for ScheduleTool, ListSchedulesTool, CancelScheduleTool."""
+
 from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,7 @@ def make_svc(tmp_path, mock_push, mock_loop):
 
 # ── ScheduleTool: validation ──────────────────────────────────────
 
+
 async def test_invalid_tier_returns_error(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc)
@@ -38,8 +40,12 @@ async def test_invalid_trigger_returns_error(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc)
     result = await tool.execute(
-        tier="instant", trigger="sometime", when="5m",
-        channel="tg", chat_id="1", message="hi"
+        tier="instant",
+        trigger="sometime",
+        when="5m",
+        channel="tg",
+        chat_id="1",
+        message="hi",
     )
     assert "错误" in result
     assert "trigger" in result
@@ -69,20 +75,29 @@ async def test_invalid_when_returns_error(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc)
     result = await tool.execute(
-        tier="instant", trigger="after", when="blah",
-        channel="tg", chat_id="1", message="hi"
+        tier="instant",
+        trigger="after",
+        when="blah",
+        channel="tg",
+        chat_id="1",
+        message="hi",
     )
     assert "错误" in result
 
 
 # ── ScheduleTool: successful registration ────────────────────────
 
+
 async def test_instant_after_registers_job(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc, default_tz="UTC")
     result = await tool.execute(
-        tier="instant", trigger="after", when="5m",
-        channel="telegram", chat_id="123", message="喝水了",
+        tier="instant",
+        trigger="after",
+        when="5m",
+        channel="telegram",
+        chat_id="123",
+        message="喝水了",
         request_time=_NOW.isoformat(),
     )
     assert "错误" not in result
@@ -96,8 +111,12 @@ async def test_after_request_time_used_for_fire_at(tmp_path, mock_push, mock_loo
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc, default_tz="UTC")
     await tool.execute(
-        tier="instant", trigger="after", when="30s",
-        channel="tg", chat_id="1", message="hi",
+        tier="instant",
+        trigger="after",
+        when="30s",
+        channel="tg",
+        chat_id="1",
+        message="hi",
         request_time=_NOW.isoformat(),
     )
     job = list(svc._jobs.values())[0]
@@ -109,8 +128,12 @@ async def test_soft_at_registers_job(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc, default_tz="UTC")
     result = await tool.execute(
-        tier="soft", trigger="at", when="2025-06-01T14:00:00",
-        channel="telegram", chat_id="456", prompt="查询北京天气",
+        tier="soft",
+        trigger="at",
+        when="2025-06-01T14:00:00",
+        channel="telegram",
+        chat_id="456",
+        prompt="查询北京天气",
     )
     assert "错误" not in result
     job = list(svc._jobs.values())[0]
@@ -123,8 +146,12 @@ async def test_every_interval_stores_interval_seconds(tmp_path, mock_push, mock_
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc, default_tz="UTC")
     await tool.execute(
-        tier="instant", trigger="every", when="1h",
-        channel="tg", chat_id="1", message="提醒",
+        tier="instant",
+        trigger="every",
+        when="1h",
+        channel="tg",
+        chat_id="1",
+        message="提醒",
     )
     job = list(svc._jobs.values())[0]
     assert job.interval_seconds == 3600
@@ -135,8 +162,12 @@ async def test_every_cron_stores_cron_expr(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc, default_tz="UTC")
     await tool.execute(
-        tier="soft", trigger="every", when="0 9 * * *",
-        channel="tg", chat_id="1", prompt="天气",
+        tier="soft",
+        trigger="every",
+        when="0 9 * * *",
+        channel="tg",
+        chat_id="1",
+        prompt="天气",
     )
     job = list(svc._jobs.values())[0]
     assert job.cron_expr == "0 9 * * *"
@@ -147,8 +178,13 @@ async def test_named_job(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
     tool = ScheduleTool(svc, default_tz="UTC")
     await tool.execute(
-        tier="instant", trigger="after", when="5m",
-        channel="tg", chat_id="1", message="hi", name="my-reminder",
+        tier="instant",
+        trigger="after",
+        when="5m",
+        channel="tg",
+        chat_id="1",
+        message="hi",
+        name="my-reminder",
         request_time=_NOW.isoformat(),
     )
     job = list(svc._jobs.values())[0]
@@ -156,6 +192,7 @@ async def test_named_job(tmp_path, mock_push, mock_loop):
 
 
 # ── ListSchedulesTool ────────────────────────────────────────────
+
 
 async def test_list_empty(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)
@@ -175,6 +212,7 @@ async def test_list_shows_jobs(tmp_path, mock_push, mock_loop):
 
 
 # ── CancelScheduleTool ───────────────────────────────────────────
+
 
 async def test_cancel_by_id(tmp_path, mock_push, mock_loop):
     svc = make_svc(tmp_path, mock_push, mock_loop)

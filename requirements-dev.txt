@@ -1,5 +1,6 @@
 # 开发与测试依赖
 -r requirements.txt
 
+black>=26.0.0
 pytest>=9.0.0
 pytest-asyncio>=1.3.0

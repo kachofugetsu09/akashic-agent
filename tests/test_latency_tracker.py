@@ -1,4 +1,5 @@
 """Tests for LatencyTracker — adaptive P90 latency estimation."""
+
 import statistics
 
 import pytest

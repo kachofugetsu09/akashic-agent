@@ -873,7 +873,9 @@ class ProactiveEngine:
             and (ctx.state.now_utc - item.published_at).total_seconds() <= 24 * 3600
         )
 
-    def _build_score_result(self, ctx: DecisionContext, *, w_random: float) -> ScoreResult:
+    def _build_score_result(
+        self, ctx: DecisionContext, *, w_random: float
+    ) -> ScoreResult:
         """把 score 阶段的分支判断统一映射成 ScoreResult。"""
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
@@ -983,7 +985,9 @@ class ProactiveEngine:
         if sense.health_events:
             decide.decision_signals["health_events"] = sense.health_events
         act.high_events = [
-            e for e in sense.health_events if str((e or {}).get("severity", "")) == "high"
+            e
+            for e in sense.health_events
+            if str((e or {}).get("severity", "")) == "high"
         ]
         logger.info(
             "[proactive] fitbit_signal events=%d high=%d sleep_state=%s",
@@ -1075,13 +1079,18 @@ class ProactiveEngine:
         )
         # 2b. 偏好否决门：interest_match 极低时说明 LLM 认定用户不关注该内容，直接硬拒绝。
         #      这避免了"虽然你不关心但我还是说"的模式——当偏好明确排斥时不进入 compose_message。
-        if getattr(self._cfg, "preference_veto_enabled", True) and decide.preference_block:
+        if (
+            getattr(self._cfg, "preference_veto_enabled", True)
+            and decide.preference_block
+        ):
             raw_interest = decide.feature_payload.get("interest_match", 0.5)
             try:
                 interest_match_val = float(raw_interest)  # type: ignore[arg-type]
             except Exception:
                 interest_match_val = 0.5
-            veto_threshold = getattr(self._cfg, "preference_interest_veto_threshold", 0.15)
+            veto_threshold = getattr(
+                self._cfg, "preference_interest_veto_threshold", 0.15
+            )
             if interest_match_val < veto_threshold:
                 logger.info(
                     "[proactive] selected_action=idle reason=preference_veto "
@@ -1167,7 +1176,9 @@ class ProactiveEngine:
             preference_block=decide.preference_block,
         )
         # 2. 再叠加随机化决策，并用最终阈值决定 should_send。
-        decide.decision, decision_delta = self._decide.randomize_decision(decide.decision)
+        decide.decision, decision_delta = self._decide.randomize_decision(
+            decide.decision
+        )
         logger.debug(
             f"[proactive] score={decide.decision.score:.2f}  "
             f"score_delta={decision_delta:+.2f}  "
@@ -1211,9 +1222,11 @@ class ProactiveEngine:
         )
         # 2. 再从 decision 里解析 evidence ids，缩成真正支撑这次发送的证据集。
         evidence_item_ids = self._decide.resolve_evidence_item_ids(
-            decide.decision
-            if decide.decision is not None
-            else _PseudoDecision(message=decide.decision_message),
+            (
+                decide.decision
+                if decide.decision is not None
+                else _PseudoDecision(message=decide.decision_message)
+            ),
             source_items,
         )
         # 3. 最后把 source/evidence/source_refs 一起打包给 act 阶段使用。
@@ -1362,9 +1375,7 @@ class ProactiveEngine:
         if not sense.health_events:
             return
         acked_ids = [
-            e["id"]
-            for e in sense.health_events
-            if isinstance(e, dict) and e.get("id")
+            e["id"] for e in sense.health_events if isinstance(e, dict) and e.get("id")
         ]
         if acked_ids:
             getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
@@ -1552,7 +1563,9 @@ class ProactiveEngine:
         return best_items, self._entries_for_items(best_items, entries)
 
     def _is_same_topic(self, left: FeedItem, right: FeedItem) -> bool:
-        if (left.source_name or "").strip().lower() != (right.source_name or "").strip().lower():
+        if (left.source_name or "").strip().lower() != (
+            right.source_name or ""
+        ).strip().lower():
             return False
         left_title = self._topic_text(left)
         right_title = self._topic_text(right)
@@ -1562,7 +1575,9 @@ class ProactiveEngine:
             return True
         left_tokens = set(self._topic_tokens(left_title))
         right_tokens = set(self._topic_tokens(right_title))
-        return bool(left_tokens and right_tokens and left_tokens.intersection(right_tokens))
+        return bool(
+            left_tokens and right_tokens and left_tokens.intersection(right_tokens)
+        )
 
     @staticmethod
     def _topic_text(item: FeedItem) -> str:
@@ -1731,7 +1746,9 @@ class ProactiveEngine:
         selected: list[tuple[str, str]] = []
         for item in items:
             item_id = self._item_id_for(item)
-            selected.append((entry_by_id.get(item_id, compute_source_key(item)), item_id))
+            selected.append(
+                (entry_by_id.get(item_id, compute_source_key(item)), item_id)
+            )
         return selected
 
     def _primary_candidate_entries(

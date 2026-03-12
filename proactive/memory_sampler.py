@@ -5,6 +5,7 @@ proactive/memory_sampler.py — 随机记忆片段抽取。
 随机抽取 N 条注入 LLM prompt，制造"偶然想起"的自然感。
 纯函数，无 I/O，无 LLM。
 """
+
 from __future__ import annotations
 
 import random as _random

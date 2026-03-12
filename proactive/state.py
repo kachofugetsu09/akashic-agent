@@ -463,7 +463,9 @@ class ProactiveStateStore:
             "deliveries": dict(raw.get("deliveries", {})),
             "semantic_items": list(raw.get("semantic_items", [])),
             "rejection_cooldown": dict(raw.get("rejection_cooldown", {})),
-            "pending_items": self._normalize_pending_items(raw.get("pending_items", {})),
+            "pending_items": self._normalize_pending_items(
+                raw.get("pending_items", {})
+            ),
         }
         state["version"] = 4
         logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)
@@ -481,7 +483,9 @@ class ProactiveStateStore:
             "content": item.content,
             "url": item.url,
             "author": item.author,
-            "published_at": item.published_at.isoformat() if item.published_at else None,
+            "published_at": (
+                item.published_at.isoformat() if item.published_at else None
+            ),
         }
 
     def _deserialize_item(self, payload: dict[str, Any]) -> FeedItem | None:
@@ -499,7 +503,9 @@ class ProactiveStateStore:
         except Exception:
             return None
 
-    def _normalize_pending_items(self, raw_pending: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    def _normalize_pending_items(
+        self, raw_pending: Any
+    ) -> dict[str, dict[str, dict[str, Any]]]:
         if not isinstance(raw_pending, dict):
             return {}
         normalized: dict[str, dict[str, dict[str, Any]]] = {}

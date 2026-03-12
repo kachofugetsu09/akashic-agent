@@ -68,16 +68,18 @@ class McpClient:
 
         # initialize 握手
         init_id = self._new_id()
-        await self._send({
-            "jsonrpc": "2.0",
-            "id": init_id,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "clientInfo": {"name": "akasic-agent", "version": "1.0"},
-            },
-        })
+        await self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": init_id,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "clientInfo": {"name": "akasic-agent", "version": "1.0"},
+                },
+            }
+        )
         await self._recv(expected_id=init_id)
 
         # initialized 通知（无 id，不等响应）
@@ -85,7 +87,9 @@ class McpClient:
 
         # 获取工具列表
         list_id = self._new_id()
-        await self._send({"jsonrpc": "2.0", "id": list_id, "method": "tools/list", "params": {}})
+        await self._send(
+            {"jsonrpc": "2.0", "id": list_id, "method": "tools/list", "params": {}}
+        )
         resp = await self._recv(expected_id=list_id)
 
         raw_tools = resp.get("result", {}).get("tools", [])
@@ -97,18 +101,22 @@ class McpClient:
             )
             for t in raw_tools
         ]
-        logger.info("[mcp] %r 已连接，工具：%s", self.name, [t.name for t in self._tool_infos])
+        logger.info(
+            "[mcp] %r 已连接，工具：%s", self.name, [t.name for t in self._tool_infos]
+        )
         return self._tool_infos
 
     async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """调用远端工具，返回结果字符串。"""
         call_id = self._new_id()
-        await self._send({
-            "jsonrpc": "2.0",
-            "id": call_id,
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-        })
+        await self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": call_id,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            }
+        )
         resp = await self._recv(expected_id=call_id)
 
         if "error" in resp:
@@ -142,7 +150,9 @@ class McpClient:
 
     async def _send(self, payload: dict[str, Any]) -> None:
         assert self._process and self._process.stdin
-        self._process.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode())
+        self._process.stdin.write(
+            (json.dumps(payload, ensure_ascii=False) + "\n").encode()
+        )
         await self._process.stdin.drain()
 
     async def _recv(self, expected_id: int | None = None) -> dict[str, Any]:

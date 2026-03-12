@@ -96,7 +96,11 @@ class ConversationTurnHandler:
             hyde_turns = loop._format_gate_history(
                 main_history, max_turns=3, max_content_len=None
             )
-            hyde_context = f"当前时间：{date_str}\n{hyde_turns}" if hyde_turns else f"当前时间：{date_str}"
+            hyde_context = (
+                f"当前时间：{date_str}\n{hyde_turns}"
+                if hyde_turns
+                else f"当前时间：{date_str}"
+            )
             p_task = asyncio.create_task(
                 retrieve_procedure_items(
                     loop._memory_port,

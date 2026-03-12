@@ -21,13 +21,13 @@ _SAFETY_ERROR_CODES = {
 }
 
 _CONTEXT_LENGTH_KEYWORDS = (
-    "range of input length",       # DashScope / Qwen
-    "context_length_exceeded",     # OpenAI
-    "maximum context length",      # OpenAI
-    "string too long",             # 通用
-    "reduce the length",           # 通用
-    "too many tokens",             # 通用
-    "invalid_parameter_error",     # DashScope 超长
+    "range of input length",  # DashScope / Qwen
+    "context_length_exceeded",  # OpenAI
+    "maximum context length",  # OpenAI
+    "string too long",  # 通用
+    "reduce the length",  # 通用
+    "too many tokens",  # 通用
+    "invalid_parameter_error",  # DashScope 超长
 )
 
 

@@ -201,7 +201,9 @@ def load_config(path: str | Path = "config.json") -> Config:
             feature_weight_message_readiness=float(
                 p.get("feature_weight_message_readiness", 0.16)
             ),
-            feature_weight_disturb_risk=float(p.get("feature_weight_disturb_risk", 0.70)),
+            feature_weight_disturb_risk=float(
+                p.get("feature_weight_disturb_risk", 0.70)
+            ),
             feature_weight_interrupt_penalty=float(
                 p.get("feature_weight_interrupt_penalty", 0.30)
             ),
@@ -235,12 +237,8 @@ def load_config(path: str | Path = "config.json") -> Config:
             ),
             pending_queue_enabled=bool(p.get("pending_queue_enabled", True)),
             pending_item_ttl_hours=max(1, int(p.get("pending_item_ttl_hours", 24))),
-            pending_candidate_limit=max(
-                1, int(p.get("pending_candidate_limit", 3))
-            ),
-            pending_max_per_source=max(
-                1, int(p.get("pending_max_per_source", 20))
-            ),
+            pending_candidate_limit=max(1, int(p.get("pending_candidate_limit", 3))),
+            pending_max_per_source=max(1, int(p.get("pending_max_per_source", 20))),
             pending_max_total=max(1, int(p.get("pending_max_total", 200))),
             feed_poller_enabled=bool(p.get("feed_poller_enabled", False)),
             feed_poller_interval_seconds=max(

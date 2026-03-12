@@ -58,6 +58,7 @@ class MemoryV2Config:
     hyde_enabled: bool = False
     hyde_timeout_ms: int = 2000
 
+
 @dataclass
 class Config:
     provider: str

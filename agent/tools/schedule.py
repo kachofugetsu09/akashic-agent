@@ -3,6 +3,7 @@
 
 AI 通过这三个工具注册、查询、取消定时任务。
 """
+
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -160,7 +161,11 @@ class ScheduleTool(Tool):
                 display_dt = fire_at
             elif request_time:
                 parsed_rt = datetime.fromisoformat(request_time)
-                display_dt = fire_at.astimezone(parsed_rt.tzinfo) if parsed_rt.tzinfo else fire_at.astimezone()
+                display_dt = (
+                    fire_at.astimezone(parsed_rt.tzinfo)
+                    if parsed_rt.tzinfo
+                    else fire_at.astimezone()
+                )
             else:
                 display_dt = fire_at.astimezone()
             time_str = display_dt.strftime("%Y-%m-%d %H:%M:%S %z")
@@ -236,7 +241,9 @@ class CancelScheduleTool(Tool):
 
         if job_id:
             all_ids = list(self._service._jobs.keys())
-            matches = [jid for jid in all_ids if jid == job_id or jid.startswith(job_id)]
+            matches = [
+                jid for jid in all_ids if jid == job_id or jid.startswith(job_id)
+            ]
             if not matches:
                 return f"未找到 ID 为 {job_id!r} 的任务"
             for jid in matches:

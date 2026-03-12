@@ -84,11 +84,21 @@ class ProactiveLoopTraceMixin:
             memory_dir = self._sessions.workspace / "memory"
             memory_dir.mkdir(parents=True, exist_ok=True)
             trace_file = memory_dir / filename
-            if "trace_type" in payload and "payload" in payload and "subject" in payload:
+            if (
+                "trace_type" in payload
+                and "payload" in payload
+                and "subject" in payload
+            ):
                 line = payload
             else:
-                trace_type = "proactive_config" if "config" in filename else "proactive_rate"
-                source = "proactive.config" if trace_type == "proactive_config" else "proactive.rate"
+                trace_type = (
+                    "proactive_config" if "config" in filename else "proactive_rate"
+                )
+                source = (
+                    "proactive.config"
+                    if trace_type == "proactive_config"
+                    else "proactive.rate"
+                )
                 line = {
                     **build_strategy_trace_envelope(
                         trace_type=trace_type,  # type: ignore[arg-type]

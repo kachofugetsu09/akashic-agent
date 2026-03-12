@@ -1,6 +1,7 @@
 """
 Embedding 客户端，对接 DashScope text-embedding-v3（OpenAI 兼容接口）
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class Embedder:
-    MAX_BATCH = 10      # DashScope 每批上限
+    MAX_BATCH = 10  # DashScope 每批上限
     MAX_TEXT_LEN = 2000
 
     def __init__(

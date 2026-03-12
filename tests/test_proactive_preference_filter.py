@@ -37,7 +37,6 @@ from proactive.ports import DefaultMemoryRetrievalPort, ProactiveRetrievedMemory
 from proactive.state import ProactiveStateStore
 from proactive.components import build_proactive_preference_query
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -95,7 +94,9 @@ class _FakePreferenceEmbedder:
 
     async def embed(self, text: str) -> list[float]:
         raw = (text or "").lower()
-        vector = [float(sum(1 for kw in group if kw in raw)) for group in self._KEYWORDS]
+        vector = [
+            float(sum(1 for kw in group if kw in raw)) for group in self._KEYWORDS
+        ]
         norm = sum(v * v for v in vector) ** 0.5
         if norm <= 0:
             return [0.0 for _ in vector]
@@ -118,7 +119,9 @@ def _build_real_preference_memory_port(tmp_path):
         },
         relative_delta=0.2,
     )
-    return DefaultMemoryPort(MemoryStore(tmp_path), memorizer=memorizer, retriever=retriever)
+    return DefaultMemoryPort(
+        MemoryStore(tmp_path), memorizer=memorizer, retriever=retriever
+    )
 
 
 def _sense_with_item(item: FeedItem):
@@ -133,7 +136,12 @@ def _sense_with_item(item: FeedItem):
             return []
 
         def compute_interruptibility(self, **kw):
-            return 1.0, {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0, "random_delta": 0.0}
+            return 1.0, {
+                "f_reply": 1.0,
+                "f_activity": 1.0,
+                "f_fatigue": 1.0,
+                "random_delta": 0.0,
+            }
 
         async def fetch_items(self, n):
             return [item]
@@ -171,12 +179,12 @@ def test_preference_query_includes_item_source_name():
     """偏好查询字符串中应包含 item 的 source_name 和标题关键词。"""
     items = [_navi_item()]
     query = build_proactive_preference_query(items=items, max_items=3)
-    assert "HLTV" in query or "hltv" in query.lower(), (
-        f"偏好查询未包含来源名称 HLTV: {query!r}"
-    )
-    assert "NAVI" in query or "navi" in query.lower(), (
-        f"偏好查询未包含内容关键词 NAVI: {query!r}"
-    )
+    assert (
+        "HLTV" in query or "hltv" in query.lower()
+    ), f"偏好查询未包含来源名称 HLTV: {query!r}"
+    assert (
+        "NAVI" in query or "navi" in query.lower()
+    ), f"偏好查询未包含内容关键词 NAVI: {query!r}"
 
 
 def test_preference_query_includes_multiple_sources():
@@ -184,21 +192,29 @@ def test_preference_query_includes_multiple_sources():
     items = [_navi_item(), _falcons_item()]
     query = build_proactive_preference_query(items=items, max_items=3)
     query_lower = query.lower()
-    assert "hltv" in query_lower or "HLTV" in query, (
-        f"偏好查询未包含来源 HLTV: {query!r}"
-    )
-    assert "falcons" in query_lower or "navi" in query_lower, (
-        f"偏好查询未包含任何 item 关键词: {query!r}"
-    )
+    assert (
+        "hltv" in query_lower or "HLTV" in query
+    ), f"偏好查询未包含来源 HLTV: {query!r}"
+    assert (
+        "falcons" in query_lower or "navi" in query_lower
+    ), f"偏好查询未包含任何 item 关键词: {query!r}"
 
 
 def test_preference_query_contains_preference_signal_words():
     """偏好查询应包含"偏好/关注/兴趣/不喜欢"等检索信号词。"""
     query = build_proactive_preference_query(items=[_navi_item()], max_items=3)
-    preference_words = ["偏好", "兴趣", "关注", "喜欢", "不关心", "preference", "interest"]
-    assert any(w in query for w in preference_words), (
-        f"偏好查询中缺少偏好信号词: {query!r}"
-    )
+    preference_words = [
+        "偏好",
+        "兴趣",
+        "关注",
+        "喜欢",
+        "不关心",
+        "preference",
+        "interest",
+    ]
+    assert any(
+        w in query for w in preference_words
+    ), f"偏好查询中缺少偏好信号词: {query!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +225,12 @@ def test_preference_query_contains_preference_signal_words():
 def test_proactive_retrieved_memory_has_preference_block():
     """ProactiveRetrievedMemory 应有独立的 preference_block 字段，默认为空字符串。"""
     result = ProactiveRetrievedMemory()
-    assert hasattr(result, "preference_block"), (
-        "ProactiveRetrievedMemory 缺少 preference_block 字段"
-    )
-    assert result.preference_block == "", (
-        f"preference_block 默认值应为空字符串，实际: {result.preference_block!r}"
-    )
+    assert hasattr(
+        result, "preference_block"
+    ), "ProactiveRetrievedMemory 缺少 preference_block 字段"
+    assert (
+        result.preference_block == ""
+    ), f"preference_block 默认值应为空字符串，实际: {result.preference_block!r}"
 
 
 def test_proactive_retrieved_memory_empty_has_preference_block():
@@ -278,9 +294,9 @@ async def test_memory_port_sends_preference_specific_query():
     assert pref_calls, "未发起 preference 专项查询"
     # 查询应包含 item 来源相关信息
     pref_query = pref_calls[0]["query"].lower()
-    assert "hltv" in pref_query or "navi" in pref_query, (
-        f"偏好查询未包含 item 来源信息: {pref_query!r}"
-    )
+    assert (
+        "hltv" in pref_query or "navi" in pref_query
+    ), f"偏好查询未包含 item 来源信息: {pref_query!r}"
 
 
 @pytest.mark.asyncio
@@ -323,12 +339,10 @@ async def test_memory_port_populates_preference_block():
         is_crisis=False,
     )
 
-    assert result.preference_block, (
-        "偏好 RAG 有返回但 preference_block 为空"
-    )
-    assert "Falcons" in result.preference_block or "偏好" in result.preference_block, (
-        f"preference_block 内容不符预期: {result.preference_block!r}"
-    )
+    assert result.preference_block, "偏好 RAG 有返回但 preference_block 为空"
+    assert (
+        "Falcons" in result.preference_block or "偏好" in result.preference_block
+    ), f"preference_block 内容不符预期: {result.preference_block!r}"
 
 
 @pytest.mark.asyncio
@@ -361,9 +375,9 @@ async def test_memory_port_preference_block_empty_when_no_preference_hits():
         is_crisis=False,
     )
 
-    assert result.preference_block == "", (
-        f"无偏好命中时 preference_block 应为空: {result.preference_block!r}"
-    )
+    assert (
+        result.preference_block == ""
+    ), f"无偏好命中时 preference_block 应为空: {result.preference_block!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +498,7 @@ async def test_engine_does_not_send_when_interest_match_below_veto_threshold(tmp
     cfg = ProactiveConfig(
         enabled=True,
         feature_scoring_enabled=True,
-        feature_send_threshold=0.0,   # 总分门槛放行
+        feature_send_threshold=0.0,  # 总分门槛放行
         score_llm_threshold=0.0,
         default_channel="telegram",
         default_chat_id="123",
@@ -506,9 +520,9 @@ async def test_engine_does_not_send_when_interest_match_below_veto_threshold(tmp
 
     await engine.tick()
 
-    assert not send_calls, (
-        f"interest_match=0.05 低于否决阈值 0.15，不应发送，但实际发送了: {send_calls}"
-    )
+    assert (
+        not send_calls
+    ), f"interest_match=0.05 低于否决阈值 0.15，不应发送，但实际发送了: {send_calls}"
 
 
 @pytest.mark.asyncio
@@ -546,9 +560,7 @@ async def test_engine_sends_when_interest_match_above_veto_threshold(tmp_path):
 
     await engine.tick()
 
-    assert send_calls, (
-        "interest_match=0.90 高于否决阈值，应发送消息，但实际未发送"
-    )
+    assert send_calls, "interest_match=0.90 高于否决阈值，应发送消息，但实际未发送"
 
 
 @pytest.mark.asyncio
@@ -569,7 +581,7 @@ async def test_engine_sends_when_preference_veto_disabled(tmp_path):
         score_llm_threshold=0.0,
         default_channel="telegram",
         default_chat_id="123",
-        preference_veto_enabled=False,   # 关闭偏好否决
+        preference_veto_enabled=False,  # 关闭偏好否决
         preference_interest_veto_threshold=0.15,
     )
     state = ProactiveStateStore(tmp_path / "state.json")
@@ -586,9 +598,9 @@ async def test_engine_sends_when_preference_veto_disabled(tmp_path):
 
     await engine.tick()
 
-    assert send_calls, (
-        "preference_veto_enabled=False 时不应硬否决，但 interest_match=0.05 时未发送"
-    )
+    assert (
+        send_calls
+    ), "preference_veto_enabled=False 时不应硬否决，但 interest_match=0.05 时未发送"
 
 
 # ---------------------------------------------------------------------------
@@ -663,12 +675,12 @@ async def test_engine_passes_preference_block_to_score_features(tmp_path):
 
     await engine.tick()
 
-    assert captured.get("preference_block") != "MISSING", (
-        "score_features 未收到 preference_block 参数"
-    )
-    assert "Falcons" in captured.get("preference_block", ""), (
-        f"preference_block 内容不正确: {captured.get('preference_block')!r}"
-    )
+    assert (
+        captured.get("preference_block") != "MISSING"
+    ), "score_features 未收到 preference_block 参数"
+    assert "Falcons" in captured.get(
+        "preference_block", ""
+    ), f"preference_block 内容不正确: {captured.get('preference_block')!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -743,9 +755,7 @@ async def test_engine_normal_flow_when_preference_block_empty(tmp_path):
 
     await engine.tick()
 
-    assert send_calls, (
-        "无偏好限制 + high interest_match，应正常发送，但实际未发送"
-    )
+    assert send_calls, "无偏好限制 + high interest_match，应正常发送，但实际未发送"
 
 
 # ---------------------------------------------------------------------------
@@ -790,9 +800,7 @@ async def test_e2e_preference_rag_populates_block_for_disliked_source():
         def format_injection_with_ids(self, items):
             if not items:
                 return "", []
-            summaries = "\n".join(
-                f"- {i['summary']}" for i in items if "summary" in i
-            )
+            summaries = "\n".join(f"- {i['summary']}" for i in items if "summary" in i)
             ids = [str(i.get("id")) for i in items if i.get("id")]
             return f"## 用户偏好\n{summaries}", ids
 
@@ -814,22 +822,21 @@ async def test_e2e_preference_rag_populates_block_for_disliked_source():
     )
 
     # 偏好专项查询必须发生
-    assert preference_retrieval_queries, (
-        "未发起 preference 类型 RAG 查询，preference_block 无法被填充"
-    )
+    assert (
+        preference_retrieval_queries
+    ), "未发起 preference 类型 RAG 查询，preference_block 无法被填充"
     # 查询应包含 item 来源相关词
     assert any(
-        "hltv" in q.lower() or "navi" in q.lower()
-        for q in preference_retrieval_queries
+        "hltv" in q.lower() or "navi" in q.lower() for q in preference_retrieval_queries
     ), f"偏好查询未包含 item 来源信息: {preference_retrieval_queries}"
 
     # preference_block 必须被填充
-    assert result.preference_block, (
-        "向量库返回了负偏好命中，但 preference_block 未被填充"
-    )
-    assert "Falcons" in result.preference_block or "NiKo" in result.preference_block, (
-        f"preference_block 未包含偏好内容: {result.preference_block!r}"
-    )
+    assert (
+        result.preference_block
+    ), "向量库返回了负偏好命中，但 preference_block 未被填充"
+    assert (
+        "Falcons" in result.preference_block or "NiKo" in result.preference_block
+    ), f"preference_block 未包含偏好内容: {result.preference_block!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -904,9 +911,9 @@ async def test_compose_message_receives_preference_block(tmp_path):
 
     await engine.tick()
 
-    assert "preference_block" in compose_kwargs_captured, (
-        "compose_message 未收到 preference_block 参数"
-    )
+    assert (
+        "preference_block" in compose_kwargs_captured
+    ), "compose_message 未收到 preference_block 参数"
     assert "Falcons" in compose_kwargs_captured.get("preference_block", ""), (
         f"compose_message 收到的 preference_block 内容不正确: "
         f"{compose_kwargs_captured.get('preference_block')!r}"
@@ -924,35 +931,40 @@ def test_config_loader_parses_preference_fields(tmp_path):
     from agent.config import load_config
 
     cfg_file = tmp_path / "config.json"
-    cfg_file.write_text(json.dumps({
-        "provider": "anthropic",
-        "model": "claude-test",
-        "api_key": "test",
-        "proactive": {
-            "enabled": False,
-            "default_chat_id": "123",
-            "preference_veto_enabled": False,
-            "preference_interest_veto_threshold": 0.25,
-            "preference_retrieval_enabled": False,
-            "preference_top_k": 8,
-        },
-    }), encoding="utf-8")
+    cfg_file.write_text(
+        json.dumps(
+            {
+                "provider": "anthropic",
+                "model": "claude-test",
+                "api_key": "test",
+                "proactive": {
+                    "enabled": False,
+                    "default_chat_id": "123",
+                    "preference_veto_enabled": False,
+                    "preference_interest_veto_threshold": 0.25,
+                    "preference_retrieval_enabled": False,
+                    "preference_top_k": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     cfg = load_config(str(cfg_file))
     p = cfg.proactive
 
-    assert p.preference_veto_enabled is False, (
-        f"preference_veto_enabled 未被正确加载: {p.preference_veto_enabled!r}"
-    )
-    assert p.preference_interest_veto_threshold == 0.25, (
-        f"preference_interest_veto_threshold 未被正确加载: {p.preference_interest_veto_threshold!r}"
-    )
-    assert p.preference_retrieval_enabled is False, (
-        f"preference_retrieval_enabled 未被正确加载: {p.preference_retrieval_enabled!r}"
-    )
-    assert p.preference_top_k == 8, (
-        f"preference_top_k 未被正确加载: {p.preference_top_k!r}"
-    )
+    assert (
+        p.preference_veto_enabled is False
+    ), f"preference_veto_enabled 未被正确加载: {p.preference_veto_enabled!r}"
+    assert (
+        p.preference_interest_veto_threshold == 0.25
+    ), f"preference_interest_veto_threshold 未被正确加载: {p.preference_interest_veto_threshold!r}"
+    assert (
+        p.preference_retrieval_enabled is False
+    ), f"preference_retrieval_enabled 未被正确加载: {p.preference_retrieval_enabled!r}"
+    assert (
+        p.preference_top_k == 8
+    ), f"preference_top_k 未被正确加载: {p.preference_top_k!r}"
 
 
 @pytest.mark.asyncio

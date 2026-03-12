@@ -136,7 +136,9 @@ def _make_feature_decide(captured: dict[str, object]):
 
 
 class _Decide:
-    def __init__(self, evidence_ids: list[str], *, should_send: bool, score: float = 0.9):
+    def __init__(
+        self, evidence_ids: list[str], *, should_send: bool, score: float = 0.9
+    ):
         self._evidence_ids = evidence_ids
         self.reflect = AsyncMock(return_value=self._decision(should_send, score))
         self.score_features = AsyncMock(return_value=None)
@@ -401,7 +403,9 @@ async def test_feature_mode_groups_same_topic_items_into_one_message(tmp_path):
     assert "Banquet for Fools demo is out now" in send_message
     assert len(send_meta.evidence_item_ids) == 2
     assert len(send_meta.source_refs) == 2
-    assert all("Banquet for Fools" in (ref.title or "") for ref in send_meta.source_refs)
+    assert all(
+        "Banquet for Fools" in (ref.title or "") for ref in send_meta.source_refs
+    )
 
 
 @pytest.mark.asyncio
@@ -446,9 +450,13 @@ async def test_feature_mode_prefers_larger_same_topic_cluster(tmp_path):
     state = ProactiveStateStore(tmp_path / "state.json")
     items = [
         _item("Falcons roster update", "https://example.com/falcons-1", minutes_ago=5),
-        _item("Falcons map pool changes", "https://example.com/falcons-2", minutes_ago=4),
+        _item(
+            "Falcons map pool changes", "https://example.com/falcons-2", minutes_ago=4
+        ),
         _item("Steam sale starts", "https://example.com/steam-1", minutes_ago=3),
-        _item("Steam sale best RPG picks", "https://example.com/steam-2", minutes_ago=2),
+        _item(
+            "Steam sale best RPG picks", "https://example.com/steam-2", minutes_ago=2
+        ),
         _item("Steam sale hidden gems", "https://example.com/steam-3", minutes_ago=1),
     ]
     entries = [(compute_source_key(item), compute_item_id(item)) for item in items]
@@ -490,9 +498,13 @@ async def test_real_composer_prompt_contains_only_selected_topic_cluster(tmp_pat
     state = ProactiveStateStore(tmp_path / "state.json")
     items = [
         _item("Falcons roster update", "https://example.com/falcons-1", minutes_ago=5),
-        _item("Falcons map pool changes", "https://example.com/falcons-2", minutes_ago=4),
+        _item(
+            "Falcons map pool changes", "https://example.com/falcons-2", minutes_ago=4
+        ),
         _item("Steam sale starts", "https://example.com/steam-1", minutes_ago=3),
-        _item("Steam sale best RPG picks", "https://example.com/steam-2", minutes_ago=2),
+        _item(
+            "Steam sale best RPG picks", "https://example.com/steam-2", minutes_ago=2
+        ),
         _item("Steam sale hidden gems", "https://example.com/steam-3", minutes_ago=1),
     ]
     entries = [(compute_source_key(item), compute_item_id(item)) for item in items]

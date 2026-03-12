@@ -21,8 +21,8 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry, _expand_query
 from agent.tools.tool_search import ToolSearchTool
 
-
 # ── 辅助工具桩 ────────────────────────────────────────────────────────────────
+
 
 class _StubTool(Tool):
     def __init__(self, name: str, description: str, params: dict | None = None) -> None:
@@ -125,6 +125,7 @@ def _make_registry() -> ToolRegistry:
 
 # ── _expand_query 单元测试 ────────────────────────────────────────────────────
 
+
 class TestExpandQuery:
     def test_phrase_expansion(self):
         result = _expand_query("查看目录")
@@ -156,6 +157,7 @@ class TestExpandQuery:
 
 
 # ── ToolRegistry.search 集成测试 ──────────────────────────────────────────────
+
 
 class TestRegistrySearch:
     @pytest.fixture
@@ -237,6 +239,7 @@ class TestRegistrySearch:
 
 # ── MCP 工具可被搜索 ──────────────────────────────────────────────────────────
 
+
 class TestMcpToolSearch:
     def test_mcp_tool_discoverable_by_capability(self):
         reg = ToolRegistry()
@@ -250,6 +253,7 @@ class TestMcpToolSearch:
         wrapper = McpToolWrapper(client, info)
 
         from agent.mcp.registry import _mcp_search_keywords
+
         kws = _mcp_search_keywords(info, "calendar")
 
         reg.register(
@@ -268,22 +272,27 @@ class TestMcpToolSearch:
 
 # ── ToolSearchTool 执行测试 ───────────────────────────────────────────────────
 
+
 class TestToolSearchTool:
     def test_returns_json_with_matched(self):
         reg = _make_registry()
         tool = ToolSearchTool(reg)
         result = asyncio.run(tool.execute(query="定时任务"))
         import json
+
         data = json.loads(result)
         assert "matched" in data
         assert any(r["name"] == "schedule" for r in data["matched"])
 
     def test_no_match_returns_tip(self):
         reg = ToolRegistry()
-        reg.register(ToolSearchTool(reg), always_on=True, tags=["meta"], risk="read-only")
+        reg.register(
+            ToolSearchTool(reg), always_on=True, tags=["meta"], risk="read-only"
+        )
         tool = ToolSearchTool(reg)
         result = asyncio.run(tool.execute(query="xxxxxxxxxxxxxxx"))
         import json
+
         data = json.loads(result)
         assert data["matched"] == []
         assert "tip" in data
@@ -293,6 +302,7 @@ class TestToolSearchTool:
         tool = ToolSearchTool(reg)
         result = asyncio.run(tool.execute(query="文件", top_k=2))
         import json
+
         data = json.loads(result)
         assert len(data["matched"]) <= 2
 
@@ -301,5 +311,6 @@ class TestToolSearchTool:
         tool = ToolSearchTool(reg)
         result = asyncio.run(tool.execute(query="文件", top_k=999))
         import json
+
         data = json.loads(result)
         assert len(data["matched"]) <= 10

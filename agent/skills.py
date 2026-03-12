@@ -38,19 +38,37 @@ class SkillsLoader:
                 if skill_dir.is_dir():
                     skill_file = skill_dir / "SKILL.md"
                     if skill_file.exists():
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "workspace"})
+                        skills.append(
+                            {
+                                "name": skill_dir.name,
+                                "path": str(skill_file),
+                                "source": "workspace",
+                            }
+                        )
 
         # 再扫描内置技能，同名的已被 workspace 覆盖则跳过
         if self.builtin_skills and self.builtin_skills.exists():
             for skill_dir in self.builtin_skills.iterdir():
                 if skill_dir.is_dir():
                     skill_file = skill_dir / "SKILL.md"
-                    if skill_file.exists() and not any(s["name"] == skill_dir.name for s in skills):
-                        skills.append({"name": skill_dir.name, "path": str(skill_file), "source": "builtin"})
+                    if skill_file.exists() and not any(
+                        s["name"] == skill_dir.name for s in skills
+                    ):
+                        skills.append(
+                            {
+                                "name": skill_dir.name,
+                                "path": str(skill_file),
+                                "source": "builtin",
+                            }
+                        )
 
         # 过滤依赖不满足的技能
         if filter_unavailable:
-            return [s for s in skills if self._check_requirements(self._get_skill_config(s["name"]))]
+            return [
+                s
+                for s in skills
+                if self._check_requirements(self._get_skill_config(s["name"]))
+            ]
         return skills
 
     def _check_requirements(self, skill_config: dict) -> bool:
@@ -115,7 +133,7 @@ class SkillsLoader:
         if content.startswith("---"):
             match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
             if match:
-                return content[match.end():].strip()
+                return content[match.end() :].strip()
         return content
 
     def get_skill_metadata(self, name: str) -> dict | None:
@@ -139,7 +157,7 @@ class SkillsLoader:
                 for line in match.group(1).split("\n"):
                     if ":" in line:
                         key, value = line.split(":", 1)
-                        metadata[key.strip()] = value.strip().strip('"\'')
+                        metadata[key.strip()] = value.strip().strip("\"'")
                 return metadata
 
         return None
@@ -173,7 +191,7 @@ class SkillsLoader:
                     return data[key]
             # 兼容：直接返回整个对象（旧格式）
             return data
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return {}
 
     def get_always_skills(self) -> list[str]:
@@ -215,7 +233,9 @@ class SkillsLoader:
             available = self._check_requirements(skill_config)
 
             source = s["source"]  # "workspace" or "builtin"
-            lines.append(f"  <skill available=\"{str(available).lower()}\" source=\"{source}\">")
+            lines.append(
+                f'  <skill available="{str(available).lower()}" source="{source}">'
+            )
             lines.append(f"    <name>{name}</name>")
             lines.append(f"    <description>{desc}</description>")
             lines.append(f"    <location>{path}</location>")

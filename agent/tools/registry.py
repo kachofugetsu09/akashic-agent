@@ -134,6 +134,7 @@ def _expand_query(query: str) -> set[str]:
 
 # ── ToolMeta ──────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ToolMeta:
     tags: list[str] = field(default_factory=list)
@@ -143,6 +144,7 @@ class ToolMeta:
 
 
 # ── ToolRegistry ──────────────────────────────────────────────────────────────
+
 
 class ToolRegistry:
     """管理所有可用工具"""
@@ -189,19 +191,11 @@ class ToolRegistry:
         """
         if names is None:
             return [t.to_schema() for t in self._tools.values()]
-        return [
-            t.to_schema()
-            for name, t in self._tools.items()
-            if name in names
-        ]
+        return [t.to_schema() for name, t in self._tools.items() if name in names]
 
     def get_always_on_names(self) -> set[str]:
         """返回标记为 always_on 的工具名称集合。"""
-        return {
-            name
-            for name, meta in self._metadata.items()
-            if meta.always_on
-        }
+        return {name for name, meta in self._metadata.items() if meta.always_on}
 
     def search(
         self,
@@ -227,15 +221,17 @@ class ToolRegistry:
             if score > 0:
                 params = tool.parameters or {}
                 key_params = list((params.get("properties") or {}).keys())[:5]
-                results.append({
-                    "name": name,
-                    "summary": tool.description[:120],
-                    "why_matched": matched_reasons,
-                    "key_params": key_params,
-                    "tags": meta.tags,
-                    "risk": meta.risk,
-                    "_score": score,
-                })
+                results.append(
+                    {
+                        "name": name,
+                        "summary": tool.description[:120],
+                        "why_matched": matched_reasons,
+                        "key_params": key_params,
+                        "tags": meta.tags,
+                        "risk": meta.risk,
+                        "_score": score,
+                    }
+                )
 
         results.sort(key=lambda x: x["_score"], reverse=True)
         for r in results:

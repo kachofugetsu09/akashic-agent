@@ -1,6 +1,7 @@
 """
 SOP 增量重索引：SOP 文件写入后自动更新 memory2 DB
 """
+
 from __future__ import annotations
 
 import logging

@@ -94,7 +94,9 @@ class RSSFeedSource(FeedSource):
                 if parse_retried or attempt >= 2:
                     break
                 parse_retried = True
-                delay = _FETCH_RETRY_DELAYS_S[min(attempt - 1, len(_FETCH_RETRY_DELAYS_S) - 1)]
+                delay = _FETCH_RETRY_DELAYS_S[
+                    min(attempt - 1, len(_FETCH_RETRY_DELAYS_S) - 1)
+                ]
                 logger.warning(
                     "RSS 解析失败 [%s] attempt=%d/2 err=%r，%.1fs 后重试一次",
                     self._sub.name,

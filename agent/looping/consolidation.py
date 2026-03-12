@@ -250,7 +250,9 @@ class AgentLoopConsolidationMixin:
             # 兼容新格式 history_entries（列表）和旧格式 history_entry（字符串）
             raw_entries = result.get("history_entries")
             if isinstance(raw_entries, list):
-                history_entries = [e for e in raw_entries if isinstance(e, str) and e.strip()]
+                history_entries = [
+                    e for e in raw_entries if isinstance(e, str) and e.strip()
+                ]
             elif result.get("history_entry"):
                 history_entries = [result["history_entry"]]
             else:
@@ -282,7 +284,9 @@ class AgentLoopConsolidationMixin:
             scope_channel = getattr(session, "_channel", "")
             scope_chat_id = getattr(session, "_chat_id", "")
             for i, entry in enumerate(history_entries):
-                entry_ref = f"{source_ref}#{i}" if len(history_entries) > 1 else source_ref
+                entry_ref = (
+                    f"{source_ref}#{i}" if len(history_entries) > 1 else source_ref
+                )
                 asyncio.create_task(
                     self._memory_port.save_from_consolidation(
                         history_entry=entry,

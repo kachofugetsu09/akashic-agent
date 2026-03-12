@@ -384,10 +384,15 @@ class MemoryStore2:
                 hit = bool(token_set & tag_token_set)
 
             if hit:
-                matched.append({
-                    "id": row_id, "memory_type": "procedure",
-                    "summary": summary, "extra_json": extra, "score": 1.0,
-                })
+                matched.append(
+                    {
+                        "id": row_id,
+                        "memory_type": "procedure",
+                        "summary": summary,
+                        "extra_json": extra,
+                        "score": 1.0,
+                    }
+                )
 
         return matched
 

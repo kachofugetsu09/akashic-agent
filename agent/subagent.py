@@ -75,6 +75,8 @@ _FORCED_FINAL_SUMMARY_FALLBACK = (
     "这次后台任务已先停在当前进度。我已经完成了一部分关键步骤，"
     "但还有剩余工作未收束；下一次可从当前检查点继续推进。"
 )
+
+
 def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """将旧轮次的 tool result 替换为占位符，防止长对话累积撑爆上下文。
 
@@ -292,8 +294,7 @@ class SubAgent:
     ) -> str:
         prompt = (
             f"[结束原因] {reason}\n"
-            f"[已执行任务轮次] {iteration}\n\n"
-            + _FORCED_FINAL_SUMMARY_PROMPT
+            f"[已执行任务轮次] {iteration}\n\n" + _FORCED_FINAL_SUMMARY_PROMPT
         )
         try:
             resp = await self._provider.chat(

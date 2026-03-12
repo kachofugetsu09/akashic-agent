@@ -15,7 +15,9 @@ def _item(title: str, content: str) -> FeedItem:
 
 
 def test_interest_filter_prefers_memory_matched_items():
-    cfg = InterestFilterConfig(enabled=True, min_score=0.10, top_k=2, exploration_ratio=0.0)
+    cfg = InterestFilterConfig(
+        enabled=True, min_score=0.10, top_k=2, exploration_ratio=0.0
+    )
     memory = "只关心 PC 游戏、Elden Ring、Path of Exile。"
     items = [
         _item("Elden Ring DLC", "new trailer for pc"),
@@ -32,7 +34,9 @@ def test_interest_filter_prefers_memory_matched_items():
 
 
 def test_interest_filter_keeps_exploration_samples():
-    cfg = InterestFilterConfig(enabled=True, min_score=0.50, top_k=3, exploration_ratio=0.34)
+    cfg = InterestFilterConfig(
+        enabled=True, min_score=0.50, top_k=3, exploration_ratio=0.34
+    )
     memory = "只关心魂类、PC游戏。"
     items = [
         _item("souls game", "pc souls"),

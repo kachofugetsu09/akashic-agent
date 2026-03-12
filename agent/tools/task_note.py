@@ -87,7 +87,9 @@ class TaskNoteTool(Tool):
         value = str(kwargs.get("value", ""))
 
         if not namespace or not key:
-            return json.dumps({"error": "namespace 和 key 不能为空"}, ensure_ascii=False)
+            return json.dumps(
+                {"error": "namespace 和 key 不能为空"}, ensure_ascii=False
+            )
 
         now = datetime.now(timezone.utc).isoformat()
         try:
@@ -99,7 +101,9 @@ class TaskNoteTool(Tool):
             )
             conn.commit()
             logger.debug("[task_note] 写入 namespace=%s key=%s", namespace, key)
-            return json.dumps({"ok": True, "namespace": namespace, "key": key}, ensure_ascii=False)
+            return json.dumps(
+                {"ok": True, "namespace": namespace, "key": key}, ensure_ascii=False
+            )
         except Exception as e:
             logger.warning("[task_note] 写入失败: %s", e)
             return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -167,7 +171,9 @@ class TaskRecallTool(Tool):
                 if not rows:
                     return json.dumps({"notes": [], "count": 0}, ensure_ascii=False)
                 notes = [{"key": r[0], "value": r[1], "updated_at": r[2]} for r in rows]
-                return json.dumps({"notes": notes, "count": len(notes)}, ensure_ascii=False)
+                return json.dumps(
+                    {"notes": notes, "count": len(notes)}, ensure_ascii=False
+                )
         except Exception as e:
             logger.warning("[task_recall] 查询失败: %s", e)
             return json.dumps({"error": str(e)}, ensure_ascii=False)

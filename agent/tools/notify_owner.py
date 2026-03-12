@@ -35,9 +35,7 @@ class NotifyOwnerTool(Tool):
         "required": ["message"],
     }
 
-    def __init__(
-        self, push_tool: MessagePushTool, channel: str, chat_id: str
-    ) -> None:
+    def __init__(self, push_tool: MessagePushTool, channel: str, chat_id: str) -> None:
         self._push = push_tool
         self._channel = channel
         self._chat_id = chat_id
