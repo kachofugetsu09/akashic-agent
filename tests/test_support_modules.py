@@ -22,10 +22,6 @@ from agent.tools.web_search import WebSearchTool
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from core.common import timekit
-from feeds.base import FeedItem, FeedSource, FeedSubscription
-from feeds.registry import FeedRegistry
-from feeds.services.subscription_service import SubscriptionService
-from feeds.store import FeedStore
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
 from proactive.loop_trigger import ProactiveLoopTriggerMixin
 from proactive.schedule import ScheduleStore
@@ -55,35 +51,6 @@ class _DummyTool(Tool):
 
     async def execute(self, **kwargs) -> str:
         return json.dumps(kwargs, ensure_ascii=False)
-
-
-class _FeedSourceStub(FeedSource):
-    def __init__(self, sub: FeedSubscription, should_fail: bool = False) -> None:
-        self._sub = sub
-        self._should_fail = should_fail
-
-    @property
-    def name(self) -> str:
-        return self._sub.name
-
-    @property
-    def source_type(self) -> str:
-        return self._sub.type
-
-    async def fetch(self, limit: int = 5) -> list[FeedItem]:
-        if self._should_fail:
-            raise RuntimeError("boom")
-        return [
-            FeedItem(
-                source_name=self._sub.name,
-                source_type=self._sub.type,
-                title=f"{self._sub.name}-{limit}",
-                content="content",
-                url=self._sub.url,
-                author=None,
-                published_at=datetime.now(timezone.utc),
-            )
-        ]
 
 
 @pytest.mark.asyncio
@@ -397,7 +364,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
 
 @pytest.mark.asyncio
-async def test_message_bus_feed_registry_and_subscription_service_cover_flows(
+async def test_message_bus_covers_flows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     bus = MessageBus()
@@ -428,53 +395,6 @@ async def test_message_bus_feed_registry_and_subscription_service_cover_flows(
     assert sent == ["payload"]
     assert bus.inbound_size == 0
     assert bus.outbound_size == 0
-
-    store = FeedStore(tmp_path / "feeds.json")
-    sub1 = FeedSubscription.new(type="rss", name="Alpha", url="https://a")
-    sub2 = FeedSubscription.new(type="rss", name="Beta", url="https://b")
-    store.add(sub1)
-    store.add(sub2)
-
-    registry = FeedRegistry(store)
-    registry.register_source_type("rss", lambda sub: _FeedSourceStub(sub))
-    items = await registry.fetch_all(limit_per_source=2, per_source_limits={sub1.id: 5})
-    assert {item.title for item in items} == {"Alpha-5", "Beta-2"}
-
-    registry = FeedRegistry(store)
-    registry.register_source_type(
-        "rss",
-        lambda sub: _FeedSourceStub(sub, should_fail=sub.name == "Beta"),
-    )
-    items = await registry.fetch_all()
-    assert len(items) == 1
-
-    scorer = MagicMock()
-    scorer.score_new_source = AsyncMock()
-    svc = SubscriptionService(store, source_scorer=scorer)
-
-    scheduled = []
-
-    def fake_ensure_future(coro):
-        scheduled.append(coro)
-        return None
-
-    monkeypatch.setattr("asyncio.ensure_future", fake_ensure_future)
-    assert "错误：name 不能为空" == await svc.subscribe("", "x")
-    assert "错误：url 不能为空" == await svc.subscribe("A", "")
-    assert "已经订阅过该地址" in await svc.subscribe("A", "https://a")
-    ok = await svc.subscribe("Gamma", "https://c", note="备注")
-    assert "已订阅 'Gamma'" in ok
-    assert len(scheduled) == 1
-    await scheduled[0]
-    scorer.score_new_source.assert_awaited()
-    assert "RSS 订阅列表" in svc.list_subscriptions()
-
-    assert "错误：name 不能为空" == await svc.unsubscribe("")
-    assert "没有找到名称包含" in await svc.unsubscribe("nope")
-    scorer.invalidate_source = MagicMock(side_effect=[None, RuntimeError("x")])
-    result = await svc.unsubscribe("a")
-    assert "已取消订阅" in result
-    assert svc.list_subscriptions() == "当前没有订阅任何信息源"
 
 
 @pytest.mark.asyncio

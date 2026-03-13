@@ -15,11 +15,8 @@ from agent.mcp.registry import McpServerRegistry, _mcp_search_keywords
 from agent.provider import ContextLengthError, ContentSafetyError, LLMProvider
 from channels.cli import CLIClient, _print_banner
 from channels.group_filter import DefaultGroupFilter, strip_at_segments
-from feeds.base import FeedItem, FeedSubscription
-from feeds.buffer import FeedBuffer
 from memory2.models import MemoryItem
 from proactive.anyaction import AnyActionGate, QuotaStore
-from proactive.feed_poller import FeedPoller
 from proactive.memory_sampler import sample_memory_chunks, split_memory_chunks
 from trigger_skill_action import DEFAULT_SOCKET, main as trigger_main, trigger
 
@@ -202,7 +199,7 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
 
 
 @pytest.mark.asyncio
-async def test_feed_poller_group_filter_and_cli_paths(
+async def test_group_filter_and_cli_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
     group = SimpleNamespace(group_id="1", allow_from=["42"], require_at=True)
@@ -211,44 +208,6 @@ async def test_feed_poller_group_filter_and_cli_paths(
     assert strip_at_segments("x [CQ:at,qq=10001] y") == "x  y".strip()
     bad_user = SimpleNamespace(user_id="9", raw_message="hi")
     assert await DefaultGroupFilter("10001").should_process(bad_user, group) is False
-
-    registry = AsyncMock()
-    registry.fetch_all = AsyncMock(
-        return_value=[
-            FeedItem("A", "rss", "t", "c", "u", None, datetime.now(timezone.utc))
-        ]
-    )
-    buffer = FeedBuffer(ttl_hours=1, max_per_source=10)
-    cfg = SimpleNamespace(
-        feed_poller_interval_seconds=999,
-        feed_poller_fetch_limit=3,
-        feed_poller_buffer_ttl_hours=1,
-        feed_poller_buffer_max_per_source=10,
-        source_scorer_total_budget=60,
-        source_scorer_min_per_source=2,
-        source_scorer_max_per_source=20,
-    )
-    scorer = AsyncMock()
-    scorer.get_limits = AsyncMock(return_value={"1": 5})
-    feed_store = MagicMock()
-    feed_store.list_enabled.return_value = [FeedSubscription.new(type="rss", name="A")]
-    memory = MagicMock()
-    memory.read_long_term.return_value = "memory"
-    poller = FeedPoller(
-        registry,
-        buffer,
-        cfg,
-        source_scorer=scorer,
-        feed_store=feed_store,
-        memory_provider=memory,
-    )
-    assert await poller._get_per_source_limits() == {"1": 5}
-    assert await poller._poll_once() == 1
-    scorer.get_limits.side_effect = RuntimeError("x")
-    assert await poller._get_per_source_limits() is None
-    registry.fetch_all.side_effect = RuntimeError("boom")
-    assert await poller._poll_once() == 0
-    poller.stop()
 
     reader = MagicMock()
     reader.readline = AsyncMock(side_effect=[b'{"content":"hi"}\n', b""])
@@ -393,9 +352,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     tasks, loop = build_proactive_runtime(
         cfg,
         tmp_path,
-        feed_registry=MagicMock(),
-        feed_store=MagicMock(),
-        feed_manage_tool=MagicMock(),
         session_manager=MagicMock(),
         provider=MagicMock(),
         light_provider=None,
@@ -409,17 +365,11 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     assert build_memory_optimizer_task(cfg, provider=MagicMock(), memory_store=MagicMock()) == []
 
     proactive_loop = SimpleNamespace(
-        _source_scorer=MagicMock(),
-        feed_buffer=MagicMock(),
         run=lambda: "loop-task",
     )
     monkeypatch.setattr("bootstrap.proactive.ProactiveLoop", lambda **kwargs: proactive_loop)
     monkeypatch.setattr("bootstrap.proactive.ProactiveStateStore", lambda path: path)
     monkeypatch.setattr("bootstrap.proactive.ScheduleStore", lambda path: path)
-    monkeypatch.setattr(
-        "bootstrap.proactive.FeedPoller",
-        lambda *args, **kwargs: SimpleNamespace(run=lambda: "poller-task"),
-    )
     monkeypatch.setattr(
         "bootstrap.proactive.MemoryOptimizer",
         lambda **kwargs: SimpleNamespace(**kwargs),
@@ -438,11 +388,9 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
             enabled=True,
             skill_actions_enabled=True,
             skill_actions_path="",
-            feed_poller_enabled=True,
             fitbit_enabled=True,
             fitbit_monitor_path="/tmp/fitbit.json",
             fitbit_url="http://fitbit",
-            feed_poller_interval_seconds=10,
         ),
         memory_optimizer_enabled=True,
         memory_optimizer_interval_seconds=7200,
@@ -450,13 +398,9 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         max_tokens=128,
         light_model="lm",
     )
-    feed_manage = MagicMock()
     tasks, loop = build_proactive_runtime(
         cfg,
         tmp_path,
-        feed_registry=MagicMock(),
-        feed_store=MagicMock(),
-        feed_manage_tool=feed_manage,
         session_manager=MagicMock(),
         provider=MagicMock(),
         light_provider=MagicMock(),
@@ -465,10 +409,9 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         presence=MagicMock(),
         agent_loop=SimpleNamespace(processing_state=SimpleNamespace(is_busy=lambda: False)),
     )
-    assert tasks == ["loop-task", "poller-task", ("fitbit-task", "/tmp/fitbit.json", "http://fitbit")]
+    assert tasks == ["loop-task", ("fitbit-task", "/tmp/fitbit.json", "http://fitbit")]
     assert loop is proactive_loop
     assert cfg.proactive.skill_actions_path.endswith("skill_actions.json")
-    feed_manage.set_scorer.assert_called_once()
     mem_tasks = build_memory_optimizer_task(
         cfg,
         provider=MagicMock(),

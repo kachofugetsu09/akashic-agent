@@ -39,6 +39,11 @@ def _mcp_search_keywords(info: McpToolInfo, server_name: str) -> list[str]:
         if kw not in seen:
             seen.add(kw)
             result.append(kw)
+    if server_name == "feed":
+        if info.name == "feed_manage":
+            result.extend(["rss订阅", "添加订阅", "删除订阅", "取消订阅", "订阅管理"])
+        if info.name == "feed_query":
+            result.extend(["查询订阅", "最近新闻", "最新资讯", "这个源有什么新闻", "rss查询"])
     return result
 
 
@@ -68,9 +73,7 @@ class McpServerRegistry:
         """启动时读取持久化配置，重连所有 server。"""
         for name, cfg in self._load_raw_configs().items():
             try:
-                await self._connect(
-                    name, cfg["command"], cfg.get("env"), cfg.get("cwd")
-                )
+                await self._connect(name, cfg["command"], cfg.get("env"), cfg.get("cwd"))
             except Exception as e:
                 logger.error("[mcp] 重连 %r 失败: %s", name, e)
 
@@ -146,7 +149,11 @@ class McpServerRegistry:
 
     def _save(self) -> None:
         servers = {
-            name: {"command": client.command, "env": client.env, "cwd": client.cwd}
+            name: {
+                "command": client.command,
+                "env": client.env,
+                "cwd": client.cwd,
+            }
             for name, client in self._clients.items()
         }
         try:

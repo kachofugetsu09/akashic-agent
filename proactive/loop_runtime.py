@@ -6,7 +6,6 @@ import random as _random_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from feeds.buffer import FeedBuffer
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.components import (
     ProactiveFeatureScorer,
@@ -35,14 +34,12 @@ from proactive.ports import (
     DefaultMemoryRetrievalPort,
     DefaultSensePort,
 )
-from proactive.source_scorer import SourceScorer
 from proactive.state import ProactiveStateStore
 
 if TYPE_CHECKING:
     from agent.provider import LLMProvider
     from agent.tools.message_push import MessagePushTool
     from core.memory.port import MemoryPort
-    from feeds.registry import FeedRegistry
     from proactive.config import ProactiveConfig
     from proactive.presence import PresenceStore
     from proactive.schedule import ScheduleStore
@@ -56,7 +53,6 @@ class ProactiveLoopRuntimeMixin:
         self._running = False
         self._manual_trigger_event = asyncio.Event()
         self._manual_trigger_lock = asyncio.Lock()
-        self.feed_buffer = self._build_feed_buffer(config)
 
     def _build_state_store(
         self,
@@ -66,43 +62,6 @@ class ProactiveLoopRuntimeMixin:
         if state_store is not None:
             return state_store
         return ProactiveStateStore(state_path or Path("proactive_state.json"))
-
-    def _build_feed_buffer(self, config: "ProactiveConfig") -> FeedBuffer | None:
-        if not config.feed_poller_enabled:
-            return None
-        return FeedBuffer(
-            ttl_hours=config.feed_poller_buffer_ttl_hours,
-            max_per_source=config.feed_poller_buffer_max_per_source,
-        )
-
-    def _build_source_scorer(
-        self,
-        source_scorer: SourceScorer | None,
-    ) -> SourceScorer | None:
-        if source_scorer is not None:
-            return source_scorer
-        if not self._cfg.source_scorer_enabled:
-            return None
-        cache_path = self._resolve_source_scorer_cache_path()
-        scorer = SourceScorer(
-            light_provider=self._light_provider,
-            light_model=self._light_model,
-            cache_path=cache_path,
-        )
-        logger.info(
-            "[proactive] SourceScorer 已初始化 model=%s cache=%s total_budget=%d",
-            self._light_model,
-            cache_path,
-            self._cfg.source_scorer_total_budget,
-        )
-        return scorer
-
-    def _resolve_source_scorer_cache_path(self) -> Path:
-        if self._cfg.source_scorer_cache_path:
-            return Path(self._cfg.source_scorer_cache_path).expanduser()
-        if hasattr(self._state, "path"):
-            return self._state.path.parent / "source_scores.json"
-        return Path("source_scores.json")
 
     def _fitbit_url(self) -> str:
         if not getattr(self._cfg, "fitbit_enabled", False):
@@ -206,7 +165,6 @@ class ProactiveLoopRuntimeMixin:
     def _build_sense_port(self, fitbit_provider) -> DefaultSensePort:
         return DefaultSensePort(
             cfg=self._cfg,
-            feeds=self._feeds,
             sessions=self._sessions,
             state=self._state,
             item_filter=self._item_filter,
@@ -214,9 +172,6 @@ class ProactiveLoopRuntimeMixin:
             presence=self._presence,
             schedule=self._schedule,
             rng=self._rng,
-            feed_buffer=self.feed_buffer,
-            source_scorer=self._source_scorer,
-            feed_store=self._feed_store,
             fitbit=fitbit_provider,
         )
 
@@ -301,8 +256,7 @@ class ProactiveLoopRuntimeMixin:
             self._cfg.interest_filter.exploration_ratio,
         )
 
-    def _init_runtime_components(self, source_scorer: SourceScorer | None) -> None:
-        self._source_scorer = self._build_source_scorer(source_scorer)
+    def _init_runtime_components(self) -> None:
         self._log_runtime_config()
         self._item_filter = self._build_item_filter()
         fitbit_url = self._fitbit_url()

@@ -232,3 +232,40 @@ class FeedEvent(ContentEvent):
             published_at=item.published_at,
             _raw_feed=item,
         )
+
+
+@dataclass
+class GenericContentEvent(ContentEvent):
+    """MCP 通道接入的通用内容事件。"""
+
+    _kind: str = field(default="content", repr=False)
+    _ack_server: str | None = field(default=None, repr=False)
+
+    @property
+    def kind(self) -> str:
+        return self._kind
+
+    @classmethod
+    def from_mcp_payload(cls, payload: dict) -> "GenericContentEvent":
+        raw = json.dumps(payload, sort_keys=True)
+        event_id = str(payload.get("event_id", "")).strip() or (
+            "gcv_" + hashlib.sha1(raw.encode()).hexdigest()[:12]
+        )
+        published_at: datetime | None = None
+        if payload.get("published_at"):
+            try:
+                published_at = datetime.fromisoformat(payload["published_at"])
+            except Exception:
+                pass
+        ack_server = str(payload.get("ack_server", "")).strip() or None
+        return cls(
+            event_id=event_id,
+            source_type=str(payload.get("source_type", "")).strip(),
+            source_name=str(payload.get("source_name", "")).strip(),
+            content=str(payload.get("content", "")).strip(),
+            title=payload.get("title"),
+            url=payload.get("url"),
+            published_at=published_at,
+            _kind=str(payload.get("kind", "content")).strip(),
+            _ack_server=ack_server,
+        )

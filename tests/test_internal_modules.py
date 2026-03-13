@@ -18,7 +18,6 @@ from agent.looping.consolidation import (
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
-from feeds.base import FeedSubscription
 from memory2.post_response_worker import PostResponseMemoryWorker
 from proactive.fitbit_sleep import (
     FitbitSleepProvider,
@@ -27,16 +26,6 @@ from proactive.fitbit_sleep import (
     _monitor_wait_ready_and_refresh,
     run_fitbit_monitor,
 )
-from proactive.source_scorer import (
-    SourceScorer,
-    _allocate_limits,
-    _hash_ids,
-    _parse_scores_json,
-    _parse_single_score,
-    _softmax,
-)
-
-
 class _Resp:
     def __init__(self, content: str) -> None:
         self.content = content
@@ -58,72 +47,10 @@ class _ConsolidationHarness(AgentLoopConsolidationMixin):
         self.session_manager = SimpleNamespace(save_async=AsyncMock())
 
 
-def _sub(source_id: str, name: str, *, enabled: bool = True, note: str | None = None):
-    return FeedSubscription(id=source_id, type="rss", name=name, enabled=enabled, note=note)
-
-
 @pytest.mark.asyncio
-async def test_source_scorer_full_incremental_cache_and_helpers(tmp_path: Path):
-    provider = SimpleNamespace(
-        chat=AsyncMock(
-            side_effect=[
-                _Resp('{"scores":{"a":9,"b":1}}'),
-                _Resp('{"score": 7.5}'),
-                _Resp('{"scores":{"a":5,"c":4}}'),
-            ]
-        )
-    )
-    scorer = SourceScorer(provider, "lm", tmp_path / "scores.json")
-    subs = [_sub("a", "Alpha"), _sub("b", "Beta", note="note")]
-
-    assert await scorer.get_limits([], "mem", 5, 1, 3) == {}
-    assert await scorer.get_limits([_sub("x", "X", enabled=False)], "mem", 5, 1, 3) == {}
-
-    scores = await scorer._get_scores(subs, "mem")
-    assert scores == {"a": 9.0, "b": 1.0}
-    assert await scorer._get_scores(subs, "mem") == {"a": 9.0, "b": 1.0}
-    assert provider.chat.await_count == 1
-
-    more_scores = await scorer._get_scores(subs + [_sub("c", "Gamma")], "mem")
-    assert more_scores["c"] == 7.5
-    assert provider.chat.await_count == 2
-
-    scorer.invalidate_source("b")
-    reloaded = SourceScorer(provider, "lm", tmp_path / "scores.json")
-    cached_scores = await reloaded._get_scores([_sub("a", "Alpha"), _sub("c", "Gamma")], "mem")
-    assert cached_scores == {"a": 9.0, "c": 7.5}
-    full_scores = await reloaded._get_scores([_sub("a", "Alpha"), _sub("d", "Delta")], "mem")
-    assert full_scores == {"a": 5.0, "d": 5.0}
-    assert provider.chat.await_count == 3
-
-    bad_cache = tmp_path / "bad.json"
-    bad_cache.write_text(json.dumps({"version": 999, "scores": {"a": 1}}), encoding="utf-8")
-    bad_scorer = SourceScorer(SimpleNamespace(chat=AsyncMock()), "lm", bad_cache)
-    bad_scorer._load_cache()
-    assert bad_scorer._cache["scores"] == {}
-
-    assert _hash_ids(["b", "a"]) == _hash_ids(["a", "b"])
-    assert _parse_scores_json("not json", subs) == {"a": 5.0, "b": 5.0}
-    assert _parse_scores_json('{"scores":{"a":11}}', subs) == {"a": 10.0, "b": 5.0}
-    assert _parse_single_score("score=12") == 10.0
-    assert _parse_single_score("bad") == 5.0
-    assert sum(_softmax([1.0, 2.0])) == pytest.approx(1.0)
-    assert _allocate_limits({"a": 10, "b": 0}, ["a", "b"], 1, 1, 3) == {"a": 1, "b": 1}
-
-
-@pytest.mark.asyncio
-async def test_source_scorer_fallback_paths_and_consolidation_helpers(
+async def test_consolidation_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    scorer = SourceScorer(
-        SimpleNamespace(chat=AsyncMock(side_effect=RuntimeError("boom"))),
-        "lm",
-        Path("/tmp/unused.json"),
-    )
-    subs = [_sub("a", "Alpha"), _sub("b", "Beta")]
-    assert await scorer._score_all_sources(subs, "m") == {"a": 5.0, "b": 5.0}
-    assert await scorer._score_single_source(_sub("c", "Gamma"), {}, "m") == 5.0
-
     assert _format_pending_items("x") == ""
     assert _format_pending_items(
         [

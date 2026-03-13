@@ -17,9 +17,6 @@ if TYPE_CHECKING:
     from core.memory.port import MemoryPort
 
 from feeds.base import FeedItem
-from feeds.buffer import FeedBuffer
-from feeds.registry import FeedRegistry
-from feeds.store import FeedStore
 from memory2.injection_planner import (
     build_memory_injection_result,
     retrieve_history_items,
@@ -32,7 +29,6 @@ from proactive.components import (
 from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
-from proactive.source_scorer import SourceScorer
 from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
 
@@ -422,7 +418,6 @@ class DefaultSensePort:
         self,
         *,
         cfg: Any,
-        feeds: FeedRegistry,
         sessions: SessionManager,
         state: ProactiveStateStore,
         item_filter: Any,
@@ -430,13 +425,9 @@ class DefaultSensePort:
         presence: PresenceStore | None,
         schedule: ScheduleStore | None,
         rng: Any,
-        feed_buffer: FeedBuffer | None = None,
-        source_scorer: SourceScorer | None = None,
-        feed_store: FeedStore | None = None,
         fitbit: Any | None = None,
     ) -> None:
         self._cfg = cfg
-        self._feeds = feeds
         self._sessions = sessions
         self._state = state
         self._item_filter = item_filter
@@ -444,9 +435,6 @@ class DefaultSensePort:
         self._presence = presence
         self._schedule = schedule
         self._rng = rng
-        self._feed_buffer = feed_buffer
-        self._source_scorer = source_scorer
-        self._feed_store = feed_store
         self._fitbit = fitbit
 
     def sleep_context(self) -> Any:
@@ -594,45 +582,6 @@ class DefaultSensePort:
             "f_fatigue": f_fatigue,
             "random_delta": random_delta,
         }
-
-    async def fetch_items(self, limit_per_source: int) -> list[FeedItem]:
-        if self._feed_buffer is not None:
-            n = getattr(self._cfg, "feed_poller_read_limit", 50)
-            items = self._feed_buffer.get_all(n=n)
-            logger.debug(
-                "[sense] fetch_items from buffer items=%d read_limit=%d", len(items), n
-            )
-            return items
-
-        # direct mode：尝试用 source_scorer 动态分配配额
-        per_source_limits: dict[str, int] | None = None
-        scorer_enabled = getattr(self._cfg, "source_scorer_enabled", False)
-        if (
-            scorer_enabled
-            and self._source_scorer is not None
-            and self._feed_store is not None
-        ):
-            try:
-                subs = self._feed_store.list_enabled()
-                memory_text = self.read_memory_text()
-                total_budget = getattr(self._cfg, "source_scorer_total_budget", 60)
-                min_per = getattr(self._cfg, "source_scorer_min_per_source", 2)
-                max_per = getattr(self._cfg, "source_scorer_max_per_source", 20)
-                per_source_limits = await self._source_scorer.get_limits(
-                    subscriptions=subs,
-                    memory_text=memory_text,
-                    total_budget=total_budget,
-                    min_per_source=min_per,
-                    max_per_source=max_per,
-                )
-            except Exception as e:
-                logger.warning("[sense] source_scorer 失败，回退均等分配: %s", e)
-                per_source_limits = None
-
-        return await self._feeds.fetch_all(
-            limit_per_source=limit_per_source,
-            per_source_limits=per_source_limits,
-        )
 
     def collect_recent_proactive(self, n: int = 5) -> list[RecentProactiveMessage]:
         """从目标 session 取最近 n 条 proactive=True 的结构化助手消息（按时间升序）。"""

@@ -73,10 +73,10 @@ async def _call_tool_async(
         await client.disconnect()
 
 
-def _run_in_thread(coro) -> Any:
+def _run_in_thread(coro, *, timeout: float = 30.0) -> Any:
     """在子线程中运行 coroutine，避免与外层 event loop 冲突。"""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result(timeout=15)
+        return pool.submit(asyncio.run, coro).result(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +93,8 @@ def fetch_alert_events() -> list[dict]:
     result: list[dict] = []
 
     for src in sources:
+        if str(src.get("channel", "")).strip().lower() == "content":
+            continue
         server = src.get("server", "")
         get_tool = src.get("get_tool", "get_proactive_events")
         cfg = _get_server_cfg(server)
@@ -118,8 +120,55 @@ def fetch_alert_events() -> list[dict]:
                 result.extend(alerts)
                 logger.debug("[mcp_sources] %s 返回 %d 条 alert 事件", server, len(alerts))
         except Exception as e:
-            logger.warning("[mcp_sources] 调用 %s.%s 失败: %s", server, get_tool, e)
+            logger.warning(
+                "[mcp_sources] 调用 %s.%s 失败: %s (%r)",
+                server,
+                get_tool,
+                e,
+                e,
+            )
 
+    return result
+
+
+def fetch_content_events() -> list[dict]:
+    """从所有已配置 MCP 源拉取 content 类 proactive events。"""
+    sources = _load_sources()
+    result: list[dict] = []
+
+    for src in sources:
+        if str(src.get("channel", "")).strip().lower() == "alert":
+            continue
+        server = src.get("server", "")
+        get_tool = src.get("get_tool", "get_proactive_events")
+        cfg = _get_server_cfg(server)
+        if not cfg:
+            continue
+        command = cfg.get("command", [])
+        env = cfg.get("env") or {}
+        if not command:
+            continue
+        try:
+            events = _run_in_thread(
+                _call_tool_async(server, command, env, get_tool, {})
+            )
+            if isinstance(events, list):
+                contents = []
+                for event in events:
+                    if not isinstance(event, dict) or event.get("kind") != "content":
+                        continue
+                    enriched = dict(event)
+                    enriched.setdefault("ack_server", server)
+                    contents.append(enriched)
+                result.extend(contents)
+        except Exception as e:
+            logger.warning(
+                "[mcp_sources] 调用 %s.%s 失败: %s (%r)",
+                server,
+                get_tool,
+                e,
+                e,
+            )
     return result
 
 
@@ -158,3 +207,76 @@ def acknowledge_events(events: list[AlertEvent]) -> None:
             logger.info("[mcp_sources] acked %d 事件 via %s.%s ids=%s", len(ids), server, ack_tool, ids)
         except Exception as e:
             logger.warning("[mcp_sources] ack 失败 %s.%s: %s", server, ack_tool, e)
+
+
+def acknowledge_content_entries(entries: list[tuple[str, str]]) -> None:
+    """按 mcp:<server> source_key 回调内容事件 ack。"""
+    if not entries:
+        return
+    sources = _load_sources()
+    ack_map: dict[str, tuple[str, list[str]]] = {}
+    for src in sources:
+        ack_tool = src.get("ack_tool")
+        if ack_tool:
+            ack_map[src["server"]] = (ack_tool, [])
+    for source_key, item_id in entries:
+        if not source_key.startswith("mcp:"):
+            continue
+        parts = source_key.split(":", 2)
+        server = parts[1] if len(parts) >= 2 else ""
+        ack_id = parts[2] if len(parts) >= 3 else item_id
+        if server in ack_map and ack_id:
+            ack_map[server][1].append(ack_id)
+    for server, (ack_tool, ids) in ack_map.items():
+        if not ids:
+            continue
+        cfg = _get_server_cfg(server)
+        if not cfg:
+            continue
+        command = cfg.get("command", [])
+        env = cfg.get("env") or {}
+        try:
+            _run_in_thread(
+                _call_tool_async(server, command, env, ack_tool, {"event_ids": ids})
+            )
+        except Exception as e:
+            logger.warning("[mcp_sources] content ack 失败 %s.%s: %s", server, ack_tool, e)
+
+
+def mark_content_entries_pending(entries: list[tuple[str, str]]) -> None:
+    """按 mcp:<server>:<event_id> source_key 回调内容 pending。"""
+    if not entries:
+        return
+    sources = _load_sources()
+    pending_map: dict[str, tuple[str, list[str]]] = {}
+    for src in sources:
+        pending_tool = src.get("pending_tool")
+        if pending_tool:
+            pending_map[src["server"]] = (pending_tool, [])
+    for source_key, item_id in entries:
+        if not source_key.startswith("mcp:"):
+            continue
+        parts = source_key.split(":", 2)
+        server = parts[1] if len(parts) >= 2 else ""
+        event_id = parts[2] if len(parts) >= 3 else item_id
+        if server in pending_map and event_id:
+            pending_map[server][1].append(event_id)
+    for server, (pending_tool, ids) in pending_map.items():
+        if not ids:
+            continue
+        cfg = _get_server_cfg(server)
+        if not cfg:
+            continue
+        command = cfg.get("command", [])
+        env = cfg.get("env") or {}
+        try:
+            _run_in_thread(
+                _call_tool_async(server, command, env, pending_tool, {"event_ids": ids})
+            )
+        except Exception as e:
+            logger.warning(
+                "[mcp_sources] content pending 失败 %s.%s: %s",
+                server,
+                pending_tool,
+                e,
+            )

@@ -22,8 +22,6 @@ if TYPE_CHECKING:
 
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
-from feeds.base import FeedItem
-from feeds.registry import FeedRegistry
 from proactive.energy import (
     compute_energy,
     d_energy,
@@ -41,7 +39,6 @@ from proactive.loop_traces import ProactiveLoopTraceMixin
 from proactive.memory_sampler import sample_memory_chunks
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
-from proactive.source_scorer import SourceScorer
 from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
 
@@ -56,7 +53,6 @@ class ProactiveLoop(
 ):
     def __init__(
         self,
-        feed_registry: FeedRegistry,
         session_manager: SessionManager,
         provider: LLMProvider,
         push_tool: MessagePushTool,
@@ -71,11 +67,8 @@ class ProactiveLoop(
         rng: _random_module.Random | None = None,
         light_provider: LLMProvider | None = None,
         light_model: str = "",
-        feed_store: Any | None = None,
-        source_scorer: SourceScorer | None = None,
         passive_busy_fn: Callable[[str], bool] | None = None,
     ) -> None:
-        self._feeds = feed_registry
         self._sessions = session_manager
         self._provider = provider
         self._push = push_tool
@@ -87,12 +80,11 @@ class ProactiveLoop(
         self._presence = presence
         self._schedule = schedule
         self._rng = rng
-        self._feed_store = feed_store
         self._light_provider = light_provider or provider
         self._light_model = light_model or (config.model or model)
         self._passive_busy_fn = passive_busy_fn
         self._init_runtime_state(config)
-        self._init_runtime_components(source_scorer)
+        self._init_runtime_components()
 
     async def run(self) -> None:
         self._running = True
@@ -101,12 +93,12 @@ class ProactiveLoop(
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
         last_base_score: float | None = None
-        # try:
-        #     # 启动后立即执行一次 tick，避免首次触达还要额外等待一个 interval。
-        #     last_base_score = await self._tick()
-        # except Exception:
-        #     logger.exception("ProactiveLoop 启动即刻 tick 异常")
-        #     last_base_score = None
+        try:
+            # 启动后立即执行一次 tick，避免首次触达还要额外等待一个 interval。
+            last_base_score = await self._tick()
+        except Exception:
+            logger.exception("ProactiveLoop 启动即刻 tick 异常")
+            last_base_score = None
         while self._running:
             interval = self._next_interval(last_base_score)
             logger.info("[proactive] 下次 tick 间隔=%ds", interval)

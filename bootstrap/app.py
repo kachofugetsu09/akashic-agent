@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -10,7 +11,7 @@ from bootstrap.channels import start_channels
 from bootstrap.memory import build_memory_runtime
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.providers import build_providers
-from bootstrap.tools import build_core_runtime, build_feed_runtime
+from bootstrap.tools import build_core_runtime
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -21,6 +22,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
     datefmt="%H:%M:%S",
+    stream=sys.stdout,
+    force=True,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -66,9 +69,6 @@ class AppRuntime:
         self.mcp_registry = None
         self.memory_runtime = None
         self.presence = None
-        self.feed_registry = None
-        self.feed_store = None
-        self.feed_manage_tool = None
         self.proactive_loop = None
         self.tasks: list[Awaitable[None]] = []
         self._shutdown = False
@@ -94,11 +94,6 @@ class AppRuntime:
             ) = build_core_runtime(self.config, self.workspace, self.http_resources)
             await self.mcp_registry.load_and_connect_all()
 
-            (
-                self.feed_registry,
-                self.feed_store,
-                self.feed_manage_tool,
-            ) = build_feed_runtime(self.workspace, self.tools, self.http_resources)
             self.ipc, self.tg_channel, self.qq_channel = await start_channels(
                 self.config,
                 bus=self.bus,
@@ -115,9 +110,6 @@ class AppRuntime:
             proactive_tasks, self.proactive_loop = build_proactive_runtime(
                 self.config,
                 self.workspace,
-                feed_registry=self.feed_registry,
-                feed_store=self.feed_store,
-                feed_manage_tool=self.feed_manage_tool,
                 session_manager=self.session_manager,
                 provider=self.provider,
                 light_provider=self.light_provider,

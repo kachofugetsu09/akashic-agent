@@ -7,10 +7,6 @@ from agent.config_models import Config
 from agent.looping.core import AgentLoop
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
-from feeds.registry import FeedRegistry
-from feeds.store import FeedStore
-from feeds.tools import FeedManageTool
-from proactive.feed_poller import FeedPoller
 from proactive.loop import ProactiveLoop
 from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
 from proactive.presence import PresenceStore
@@ -26,9 +22,6 @@ def build_proactive_runtime(
     config: Config,
     workspace: Path,
     *,
-    feed_registry: FeedRegistry,
-    feed_store: FeedStore,
-    feed_manage_tool: FeedManageTool,
     session_manager: SessionManager,
     provider: LLMProvider,
     light_provider: LLMProvider | None,
@@ -48,7 +41,6 @@ def build_proactive_runtime(
         proactive_cfg.skill_actions_path = str(workspace / "skill_actions.json")
 
     proactive_loop = ProactiveLoop(
-        feed_registry=feed_registry,
         session_manager=session_manager,
         provider=provider,
         push_tool=push_tool,
@@ -61,30 +53,11 @@ def build_proactive_runtime(
         schedule=schedule_store,
         light_provider=light_provider,
         light_model=config.light_model,
-        feed_store=feed_store,
         passive_busy_fn=(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
     )
     tasks.append(proactive_loop.run())
-
-    if proactive_loop._source_scorer is not None:
-        feed_manage_tool.set_scorer(proactive_loop._source_scorer)
-
-    if config.proactive.feed_poller_enabled and proactive_loop.feed_buffer is not None:
-        feed_poller = FeedPoller(
-            feed_registry,
-            proactive_loop.feed_buffer,
-            config.proactive,
-            source_scorer=proactive_loop._source_scorer,
-            feed_store=feed_store,
-            memory_provider=memory_store,
-        )
-        tasks.append(feed_poller.run())
-        print(
-            f"FeedPoller 已启动  |  间隔={config.proactive.feed_poller_interval_seconds}s"
-            + (f"  source_scorer=enabled" if proactive_loop._source_scorer else "")
-        )
 
     fitbit_path = getattr(config.proactive, "fitbit_monitor_path", "").strip()
     if config.proactive.fitbit_enabled and fitbit_path:

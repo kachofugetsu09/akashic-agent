@@ -36,11 +36,6 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
-from feeds.novel import NovelKBFeedSource
-from feeds.registry import FeedRegistry
-from feeds.rss import RSSFeedSource
-from feeds.store import FeedStore
-from feeds.tools import FeedManageTool, FeedQueryTool
 from proactive.presence import PresenceStore
 from session.manager import SessionManager
 
@@ -300,30 +295,3 @@ def build_core_runtime(
     )
 
 
-def build_feed_runtime(
-    workspace: Path,
-    tools: ToolRegistry,
-    http_resources: SharedHttpResources,
-) -> tuple[FeedRegistry, FeedStore, FeedManageTool]:
-    feed_store = FeedStore(workspace / "feeds.json")
-    feed_registry = FeedRegistry(feed_store)
-    feed_registry.register_source_type(
-        "rss",
-        lambda sub: RSSFeedSource(sub, requester=http_resources.feed_fetcher),
-    )
-    feed_registry.register_source_type("novel-kb", lambda sub: NovelKBFeedSource(sub))
-
-    feed_manage_tool = FeedManageTool(feed_store)
-    tools.register(
-        feed_manage_tool,
-        tags=["feed"],
-        risk="write",
-        search_keywords=["RSS订阅", "订阅管理", "添加订阅", "删除订阅", "feed管理"],
-    )
-    tools.register(
-        FeedQueryTool(feed_store, feed_registry),
-        tags=["feed"],
-        risk="read-only",
-        search_keywords=["查询订阅", "读取订阅", "RSS内容", "feed查询", "订阅内容"],
-    )
-    return feed_registry, feed_store, feed_manage_tool

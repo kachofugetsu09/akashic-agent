@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
 from feeds.base import FeedItem
-from proactive.event import AlertEvent, ContentEvent, FeedEvent, GenericAlertEvent, ProactiveEvent
+from proactive.event import AlertEvent, ContentEvent, GenericAlertEvent, GenericContentEvent, ProactiveEvent
 from proactive.item_id import compute_item_id, compute_source_key
 from proactive.energy import (
     composite_score,
@@ -618,90 +618,76 @@ class ProactiveEngine:
     # ------------------------------------------------------------------
 
     async def _stage_fetch_filter(self, ctx: DecisionContext) -> FetchFilterResult:
-        """拉取 feed 条目，去重，应用兴趣筛选，填充 ctx.new_items 等。"""
-        state = ctx.state
+        """拉取 MCP content 事件，应用兴趣筛选，填充 ctx.new_items 等。"""
         fetch = ctx.ensure_fetch()
-        # 1. 先从 feed 拉原始条目，后续所有筛选都基于这批候选。
-        fetch.items = await self._sense.fetch_items(self._cfg.items_per_source)
-        logger.debug("[proactive] 拉取到 %d 条信息", len(fetch.items))
+        fetch.items = []
+        fetch.new_items = []
+        fetch.new_entries = []
+        fetch.semantic_duplicate_entries = []
 
-        # 2. 先做 seen / semantic 去重，避免重复条目进入后续决策。
-        discovered_items, discovered_entries, fetch.semantic_duplicate_entries = (
-            self._sense.filter_new_items(fetch.items)
-        )
-        logger.debug(
-            "[proactive] 去重后剩余新信息 %d 条（过滤重复 %d 条）",
-            len(discovered_items),
-            len(fetch.items) - len(discovered_items),
-        )
-        if fetch.semantic_duplicate_entries:
-            logger.debug(
-                "[proactive] 语义重复条目 count=%d 不写入 seen_items，72h 窗口自然抑制",
-                len(fetch.semantic_duplicate_entries),
-            )
+        # 1. 只从 MCP content 源拉候选，内容侧的 pending/ack 状态在各自 MCP 内维护。
+        try:
+            from proactive import mcp_sources
 
-        # 3. 如果开启兴趣筛选，再用 memory 对候选做一次收缩。
-        if self._cfg.interest_filter.enabled and discovered_items:
+            mcp_content_events = [
+                GenericContentEvent.from_mcp_payload(p)
+                for p in mcp_sources.fetch_content_events()
+            ]
+        except Exception as _mcp_err:
+            logger.warning("[proactive] MCP content 拉取失败: %s", _mcp_err)
+            mcp_content_events = []
+
+        feed_views = [(event, event.to_feed_item()) for event in mcp_content_events]
+        fetch.items = [item for _, item in feed_views]
+        logger.debug("[proactive] 从 MCP 拉取到 %d 条内容", len(fetch.items))
+
+        # 2. 兴趣筛选仍由主 agent 完成，这样能继续复用 memory 偏好逻辑。
+        if self._cfg.interest_filter.enabled and feed_views:
             memory_text = self._sense.read_memory_text()
             if memory_text:
+                candidate_items = [item for _, item in feed_views]
                 filtered_items, ranked = select_interesting_items(
-                    discovered_items, memory_text, self._cfg.interest_filter
+                    candidate_items, memory_text, self._cfg.interest_filter
                 )
-                keep_ids = {self._item_id_for(item) for item in filtered_items}
-                old_count = len(discovered_items)
-                discovered_items = filtered_items
-                discovered_entries = [
-                    (source_key, item_id)
-                    for source_key, item_id in discovered_entries
-                    if item_id in keep_ids
+                keep_obj_ids = {id(item) for item in filtered_items}
+                old_count = len(feed_views)
+                feed_views = [
+                    (event, item)
+                    for event, item in feed_views
+                    if id(item) in keep_obj_ids
                 ]
+                fetch.items = [item for _, item in feed_views]
                 top_preview = ", ".join(
                     f"{(pair[0].title or '')[:28]}:{pair[1]:.2f}" for pair in ranked[:3]
                 )
                 logger.info(
                     "[proactive] memory 兴趣筛选 old=%d kept=%d min_score=%.2f top=%s",
                     old_count,
-                    len(filtered_items),
+                    len(feed_views),
                     self._cfg.interest_filter.min_score,
                     top_preview or "-",
                 )
             else:
                 logger.info("[proactive] memory 兴趣筛选跳过：memory 为空")
 
-        pending_enabled = bool(getattr(self._cfg, "pending_queue_enabled", True))
-        if pending_enabled:
-            self._state.upsert_pending_items(
-                discovered_items,
-                max_per_source=self._cfg_int("pending_max_per_source", 20),
-                max_total=self._cfg_int("pending_max_total", 200),
-                now=state.now_utc,
+        # 3. 当前内容源全部来自 MCP，直接保留事件对象，并在 source_key 里显式带上 ack_id。
+        fetch.new_items = [event for event, _ in feed_views]
+        fetch.new_entries = [
+            (
+                f"mcp:{getattr(event, '_ack_server', None) or event.source_name}:{event.event_id}",
+                self._item_id_for(item),
             )
-            raw_pending, fetch.new_entries = self._select_pending_candidates(
-                now=state.now_utc,
-                limit=self._cfg_int("pending_candidate_limit", 3),
-            )
-            fetch.new_items = [
-                FeedEvent.from_item(it, self._item_id_for(it)) for it in raw_pending
-            ]
-            logger.info(
-                "[proactive] pending 选出候选=%d pending_stats=%s",
-                len(fetch.new_items),
-                self._state.pending_stats(),
-            )
-        else:
-            fetch.new_items = [
-                FeedEvent.from_item(it, self._item_id_for(it)) for it in discovered_items
-            ]
-            fetch.new_entries = discovered_entries
+            for event, item in feed_views
+        ]
 
         # 4. 最后补充全局记忆命中状态，供后面的 force_reflect 判断使用。
         fetch.has_memory = self._sense.has_global_memory()
         result = FetchFilterResult(
             total_items=len(fetch.items),
-            discovered_count=len(discovered_items),
+            discovered_count=len(fetch.new_items),
             selected_count=len(fetch.new_items),
             semantic_duplicate_count=len(fetch.semantic_duplicate_entries),
-            pending_enabled=pending_enabled,
+            pending_enabled=False,
             has_memory=fetch.has_memory,
         )
         return result
@@ -1401,6 +1387,18 @@ class ProactiveEngine:
         self._consume_evidence_entries(evidence)
         if state.session_key:
             self._state.mark_delivery(state.session_key, delivery_key)
+        try:
+            from proactive import mcp_sources
+
+            deferred_entries = [
+                entry
+                for entry in ctx.ensure_fetch().new_entries
+                if entry not in evidence.evidence_entries
+            ]
+            mcp_sources.mark_content_entries_pending(deferred_entries)
+            mcp_sources.acknowledge_content_entries(evidence.evidence_entries)
+        except Exception as _ack_err:
+            logger.warning("[proactive] MCP content ack 失败: %s", _ack_err)
         if not sense.health_events:
             return
         try:

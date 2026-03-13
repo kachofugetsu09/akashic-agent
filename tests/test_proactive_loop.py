@@ -13,9 +13,10 @@ from core.net.http import (
     configure_default_shared_http_resources,
 )
 from feeds.base import FeedItem
-from proactive.event import FeedEvent
+from proactive.event import FeedEvent, GenericContentEvent
 from proactive.config import ProactiveConfig
 from proactive.engine import DecisionContext, GateResult, ProactiveEngine, _STOP_NONE
+from proactive.item_id import compute_item_id
 from proactive.loop import ProactiveLoop, _parse_decision
 from proactive.ports import ProactiveSendMeta, ProactiveSourceRef
 from proactive.presence import PresenceStore
@@ -24,15 +25,6 @@ from session.manager import SessionManager
 
 def _utc(**kwargs) -> datetime:
     return datetime.now(timezone.utc) - timedelta(**kwargs)
-
-
-class _DummyFeedRegistry:
-    async def fetch_all(
-        self,
-        limit_per_source: int = 3,
-        per_source_limits: dict[str, int] | None = None,
-    ):
-        return []
 
 
 class _DummyProvider:
@@ -46,7 +38,6 @@ def _build_loop(
     session_manager = SessionManager(tmp_path)
     return (
         ProactiveLoop(
-            feed_registry=_DummyFeedRegistry(),
             session_manager=session_manager,
             provider=_DummyProvider(),
             push_tool=push_tool,
@@ -83,6 +74,10 @@ async def _shared_http_resources():
 def _isolate_mcp_alert_sources():
     with mock.patch("proactive.mcp_sources.fetch_alert_events", return_value=[]), mock.patch(
         "proactive.mcp_sources.acknowledge_events", return_value=None
+    ), mock.patch(
+        "proactive.mcp_sources.fetch_content_events", return_value=[]
+    ), mock.patch(
+        "proactive.mcp_sources.acknowledge_content_entries", return_value=None
     ):
         yield
 
@@ -409,18 +404,19 @@ async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
 
 @pytest.mark.asyncio
 async def test_engine_stage_fetch_filter_returns_structured_snapshot():
-    items = [
-        FeedItem(
-            source_name="Test",
-            source_type="rss",
-            title="A",
-            content="body",
-            url="https://example.com/a",
-            author=None,
-            published_at=None,
-        )
+    payloads = [
+        {
+            "event_id": "evt-1",
+            "kind": "content",
+            "source_type": "rss",
+            "source_name": "Test",
+            "title": "A",
+            "content": "body",
+            "url": "https://example.com/a",
+            "published_at": None,
+            "ack_server": "feed",
+        }
     ]
-    entries = [("rss:test", "item-1")]
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         interest_filter=SimpleNamespace(enabled=False),
@@ -428,13 +424,11 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
         items_per_source=3,
     )
     engine._sense = SimpleNamespace(
-        fetch_items=AsyncMock(return_value=items),
-        filter_new_items=lambda raw: (raw, entries, []),
         has_global_memory=lambda: True,
     )
-    ctx = DecisionContext()
-
-    result = await engine._stage_fetch_filter(ctx)
+    with mock.patch("proactive.mcp_sources.fetch_content_events", return_value=payloads):
+        ctx = DecisionContext()
+        result = await engine._stage_fetch_filter(ctx)
 
     assert result.total_items == 1
     assert result.discovered_count == 1
@@ -444,9 +438,11 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
     assert result.has_memory is True
     feed_events = ctx.ensure_fetch().new_items
     assert len(feed_events) == 1
-    assert isinstance(feed_events[0], FeedEvent)
-    assert feed_events[0]._raw_feed == items[0]
-    assert ctx.ensure_fetch().new_entries == entries
+    assert isinstance(feed_events[0], GenericContentEvent)
+    assert feed_events[0].event_id == "evt-1"
+    assert ctx.ensure_fetch().new_entries == [
+        ("mcp:feed:evt-1", compute_item_id(feed_events[0].to_feed_item()))
+    ]
 
 
 @pytest.mark.asyncio
@@ -768,53 +764,6 @@ async def test_send_persists_source_refs_and_state_summary_tag(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tick_delivery_dedupe_blocks_repeat_send_for_seen_item(tmp_path):
-    push_tool = AsyncMock()
-    push_tool.execute = AsyncMock(return_value="文本已发送")
-
-    feed = _DummyFeedRegistry()
-    item = FeedItem(
-        source_name="TestFeed",
-        source_type="rss",
-        title="Same News",
-        content="content",
-        url="https://example.com/a",
-        author=None,
-        published_at=None,
-    )
-    feed.fetch_all = AsyncMock(side_effect=[[item], [item]])
-
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.9,"should_send":true,"message":"ping"}'
-        )
-    )
-    session_manager = SessionManager(tmp_path)
-    loop = ProactiveLoop(
-        feed_registry=feed,
-        session_manager=session_manager,
-        provider=provider,
-        push_tool=push_tool,
-        config=ProactiveConfig(
-            enabled=True,
-            default_channel="telegram",
-            default_chat_id="7674283004",
-            delivery_dedupe_hours=24,
-            message_dedupe_enabled=False,
-        ),
-        model="test-model",
-        state_path=tmp_path / "proactive_state.json",
-    )
-
-    await loop._tick()
-    await loop._tick()
-
-    assert provider.chat.await_count == 2
-    assert push_tool.execute.await_count == 1
-
-
-@pytest.mark.asyncio
 async def test_reflect_includes_global_memory(tmp_path):
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
@@ -830,7 +779,6 @@ async def test_reflect_includes_global_memory(tmp_path):
     )
     session_manager = SessionManager(tmp_path)
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),
         session_manager=session_manager,
         provider=provider,
         push_tool=push_tool,
@@ -861,12 +809,11 @@ def _make_presence(tmp_path, session_key: str, last_user_minutes_ago: float | No
     return p
 
 
-def _build_loop_with_presence(tmp_path, provider, presence, feed=None):
+def _build_loop_with_presence(tmp_path, provider, presence):
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
     session_manager = SessionManager(tmp_path)
     loop = ProactiveLoop(
-        feed_registry=feed or _DummyFeedRegistry(),
         session_manager=session_manager,
         provider=provider,
         push_tool=push_tool,
@@ -912,7 +859,6 @@ async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),
         session_manager=SessionManager(tmp_path),
         provider=provider,
         push_tool=push_tool,
@@ -1090,7 +1036,6 @@ async def test_tick_skips_llm_when_no_content_and_no_crisis(tmp_path):
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),
         session_manager=SessionManager(tmp_path),
         provider=provider,
         push_tool=push_tool,
@@ -1131,7 +1076,6 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
     memory.write_long_term("用户喜欢魂类游戏，最近在玩 Elden Ring。")
 
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),
         session_manager=session_manager,
         provider=provider,
         push_tool=push_tool,
@@ -1173,7 +1117,6 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
     memory.write_long_term("用户喜欢 Python。")
 
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),  # 始终返回空 feed
         session_manager=session_manager,
         provider=provider,
         push_tool=push_tool,
@@ -1214,7 +1157,6 @@ async def test_reflect_always_contains_full_memory(tmp_path):
     push_tool.execute = AsyncMock(return_value="文本已发送")
 
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),
         session_manager=SessionManager(tmp_path),
         provider=provider,
         push_tool=push_tool,
@@ -1254,7 +1196,6 @@ async def test_reflect_crisis_adds_topic_hint(tmp_path):
     push_tool.execute = AsyncMock(return_value="文本已发送")
 
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),
         session_manager=SessionManager(tmp_path),
         provider=provider,
         push_tool=push_tool,
@@ -1284,7 +1225,6 @@ async def test_send_records_proactive_sent_in_presence(tmp_path):
     presence = PresenceStore(tmp_path / "presence.json")
     session_manager = SessionManager(tmp_path)
     loop = ProactiveLoop(
-        feed_registry=_DummyFeedRegistry(),
         session_manager=session_manager,
         provider=_DummyProvider(),
         push_tool=push_tool,
@@ -1304,142 +1244,6 @@ async def test_send_records_proactive_sent_in_presence(tmp_path):
 
 
 # ── P1-1: record_action/mark_items_seen 与 session_key 解耦 ─────────
-
-
-@pytest.mark.asyncio
-async def test_sent_without_session_key_still_marks_items_seen(tmp_path):
-    """sent=True 且 session_key 为空时：mark_items_seen 执行，mark_delivery 跳过。"""
-    from unittest.mock import MagicMock, patch
-    from proactive.engine import ProactiveEngine
-    from proactive.state import ProactiveStateStore
-    from proactive.anyaction import AnyActionGate, QuotaStore
-
-    state = ProactiveStateStore(tmp_path / "state.json")
-    seen_calls: list = []
-    delivery_calls: list = []
-
-    original_mark_seen = state.mark_items_seen
-    original_mark_delivery = state.mark_delivery
-
-    def _track_seen(entries, **kw):
-        seen_calls.append(entries)
-        return original_mark_seen(entries, **kw)
-
-    def _track_delivery(session_key, delivery_key, **kw):
-        delivery_calls.append((session_key, delivery_key))
-        return original_mark_delivery(session_key, delivery_key, **kw)
-
-    state.mark_items_seen = _track_seen
-    state.mark_delivery = _track_delivery
-
-    item = FeedItem(
-        source_name="S",
-        source_type="rss",
-        title="T",
-        content="c",
-        url="https://x.com/1",
-        author=None,
-        published_at=None,
-    )
-
-    class _Sense:
-        def compute_energy(self):
-            return 0.0
-
-        def collect_recent(self):
-            return []
-
-        def collect_recent_proactive(self, n=5):
-            return []
-
-        def compute_interruptibility(self, **kw):
-            return 1.0, {
-                "f_time": 1,
-                "f_reply": 1,
-                "f_activity": 1,
-                "f_fatigue": 1,
-                "random_delta": 0,
-            }
-
-        async def fetch_items(self, n):
-            return [item]
-
-        def filter_new_items(self, items):
-            return items, [("s:s", "id1")], []
-
-        def read_memory_text(self):
-            return ""
-
-        def has_global_memory(self):
-            return False
-
-        def last_user_at(self):
-            return None
-
-        def target_session_key(self):
-            return ""  # 空 session_key
-
-        def quiet_hours(self):
-            return 23, 10, 0.0
-
-    class _Decide:
-        async def score_features(self, **kw):
-            return None
-
-        async def compose_message(self, **kw):
-            return ""
-
-        async def reflect(self, items, recent, **kw):
-            class D:
-                score = 0.9
-                should_send = True
-                message = "hi"
-                reasoning = "ok"
-                evidence_item_ids = []
-
-            return D()
-
-        def randomize_decision(self, d):
-            return d, 0.0
-
-        def resolve_evidence_item_ids(self, d, items):
-            return ["id1"]
-
-        def build_delivery_key(self, ids, msg):
-            return "key1"
-
-        def semantic_entries(self, items):
-            return [{"source_key": "s:s", "item_id": "id1", "text": "t"}]
-
-        def item_id_for(self, item):
-            return "id1"
-
-    class _Act:
-        async def send(self, msg, meta=None):
-            return True  # 发送成功
-
-    cfg = ProactiveConfig(
-        enabled=True,
-        default_channel="",
-        default_chat_id="",
-        anyaction_enabled=False,
-        feature_scoring_enabled=False,
-        score_pre_threshold=0.0,
-        score_llm_threshold=0.0,
-    )
-    engine = ProactiveEngine(
-        cfg=cfg,
-        state=state,
-        presence=None,
-        rng=None,
-        sense=_Sense(),
-        decide=_Decide(),
-        act=_Act(),
-    )
-    await engine.tick()
-
-    assert len(seen_calls) > 0, "mark_items_seen 应被调用"
-    assert len(delivery_calls) == 0, "session_key 为空时 mark_delivery 不应调用"
 
 
 # ── P2-4: gate 拒绝返回值语义 ──────────────────────────────────────
@@ -1807,104 +1611,3 @@ def test_rejection_cooldown_filters_in_next_tick(tmp_path):
     new_items, new_entries, _ = item_filter.filter_new_items([item])
     assert len(new_items) == 0, "rejection_cooldown 中的条目应被过滤掉"
 
-
-@pytest.mark.asyncio
-async def test_llm_rejection_writes_rejection_cooldown(tmp_path):
-    """LLM 返回 should_send=False → new_entries 写入 rejection_cooldown，不写 seen_items。"""
-    from proactive.state import ProactiveStateStore
-    from proactive.engine import ProactiveEngine
-    from proactive.item_id import compute_item_id, compute_source_key
-    from unittest.mock import AsyncMock, MagicMock
-
-    item = FeedItem(
-        source_name="src",
-        source_type="rss",
-        title="LLM 拒绝的条目",
-        content="",
-        url="https://example.com/llm-rejected",
-        author=None,
-        published_at=None,
-    )
-    source_key = compute_source_key(item)
-    item_id = compute_item_id(item)
-
-    state = ProactiveStateStore(tmp_path / "state.json")
-
-    sense = MagicMock()
-    sense.compute_energy.return_value = 0.5
-    sense.collect_recent.return_value = []
-    sense.compute_interruptibility.return_value = (
-        0.5,
-        {
-            "f_time": 0.5,
-            "f_reply": 0.5,
-            "f_activity": 0.5,
-            "f_fatigue": 0.5,
-            "random_delta": 0.0,
-        },
-    )
-    sense.fetch_items = AsyncMock(return_value=[item])
-    sense.filter_new_items.return_value = (
-        [item],
-        [(source_key, item_id)],
-        [],
-    )
-    sense.read_memory_text.return_value = ""
-    sense.has_global_memory.return_value = False
-    sense.last_user_at.return_value = None
-    sense.target_session_key.return_value = "telegram:123"
-    sense.quiet_hours.return_value = (23, 8, 0.0)
-    sense.refresh_sleep_context.return_value = False
-    sense.sleep_context.return_value = None
-
-    # decide: reflect 返回 should_send=False
-    from proactive.loop import _Decision
-
-    decide = MagicMock()
-    decide.reflect = AsyncMock(
-        return_value=_Decision(
-            score=0.2, should_send=False, message="", reasoning="not interesting"
-        )
-    )
-    decide.randomize_decision.side_effect = lambda d: (d, 0.0)
-    decide.semantic_entries.return_value = []
-
-    cfg = MagicMock()
-    cfg.anyaction_enabled = False
-    cfg.score_weight_energy = 0.40
-    cfg.score_weight_content = 0.30
-    cfg.score_weight_recent = 0.20
-    cfg.score_recent_scale = 8.0
-    cfg.score_content_halfsat = 2.5
-    cfg.score_pre_threshold = 0.01
-    cfg.score_llm_threshold = 0.01  # 很低，确保进 LLM
-    cfg.items_per_source = 5
-    cfg.interest_filter.enabled = False
-    cfg.feature_scoring_enabled = False
-    cfg.threshold = 0.9  # 高 threshold → should_send 不触发
-    cfg.dedupe_seen_ttl_hours = 336
-    cfg.delivery_dedupe_hours = 10
-    cfg.semantic_dedupe_window_hours = 72
-    cfg.llm_reject_cooldown_hours = 12
-
-    engine = ProactiveEngine(
-        cfg=cfg,
-        state=state,
-        presence=None,
-        rng=None,
-        sense=sense,
-        decide=decide,
-        act=MagicMock(),
-    )
-
-    await engine.tick()
-
-    # rejection_cooldown 应写入
-    assert state.is_rejection_cooled(
-        source_key, item_id, ttl_hours=12
-    ), "LLM 拒绝后条目应进入 rejection_cooldown"
-
-    # seen_items 不应写入
-    assert not state.is_item_seen(
-        source_key=source_key, item_id=item_id, ttl_hours=336
-    ), "LLM 拒绝后条目不应写入 seen_items（仅软冷却）"

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,19 +10,6 @@ import pytest
 
 from agent.provider import LLMResponse
 from core.memory.port import DefaultMemoryPort
-from feeds.base import FeedSubscription
-from feeds.novel import NovelKBFeedSource, _extract_body, _resolve_kb_root
-from feeds.rss import (
-    RSSFeedSource,
-    _atom_text,
-    _is_retryable_curl_code,
-    _is_retryable_http_error,
-    _normalize_xml_text,
-    _parse_rfc822,
-    _remaining_budget,
-    _strip_html,
-    _text,
-)
 from memory2.sop_indexer import SopIndexer, _parse_sop_chunks
 from proactive.loop import ProactiveLoop
 from proactive.memory_optimizer import (
@@ -37,81 +22,9 @@ from session.manager import Session, SessionManager, _safe_filename
 
 
 @pytest.mark.asyncio
-async def test_rss_novel_and_sop_indexer_cover_paths(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_sop_indexer_cover_paths(
+    tmp_path: Path
 ):
-    rss_xml = """<rss><channel><item><title>T</title><link>https://x</link><description><![CDATA[<b>Hello</b>]]></description><pubDate>Tue, 01 Jan 2025 00:00:00 +0000</pubDate></item></channel></rss>"""
-    file_path = tmp_path / "feed.xml"
-    file_path.write_text(rss_xml, encoding="utf-8")
-    sub = FeedSubscription.new(type="rss", name="Feed", url=f"file://{file_path}")
-    items = await RSSFeedSource(sub).fetch()
-    assert items[0].title == "T"
-    assert items[0].content == "Hello"
-
-    sub = FeedSubscription.new(type="rss", name="Feed", url="https://xcancel.com/rss")
-
-    class _Proc:
-        def __init__(self, rc: int, out: bytes = b"", err: bytes = b"") -> None:
-            self.returncode = rc
-            self._out = out
-            self._err = err
-
-        async def communicate(self):
-            return self._out, self._err
-
-        def kill(self):
-            return None
-
-    monkeypatch.setattr(
-        "feeds.rss.asyncio.create_subprocess_exec",
-        AsyncMock(return_value=_Proc(0, rss_xml.encode())),
-    )
-    items = await RSSFeedSource(sub)._fetch_via_curl(limit=1)
-    assert items[0].title == "T"
-    assert RSSFeedSource(sub)._parse("rss reader not yet whitelisted", 1) == []
-    assert RSSFeedSource(sub)._parse("<root />", 1) == []
-
-    root = ET.fromstring(rss_xml)
-    assert _text(root.find("channel/item"), "title") == "T"  # type: ignore[arg-type]
-    atom_xml = ET.fromstring(
-        '<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>A</title></entry></feed>'
-    )
-    assert _atom_text(atom_xml.find("{http://www.w3.org/2005/Atom}entry"), "title", {"a": "http://www.w3.org/2005/Atom"}) == "A"  # type: ignore[arg-type]
-    assert _strip_html("<p>a &amp; b</p>") == "a & b"
-    assert _parse_rfc822("Tue, 01 Jan 2025 00:00:00 +0000") is not None
-    assert _normalize_xml_text("\ufeff\n<a/>") == "<a/>"
-    assert _is_retryable_curl_code(28) is True
-    err = __import__("httpx").TimeoutException("x")
-    assert _is_retryable_http_error(err) is True
-    loop = asyncio.get_running_loop()
-    assert _remaining_budget(loop.time() + 1, loop) > 0
-
-    kb = tmp_path / "kb"
-    summary_dir = kb / "summaries" / "chunks"
-    summary_dir.mkdir(parents=True)
-    (kb / "summaries" / "index.json").write_text(
-        json.dumps(
-            {
-                "chunks": [
-                    {
-                        "chunk_id": "c1",
-                        "segment": "s1",
-                        "created_at": "2025-01-01T00:00:00+00:00",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    (summary_dir / "c1.summary.md").write_text("# T\n- key: value\n正文" * 10, encoding="utf-8")
-    source = NovelKBFeedSource(
-        FeedSubscription.new(type="novel-kb", name="KB", url=f"file://{kb}")
-    )
-    items = await source.fetch()
-    assert items and items[0].url == "novel://kb/c1"
-    assert _resolve_kb_root("relative") is None
-    assert _extract_body("# T\n- a: b\n正文", 10) == "正文"
-
     sop_dir = tmp_path / "sop"
     sop_dir.mkdir()
     sop_file = sop_dir / "core-rules.md"
