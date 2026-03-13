@@ -66,7 +66,7 @@ def build_reflect_prompt_messages(
 - 若告警涉及健康来源，可调用 fitbit_health_snapshot 校验当前实时状态（注意 data_lag_min 判断数据是否新鲜）
 - 写告警时优先转述对应 alert_events[*] 的 message/content/title/source_name；若是健康告警，可参考 health_events[*].message，但不要编造数值
 - 若最近主动消息已经表达过对用户当前处境的总结、安慰或判断，而用户此后还没有回复，则新消息禁止重复这一层；若本次只是新资讯，直接进入新内容
-- 决策信号含 user_replied_after_last_proactive（用户是否在上次主动消息之后回复过）和 minutes_since_last_proactive（上次主动消息距今分钟数）：若为 false 且间隔较短（<60 分钟），应显著提高门槛，避免连续打扰；若间隔已足够长或用户已回复，则正常判断
+- 决策信号含 user_replied_after_last_proactive（用户是否在上次主动消息之后回复过）和 minutes_since_last_proactive（上次主动消息距今分钟数）：若为 false 且间隔很短（<15 分钟），应提高门槛但不要视为硬否决；若存在明确新内容、candidate_items > 0、且 interruptibility 不低（>=0.45），仍可发送一条轻量、不重复的新消息。若间隔在 15-45 分钟之间，只作中等负面因素，不要因为“未回复”单独否决；若间隔已足够长或用户已回复，则正常判断
 - 决策信号含 sleep 字段，表示 sleep_monitor 对用户当前状态的判断：state=sleeping 表示用户很可能在睡觉，此时显著提高发送门槛，只有内容价值较高或者用户很感兴趣的消息才考虑发送；state=uncertain 且 prob 较高（≥0.6）时也应保守；data_lag_min 过大（>30）说明数据不新鲜，参考价值有限
 
 只输出 JSON，不要其他内容：
