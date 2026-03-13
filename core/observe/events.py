@@ -56,6 +56,7 @@ class TurnTrace:
 class ProactiveDecisionTrace:
     """主动链路的结构化决策 trace，用于解释为什么发/没发。"""
 
+    tick_id: str
     session_key: str
     stage: str
     reason_code: str | None = None
@@ -70,6 +71,10 @@ class ProactiveDecisionTrace:
     interruptibility: float | None = None
     candidate_count: int | None = None
     candidate_item_ids: list[str] = field(default_factory=list)
+    sleep_state: str | None = None
+    sleep_prob: float | None = None
+    sleep_available: bool | None = None
+    sleep_data_lag_min: int | None = None
     user_replied_after_last_proactive: bool | None = None
     proactive_sent_24h: int | None = None
     fresh_items_24h: int | None = None
@@ -79,4 +84,6 @@ class ProactiveDecisionTrace:
     delivery_attempted: bool | None = None
     delivery_result: str | None = None
     reasoning_preview: str | None = None
+    stage_result_json: str | None = None
+    decision_signals_json: str | None = None
     error: str | None = None

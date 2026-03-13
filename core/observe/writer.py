@@ -178,61 +178,144 @@ def _write_rag(conn, e: RagTrace, ts: str) -> None:
 
 
 def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
+    stage_json_map = {
+        "gate": ("gate_result_json", e.stage_result_json),
+        "sense": ("sense_result_json", e.stage_result_json),
+        "pre_score": ("pre_score_result_json", e.stage_result_json),
+        "fetch_filter": ("fetch_filter_result_json", e.stage_result_json),
+        "score": ("score_result_json", e.stage_result_json),
+        "decide": ("decide_result_json", e.stage_result_json),
+        "act": ("act_result_json", e.stage_result_json),
+    }
+    stage_col, stage_json = stage_json_map.get(e.stage, ("act_result_json", None))
+    payload = {
+        "tick_id": e.tick_id,
+        "ts": ts,
+        "updated_ts": ts,
+        "session_key": e.session_key,
+        "stage": e.stage,
+        "reason_code": e.reason_code,
+        "should_send": None if e.should_send is None else (1 if e.should_send else 0),
+        "action": e.action,
+        "gate_reason": e.gate_reason,
+        "pre_score": e.pre_score,
+        "base_score": e.base_score,
+        "draw_score": e.draw_score,
+        "decision_score": e.decision_score,
+        "send_threshold": e.send_threshold,
+        "interruptibility": e.interruptibility,
+        "candidate_count": e.candidate_count,
+        "candidate_item_ids": (
+            json.dumps(e.candidate_item_ids, ensure_ascii=False)
+            if e.candidate_item_ids
+            else None
+        ),
+        "sleep_state": e.sleep_state,
+        "sleep_prob": e.sleep_prob,
+        "sleep_available": (
+            None if e.sleep_available is None else (1 if e.sleep_available else 0)
+        ),
+        "sleep_data_lag_min": e.sleep_data_lag_min,
+        "user_replied_after_last_proactive": (
+            None
+            if e.user_replied_after_last_proactive is None
+            else (1 if e.user_replied_after_last_proactive else 0)
+        ),
+        "proactive_sent_24h": e.proactive_sent_24h,
+        "fresh_items_24h": e.fresh_items_24h,
+        "delivery_key": e.delivery_key,
+        "is_delivery_duplicate": (
+            None
+            if e.is_delivery_duplicate is None
+            else (1 if e.is_delivery_duplicate else 0)
+        ),
+        "is_message_duplicate": (
+            None
+            if e.is_message_duplicate is None
+            else (1 if e.is_message_duplicate else 0)
+        ),
+        "delivery_attempted": (
+            None
+            if e.delivery_attempted is None
+            else (1 if e.delivery_attempted else 0)
+        ),
+        "delivery_result": e.delivery_result,
+        "reasoning_preview": e.reasoning_preview,
+        "gate_result_json": stage_json if stage_col == "gate_result_json" else None,
+        "sense_result_json": stage_json if stage_col == "sense_result_json" else None,
+        "pre_score_result_json": (
+            stage_json if stage_col == "pre_score_result_json" else None
+        ),
+        "fetch_filter_result_json": (
+            stage_json if stage_col == "fetch_filter_result_json" else None
+        ),
+        "score_result_json": stage_json if stage_col == "score_result_json" else None,
+        "decide_result_json": stage_json if stage_col == "decide_result_json" else None,
+        "act_result_json": stage_json if stage_col == "act_result_json" else None,
+        "decision_signals_json": e.decision_signals_json,
+        "error": e.error,
+    }
+    columns = list(payload.keys())
+    insert_columns = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    values = [payload[col] for col in columns]
+    update_columns = [
+        "updated_ts",
+        "session_key",
+        "stage",
+        "reason_code",
+        "should_send",
+        "action",
+        "gate_reason",
+        "pre_score",
+        "base_score",
+        "draw_score",
+        "decision_score",
+        "send_threshold",
+        "interruptibility",
+        "candidate_count",
+        "candidate_item_ids",
+        "sleep_state",
+        "sleep_prob",
+        "sleep_available",
+        "sleep_data_lag_min",
+        "user_replied_after_last_proactive",
+        "proactive_sent_24h",
+        "fresh_items_24h",
+        "delivery_key",
+        "is_delivery_duplicate",
+        "is_message_duplicate",
+        "delivery_attempted",
+        "delivery_result",
+        "reasoning_preview",
+        "gate_result_json",
+        "sense_result_json",
+        "pre_score_result_json",
+        "fetch_filter_result_json",
+        "score_result_json",
+        "decide_result_json",
+        "act_result_json",
+        "decision_signals_json",
+        "error",
+    ]
+    updates = []
+    for col in update_columns:
+        if col == "session_key":
+            updates.append(
+                "session_key = CASE WHEN excluded.session_key <> '' "
+                "THEN excluded.session_key ELSE proactive_decisions.session_key END"
+            )
+        elif col in {"updated_ts", "stage"}:
+            updates.append(f"{col} = excluded.{col}")
+        else:
+            updates.append(f"{col} = COALESCE(excluded.{col}, proactive_decisions.{col})")
     with conn:
         conn.execute(
-            """
-            INSERT INTO proactive_decisions (
-                ts, session_key, stage, reason_code, should_send, action, gate_reason,
-                pre_score, base_score, draw_score, decision_score, send_threshold,
-                interruptibility, candidate_count, candidate_item_ids,
-                user_replied_after_last_proactive, proactive_sent_24h, fresh_items_24h,
-                delivery_key, is_delivery_duplicate, is_message_duplicate,
-                delivery_attempted, delivery_result, reasoning_preview, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            f"""
+            INSERT INTO proactive_decisions ({insert_columns})
+            VALUES ({placeholders})
+            ON CONFLICT(tick_id) DO UPDATE SET
+                {", ".join(updates)}
             """,
-            (
-                ts,
-                e.session_key,
-                e.stage,
-                e.reason_code,
-                None if e.should_send is None else (1 if e.should_send else 0),
-                e.action,
-                e.gate_reason,
-                e.pre_score,
-                e.base_score,
-                e.draw_score,
-                e.decision_score,
-                e.send_threshold,
-                e.interruptibility,
-                e.candidate_count,
-                json.dumps(e.candidate_item_ids, ensure_ascii=False)
-                if e.candidate_item_ids
-                else None,
-                (
-                    None
-                    if e.user_replied_after_last_proactive is None
-                    else (1 if e.user_replied_after_last_proactive else 0)
-                ),
-                e.proactive_sent_24h,
-                e.fresh_items_24h,
-                e.delivery_key,
-                (
-                    None
-                    if e.is_delivery_duplicate is None
-                    else (1 if e.is_delivery_duplicate else 0)
-                ),
-                (
-                    None
-                    if e.is_message_duplicate is None
-                    else (1 if e.is_message_duplicate else 0)
-                ),
-                (
-                    None
-                    if e.delivery_attempted is None
-                    else (1 if e.delivery_attempted else 0)
-                ),
-                e.delivery_result,
-                e.reasoning_preview,
-                e.error,
-            ),
+            values,
         )

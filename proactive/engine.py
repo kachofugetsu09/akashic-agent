@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
+from uuid import uuid4
 
 from feeds.base import FeedItem
 from proactive.event import AlertEvent, ContentEvent, GenericAlertEvent, GenericContentEvent, ProactiveEvent
@@ -111,6 +112,7 @@ def _sleep_policy_note(state: str, available: bool, prob: float | None = None) -
 
 @dataclass
 class EngineState:
+    tick_id: str = ""
     now_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     session_key: str = ""
     target_last_user: datetime | None = None
@@ -355,6 +357,7 @@ class ProactiveEngine:
         """
         logger.debug("[proactive] tick 开始")
         ctx = DecisionContext()
+        ctx.state.tick_id = uuid4().hex
 
         # 1. 先做 gate，决定这一轮是否连主动判断资格都没有。
         gate_result = await self._stage_gate(ctx)
@@ -1493,25 +1496,24 @@ class ProactiveEngine:
         result: object,
     ) -> None:
         state = ctx.state
-        if self._stage_trace_writer is None:
-            return
         payload = {
             "stage": stage,
             "result": _json_safe(asdict(result)) if is_dataclass(result) else {},
             "session_key": state.session_key,
         }
-        try:
-            self._stage_trace_writer(
-                build_strategy_trace_envelope(
-                    trace_type="proactive_stage",
-                    source="proactive.engine",
-                    subject_kind="global",
-                    subject_id=f"proactive-stage:{stage}",
-                    payload=payload,
+        if self._stage_trace_writer is not None:
+            try:
+                self._stage_trace_writer(
+                    build_strategy_trace_envelope(
+                        trace_type="proactive_stage",
+                        source="proactive.engine",
+                        subject_kind="global",
+                        subject_id=f"proactive-stage:{stage}",
+                        payload=payload,
+                    )
                 )
-            )
-        except Exception:
-            logger.exception("[proactive] stage trace write failed stage=%s", stage)
+            except Exception:
+                logger.exception("[proactive] stage trace write failed stage=%s", stage)
         self._emit_observe_decision(ctx, stage=stage, result=result)
 
     def _emit_observe_decision(
@@ -1537,6 +1539,7 @@ class ProactiveEngine:
         fetch = ctx.fetch
         score = ctx.score
         decide = ctx.decide
+        sense = ctx.sense
         candidate_item_ids = (
             [self._item_id_for(item) for item in self._feed_items(fetch.new_items[:5])]
             if fetch is not None
@@ -1549,7 +1552,19 @@ class ProactiveEngine:
             if isinstance(decision_signals.get("scores", {}), dict)
             else {}
         )
+        sleep_ctx = sense.sleep_ctx if sense is not None else None
+        stage_result_json = (
+            json.dumps(_json_safe(asdict(result)), ensure_ascii=False)
+            if result is not None and is_dataclass(result)
+            else None
+        )
+        decision_signals_json = (
+            json.dumps(_json_safe(decision_signals), ensure_ascii=False)
+            if decision_signals
+            else None
+        )
         trace = ProactiveDecisionTrace(
+            tick_id=state.tick_id,
             session_key=state.session_key or "",
             stage=stage,
             reason_code=reason_code
@@ -1582,6 +1597,23 @@ class ProactiveEngine:
             ),
             candidate_count=(len(fetch.new_items) if fetch is not None else None),
             candidate_item_ids=candidate_item_ids,
+            sleep_state=(getattr(sleep_ctx, "state", None) if sleep_ctx is not None else None),
+            sleep_prob=(
+                float(sleep_ctx.prob)
+                if sleep_ctx is not None and getattr(sleep_ctx, "prob", None) is not None
+                else None
+            ),
+            sleep_available=(
+                bool(getattr(sleep_ctx, "available", False))
+                if sleep_ctx is not None
+                else None
+            ),
+            sleep_data_lag_min=(
+                int(sleep_ctx.data_lag_min)
+                if sleep_ctx is not None
+                and getattr(sleep_ctx, "data_lag_min", None) is not None
+                else None
+            ),
             user_replied_after_last_proactive=(
                 bool(decision_signals["user_replied_after_last_proactive"])
                 if "user_replied_after_last_proactive" in decision_signals
@@ -1607,6 +1639,8 @@ class ProactiveEngine:
                 if decision is not None
                 else None
             ),
+            stage_result_json=stage_result_json,
+            decision_signals_json=decision_signals_json,
             error=error,
         )
         try:
