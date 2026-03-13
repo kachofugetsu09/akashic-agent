@@ -200,6 +200,7 @@ def build_registered_tools(
     provider,
     light_provider,
     tools: ToolRegistry | None = None,
+    observe_writer=None,
 ) -> tuple[ToolRegistry, MessagePushTool, SchedulerService, McpServerRegistry, MemoryRuntime]:
     tools = tools or ToolRegistry()
     readonly_tools = _build_readonly_tools(http_resources)
@@ -221,6 +222,7 @@ def build_registered_tools(
         provider,
         light_provider,
         http_resources,
+        observe_writer=observe_writer,
     )
     subagent_manager.set_memory_port(memory_runtime.port)
     tools.register(
@@ -250,6 +252,7 @@ def build_core_runtime(
         bus=bus,
         provider=provider,
         light_provider=light_provider,
+        observe_writer=observe_writer,
     )
     session_manager = SessionManager(workspace)
     presence = PresenceStore(workspace / "presence.json")

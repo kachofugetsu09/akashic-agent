@@ -42,12 +42,14 @@ class PostResponseMemoryWorker:
         light_provider: LLMProvider,
         light_model: str,
         tagger=None,  # ProcedureTagger | None
+        observe_writer=None,
     ) -> None:
         self._memorizer = memorizer
         self._retriever = retriever
         self._provider = light_provider
         self._model = light_model
         self._tagger = tagger
+        self._observe_writer = observe_writer
 
     async def run(
         self,
@@ -55,7 +57,9 @@ class PostResponseMemoryWorker:
         agent_response: str,
         tool_chain: list[dict],
         source_ref: str,
+        session_key: str = "",
     ) -> None:
+        self._current_run_session_key = session_key
         token_budget = self.TOKEN_BUDGET_PER_RUN
         try:
             already_memorized, protected_ids = self._collect_explicit_memorized(
@@ -205,6 +209,17 @@ class PostResponseMemoryWorker:
                     supersede_ids,
                     topic,
                 )
+                if self._observe_writer is not None and self._current_run_session_key:
+                    try:
+                        from core.observe.events import MemoryWriteTrace
+                        self._observe_writer.emit(MemoryWriteTrace(
+                            session_key=self._current_run_session_key,
+                            source_ref=source_ref,
+                            action="supersede",
+                            superseded_ids=supersede_ids,
+                        ))
+                    except Exception:
+                        pass
         return token_budget
 
     async def _extract_invalidation_topics(
@@ -539,6 +554,17 @@ ASSISTANT: {agent_response}
                             supersede_ids.append(item_id)
                 if supersede_ids:
                     self._memorizer.supersede_batch(supersede_ids)
+                    if self._observe_writer is not None and self._current_run_session_key:
+                        try:
+                            from core.observe.events import MemoryWriteTrace
+                            self._observe_writer.emit(MemoryWriteTrace(
+                                session_key=self._current_run_session_key,
+                                source_ref=source_ref,
+                                action="supersede",
+                                superseded_ids=supersede_ids,
+                            ))
+                        except Exception:
+                            pass
 
         extra: dict = {
             "tool_requirement": item.get("tool_requirement"),
@@ -572,6 +598,19 @@ ASSISTANT: {agent_response}
                 source_ref=source_ref,
             )
             logger.debug(f"post_response_memorize saved ({mtype}): {result}")
+            if self._observe_writer is not None and self._current_run_session_key:
+                try:
+                    from core.observe.events import MemoryWriteTrace
+                    self._observe_writer.emit(MemoryWriteTrace(
+                        session_key=self._current_run_session_key,
+                        source_ref=source_ref,
+                        action="write",
+                        memory_type=mtype,
+                        item_id=result,
+                        summary=summary,
+                    ))
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"post_response_memorize save failed: {e}")
         return token_budget

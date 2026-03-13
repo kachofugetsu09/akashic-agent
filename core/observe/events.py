@@ -51,6 +51,21 @@ class TurnTrace:
     tool_calls: list[dict] = field(default_factory=list)
     # 每个 tool call: {name, args, result}（args/result 会截断）
     error: str | None = None
+    tool_chain_json: str | None = None  # JSON: [{text, calls:[{name,args,result}]}] 每轮迭代完整记录
+
+
+@dataclass
+class MemoryWriteTrace:
+    """PostResponseMemoryWorker 写入/supersede 的一条记忆记录。"""
+
+    session_key: str
+    source_ref: str
+    action: str          # 'write' | 'supersede'
+    memory_type: str | None = None   # write: 写入类型; supersede: None
+    item_id: str | None = None       # write: 新条目 id (格式 'new:xxx' or 'reinforced:xxx')
+    summary: str | None = None       # write: 写入的 summary
+    superseded_ids: list[str] = field(default_factory=list)  # supersede: 被退休的 id 列表
+    error: str | None = None
 
 
 @dataclass

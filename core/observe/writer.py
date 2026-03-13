@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.observe.db import open_db
-from core.observe.events import ProactiveDecisionTrace, RagItemTrace, RagTrace, TurnTrace
+from core.observe.events import MemoryWriteTrace, ProactiveDecisionTrace, RagItemTrace, RagTrace, TurnTrace
 
 logger = logging.getLogger("observe.writer")
 
@@ -44,7 +44,7 @@ class TraceWriter:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._queue: asyncio.Queue[
-            TurnTrace | RagTrace | ProactiveDecisionTrace
+            TurnTrace | RagTrace | ProactiveDecisionTrace | MemoryWriteTrace
         ] = asyncio.Queue(
             maxsize=_QUEUE_MAX
         )
@@ -52,7 +52,7 @@ class TraceWriter:
 
     # ── 公共接口 ─────────────────────────────────
 
-    def emit(self, event: TurnTrace | RagTrace | ProactiveDecisionTrace) -> None:
+    def emit(self, event: TurnTrace | RagTrace | ProactiveDecisionTrace | MemoryWriteTrace) -> None:
         """非阻塞 emit。Queue 满时 drop 并记录计数。"""
         try:
             self._queue.put_nowait(event)
@@ -86,7 +86,7 @@ class TraceWriter:
     # ── 内部写入 ─────────────────────────────────
 
     def _write_one(
-        self, conn, event: TurnTrace | RagTrace | ProactiveDecisionTrace
+        self, conn, event: TurnTrace | RagTrace | ProactiveDecisionTrace | MemoryWriteTrace
     ) -> None:
         ts = _now_iso()
         if isinstance(event, TurnTrace):
@@ -95,6 +95,8 @@ class TraceWriter:
             _write_rag(conn, event, ts)
         elif isinstance(event, ProactiveDecisionTrace):
             _write_proactive_decision(conn, event, ts)
+        elif isinstance(event, MemoryWriteTrace):
+            _write_memory_write(conn, event, ts)
 
 
 # ── DB 写入函数 ───────────────────────────────────────────────────────────────
@@ -104,8 +106,8 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
     with conn:
         conn.execute(
             """
-            INSERT INTO turns (ts, source, session_key, user_msg, llm_output, tool_calls, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO turns (ts, source, session_key, user_msg, llm_output, tool_calls, tool_chain_json, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -114,6 +116,7 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 e.user_msg,
                 e.llm_output,
                 _serialize_tool_calls(e.tool_calls),
+                e.tool_chain_json,
                 e.error,
             ),
         )
@@ -323,4 +326,26 @@ def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
                 {", ".join(updates)}
             """,
             values,
+        )
+
+
+def _write_memory_write(conn, e: MemoryWriteTrace, ts: str) -> None:
+    import json as _json
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO memory_writes (ts, session_key, source_ref, action, memory_type, item_id, summary, superseded_ids, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ts,
+                e.session_key,
+                e.source_ref,
+                e.action,
+                e.memory_type,
+                e.item_id,
+                e.summary,
+                _json.dumps(e.superseded_ids, ensure_ascii=False) if e.superseded_ids else None,
+                e.error,
+            ),
         )

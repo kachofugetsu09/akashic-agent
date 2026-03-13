@@ -17,6 +17,7 @@ def build_memory_runtime(
     provider: LLMProvider,
     light_provider: LLMProvider | None,
     http_resources: SharedHttpResources,
+    observe_writer=None,
 ) -> MemoryRuntime:
     from agent.memory import MemoryStore
     from agent.skills import SkillsLoader
@@ -96,6 +97,7 @@ def build_memory_runtime(
         light_provider=light_provider or provider,
         light_model=config.light_model or config.model,
         tagger=tagger,
+        observe_writer=observe_writer,
     )
     tools.register(
         MemorizeTool(port, tagger=tagger),

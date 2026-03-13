@@ -318,6 +318,7 @@ class AgentLoop(
                     agent_response=final_content,
                     tool_chain=tool_chain,
                     source_ref=f"{key}@post_response",
+                    session_key=key,
                 ),
                 name=f"post_mem:{key}",
             )

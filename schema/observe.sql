@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS turns (
     user_msg    TEXT,                       -- agent: 用户原文; proactive: NULL
     llm_output  TEXT    NOT NULL DEFAULT '', -- LLM 最终输出完整文本
     tool_calls  TEXT,                       -- JSON: [{name, args, result}]（每次 tool 调用）
+    tool_chain_json TEXT,                   -- JSON: [{text, calls:[{name,args,result}]}] 完整迭代链路
     error       TEXT                        -- NULL = 正常
 );
 
@@ -76,7 +77,25 @@ CREATE INDEX IF NOT EXISTS ix_ri_event ON rag_items (rag_event_id);
 CREATE INDEX IF NOT EXISTS ix_ri_item  ON rag_items (item_id);
 
 -- ─────────────────────────────────────────────
--- 4. proactive_decisions  主动链路关键决策
+-- 4. memory_writes  post-response 记忆写入记录
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS memory_writes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT    NOT NULL,
+    session_key     TEXT    NOT NULL,
+    source_ref      TEXT,
+    action          TEXT    NOT NULL,   -- 'write' | 'supersede'
+    memory_type     TEXT,               -- write 时填写
+    item_id         TEXT,               -- write: 'new:xxx' or 'reinforced:xxx'
+    summary         TEXT,               -- write 时填写
+    superseded_ids  TEXT,               -- supersede: JSON 数组
+    error           TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_mw_sk_ts ON memory_writes (session_key, ts);
+CREATE INDEX IF NOT EXISTS ix_mw_action ON memory_writes (action, ts);
+
+-- ─────────────────────────────────────────────
+-- 5. proactive_decisions  主动链路关键决策
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS proactive_decisions (
     id                               INTEGER PRIMARY KEY AUTOINCREMENT,

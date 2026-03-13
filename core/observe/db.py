@@ -17,8 +17,9 @@ CREATE TABLE IF NOT EXISTS turns (
     session_key TEXT    NOT NULL,
     user_msg    TEXT,
     llm_output  TEXT    NOT NULL DEFAULT '',
-    tool_calls  TEXT,
-    error       TEXT
+    tool_calls  TEXT,                       -- JSON: [{name, args, result}]（每次 tool 调用）
+    tool_chain_json TEXT,                   -- JSON: [{text, calls:[{name,args,result}]}] 完整迭代链路
+    error       TEXT                        -- NULL = 正常
 );
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts  ON turns (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
@@ -44,7 +45,6 @@ CREATE TABLE IF NOT EXISTS rag_events (
 );
 CREATE INDEX IF NOT EXISTS ix_re_sk_ts   ON rag_events (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_re_source  ON rag_events (source, ts);
-CREATE INDEX IF NOT EXISTS ix_re_tick_id ON rag_events (tick_id);
 
 CREATE TABLE IF NOT EXISTS rag_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,6 +60,24 @@ CREATE TABLE IF NOT EXISTS rag_items (
 );
 CREATE INDEX IF NOT EXISTS ix_ri_event ON rag_items (rag_event_id);
 CREATE INDEX IF NOT EXISTS ix_ri_item  ON rag_items (item_id);
+
+-- ─────────────────────────────────────────────
+-- 4. memory_writes  post-response 记忆写入记录
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS memory_writes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT    NOT NULL,
+    session_key     TEXT    NOT NULL,
+    source_ref      TEXT,
+    action          TEXT    NOT NULL,   -- 'write' | 'supersede'
+    memory_type     TEXT,               -- write 时填写
+    item_id         TEXT,               -- write: 'new:xxx' or 'reinforced:xxx'
+    summary         TEXT,               -- write 时填写
+    superseded_ids  TEXT,               -- supersede: JSON 数组
+    error           TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_mw_sk_ts ON memory_writes (session_key, ts);
+CREATE INDEX IF NOT EXISTS ix_mw_action ON memory_writes (action, ts);
 
 CREATE TABLE IF NOT EXISTS proactive_decisions (
     id                                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,6 +151,20 @@ _RAG_EVENT_COLUMNS: dict[str, str] = {
     "tick_id": "TEXT",
 }
 
+_TURNS_COLUMNS: dict[str, str] = {
+    "tool_chain_json": "TEXT",
+}
+
+
+def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
+    cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(turns)").fetchall()
+    }
+    for col, ddl in _TURNS_COLUMNS.items():
+        if col in cols:
+            continue
+        conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {ddl}")
+
 
 def _ensure_proactive_decision_columns(conn: sqlite3.Connection) -> None:
     cols = {
@@ -170,5 +202,6 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     conn.executescript(_SCHEMA_SQL)
     _ensure_proactive_decision_columns(conn)
     _ensure_rag_event_columns(conn)
+    _ensure_turns_columns(conn)
     conn.commit()
     return conn

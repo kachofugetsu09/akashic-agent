@@ -372,6 +372,7 @@ class ConversationTurnHandler:
         writer = getattr(loop, "_observe_writer", None)
         if writer is None:
             return
+        import json as _json
         from core.observe.events import TurnTrace
 
         tool_calls = [
@@ -383,6 +384,24 @@ class ConversationTurnHandler:
             for group in tool_chain
             for call in (group.get("calls") or [])
         ]
+        # 完整迭代链路：包含每轮 LLM 推理文本 + 工具调用（args/result 分别限 800/1200 字）
+        def _slim_chain(chain: list[dict]) -> list[dict]:
+            out = []
+            for group in chain:
+                text = str(group.get("text") or "")
+                calls = [
+                    {
+                        "name": c.get("name", ""),
+                        "args": str(c.get("arguments", ""))[:800],
+                        "result": str(c.get("result", ""))[:1200],
+                    }
+                    for c in (group.get("calls") or [])
+                ]
+                out.append({"text": text, "calls": calls})
+            return out
+
+        tool_chain_json = _json.dumps(_slim_chain(tool_chain), ensure_ascii=False) if tool_chain else None
+
         writer.emit(
             TurnTrace(
                 source="agent",
@@ -390,6 +409,7 @@ class ConversationTurnHandler:
                 user_msg=msg.content,
                 llm_output=final_content,
                 tool_calls=tool_calls,
+                tool_chain_json=tool_chain_json,
             )
         )
         if rag_trace is not None:
