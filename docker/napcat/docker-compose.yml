@@ -3,6 +3,8 @@ services:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:v4.8.119}
     container_name: napcat
     restart: always
+    env_file:
+      - ../.env
     network_mode: host
     mac_address: "ec:4c:8c:e2:ed:20"
     privileged: true
@@ -12,7 +14,7 @@ services:
       - NAPCAT_GID=1000
       - ACCOUNT=1666567690
     volumes:
-      - ../.codex-temp/napcat-entrypoint.custom.sh:/app/entrypoint.sh:ro
+      - ./napcat-entrypoint.custom.sh:/app/entrypoint.sh:ro
       - ~/.config/QQ:/app/.config/QQ
       - ~/napcat/napcat-config:/app/napcat/config
       - ~/napcat/logs:/app/napcat/logs

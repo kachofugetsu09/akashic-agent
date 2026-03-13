@@ -3,6 +3,8 @@
 
 # NcatBot 自动生成的配置文件
 config.yaml
+/docker/.env
+/docker/napcat/runtime/
 
 # Python 缓存
 __pycache__/
@@ -12,9 +14,12 @@ __pycache__/
 
 # 运行时产物
 logs/
+/logs
 workspace/
 plugins/
+/plugins
 data/
+/data
 memory/
 
 # IDE
@@ -28,8 +33,11 @@ memory/
 /scripts/fitbit-monitor/fitbit-swagger.json
 /config.backup.20260301-063714.json
 /scripts/fitbit-monitor/monitor.config.toml
+/scripts/fitbit-monitor/monitor.config.local.toml
+/scripts/fitbit-monitor/monitor.config.json
 /scripts/fitbit-monitor/monitor.runtime.log
 /docs/
 /scripts/fitbit-monitor/backups/
 /scripts/fitbit-monitor/stat_events.json
 /.pytest_artifacts/
+/rss/
