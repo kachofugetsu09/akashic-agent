@@ -124,19 +124,20 @@ def _write_rag(conn, e: RagTrace, ts: str) -> None:
         cur = conn.execute(
             """
             INSERT INTO rag_events (
-                ts, source, session_key,
+                ts, source, session_key, tick_id,
                 original_query, query,
                 route_decision, route_latency_ms,
                 hyde_hypothesis,
                 history_scope_mode, history_gate_reason,
                 injected_block, preference_block, preference_query,
                 fallback_reason, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
                 e.source,
                 e.session_key,
+                e.tick_id or None,
                 e.original_query,
                 e.query,
                 e.route_decision,
@@ -241,6 +242,8 @@ def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
         ),
         "delivery_result": e.delivery_result,
         "reasoning_preview": e.reasoning_preview,
+        "sent_message": e.sent_message,
+        "candidates_json": e.candidates_json,
         "gate_result_json": stage_json if stage_col == "gate_result_json" else None,
         "sense_result_json": stage_json if stage_col == "sense_result_json" else None,
         "pre_score_result_json": (
@@ -288,6 +291,8 @@ def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
         "delivery_attempted",
         "delivery_result",
         "reasoning_preview",
+        "sent_message",
+        "candidates_json",
         "gate_result_json",
         "sense_result_json",
         "pre_score_result_json",

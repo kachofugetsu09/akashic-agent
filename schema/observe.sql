@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS rag_events (
     ts                  TEXT    NOT NULL,
     source              TEXT    NOT NULL,   -- 'agent' | 'proactive'
     session_key         TEXT    NOT NULL,
+    tick_id             TEXT,               -- proactive: 关联 proactive_decisions.tick_id
     -- query 链路
     original_query      TEXT    NOT NULL,   -- agent: user_msg; proactive: build_proactive_memory_query 输出前的原始 query
     query               TEXT    NOT NULL,   -- 实际用于检索的 query（route decision 改写后）
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS rag_events (
 
 CREATE INDEX IF NOT EXISTS ix_re_sk_ts   ON rag_events (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_re_source  ON rag_events (source, ts);
+CREATE INDEX IF NOT EXISTS ix_re_tick_id ON rag_events (tick_id);
 
 -- ─────────────────────────────────────────────
 -- 3. rag_items  每个检索到的 item 展开一行（raw data）
@@ -108,6 +110,8 @@ CREATE TABLE IF NOT EXISTS proactive_decisions (
     delivery_attempted               INTEGER,
     delivery_result                  TEXT,
     reasoning_preview                TEXT,
+    sent_message                     TEXT,       -- 实际发送的消息正文（act 阶段填充）
+    candidates_json                  TEXT,       -- 候选内容 JSON: [{kind, source_type, source_name, title, content, url, severity?}]
     gate_result_json                 TEXT,
     sense_result_json                TEXT,
     pre_score_result_json            TEXT,

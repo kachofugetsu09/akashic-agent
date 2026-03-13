@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS rag_events (
     ts                  TEXT    NOT NULL,
     source              TEXT    NOT NULL,
     session_key         TEXT    NOT NULL,
+    tick_id             TEXT,           -- proactive: 关联 proactive_decisions.tick_id
     original_query      TEXT    NOT NULL,
     query               TEXT    NOT NULL,
     route_decision      TEXT,
@@ -41,8 +42,9 @@ CREATE TABLE IF NOT EXISTS rag_events (
     fallback_reason     TEXT,
     error               TEXT
 );
-CREATE INDEX IF NOT EXISTS ix_re_sk_ts  ON rag_events (session_key, ts);
-CREATE INDEX IF NOT EXISTS ix_re_source ON rag_events (source, ts);
+CREATE INDEX IF NOT EXISTS ix_re_sk_ts   ON rag_events (session_key, ts);
+CREATE INDEX IF NOT EXISTS ix_re_source  ON rag_events (source, ts);
+CREATE INDEX IF NOT EXISTS ix_re_tick_id ON rag_events (tick_id);
 
 CREATE TABLE IF NOT EXISTS rag_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +101,8 @@ CREATE TABLE IF NOT EXISTS proactive_decisions (
     decide_result_json                TEXT,
     act_result_json                   TEXT,
     decision_signals_json             TEXT,
+    sent_message                      TEXT,       -- 实际发送的消息正文（act 阶段填充）
+    candidates_json                   TEXT,       -- 候选内容 JSON（fetch_filter/decide 阶段填充）
     error                             TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_pd_sk_ts ON proactive_decisions (session_key, ts);
@@ -121,6 +125,12 @@ _PROACTIVE_DECISION_COLUMNS: dict[str, str] = {
     "decide_result_json": "TEXT",
     "act_result_json": "TEXT",
     "decision_signals_json": "TEXT",
+    "sent_message": "TEXT",
+    "candidates_json": "TEXT",
+}
+
+_RAG_EVENT_COLUMNS: dict[str, str] = {
+    "tick_id": "TEXT",
 }
 
 
@@ -140,11 +150,25 @@ def _ensure_proactive_decision_columns(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_rag_event_columns(conn: sqlite3.Connection) -> None:
+    cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(rag_events)").fetchall()
+    }
+    for col, ddl in _RAG_EVENT_COLUMNS.items():
+        if col in cols:
+            continue
+        conn.execute(f"ALTER TABLE rag_events ADD COLUMN {col} {ddl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_re_tick_id ON rag_events (tick_id)"
+    )
+
+
 def open_db(db_path: Path) -> sqlite3.Connection:
     """打开（或新建）observe.db，初始化 schema，返回连接。"""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.executescript(_SCHEMA_SQL)
     _ensure_proactive_decision_columns(conn)
+    _ensure_rag_event_columns(conn)
     conn.commit()
     return conn

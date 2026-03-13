@@ -1082,6 +1082,7 @@ class ProactiveEngine:
                 recent=sense.recent,
                 decision_signals=decide.decision_signals,
                 is_crisis=score.is_crisis,
+                tick_id=state.tick_id,
             )
         else:
             retrieved = ProactiveRetrievedMemory.empty("retrieval_disabled")
@@ -1563,6 +1564,45 @@ class ProactiveEngine:
             if decision_signals
             else None
         )
+        # 候选内容：content events + alert events，完整原始字段塞进去
+        candidates_json: str | None = None
+        if fetch is not None or sense is not None:
+            _candidates = []
+            for item in (self._feed_items((fetch.new_items if fetch else [])) or []):
+                _candidates.append({
+                    "kind": getattr(item, "kind", "content"),
+                    "source_type": getattr(item, "source_type", ""),
+                    "source_name": getattr(item, "source_name", ""),
+                    "title": getattr(item, "title", None),
+                    "content": str(getattr(item, "content", "") or "")[:600],
+                    "url": getattr(item, "url", None),
+                    "published_at": (
+                        item.published_at.isoformat()
+                        if getattr(item, "published_at", None) is not None
+                        else None
+                    ),
+                })
+            for evt in (sense.health_events if sense else []):
+                _candidates.append({
+                    "kind": getattr(evt, "kind", "alert"),
+                    "source_type": getattr(evt, "source_type", ""),
+                    "source_name": getattr(evt, "source_name", ""),
+                    "title": getattr(evt, "title", None),
+                    "content": str(getattr(evt, "content", "") or "")[:600],
+                    "url": getattr(evt, "url", None),
+                    "severity": getattr(evt, "severity", None),
+                    "published_at": (
+                        evt.published_at.isoformat()
+                        if getattr(evt, "published_at", None) is not None
+                        else None
+                    ),
+                })
+            if _candidates:
+                candidates_json = json.dumps(_candidates, ensure_ascii=False)
+        # 实际发送的消息正文（仅 act 阶段且 decision_message 已设时写入）
+        sent_message: str | None = None
+        if stage == "act" and decide is not None and decide.decision_message:
+            sent_message = decide.decision_message
         trace = ProactiveDecisionTrace(
             tick_id=state.tick_id,
             session_key=state.session_key or "",
@@ -1642,6 +1682,8 @@ class ProactiveEngine:
             stage_result_json=stage_result_json,
             decision_signals_json=decision_signals_json,
             error=error,
+            sent_message=sent_message,
+            candidates_json=candidates_json,
         )
         try:
             writer.emit(trace)

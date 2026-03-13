@@ -37,6 +37,7 @@ class RagTrace:
     preference_query: str | None = None
     fallback_reason: str = ""
     error: str | None = None
+    tick_id: str | None = None      # proactive: 关联 proactive_decisions.tick_id
 
 
 @dataclass
@@ -87,3 +88,5 @@ class ProactiveDecisionTrace:
     stage_result_json: str | None = None
     decision_signals_json: str | None = None
     error: str | None = None
+    sent_message: str | None = None     # act 阶段：实际发送的消息正文
+    candidates_json: str | None = None  # JSON: [{kind, source_type, source_name, title, content, url, severity?}]

@@ -157,6 +157,7 @@ class MemoryRetrievalPort(Protocol):
         recent: list[dict],
         decision_signals: dict[str, object],
         is_crisis: bool,
+        tick_id: str = "",
     ) -> ProactiveRetrievedMemory: ...
 
 
@@ -188,6 +189,7 @@ class DefaultMemoryRetrievalPort:
         recent: list[dict],
         decision_signals: dict[str, object],
         is_crisis: bool,
+        tick_id: str = "",
     ) -> ProactiveRetrievedMemory:
         if (
             not getattr(self._cfg, "memory_retrieval_enabled", True)
@@ -200,6 +202,7 @@ class DefaultMemoryRetrievalPort:
                 chat_id=chat_id,
                 result=result,
                 candidate_items=items,
+                tick_id=tick_id,
             )
             return result
 
@@ -338,6 +341,7 @@ class DefaultMemoryRetrievalPort:
                 p_items_raw=p_items,
                 h_items_raw=h_items,
                 pref_items_raw=raw_pref_items,
+                tick_id=tick_id,
             )
             return result
         except Exception:
@@ -349,6 +353,7 @@ class DefaultMemoryRetrievalPort:
                 chat_id=chat_id,
                 result=result,
                 candidate_items=items,
+                tick_id=tick_id,
             )
             return result
 
@@ -392,6 +397,7 @@ class DefaultMemoryRetrievalPort:
         p_items_raw: list[dict] | None = None,
         h_items_raw: list[dict] | None = None,
         pref_items_raw: list[dict] | None = None,
+        tick_id: str = "",
     ) -> None:
         if not bool(getattr(self._cfg, "memory_trace_enabled", True)):
             return
@@ -429,6 +435,7 @@ class DefaultMemoryRetrievalPort:
                     p_items_raw=p_items_raw or [],
                     h_items_raw=h_items_raw or [],
                     pref_items_raw=pref_items_raw or [],
+                    tick_id=tick_id,
                 )
             except Exception:
                 logger.exception("[proactive.memory] observe emit failed")
@@ -442,6 +449,7 @@ class DefaultMemoryRetrievalPort:
         p_items_raw: list[dict],
         h_items_raw: list[dict],
         pref_items_raw: list[dict],
+        tick_id: str = "",
     ) -> None:
         import json as _json
 
@@ -486,6 +494,7 @@ class DefaultMemoryRetrievalPort:
             preference_block=result.preference_block,
             preference_query=preference_query or None,
             fallback_reason=result.fallback_reason,
+            tick_id=tick_id or None,
         )
         self._observe_writer.emit(rag)
 
