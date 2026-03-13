@@ -55,7 +55,7 @@ class McpClient:
     async def connect(self) -> list[McpToolInfo]:
         """启动子进程，完成握手，获取工具列表。"""
         proc_env = {**os.environ, **self.env}
-        logger.info("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
+        logger.debug("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
         self._process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
@@ -101,7 +101,7 @@ class McpClient:
             )
             for t in raw_tools
         ]
-        logger.info(
+        logger.debug(
             "[mcp] %r 已连接，工具：%s", self.name, [t.name for t in self._tool_infos]
         )
         return self._tool_infos

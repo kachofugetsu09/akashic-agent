@@ -974,6 +974,7 @@ class ProactiveMessageComposer:
 若引用了某条信息流，请优先在正文里自然带上来源名；如果你在一条消息里聚合了多条更新，则每条被提到的更新都应带上对应链接，必要时可把多个 URL 集中放在结尾。
 若没有确切证据、来源名或链接，就不要把相关事实写成确定表述。"""
 
+        logger.debug("[prompt:compose] user_msg=\n%s", user_msg)
         messages: list[dict] = [
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_msg},

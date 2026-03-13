@@ -138,6 +138,7 @@ class FetchSnapshot:
     new_entries: list[tuple[str, str]] = field(default_factory=list)
     semantic_duplicate_entries: list[tuple[str, str]] = field(default_factory=list)
     has_memory: bool = False
+    background_context: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -625,11 +626,15 @@ class ProactiveEngine:
 
         # 1. 只从 MCP content 源拉候选，内容侧的 pending/ack 状态在各自 MCP 内维护。
         try:
-            from proactive import mcp_sources
+            from proactive import mcp_sources as _mcp_sources
+        except Exception as _import_err:
+            logger.warning("[proactive] mcp_sources 导入失败: %s", _import_err)
+            _mcp_sources = None  # type: ignore[assignment]
 
+        try:
             mcp_content_events = [
                 GenericContentEvent.from_mcp_payload(p)
-                for p in mcp_sources.fetch_content_events()
+                for p in (_mcp_sources.fetch_content_events() if _mcp_sources else [])
             ]
         except Exception as _mcp_err:
             logger.warning("[proactive] MCP content 拉取失败: %s", _mcp_err)
@@ -649,6 +654,13 @@ class ProactiveEngine:
             )
             for event, item in feed_views
         ]
+
+        # 3. 拉取 context 类源（持久背景感知，如 Steam），不涉及 ack。
+        try:
+            fetch.background_context = _mcp_sources.fetch_context_data() if _mcp_sources else []
+        except Exception as _ctx_err:
+            logger.warning("[proactive] MCP context 拉取失败: %s", _ctx_err)
+            fetch.background_context = []
 
         # 4. 最后补充全局记忆命中状态，供后面的 force_reflect 判断使用。
         fetch.has_memory = self._sense.has_global_memory()
@@ -934,11 +946,20 @@ class ProactiveEngine:
             and state.target_last_user > state.last_proactive_at
         )
         # 2. 再组织成给 feature / reflect 共用的 decision_signals。
+        sleep_signal: dict[str, object] = {"state": "unavailable"}
+        if sense.sleep_ctx is not None:
+            sleep_signal = {
+                "state": sense.sleep_ctx.state,
+                "prob": sense.sleep_ctx.prob,
+                "data_lag_min": sense.sleep_ctx.data_lag_min,
+                "available": sense.sleep_ctx.available,
+            }
         decide.decision_signals = {
             "minutes_since_last_user": mins_since_last_user,
             "minutes_since_last_proactive": mins_since_last_proactive,
             "user_replied_after_last_proactive": replied_after_last_proactive,
             "proactive_sent_24h": score.sent_24h,
+            "sleep": sleep_signal,
             "interruptibility": round(sense.interruptibility, 3),
             "interrupt_breakdown": {
                 "reply": round(sense.interrupt_detail["f_reply"], 3),
@@ -955,6 +976,15 @@ class ProactiveEngine:
             "candidate_items": len(fetch.new_items),
             "fresh_items_24h": score.fresh_items_24h,
         }
+        # background_context：持久背景感知数据（如 Steam 游戏活动），每次反思均可读取。
+        if fetch.background_context:
+            decide.decision_signals["background_context"] = {
+                "_description": (
+                    "用户自身近期行为数据，非外部资讯。每轮反思均可读取，无信息流内容时也可据此主动搭话。"
+                    "各条目的 summary 字段为可读摘要，可直接引用。"
+                ),
+                "sources": fetch.background_context,
+            }
         # 3. 最后抽取高优先级告警事件，给后面的发送和 ack 路径使用。
         # alert_events：所有 AlertEvent，供 history gate / memory query 等通用路径使用。
         # health_events：source_type=="health_event" 的子集，保留给健康相关提示词兼容层。

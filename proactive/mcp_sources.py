@@ -93,7 +93,7 @@ def fetch_alert_events() -> list[dict]:
     result: list[dict] = []
 
     for src in sources:
-        if str(src.get("channel", "")).strip().lower() == "content":
+        if str(src.get("channel", "")).strip().lower() in ("content", "context"):
             continue
         server = src.get("server", "")
         get_tool = src.get("get_tool", "get_proactive_events")
@@ -137,7 +137,7 @@ def fetch_content_events() -> list[dict]:
     result: list[dict] = []
 
     for src in sources:
-        if str(src.get("channel", "")).strip().lower() == "alert":
+        if str(src.get("channel", "")).strip().lower() in ("alert", "context"):
             continue
         server = src.get("server", "")
         get_tool = src.get("get_tool", "get_proactive_events")
@@ -169,6 +169,45 @@ def fetch_content_events() -> list[dict]:
                 e,
                 e,
             )
+    return result
+
+
+def fetch_context_data() -> list[dict]:
+    """从 channel=context 的源拉取持久背景上下文。不涉及 ack，每次返回最新状态。"""
+    sources = _load_sources()
+    result: list[dict] = []
+
+    for src in sources:
+        if str(src.get("channel", "")).strip().lower() != "context":
+            continue
+        server = src.get("server", "")
+        get_tool = src.get("get_tool", "get_context")
+        cfg = _get_server_cfg(server)
+        if not cfg:
+            logger.warning("[mcp_sources] 找不到 context server 配置: %s", server)
+            continue
+        command = cfg.get("command", [])
+        env = cfg.get("env") or {}
+        if not command:
+            continue
+        try:
+            data = _run_in_thread(
+                _call_tool_async(server, command, env, get_tool, {})
+            )
+            if isinstance(data, dict):
+                data = dict(data)
+                data.setdefault("_source", server)
+                result.append(data)
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        item = dict(item)
+                        item.setdefault("_source", server)
+                        result.append(item)
+            logger.debug("[mcp_sources] context 源 %s 返回数据 available=%s", server, (data or {}).get("available"))
+        except Exception as e:
+            logger.warning("[mcp_sources] context 源 %s 拉取失败: %s", server, e)
+
     return result
 
 
