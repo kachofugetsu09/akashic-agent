@@ -100,3 +100,4 @@ class ProactiveConfig:
     # 偏好专项 RAG
     preference_retrieval_enabled: bool = True
     preference_top_k: int = 4
+    bg_context_main_topic_min_interval_hours: int = 6

@@ -245,6 +245,18 @@ def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
         ),
         "delivery_result": e.delivery_result,
         "reasoning_preview": e.reasoning_preview,
+        "reasoning": e.reasoning,
+        "evidence_item_ids": (
+            json.dumps(e.evidence_item_ids, ensure_ascii=False)
+            if e.evidence_item_ids
+            else None
+        ),
+        "source_refs_json": e.source_refs_json,
+        "fetched_urls": (
+            json.dumps(e.fetched_urls, ensure_ascii=False)
+            if e.fetched_urls
+            else None
+        ),
         "sent_message": e.sent_message,
         "candidates_json": e.candidates_json,
         "gate_result_json": stage_json if stage_col == "gate_result_json" else None,
@@ -294,6 +306,10 @@ def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
         "delivery_attempted",
         "delivery_result",
         "reasoning_preview",
+        "reasoning",
+        "evidence_item_ids",
+        "source_refs_json",
+        "fetched_urls",
         "sent_message",
         "candidates_json",
         "gate_result_json",

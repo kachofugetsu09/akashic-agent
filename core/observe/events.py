@@ -100,6 +100,10 @@ class ProactiveDecisionTrace:
     delivery_attempted: bool | None = None
     delivery_result: str | None = None
     reasoning_preview: str | None = None
+    reasoning: str | None = None        # LLM 完整推理过程
+    evidence_item_ids: list[str] = field(default_factory=list)  # LLM 实际引用的条目 IDs
+    source_refs_json: str | None = None  # 引用条目元数据 JSON: [{source_name, title, url}]
+    fetched_urls: list[str] = field(default_factory=list)  # reflect 阶段 web_fetch 调用的 URL
     stage_result_json: str | None = None
     decision_signals_json: str | None = None
     error: str | None = None

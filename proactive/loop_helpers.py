@@ -23,6 +23,7 @@ class _Decision:
     message: str
     reasoning: str
     evidence_item_ids: list[str] = field(default_factory=list)
+    fetched_urls: list[str] = field(default_factory=list)  # web_fetch 工具调用记录
 
 
 def _decision_with_randomized_score(

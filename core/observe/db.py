@@ -111,6 +111,10 @@ CREATE TABLE IF NOT EXISTS proactive_decisions (
     delivery_attempted                INTEGER,
     delivery_result                   TEXT,
     reasoning_preview                 TEXT,
+    reasoning                         TEXT,       -- LLM 完整推理过程
+    evidence_item_ids                 TEXT,       -- LLM 实际引用的条目 IDs（JSON 数组）
+    source_refs_json                  TEXT,       -- 引用条目元数据 JSON
+    fetched_urls                      TEXT,       -- reflect 阶段 web_fetch 调用的 URL（JSON 数组）
     gate_result_json                  TEXT,
     sense_result_json                 TEXT,
     pre_score_result_json             TEXT,
@@ -145,6 +149,10 @@ _PROACTIVE_DECISION_COLUMNS: dict[str, str] = {
     "decision_signals_json": "TEXT",
     "sent_message": "TEXT",
     "candidates_json": "TEXT",
+    "reasoning": "TEXT",
+    "evidence_item_ids": "TEXT",
+    "source_refs_json": "TEXT",
+    "fetched_urls": "TEXT",
 }
 
 _RAG_EVENT_COLUMNS: dict[str, str] = {

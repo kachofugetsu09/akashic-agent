@@ -443,6 +443,18 @@ class ProactiveStateStore:
             removed_pending,
         )
 
+    def get_bg_context_last_main_at(self) -> datetime | None:
+        """返回上次以 background_context 为主 topic 发送的时间，若无则 None。"""
+        raw = self._state.get("bg_context_last_main_at")
+        return _parse_iso(raw) if raw else None
+
+    def mark_bg_context_main_send(self, now: datetime | None = None) -> None:
+        """记录本次以 background_context 为主 topic 发送的时间。"""
+        now = now or _utcnow()
+        self._state["bg_context_last_main_at"] = now.isoformat()
+        self._save()
+        logger.info("[proactive.state] bg_context 主 topic 发送已记录 ts=%s", now.isoformat())
+
     def _load(self) -> dict[str, Any]:
         # 1. 从磁盘读取原始数据
         raw = load_json(self.path, default=None, domain="proactive.state")
@@ -454,6 +466,7 @@ class ProactiveStateStore:
                 "semantic_items": [],
                 "rejection_cooldown": {},
                 "pending_items": {},
+                "bg_context_last_main_at": None,
             }
 
         # 2. 规范化字段（向后兼容）
@@ -466,6 +479,7 @@ class ProactiveStateStore:
             "pending_items": self._normalize_pending_items(
                 raw.get("pending_items", {})
             ),
+            "bg_context_last_main_at": raw.get("bg_context_last_main_at"),
         }
         state["version"] = 4
         logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)

@@ -181,6 +181,7 @@ class ActSnapshot:
     state_summary_tag: str = "none"
     source_refs: list[ProactiveSourceRef] = field(default_factory=list)
     high_events: list[AlertEvent] = field(default_factory=list)
+    evidence_item_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -729,6 +730,7 @@ class ProactiveEngine:
         act = ctx.ensure_act()
         evidence = self._build_evidence_bundle(ctx)
         act.source_refs = evidence.source_refs
+        act.evidence_item_ids = evidence.evidence_item_ids
 
         # 1. 如果 decide 已经判定不发，就只做 rejection / fallback，不进入发送链。
         if not decide.should_send:
@@ -1034,12 +1036,30 @@ class ProactiveEngine:
         }
         # background_context：持久背景感知数据（如 Steam 游戏活动），每次反思均可读取。
         if fetch.background_context:
+            processed_bg = _process_bg_context_sources(fetch.background_context)
             decide.decision_signals["background_context"] = {
                 "_description": (
                     "用户自身近期行为数据，非外部资讯。每轮反思均可读取，无信息流内容时也可据此主动搭话。"
-                    "各条目的 summary 字段为可读摘要，可直接引用。"
+                    "recent_activity 字段为活动强度（heavy/moderate/light），不含精确时长。"
+                    "currently_playing 非 null 时表示用户此刻正在游戏中（唯一实时信号）。"
                 ),
-                "sources": fetch.background_context,
+                "sources": processed_bg,
+            }
+            # bg_context_quota：主 topic 冷却信号。
+            last_main = self._state.get_bg_context_last_main_at()
+            min_interval_hours = self._cfg.bg_context_main_topic_min_interval_hours
+            if last_main is not None:
+                elapsed_min = int((state.now_utc - last_main).total_seconds() / 60)
+                min_interval_min = min_interval_hours * 60
+                available = elapsed_min >= min_interval_min
+                cooldown_remaining = max(0, min_interval_min - elapsed_min)
+            else:
+                available = True
+                cooldown_remaining = 0
+            decide.decision_signals["bg_context_quota"] = {
+                "available": available,
+                "cooldown_remaining_min": cooldown_remaining,
+                "min_interval_hours": min_interval_hours,
             }
         # 3. 最后抽取高优先级告警事件，给后面的发送和 ack 路径使用。
         # alert_events：所有 AlertEvent，供 history gate / memory query 等通用路径使用。
@@ -1468,6 +1488,9 @@ class ProactiveEngine:
         if self._cfg.anyaction_enabled and self._anyaction:
             self._anyaction.record_action(now_utc=state.now_utc)
         self._consume_evidence_entries(evidence)
+        # 若本次发送无 feed 证据（纯 background_context 驱动），更新主 topic 冷却时间。
+        if not evidence.evidence_item_ids:
+            self._state.mark_bg_context_main_send(state.now_utc)
         if state.session_key:
             self._state.mark_delivery(state.session_key, delivery_key)
         try:
@@ -1679,6 +1702,36 @@ class ProactiveEngine:
                 if decision is not None
                 else None
             ),
+            reasoning=(
+                str(getattr(decision, "reasoning", "")) or None
+                if decision is not None
+                else None
+            ),
+            evidence_item_ids=(
+                list(getattr(decision, "evidence_item_ids", None) or [])
+                if decision is not None
+                else (
+                    list(ctx.act.evidence_item_ids)
+                    if ctx.act is not None
+                    else []
+                )
+            ),
+            source_refs_json=(
+                json.dumps(
+                    [
+                        {
+                            "source_name": getattr(r, "source_name", ""),
+                            "title": getattr(r, "title", None),
+                            "url": getattr(r, "url", None),
+                        }
+                        for r in ctx.act.source_refs
+                    ],
+                    ensure_ascii=False,
+                )
+                if ctx.act is not None and ctx.act.source_refs
+                else None
+            ),
+            fetched_urls=list(getattr(decision, "fetched_urls", None) or []),
             stage_result_json=stage_result_json,
             decision_signals_json=decision_signals_json,
             error=error,
@@ -2050,6 +2103,43 @@ class ProactiveEngine:
         except Exception:
             pass
         return compute_item_id(item)
+
+
+def _process_bg_context_sources(sources: list[dict]) -> list[dict]:
+    """处理 background_context 原始数据：隐藏精确数字，只暴露活动强度级别。
+
+    防止 LLM 把统计时长数字直接引述进消息或用于实时状态推断。
+    唯一保留实时精确信息的字段是 currently_playing（来自 Steam API 实时查询）。
+    """
+    result = []
+    for src in sources:
+        if src.get("_source") == "steam" and src.get("available"):
+            games = src.get("games", [])
+            realtime = src.get("realtime", {})
+            processed_games = []
+            for g in games:
+                h = float(g.get("recent_2w_hours", 0) or 0)
+                level = (
+                    "heavy" if h >= 20
+                    else "moderate" if h >= 5
+                    else "light" if h > 0
+                    else "none"
+                )
+                processed_games.append({
+                    "name": g["name"],
+                    "recent_activity": level,
+                    "all_time_familiar": float(g.get("all_time_hours", 0) or 0) >= 50,
+                })
+            result.append({
+                "_source": "steam",
+                "currently_playing": realtime.get("currently_playing"),
+                "online_status": realtime.get("online_status"),
+                "recent_games": processed_games,
+                "data_freshness_hours": src.get("data_freshness_hours"),
+            })
+        else:
+            result.append(src)
+    return result
 
 
 def _heuristic_state_summary_tag(message: str) -> str:

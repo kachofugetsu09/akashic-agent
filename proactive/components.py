@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
 from agent.provider import LLMProvider, LLMResponse
 from agent.tool_bundles import build_fitbit_tools, build_readonly_research_tools
+from agent.tools.web_fetch import WebFetchTool
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -301,6 +302,9 @@ class ProactiveReflector:
         self._fitbit_tool_schemas, self._fitbit_tool_map = (
             _build_optional_fitbit_tool_runtime(self._fitbit_tools)
         )
+        # WebFetchTool 懒初始化：依赖共享 HTTP 资源，需等启动完成后首次 reflect 时再创建。
+        self._web_fetch_schemas: list[dict[str, Any]] | None = None
+        self._web_fetch_tool_map: dict[str, Tool] | None = None
 
     async def reflect(
         self,
@@ -383,9 +387,14 @@ class ProactiveReflector:
         )
 
         try:
+            if self._web_fetch_schemas is None:
+                _wf = prepare_toolset([WebFetchTool(get_default_http_requester("external_default"))])
+                self._web_fetch_schemas = _wf.schemas
+                self._web_fetch_tool_map = _wf.tool_map
+
             active_tools, active_tool_map = _resolve_active_tool_runtime(
-                base_schemas=[],
-                base_tool_map={},
+                base_schemas=self._web_fetch_schemas,
+                base_tool_map=self._web_fetch_tool_map or {},
                 include_fitbit=True,
                 fitbit_schemas=self._fitbit_tool_schemas,
                 fitbit_tool_map=self._fitbit_tool_map,
@@ -396,7 +405,8 @@ class ProactiveReflector:
                 {"role": "user", "content": user_msg},
             ]
             resp: LLMResponse | None = None
-            for _ in range(2):
+            fetched_urls: list[str] = []
+            for _ in range(4):
                 resp = await self._provider.chat(
                     messages=messages,
                     tools=active_tools,
@@ -406,6 +416,13 @@ class ProactiveReflector:
                 tool_calls = getattr(resp, "tool_calls", []) or []
                 if not tool_calls:
                     break
+
+                for tc in tool_calls:
+                    if getattr(tc, "name", "") == "web_fetch":
+                        url = (getattr(tc, "arguments", {}) or {}).get("url", "")
+                        if url:
+                            fetched_urls.append(url)
+                            logger.info("[proactive] web_fetch 调用: %s", url)
 
                 append_assistant_tool_calls(
                     messages,
@@ -417,13 +434,17 @@ class ProactiveReflector:
                     tool_calls=tool_calls,
                     active_tool_map=active_tool_map,
                     log_prefix="[proactive]",
+                    log_each_call=True,
                 )
 
             if resp is None:
                 return self._hooks.parse_decision("")
             content = resp.content or ""
             logger.info("[proactive] LLM 原始输出预览: %r", content[:240])
-            return self._hooks.parse_decision(content)
+            decision = self._hooks.parse_decision(content)
+            if fetched_urls and hasattr(decision, "fetched_urls"):
+                decision.fetched_urls = fetched_urls
+            return decision
         except Exception as e:
             logger.error(f"[proactive] LLM 反思失败: {e}")
             return self._hooks.on_reflect_error(e)
