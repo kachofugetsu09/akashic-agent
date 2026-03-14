@@ -2,7 +2,11 @@ import json
 import logging
 from datetime import datetime
 
-from agent.procedure_hint import prepend_procedure_hint
+from agent.procedure_hint import (
+    _match_procedure_items,
+    build_intercept_hint,
+    build_procedure_hint,
+)
 from agent.looping.constants import (
     _INCOMPLETE_SUMMARY_PROMPT,
     _PRE_FLIGHT_PROMPT,
@@ -26,6 +30,19 @@ def _unlock_from_tool_search(result: str, visible_names: set[str]) -> None:
                 visible_names.add(name)
     except Exception:
         pass
+
+
+def _build_reflect_content(pending_hints: list[str]) -> str:
+    if not pending_hints:
+        return _REFLECT_PROMPT
+    combined = "\n".join(h for h in pending_hints if h.strip())
+    if not combined.strip():
+        return _REFLECT_PROMPT
+    return (
+        "【⚠️ 操作规范提醒 | 适用于本轮工具调用】\n"
+        f"{combined}\n\n---\n\n"
+        + _REFLECT_PROMPT
+    )
 
 
 class AgentLoopToolExecutionMixin:
@@ -111,6 +128,7 @@ class AgentLoopToolExecutionMixin:
                 )
 
                 iter_calls: list[dict] = []
+                pending_hints: list[str] = []
                 for tc in response.tool_calls:
                     # 硬约束：visible_names 启用时，检查工具可见性
                     if visible_names is not None and tc.name not in visible_names:
@@ -137,23 +155,67 @@ class AgentLoopToolExecutionMixin:
                             )
                             continue
 
-                    tools_used.append(tc.name)
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info(f"  → 工具 {tc.name}  参数: {args_str[:120]}")
-                    result = await self.tools.execute(tc.name, tc.arguments)
 
-                    result, new_ids = prepend_procedure_hint(
+                    # 1. 单次匹配规范，先分流执行前拦截
+                    all_items = _match_procedure_items(
                         memory=self._memory_port,
                         tool_name=tc.name,
                         tool_arguments=tc.arguments,
-                        result=result,
-                        injected_ids=injected_proc_ids,
                         logger=logger,
+                    )
+                    intercept_items = [
+                        item
+                        for item in all_items
+                        if bool(item.get("intercept", False))
+                        and str(item.get("id", "")) not in injected_proc_ids
+                    ]
+                    if intercept_items:
+                        result = build_intercept_hint(intercept_items, tc.name)
+                        injected_proc_ids.update(
+                            str(item.get("id", "")) for item in intercept_items
+                        )
+                        append_tool_result(
+                            messages,
+                            tool_call_id=tc.id,
+                            content=result,
+                        )
+                        iter_calls.append(
+                            {
+                                "call_id": tc.id,
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                                "result": result,
+                            }
+                        )
+                        logger.info("  ⛔ 工具 %s 被规范拦截，未执行", tc.name)
+                        continue
+
+                    # 2. 执行工具，并保留干净的真实输出
+                    tools_used.append(tc.name)
+                    result = await self.tools.execute(tc.name, tc.arguments)
+                    result_preview = result[:80] + "..." if len(result) > 80 else result
+                    logger.info(f"  ← 工具 {tc.name}  结果: {result_preview!r}")
+
+                    append_tool_result(
+                        messages,
+                        tool_call_id=tc.id,
+                        content=result,
+                    )
+
+                    # 3. 从同一批匹配结果里收集执行后提醒，统一并入 reflect prompt
+                    hint_items = [
+                        item for item in all_items if not bool(item.get("intercept", False))
+                    ]
+                    raw_hint, new_ids = build_procedure_hint(
+                        hint_items,
+                        injected_proc_ids,
                     )
                     if new_ids:
                         injected_proc_ids.update(new_ids)
-                    result_preview = result[:80] + "..." if len(result) > 80 else result
-                    logger.info(f"  ← 工具 {tc.name}  结果: {result_preview!r}")
+                        if raw_hint:
+                            pending_hints.append(raw_hint.split("\n", 1)[1])
 
                     # tool_search 返回后解锁匹配工具
                     if tc.name == "tool_search" and visible_names is not None:
@@ -162,12 +224,6 @@ class AgentLoopToolExecutionMixin:
                             "tool_search 解锁后 visible=%d 个工具",
                             len(visible_names),
                         )
-
-                    append_tool_result(
-                        messages,
-                        tool_call_id=tc.id,
-                        content=result,
-                    )
                     iter_calls.append(
                         {
                             "call_id": tc.id,
@@ -177,7 +233,9 @@ class AgentLoopToolExecutionMixin:
                         }
                     )
                 tool_chain.append({"text": response.content, "calls": iter_calls})
-                messages.append({"role": "user", "content": _REFLECT_PROMPT})
+                messages.append(
+                    {"role": "user", "content": _build_reflect_content(pending_hints)}
+                )
             else:
                 logger.info(f"LLM 返回最终回复  iteration={iteration + 1}")
                 messages.append({"role": "assistant", "content": response.content})

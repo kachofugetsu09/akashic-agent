@@ -402,6 +402,7 @@ class MemoryStore2:
                         "memory_type": "procedure",
                         "summary": summary,
                         "extra_json": extra,
+                        "intercept": bool(tags.get("intercept", False)),
                         "score": 1.0,
                     }
                 )

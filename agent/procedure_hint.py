@@ -68,6 +68,39 @@ def build_procedure_hint(
     return hint, new_ids
 
 
+def _match_procedure_items(
+    *,
+    memory: "MemoryPort | None",
+    tool_name: str,
+    tool_arguments: dict,
+    logger: logging.Logger | None = None,
+) -> list[dict]:
+    if memory is None:
+        return []
+    try:
+        action_tokens = extract_action_tokens(tool_name, tool_arguments)
+        return memory.keyword_match_procedures(action_tokens)
+    except Exception as exc:
+        if logger is not None:
+            logger.debug("  [proc_hint] keyword match 失败: %s", exc)
+        return []
+
+
+def build_intercept_hint(items: list[dict], tool_name: str) -> str:
+    """格式化执行前拦截提示。"""
+    lines = [
+        f"- {(item.get('summary') or '').strip()}"
+        for item in items
+        if (item.get("summary") or "").strip()
+    ]
+    body = "\n".join(lines) if lines else "- 检测到匹配规范"
+    return (
+        f"⚠️【执行拦截 | {tool_name}】工具未执行，检测到适用规范，请重新决策：\n"
+        f"{body}\n"
+        "请改用正确的工具/技能后重试。"
+    )
+
+
 def prepend_procedure_hint(
     *,
     memory: "MemoryPort | None",
@@ -78,21 +111,19 @@ def prepend_procedure_hint(
     logger: logging.Logger | None = None,
 ) -> tuple[str, list[str]]:
     """Prepend a procedure hint to a tool result when keyword matching hits."""
-    if memory is None:
+    proc_items = [
+        item
+        for item in _match_procedure_items(
+            memory=memory,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+            logger=logger,
+        )
+        if not bool(item.get("intercept", False))
+    ]
+    hint, new_ids = build_procedure_hint(proc_items, injected_ids)
+    if not hint:
         return result, []
-
-    try:
-        action_tokens = extract_action_tokens(tool_name, tool_arguments)
-        proc_items = memory.keyword_match_procedures(action_tokens)
-        if not proc_items:
-            return result, []
-        hint, new_ids = build_procedure_hint(proc_items, injected_ids)
-        if not hint:
-            return result, []
-        if logger is not None:
-            logger.info("  [proc_hint] 注入 %d 条规范: %s", len(new_ids), new_ids)
-        return hint + "\n\n---\n\n" + result, new_ids
-    except Exception as exc:
-        if logger is not None:
-            logger.debug("  [proc_hint] keyword match 失败: %s", exc)
-        return result, []
+    if logger is not None:
+        logger.info("  [proc_hint] 注入 %d 条规范: %s", len(new_ids), new_ids)
+    return hint + "\n\n---\n\n" + result, new_ids
