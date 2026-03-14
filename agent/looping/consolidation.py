@@ -107,6 +107,46 @@ def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
 
 
 class AgentLoopConsolidationMixin:
+    async def _extract_and_save_profile_facts(
+        self,
+        *,
+        extractor,
+        conversation: str,
+        existing_profile: str,
+        source_ref: str,
+        scope_channel: str,
+        scope_chat_id: str,
+    ) -> None:
+        try:
+            # 1. 先提取 profile facts；失败时由 extractor fail-open 返回空列表。
+            facts = await extractor.extract(
+                conversation,
+                existing_profile=existing_profile,
+            )
+            if not facts:
+                return
+
+            # 2. 再逐条写入 memory2 profile，复用现有 save_item 幂等能力。
+            for fact in facts:
+                await self._memory_port.save_item(
+                    summary=fact.summary,
+                    memory_type="profile",
+                    extra={
+                        "category": fact.category,
+                        "scope_channel": scope_channel,
+                        "scope_chat_id": scope_chat_id,
+                    },
+                    source_ref=f"{source_ref}#profile",
+                    happened_at=fact.happened_at,
+                )
+                logger.info(
+                    "memory2 profile fact saved: category=%s %r",
+                    fact.category,
+                    fact.summary[:60],
+                )
+        except Exception as e:
+            logger.warning("profile fact extraction failed: %s", e)
+
     def _on_post_mem_task_done(self, task: asyncio.Task, session_key: str) -> None:
         try:
             exc = task.exception()
@@ -310,6 +350,22 @@ class AgentLoopConsolidationMixin:
                     "Memory consolidation: saved %d history entries to vector store",
                     len(history_entries),
                 )
+
+            profile_task = None
+            profile_extractor = getattr(self, "_profile_extractor", None)
+            if profile_extractor and conversation.strip():
+                profile_task = asyncio.create_task(
+                    self._extract_and_save_profile_facts(
+                        extractor=profile_extractor,
+                        conversation=conversation,
+                        existing_profile=current_memory or "",
+                        source_ref=source_ref,
+                        scope_channel=scope_channel,
+                        scope_chat_id=scope_chat_id,
+                    )
+                )
+            if await_vector_store and profile_task is not None:
+                await profile_task
 
             if archive_all:
                 session.last_consolidated = 0

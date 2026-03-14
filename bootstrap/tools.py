@@ -36,6 +36,7 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
+from memory2.profile_extractor import ProfileFactExtractor
 from memory2.query_rewriter import QueryRewriter
 from memory2.sufficiency_checker import SufficiencyChecker
 from proactive.presence import PresenceStore
@@ -294,6 +295,10 @@ def build_core_runtime(
             else None
         ),
         sufficiency_checker=SufficiencyChecker(
+            llm_client=light_provider or provider,
+            model=config.light_model or config.model,
+        ),
+        profile_extractor=ProfileFactExtractor(
             llm_client=light_provider or provider,
             model=config.light_model or config.model,
         ),

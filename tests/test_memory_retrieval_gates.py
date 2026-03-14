@@ -605,3 +605,53 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
     )
 
     assert retrieve_call_count <= 2
+
+
+def test_consolidate_memory_calls_profile_extractor_when_set():
+    loop = _make_loop(_Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']))
+    loop._memory_port = MagicMock()
+    loop._memory_port.read_long_term = MagicMock(return_value="MEMORY")
+    loop._memory_port.append_history_once = MagicMock(return_value=True)
+    loop._memory_port.append_pending_once = MagicMock(return_value=True)
+    loop._memory_port.save_from_consolidation = AsyncMock()
+    loop._memory_port.save_item = AsyncMock(return_value="new:profile-1")
+    loop._profile_extractor = MagicMock()
+    loop._profile_extractor.extract = AsyncMock(return_value=[])
+    session = _DummySession("cli:1")
+    session.messages = [
+        {"role": "user", "content": "我买了 Zigbee 网关和加湿器", "timestamp": "2026-03-15T10:00:00"},
+        {"role": "assistant", "content": "记住了", "timestamp": "2026-03-15T10:01:00"},
+    ]
+    session._channel = "cli"
+    session._chat_id = "1"
+
+    asyncio.run(loop._consolidate_memory(session, archive_all=True, await_vector_store=True))
+
+    loop._profile_extractor.extract.assert_awaited_once()
+    extract_call = loop._profile_extractor.extract.await_args
+    conversation_arg = (
+        extract_call.args[0]
+        if extract_call.args
+        else str(extract_call.kwargs.get("conversation", ""))
+    )
+    assert "Zigbee" in conversation_arg
+
+
+def test_consolidate_memory_works_without_profile_extractor():
+    loop = _make_loop(_Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']))
+    loop._memory_port = MagicMock()
+    loop._memory_port.read_long_term = MagicMock(return_value="MEMORY")
+    loop._memory_port.append_history_once = MagicMock(return_value=True)
+    loop._memory_port.append_pending_once = MagicMock(return_value=True)
+    loop._memory_port.save_from_consolidation = AsyncMock()
+    loop._memory_port.save_item = AsyncMock(return_value="new:profile-1")
+    loop._profile_extractor = None
+    session = _DummySession("cli:1")
+    session.messages = [
+        {"role": "user", "content": "我买了 Zigbee 网关和加湿器", "timestamp": "2026-03-15T10:00:00"},
+        {"role": "assistant", "content": "记住了", "timestamp": "2026-03-15T10:01:00"},
+    ]
+    session._channel = "cli"
+    session._chat_id = "1"
+
+    asyncio.run(loop._consolidate_memory(session, archive_all=True, await_vector_store=True))

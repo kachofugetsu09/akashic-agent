@@ -22,7 +22,7 @@ class QueryRewriter:
         llm_client: Any,
         *,
         model: str = "",
-        max_tokens: int = 160,
+        max_tokens: int = 220,
         timeout_ms: int = 800,
     ) -> None:
         self._llm_client = llm_client
@@ -137,6 +137,14 @@ class QueryRewriter:
 规则：
 - NO_RETRIEVE：打招呼、闲聊、确认当前轮内容、通用知识问答、简单回应“好/嗯/继续”
 - RETRIEVE：询问过去发生的事、用户偏好、个人信息，或要求执行某类操作时需要查 memory
+
+隐式意图推断（先想再决策）：
+- 在输出 XML 之前，先用 <thinking>...</thinking> 推断用户消息的隐含背景
+- 提到快递 / 物流 / 单号 / 包裹 / 到货：隐含意图通常是查用户最近的购买行为
+- 提到身体症状 / 药 / 复查：隐含意图通常是查用户健康档案
+- 提到“那个任务 / 项目 / 上次说的”：隐含意图通常是查用户正在进行的事项
+- 如果隐含意图指向历史记录，则应 RETRIEVE，history_query 应面向隐含意图，而不是表面词
+- <thinking> 只用于内部推理，不要把它混入最终 XML 字段
 
 输出要求：
 - procedure_query：面向 procedure/preference 的精简动作意图，不要写成问句，不要用“用户/我”做主语
