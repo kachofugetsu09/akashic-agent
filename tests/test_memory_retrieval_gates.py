@@ -15,6 +15,7 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage
 from core.memory.port import DefaultMemoryPort
+from memory2.query_rewriter import RewriteDecision
 
 
 class _NoopTool(Tool):
@@ -240,6 +241,97 @@ def test_build_procedure_context_hint_handles_none_media():
     )
 
     assert handler._build_procedure_context_hint(msg) == ""
+
+
+def test_retrieve_memory_block_prefers_query_rewriter_primary_path():
+    loop = _make_loop(_Provider())
+    session = _DummySession("cli:1")
+    handler = ConversationTurnHandler(loop)
+    loop._trace_memory_retrieve = MagicMock()
+    loop._query_rewriter = MagicMock()
+    loop._query_rewriter.decide = AsyncMock(
+        return_value=RewriteDecision(
+            needs_retrieval=False,
+            procedure_query="下载",
+            history_query="下载历史",
+            memory_types_hint=["procedure"],
+            latency_ms=12,
+        )
+    )
+    loop._decide_history_route = AsyncMock(
+        side_effect=AssertionError("should not call history route fallback")
+    )
+    loop._memory_port = MagicMock()
+    loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
+
+    with patch(
+        "agent.looping.handlers.build_procedure_queries",
+        side_effect=AssertionError("should not call fallback query builder"),
+    ):
+        asyncio.run(
+            handler._retrieve_memory_block(
+                msg=msg,
+                key=msg.session_key,
+                session=session,
+                main_history=[],
+            )
+        )
+
+    loop._query_rewriter.decide.assert_awaited_once()
+    assert loop._trace_memory_retrieve.call_args.kwargs["gate_type"] == "query_rewriter"
+
+
+def test_retrieve_memory_block_passes_procedure_query_and_user_msg_to_multi_query():
+    loop = _make_loop(_Provider())
+    session = _DummySession("cli:1")
+    handler = ConversationTurnHandler(loop)
+    loop._trace_memory_retrieve = MagicMock()
+    loop._query_rewriter = MagicMock()
+    loop._query_rewriter.decide = AsyncMock(
+        return_value=RewriteDecision(
+            needs_retrieval=True,
+            procedure_query="B站视频下载流程",
+            history_query="用户的B站下载偏好历史",
+            memory_types_hint=["procedure", "preference"],
+            latency_ms=8,
+        )
+    )
+    loop._memory_port = MagicMock()
+    loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    msg = InboundMessage(
+        channel="cli",
+        sender="u",
+        chat_id="1",
+        content="把这个B站视频下载下来",
+    )
+
+    with (
+        patch(
+            "agent.looping.handlers.retrieve_procedure_items",
+            new=AsyncMock(return_value=[]),
+        ) as proc_mock,
+        patch(
+            "agent.looping.handlers.retrieve_history_items",
+            new=AsyncMock(return_value=([], "disabled")),
+        ),
+    ):
+        asyncio.run(
+            handler._retrieve_memory_block(
+                msg=msg,
+                key=msg.session_key,
+                session=session,
+                main_history=[],
+            )
+        )
+
+    proc_mock.assert_awaited_once()
+    assert proc_mock.call_args.kwargs["queries"] == [
+        "B站视频下载流程",
+        "把这个B站视频下载下来",
+    ]
 
 
 def test_process_inner_schedules_consolidation_only_after_append_messages():

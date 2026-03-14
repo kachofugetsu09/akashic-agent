@@ -36,6 +36,7 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
+from memory2.query_rewriter import QueryRewriter
 from proactive.presence import PresenceStore
 from session.manager import SessionManager
 
@@ -281,6 +282,16 @@ def build_core_runtime(
         memory_hyde_enabled=config.memory_v2.hyde_enabled,
         memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
         observe_writer=observe_writer,
+        query_rewriter=(
+            QueryRewriter(
+                llm_client=light_provider or provider,
+                model=config.light_model or config.model,
+                max_tokens=config.memory_v2.gate_max_tokens,
+                timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+            )
+            if config.memory_v2.route_intention_enabled
+            else None
+        ),
     )
 
     scheduler.agent_loop = loop
@@ -298,5 +309,3 @@ def build_core_runtime(
         memory_runtime,
         presence,
     )
-
-

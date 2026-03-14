@@ -26,6 +26,7 @@ class RagTrace:
     session_key: str
     original_query: str             # 改写前的原始 query（agent: user_msg）
     query: str                      # 实际用于检索的 query（route decision 改写后）
+    gate_type: str | None           # 'query_rewriter' | 'history_route' | None
     route_decision: str | None      # 'RETRIEVE' | 'NO_RETRIEVE'（仅 agent）
     route_latency_ms: int | None
     hyde_hypothesis: str | None     # HyDE 生成的假设文本，None = 未使用

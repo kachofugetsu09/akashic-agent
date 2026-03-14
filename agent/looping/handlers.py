@@ -15,6 +15,7 @@ from memory2.injection_planner import (
     retrieve_procedure_items,
 )
 from memory2.query_builder import build_procedure_queries
+from memory2.query_rewriter import RewriteDecision
 
 if TYPE_CHECKING:
     from agent.looping.core import AgentLoop
@@ -97,6 +98,66 @@ class ConversationTurnHandler:
         # 3. 最后拼成一个轻量 hint，供 procedure query builder 做语义补足。
         return " ".join(parts)
 
+    @staticmethod
+    def _history_memory_types_from_hint(memory_types_hint: list[str]) -> list[str]:
+        result = [item for item in memory_types_hint if item in {"event", "profile"}]
+        return result or ["event", "profile"]
+
+    @staticmethod
+    def _build_query_rewriter_gate_result(
+        decision: RewriteDecision,
+    ) -> dict[str, object]:
+        return {
+            "gate_type": "query_rewriter",
+            "procedure_query": decision.procedure_query,
+            "history_query": decision.history_query,
+            "route_decision": "RETRIEVE" if decision.needs_retrieval else "NO_RETRIEVE",
+            "route_latency_ms": decision.latency_ms,
+            "fallback_reason": "",
+            "history_memory_types": ConversationTurnHandler._history_memory_types_from_hint(
+                decision.memory_types_hint
+            ),
+        }
+
+    async def _run_history_route_fallback(
+        self,
+        *,
+        msg: InboundMessage,
+        recent_turns: str,
+        runtime_md: dict,
+    ) -> tuple[list[dict], dict[str, object]]:
+        loop = self._loop
+        p_queries = build_procedure_queries(
+            msg.content,
+            context_hint=self._build_procedure_context_hint(msg),
+        )
+        p_task = asyncio.create_task(
+            retrieve_procedure_items(
+                loop._memory_port,
+                queries=p_queries,
+                top_k=loop._memory_top_k_procedure,
+            )
+        )
+        route_task = asyncio.create_task(
+            loop._decide_history_route(
+                user_msg=msg.content,
+                metadata=runtime_md,
+                recent_history=recent_turns,
+            )
+        )
+        p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
+        route_reason = loop._trace_route_reason(route_decision_obj)
+        gate_result = {
+            "gate_type": "history_route",
+            "procedure_query": p_queries[0] if p_queries else msg.content,
+            "history_query": route_decision_obj.rewritten_query,
+            "route_decision": "RETRIEVE" if route_decision_obj.needs_history else "NO_RETRIEVE",
+            "route_latency_ms": route_decision_obj.latency_ms,
+            "fallback_reason": "" if route_reason == "ok" else route_reason,
+            "history_memory_types": ["event", "profile"],
+        }
+        return p_items, gate_result
+
     async def _retrieve_memory_block(
         self,
         *,
@@ -112,15 +173,12 @@ class ConversationTurnHandler:
         try:
             route_decision = "RETRIEVE"
             rewritten_query = msg.content
+            gate_type = "history_route"
             fallback_reason = ""
             gate_latency_ms: dict[str, int] = {}
             runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
 
-            # 1. 先并行获取 procedure items 和 history route decision，压缩门控延迟。
-            p_queries = build_procedure_queries(
-                msg.content,
-                context_hint=self._build_procedure_context_hint(msg),
-            )
+            # 1. 先做 gate 决策：正式主路径优先 query_rewriter，缺失时回退旧 history_route。
             recent_turns = loop._format_gate_history(main_history, max_turns=3)
             now = datetime.now()
             date_str = now.strftime(f"%Y-%m-%d {_WEEKDAY_CN[now.weekday()]} %H:%M")
@@ -132,31 +190,36 @@ class ConversationTurnHandler:
                 if hyde_turns
                 else f"当前时间：{date_str}"
             )
-            p_task = asyncio.create_task(
-                retrieve_procedure_items(
-                    loop._memory_port,
-                    queries=p_queries,
-                    top_k=loop._memory_top_k_procedure,
+            if loop._query_rewriter is not None:
+                gate_result = self._build_query_rewriter_gate_result(
+                    await loop._query_rewriter.decide(
+                        user_msg=msg.content,
+                        recent_history=recent_turns,
+                    )
                 )
-            )
-            route_task = asyncio.create_task(
-                loop._decide_history_route(
-                    user_msg=msg.content,
-                    metadata=runtime_md,
-                    recent_history=recent_turns,
+                if gate_result["route_decision"] == "RETRIEVE":
+                    p_items = await retrieve_procedure_items(
+                        loop._memory_port,
+                        queries=[str(gate_result["procedure_query"]), msg.content],
+                        top_k=loop._memory_top_k_procedure,
+                    )
+                else:
+                    p_items = []
+            else:
+                p_items, gate_result = await self._run_history_route_fallback(
+                    msg=msg,
+                    recent_turns=recent_turns,
+                    runtime_md=runtime_md,
                 )
-            )
-            p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
-            needs_history = route_decision_obj.needs_history
-            rewritten_query = route_decision_obj.rewritten_query
-            route_reason = loop._trace_route_reason(route_decision_obj)
-            route_ms = route_decision_obj.latency_ms
 
-            # 2. 再按 route decision 决定是否继续检索 history items。
+            gate_type = str(gate_result["gate_type"])
+            rewritten_query = str(gate_result["history_query"])
+            route_decision = str(gate_result["route_decision"])
+            route_ms = int(gate_result["route_latency_ms"])
+            fallback_reason = str(gate_result["fallback_reason"])
+            history_memory_types = list(gate_result["history_memory_types"])
             gate_latency_ms["route"] = route_ms
-            if route_reason != "ok":
-                fallback_reason = route_reason
-            route_decision = "RETRIEVE" if needs_history else "NO_RETRIEVE"
+            needs_history = route_decision == "RETRIEVE"
 
             h_items: list[dict] = []
             h_scope_mode = "disabled"
@@ -170,7 +233,7 @@ class ConversationTurnHandler:
                 h_items, h_scope_mode = await retrieve_history_items(
                     loop._memory_port,
                     rewritten_query,
-                    memory_types=["event", "profile"],
+                    memory_types=history_memory_types,
                     top_k=loop._memory_top_k_history,
                     allow_global=True,
                     context=hyde_context,
@@ -234,6 +297,7 @@ class ConversationTurnHandler:
                 user_msg=msg.content,
                 items=selected_items,
                 injected_block=retrieved_block,
+                gate_type=gate_type,
                 route_decision=route_decision,
                 rewritten_query=rewritten_query,
                 fallback_reason=fallback_reason,
@@ -250,6 +314,7 @@ class ConversationTurnHandler:
                 session_key=key,
                 user_msg=msg.content,
                 rewritten_query=rewritten_query,
+                gate_type=gate_type,
                 route_decision=route_decision,
                 route_latency_ms=route_ms,
                 h_scope_mode=h_scope_mode,
@@ -269,6 +334,7 @@ class ConversationTurnHandler:
                 user_msg=msg.content,
                 items=[],
                 injected_block="",
+                gate_type=gate_type,
                 fallback_reason="retrieve_exception",
                 error=str(e),
             )
@@ -276,6 +342,7 @@ class ConversationTurnHandler:
                 session_key=key,
                 user_msg=msg.content,
                 rewritten_query=msg.content,
+                gate_type=gate_type,
                 route_decision=None,
                 route_latency_ms=None,
                 h_scope_mode=None,
@@ -440,6 +507,7 @@ def _build_agent_rag_trace(
     session_key: str,
     user_msg: str,
     rewritten_query: str,
+    gate_type: str | None,
     route_decision: str | None,
     route_latency_ms: int | None,
     h_scope_mode: str | None,
@@ -490,6 +558,7 @@ def _build_agent_rag_trace(
         session_key=session_key,
         original_query=user_msg,
         query=rewritten_query,
+        gate_type=gate_type,
         route_decision=route_decision,
         route_latency_ms=route_latency_ms,
         hyde_hypothesis=hyde_result.hypothesis if hyde_result else None,

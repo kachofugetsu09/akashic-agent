@@ -128,13 +128,13 @@ def _write_rag(conn, e: RagTrace, ts: str) -> None:
             """
             INSERT INTO rag_events (
                 ts, source, session_key, tick_id,
-                original_query, query,
+                original_query, query, gate_type,
                 route_decision, route_latency_ms,
                 hyde_hypothesis,
                 history_scope_mode, history_gate_reason,
                 injected_block, preference_block, preference_query,
                 fallback_reason, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -143,6 +143,7 @@ def _write_rag(conn, e: RagTrace, ts: str) -> None:
                 e.tick_id or None,
                 e.original_query,
                 e.query,
+                e.gate_type,
                 e.route_decision,
                 e.route_latency_ms,
                 e.hyde_hypothesis,

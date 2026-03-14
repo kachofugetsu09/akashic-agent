@@ -21,6 +21,7 @@ from bus.internal_events import is_spawn_completion_message
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from memory2.post_response_worker import PostResponseMemoryWorker
+from memory2.query_rewriter import QueryRewriter
 from proactive.presence import PresenceStore
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
@@ -77,6 +78,7 @@ class AgentLoop(
         memory_hyde_enabled: bool = False,
         memory_hyde_timeout_ms: int = 2000,
         observe_writer=None,
+        query_rewriter: QueryRewriter | None = None,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -139,6 +141,7 @@ class AgentLoop(
         self.context = ContextBuilder(workspace, memory=self._memory_port)
         self._post_mem_failures = 0
         self._observe_writer = observe_writer
+        self._query_rewriter = query_rewriter
         self._conversation_handler = ConversationTurnHandler(self)
         self._internal_event_handler = InternalEventHandler(self)
 

@@ -484,6 +484,7 @@ class DefaultMemoryRetrievalPort:
             session_key=session_key,
             original_query=result.query,
             query=result.query,
+            gate_type=None,
             route_decision=None,
             route_latency_ms=None,
             hyde_hypothesis=None,

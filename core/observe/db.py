@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS rag_events (
     tick_id             TEXT,           -- proactive: 关联 proactive_decisions.tick_id
     original_query      TEXT    NOT NULL,
     query               TEXT    NOT NULL,
+    gate_type           TEXT,
     route_decision      TEXT,
     route_latency_ms    INTEGER,
     hyde_hypothesis     TEXT,
@@ -157,6 +158,7 @@ _PROACTIVE_DECISION_COLUMNS: dict[str, str] = {
 
 _RAG_EVENT_COLUMNS: dict[str, str] = {
     "tick_id": "TEXT",
+    "gate_type": "TEXT",
 }
 
 _TURNS_COLUMNS: dict[str, str] = {

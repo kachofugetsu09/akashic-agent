@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS rag_events (
     -- query 链路
     original_query      TEXT    NOT NULL,   -- agent: user_msg; proactive: build_proactive_memory_query 输出前的原始 query
     query               TEXT    NOT NULL,   -- 实际用于检索的 query（route decision 改写后）
+    gate_type           TEXT,
     route_decision      TEXT,               -- 'RETRIEVE' | 'NO_RETRIEVE'（仅 agent）
     route_latency_ms    INTEGER,
     -- HyDE
