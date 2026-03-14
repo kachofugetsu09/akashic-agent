@@ -9,6 +9,7 @@ import json_repair
 
 from agent.provider import LLMProvider
 from memory2.memorizer import Memorizer
+from memory2.profile_extractor import ProfileFact
 from memory2.retriever import Retriever
 from memory2.rule_schema import (
     build_procedure_rule_schema,
@@ -28,12 +29,15 @@ class PostResponseMemoryWorker:
     """
 
     SUPERSEDE_THRESHOLD = 0.82
+    SUPERSEDE_THRESHOLD_PROFILE = 0.78
     SUPERSEDE_CANDIDATE_K = 5
-    TOKEN_BUDGET_PER_RUN = 768
+    TOKEN_BUDGET_PER_RUN = 1000
     TOKENS_EXTRACT_IMPLICIT = 384
     TOKENS_EXTRACT_INVALIDATION = 96
     TOKENS_CHECK_INVALIDATE = 96
     TOKENS_CHECK_SUPERSEDE = 96
+    TOKENS_EXTRACT_PROFILE = 200
+    TOKENS_SAVE_PROFILE = 96
 
     def __init__(
         self,
@@ -42,6 +46,8 @@ class PostResponseMemoryWorker:
         light_provider: LLMProvider,
         light_model: str,
         tagger=None,  # ProcedureTagger | None
+        profile_extractor=None,  # ProfileFactExtractor | None
+        profile_supersede_enabled: bool = True,
         observe_writer=None,
     ) -> None:
         self._memorizer = memorizer
@@ -49,6 +55,8 @@ class PostResponseMemoryWorker:
         self._provider = light_provider
         self._model = light_model
         self._tagger = tagger
+        self._profile_extractor = profile_extractor
+        self._profile_supersede_enabled = profile_supersede_enabled
         self._observe_writer = observe_writer
 
     async def run(
@@ -85,14 +93,18 @@ class PostResponseMemoryWorker:
                 already_memorized,
                 protected_ids,
             )
-            if not new_items:
-                return
-
             for item in new_items:
                 token_budget = await self._save_with_supersede(
                     item,
                     source_ref,
                     protected_ids,
+                    token_budget,
+                )
+            if self._profile_extractor is not None:
+                token_budget = await self._run_profile_extraction(
+                    user_msg,
+                    agent_response,
+                    source_ref,
                     token_budget,
                 )
         except Exception as e:
@@ -615,11 +627,139 @@ ASSISTANT: {agent_response}
             logger.warning(f"post_response_memorize save failed: {e}")
         return token_budget
 
+    async def _run_profile_extraction(
+        self,
+        user_msg: str,
+        agent_response: str,
+        source_ref: str,
+        token_budget: int,
+    ) -> int:
+        # 1. 先检查本轮是否还有 profile 提取预算。
+        ok, token_budget = self._consume_budget(
+            token_budget,
+            self.TOKENS_EXTRACT_PROFILE,
+        )
+        if not ok:
+            logger.debug("post_response profile extraction skipped: token budget exhausted")
+            return token_budget
+        try:
+            # 2. 再加载少量近期 profile 摘要，供 extractor 做轻量查重提示。
+            existing_profile = await self._load_existing_profile_context(user_msg)
+
+            # 3. 最后提取并逐条写入 profile facts。
+            facts = await self._profile_extractor.extract_from_exchange(
+                user_msg,
+                agent_response,
+                existing_profile=existing_profile,
+            )
+            for fact in facts:
+                token_budget = await self._save_profile_with_supersede(
+                    fact,
+                    source_ref,
+                    token_budget,
+                )
+        except Exception as e:
+            logger.warning("per-turn profile extraction failed: %s", e)
+        return token_budget
+
+    async def _load_existing_profile_context(self, query: str) -> str:
+        try:
+            items = await self._retriever.retrieve(
+                query,
+                memory_types=["profile"],
+                top_k=3,
+            )
+        except Exception as e:
+            logger.warning("post_response existing_profile retrieve failed: %s", e)
+            return ""
+
+        lines: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            summary = str(item.get("summary", "") or "").strip()
+            key = self._normalize_text(summary)
+            if not summary or not key or key in seen:
+                continue
+            seen.add(key)
+            lines.append(summary)
+        return "\n".join(lines)
+
+    async def _save_profile_with_supersede(
+        self,
+        fact: ProfileFact,
+        source_ref: str,
+        token_budget: int,
+    ) -> int:
+        # 1. 先写入新条目，保证 supersede 检查失败时新事实仍保留。
+        try:
+            saved_result = await self._memorizer.save_item(
+                summary=fact.summary,
+                memory_type="profile",
+                extra={"category": fact.category},
+                source_ref=source_ref,
+                happened_at=fact.happened_at,
+            )
+        except Exception as e:
+            logger.warning("post_response profile save failed: %s", e)
+            return token_budget
+
+        if fact.category not in {"status", "purchase"} or not self._profile_supersede_enabled:
+            return token_budget
+
+        ok, token_budget = self._consume_budget(token_budget, self.TOKENS_SAVE_PROFILE)
+        if not ok:
+            logger.debug("post_response profile supersede skipped: token budget exhausted")
+            return token_budget
+
+        try:
+            candidates = await self._retriever.retrieve(
+                fact.summary,
+                memory_types=["profile"],
+                top_k=self.SUPERSEDE_CANDIDATE_K,
+            )
+        except Exception as e:
+            logger.warning("post_response profile retrieve failed: %s", e)
+            return token_budget
+
+        saved_id = self._parse_saved_item_id(saved_result)
+        high_sim = [
+            item
+            for item in candidates
+            if isinstance(item, dict)
+            and item.get("score", 0) >= self.SUPERSEDE_THRESHOLD_PROFILE
+            and (item.get("extra_json") or {}).get("category") == fact.category
+            and str(item.get("id", "")) != saved_id
+        ][: self.SUPERSEDE_CANDIDATE_K]
+        if not high_sim:
+            return token_budget
+
+        try:
+            supersede_ids, token_budget = await self._check_supersede(
+                fact.summary,
+                high_sim,
+                token_budget,
+                consume_budget=False,
+            )
+        except Exception as e:
+            logger.warning("profile supersede check failed: %s", e)
+            return token_budget
+        if supersede_ids:
+            self._memorizer.supersede_batch(supersede_ids)
+        return token_budget
+
+    @staticmethod
+    def _parse_saved_item_id(result: str) -> str:
+        text = str(result or "")
+        if ":" not in text:
+            return ""
+        return text.split(":", 1)[1].strip()
+
     async def _check_supersede(
         self,
         new_summary: str,
         candidates: list[dict],
         token_budget: int,
+        consume_budget: bool = True,
     ) -> tuple[list[str], int]:
         """让 light model 判断新条目覆盖了哪些旧条目。"""
         old_block = "\n".join(f"- id={c['id']} | {c['summary']}" for c in candidates)
@@ -636,15 +776,16 @@ ASSISTANT: {agent_response}
 - 若无矛盾，返回空数组
 
 只返回 JSON 数组，如 ["abc123", "def456"] 或 []"""
-        ok, token_budget = self._consume_budget(
-            token_budget,
-            self.TOKENS_CHECK_SUPERSEDE,
-        )
-        if not ok:
-            logger.debug(
-                "post_response check_supersede skipped: token budget exhausted"
+        if consume_budget:
+            ok, token_budget = self._consume_budget(
+                token_budget,
+                self.TOKENS_CHECK_SUPERSEDE,
             )
-            return [], token_budget
+            if not ok:
+                logger.debug(
+                    "post_response check_supersede skipped: token budget exhausted"
+                )
+                return [], token_budget
 
         try:
             resp = await self._provider.chat(

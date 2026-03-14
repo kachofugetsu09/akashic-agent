@@ -146,3 +146,42 @@ async def test_duplicate_facts_within_one_extraction_are_deduplicated():
     )
     facts = await extractor.extract("买了 Zigbee 网关")
     assert len(facts) == 1
+
+
+@pytest.mark.asyncio
+async def test_extract_from_exchange_returns_only_targeted_categories():
+    extractor = _make_extractor(
+        """
+<facts>
+<fact><summary>用户刚买了一个新键盘</summary><category>purchase</category><happened_at>2026-03-15</happened_at></fact>
+<fact><summary>用户决定采用新方案</summary><category>decision</category><happened_at>2026-03-15</happened_at></fact>
+<fact><summary>用户正在等待键盘到货</summary><category>status</category><happened_at></happened_at></fact>
+</facts>
+"""
+    )
+    facts = await extractor.extract_from_exchange("我买了键盘", "记住了")
+    assert [fact.category for fact in facts] == ["purchase", "status"]
+
+
+@pytest.mark.asyncio
+async def test_extract_from_exchange_empty_for_chitchat():
+    extractor = _make_extractor("<facts></facts>")
+    facts = await extractor.extract_from_exchange("你好", "你好呀")
+    assert facts == []
+
+
+@pytest.mark.asyncio
+async def test_extract_from_exchange_includes_both_user_and_agent_in_prompt():
+    client = MagicMock()
+    captured: list[str] = []
+
+    async def _cap(*, messages, **kwargs):
+        captured.append(messages[0]["content"])
+        return "<facts></facts>"
+
+    client.chat = AsyncMock(side_effect=_cap)
+    extractor = ProfileFactExtractor(llm_client=client)
+    await extractor.extract_from_exchange("我刚买了一个新键盘", "记住了")
+    assert captured
+    assert "我刚买了一个新键盘" in captured[0]
+    assert "记住了" in captured[0]

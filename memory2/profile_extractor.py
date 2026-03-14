@@ -59,6 +59,40 @@ class ProfileFactExtractor:
         content = str(getattr(response, "content", response) or "")
         return self._parse_facts(content)
 
+    async def extract_from_exchange(
+        self,
+        user_msg: str,
+        agent_response: str,
+        *,
+        existing_profile: str = "",
+    ) -> list[ProfileFact]:
+        """只从单轮 user/assistant 交换中提取 purchase/status/personal_fact。"""
+        if not (str(user_msg or "").strip() or str(agent_response or "").strip()):
+            return []
+
+        prompt = self._build_exchange_prompt(
+            user_msg=user_msg,
+            agent_response=agent_response,
+            existing_profile=existing_profile,
+        )
+        try:
+            response = await asyncio.wait_for(
+                self._llm_client.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=[],
+                    model=self._model,
+                    max_tokens=min(self._max_tokens, 200),
+                ),
+                timeout=min(self._timeout_s, 0.6),
+            )
+        except Exception:
+            return []
+
+        content = str(getattr(response, "content", response) or "")
+        facts = self._parse_facts(content)
+        allowed = {"purchase", "status", "personal_fact"}
+        return [fact for fact in facts if fact.category in allowed]
+
     @staticmethod
     def _build_prompt(*, conversation: str, existing_profile: str) -> str:
         return f"""你是 profile 事实提取器。请只从对话里提取用户长期可检索的 profile 事实，并输出 XML。
@@ -86,6 +120,45 @@ class ProfileFactExtractor:
 <fact>
   <summary>...</summary>
   <category>purchase|decision|preference|status|personal_fact</category>
+  <happened_at>YYYY-MM-DD</happened_at>
+</fact>
+</facts>"""
+
+    @staticmethod
+    def _build_exchange_prompt(
+        *,
+        user_msg: str,
+        agent_response: str,
+        existing_profile: str,
+    ) -> str:
+        return f"""你是单轮 profile 事实提取器。只看这一轮对话（1 条 USER + 1 条 ASSISTANT），不要推断、不要联想。
+
+只允许提取以下 3 类：
+- purchase：用户刚购买/下单了什么
+- status：用户某件事的状态变化（等待、到货、完成、放弃）
+- personal_fact：用户关于自身的事实性披露
+
+禁止输出：
+- decision
+- preference
+- 纯闲聊、打招呼
+- 纯技术讨论
+- 任何不是用户本人事实的内容
+
+若 existing_profile 已有同一事实，不重复输出。
+
+当前已有 profile（用于查重）：
+{existing_profile or "（空）"}
+
+本轮对话：
+USER: {user_msg}
+ASSISTANT: {agent_response}
+
+只输出 XML：
+<facts>
+<fact>
+  <summary>...</summary>
+  <category>purchase|status|personal_fact</category>
   <happened_at>YYYY-MM-DD</happened_at>
 </fact>
 </facts>"""

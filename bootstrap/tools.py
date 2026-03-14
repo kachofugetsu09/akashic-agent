@@ -294,13 +294,21 @@ def build_core_runtime(
             if config.memory_v2.route_intention_enabled
             else None
         ),
-        sufficiency_checker=SufficiencyChecker(
-            llm_client=light_provider or provider,
-            model=config.light_model or config.model,
+        sufficiency_checker=(
+            SufficiencyChecker(
+                llm_client=light_provider or provider,
+                model=config.light_model or config.model,
+            )
+            if config.memory_v2.sufficiency_check_enabled
+            else None
         ),
-        profile_extractor=ProfileFactExtractor(
-            llm_client=light_provider or provider,
-            model=config.light_model or config.model,
+        profile_extractor=(
+            ProfileFactExtractor(
+                llm_client=light_provider or provider,
+                model=config.light_model or config.model,
+            )
+            if config.memory_v2.profile_extraction_enabled
+            else None
         ),
     )
 

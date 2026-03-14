@@ -27,6 +27,7 @@ def build_memory_runtime(
     from memory2.embedder import Embedder
     from memory2.memorizer import Memorizer
     from memory2.procedure_tagger import ProcedureTagger
+    from memory2.profile_extractor import ProfileFactExtractor
     from memory2.retriever import Retriever
     from memory2.sop_indexer import SopIndexer
     from memory2.store import MemoryStore2
@@ -97,6 +98,15 @@ def build_memory_runtime(
         light_provider=light_provider or provider,
         light_model=config.light_model or config.model,
         tagger=tagger,
+        profile_extractor=(
+            ProfileFactExtractor(
+                llm_client=light_provider or provider,
+                model=config.light_model or config.model,
+            )
+            if config.memory_v2.profile_extraction_enabled
+            else None
+        ),
+        profile_supersede_enabled=config.memory_v2.profile_supersede_enabled,
         observe_writer=observe_writer,
     )
     tools.register(

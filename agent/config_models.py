@@ -57,6 +57,9 @@ class MemoryV2Config:
     gate_max_tokens: int = 96
     hyde_enabled: bool = False
     hyde_timeout_ms: int = 2000
+    sufficiency_check_enabled: bool = True
+    profile_extraction_enabled: bool = True
+    profile_supersede_enabled: bool = True
 
 
 @dataclass
