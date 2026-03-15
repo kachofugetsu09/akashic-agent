@@ -152,13 +152,15 @@ def _register_spawn_tool(
         fetch_requester=http_resources.external_default,
     )
     if config.spawn_enabled:
-        tools.register(
-            SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
-            always_on=True,
-            tags=["meta", "background"],
-            risk="write",
-            search_keywords=["后台", "长任务", "异步", "继续处理", "spawn", "阻塞", "后台执行"],
-        )
+        # 暂时注释掉 spawn 工具注册，仅保留 subagent_manager 初始化，避免影响其他依赖链路。
+        # tools.register(
+        #     SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
+        #     always_on=True,
+        #     tags=["meta", "background"],
+        #     risk="write",
+        #     search_keywords=["后台", "长任务", "异步", "继续处理", "spawn", "阻塞", "后台执行"],
+        # )
+        pass
     return subagent_manager
 
 
