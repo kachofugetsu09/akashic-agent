@@ -1545,36 +1545,12 @@ class ProactiveEngine:
             return f"{title}\n{url}"
         return title
 
-    def _candidate_entries_for_rejection(
-        self,
-        ctx: DecisionContext,
-        evidence: EvidenceBundle,
-    ) -> list[tuple[str, str]]:
-        fetch = ctx.ensure_fetch()
-        return evidence.evidence_entries or self._primary_candidate_entries(
-            evidence.source_entries or fetch.new_entries
-        )
-
-    def _reject_current_candidates(self, entries: list[tuple[str, str]]) -> None:
-        # LLM / feature score 拒绝时，通过 MCP pending 给候选内容一段冷却期，
-        # 避免下次 tick 立即重复评估同一批内容。冷却时长由 MCP 的 pending_ttl_hours 控制。
-        if not entries:
-            return
-        try:
-            from proactive import mcp_sources
-            mcp_sources.mark_content_entries_pending(entries)
-        except Exception as e:
-            logger.warning("[proactive] rejection pending 标记失败: %s", e)
-
     async def _reject_and_try_skill_action(
         self,
         ctx: DecisionContext,
         evidence: EvidenceBundle,
     ) -> None:
         state = ctx.state
-        self._reject_current_candidates(
-            self._candidate_entries_for_rejection(ctx, evidence)
-        )
         await self._try_skill_action(now_utc=state.now_utc)
 
     def _consume_evidence_entries(self, evidence: EvidenceBundle) -> None:
