@@ -4,10 +4,12 @@ import json
 import logging
 import mimetypes
 import re
-from dataclasses import field, dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from session.store import SessionStore
 
 # 保留完整 tool_result 的最近轮次数；更早的轮次仅保留调用结构，结果替换为占位符
 _RECENT_TOOL_ROUNDS = 3
@@ -79,17 +81,14 @@ def _safe_filename(key: str) -> str:
 
 @dataclass
 class Session:
-    """
-    单次对话中的session,用JSONL格式储存。
-    消息是append-only的。
-    """
+    """单次对话中的 session。"""
 
-    key: str  # channel:chat_id
+    key: str
     messages: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
-    last_consolidated: int = 0  # Number of messages already consolidated to files
+    last_consolidated: int = 0
 
     def add_message(
         self, role: str, content: str, media: list[str] | None = None, **kwargs: Any
@@ -107,24 +106,12 @@ class Session:
         self.updated_at = datetime.now()
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
-        """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。
-
-        assistant 消息中的 tool_chain 会被展开为：
-          assistant(tool_calls) → tool(result) → ... → assistant(final_text)
-
-        近期 _RECENT_TOOL_ROUNDS 个 assistant 轮次保留完整 tool_result；
-        更早的轮次将 tool_result 内容替换为占位符，节省 token 同时保留因果结构。
-        """
+        """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。"""
         messages = self.messages[-max_messages:]
-
-        # 找到"近期边界"：倒数第 _RECENT_TOOL_ROUNDS 个 assistant 消息的索引
         assistant_indices = [
             i for i, m in enumerate(messages) if m.get("role") == "assistant"
         ]
-        if len(assistant_indices) > _RECENT_TOOL_ROUNDS:
-            recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS]
-        else:
-            recent_boundary = 0  # 全部视为近期
+        recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS] if len(assistant_indices) > _RECENT_TOOL_ROUNDS else 0
 
         out: list[dict[str, Any]] = []
         for i, m in enumerate(messages):
@@ -138,54 +125,50 @@ class Session:
                     _rebuild_user_content(text, media_paths) if media_paths else text
                 )
                 out.append({"role": "user", "content": user_content})
+                continue
 
-            elif role == "assistant":
-                tool_chain: list[dict] = m.get("tool_chain") or []
+            if role != "assistant":
+                continue
 
-                # 展开每个迭代组：assistant(tool_calls) + tool(results)
-                for group in tool_chain:
-                    calls: list[dict] = group.get("calls") or []
-                    if not calls:
-                        continue
+            tool_chain: list[dict] = m.get("tool_chain") or []
+            for group in tool_chain:
+                calls: list[dict] = group.get("calls") or []
+                if not calls:
+                    continue
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": group.get("text"),
+                        "tool_calls": [
+                            {
+                                "id": c["call_id"],
+                                "type": "function",
+                                "function": {
+                                    "name": c["name"],
+                                    "arguments": json.dumps(
+                                        c.get("arguments", {}), ensure_ascii=False
+                                    ),
+                                },
+                            }
+                            for c in calls
+                        ],
+                    }
+                )
+                for c in calls:
                     out.append(
                         {
-                            "role": "assistant",
-                            "content": group.get("text"),  # 可能为 None
-                            "tool_calls": [
-                                {
-                                    "id": c["call_id"],
-                                    "type": "function",
-                                    "function": {
-                                        "name": c["name"],
-                                        "arguments": json.dumps(
-                                            c.get("arguments", {}), ensure_ascii=False
-                                        ),
-                                    },
-                                }
-                                for c in calls
-                            ],
+                            "role": "tool",
+                            "tool_call_id": c["call_id"],
+                            "content": c["result"] if is_recent else _CLEARED,
                         }
                     )
-                    for c in calls:
-                        out.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": c["call_id"],
-                                "content": c["result"] if is_recent else _CLEARED,
-                            }
-                        )
 
-                # 最终文本回复：若该轮没有工具链，标记为推演内容，避免被后续轮次当成事实引用
-                content = m.get("content", "") or ""
-                if (
-                    not tool_chain
-                    and content
-                    and not content.startswith(_INFERENCE_TAG)
-                ):
-                    content = _INFERENCE_TAG + content
-                if content:
-                    content = _append_proactive_meta(content, m)
-                out.append({"role": "assistant", "content": content})
+            content = m.get("content", "") or ""
+            if not tool_chain and content and not content.startswith(_INFERENCE_TAG):
+                content = _INFERENCE_TAG + content
+            if content:
+                content = _append_proactive_meta(content, m)
+            out.append({"role": "assistant", "content": content})
 
         return out
 
@@ -196,23 +179,21 @@ class Session:
 
 
 class SessionManager:
-    # 每 N 次增量追加后触发一次全量重写，以刷新 metadata 首行（updated_at / last_consolidated）
     _METADATA_REFRESH_EVERY: int = 10
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.session_dir = workspace / "sessions"
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = workspace / "sessions.db"
+        self._store = SessionStore(self.db_path)
         self._cache: dict[str, Session] = {}
-        # per-session 写锁，防止全量重写与增量追加在 executor 中交错
         self._write_locks: dict[str, asyncio.Lock] = {}
-        # 记录各 session 自上次全量重写后的追加次数
-        self._append_counts: dict[str, int] = {}
 
-    def _get_session_path(self, key: str) -> Path:
-        """Get the file path for a session."""
-        safe_key = _safe_filename(key)
-        return self.session_dir / f"{safe_key}.jsonl"
+    def _lock(self, key: str) -> asyncio.Lock:
+        if key not in self._write_locks:
+            self._write_locks[key] = asyncio.Lock()
+        return self._write_locks[key]
 
     def get_or_create(self, key: str) -> Session:
         if key in self._cache:
@@ -221,180 +202,138 @@ class SessionManager:
         session = self._load(key)
         if session is None:
             session = Session(key)
+            self._ensure_session_meta(session)
         self._cache[key] = session
         return session
 
-    def _load(self, key: str) -> Session:
-        path = self._get_session_path(key)
-        if not path.exists():
+    def _load(self, key: str) -> Session | None:
+        meta = self._store.get_session_meta(key)
+        messages = self._store.fetch_session_messages(key)
+        if meta is None and not messages:
             return None
 
-        try:
-            messages = []
-            metadata = {}
-            created_at = None
-            last_consolidated = 0
+        created_at = (
+            datetime.fromisoformat(meta["created_at"])
+            if meta and meta.get("created_at")
+            else datetime.now()
+        )
+        updated_at = (
+            datetime.fromisoformat(meta["updated_at"])
+            if meta and meta.get("updated_at")
+            else datetime.now()
+        )
+        metadata = meta.get("metadata", {}) if meta else {}
+        last_consolidated = int(meta.get("last_consolidated", 0)) if meta else 0
+        return Session(
+            key=key,
+            messages=messages,
+            created_at=created_at,
+            updated_at=updated_at,
+            metadata=metadata,
+            last_consolidated=last_consolidated,
+        )
 
-            with open(path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
+    def _ensure_session_meta(self, session: Session) -> None:
+        self._store.upsert_session(
+            session.key,
+            created_at=session.created_at.isoformat(),
+            updated_at=session.updated_at.isoformat(),
+            last_consolidated=session.last_consolidated,
+            metadata=session.metadata,
+        )
 
-                    data = json.loads(line)
+    def _extract_extra(self, msg: dict[str, Any]) -> dict[str, Any]:
+        skip = {
+            "id",
+            "session_key",
+            "seq",
+            "role",
+            "content",
+            "timestamp",
+            "tool_chain",
+        }
+        return {k: v for k, v in msg.items() if k not in skip}
 
-                    if data.get("_type") == "metadata":
-                        metadata = data.get("metadata", {})
-                        created_at = (
-                            datetime.fromisoformat(data["created_at"])
-                            if data.get("created_at")
-                            else None
-                        )
-                        last_consolidated = data.get("last_consolidated", 0)
-                    else:
-                        messages.append(data)
-            return Session(
-                key=key,
-                messages=messages,
-                created_at=created_at or datetime.now(),
-                metadata=metadata,
-                last_consolidated=last_consolidated,
+    def _persist_messages(self, session: Session, messages: list[dict[str, Any]]) -> int:
+        next_seq = self._store.next_seq(session.key)
+        inserted = 0
+
+        # 1. 只写入尚未持久化（没有 id）的消息。
+        for msg in messages:
+            if msg.get("id"):
+                continue
+            ts = str(msg.get("timestamp") or datetime.now().astimezone().isoformat())
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False)
+            row = self._store.insert_message(
+                session.key,
+                role=str(msg.get("role") or "assistant"),
+                content=content,
+                ts=ts,
+                seq=next_seq,
+                tool_chain=msg.get("tool_chain"),
+                extra=self._extract_extra(msg),
             )
-        except Exception as e:
-            logging.warning(f"Failed to load {key}: {e}")
-            return None
+            msg.update(row)
+            next_seq += 1
+            inserted += 1
 
-    # ── per-session 写锁 ──────────────────────────────────────────────────────
+        # 2. 保持会话消息缓存里的时间字段完整。
+        for msg in messages:
+            if "timestamp" not in msg:
+                msg["timestamp"] = datetime.now().astimezone().isoformat()
 
-    def _lock(self, key: str) -> asyncio.Lock:
-        if key not in self._write_locks:
-            self._write_locks[key] = asyncio.Lock()
-        return self._write_locks[key]
-
-    # ── 同步底层实现（无锁，仅供 executor 或非 async 上下文调用）────────────────
-
-    def _write_full(self, session: Session) -> None:
-        """全量重写 JSONL，刷新 metadata 首行（last_consolidated / updated_at）。"""
-        path = self._get_session_path(session.key)
-        with open(path, "w") as f:
-            metadata_line = {
-                "_type": "metadata",
-                "key": session.key,
-                "created_at": session.created_at.isoformat(),
-                "updated_at": session.updated_at.isoformat(),
-                "last_consolidated": session.last_consolidated,
-                "metadata": session.metadata,
-            }
-            f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
-            for msg in session.messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-        self._cache[session.key] = session
-
-    def _write_append(self, session: Session, messages: list[dict]) -> None:
-        """追加消息行（不重写 metadata 首行，速度快）。"""
-        path = self._get_session_path(session.key)
-        with open(path, "a") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
-        self._cache[session.key] = session
-
-    # ── 公共 API ──────────────────────────────────────────────────────────────
+        return inserted
 
     def save(self, session: Session) -> None:
-        """同步全量重写（兼容非 async 上下文，如 CLI / 安全重试降级）。
-
-        不持 asyncio 锁，仅在确认无并发写操作时调用（例如启动/关闭路径）。
-        """
         session.updated_at = datetime.now()
-        self._append_counts[session.key] = 0
-        self._write_full(session)
+        self._ensure_session_meta(session)
+        self._persist_messages(session, session.messages)
+        self._store.upsert_session(
+            session.key,
+            created_at=session.created_at.isoformat(),
+            updated_at=session.updated_at.isoformat(),
+            last_consolidated=session.last_consolidated,
+            metadata=session.metadata,
+        )
+        self._cache[session.key] = session
 
     async def save_async(self, session: Session) -> None:
-        """异步全量重写，持有 per-session 写锁，用于 consolidation 和 proactive 写入。"""
         session.updated_at = datetime.now()
         async with self._lock(session.key):
-            self._append_counts[session.key] = 0
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._write_full, session)
+            self.save(session)
 
     async def append_messages(self, session: Session, messages: list[dict]) -> None:
-        """增量追加消息（普通对话路径），持有 per-session 写锁。
-
-        每 _METADATA_REFRESH_EVERY 次触发一次全量重写，保持 metadata 首行时效。
-        """
         session.updated_at = datetime.now()
         msgs_copy = list(messages)
         async with self._lock(session.key):
-            cnt = self._append_counts.get(session.key, 0) + 1
-            loop = asyncio.get_event_loop()
-            if cnt >= self._METADATA_REFRESH_EVERY:
-                self._append_counts[session.key] = 0
-                await loop.run_in_executor(None, self._write_full, session)
-            else:
-                self._append_counts[session.key] = cnt
-                await loop.run_in_executor(None, self._write_append, session, msgs_copy)
+            # 1. 确保 session 元数据存在并刷新 updated_at。
+            self._ensure_session_meta(session)
+            # 2. 追加写入本次新增消息，并补齐稳定 id。
+            self._persist_messages(session, msgs_copy)
+            # 3. 回写 session 元数据（含 last_consolidated / metadata）。
+            self._store.upsert_session(
+                session.key,
+                created_at=session.created_at.isoformat(),
+                updated_at=session.updated_at.isoformat(),
+                last_consolidated=session.last_consolidated,
+                metadata=session.metadata,
+            )
+            self._cache[session.key] = session
 
     def invalidate(self, key: str) -> None:
-        """Remove a session from the in-memory cache."""
         self._cache.pop(key, None)
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        """
-        List all sessions.
-
-        Returns:
-            List of session info dicts.
-        """
-        sessions = []
-
-        for path in self.session_dir.glob("*.jsonl"):
-            try:
-                # Read just the metadata line
-                with open(path) as f:
-                    first_line = f.readline().strip()
-                    if first_line:
-                        data = json.loads(first_line)
-                        if data.get("_type") == "metadata":
-                            sessions.append(
-                                {
-                                    "key": path.stem.replace("_", ":"),
-                                    "created_at": data.get("created_at"),
-                                    "updated_at": data.get("updated_at"),
-                                    "path": str(path),
-                                }
-                            )
-            except Exception:
-                continue
-
-        return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
+        sessions = self._store.list_sessions()
+        for item in sessions:
+            item["path"] = str(self.db_path)
+        return sessions
 
     def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
-        """返回指定 channel 的所有 session 的 metadata（只读首行，不加载消息）。
-
-        返回列表元素形如：{"key": "telegram:123456", "chat_id": "123456", "metadata": {...}}
-        """
-        results = []
-        prefix = _safe_filename(channel + ":")
-        for path in self.session_dir.glob(f"{prefix}*.jsonl"):
-            try:
-                with open(path) as f:
-                    first_line = f.readline().strip()
-                if not first_line:
-                    continue
-                data = json.loads(first_line)
-                if data.get("_type") != "metadata":
-                    continue
-                key = data.get("key") or path.stem.replace("_", ":", 1)
-                chat_id = (
-                    key.split(":", 1)[-1] if ":" in key else path.stem[len(prefix) :]
-                )
-                results.append(
-                    {
-                        "key": key,
-                        "chat_id": chat_id,
-                        "metadata": data.get("metadata", {}),
-                    }
-                )
-            except Exception:
-                continue
-        return results
+        try:
+            return self._store.get_channel_metadata(channel)
+        except Exception as e:
+            logging.warning("Failed to read channel metadata for %s: %s", channel, e)
+            return []
