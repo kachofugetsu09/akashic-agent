@@ -8,8 +8,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from openai import AsyncOpenAI
+
+_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ class ToolCall:
 class LLMResponse:
     content: str | None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    thinking: str | None = None
 
 
 class LLMProvider:
@@ -104,7 +108,14 @@ class LLMProvider:
                     )
                 )
 
-        return LLMResponse(content=msg.content, tool_calls=tool_calls)
+        raw = msg.content
+        thinking: str | None = None
+        if raw:
+            m = _THINK_RE.search(raw)
+            if m:
+                thinking = m.group(1).strip()
+                raw = _THINK_RE.sub("", raw).strip() or None
+        return LLMResponse(content=raw, tool_calls=tool_calls, thinking=thinking)
 
     async def _create_with_retry(self, kwargs: dict) -> object:
         last_err: Exception | None = None

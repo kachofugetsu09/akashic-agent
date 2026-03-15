@@ -15,7 +15,7 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
-from channels.telegram_utils import send_markdown
+from channels.telegram_utils import send_markdown, send_thinking_block
 from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -351,6 +351,8 @@ class TelegramChannel:
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
+        if msg.thinking:
+            await send_thinking_block(self._app.bot, msg.chat_id, msg.thinking)
         await send_markdown(self._app.bot, msg.chat_id, msg.content)
 
     async def _safe_send_typing(

@@ -10,7 +10,7 @@ Telegram Markdown 发送工具
 import asyncio
 import logging
 
-from telegram import Bot
+from telegram import Bot, MessageEntity as TgEntity
 from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegramify_markdown.converter import convert_with_segments
 from telegramify_markdown.entity import MessageEntity, split_entities
@@ -148,3 +148,23 @@ def _split_text(text: str, limit: int) -> list[str]:
     if current:
         chunks.append("".join(current))
     return chunks
+
+
+async def send_thinking_block(bot: Bot, chat_id: int | str, thinking: str) -> None:
+    """Send thinking content as an expandable blockquote message."""
+    header = "💭 思考过程\n\n"
+    content = header + thinking
+    utf16_len = len(content.encode("utf-16-le")) // 2
+    entity = TgEntity(type="expandable_blockquote", offset=0, length=utf16_len)
+    try:
+        await _send_with_retry(
+            lambda: bot.send_message(
+                chat_id=int(chat_id),
+                text=content,
+                entities=[entity],
+            ),
+            label="send_message(thinking_block)",
+        )
+        logger.info("[telegram] thinking block sent, length=%d", len(thinking))
+    except Exception as e:
+        logger.warning("[telegram] failed to send thinking block, skipping: %s", e)

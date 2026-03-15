@@ -30,6 +30,7 @@ class OutboundMessage:
     channel: str  # 目标渠道
     chat_id: str  # 目标会话 ID
     content: str
+    thinking: str | None = None
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)

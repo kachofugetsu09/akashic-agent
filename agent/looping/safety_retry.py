@@ -18,7 +18,7 @@ class AgentLoopSafetyRetryMixin:
         skill_names: list[str] | None = None,
         base_history: list[dict] | None = None,
         retrieved_memory_block: str = "",
-    ) -> tuple[str, list[str], list[dict]]:
+    ) -> tuple[str, list[str], list[dict], str | None]:
         """递减历史窗口重试，处理 LLM 安全拦截错误。"""
         source_history = base_history or session.get_history(
             max_messages=self.memory_window
@@ -53,7 +53,7 @@ class AgentLoopSafetyRetryMixin:
                 retrieved_memory_block=retrieved_memory_block,
             )
             try:
-                content, tools_used, tool_chain, _ = await self._run_agent_loop(
+                content, tools_used, tool_chain, _, thinking = await self._run_agent_loop(
                     initial_messages,
                     request_time=msg.timestamp,
                     preloaded_tools=preloaded,
@@ -73,7 +73,7 @@ class AgentLoopSafetyRetryMixin:
                 if getattr(self, "_tool_search_enabled", False) and tools_used:
                     self._update_lru(session.key, tools_used)
 
-                return content, tools_used, tool_chain
+                return content, tools_used, tool_chain, thinking
             except ContentSafetyError:
                 if attempt < len(_SAFETY_RETRY_RATIOS) - 1:
                     next_window = int(total_history * _SAFETY_RETRY_RATIOS[attempt + 1])
@@ -83,7 +83,7 @@ class AgentLoopSafetyRetryMixin:
                     )
                 else:
                     logger.warning("安全拦截：所有窗口均失败，当前消息本身可能违规")
-                    return "你的消息触发了安全审查，无法处理。", [], []
+                    return "你的消息触发了安全审查，无法处理。", [], [], None
             except ContextLengthError:
                 if attempt < len(_SAFETY_RETRY_RATIOS) - 1:
                     next_window = int(total_history * _SAFETY_RETRY_RATIOS[attempt + 1])
@@ -93,9 +93,9 @@ class AgentLoopSafetyRetryMixin:
                     )
                 else:
                     logger.warning("上下文超长：所有窗口均失败，清空历史后仍超长")
-                    return "上下文过长无法处理，请尝试新建对话。", [], []
+                    return "上下文过长无法处理，请尝试新建对话。", [], [], None
 
-        return "（安全重试异常）", [], []
+        return "（安全重试异常）", [], [], None
 
     def _update_lru(self, session_key: str, tools_used: list[str]) -> None:
         """将本轮实际调用的非核心工具写入 LRU，超出容量时驱逐最久未用的。"""

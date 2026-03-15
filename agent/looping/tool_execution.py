@@ -244,6 +244,7 @@ class AgentLoopToolExecutionMixin:
                     tools_used,
                     tool_chain,
                     visible_names,
+                    response.thinking,
                 )
 
         logger.warning(f"已达到最大迭代次数 {self.max_iterations}")
@@ -253,7 +254,7 @@ class AgentLoopToolExecutionMixin:
             iteration=self.max_iterations,
             tools_used=tools_used,
         )
-        return summary, tools_used, tool_chain, visible_names
+        return summary, tools_used, tool_chain, visible_names, None
 
     async def _summarize_incomplete_progress(
         self,

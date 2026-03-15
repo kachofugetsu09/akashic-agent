@@ -42,7 +42,7 @@ class ConversationTurnHandler:
             main_history=main_history,
         )
         # 3. 用会话历史、skill 和 memory block 执行真正的 conversation turn。
-        final_content, tools_used, tool_chain = await self._run_conversation_turn(
+        final_content, tools_used, tool_chain, thinking = await self._run_conversation_turn(
             msg=msg,
             session=session,
             skill_mentions=skill_mentions,
@@ -57,6 +57,7 @@ class ConversationTurnHandler:
             final_content=final_content,
             tools_used=tools_used,
             tool_chain=tool_chain,
+            thinking=thinking,
         )
         # 5. 写入 observe trace（非阻塞）。
         self._emit_observe_traces(
@@ -72,6 +73,7 @@ class ConversationTurnHandler:
             final_content=final_content,
             tools_used=tools_used,
             tool_chain=tool_chain,
+            thinking=thinking,
         )
 
     def _collect_skill_mentions(self, msg: InboundMessage) -> list[str]:
@@ -488,13 +490,13 @@ class ConversationTurnHandler:
         skill_mentions: list[str],
         main_history: list[dict],
         retrieved_block: str,
-    ) -> tuple[str, list[str], list[dict]]:
-        """真正执行一轮 agent 对话，并返回内容、工具使用和 tool_chain。"""
+    ) -> tuple[str, list[str], list[dict], str | None]:
+        """真正执行一轮 agent 对话，并返回内容、工具使用、tool_chain 和 thinking。"""
         loop = self._loop
         # 1. 先把 channel/chat_id 写进 tool context，保证工具知道当前会话来源。
         loop._set_tool_context(msg.channel, msg.chat_id)
         # 2. 再统一走 safety retry 包装，避免模型输出异常直接打断主流程。
-        final_content, tools_used, tool_chain = await loop._run_with_safety_retry(
+        final_content, tools_used, tool_chain, thinking = await loop._run_with_safety_retry(
             msg,
             session,
             skill_names=skill_mentions or None,
@@ -505,7 +507,7 @@ class ConversationTurnHandler:
         # 3. 最后保证 content 至少有一个兜底字符串，避免 assistant 回复为空。
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
-        return final_content, tools_used, tool_chain
+        return final_content, tools_used, tool_chain, thinking
 
     async def _persist_turn(
         self,
@@ -516,6 +518,7 @@ class ConversationTurnHandler:
         final_content: str,
         tools_used: list[str],
         tool_chain: list[dict],
+        thinking: str | None = None,
     ) -> None:
         """把本轮结果统一写回 session、presence 和 post-response worker。"""
         loop = self._loop
@@ -525,6 +528,7 @@ class ConversationTurnHandler:
         logger.info(f"Response to {msg.channel}:{msg.sender}: {preview}")
 
         # 1. 先把 user/assistant 两条消息落到 session 内存对象中。
+        # final_content 已由 provider 层剥离 thinking，直接存入 session。
         if loop._presence:
             loop._presence.record_user_message(key)
         session.add_message("user", msg.content, media=msg.media if msg.media else None)
@@ -557,11 +561,13 @@ class ConversationTurnHandler:
         final_content: str,
         tools_used: list[str],
         tool_chain: list[dict],
+        thinking: str | None = None,
     ) -> OutboundMessage:
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
+            thinking=thinking,
             metadata={
                 **(msg.metadata or {}),
                 "tools_used": tools_used,
@@ -736,7 +742,7 @@ class InternalEventHandler:
             chat_id=msg.chat_id,
             message_timestamp=msg.timestamp,
         )
-        final_content, tools_used, tool_chain, _ = await loop._run_agent_loop(
+        final_content, tools_used, tool_chain, _, _thinking = await loop._run_agent_loop(
             initial_messages,
             request_time=msg.timestamp,
             preloaded_tools=None,
