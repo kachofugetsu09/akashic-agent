@@ -13,20 +13,16 @@ from proactive.components import (
     ProactiveJudge,
     ProactiveMessageComposer,
     ProactiveMessageDeduper,
-    ProactiveReflector,
     ProactiveSender,
-    ReflectHooks,
 )
 from proactive.engine import ProactiveEngine
 from proactive.loop_helpers import (
-    _Decision,
     _build_tfidf_vectors,
     _cosine_sparse,
     _decision_with_randomized_score,
     _format_items,
     _format_recent,
     _item_id,
-    _parse_decision,
     _semantic_text,
     _source_key,
 )
@@ -98,31 +94,6 @@ class ProactiveLoopRuntimeMixin:
             cosine_fn=_cosine_sparse,
         )
 
-    def _build_reflector(self, fitbit_url: str) -> ProactiveReflector:
-        return ProactiveReflector(
-            provider=self._provider,
-            model=self._model,
-            max_tokens=self._max_tokens,
-            cfg=self._cfg,
-            memory_store=self._memory,
-            presence=self._presence,
-            fitbit_url=fitbit_url,
-            hooks=ReflectHooks(
-                format_items=_format_items,
-                format_recent=_format_recent,
-                parse_decision=_parse_decision,
-                collect_global_memory=self._build_context_block,
-                sample_random_memory=self._sample_random_memory,
-                target_session_key=self._target_session_key,
-                on_reflect_error=lambda e: _Decision(
-                    score=0.0,
-                    should_send=False,
-                    message="",
-                    reasoning=str(e),
-                ),
-            ),
-        )
-
     def _build_sender(self) -> ProactiveSender:
         return ProactiveSender(
             cfg=self._cfg,
@@ -188,7 +159,6 @@ class ProactiveLoopRuntimeMixin:
 
     def _build_decide_port(self) -> DefaultDecidePort:
         return DefaultDecidePort(
-            reflector=self._reflector,
             randomize_fn=lambda decision: _decision_with_randomized_score(
                 decision,
                 strength=self._cfg.decision_score_random_strength,
@@ -267,7 +237,6 @@ class ProactiveLoopRuntimeMixin:
         self._log_runtime_config()
         self._item_filter = self._build_item_filter()
         fitbit_url = self._fitbit_url()
-        self._reflector = self._build_reflector(fitbit_url)
         self._sender = self._build_sender()
         self._feature_scorer = self._build_feature_scorer()
         self._message_composer = self._build_message_composer(fitbit_url)

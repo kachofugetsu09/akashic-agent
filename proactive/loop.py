@@ -29,10 +29,6 @@ from proactive.energy import (
 )
 from proactive.config import ProactiveConfig
 from proactive.loop_factory import ProactiveLoopFactoryMixin
-from proactive.loop_helpers import (
-    _Decision,
-    _parse_decision,
-)
 from proactive.loop_runtime import ProactiveLoopRuntimeMixin
 from proactive.loop_trigger import ProactiveLoopTriggerMixin
 from proactive.loop_traces import ProactiveLoopTraceMixin
@@ -210,24 +206,6 @@ class ProactiveLoop(
     def _collect_recent(self) -> list[dict]:
         """取目标会话最近 N 条消息（只取 user/assistant 文本）。"""
         return self._sense.collect_recent()
-
-    async def _reflect(
-        self,
-        items: list[FeedItem],
-        recent: list[dict],
-        energy: float = 0.0,
-        urge: float = 0.0,
-        is_crisis: bool = False,
-        decision_signals: dict[str, object] | None = None,
-    ) -> _Decision:
-        return await self._reflector.reflect(
-            items=items,
-            recent=recent,
-            energy=energy,
-            urge=urge,
-            is_crisis=is_crisis,
-            decision_signals=decision_signals,
-        )
 
     def _collect_global_memory(self) -> str:
         if not self._cfg.use_global_memory:

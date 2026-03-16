@@ -34,12 +34,8 @@ from feeds.base import FeedItem
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.components import (
     ProactiveFeatureScorer,
-    ProactiveItemFilter,
+    ProactiveJudge,
     ProactiveMessageComposer,
-    ProactiveMessageDeduper,
-    ProactiveReflector,
-    ProactiveSender,
-    ReflectHooks,
 )
 from proactive.config import ProactiveConfig
 from proactive.engine import (
@@ -51,14 +47,10 @@ from proactive.engine import (
 from proactive.event import AlertEvent, GenericAlertEvent
 from proactive.event import GenericContentEvent
 from proactive.loop_helpers import (
-    _Decision,
-    _build_tfidf_vectors,
-    _cosine_sparse,
     _decision_with_randomized_score,
     _format_items,
     _format_recent,
     _item_id,
-    _parse_decision,
     _semantic_text,
     _source_key,
 )
@@ -70,7 +62,6 @@ from proactive.ports import (
     ProactiveSendMeta,
     RecentProactiveMessage,
 )
-from proactive.presence import PresenceStore
 from proactive.state import ProactiveStateStore
 from tests_scenarios.fixtures import ScenarioJudgeSpec
 from tests_scenarios.judge_runner import ScenarioJudgeRunner, ScenarioJudgeVerdict
@@ -371,10 +362,9 @@ class ProactiveScenarioRunner:
 
             proactive_cfg = self._build_proactive_config(cfg, spec)
 
-            reflector = self._build_reflector(
+            decide_port = self._build_decide_port(
                 provider, proactive_cfg, spec, fallback_model=cfg.model
             )
-            decide_port = self._build_decide_port(provider, proactive_cfg, reflector)
             memory_retrieval = TestMemoryRetrievalPort()
 
             stage_trace_lines: list[dict] = []
@@ -479,48 +469,44 @@ class ProactiveScenarioRunner:
         p_cfg.semantic_dedupe_enabled = False
         return p_cfg
 
-    def _build_reflector(
+    def _build_decide_port(
         self,
         provider: LLMProvider,
         p_cfg: ProactiveConfig,
         spec: ProactiveScenarioSpec,
         *,
         fallback_model: str = "",
-    ) -> ProactiveReflector:
-        memory_text = spec.memory_text
-
-        def collect_global_memory() -> str:
-            return memory_text
-
-        return ProactiveReflector(
-            provider=provider,
-            model=p_cfg.model or fallback_model,
-            max_tokens=1024,
-            cfg=p_cfg,
-            memory_store=None,
-            presence=None,
-            fitbit_url="",
-            hooks=ReflectHooks(
-                format_items=_format_items,
-                format_recent=_format_recent,
-                parse_decision=_parse_decision,
-                collect_global_memory=collect_global_memory,
-                sample_random_memory=lambda n: [],
-                target_session_key=lambda: "test:scenario",
-                on_reflect_error=lambda e: _Decision(
-                    score=0.0, should_send=False, message="", reasoning=str(e)
-                ),
-            ),
-        )
-
-    def _build_decide_port(
-        self,
-        provider: LLMProvider,
-        p_cfg: ProactiveConfig,
-        reflector: ProactiveReflector,
     ) -> DefaultDecidePort:
+        def collect_global_memory() -> str:
+            return spec.memory_text
+
+        model = p_cfg.model or fallback_model
+        feature_scorer = ProactiveFeatureScorer(
+            provider=provider,
+            model=model,
+            max_tokens=1024,
+            format_items=_format_items,
+            format_recent=_format_recent,
+            collect_global_memory=collect_global_memory,
+        )
+        message_composer = ProactiveMessageComposer(
+            provider=provider,
+            model=model,
+            max_tokens=1024,
+            format_items=_format_items,
+            format_recent=_format_recent,
+            collect_global_memory=collect_global_memory,
+            fitbit_url="",
+        )
+        judge = ProactiveJudge(
+            provider=provider,
+            model=model,
+            max_tokens=1024,
+            format_items=_format_items,
+            format_recent=_format_recent,
+            cfg=p_cfg,
+        )
         return DefaultDecidePort(
-            reflector=reflector,
             randomize_fn=lambda decision: _decision_with_randomized_score(
                 decision,
                 strength=0.0,  # 测试中不加随机扰动，保证结果稳定
@@ -529,8 +515,9 @@ class ProactiveScenarioRunner:
             item_id_fn=_item_id,
             semantic_text_fn=_semantic_text,
             semantic_text_max_chars=p_cfg.semantic_dedupe_text_max_chars,
-            feature_scorer=None,
-            message_composer=None,
+            feature_scorer=feature_scorer,
+            message_composer=message_composer,
+            judge=judge,
         )
 
     # ── 断言 ──────────────────────────────────────────────────────────────────

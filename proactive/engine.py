@@ -116,7 +116,7 @@ def _build_recent_proactive_context_signal(
             continue
         active_since_user.append(msg)
     latest = active_since_user[-1] if active_since_user else None
-    # 2. 再把"连续主动续写"的强弱信号压成结构化字段，交给 reflect 自己判断是否该收住。
+    # 2. 再把"连续主动续写"的强弱信号压成结构化字段，交给后续决策判断是否该收住。
     return {
         "exists": latest is not None,
         "count_since_last_user": len(active_since_user),
@@ -339,7 +339,7 @@ class DecideResult:
     ]
     should_send: bool
     decision_message: str
-    decision_mode: Literal["feature", "reflect", "compose_judge"]
+    decision_mode: Literal["feature", "compose_judge"]
     feature_final_score: float | None
     judge_dims: dict[str, object]
     judge_final_score: float | None
@@ -441,7 +441,7 @@ class ProactiveEngine:
         if not score_result.proceed:
             return score_result.return_score
 
-        # 6. 进入 decide，生成 decision_signals，并走 feature 或 reflect 模式。
+        # 6. 进入 decide，生成 decision_signals，并走 feature / compose_judge 分支。
         decide_result = await self._stage_decide(ctx)
         self._trace_stage_result(ctx, stage="decide", result=decide_result)
         if not decide_result.proceed:
@@ -760,7 +760,7 @@ class ProactiveEngine:
 
     async def _stage_decide(self, ctx: DecisionContext) -> DecideResult:
         """构建决策信号，调用 LLM 评分或生成消息，填充 ctx.should_send / decision_message。"""
-        # 1. 先把决策所需的显式 signals 组好，后续 feature/reflect 共用。
+        # 1. 先把决策所需的显式 signals 组好，后续决策共用。
         self._populate_decision_signals(ctx)
         # 2. 再补记忆检索结果，把 memory block 和 route 元信息挂到 decide snapshot。
         await self._retrieve_decision_memory(ctx)
@@ -773,13 +773,9 @@ class ProactiveEngine:
         # 4. compose+judge 开关开启时，走 compose -> post-judge 链路。
         if getattr(self._cfg, "compose_judge_enabled", False):
             return await self._run_compose_judge_decision(ctx)
-        # 5. feature 模式走"评分 + compose"的闭环；否则走 reflect 模式。
-        if self._cfg.feature_scoring_enabled:
-            self._prepare_feature_compose_candidates(ctx)
-            return await self._run_feature_decision(ctx)
-        await self._run_reflect_decision(ctx)
-        # 6. 两条分支最后都统一落成 DecideResult，交给 act 阶段消费。
-        return self._build_continue_decide_result(ctx, decision_mode="reflect")
+        # 5. feature 模式走"评分 + compose"的闭环。
+        self._prepare_feature_compose_candidates(ctx)
+        return await self._run_feature_decision(ctx)
 
     # ------------------------------------------------------------------
     # Stage 7 — act: dedup checks, send, mark state
@@ -1091,7 +1087,7 @@ class ProactiveEngine:
             )
         else:
             recent_proactive = []
-        # 2. 再组织成给 feature / reflect 共用的 decision_signals。
+        # 2. 再组织成决策共用的 decision_signals。
         sleep_signal: dict[str, object] = {"state": "unavailable"}
         if sense.sleep_ctx is not None:
             sleep_signal = {
@@ -1237,6 +1233,31 @@ class ProactiveEngine:
         decide.judge_dims = {}
         decide.judge_final_score = None
         decide.judge_vetoed_by = None
+        # compose 전 결정적 거부 검사 — LLM 호출 낭비 방지
+        age_hours = self._candidate_age_hours(fetch.new_items, now_utc=ctx.state.now_utc)
+        pre_veto = self._decide.pre_compose_veto(
+            age_hours=age_hours,
+            sent_24h=score.sent_24h,
+            interrupt_factor=sense.interrupt_factor,
+        )
+        if pre_veto:
+            decide.should_send = False
+            decide.judge_vetoed_by = pre_veto
+            return DecideResult(
+                proceed=False,
+                return_score=score.base_score,
+                reason_code="judge_reject",
+                should_send=False,
+                decision_message="",
+                decision_mode="compose_judge",
+                feature_final_score=None,
+                judge_dims={},
+                judge_final_score=0.0,
+                judge_vetoed_by=pre_veto,
+                compose_no_content=False,
+                history_gate_reason=decide.history_gate_reason,
+                history_scope_mode=decide.history_scope_mode,
+            )
         no_content_token = str(getattr(self._cfg, "compose_no_content_token", "<no_content/>"))
         decide.decision_message = await self._decide.compose_for_judge(
             items=act.compose_items,
@@ -1264,8 +1285,7 @@ class ProactiveEngine:
                 history_gate_reason=decide.history_gate_reason,
                 history_scope_mode=decide.history_scope_mode,
             )
-        # 2. 计算 deterministic 评分输入并调用 judge。
-        age_hours = self._candidate_age_hours(fetch.new_items, now_utc=ctx.state.now_utc)
+        # 2. 调用 judge（age_hours 已在 pre_compose_veto 中计算）。
         recent_proactive_text = self._recent_proactive_text()
         judge_result = await self._decide.judge_message(
             message=msg,
@@ -1460,47 +1480,11 @@ class ProactiveEngine:
         )
         return self._build_continue_decide_result(ctx, decision_mode="feature")
 
-    async def _run_reflect_decision(self, ctx: DecisionContext) -> None:
-        """reflect 模式：直接让 LLM 做反思与消息草拟。"""
-        sense = ctx.ensure_sense()
-        fetch = ctx.ensure_fetch()
-        score = ctx.ensure_score()
-        decide = ctx.ensure_decide()
-        # 1. 先请求 reflect 结果，得到 score / should_send / message / reasoning。
-        decide.decision = await self._decide.reflect(
-            self._feed_items(fetch.new_items),
-            sense.recent,
-            energy=sense.energy,
-            urge=score.draw_score,
-            is_crisis=score.is_crisis,
-            decision_signals=decide.decision_signals,
-            retrieved_memory_block=decide.retrieved_memory_block,
-            preference_block=decide.preference_block,
-        )
-        if decide.prefetch_urls and hasattr(decide.decision, "fetched_urls"):
-            existing = list(getattr(decide.decision, "fetched_urls", None) or [])
-            merged = list(dict.fromkeys(decide.prefetch_urls + existing))
-            decide.decision.fetched_urls = merged
-        # 2. 再叠加随机化决策，并用最终阈值决定 should_send。
-        decide.decision, decision_delta = self._decide.randomize_decision(
-            decide.decision
-        )
-        logger.debug(
-            f"[proactive] score={decide.decision.score:.2f}  "
-            f"score_delta={decision_delta:+.2f}  "
-            f"send={decide.decision.should_send}  "
-            f"reasoning={decide.decision.reasoning[:80]!r}"
-        )
-        decide.should_send = (
-            decide.decision.should_send and decide.decision.score >= self._cfg.threshold
-        )
-        decide.decision_message = decide.decision.message
-
     def _build_continue_decide_result(
         self,
         ctx: DecisionContext,
         *,
-        decision_mode: Literal["feature", "reflect", "compose_judge"],
+        decision_mode: Literal["feature", "compose_judge"],
     ) -> DecideResult:
         decide = ctx.ensure_decide()
         return DecideResult(

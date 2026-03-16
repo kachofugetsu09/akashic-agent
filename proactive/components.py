@@ -5,16 +5,12 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
-if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
-
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
-from agent.provider import LLMProvider, LLMResponse
+from agent.provider import LLMProvider
 from agent.tool_bundles import build_fitbit_tools, build_readonly_research_tools
-from agent.tools.web_fetch import WebFetchTool
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -27,10 +23,8 @@ from core.net.http import get_default_http_requester
 from feeds.base import FeedItem
 from prompts.proactive import (
     build_compose_prompt_messages,
-    build_context_reflect_prompt_messages,
     build_feature_scoring_prompt_messages,
     build_post_judge_prompt_messages,
-    build_reflect_prompt_messages,
 )
 from proactive.json_utils import extract_json_object
 from proactive.presence import PresenceStore
@@ -252,15 +246,14 @@ def _format_recent_proactive_entries(recent_proactive: list[object]) -> str:
     return "\n---\n".join(lines)
 
 
-@dataclass
-class ReflectHooks:
-    format_items: Callable[[list[FeedItem]], str]
-    format_recent: Callable[[list[dict]], str]
-    parse_decision: Callable[[str], Any]
-    collect_global_memory: Callable[[], str]
-    sample_random_memory: Callable[[int], list[str]]
-    target_session_key: Callable[[], str]
-    on_reflect_error: Callable[[Exception], Any]
+@dataclass(frozen=True)
+class ProactiveJudgeResult:
+    final_score: float
+    should_send: bool
+    vetoed_by: str | None
+    dims_deterministic: dict[str, float]
+    dims_llm: dict[str, float]
+    dims_llm_raw: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -270,24 +263,6 @@ class ProactivePromptContext:
     feed_text: str
     chat_text: str
     memory_text: str
-
-
-@dataclass(frozen=True)
-class ContextReflectDecision:
-    primary_context: str = "none"
-    background_role: str = "secondary"
-    topic_hint: str = ""
-    reasoning: str = ""
-
-
-@dataclass(frozen=True)
-class ProactiveJudgeResult:
-    final_score: float
-    should_send: bool
-    vetoed_by: str | None
-    dims_deterministic: dict[str, float]
-    dims_llm: dict[str, float]
-    dims_llm_raw: dict[str, int]
 
 
 def _build_proactive_prompt_context(
@@ -306,234 +281,6 @@ def _build_proactive_prompt_context(
         chat_text=format_recent(recent) or "（无近期对话记录）",
         memory_text=collect_global_memory(),
     )
-
-
-class ProactiveReflector:
-    def __init__(
-        self,
-        *,
-        provider: LLMProvider,
-        model: str,
-        max_tokens: int,
-        cfg: Any,
-        memory_store: "MemoryPort | None",
-        presence: PresenceStore | None,
-        hooks: ReflectHooks,
-        fitbit_url: str = "",
-    ) -> None:
-        self._provider = provider
-        self._model = model
-        self._max_tokens = max_tokens
-        self._cfg = cfg
-        self._memory = memory_store
-        self._presence = presence
-        self._hooks = hooks
-        self._fitbit_url = fitbit_url
-        self._fitbit_tools: list[Tool] = build_fitbit_tools(
-            fitbit_url=fitbit_url,
-            requester=get_default_http_requester("local_service"),
-        )
-        self._fitbit_tool_schemas, self._fitbit_tool_map = (
-            _build_optional_fitbit_tool_runtime(self._fitbit_tools)
-        )
-        # WebFetchTool 懒初始化：依赖共享 HTTP 资源，需等启动完成后首次 reflect 时再创建。
-        self._web_fetch_schemas: list[dict[str, Any]] | None = None
-        self._web_fetch_tool_map: dict[str, Tool] | None = None
-
-    async def _reflect_context_plan(
-        self,
-        *,
-        prompt_context: ProactivePromptContext,
-        decision_signals: dict[str, object] | None,
-        retrieved_memory_block: str,
-        now_ongoing_text: str,
-    ) -> ContextReflectDecision:
-        # 1. 先构造一个只做主次上下文裁决的轻量 prompt。
-        system_msg, user_msg = build_context_reflect_prompt_messages(
-            prompt_context=prompt_context,
-            decision_signals=decision_signals,
-            retrieved_memory_block=retrieved_memory_block,
-            now_ongoing_text=now_ongoing_text,
-        )
-        # 2. 再用同模型跑一次无工具 JSON 裁决，避免边写消息边跑偏。
-        resp = await self._provider.chat(
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            tools=[],
-            model=self._model,
-            max_tokens=min(self._max_tokens, 256),
-        )
-        # 3. 最后规范化字段，只把允许的裁决结果带回主 reflect。
-        data = extract_json_object(resp.content or "")
-        primary = str(data.get("primary_context", "none") or "none").strip().lower()
-        role = str(data.get("background_role", "secondary") or "secondary").strip().lower()
-        if primary not in {"alert", "feed", "background_context", "none"}:
-            primary = "none"
-        if role not in {"primary", "secondary", "suppress"}:
-            role = "secondary"
-        return ContextReflectDecision(
-            primary_context=primary,
-            background_role=role,
-            topic_hint=str(data.get("topic_hint", "") or "").strip(),
-            reasoning=str(data.get("reasoning", "") or "").strip(),
-        )
-
-    async def reflect(
-        self,
-        items: list[FeedItem],
-        recent: list[dict],
-        energy: float = 0.0,
-        urge: float = 0.0,
-        is_crisis: bool = False,
-        decision_signals: dict[str, object] | None = None,
-        retrieved_memory_block: str = "",
-        preference_block: str = "",
-    ) -> Any:
-        # 1. 先把决策信号复制成可安全扩展的字典，避免污染上游对象。
-        signal_payload: dict[str, object] = dict(decision_signals or {})
-        prompt_context = _build_proactive_prompt_context(
-            items=items,
-            recent=recent,
-            format_items=self._hooks.format_items,
-            format_recent=self._hooks.format_recent,
-            collect_global_memory=self._hooks.collect_global_memory,
-        )
-
-        self_text = ""
-        now_ongoing_text = ""
-        if self._memory:
-            try:
-                self_text = self._memory.read_self().strip()
-            except Exception:
-                pass
-            try:
-                now_ongoing_text = self._memory.read_now_ongoing().strip()
-            except Exception:
-                pass
-
-        crisis_hint = ""
-        if is_crisis:
-            topic_chunks = self._hooks.sample_random_memory(1)
-            topic_hint = topic_chunks[0] if topic_chunks else ""
-            session_key = self._hooks.target_session_key()
-            last_at = (
-                self._presence.get_last_user_at(session_key) if self._presence else None
-            )
-            elapsed = ""
-            if last_at:
-                hours = (datetime.now(timezone.utc) - last_at).total_seconds() / 3600
-                elapsed = f"距离上次对话已超过 {hours:.0f} 小时。"
-            topic_section = (
-                f"\n\n## 随机话题建议（危机开场用）\n\n{topic_hint}"
-                if topic_hint
-                else ""
-            )
-            crisis_hint = (
-                f"\n[危机模式] {elapsed}"
-                "用户可能已忘记你的存在，需要主动找一个自然的切入点重新联系。"
-                "可以从下方随机话题出发，或用关心/有趣内容开场。"
-                f"{topic_section}"
-            )
-
-        try:
-            # 2. 先做一轮轻量上下文裁决，把 alert/feed/background 的主次关系想清楚。
-            context_plan = await self._reflect_context_plan(
-                prompt_context=prompt_context,
-                decision_signals=signal_payload,
-                retrieved_memory_block=retrieved_memory_block,
-                now_ongoing_text=now_ongoing_text,
-            )
-            signal_payload["context_reflect"] = {
-                "primary_context": context_plan.primary_context,
-                "background_role": context_plan.background_role,
-                "topic_hint": context_plan.topic_hint,
-                "reasoning": context_plan.reasoning,
-            }
-        except Exception as e:
-            logger.warning("[proactive] context reflect 失败，回退原始 reflect: %s", e)
-
-        content_statuses = [
-            str(getattr(item, "content_status", "") or "").strip()
-            for item in items
-            if str(getattr(item, "content_status", "") or "").strip()
-        ]
-        system_msg, user_msg = build_reflect_prompt_messages(
-            prompt_context=prompt_context,
-            energy=energy,
-            urge=urge,
-            crisis_hint=crisis_hint,
-            decision_signals=signal_payload,
-            self_text=self_text,
-            retrieved_memory_block=retrieved_memory_block,
-            now_ongoing_text=now_ongoing_text,
-            preference_block=preference_block,
-            content_statuses=content_statuses,
-        )
-
-        try:
-            if self._web_fetch_schemas is None:
-                _wf = prepare_toolset([WebFetchTool(get_default_http_requester("external_default"))])
-                self._web_fetch_schemas = _wf.schemas
-                self._web_fetch_tool_map = _wf.tool_map
-
-            active_tools, active_tool_map = _resolve_active_tool_runtime(
-                base_schemas=self._web_fetch_schemas,
-                base_tool_map=self._web_fetch_tool_map or {},
-                include_fitbit=True,
-                fitbit_schemas=self._fitbit_tool_schemas,
-                fitbit_tool_map=self._fitbit_tool_map,
-            )
-
-            messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ]
-            resp: LLMResponse | None = None
-            fetched_urls: list[str] = []
-            for _ in range(4):
-                resp = await self._provider.chat(
-                    messages=messages,
-                    tools=active_tools,
-                    model=self._model,
-                    max_tokens=self._max_tokens,
-                )
-                tool_calls = getattr(resp, "tool_calls", []) or []
-                if not tool_calls:
-                    break
-
-                for tc in tool_calls:
-                    if getattr(tc, "name", "") == "web_fetch":
-                        url = (getattr(tc, "arguments", {}) or {}).get("url", "")
-                        if url:
-                            fetched_urls.append(url)
-                            logger.info("[proactive] web_fetch 调用: %s", url)
-
-                append_assistant_tool_calls(
-                    messages,
-                    content=resp.content,
-                    tool_calls=tool_calls,
-                )
-                await _execute_tool_calls(
-                    messages=messages,
-                    tool_calls=tool_calls,
-                    active_tool_map=active_tool_map,
-                    log_prefix="[proactive]",
-                    log_each_call=True,
-                )
-
-            if resp is None:
-                return self._hooks.parse_decision("")
-            content = resp.content or ""
-            logger.info("[proactive] LLM 原始输出预览: %r", content[:240])
-            decision = self._hooks.parse_decision(content)
-            if fetched_urls and hasattr(decision, "fetched_urls"):
-                decision.fetched_urls = fetched_urls
-            return decision
-        except Exception as e:
-            logger.error(f"[proactive] LLM 反思失败: {e}")
-            return self._hooks.on_reflect_error(e)
 
 
 class ProactiveSender:
@@ -1039,6 +786,32 @@ class ProactiveJudge:
         balance = max(0.0, 1.0 - (max(sent_24h, 0) / float(daily_max)))
         dynamics = 0.6 + 0.4 * max(0.0, min(1.0, float(interrupt_factor)))
         return {"urgency": urgency, "balance": balance, "dynamics": dynamics}
+
+    def pre_compose_veto(
+        self,
+        *,
+        age_hours: float,
+        sent_24h: int,
+        interrupt_factor: float,
+    ) -> str | None:
+        """compose 前仅凭确定性维度做快速否决，避免 LLM 调用浪费。"""
+        deterministic = self._build_deterministic_dims(
+            age_hours=age_hours,
+            sent_24h=sent_24h,
+            interrupt_factor=interrupt_factor,
+        )
+        vetoed = self._deterministic_veto(deterministic)
+        if vetoed:
+            logger.info(
+                "[judge] pre-compose 确定性否决 vetoed_by=%s"
+                " urgency=%.3f balance=%.3f (age_hours=%.1f sent_24h=%d)",
+                vetoed,
+                deterministic["urgency"],
+                deterministic["balance"],
+                age_hours,
+                sent_24h,
+            )
+        return vetoed
 
     def _deterministic_veto(self, deterministic: dict[str, float]) -> str | None:
         if deterministic["balance"] < float(getattr(self._cfg, "judge_veto_balance_min", 0.1)):

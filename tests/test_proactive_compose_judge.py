@@ -93,9 +93,6 @@ async def test_compose_judge_no_content_skip_send(tmp_path):
         async def judge_message(self, **kw):
             raise AssertionError("compose 输出 no_content 时不应调用 judge")
 
-        async def reflect(self, *a, **kw):
-            raise AssertionError("compose_judge 模式不应走 reflect")
-
         def randomize_decision(self, d):
             return d, 0.0
 
@@ -161,9 +158,6 @@ async def test_compose_judge_veto_skip_send(tmp_path):
                 dims_llm_raw={"information_gap": 4, "relevance": 4, "expected_impact": 4},
             )
 
-        async def reflect(self, *a, **kw):
-            raise AssertionError("compose_judge 模式不应走 reflect")
-
         def randomize_decision(self, d):
             return d, 0.0
 
@@ -218,9 +212,6 @@ async def test_compose_judge_empty_string_skip_send(tmp_path):
         async def judge_message(self, **kw):
             raise AssertionError("compose 输出空字符串时不应调用 judge")
 
-        async def reflect(self, *a, **kw):
-            raise AssertionError("compose_judge 模式不应走 reflect")
-
         def randomize_decision(self, d):
             return d, 0.0
 
@@ -272,9 +263,6 @@ async def test_compose_judge_none_fallback_allows_send(tmp_path):
 
         async def judge_message(self, **kw):
             return None
-
-        async def reflect(self, *a, **kw):
-            raise AssertionError("compose_judge 模式不应走 reflect")
 
         def randomize_decision(self, d):
             return d, 0.0

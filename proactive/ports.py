@@ -115,17 +115,13 @@ class DecidePort(Protocol):
         sent_24h: int,
         interrupt_factor: float,
     ) -> Any: ...
-    async def reflect(
+    def pre_compose_veto(
         self,
-        items: list[FeedItem],
-        recent: list[dict],
-        energy: float = 0.0,
-        urge: float = 0.0,
-        is_crisis: bool = False,
-        decision_signals: dict[str, object] | None = None,
-        retrieved_memory_block: str = "",
-        preference_block: str = "",
-    ) -> Any: ...
+        *,
+        age_hours: float,
+        sent_24h: int,
+        interrupt_factor: float,
+    ) -> str | None: ...
     def randomize_decision(self, decision: Any) -> tuple[Any, float]: ...
     def resolve_evidence_item_ids(
         self, decision: Any, items: list[FeedItem]
@@ -813,7 +809,6 @@ class DefaultDecidePort:
     def __init__(
         self,
         *,
-        reflector: Any,
         randomize_fn: Callable[[Any], tuple[Any, float]],
         source_key_fn: Callable[[FeedItem], str],
         item_id_fn: Callable[[FeedItem], str],
@@ -823,7 +818,6 @@ class DefaultDecidePort:
         message_composer: Any | None = None,
         judge: Any | None = None,
     ) -> None:
-        self._reflector = reflector
         self._randomize_fn = randomize_fn
         self._source_key = source_key_fn
         self._item_id = item_id_fn
@@ -909,26 +903,19 @@ class DefaultDecidePort:
             interrupt_factor=interrupt_factor,
         )
 
-    async def reflect(
+    def pre_compose_veto(
         self,
-        items: list[FeedItem],
-        recent: list[dict],
-        energy: float = 0.0,
-        urge: float = 0.0,
-        is_crisis: bool = False,
-        decision_signals: dict[str, object] | None = None,
-        retrieved_memory_block: str = "",
-        preference_block: str = "",
-    ) -> Any:
-        return await self._reflector.reflect(
-            items=items,
-            recent=recent,
-            energy=energy,
-            urge=urge,
-            is_crisis=is_crisis,
-            decision_signals=decision_signals,
-            retrieved_memory_block=retrieved_memory_block,
-            preference_block=preference_block,
+        *,
+        age_hours: float,
+        sent_24h: int,
+        interrupt_factor: float,
+    ) -> str | None:
+        if not self._judge:
+            return None
+        return self._judge.pre_compose_veto(
+            age_hours=age_hours,
+            sent_24h=sent_24h,
+            interrupt_factor=interrupt_factor,
         )
 
     def randomize_decision(self, decision: Any) -> tuple[Any, float]:

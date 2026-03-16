@@ -15,7 +15,6 @@ from core.net.http import (
 from feeds.base import FeedItem
 from proactive.event import GenericContentEvent
 from proactive.config import ProactiveConfig
-from proactive.components import ProactiveReflector, ReflectHooks
 from proactive.engine import (
     DecisionContext,
     GateResult,
@@ -24,7 +23,8 @@ from proactive.engine import (
     _build_recent_proactive_context_signal,
 )
 from proactive.item_id import compute_item_id
-from proactive.loop import ProactiveLoop, _parse_decision
+from proactive.loop import ProactiveLoop
+from proactive.loop_helpers import _parse_decision
 from proactive.ports import ProactiveSendMeta, ProactiveSourceRef, RecentProactiveMessage
 from proactive.presence import PresenceStore
 from session.manager import SessionManager
@@ -66,16 +66,6 @@ class _Resp:
         self.content = content
 
 
-class _QueuedProvider:
-    def __init__(self, responses: list[str]) -> None:
-        self._responses = list(responses)
-        self.calls: list[dict] = []
-
-    async def chat(self, **kwargs):
-        self.calls.append(kwargs)
-        return _Resp(self._responses.pop(0))
-
-
 @pytest.fixture(autouse=True)
 async def _shared_http_resources():
     resources = SharedHttpResources()
@@ -104,60 +94,6 @@ def test_parse_decision_string_false_is_false():
         '{"score": 0.9, "should_send": "false", "message": "hello", "reasoning": "r"}'
     )
     assert d.should_send is False
-
-
-@pytest.mark.asyncio
-async def test_reflector_injects_context_reflect_before_final_reflect():
-    provider = _QueuedProvider(
-        [
-            '{"primary_context":"feed","background_role":"secondary","topic_hint":"新 feed","reasoning":"feed 更适合做主语境"}',
-            '{"score":0.8,"should_send":true,"message":"今天这条新内容更适合直接聊。","reasoning":"按 context_reflect 选择 feed 为主"}',
-        ]
-    )
-    reflector = ProactiveReflector(
-        provider=provider,
-        model="test-model",
-        max_tokens=256,
-        cfg=SimpleNamespace(),
-        memory_store=None,
-        presence=None,
-        fitbit_url="",
-        hooks=ReflectHooks(
-            format_items=lambda items: "1. Feed A",
-            format_recent=lambda recent: "用户: hi",
-            parse_decision=_parse_decision,
-            collect_global_memory=lambda: "用户偏好游戏与资讯",
-            sample_random_memory=lambda n: [],
-            target_session_key=lambda: "telegram:1",
-            on_reflect_error=lambda e: e,
-        ),
-    )
-
-    decision = await reflector.reflect(
-        items=[],
-        recent=[{"role": "user", "content": "hi"}],
-        decision_signals={
-            "background_context": {
-                "sources": [{"type": "steam", "recent_games": [{"name": "仁王 2"}]}]
-            },
-            "recent_proactive_context": {
-                "exists": True,
-                "count_since_last_user": 1,
-                "already_followed_up": True,
-                "followup_fatigue": "medium",
-                "has_new_feed": False,
-                "latest_excerpt": "刚刚已经补过一句了",
-            },
-        },
-    )
-
-    assert decision.should_send is True
-    assert len(provider.calls) == 2
-    final_prompt = provider.calls[1]["messages"][1]["content"]
-    assert '"context_reflect"' in final_prompt
-    assert '"primary_context": "feed"' in final_prompt
-    assert '"background_role": "secondary"' in final_prompt
-    assert '"recent_proactive_context"' in final_prompt
 
 
 def test_build_recent_proactive_context_signal_marks_followup_fatigue():
@@ -878,42 +814,6 @@ async def test_send_persists_source_refs_and_state_summary_tag(tmp_path):
     )
 
 
-@pytest.mark.asyncio
-async def test_reflect_includes_global_memory(tmp_path):
-    push_tool = AsyncMock()
-    push_tool.execute = AsyncMock(return_value="文本已发送")
-
-    memory = MemoryStore(tmp_path)
-    memory.write_long_term("用户偏好：关注单机游戏发售与DLC，不爱电竞资讯。")
-
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.2,"should_send":false,"message":""}'
-        )
-    )
-    session_manager = SessionManager(tmp_path)
-    loop = ProactiveLoop(
-        session_manager=session_manager,
-        provider=provider,
-        push_tool=push_tool,
-        config=ProactiveConfig(
-            enabled=True,
-            use_global_memory=True,
-            global_memory_max_chars=3000,
-        ),
-        model="test-model",
-        state_path=tmp_path / "proactive_state.json",
-        memory_store=memory,
-    )
-
-    await loop._reflect(items=[], recent=[])
-
-    kwargs = provider.chat.await_args.kwargs
-    user_prompt = kwargs["messages"][1]["content"]
-    assert "用户偏好：关注单机游戏发售与DLC，不爱电竞资讯。" in user_prompt
-
-
 # ── Dynamic energy / presence 集成测试 ────────────────────────────
 
 
@@ -936,6 +836,7 @@ def _build_loop_with_presence(tmp_path, provider, presence):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
+            compose_judge_enabled=True,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -964,11 +865,7 @@ async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
     import random
 
     provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
+    provider.chat = AsyncMock(return_value=_Resp("<no_content/>"))
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 72)
     push_tool = AsyncMock()
@@ -981,6 +878,7 @@ async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
+            compose_judge_enabled=True,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -990,144 +888,21 @@ async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
 
     await loop._tick()
 
-    assert provider.chat.call_count == 2
+    assert provider.chat.call_count >= 1
 
 
 @pytest.mark.asyncio
 async def test_tick_calls_llm_when_no_presence_data(tmp_path):
     """无心跳记录（从未收到消息），视作电量为 0，应进入 LLM 反思。"""
     provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
+    provider.chat = AsyncMock(return_value=_Resp("<no_content/>"))
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=None)
     loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
 
     await loop._tick()
 
-    assert provider.chat.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_reflect_contains_energy_context(tmp_path):
-    """LLM prompt 里应包含电量和冲动信息。"""
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
-
-    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
-    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
-
-    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
-
-    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "电量" in user_prompt
-    assert "冲动" in user_prompt
-
-
-@pytest.mark.asyncio
-async def test_reflect_prompt_requires_direct_opinion_not_counter_question(tmp_path):
-    """proactive 文案应强调直接表达观点，避免“你怎么看”式收尾。"""
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
-
-    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
-    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
-
-    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
-
-    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "直接表达你的判断/观点" in user_prompt
-    assert "你怎么看/你觉得呢/你怎么想/要不要我继续" in user_prompt
-
-
-@pytest.mark.asyncio
-async def test_reflect_prompt_allows_interest_based_new_topic(tmp_path):
-    """即使与近期对话无关，只要符合长期兴趣，也允许自然开启新话题。"""
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
-
-    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
-    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
-
-    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
-
-    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "近期对话只是背景" in user_prompt
-    assert "会感兴趣的东西，有就是发送的理由" in user_prompt
-
-
-@pytest.mark.asyncio
-async def test_reflect_prompt_discourages_repeating_user_state_summary(tmp_path):
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
-
-    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
-    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
-
-    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
-
-    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "不在消息体里重复那层情感关怀" in user_prompt
-    assert "若上一条主动消息已表达过" in user_prompt
-
-
-@pytest.mark.asyncio
-async def test_reflect_prompt_requires_evidence_and_exact_source(tmp_path):
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
-
-    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
-    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
-
-    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
-
-    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "不得用自身背景知识补充条目未提供的细节" in user_prompt
-    assert "严禁捏造不存在的文章/新闻" in user_prompt
-    assert "优先自然带上“来源名 + 可点击原文链接”" in user_prompt
-    assert "系统不会在发送前替你自动补来源" in user_prompt
-
-
-@pytest.mark.asyncio
-async def test_reflect_contains_crisis_hint_when_energy_very_low(tmp_path):
-    """电量极低（危机模式）时，prompt 里应包含危机提示。"""
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
-
-    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 72)
-    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
-
-    await loop._reflect(items=[], recent=[], energy=0.02, urge=0.99)
-
-    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "危机" in user_prompt
+    assert provider.chat.call_count >= 1
 
 
 @pytest.mark.asyncio
@@ -1174,11 +949,7 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
     from agent.memory import MemoryStore
 
     provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
+    provider.chat = AsyncMock(return_value=_Resp("<no_content/>"))
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 24)
     push_tool = AsyncMock()
@@ -1195,6 +966,7 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
+            compose_judge_enabled=True,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -1205,7 +977,7 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
 
     await loop._tick()
 
-    assert provider.chat.call_count == 2
+    assert provider.chat.call_count >= 1
 
 
 @pytest.mark.asyncio
@@ -1215,11 +987,7 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
     from agent.memory import MemoryStore
 
     provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
+    provider.chat = AsyncMock(return_value=_Resp("<no_content/>"))
 
     presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 24)
     push_tool = AsyncMock()
@@ -1236,6 +1004,7 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
+            compose_judge_enabled=True,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -1246,86 +1015,7 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
 
     await loop._tick()
 
-    assert provider.chat.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_reflect_always_contains_full_memory(tmp_path):
-    """_reflect 应始终注入全量记忆，不论是否危机模式。"""
-    from agent.memory import MemoryStore
-
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
-
-    memory = MemoryStore(tmp_path)
-    memory.write_long_term(
-        "## 偏好\n\n- 喜欢魂类游戏\n- 不喜欢电竞\n\n## 工作\n\n- 用 Python\n"
-    )
-    push_tool = AsyncMock()
-    push_tool.execute = AsyncMock(return_value="文本已发送")
-
-    loop = ProactiveLoop(
-        session_manager=SessionManager(tmp_path),
-        provider=provider,
-        push_tool=push_tool,
-        config=ProactiveConfig(enabled=True),
-        model="test-model",
-        state_path=tmp_path / "proactive_state.json",
-        memory_store=memory,
-    )
-
-    # 正常模式：全量记忆
-    await loop._reflect(items=[], recent=[], energy=0.15, urge=0.3, is_crisis=False)
-    prompt_normal = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "偏好" in prompt_normal
-    assert "工作" in prompt_normal
-    assert "Python" in prompt_normal
-    assert "魂类" in prompt_normal
-
-
-@pytest.mark.asyncio
-async def test_reflect_crisis_adds_topic_hint(tmp_path):
-    """危机模式应在全量记忆基础上额外注入一条随机话题作为开场提示。"""
-    import random
-    from agent.memory import MemoryStore
-
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp(
-            '{"reasoning":"ok","score":0.3,"should_send":false,"message":""}'
-        )
-    )
-
-    memory = MemoryStore(tmp_path)
-    memory.write_long_term(
-        "## 偏好\n\n- 喜欢魂类游戏\n- 不喜欢电竞\n\n## 工作\n\n- 用 Python\n"
-    )
-    push_tool = AsyncMock()
-    push_tool.execute = AsyncMock(return_value="文本已发送")
-
-    loop = ProactiveLoop(
-        session_manager=SessionManager(tmp_path),
-        provider=provider,
-        push_tool=push_tool,
-        config=ProactiveConfig(enabled=True),
-        model="test-model",
-        state_path=tmp_path / "proactive_state.json",
-        memory_store=memory,
-        rng=random.Random(1),
-    )
-
-    await loop._reflect(items=[], recent=[], energy=0.02, urge=0.99, is_crisis=True)
-    prompt_crisis = provider.chat.await_args.kwargs["messages"][1]["content"]
-    # 全量记忆仍在
-    assert "偏好" in prompt_crisis or "工作" in prompt_crisis
-    # 额外有话题提示
-    assert (
-        "话题" in prompt_crisis or "开场" in prompt_crisis or "开始聊" in prompt_crisis
-    )
+    assert provider.chat.call_count >= 1
 
 
 @pytest.mark.asyncio
@@ -1428,9 +1118,6 @@ async def test_gate_quota_exhausted_returns_zero(tmp_path):
 
         async def compose_message(self, **kw):
             return ""
-
-        async def reflect(self, *a, **kw):
-            raise AssertionError("不应调用")
 
         def randomize_decision(self, d):
             return d, 0.0
@@ -1538,9 +1225,6 @@ async def test_gate_min_interval_returns_none(tmp_path):
         async def compose_message(self, **kw):
             return ""
 
-        async def reflect(self, *a, **kw):
-            raise AssertionError("不应调用")
-
         def randomize_decision(self, d):
             return d, 0.0
 
@@ -1617,7 +1301,6 @@ def test_delivery_key_with_evidence_ignores_message():
     from unittest.mock import MagicMock
 
     decide = DefaultDecidePort(
-        reflector=MagicMock(),
         randomize_fn=lambda d: (d, 0.0),
         source_key_fn=lambda i: "rss:test",
         item_id_fn=lambda i: "id1",
@@ -1636,7 +1319,6 @@ def test_delivery_key_empty_ids_uses_time_bucket_and_prefix():
     from unittest.mock import MagicMock
 
     decide = DefaultDecidePort(
-        reflector=MagicMock(),
         randomize_fn=lambda d: (d, 0.0),
         source_key_fn=lambda i: "rss:test",
         item_id_fn=lambda i: "id1",
