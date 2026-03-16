@@ -19,6 +19,7 @@ from agent.tool_runtime import (
 )
 from agent.tools.base import Tool
 from agent.tools.message_push import MessagePushTool
+from agent.tools.web_fetch import WebFetchTool
 from core.net.http import get_default_http_requester
 from feeds.base import FeedItem
 from prompts.proactive import (
@@ -660,6 +661,8 @@ class ProactiveJudge:
             len(items),
             len(preference_block),
         )
+        # 1. 先尽量为最终选中的条目补抓正文；抓不到时保留原标题/摘要继续生成。
+        items = await self._enrich_items_for_compose(items)
         # 1. 基于候选内容、近期对话、偏好构造最小 compose prompt。
         prompt_context = _build_proactive_prompt_context(
             items=items,
@@ -694,6 +697,32 @@ class ProactiveJudge:
             return no_content_token
         logger.info("[compose] → 生成成功 %d字符: %s", len(text), text[:80].replace("\n", " "))
         return text
+
+    async def _enrich_items_for_compose(self, items: list[FeedItem]) -> list[FeedItem]:
+        # 1. 只补抓最终 compose 组，最多 2 条，避免主动链路过重。
+        # 2. 只在标题/摘要过短时抓取，已有较完整正文就直接复用。
+        # 3. 抓取失败时保持原内容，不影响后续生成。
+        selected = items[:]
+        candidates = [
+            item
+            for item in selected[:2]
+            if item.url and classify_content_quality(item) != "full"
+        ]
+        if not candidates:
+            return selected
+        fetcher = WebFetchTool(get_default_http_requester("external_default"))
+        for item in candidates:
+            try:
+                raw = await fetcher.execute(url=item.url, format="text", timeout=8)
+                data = json.loads(raw or "{}")
+                text = str(data.get("text", "") or "").strip()
+                if len(text) > 400:
+                    item.content = text[:4000]
+                    setattr(item, "content_status", "fetched")
+            except Exception as e:
+                logger.info("[compose] enrich_item_failed url=%s err=%s", item.url, e)
+                setattr(item, "content_status", "fetch_failed")
+        return selected
 
     async def judge_message(
         self,

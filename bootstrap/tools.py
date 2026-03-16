@@ -98,6 +98,7 @@ def _register_meta_and_common_tools(
     )
     tools.register(
         FetchMessagesTool(session_store),
+        always_on=True,
         tags=["memory", "session"],
         risk="read-only",
         search_keywords=["消息回溯", "按ID查消息", "fetch messages", "source_ref"],
@@ -253,7 +254,6 @@ def build_registered_tools(
         UpdateNowTool(memory_runtime.port),
         tags=["memory"],
         risk="write",
-        always_on=True,
         search_keywords=["更新记忆", "同步记忆", "刷新知识库", "memory更新"],
     )
     scheduler = _build_scheduler(workspace, push_tool)
