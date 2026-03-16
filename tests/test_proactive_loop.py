@@ -1608,6 +1608,116 @@ def test_select_compose_items_keeps_top_interest_single_item_over_larger_lower_i
     assert len(compose_entries) == 1
 
 
+def test_select_compose_items_aggregates_same_source_short_news():
+    from types import SimpleNamespace
+    from datetime import datetime, timezone, timedelta
+    from feeds.base import FeedItem
+    from proactive.engine import ProactiveEngine
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
+    now = datetime.now(timezone.utc)
+    items = [
+        FeedItem("HLTV News", "rss", "Short news: Week 10", "", "https://e/10", None, now - timedelta(hours=2)),
+        FeedItem("HLTV News", "rss", "Roster tracker: March 2026", "", "https://e/11", None, now - timedelta(hours=1)),
+        FeedItem("HLTV News", "rss", "Inner Circle sign headtr1ck", "", "https://e/12", None, now),
+    ]
+    entries = [
+        ("rss:hltv", "Short news: Week 10"),
+        ("rss:hltv", "Roster tracker: March 2026"),
+        ("rss:hltv", "Inner Circle sign headtr1ck"),
+    ]
+
+    # 1. 输入顺序代表兴趣排序，三条都是低价值同源资讯流。
+    # 2. MVP 期望：即便 token 不重合，只要同来源且接近，也能聚成一组。
+    compose_items, compose_entries = engine._select_compose_items(items, entries)
+
+    # 3. 当前实现还做不到，这条测试先作为聚合实现目标。
+    assert [item.title for item in compose_items] == [
+        "Short news: Week 10",
+        "Roster tracker: March 2026",
+        "Inner Circle sign headtr1ck",
+    ]
+    assert compose_entries == entries
+
+
+def test_select_compose_items_aggregates_same_topic_across_sources():
+    from types import SimpleNamespace
+    from datetime import datetime, timezone, timedelta
+    from feeds.base import FeedItem
+    from proactive.engine import ProactiveEngine
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
+    now = datetime.now(timezone.utc)
+    items = [
+        FeedItem("NiKo Twitter", "rss", "NiKo talks about pressure in playoffs", "", "https://e/niko", None, now),
+        FeedItem("HLTV News", "rss", "HooXi reflects on NiKo leadership in G2", "", "https://e/hooxi", None, now - timedelta(minutes=20)),
+    ]
+    entries = [
+        ("rss:niko", "NiKo talks about pressure in playoffs"),
+        ("rss:hltv", "HooXi reflects on NiKo leadership in G2"),
+    ]
+
+    # 1. 两条来自不同 source，但同一核心话题是 NiKo。
+    # 2. MVP 期望：跨来源同话题也可以聚成一个 compose group。
+    compose_items, compose_entries = engine._select_compose_items(items, entries)
+
+    # 3. 当前实现只按同 source 补上下文，这条测试先锁定目标行为。
+    assert [item.title for item in compose_items] == [
+        "HooXi reflects on NiKo leadership in G2",
+        "NiKo talks about pressure in playoffs",
+    ]
+    assert compose_entries == [
+        ("rss:hltv", "HooXi reflects on NiKo leadership in G2"),
+        ("rss:niko", "NiKo talks about pressure in playoffs"),
+    ]
+
+
+def test_prepare_compose_candidates_prefers_hot_single_over_same_source_news_bundle():
+    from types import SimpleNamespace
+    from proactive.engine import ProactiveEngine, DecisionContext
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        interest_filter=SimpleNamespace(
+            enabled=True,
+            memory_max_chars=4000,
+            keyword_max_count=80,
+            min_token_len=2,
+            min_score=0.0,
+            top_k=10,
+            exploration_ratio=0.0,
+        )
+    )
+    engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
+    ctx = DecisionContext()
+    fetch = ctx.ensure_fetch()
+    decide = ctx.ensure_decide()
+    act = ctx.ensure_act()
+    decide.preference_block = "只关注 NiKo，普通资讯流可以聚合但不要压过 NiKo"
+    fetch.new_items = [
+        _build_event(event_id="n1", source_name="NiKo Twitter", title="NiKo playoff interview"),
+        _build_event(event_id="h1", source_name="HLTV News", title="Short news: Week 10"),
+        _build_event(event_id="h2", source_name="HLTV News", title="Roster tracker: March 2026"),
+        _build_event(event_id="h3", source_name="HLTV News", title="Inner Circle sign headtr1ck"),
+    ]
+    fetch.new_entries = [
+        ("rss:niko", "NiKo playoff interview"),
+        ("rss:hltv", "Short news: Week 10"),
+        ("rss:hltv", "Roster tracker: March 2026"),
+        ("rss:hltv", "Inner Circle sign headtr1ck"),
+    ]
+
+    # 1. 先按兴趣排序，再进入聚合选择。
+    # 2. MVP 期望：同源新闻 bundle 可以存在，但不能压过高兴趣单条。
+    engine._prepare_feature_compose_candidates(ctx)
+
+    # 3. 最高兴趣单条仍应优先。
+    assert [item.title for item in act.compose_items] == ["NiKo playoff interview"]
+    assert act.compose_entries == [("rss:niko", "NiKo playoff interview")]
+
+
 @pytest.mark.asyncio
 async def test_compose_judge_reject_marks_rejection_cooldown():
     from types import SimpleNamespace
@@ -1663,4 +1773,3 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
         [("rss:hltv", "Niko semifinal")],
         hours=12,
     )
-

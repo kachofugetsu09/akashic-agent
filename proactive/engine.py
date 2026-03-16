@@ -2255,14 +2255,14 @@ class ProactiveEngine:
         max_items = min(3, len(items))
         seed = items[0]
         group = [seed]
+        # 1. 先围绕最高兴趣 seed 聚合最多 2 条上下文。
+        # 2. 聚合条件只做 MVP：同来源近时间，或跨来源同话题。
+        # 3. 最后按发布时间正序，保证输出叙事稳定。
         for candidate in items[1:]:
-            if self._is_same_topic(seed, candidate):
+            if self._should_aggregate(seed, candidate):
                 group.append(candidate)
             if len(group) >= max_items:
                 break
-        # 1. 兴趣第一位：只围绕最高兴趣 seed 补同 topic 上下文。
-        # 2. 不再允许后续更大但兴趣更低的 group 覆盖当前 seed。
-        # 3. 最后仅做组内时间正序，保证叙事时序正确。
         group = self._sort_items_by_published_at(group)
         return group, self._entries_for_items(group, entries)
 
@@ -2314,11 +2314,27 @@ class ProactiveEngine:
         ranked.sort(key=lambda pair: pair[1], reverse=True)
         return [item for item, _ in ranked]
 
-    def _is_same_topic(self, left: FeedItem, right: FeedItem) -> bool:
+    def _should_aggregate(self, left: FeedItem, right: FeedItem) -> bool:
+        if self._is_same_source_window(left, right):
+            return True
+        return self._shares_topic(left, right)
+
+    def _is_same_source_window(self, left: FeedItem, right: FeedItem) -> bool:
         if (left.source_name or "").strip().lower() != (
             right.source_name or ""
         ).strip().lower():
             return False
+        left_ts = getattr(left, "published_at", None)
+        right_ts = getattr(right, "published_at", None)
+        if not isinstance(left_ts, datetime) or not isinstance(right_ts, datetime):
+            return True
+        if left_ts.tzinfo is None:
+            left_ts = left_ts.replace(tzinfo=timezone.utc)
+        if right_ts.tzinfo is None:
+            right_ts = right_ts.replace(tzinfo=timezone.utc)
+        return abs((left_ts - right_ts).total_seconds()) <= 12 * 3600
+
+    def _shares_topic(self, left: FeedItem, right: FeedItem) -> bool:
         left_title = self._topic_text(left)
         right_title = self._topic_text(right)
         if not left_title or not right_title:
