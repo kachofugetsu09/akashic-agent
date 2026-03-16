@@ -673,11 +673,11 @@ class ProactiveEngine:
         )
 
     # ------------------------------------------------------------------
-    # Stage 4 — fetch & filter: pull items, deduplicate, interest filter
+    # Stage 4 — fetch & filter: pull items, deduplicate
     # ------------------------------------------------------------------
 
     async def _stage_fetch_filter(self, ctx: DecisionContext) -> FetchFilterResult:
-        """拉取 MCP content 事件，应用兴趣筛选，填充 ctx.new_items 等。"""
+        """拉取 MCP content 事件，填充 ctx.new_items 等。"""
         fetch = ctx.ensure_fetch()
         fetch.items = []
         fetch.new_items = []
@@ -701,19 +701,42 @@ class ProactiveEngine:
             mcp_content_events = []
 
         feed_views = [(event, event.to_feed_item()) for event in mcp_content_events]
-        fetch.items = [item for _, item in feed_views]
-        logger.debug("[proactive] 从 MCP 拉取到 %d 条内容（已过兴趣筛选）", len(fetch.items))
-
-        # 2. 兴趣筛选已移至 MCP 层（feed_mcp interest_filter），直接使用返回结果。
-        # 当前内容源全部来自 MCP，直接保留事件对象，并在 source_key 里显式带上 ack_id。
-        fetch.new_items = [event for event, _ in feed_views]
-        fetch.new_entries = [
+        feed_entries = [
             (
                 f"mcp:{getattr(event, '_ack_server', None) or event.source_name}:{event.event_id}",
                 self._item_id_for(item),
             )
             for event, item in feed_views
         ]
+        cooldown_hours = getattr(self._cfg, "llm_reject_cooldown_hours", 0)
+        if cooldown_hours > 0:
+            filtered_views: list[tuple[ContentEvent, FeedItem]] = []
+            filtered_entries: list[tuple[str, str]] = []
+            for (event, item), (source_key, item_id) in zip(feed_views, feed_entries):
+                if self._state.is_rejection_cooled(
+                    source_key=source_key,
+                    item_id=item_id,
+                    ttl_hours=cooldown_hours,
+                    now=ctx.state.now_utc,
+                ):
+                    logger.debug(
+                        "[proactive] stage_fetch_filter rejection_cooldown 跳过 source=%s item_id=%s ttl_hours=%d",
+                        source_key,
+                        item_id[:16],
+                        cooldown_hours,
+                    )
+                    continue
+                filtered_views.append((event, item))
+                filtered_entries.append((source_key, item_id))
+            feed_views = filtered_views
+            feed_entries = filtered_entries
+
+        fetch.items = [item for _, item in feed_views]
+        logger.debug("[proactive] 从 MCP 拉取到 %d 条内容", len(fetch.items))
+
+        # 2. 当前内容源全部来自 MCP，直接保留事件对象，并在 source_key 里显式带上 ack_id。
+        fetch.new_items = [event for event, _ in feed_views]
+        fetch.new_entries = feed_entries
 
         # 3. 拉取 context 类源（持久背景感知，如 Steam），不涉及 ack。
         try:
@@ -1208,8 +1231,13 @@ class ProactiveEngine:
     def _prepare_feature_compose_candidates(self, ctx: DecisionContext) -> None:
         fetch = ctx.ensure_fetch()
         act = ctx.ensure_act()
-        act.compose_items, act.compose_entries = self._select_compose_items(
+        decide = ctx.ensure_decide()
+        ranked_items = self._rank_items_by_interest(
             self._feed_items(fetch.new_items),
+            decide.preference_block,
+        )
+        act.compose_items, act.compose_entries = self._select_compose_items(
+            ranked_items,
             fetch.new_entries,
         )
 
@@ -1222,6 +1250,9 @@ class ProactiveEngine:
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
         self._prepare_feature_compose_candidates(ctx)
+        compose_entries = act.compose_entries or self._primary_candidate_entries(
+            fetch.new_entries
+        )
         logger.info(
             "[compose_judge] 进入 compose+judge 决策 "
             "feed_items=%d compose_candidates=%d pref_block=%d字符",
@@ -1235,7 +1266,7 @@ class ProactiveEngine:
         decide.judge_vetoed_by = None
         # compose 전 결정적 거부 검사 — LLM 호출 낭비 방지
         age_hours = self._candidate_age_hours(fetch.new_items, now_utc=ctx.state.now_utc)
-        pre_veto = self._decide.pre_compose_veto(
+        pre_veto = getattr(self._decide, "pre_compose_veto", lambda **_: None)(
             age_hours=age_hours,
             sent_24h=score.sent_24h,
             interrupt_factor=sense.interrupt_factor,
@@ -1243,6 +1274,11 @@ class ProactiveEngine:
         if pre_veto:
             decide.should_send = False
             decide.judge_vetoed_by = pre_veto
+            if pre_veto != "balance":
+                self._state.mark_rejection_cooldown(
+                    compose_entries,
+                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
+                )
             return DecideResult(
                 proceed=False,
                 return_score=score.base_score,
@@ -1270,6 +1306,10 @@ class ProactiveEngine:
             decide.compose_no_content = True
             decide.should_send = False
             decide.decision_message = ""
+            self._state.mark_rejection_cooldown(
+                compose_entries,
+                hours=8,
+            )
             return DecideResult(
                 proceed=False,
                 return_score=score.base_score,
@@ -1311,6 +1351,20 @@ class ProactiveEngine:
         decide.judge_vetoed_by = getattr(judge_result, "vetoed_by", None)
         decide.should_send = bool(getattr(judge_result, "should_send", False))
         if not decide.should_send:
+            vetoed_by = decide.judge_vetoed_by or ""
+            if vetoed_by != "balance":
+                if not vetoed_by:
+                    cooldown_hours = 8
+                elif vetoed_by == "llm_dim":
+                    cooldown_hours = 12
+                elif vetoed_by == "compose_no_content":
+                    cooldown_hours = 8
+                else:
+                    cooldown_hours = 8
+                self._state.mark_rejection_cooldown(
+                    compose_entries,
+                    hours=cooldown_hours,
+                )
             return DecideResult(
                 proceed=False,
                 return_score=score.base_score,
@@ -2208,15 +2262,66 @@ class ProactiveEngine:
                     group.append(candidate)
                 if len(group) >= max_items:
                     break
-            if len(group) > len(best_items):
+            # 1. 兴趣排序后的更早 seed 优先；只在当前最佳组仍是单条时，才允许更大组覆盖。
+            if len(best_items) <= 1 and len(group) > len(best_items):
                 best_items = group
                 best_index = idx
             elif len(group) == len(best_items) and idx < best_index:
                 best_items = group
                 best_index = idx
-            if len(best_items) >= max_items:
+            # 2. 一旦命中多条同主题组，就直接采用当前最高兴趣 seed 的结果。
+            if len(best_items) > 1:
                 break
+        best_items = self._sort_items_by_published_at(best_items)
         return best_items, self._entries_for_items(best_items, entries)
+
+    def _sort_items_by_published_at(self, items: list[FeedItem]) -> list[FeedItem]:
+        if len(items) <= 1:
+            return items
+
+        def _ts(item: FeedItem) -> tuple[int, datetime]:
+            ts = getattr(item, "published_at", None)
+            if isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    return (0, ts.replace(tzinfo=timezone.utc))
+                return (0, ts)
+            return (1, datetime.max.replace(tzinfo=timezone.utc))
+        return sorted(items, key=_ts)
+
+    def _rank_items_by_interest(
+        self,
+        items: list[FeedItem],
+        preference_block: str,
+    ) -> list[FeedItem]:
+        # 1. 兜底检查：无候选 / 未开启 / 无偏好文本时保持原顺序。
+        if not items:
+            return []
+        cfg = getattr(self._cfg, "interest_filter", None)
+        if not cfg or not getattr(cfg, "enabled", False):
+            return items
+        if not (preference_block or "").strip():
+            return items
+        # 2. 构造兴趣配置并打分（不做硬过滤，只排序）。
+        try:
+            from proactive.interest import (
+                InterestFilterConfig,
+                score_items_by_memory,
+            )
+        except Exception:
+            return items
+        interest_cfg = InterestFilterConfig(
+            enabled=True,
+            memory_max_chars=getattr(cfg, "memory_max_chars", 4000),
+            keyword_max_count=getattr(cfg, "keyword_max_count", 80),
+            min_token_len=getattr(cfg, "min_token_len", 2),
+            min_score=getattr(cfg, "min_score", 0.14),
+            top_k=getattr(cfg, "top_k", 10),
+            exploration_ratio=getattr(cfg, "exploration_ratio", 0.2),
+        )
+        ranked = score_items_by_memory(items, preference_block, interest_cfg)
+        # 3. 按兴趣分数降序返回。
+        ranked.sort(key=lambda pair: pair[1], reverse=True)
+        return [item for item, _ in ranked]
 
     def _is_same_topic(self, left: FeedItem, right: FeedItem) -> bool:
         if (left.source_name or "").strip().lower() != (

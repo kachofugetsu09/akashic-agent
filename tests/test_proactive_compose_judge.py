@@ -314,7 +314,7 @@ class _StubProvider:
 
 
 @pytest.mark.asyncio
-async def test_judge_veto_by_urgency():
+async def test_judge_does_not_veto_by_urgency():
     judge = ProactiveJudge(
         provider=_StubProvider(),
         model="m",
@@ -324,6 +324,7 @@ async def test_judge_veto_by_urgency():
         cfg=ProactiveConfig(
             judge_urgency_horizon_hours=12.0,
             judge_veto_urgency_min=0.2,
+            judge_send_threshold=0.0,
         ),
     )
     result = await judge.judge_message(
@@ -334,7 +335,8 @@ async def test_judge_veto_by_urgency():
         sent_24h=0,
         interrupt_factor=1.0,
     )
-    assert result.vetoed_by == "urgency"
+    assert result.vetoed_by is None
+    assert result.should_send is True
 
 
 @pytest.mark.asyncio

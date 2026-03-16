@@ -487,6 +487,50 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_engine_stage_fetch_filter_skips_rejection_cooled_events(tmp_path):
+    from proactive.state import ProactiveStateStore
+
+    payloads = [
+        {
+            "event_id": "evt-1",
+            "kind": "content",
+            "source_type": "rss",
+            "source_name": "Test",
+            "title": "A",
+            "content": "body",
+            "url": "https://example.com/a",
+            "published_at": None,
+            "ack_server": "feed",
+        }
+    ]
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        llm_reject_cooldown_hours=12,
+    )
+    state = ProactiveStateStore(tmp_path / "state.json")
+    engine._state = state
+    engine._sense = SimpleNamespace(
+        has_global_memory=lambda: False,
+    )
+    engine._decide = SimpleNamespace()
+    ctx = DecisionContext()
+    ctx.state.now_utc = datetime.now(timezone.utc)
+
+    item_id = compute_item_id(
+        GenericContentEvent.from_mcp_payload(payloads[0]).to_feed_item()
+    )
+    state.mark_rejection_cooldown([("mcp:feed:evt-1", item_id)], hours=12)
+
+    with mock.patch("proactive.mcp_sources.fetch_content_events", return_value=payloads):
+        result = await engine._stage_fetch_filter(ctx)
+
+    assert result.total_items == 0
+    assert result.selected_count == 0
+    assert ctx.ensure_fetch().new_items == []
+    assert ctx.ensure_fetch().new_entries == []
+
+
+@pytest.mark.asyncio
 async def test_engine_stage_decide_returns_structured_feature_reject_result():
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
@@ -1404,3 +1448,166 @@ def test_rejection_cooldown_filters_in_next_tick(tmp_path):
 
     new_items, new_entries, _ = item_filter.filter_new_items([item])
     assert len(new_items) == 0, "rejection_cooldown 中的条目应被过滤掉"
+
+
+def _build_event(*, event_id: str, source_name: str, title: str, published_at=None):
+    from proactive.event import GenericContentEvent
+
+    return GenericContentEvent(
+        event_id=event_id,
+        source_type="rss",
+        source_name=source_name,
+        content=title,
+        title=title,
+        url="https://example.com/" + event_id,
+        published_at=published_at,
+    )
+
+
+def test_prepare_compose_candidates_prefers_interest_ranked_items():
+    from types import SimpleNamespace
+    from proactive.engine import ProactiveEngine, DecisionContext
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        interest_filter=SimpleNamespace(
+            enabled=True,
+            memory_max_chars=4000,
+            keyword_max_count=80,
+            min_token_len=2,
+            min_score=0.0,
+            top_k=10,
+            exploration_ratio=0.0,
+        )
+    )
+    engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
+
+    ctx = DecisionContext()
+    fetch = ctx.ensure_fetch()
+    decide = ctx.ensure_decide()
+    act = ctx.ensure_act()
+    decide.preference_block = "只关注 Niko 和 Major"
+
+    # 1. 构造“无关大组 + 关注小组”的候选，顺序先无关后关注。
+    fetch.new_items = [
+        _build_event(event_id="o1", source_name="Other", title="Other match A"),
+        _build_event(event_id="o2", source_name="Other", title="Other match B"),
+        _build_event(event_id="o3", source_name="Other", title="Other match C"),
+        _build_event(event_id="n1", source_name="HLTV", title="Niko semifinal"),
+        _build_event(event_id="n2", source_name="HLTV", title="Niko final"),
+    ]
+    fetch.new_entries = [
+        ("rss:other", "Other match A"),
+        ("rss:other", "Other match B"),
+        ("rss:other", "Other match C"),
+        ("rss:hltv", "Niko semifinal"),
+        ("rss:hltv", "Niko final"),
+    ]
+
+    # 2. 触发 compose 候选选择。
+    engine._prepare_feature_compose_candidates(ctx)
+
+    # 3. 应优先选择高兴趣组（Niko）。
+    assert act.compose_items
+    assert "Niko" in (act.compose_items[0].title or "")
+    assert act.compose_entries == [
+        ("rss:hltv", "Niko semifinal"),
+        ("rss:hltv", "Niko final"),
+    ]
+
+
+def test_select_compose_items_sorts_group_by_published_at_asc():
+    from types import SimpleNamespace
+    from datetime import datetime, timezone, timedelta
+    from feeds.base import FeedItem
+    from proactive.engine import ProactiveEngine
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
+
+    now = datetime.now(timezone.utc)
+    newer = FeedItem(
+        source_name="HLTV",
+        source_type="rss",
+        title="Niko final",
+        content="",
+        url="https://example.com/f",
+        author=None,
+        published_at=now,
+    )
+    older = FeedItem(
+        source_name="HLTV",
+        source_type="rss",
+        title="Niko semifinal",
+        content="",
+        url="https://example.com/s",
+        author=None,
+        published_at=now - timedelta(hours=3),
+    )
+
+    # 1. 逆序输入同组内容。
+    items = [newer, older]
+    entries: list[tuple[str, str]] = []
+
+    # 2. 选择 compose 候选。
+    compose_items, _ = engine._select_compose_items(items, entries)
+
+    # 3. 组内应按发布时间正序。
+    assert compose_items[0].title == "Niko semifinal"
+
+
+@pytest.mark.asyncio
+async def test_compose_judge_reject_marks_rejection_cooldown():
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+    from proactive.engine import ProactiveEngine, DecisionContext
+    from proactive.components import ProactiveJudgeResult
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        compose_judge_enabled=True,
+        compose_no_content_token="<no_content/>",
+        llm_reject_cooldown_hours=12,
+    )
+    engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
+    async def _compose_for_judge(**kw):
+        return "content"
+
+    async def _judge_message(**kw):
+        return ProactiveJudgeResult(
+            final_score=0.1,
+            should_send=False,
+            vetoed_by="llm_dim",
+            dims_deterministic={"urgency": 0.5, "balance": 1.0, "dynamics": 1.0},
+            dims_llm={"information_gap": 0.0, "relevance": 0.0, "expected_impact": 0.0},
+            dims_llm_raw={"information_gap": 1, "relevance": 1, "expected_impact": 1},
+        )
+
+    engine._decide = SimpleNamespace(
+        item_id_for=lambda item: item.title,
+        pre_compose_veto=lambda **kw: None,
+        compose_for_judge=_compose_for_judge,
+        judge_message=_judge_message,
+    )
+
+    ctx = DecisionContext()
+    fetch = ctx.ensure_fetch()
+    sense = ctx.ensure_sense()
+    score = ctx.ensure_score()
+    ctx.state.now_utc = datetime.now(timezone.utc)
+    sense.recent = []
+    score.sent_24h = 0
+    fetch.new_items = [
+        _build_event(event_id="n1", source_name="HLTV", title="Niko semifinal")
+    ]
+    fetch.new_entries = [("rss:hltv", "Niko semifinal")]
+
+    # 1. 执行 compose+judge 决策。
+    await engine._run_compose_judge_decision(ctx)
+
+    # 2. LLM 拒绝应写入本轮真正进入 compose 的条目，而不是原始候选首条。
+    engine._state.mark_rejection_cooldown.assert_called_once_with(
+        [("rss:hltv", "Niko semifinal")],
+        hours=12,
+    )

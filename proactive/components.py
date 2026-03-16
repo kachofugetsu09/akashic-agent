@@ -814,10 +814,9 @@ class ProactiveJudge:
         return vetoed
 
     def _deterministic_veto(self, deterministic: dict[str, float]) -> str | None:
+        # 1. MVP 只保留 balance 硬否决，避免旧内容因 urgency 过低被挡在 compose 前。
         if deterministic["balance"] < float(getattr(self._cfg, "judge_veto_balance_min", 0.1)):
             return "balance"
-        if deterministic["urgency"] < float(getattr(self._cfg, "judge_veto_urgency_min", 0.05)):
-            return "urgency"
         return None
 
     async def _score_llm_dims(
