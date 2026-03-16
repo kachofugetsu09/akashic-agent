@@ -115,7 +115,7 @@ class AgentLoopToolExecutionMixin:
                         iteration=iteration + 1,
                         tools_used=tools_used,
                     )
-                    return summary, tools_used, tool_chain, visible_names
+                    return summary, tools_used, tool_chain, visible_names, None
 
                 logger.info(
                     f"LLM 请求调用 {len(response.tool_calls)} 个工具: "
