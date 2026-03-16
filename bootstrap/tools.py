@@ -63,6 +63,7 @@ def _register_meta_and_common_tools(
     tools.register(ListToolsTool(tools), always_on=True, tags=["meta"], risk="read-only")
     tools.register(
         ShellTool(),
+        always_on=True,
         tags=["system"],
         risk="external-side-effect",
         search_keywords=["终端", "命令", "bash", "运行命令", "执行脚本", "shell"],

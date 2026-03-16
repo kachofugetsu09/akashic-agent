@@ -111,7 +111,6 @@ def build_memory_runtime(
     )
     tools.register(
         MemorizeTool(port, tagger=tagger),
-        always_on=True,
         tags=["memory"],
         risk="write",
         search_keywords=["记忆", "存储知识", "记录信息", "备忘", "memorize"],
