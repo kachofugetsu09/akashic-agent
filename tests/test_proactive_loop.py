@@ -1597,3 +1597,48 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
         [("rss:hltv", "Niko semifinal")],
         hours=12,
     )
+
+
+@pytest.mark.asyncio
+async def test_compose_judge_without_candidates_uses_user_recent_only():
+    from types import SimpleNamespace
+    from datetime import datetime, timezone
+    from proactive.engine import ProactiveEngine, DecisionContext
+
+    compose_calls: list[dict] = []
+
+    async def _compose_for_judge(**kw):
+        compose_calls.append(kw)
+        return "<no_content/>"
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        compose_no_content_token="<no_content/>",
+        llm_reject_cooldown_hours=12,
+    )
+    engine._state = SimpleNamespace(mark_rejection_cooldown=lambda *a, **kw: None)
+    engine._decide = SimpleNamespace(
+        item_id_for=lambda item: item.title,
+        pre_compose_veto=lambda **kw: None,
+        compose_for_judge=_compose_for_judge,
+        judge_message=None,
+    )
+
+    ctx = DecisionContext()
+    sense = ctx.ensure_sense()
+    score = ctx.ensure_score()
+    ctx.state.now_utc = datetime.now(timezone.utc)
+    sense.recent = [
+        {"role": "assistant", "content": "旧的主动资讯"},
+        {"role": "user", "content": "我最近有点累"},
+        {"role": "assistant", "content": "再一条旧资讯"},
+    ]
+    score.sent_24h = 0
+
+    await engine._run_compose_judge_decision(ctx)
+
+    assert len(compose_calls) == 1
+    assert compose_calls[0]["items"] == []
+    assert compose_calls[0]["recent"] == [
+        {"role": "user", "content": "我最近有点累"}
+    ]

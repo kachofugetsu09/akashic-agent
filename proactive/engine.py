@@ -1289,9 +1289,13 @@ class ProactiveEngine:
                 history_scope_mode=decide.history_scope_mode,
             )
         no_content_token = str(getattr(self._cfg, "compose_no_content_token", "<no_content/>"))
+        compose_recent = self._compose_recent_messages(
+            recent=sense.recent,
+            has_compose_candidates=bool(act.compose_items),
+        )
         decide.decision_message = await self._decide.compose_for_judge(
             items=act.compose_items,
-            recent=sense.recent,
+            recent=compose_recent,
             preference_block=decide.preference_block,
             no_content_token=no_content_token,
         )
@@ -1376,6 +1380,20 @@ class ProactiveEngine:
                 history_scope_mode=decide.history_scope_mode,
             )
         return self._build_continue_decide_result(ctx, decision_mode="compose_judge")
+
+    def _compose_recent_messages(
+        self,
+        *,
+        recent: list[dict],
+        has_compose_candidates: bool,
+    ) -> list[dict]:
+        # 1. 有内容候选时保留完整 recent，让模型正常结合上下文组织资讯消息。
+        if has_compose_candidates:
+            return recent
+        # 2. 无内容候选时只保留用户消息，避免模型复述最近 assistant 主动发过的旧资讯。
+        filtered = [msg for msg in recent if str(msg.get("role", "")) == "user"]
+        # 3. 若近期没有用户消息，则显式返回空列表，交给 compose prompt 自行判断 no_content。
+        return filtered
 
     def _candidate_age_hours(
         self,
