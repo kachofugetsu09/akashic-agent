@@ -87,7 +87,9 @@ def build_compose_prompt_messages(
         "4. 允许在开头加一句自然的人话式开场，但这句开场不能引入任何新事实。\n"
         "5. 消息正文最多提炼 1 到 2 个关键信息点，不要把整篇文章复述成摘要。\n"
         "6. 消息末尾必须附上对应来源的原文链接（取自新内容中的「原文链接:」字段）。\n"
-        "7. 输出纯文本，不要 JSON，不要提问收尾，不要像系统通知。"
+        "7. 如果「用户偏好记录」里出现了明确的禁推/过滤/不要推送规则，且该规则与候选内容匹配，必须直接输出"
+        f" {no_content_token}，不得因为内容新鲜或信息量高而继续生成。\n"
+        "8. 输出纯文本，不要 JSON，不要提问收尾，不要像系统通知。"
     )
     user_msg = f"""当前时间：{prompt_context.now_str}
 
@@ -103,7 +105,8 @@ def build_compose_prompt_messages(
 3. 不要只把标题重复一遍；要尽量提炼“这条里真正值得用户点开的点”。
 4. 在消息末尾另起一行附上对应原文链接；若聚合了多条，可逐行附多个链接。
 5. 若抓到的内容仍然不足以支撑任何具体提炼，只能基于标题做最小转述，不要扩写。
-6. 若以上内容都不值得推送，或无法找到原文依据，输出 `{no_content_token}`。"""
+6. 若「用户偏好记录」中有明确写明不要推送/直接过滤/主动屏蔽，而候选内容正好命中该规则，必须输出 `{no_content_token}`。
+7. 若以上内容都不值得推送，或无法找到原文依据，输出 `{no_content_token}`。"""
     return system_msg, user_msg
 
 
@@ -112,6 +115,7 @@ def build_post_judge_prompt_messages(
     recent_summary: str,
     last_proactive: str,
     composed_message: str,
+    preference_block: str = "",
 ) -> tuple[str, str]:
     system_msg = (
         "你是主动消息评分器。"
@@ -123,6 +127,8 @@ def build_post_judge_prompt_messages(
 
 用户已收到的最近几条推送：
 {last_proactive}
+
+{f"用户偏好与禁推规则：\n{preference_block}\n\n" if preference_block else ""}
 
 待发送消息：
 {composed_message}
@@ -138,6 +144,10 @@ def build_post_judge_prompt_messages(
 - 3：一般，价值不确定
 - 4：较强，明显有价值
 - 5：很强，强价值且很贴合
+
+额外判分约束：
+- 如果消息违反了用户明确写出的“不要推送/禁止推送/直接过滤/主动屏蔽”等禁推规则，`relevance` 必须打 1，`expected_impact` 也必须打 1
+- 遇到这种情况，不要因为消息本身是新资讯就提高分数
 
 请基于“是否应该推动发送”来打分：分数越高代表越应该发送，分数越低代表应保守抑制发送。
 

@@ -64,7 +64,6 @@ _TOPIC_STOPWORDS = frozenset(
         "review",
     }
 )
-
 # Sentinel returned by stage methods to signal "stop tick, return None to caller"
 _STOP_NONE: object = object()
 
@@ -1331,6 +1330,7 @@ class ProactiveEngine:
             message=msg,
             recent=sense.recent,
             recent_proactive_text=recent_proactive_text,
+            preference_block=decide.preference_block,
             age_hours=age_hours,
             sent_24h=score.sent_24h,
             interrupt_factor=sense.interrupt_factor,

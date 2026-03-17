@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+
 @dataclass
 class ProactiveConfig:
     enabled: bool = False
@@ -53,8 +54,11 @@ class ProactiveConfig:
     anyaction_probability_min: float = 0.03
     anyaction_probability_max: float = 0.45
     anyaction_idle_scale_minutes: float = 240.0
+    # 决策模式由 compose_judge_enabled 决定；feature_scoring_enabled 仅保留兼容，不再参与分支选择。
     feature_scoring_enabled: bool = False
     compose_judge_enabled: bool = False
+    active_decision_mode: str = "feature"
+    inactive_config_keys: list[str] = field(default_factory=list)
     compose_no_content_token: str = "<no_content/>"
     feature_send_threshold: float = 0.52
     feature_weight_topic_continuity: float = 0.16

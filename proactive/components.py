@@ -749,6 +749,7 @@ class ProactiveJudge:
         message: str,
         recent: list[dict],
         recent_proactive_text: str,
+        preference_block: str = "",
         age_hours: float,
         sent_24h: int,
         interrupt_factor: float,
@@ -778,6 +779,7 @@ class ProactiveJudge:
             message=message,
             recent=recent,
             recent_proactive_text=recent_proactive_text,
+            preference_block=preference_block,
         )
         logger.info(
             "[judge] LLM维度 info_gap=%d relevance=%d impact=%d (归一化 %.2f/%.2f/%.2f)",
@@ -873,11 +875,13 @@ class ProactiveJudge:
         message: str,
         recent: list[dict],
         recent_proactive_text: str,
+        preference_block: str = "",
     ) -> tuple[dict[str, float], dict[str, int]]:
         system_msg, user_msg = build_post_judge_prompt_messages(
             recent_summary=self._format_recent(recent) or "（无近期对话）",
             last_proactive=recent_proactive_text or "（无近期主动消息）",
             composed_message=message,
+            preference_block=preference_block,
         )
         try:
             resp = await self._provider.chat(
