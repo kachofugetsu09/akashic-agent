@@ -98,8 +98,13 @@ class ConversationTurnHandler:
         gate_type = "history_route"
         sufficiency_trace: dict[str, object] = self._empty_sufficiency_state()
         try:
+            # 1. 先整理 gate 和 HyDE 需要的最近上下文，作为“要不要检索历史”的输入。
             recent_turns = loop._format_gate_history(main_history, max_turns=3)
             hyde_context = self._build_hyde_context(main_history)
+
+            # 2. 再做 memory gate：
+            #    - 一路取 procedure/preference 规则类记忆
+            #    - 一路判断这轮是否需要检索 event/profile 历史类记忆
             gate_result, p_items = await self._resolve_memory_gate(
                 msg=msg,
                 session=session,
@@ -112,6 +117,9 @@ class ConversationTurnHandler:
             fallback_reason = str(gate_result["fallback_reason"])
             history_memory_types = list(gate_result["history_memory_types"])
             gate_latency_ms = {"route": route_ms}
+
+            # 3. 若 gate 判定需要历史检索，就按改写后的 query 去取 episodic items；
+            #    然后把规则类记忆和历史类记忆合并，生成最终注入主模型的 memory block。
             h_items, h_scope_mode, hyde_hypothesis = await self._retrieve_episodic_items(
                 route_decision=route_decision,
                 rewritten_query=rewritten_query,
@@ -122,6 +130,9 @@ class ConversationTurnHandler:
                 procedure_items=p_items,
                 history_items=h_items,
             )
+
+            # 4. 若第一次历史召回结果不够支撑回答，再做一次 sufficiency retry；
+            #    最后把 route / hits / injected ids 等细节写入 trace，返回 memory block 给主链路。
             h_items, h_scope_mode, selected_items, retrieved_block, injected_item_ids = (
                 await self._retry_empty_episodic_block(
                     msg=msg,

@@ -54,7 +54,16 @@ async def retrieve_episodic(
 
     不含 scoped 路径——scoped 路径由 proactive 的 retrieve_history_items 负责。
     """
+    # 1. 先确定这次到底查哪些记忆类型。
+    #    主回复链路通常传进来的是 ["event", "profile"]；
+    #    如果上层没传，就默认按 event + profile 查。
     mtypes: list[str] = memory_types if memory_types is not None else ["event", "profile"]
+
+    # 2. 如果配置了 HyDE，就先让 light model 基于 raw query + recent context
+    #    生成一个“更像记忆库表述方式”的假想查询，再用它辅助召回。
+    #    这里返回的不只是增强后的 hits，还会告诉上层：
+    #    - 这次是否真的用了 HyDE
+    #    - 生成的假想描述是什么
     if hyde_enhancer is not None:
         result = await hyde_enhancer.augment(
             raw_query=query,
@@ -65,7 +74,13 @@ async def retrieve_episodic(
         )
         scope = "global+hyde" if result.used_hyde else "global"
         return _mark_hyde_history_paths(result.raw_hits, result.items), scope, result.hypothesis
+
+    # 3. 如果没开 HyDE，就直接用改写后的 query 去查向量库。
+    #    这里查到的就是最原始的一批 event/profile 命中结果。
     items = await memory.retrieve_related(query, memory_types=mtypes, top_k=top_k)
+
+    # 4. 最后给命中的 item 打一个 history_path 标记，告诉上层：
+    #    这批结果来自“原始历史检索”而不是 HyDE 增强路径。
     return _mark_history_path(items, "history_raw"), "global", None
 
 
