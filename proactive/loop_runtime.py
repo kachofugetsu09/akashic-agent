@@ -8,10 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.components import (
-    ProactiveFeatureScorer,
     ProactiveItemFilter,
     ProactiveJudge,
-    ProactiveMessageComposer,
     ProactiveMessageDeduper,
     ProactiveSender,
 )
@@ -102,27 +100,6 @@ class ProactiveLoopRuntimeMixin:
             presence=self._presence,
         )
 
-    def _build_feature_scorer(self) -> ProactiveFeatureScorer:
-        return ProactiveFeatureScorer(
-            provider=self._provider,
-            model=self._model,
-            max_tokens=self._max_tokens,
-            format_items=_format_items,
-            format_recent=_format_recent,
-            collect_global_memory=self._build_context_block,
-        )
-
-    def _build_message_composer(self, fitbit_url: str) -> ProactiveMessageComposer:
-        return ProactiveMessageComposer(
-            provider=self._provider,
-            model=self._model,
-            max_tokens=self._max_tokens,
-            format_items=_format_items,
-            format_recent=_format_recent,
-            collect_global_memory=self._build_context_block,
-            fitbit_url=fitbit_url,
-        )
-
     def _build_judge(self) -> ProactiveJudge:
         return ProactiveJudge(
             provider=self._light_provider or self._provider,
@@ -168,8 +145,6 @@ class ProactiveLoopRuntimeMixin:
             item_id_fn=_item_id,
             semantic_text_fn=_semantic_text,
             semantic_text_max_chars=self._cfg.semantic_dedupe_text_max_chars,
-            feature_scorer=self._feature_scorer,
-            message_composer=self._message_composer,
             judge=self._judge,
         )
 
@@ -238,10 +213,7 @@ class ProactiveLoopRuntimeMixin:
     def _init_runtime_components(self) -> None:
         self._log_runtime_config()
         self._item_filter = self._build_item_filter()
-        fitbit_url = self._fitbit_url()
         self._sender = self._build_sender()
-        self._feature_scorer = self._build_feature_scorer()
-        self._message_composer = self._build_message_composer(fitbit_url)
         self._judge = self._build_judge()
         self._anyaction = self._build_anyaction_gate()
         fitbit_provider = self._build_fitbit_provider()

@@ -32,11 +32,7 @@ from core.net.http import (
 )
 from feeds.base import FeedItem
 from proactive.anyaction import AnyActionGate, QuotaStore
-from proactive.components import (
-    ProactiveFeatureScorer,
-    ProactiveJudge,
-    ProactiveMessageComposer,
-)
+from proactive.components import ProactiveJudge
 from proactive.config import ProactiveConfig
 from proactive.engine import (
     DecisionContext,
@@ -477,27 +473,7 @@ class ProactiveScenarioRunner:
         *,
         fallback_model: str = "",
     ) -> DefaultDecidePort:
-        def collect_global_memory() -> str:
-            return spec.memory_text
-
         model = p_cfg.model or fallback_model
-        feature_scorer = ProactiveFeatureScorer(
-            provider=provider,
-            model=model,
-            max_tokens=1024,
-            format_items=_format_items,
-            format_recent=_format_recent,
-            collect_global_memory=collect_global_memory,
-        )
-        message_composer = ProactiveMessageComposer(
-            provider=provider,
-            model=model,
-            max_tokens=1024,
-            format_items=_format_items,
-            format_recent=_format_recent,
-            collect_global_memory=collect_global_memory,
-            fitbit_url="",
-        )
         judge = ProactiveJudge(
             provider=provider,
             model=model,
@@ -515,8 +491,6 @@ class ProactiveScenarioRunner:
             item_id_fn=_item_id,
             semantic_text_fn=_semantic_text,
             semantic_text_max_chars=p_cfg.semantic_dedupe_text_max_chars,
-            feature_scorer=feature_scorer,
-            message_composer=message_composer,
             judge=judge,
         )
 
@@ -542,8 +516,7 @@ class ProactiveScenarioRunner:
                     f"(snapshot.should_send={should_send_in_snapshot})"
                 )
 
-        # score 断言：reflect mode 下直接用 should_send 推断（sent=True → score≥threshold）
-        # feature_final_score 只在 feature_scorer 启用时有效，测试中禁用了
+        # score 断言：当前只保留 compose_judge 路线，直接用 sent / not sent 推断。
         if assertions.min_score is not None:
             if assertions.min_score > 0.0 and not sent_messages:
                 errors.append(

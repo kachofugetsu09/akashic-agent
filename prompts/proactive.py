@@ -1,68 +1,8 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
-
-
-def build_feature_scoring_prompt_messages(
-    *,
-    prompt_context: Any,
-    decision_signals: dict[str, object],
-    retrieved_memory_block: str,
-) -> tuple[str, str]:
-    system_msg = (
-        "你是主动触达特征评估器。只输出固定JSON字段。"
-        "每个分数字段必须是0到1的小数；同时给每个字段一句简短理由。"
-        "若决策信号含 alert_events，告警类触达优先级高于普通资讯触达。"
-        "message_readiness_reason 应基于用户整体状态（时间、活跃度、对话节奏等）综合判断，无需引用具体健康数值。"
-        "若决策信号不含健康来源告警，不得用健康状况作为触达理由。"
-        "topic_continuity 代表与近期对话的连续性，它是加分项而不是硬门槛。"
-        "如果订阅内容与用户长期兴趣明显匹配，即使与近期对话无关，也可以给出高 interest_match 和合理的 reconnect_value。"
-        "不要给最终决策，不要输出额外文本。"
-    )
-    user_msg = f"""当前时间：{prompt_context.now_str}
-
-## 决策信号（系统计算）
-```json
-{json.dumps(decision_signals, ensure_ascii=False, indent=2)}
-```
-
-## 订阅信息流
-{prompt_context.feed_text}
-
-## 长期记忆
-{prompt_context.memory_text}
-{f"## 相关记忆（本次触达召回）\n{retrieved_memory_block}\n" if retrieved_memory_block else ""}
-
-## 近期对话
-{prompt_context.chat_text}
-
-补充原则：
-- 不要求消息必须承接近期对话
-- 若某条信息流与用户长期兴趣明显匹配，可把它视为一个自然的新切入点
-- 只有当完全无关、打扰风险高、或内容不够新鲜时，才应压低分数
-
-只输出 JSON，且仅包含以下键：
-{{
-  "topic_continuity": 0.0,
-  "topic_continuity_reason": "",
-  "interest_match": 0.0,
-  "interest_match_reason": "",
-  "content_novelty": 0.0,
-  "content_novelty_reason": "",
-  "reconnect_value": 0.0,
-  "reconnect_value_reason": "",
-  "disturb_risk": 0.0,
-  "disturb_risk_reason": "",
-  "message_readiness": 0.0,
-  "message_readiness_reason": "",
-  "confidence": 0.0,
-  "confidence_reason": ""
-}}
-"""
-    return system_msg, user_msg
 
 
 def build_compose_prompt_messages(

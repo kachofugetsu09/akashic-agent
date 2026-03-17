@@ -127,7 +127,6 @@ async def test_compose_judge_no_content_skip_send(tmp_path):
             return "item1"
 
     cfg = ProactiveConfig(
-        compose_judge_enabled=True,
         score_llm_threshold=0.0,
         score_pre_threshold=0.0,
         default_channel="telegram",
@@ -192,7 +191,6 @@ async def test_compose_judge_veto_skip_send(tmp_path):
             return "item1"
 
     cfg = ProactiveConfig(
-        compose_judge_enabled=True,
         score_llm_threshold=0.0,
         score_pre_threshold=0.0,
         default_channel="telegram",
@@ -259,6 +257,44 @@ async def test_compose_for_judge_prompt_includes_portal_negative_preference(monk
     )
 
     assert result == "<no_content/>"
+
+
+@pytest.mark.asyncio
+async def test_compose_enrich_items_parses_fetch_json(monkeypatch):
+    judge = ProactiveJudge(
+        provider=object(),
+        model="m",
+        max_tokens=128,
+        format_items=lambda _: "",
+        format_recent=lambda _: "",
+        cfg=ProactiveConfig(),
+    )
+    item = FeedItem(
+        source_name="Test",
+        source_type="rss",
+        title="short",
+        content="tiny",
+        url="https://example.com/a",
+        author=None,
+        published_at=datetime.now(timezone.utc),
+    )
+
+    async def _fake_execute(self, **kwargs):
+        return '{"text": "' + ("x" * 500) + '"}'
+
+    monkeypatch.setattr(
+        "proactive.components.get_default_http_requester",
+        lambda *_: object(),
+    )
+    monkeypatch.setattr(
+        "proactive.components.WebFetchTool.execute",
+        _fake_execute,
+    )
+
+    items = await judge._enrich_items_for_compose([item])
+
+    assert items[0].content == "x" * 500
+    assert getattr(items[0], "content_status", "") == "fetched"
 
 
 @pytest.mark.asyncio
@@ -336,7 +372,6 @@ async def test_compose_judge_empty_string_skip_send(tmp_path):
 
     engine = ProactiveEngine(
         cfg=ProactiveConfig(
-            compose_judge_enabled=True,
             score_llm_threshold=0.0,
             score_pre_threshold=0.0,
             default_channel="telegram",
@@ -393,7 +428,6 @@ async def test_compose_judge_none_fallback_allows_send(tmp_path):
 
     engine = ProactiveEngine(
         cfg=ProactiveConfig(
-            compose_judge_enabled=True,
             score_llm_threshold=0.0,
             score_pre_threshold=0.0,
             default_channel="telegram",

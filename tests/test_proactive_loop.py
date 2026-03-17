@@ -530,177 +530,6 @@ async def test_engine_stage_fetch_filter_skips_rejection_cooled_events(tmp_path)
     assert ctx.ensure_fetch().new_entries == []
 
 
-@pytest.mark.asyncio
-async def test_engine_stage_decide_returns_structured_feature_reject_result():
-    engine = ProactiveEngine.__new__(ProactiveEngine)
-    engine._cfg = SimpleNamespace(
-        feature_scoring_enabled=True,
-        feature_send_threshold=0.8,
-        threshold=0.7,
-        score_llm_threshold=0.6,
-        llm_reject_cooldown_hours=0,
-        feature_weight_topic_continuity=1.0,
-        feature_weight_interest_match=1.0,
-        feature_weight_content_novelty=1.0,
-        feature_weight_reconnect_value=1.0,
-        feature_weight_message_readiness=1.0,
-        feature_weight_disturb_risk=1.0,
-        feature_weight_interrupt_penalty=1.0,
-        feature_weight_d_recent_bonus=0.0,
-        feature_weight_d_content_bonus=0.0,
-        feature_weight_d_energy_bonus=0.0,
-    )
-    engine._decide = SimpleNamespace(
-        score_features=AsyncMock(
-            return_value={
-                "topic_continuity": 0.1,
-                "interest_match": 0.1,
-                "content_novelty": 0.1,
-                "reconnect_value": 0.1,
-                "disturb_risk": 0.9,
-                "message_readiness": 0.1,
-                "confidence": 0.1,
-            }
-        ),
-        compose_message=AsyncMock(return_value=""),
-    )
-    engine._memory_retrieval = None
-    engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
-    ctx = DecisionContext()
-    sense = ctx.ensure_sense()
-    fetch = ctx.ensure_fetch()
-    score = ctx.ensure_score()
-    act = ctx.ensure_act()
-    ctx.state.session_key = "telegram:1"
-    ctx.state.now_utc = datetime.now(timezone.utc)
-    fetch.new_items = []
-    fetch.new_entries = []
-    sense.recent = []
-    sense.health_events = []
-    act.high_events = []
-    sense.interruptibility = 1.0
-    sense.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
-    score.pre_score = 0.2
-    score.base_score = 0.3
-    score.draw_score = 0.3
-    score.dc = 0.1
-    sense.de = 0.1
-    sense.dr = 0.1
-    score.is_crisis = False
-    score.sent_24h = 0
-    score.fresh_items_24h = 0
-
-    result = await engine._stage_decide(ctx)
-
-    assert result.proceed is False
-    assert result.reason_code == "feature_score_reject"
-    assert result.should_send is False
-    assert result.decision_message == ""
-    assert result.decision_mode == "feature"
-    assert result.feature_final_score == ctx.ensure_decide().feature_final_score
-    assert result.history_gate_reason == "disabled"
-    assert result.history_scope_mode == "disabled"
-
-
-@pytest.mark.asyncio
-async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidates():
-    engine = ProactiveEngine.__new__(ProactiveEngine)
-    engine._cfg = SimpleNamespace(
-        feature_scoring_enabled=True,
-        feature_send_threshold=0.4,
-        threshold=0.7,
-        score_llm_threshold=0.6,
-        llm_reject_cooldown_hours=0,
-        feature_weight_topic_continuity=1.0,
-        feature_weight_interest_match=1.0,
-        feature_weight_content_novelty=1.0,
-        feature_weight_reconnect_value=1.0,
-        feature_weight_message_readiness=1.0,
-        feature_weight_disturb_risk=0.0,
-        feature_weight_interrupt_penalty=0.0,
-        feature_weight_d_recent_bonus=0.0,
-        feature_weight_d_content_bonus=0.0,
-        feature_weight_d_energy_bonus=0.0,
-    )
-    _raw_item = FeedItem(
-        source_name="Test",
-        source_type="rss",
-        title="A",
-        content="body",
-        url="https://example.com/a",
-        author=None,
-        published_at=None,
-    )
-    item = _raw_item  # compose_items assertion still compares against FeedItem
-    engine._decide = SimpleNamespace(
-        score_features=AsyncMock(
-            return_value={
-                "topic_continuity": 1.0,
-                "interest_match": 1.0,
-                "content_novelty": 1.0,
-                "reconnect_value": 1.0,
-                "disturb_risk": 0.0,
-                "message_readiness": 1.0,
-                "confidence": 1.0,
-                "topic_continuity_reason": "r1",
-                "interest_match_reason": "r2",
-                "content_novelty_reason": "r3",
-                "reconnect_value_reason": "r4",
-                "disturb_risk_reason": "r5",
-                "message_readiness_reason": "r6",
-                "confidence_reason": "r7",
-            }
-        ),
-        compose_message=AsyncMock(return_value="hello proactive"),
-        item_id_for=lambda _: "item-1",
-    )
-    engine._memory_retrieval = None
-    engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
-    ctx = DecisionContext()
-    sense = ctx.ensure_sense()
-    fetch = ctx.ensure_fetch()
-    score = ctx.ensure_score()
-    act = ctx.ensure_act()
-    ctx.state.session_key = "telegram:1"
-    ctx.state.now_utc = datetime.now(timezone.utc)
-    fetch.new_items = [
-        GenericContentEvent(
-            event_id="item-1",
-            source_type=_raw_item.source_type or "",
-            source_name=_raw_item.source_name or "",
-            content=_raw_item.content or "",
-            title=_raw_item.title,
-            url=_raw_item.url,
-            published_at=_raw_item.published_at,
-        )
-    ]
-    fetch.new_entries = [("rss:test", "item-1")]
-    sense.recent = []
-    sense.health_events = []
-    act.high_events = []
-    sense.interruptibility = 1.0
-    sense.interrupt_detail = {"f_reply": 1.0, "f_activity": 1.0, "f_fatigue": 1.0}
-    score.pre_score = 0.2
-    score.base_score = 0.3
-    score.draw_score = 0.3
-    score.dc = 0.1
-    sense.de = 0.1
-    sense.dr = 0.1
-    score.is_crisis = False
-    score.sent_24h = 0
-    score.fresh_items_24h = 0
-
-    result = await engine._stage_decide(ctx)
-
-    assert result.proceed is True
-    assert result.decision_mode == "feature"
-    assert result.should_send is True
-    assert result.decision_message == "hello proactive"
-    assert ctx.ensure_act().compose_items == [item]
-    assert ctx.ensure_act().compose_entries == [("rss:test", "item-1")]
-    engine._decide.compose_message.assert_awaited_once()
-
-
 def test_populate_decision_signals_keeps_health_subset_by_source_type():
     from proactive.event import GenericAlertEvent
 
@@ -880,7 +709,6 @@ def _build_loop_with_presence(tmp_path, provider, presence):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            compose_judge_enabled=True,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -922,7 +750,6 @@ async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            compose_judge_enabled=True,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -1010,7 +837,6 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            compose_judge_enabled=True,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -1048,7 +874,6 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            compose_judge_enabled=True,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -1728,7 +1553,6 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
-        compose_judge_enabled=True,
         compose_no_content_token="<no_content/>",
         llm_reject_cooldown_hours=12,
     )

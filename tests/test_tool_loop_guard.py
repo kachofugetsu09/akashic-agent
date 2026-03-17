@@ -18,7 +18,6 @@ from core.net.http import (
     configure_default_shared_http_resources,
 )
 from core.memory.port import DefaultMemoryPort
-from proactive.components import ProactiveMessageComposer
 
 
 class _DummyTool(Tool):
@@ -357,36 +356,6 @@ def test_extract_action_tokens_includes_web_fetch_host_and_path_tokens():
     ]
 
 
-def test_composer_no_false_positive_when_args_change():
-    tool = _DummyTool("dummy")
-    provider = _FakeProvider(
-        [
-            LLMResponse(content="", tool_calls=[ToolCall("p1", "dummy", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("p2", "dummy", {"x": 2})]),
-            LLMResponse(content="给用户的最终消息", tool_calls=[]),
-        ]
-    )
-    composer = ProactiveMessageComposer(
-        provider=cast(Any, provider),
-        model="m",
-        max_tokens=256,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        collect_global_memory=lambda: "",
-        max_tool_iterations=10,
-    )
-    composer._tools = [tool]
-    composer._tool_map = cast(dict[str, Tool], {tool.name: tool})
-    composer._tool_schemas = [tool.to_schema()]
-
-    result = asyncio.run(
-        composer.compose_message(items=[], recent=[], decision_signals={})
-    )
-
-    assert result == "给用户的最终消息"
-    assert len(tool.calls) == 2
-
-
 def test_agent_loop_does_not_trigger_on_two_repeats_only(tmp_path):
     tool = _DummyTool("dummy")
     provider = _FakeProvider(
@@ -499,112 +468,6 @@ def test_subagent_max_iterations_summary_failure_uses_fallback():
 
     assert subagent.last_exit_reason == "forced_summary_fallback"
     assert "当前进度" in result or "关键步骤" in result
-
-
-def test_composer_breaks_on_repeated_same_signature_and_summarizes():
-    tool = _DummyTool("dummy")
-    provider = _FakeProvider(
-        [
-            LLMResponse(content="", tool_calls=[ToolCall("p1", "dummy", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("p2", "dummy", {"x": 1})]),
-            LLMResponse(content="", tool_calls=[ToolCall("p3", "dummy", {"x": 1})]),
-            LLMResponse(content="已核对部分信息，后续继续补齐", tool_calls=[]),
-        ]
-    )
-    composer = ProactiveMessageComposer(
-        provider=cast(Any, provider),
-        model="m",
-        max_tokens=256,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        collect_global_memory=lambda: "",
-        max_tool_iterations=10,
-    )
-    composer._tools = [tool]
-    composer._tool_map = cast(dict[str, Tool], {tool.name: tool})
-    composer._tool_schemas = [tool.to_schema()]
-
-    result = asyncio.run(
-        composer.compose_message(items=[], recent=[], decision_signals={})
-    )
-
-    assert "最大迭代" not in result
-    assert len(tool.calls) == 2
-
-
-def test_composer_prompt_allows_standalone_interest_based_opening():
-    provider = _FakeProvider([LLMResponse(content="给用户的最终消息", tool_calls=[])])
-    composer = ProactiveMessageComposer(
-        provider=cast(Any, provider),
-        model="m",
-        max_tokens=256,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        collect_global_memory=lambda: "",
-        max_tool_iterations=2,
-    )
-
-    result = asyncio.run(
-        composer.compose_message(items=[], recent=[], decision_signals={})
-    )
-
-    assert result == "给用户的最终消息"
-    system_prompt = provider.calls[0]["messages"][0]["content"]
-    user_prompt = provider.calls[0]["messages"][1]["content"]
-    assert "不必强行承接近期对话" in system_prompt
-    assert "也可以直接从最相关的那条信息流自然起题" in user_prompt
-
-
-def test_composer_prompt_requires_source_name_and_clickable_url_when_citing():
-    provider = _FakeProvider([LLMResponse(content="给用户的最终消息", tool_calls=[])])
-    composer = ProactiveMessageComposer(
-        provider=cast(Any, provider),
-        model="m",
-        max_tokens=256,
-        format_items=lambda _: "1. 测试标题 [TestFeed]\n测试内容\n原文链接: https://example.com/post",
-        format_recent=lambda _: "",
-        collect_global_memory=lambda: "",
-        max_tool_iterations=2,
-    )
-
-    result = asyncio.run(
-        composer.compose_message(items=[], recent=[], decision_signals={})
-    )
-
-    assert result == "给用户的最终消息"
-    system_prompt = provider.calls[0]["messages"][0]["content"]
-    user_prompt = provider.calls[0]["messages"][1]["content"]
-    preflight_prompt = provider.calls[0]["messages"][2]["content"]
-    assert "附上可点击的原文 URL" in system_prompt
-    assert "每个被你明确提到的具体进展，都应附上对应链接" in system_prompt
-    assert "系统不会替你自动补来源" in system_prompt
-    assert "每条被提到的更新都应带上对应链接" in user_prompt
-    assert "优先在正文自然带上“来源名 + URL”" in preflight_prompt
-
-
-def test_composer_prompt_allows_longer_aggregated_message():
-    provider = _FakeProvider([LLMResponse(content="给用户的最终消息", tool_calls=[])])
-    composer = ProactiveMessageComposer(
-        provider=cast(Any, provider),
-        model="m",
-        max_tokens=256,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        collect_global_memory=lambda: "",
-        max_tool_iterations=2,
-    )
-
-    result = asyncio.run(
-        composer.compose_message(items=[], recent=[], decision_signals={})
-    )
-
-    assert result == "给用户的最终消息"
-    system_prompt = provider.calls[0]["messages"][0]["content"]
-    user_prompt = provider.calls[0]["messages"][1]["content"]
-    assert "不超过400字" in system_prompt
-    assert "优先合并成一条更完整的主动消息" in system_prompt
-    assert "不超过400字" in user_prompt
-    assert "应优先把 2-3 条自然整合进一条消息里" in user_prompt
 
 
 def test_agent_loop_summary_path_keeps_tool_chain_closed(tmp_path):

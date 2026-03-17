@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -54,23 +54,7 @@ class ProactiveConfig:
     anyaction_probability_min: float = 0.03
     anyaction_probability_max: float = 0.45
     anyaction_idle_scale_minutes: float = 240.0
-    # 决策模式由 compose_judge_enabled 决定；feature_scoring_enabled 仅保留兼容，不再参与分支选择。
-    feature_scoring_enabled: bool = False
-    compose_judge_enabled: bool = False
-    active_decision_mode: str = "feature"
-    inactive_config_keys: list[str] = field(default_factory=list)
     compose_no_content_token: str = "<no_content/>"
-    feature_send_threshold: float = 0.52
-    feature_weight_topic_continuity: float = 0.16
-    feature_weight_interest_match: float = 0.32
-    feature_weight_content_novelty: float = 0.20
-    feature_weight_reconnect_value: float = 0.16
-    feature_weight_message_readiness: float = 0.16
-    feature_weight_disturb_risk: float = 0.70
-    feature_weight_interrupt_penalty: float = 0.30
-    feature_weight_d_recent_bonus: float = 0.10
-    feature_weight_d_content_bonus: float = 0.10
-    feature_weight_d_energy_bonus: float = 0.08
     memory_retrieval_enabled: bool = True
     memory_top_k_procedure: int = 4
     memory_top_k_history: int = 6
@@ -99,10 +83,6 @@ class ProactiveConfig:
     source_scorer_min_per_source: int = 2
     source_scorer_max_per_source: int = 20
     source_scorer_cache_path: str = ""
-    # 偏好否决门：interest_match 低于阈值时硬拒绝，不进入 compose_message
-    # 默认值与 config.example.json 保持一致，避免“软偏好”过于容易放行。
-    preference_veto_enabled: bool = True
-    preference_interest_veto_threshold: float = 0.4
     # 偏好专项 RAG
     preference_retrieval_enabled: bool = True
     preference_top_k: int = 4

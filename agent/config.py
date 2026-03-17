@@ -103,6 +103,11 @@ def load_config(path: str | Path = "config.json") -> Config:
 
     proactive = ProactiveConfig()
     if p := data.get("proactive"):
+        if "compose_judge_enabled" in p:
+            _warn_deprecated_config(
+                "proactive.compose_judge_enabled",
+                "该开关已移除；proactive 现固定使用 compose + judge 决策链路。",
+            )
         proactive = ProactiveConfig(
             enabled=p.get("enabled", False),
             interval_seconds=p.get("interval_seconds", 1800),
@@ -174,41 +179,8 @@ def load_config(path: str | Path = "config.json") -> Config:
             anyaction_idle_scale_minutes=float(
                 p.get("anyaction_idle_scale_minutes", 240.0)
             ),
-            feature_scoring_enabled=bool(p.get("feature_scoring_enabled", False)),
-            compose_judge_enabled=bool(p.get("compose_judge_enabled", False)),
             compose_no_content_token=str(
                 p.get("compose_no_content_token", "<no_content/>")
-            ),
-            feature_send_threshold=float(p.get("feature_send_threshold", 0.52)),
-            feature_weight_topic_continuity=float(
-                p.get("feature_weight_topic_continuity", 0.16)
-            ),
-            feature_weight_interest_match=float(
-                p.get("feature_weight_interest_match", 0.32)
-            ),
-            feature_weight_content_novelty=float(
-                p.get("feature_weight_content_novelty", 0.20)
-            ),
-            feature_weight_reconnect_value=float(
-                p.get("feature_weight_reconnect_value", 0.16)
-            ),
-            feature_weight_message_readiness=float(
-                p.get("feature_weight_message_readiness", 0.16)
-            ),
-            feature_weight_disturb_risk=float(
-                p.get("feature_weight_disturb_risk", 0.70)
-            ),
-            feature_weight_interrupt_penalty=float(
-                p.get("feature_weight_interrupt_penalty", 0.30)
-            ),
-            feature_weight_d_recent_bonus=float(
-                p.get("feature_weight_d_recent_bonus", 0.10)
-            ),
-            feature_weight_d_content_bonus=float(
-                p.get("feature_weight_d_content_bonus", 0.10)
-            ),
-            feature_weight_d_energy_bonus=float(
-                p.get("feature_weight_d_energy_bonus", 0.08)
             ),
             memory_retrieval_enabled=bool(p.get("memory_retrieval_enabled", True)),
             memory_top_k_procedure=max(1, int(p.get("memory_top_k_procedure", 4))),
@@ -252,10 +224,6 @@ def load_config(path: str | Path = "config.json") -> Config:
                 1, int(p.get("source_scorer_max_per_source", 20))
             ),
             source_scorer_cache_path=str(p.get("source_scorer_cache_path", "")),
-            preference_veto_enabled=bool(p.get("preference_veto_enabled", True)),
-            preference_interest_veto_threshold=float(
-                p.get("preference_interest_veto_threshold", 0.15)
-            ),
             preference_retrieval_enabled=bool(
                 p.get("preference_retrieval_enabled", True)
             ),

@@ -35,9 +35,7 @@ class ProactiveLoopTraceMixin:
     def _trace_proactive_config_snapshot(self) -> None:
         payload = {
             "enabled": self._cfg.enabled,
-            "feature_scoring_enabled": self._cfg.feature_scoring_enabled,
             "threshold": self._cfg.threshold,
-            "feature_send_threshold": self._cfg.feature_send_threshold,
             "score_llm_threshold": self._cfg.score_llm_threshold,
             "score_pre_threshold": self._cfg.score_pre_threshold,
             "tick_interval_s0": self._cfg.tick_interval_s0,
@@ -69,7 +67,6 @@ class ProactiveLoopTraceMixin:
             "base_score": round(base_score, 4) if base_score is not None else None,
             "interval_seconds": int(interval),
             "threshold": self._cfg.threshold,
-            "feature_send_threshold": self._cfg.feature_send_threshold,
             "score_llm_threshold": self._cfg.score_llm_threshold,
             "tick_interval_s0": self._cfg.tick_interval_s0,
             "tick_interval_s1": self._cfg.tick_interval_s1,

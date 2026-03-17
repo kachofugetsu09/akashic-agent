@@ -82,24 +82,6 @@ class SensePort(Protocol):
 
 
 class DecidePort(Protocol):
-    async def score_features(
-        self,
-        *,
-        items: list[FeedItem],
-        recent: list[dict],
-        decision_signals: dict[str, object],
-        retrieved_memory_block: str = "",
-        preference_block: str = "",
-    ) -> dict[str, float | str] | None: ...
-    async def compose_message(
-        self,
-        *,
-        items: list[FeedItem],
-        recent: list[dict],
-        decision_signals: dict[str, object],
-        retrieved_memory_block: str = "",
-        preference_block: str = "",
-    ) -> str: ...
     async def compose_for_judge(
         self,
         *,
@@ -308,7 +290,7 @@ class DefaultMemoryRetrievalPort:
 
             # 偏好专项 RAG：针对候选 item 来源/话题独立查询 preference 类型记忆。
             # 目的：检索"用户只关注 TeamAtlas/PlayerNova 不关心其他战队"之类的明确偏好，
-            # 用于引擎层的偏好否决门（engine preference_veto_enabled）。
+            # 供 compose/judge prompt 直接约束是否允许发送。
             preference_block = ""
             pref_hit_count = len(raw_pref_items)
             if raw_pref_items:
@@ -890,8 +872,6 @@ class DefaultDecidePort:
         item_id_fn: Callable[[FeedItem], str],
         semantic_text_fn: Callable[[FeedItem, int], str],
         semantic_text_max_chars: int,
-        feature_scorer: Any | None = None,
-        message_composer: Any | None = None,
         judge: Any | None = None,
     ) -> None:
         self._randomize_fn = randomize_fn
@@ -899,47 +879,7 @@ class DefaultDecidePort:
         self._item_id = item_id_fn
         self._semantic_text = semantic_text_fn
         self._semantic_text_max_chars = semantic_text_max_chars
-        self._feature_scorer = feature_scorer
-        self._message_composer = message_composer
         self._judge = judge
-
-    async def score_features(
-        self,
-        *,
-        items: list[FeedItem],
-        recent: list[dict],
-        decision_signals: dict[str, object],
-        retrieved_memory_block: str = "",
-        preference_block: str = "",
-    ) -> dict[str, float | str] | None:
-        if not self._feature_scorer:
-            return None
-        return await self._feature_scorer.score_features(
-            items=items,
-            recent=recent,
-            decision_signals=decision_signals,
-            retrieved_memory_block=retrieved_memory_block,
-            preference_block=preference_block,
-        )
-
-    async def compose_message(
-        self,
-        *,
-        items: list[FeedItem],
-        recent: list[dict],
-        decision_signals: dict[str, object],
-        retrieved_memory_block: str = "",
-        preference_block: str = "",
-    ) -> str:
-        if not self._message_composer:
-            return ""
-        return await self._message_composer.compose_message(
-            items=items,
-            recent=recent,
-            decision_signals=decision_signals,
-            retrieved_memory_block=retrieved_memory_block,
-            preference_block=preference_block,
-        )
 
     async def compose_for_judge(
         self,

@@ -53,9 +53,7 @@ class _ProactiveTraceLoop(ProactiveLoopTraceMixin):
         self._sessions = SimpleNamespace(workspace=workspace)
         self._cfg = SimpleNamespace(
             enabled=True,
-            feature_scoring_enabled=True,
             threshold=0.7,
-            feature_send_threshold=0.8,
             score_llm_threshold=0.6,
             score_pre_threshold=0.4,
             tick_interval_s0=30,

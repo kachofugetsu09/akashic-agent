@@ -1,10 +1,10 @@
 """
-test_proactive_reflect_scenarios.py — ProactiveLoop 行为契约真实测试。
+test_proactive_compose_judge_scenarios.py — ProactiveLoop 行为契约真实测试。
 
-每个场景描述一个"像人"与"不像人"的决策边界，用真实 LLM 验证 reflect prompt 的行为。
+每个场景描述一个"像人"与"不像人"的决策边界，用真实 LLM 验证 compose + judge 链路的行为。
 
 运行方式：
-    AKASIC_RUN_PROACTIVE=1 pytest tests_scenarios/test_proactive_reflect_scenarios.py -v
+    AKASIC_RUN_PROACTIVE=1 pytest tests_scenarios/test_proactive_compose_judge_scenarios.py -v
 """
 from __future__ import annotations
 

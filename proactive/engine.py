@@ -196,7 +196,6 @@ class ScoreSnapshot:
 @dataclass
 class DecideSnapshot:
     decision_signals: dict[str, object] = field(default_factory=dict)
-    feature_payload: dict[str, float | str] = field(default_factory=dict)
     feature_final_score: float | None = None
     decision: Any = None
     decision_message: str = ""
@@ -332,13 +331,12 @@ class DecideResult:
     return_score: float | None
     reason_code: Literal[
         "continue",
-        "feature_score_reject",
         "compose_no_content",
         "judge_reject",
     ]
     should_send: bool
     decision_message: str
-    decision_mode: Literal["feature", "compose_judge"]
+    decision_mode: Literal["compose_judge"]
     feature_final_score: float | None
     judge_dims: dict[str, object]
     judge_final_score: float | None
@@ -792,12 +790,9 @@ class ProactiveEngine:
         fetch.new_items, decide.prefetch_urls = await self._prefetch_candidate_content(
             fetch.new_items
         )
-        # 4. compose+judge 开关开启时，走 compose -> post-judge 链路。
-        if getattr(self._cfg, "compose_judge_enabled", False):
-            return await self._run_compose_judge_decision(ctx)
-        # 5. feature 模式走"评分 + compose"的闭环。
+        # 4. 准备 compose 候选并固定走 compose -> post-judge 链路。
         self._prepare_feature_compose_candidates(ctx)
-        return await self._run_feature_decision(ctx)
+        return await self._run_compose_judge_decision(ctx)
 
     # ------------------------------------------------------------------
     # Stage 7 — act: dedup checks, send, mark state
@@ -1407,138 +1402,11 @@ class ProactiveEngine:
         lines = [line for line in lines if line]
         return "\n---\n".join(lines)
 
-    async def _run_feature_decision(self, ctx: DecisionContext) -> DecideResult:
-        """feature 模式：先打分，再在通过阈值时 compose_message。"""
-        sense = ctx.ensure_sense()
-        fetch = ctx.ensure_fetch()
-        score = ctx.ensure_score()
-        decide = ctx.ensure_decide()
-        act = ctx.ensure_act()
-        # 1. 先对当前候选打 feature 分数，并缓存原始 feature payload。
-        features = await self._decide.score_features(
-            items=self._feed_items(fetch.new_items),
-            recent=sense.recent,
-            decision_signals=decide.decision_signals,
-            retrieved_memory_block=decide.retrieved_memory_block,
-            preference_block=decide.preference_block,
-        )
-        # 2. 再合成最终 feature_final_score，并决定是否在这里直接拒绝。
-        decide.feature_payload = features or {}
-        feature_final_base = _feature_final_score(
-            cfg=self._cfg,
-            features=decide.feature_payload,
-            de=sense.de,
-            dc=score.dc,
-            dr=sense.dr,
-            interruptibility=sense.interruptibility,
-        )
-        health_bonus = _health_priority_bonus(
-            alert_count=len(sense.health_events),
-            notify_count=len(act.high_events),
-        )
-        decide.feature_final_score = min(1.0, feature_final_base + health_bonus)
-        logger.debug(
-            "[proactive] feature_score enabled base=%.3f health_bonus=%.3f final=%.3f threshold=%.3f features=%s",
-            feature_final_base,
-            health_bonus,
-            decide.feature_final_score,
-            self._cfg.feature_send_threshold,
-            decide.feature_payload,
-        )
-        # 2b. 偏好否决门：interest_match 极低时说明 LLM 认定用户不关注该内容，直接硬拒绝。
-        #      这避免了"虽然你不关心但我还是说"的模式——当偏好明确排斥时不进入 compose_message。
-        if (
-            getattr(self._cfg, "preference_veto_enabled", True)
-            and decide.preference_block
-        ):
-            raw_interest = decide.feature_payload.get("interest_match", 0.5)
-            try:
-                interest_match_val = float(raw_interest)  # type: ignore[arg-type]
-            except Exception:
-                interest_match_val = 0.5
-            veto_threshold = getattr(
-                self._cfg, "preference_interest_veto_threshold", 0.15
-            )
-            if interest_match_val < veto_threshold:
-                logger.info(
-                    "[proactive] selected_action=idle reason=preference_veto "
-                    "interest_match=%.3f threshold=%.3f preference_block_len=%d",
-                    interest_match_val,
-                    veto_threshold,
-                    len(decide.preference_block),
-                )
-                self._state.mark_rejection_cooldown(
-                    self._primary_candidate_entries(fetch.new_entries),
-                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-                )
-                return DecideResult(
-                    proceed=False,
-                    return_score=score.base_score,
-                    reason_code="feature_score_reject",
-                    should_send=False,
-                    decision_message="",
-                    decision_mode="feature",
-                    feature_final_score=decide.feature_final_score,
-                    judge_dims={},
-                    judge_final_score=None,
-                    judge_vetoed_by=None,
-                    compose_no_content=False,
-                    history_gate_reason=decide.history_gate_reason,
-                    history_scope_mode=decide.history_scope_mode,
-                )
-
-        if decide.feature_final_score < self._cfg.feature_send_threshold:
-            logger.info("[proactive] selected_action=idle reason=feature_score")
-            self._state.mark_rejection_cooldown(
-                self._primary_candidate_entries(fetch.new_entries),
-                hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-            )
-            return DecideResult(
-                proceed=False,
-                return_score=score.base_score,
-                reason_code="feature_score_reject",
-                should_send=False,
-                decision_message="",
-                decision_mode="feature",
-                feature_final_score=decide.feature_final_score,
-                judge_dims={},
-                judge_final_score=None,
-                judge_vetoed_by=None,
-                compose_no_content=False,
-                history_gate_reason=decide.history_gate_reason,
-                history_scope_mode=decide.history_scope_mode,
-            )
-        # 3. 只有通过 feature gate，才会继续 compose_message 并产出 should_send。
-        decide.decision_message = await self._decide.compose_message(
-            items=act.compose_items,
-            recent=sense.recent,
-            decision_signals=decide.decision_signals,
-            retrieved_memory_block=decide.retrieved_memory_block,
-            preference_block=decide.preference_block,
-        )
-        decide.should_send = bool(decide.decision_message.strip()) and (
-            decide.feature_final_score is not None
-            and decide.feature_final_score >= self._cfg.feature_send_threshold
-        )
-        logger.debug(
-            "[proactive] feature_mode compose_len=%d should_send=%s reasons={topic:%r,interest:%r,novel:%r,reconnect:%r,disturb:%r,readiness:%r,conf:%r}",
-            len(decide.decision_message),
-            decide.should_send,
-            decide.feature_payload.get("topic_continuity_reason", ""),
-            decide.feature_payload.get("interest_match_reason", ""),
-            decide.feature_payload.get("content_novelty_reason", ""),
-            decide.feature_payload.get("reconnect_value_reason", ""),
-            decide.feature_payload.get("disturb_risk_reason", ""),
-            decide.feature_payload.get("message_readiness_reason", ""),
-            decide.feature_payload.get("confidence_reason", ""),
-        )
-        return self._build_continue_decide_result(ctx, decision_mode="feature")
-
     def _build_continue_decide_result(
         self,
         ctx: DecisionContext,
         *,
-        decision_mode: Literal["feature", "compose_judge"],
+        decision_mode: Literal["compose_judge"],
     ) -> DecideResult:
         decide = ctx.ensure_decide()
         return DecideResult(
@@ -2610,52 +2478,6 @@ def _heuristic_state_summary_tag(message: str) -> str:
     if has_any(("别太逼", "不用慌", "底子在", "先歇", "放轻松", "撑住", "别慌")):
         return "general_encouragement"
     return "none"
-
-
-def _feature_final_score(
-    *,
-    cfg: Any,
-    features: dict[str, float | str],
-    de: float,
-    dc: float,
-    dr: float,
-    interruptibility: float,
-) -> float:
-    def f(name: str, default: float = 0.5) -> float:
-        try:
-            val = float(features.get(name, default))
-        except Exception:
-            val = default
-        return max(0.0, min(1.0, val))
-
-    topic_continuity = f("topic_continuity")
-    interest_match = f("interest_match")
-    content_novelty = f("content_novelty")
-    reconnect_value = f("reconnect_value")
-    disturb_risk = f("disturb_risk")
-    message_readiness = f("message_readiness")
-    confidence = f("confidence")
-
-    utility = (
-        cfg.feature_weight_topic_continuity * topic_continuity
-        + cfg.feature_weight_interest_match * interest_match
-        + cfg.feature_weight_content_novelty * content_novelty
-        + cfg.feature_weight_reconnect_value * reconnect_value
-        + cfg.feature_weight_message_readiness * message_readiness
-    )
-    risk = (
-        cfg.feature_weight_disturb_risk * disturb_risk
-        + cfg.feature_weight_interrupt_penalty
-        * (1.0 - max(0.0, min(1.0, interruptibility)))
-    )
-    system_bonus = (
-        cfg.feature_weight_d_recent_bonus * dr
-        + cfg.feature_weight_d_content_bonus * dc
-        + cfg.feature_weight_d_energy_bonus * de
-    )
-    raw = utility - risk + system_bonus
-    conf_adjusted = raw * (0.7 + 0.3 * confidence)
-    return max(0.0, min(1.0, conf_adjusted))
 
 
 def _health_priority_bonus(*, alert_count: int, notify_count: int) -> float:
