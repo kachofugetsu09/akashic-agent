@@ -1,134 +1,92 @@
 {
-  "_comment": "将此文件复制为 config.json，填入对应值即可使用",
-
-  "provider": "deepseek",
-  "model": "deepseek-chat",
-  "api_key": "${DEEPSEEK_API_KEY}",
-  "_comment_light_model": "轻量模型（用于 self-check / eval judge），可独立配置为 Gemini",
-  "light_model": "gemini-2.5-flash-lite",
-  "light_api_key": "${GEMINI_API_KEY}",
-  "light_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-  "system_prompt": "You are Akasic, a helpful AI assistant with access to tools. Always respond in the same language the user uses.",
+  "provider": "qwen",
+  "model": "qwen3.5-plus",
+  "light_model": "qwen-flash",
+  "light_api_key": "${QWEN_API_KEY}",
+  "light_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "api_key": "${QWEN_API_KEY}",
+  "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+  "system_prompt": "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses.",
   "max_tokens": 8192,
-  "max_iterations": 10,
-  "_comment_tool_search": "按需暴露工具：开启后 agent 默认只看到少量核心工具，其余需通过 tool_search 解锁",
-  "tool_search_enabled": false,
-
+  "max_iterations": 40,
+  "extra_body": {
+    "enable_thinking": false
+  },
   "channels": {
-    "_comment": "不配置 telegram 则只启动 IPC server（供 CLI 客户端连接）",
-
     "telegram": {
       "token": "${TELEGRAM_BOT_TOKEN}",
-      "allowFrom": ["your_username_or_numeric_id"]
+      "allowFrom": ["your_username"]
     },
-
-    "_comment_qq": "配置 qq 后会启动 QQ Bot，bot_uin 为 Bot 的 QQ 号",
     "qq": {
       "bot_uin": "123456789",
       "allowFrom": ["987654321"],
       "groups": [
         {
-          "_comment": "每个群单独配置，chat_id 为 gqq:{groupId}",
-          "groupId": "111222333",
-          "allowFrom": ["987654321", "444444444"],
+          "groupId": "111111111",
+          "allowFrom": ["987654321"],
           "requireAt": true
         }
       ]
-    },
-
-    "cli": {
-      "_comment": "CLI IPC server 配置，通常不需要修改",
-      "socket": "/tmp/akasic.sock"
     }
   },
-
   "proactive": {
-    "_comment": "主动触达：定期拉取订阅信息流，LLM 判断是否值得主动发消息",
-    "enabled": false,
+    "enabled": true,
     "default_channel": "telegram",
-    "default_chat_id": "your_numeric_chat_id",
-
-    "_comment_personality": "── 主动性人格（标准 / 话痨测试）──",
-    "_comment_threshold": "score 高于此值才发送。标准=0.70，话痨=0.50",
-    "threshold": 0.70,
-
-    "_comment_tick": "── tick 检查间隔（秒，按 base_score 分层）──",
-    "tick_interval_s0": 4800,
-    "tick_interval_s1": 2400,
-    "tick_interval_s2": 1080,
-    "tick_interval_s3": 420,
-    "_comment_jitter": "随机抖动幅度：0.3=±30%，让行为不那么机械，0=关闭",
-    "tick_jitter": 0.3,
-
-    "_comment_feed": "── 信息流 ──",
-    "items_per_source": 3,
-    "recent_chat_messages": 20,
-    "dedupe_seen_ttl_hours": 336,
-    "delivery_dedupe_hours": 24,
-    "semantic_dedupe_enabled": true,
-    "semantic_dedupe_threshold": 0.9,
-    "semantic_dedupe_window_hours": 72,
-    "semantic_dedupe_max_candidates": 200,
-    "semantic_dedupe_ngram": 3,
-    "semantic_dedupe_text_max_chars": 240,
-
-    "_comment_memory": "── 记忆注入 ──",
-    "use_global_memory": true,
-    "global_memory_max_chars": 3000,
-    "_comment_memory_retrieval": "── 主动链路 memory2 召回 ──",
-    "memory_retrieval_enabled": true,
-    "memory_top_k_procedure": 4,
-    "memory_top_k_history": 6,
-    "memory_query_max_recent_messages": 3,
-    "memory_query_max_items": 3,
-    "memory_history_gate_enabled": true,
-    "memory_scope_fallback_to_global": false,
-    "memory_trace_enabled": true,
-
-    "_comment_pending": "── 待发队列（pending backlog）──",
-    "pending_queue_enabled": true,
-    "pending_item_ttl_hours": 12,
-    "pending_candidate_limit": 3,
-    "pending_max_per_source": 20,
-    "pending_max_total": 200,
-    "_comment_fitbit_sleep_modifier": "Fitbit 判定 sleeping 时，对 proactive 打扰系数的乘数；越低越保守",
-    "sleep_modifier_sleeping": 0.15,
-
-    "_comment_preference": "── 偏好过滤（preference RAG + 否决门）──",
-    "compose_no_content_token": "<no_content/>",
-    "_comment_preference_detail": "preference_retrieval_enabled: 针对候选 item 来源/话题独立查询 preference 类型记忆，生成 preference_block",
-    "preference_retrieval_enabled": true,
-    "preference_top_k": 4,
-    "preference_per_source_top_k": 2,
-    "preference_max_sources": 5,
-    "_comment_judge_weights": "post-judge 多维评分权重",
-    "judge_weight_urgency": 0.15,
-    "judge_weight_balance": 0.10,
-    "judge_weight_dynamics": 0.10,
-    "judge_weight_information_gap": 0.25,
-    "judge_weight_relevance": 0.20,
-    "judge_weight_expected_impact": 0.20,
-    "judge_urgency_horizon_hours": 12.0,
-    "judge_balance_daily_max": 8,
-    "_comment_judge_veto": "post-judge 否决线和发送阈值",
-    "judge_veto_balance_min": 0.10,
-    "judge_veto_urgency_min": 0.05,
-    "judge_veto_llm_dim_min": 2,
-    "judge_send_threshold": 0.60
+    "default_chat_id": "your_chat_id",
+    "preset": "daily",
+    "features": {
+      "memory_retrieval_enabled": true,
+      "preference_retrieval_enabled": true,
+      "research_enabled": true,
+      "fitbit_enabled": false,
+      "skill_actions_enabled": false
+    },
+    "feed_poller_enabled": true,
+    "feed_poller_interval_seconds": 150,
+    "feed_poller_fetch_limit": 20,
+    "feed_poller_buffer_ttl_hours": 48,
+    "feed_poller_buffer_max_per_source": 100,
+    "feed_poller_read_limit": 50,
+    "interest_filter": {
+      "enabled": true,
+      "memory_max_chars": 4000,
+      "keyword_max_count": 100,
+      "min_token_len": 2,
+      "min_score": 0.12,
+      "top_k": 10,
+      "exploration_ratio": 0.2
+    },
+    "fitbit_url": "http://127.0.0.1:18765",
+    "fitbit_poll_seconds": 300,
+    "fitbit_monitor_path": "",
+    "skill_actions_path": "",
+    "overrides": {}
   },
-
-  "_provider_presets": {
-    "_comment": "以下 provider 有内置 base_url，无需手动填写",
-    "deepseek": "https://api.deepseek.com/v1",
-    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "openai": "https://api.openai.com/v1"
+  "tool_search_enabled": true,
+  "memory_optimizer_enabled": true,
+  "memory_optimizer_interval_seconds": 3600,
+  "memory_v2": {
+    "enabled": true,
+    "embed_model": "text-embedding-v3",
+    "top_k_history": 8,
+    "score_threshold": 0.45,
+    "score_thresholds": {
+      "procedure": 0.66,
+      "preference": 0.5,
+      "event": 0.5,
+      "profile": 0.5
+    },
+    "relative_delta": 0.2,
+    "inject_limits": {
+      "max_chars": 6000,
+      "line_max": 600,
+      "event_profile": 4
+    },
+    "route_intention_enabled": true,
+    "gate_llm_timeout_ms": 1600,
+    "gate_max_tokens": 200,
+    "hyde_enabled": true,
+    "hyde_timeout_ms": 2000
   },
-
-  "_custom_provider_example": {
-    "_comment": "自定义 OpenAI 兼容地址时，显式填写 base_url",
-    "provider": "my-provider",
-    "model": "some-model",
-    "api_key": "${MY_API_KEY}",
-    "base_url": "https://my-llm-api.example.com/v1"
-  }
+  "memory_window": 40
 }

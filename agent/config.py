@@ -22,6 +22,7 @@ from agent.config_models import (
     TelegramChannelConfig,
 )
 from proactive.config import ProactiveConfig
+from proactive.config_loader import ProactiveConfigError, load_proactive_config
 
 _PRESETS: dict[str, str] = {
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -103,169 +104,11 @@ def load_config(path: str | Path = "config.json") -> Config:
 
     proactive = ProactiveConfig()
     if p := data.get("proactive"):
-        if "compose_judge_enabled" in p:
-            _warn_deprecated_config(
-                "proactive.compose_judge_enabled",
-                "该开关已移除；proactive 现固定使用 compose + judge 决策链路。",
-            )
-        proactive = ProactiveConfig(
-            enabled=p.get("enabled", False),
-            interval_seconds=p.get("interval_seconds", 1800),
-            threshold=p.get("threshold", 0.70),
-            recent_chat_messages=p.get("recent_chat_messages", 20),
-            model=p.get("model", ""),
-            default_channel=p.get("default_channel", "telegram"),
-            default_chat_id=str(p.get("default_chat_id", "")),
-            dedupe_seen_ttl_hours=int(p.get("dedupe_seen_ttl_hours", 24 * 14)),
-            delivery_dedupe_hours=int(p.get("delivery_dedupe_hours", 24)),
-            semantic_dedupe_window_hours=int(p.get("semantic_dedupe_window_hours", 72)),
-            semantic_dedupe_text_max_chars=int(
-                p.get("semantic_dedupe_text_max_chars", 240)
-            ),
-            use_global_memory=bool(p.get("use_global_memory", True)),
-            score_weight_energy=float(p.get("score_weight_energy", 0.40)),
-            score_weight_content=float(p.get("score_weight_content", 0.40)),
-            score_weight_recent=float(p.get("score_weight_recent", 0.20)),
-            score_content_halfsat=float(p.get("score_content_halfsat", 3.0)),
-            score_recent_scale=float(p.get("score_recent_scale", 10.0)),
-            score_llm_threshold=float(p.get("score_llm_threshold", 0.40)),
-            score_pre_threshold=float(p.get("score_pre_threshold", 0.05)),
-            decision_score_random_strength=float(
-                p.get("decision_score_random_strength", 0.0)
-            ),
-            interrupt_weight_reply=float(p.get("interrupt_weight_reply", 0.35)),
-            interrupt_weight_activity=float(p.get("interrupt_weight_activity", 0.25)),
-            interrupt_weight_fatigue=float(p.get("interrupt_weight_fatigue", 0.15)),
-            interrupt_activity_decay_minutes=float(
-                p.get("interrupt_activity_decay_minutes", 180.0)
-            ),
-            interrupt_reply_decay_minutes=float(
-                p.get("interrupt_reply_decay_minutes", 120.0)
-            ),
-            interrupt_no_reply_decay_minutes=float(
-                p.get("interrupt_no_reply_decay_minutes", 360.0)
-            ),
-            interrupt_fatigue_window_hours=int(
-                p.get("interrupt_fatigue_window_hours", 24)
-            ),
-            interrupt_fatigue_soft_cap=float(p.get("interrupt_fatigue_soft_cap", 6.0)),
-            interrupt_random_strength=float(p.get("interrupt_random_strength", 0.12)),
-            interrupt_min_floor=float(p.get("interrupt_min_floor", 0.08)),
-            tick_interval_s0=int(p.get("tick_interval_s0", 4800)),
-            tick_interval_s1=int(p.get("tick_interval_s1", 2400)),
-            tick_interval_s2=int(p.get("tick_interval_s2", 1080)),
-            tick_interval_s3=int(p.get("tick_interval_s3", 420)),
-            tick_jitter=float(p.get("tick_jitter", 0.3)),
-            anyaction_enabled=bool(p.get("anyaction_enabled", False)),
-            anyaction_daily_max_actions=int(p.get("anyaction_daily_max_actions", 24)),
-            anyaction_min_interval_seconds=int(
-                p.get("anyaction_min_interval_seconds", 300)
-            ),
-            anyaction_reset_hour_local=int(p.get("anyaction_reset_hour_local", 12)),
-            anyaction_timezone=_validated_timezone(
-                str(p.get("anyaction_timezone", "Asia/Shanghai")),
-                enabled=bool(p.get("anyaction_enabled", False)),
-            ),
-            anyaction_probability_min=float(p.get("anyaction_probability_min", 0.03)),
-            anyaction_probability_max=float(p.get("anyaction_probability_max", 0.45)),
-            anyaction_idle_scale_minutes=float(
-                p.get("anyaction_idle_scale_minutes", 240.0)
-            ),
-            compose_no_content_token=str(
-                p.get("compose_no_content_token", "<no_content/>")
-            ),
-            memory_retrieval_enabled=bool(p.get("memory_retrieval_enabled", True)),
-            memory_top_k_procedure=max(1, int(p.get("memory_top_k_procedure", 4))),
-            memory_top_k_history=max(1, int(p.get("memory_top_k_history", 6))),
-            memory_query_max_recent_messages=max(
-                1, int(p.get("memory_query_max_recent_messages", 3))
-            ),
-            memory_query_max_items=max(1, int(p.get("memory_query_max_items", 3))),
-            memory_history_gate_enabled=bool(
-                p.get("memory_history_gate_enabled", True)
-            ),
-            memory_scope_fallback_to_global=bool(
-                p.get("memory_scope_fallback_to_global", False)
-            ),
-            memory_trace_enabled=bool(p.get("memory_trace_enabled", True)),
-            message_dedupe_enabled=bool(p.get("message_dedupe_enabled", True)),
-            message_dedupe_recent_n=int(p.get("message_dedupe_recent_n", 5)),
-            llm_reject_cooldown_hours=max(
-                0, int(p.get("llm_reject_cooldown_hours", 12))
-            ),
-            skill_actions_enabled=bool(p.get("skill_actions_enabled", False)),
-            skill_actions_path=str(p.get("skill_actions_path", "")),
-            fitbit_enabled=bool(p.get("fitbit_enabled", False)),
-            fitbit_url=str(p.get("fitbit_url", "http://127.0.0.1:18765")),
-            fitbit_poll_seconds=max(1, int(p.get("fitbit_poll_seconds", 300))),
-            sleep_modifier_sleeping=float(p.get("sleep_modifier_sleeping", 0.15)),
-            fitbit_monitor_path=str(p.get("fitbit_monitor_path", "")),
-            preference_retrieval_enabled=bool(
-                p.get("preference_retrieval_enabled", True)
-            ),
-            preference_per_source_top_k=max(
-                1, int(p.get("preference_per_source_top_k", 2))
-            ),
-            preference_max_sources=max(1, int(p.get("preference_max_sources", 5))),
-            preference_hyde_enabled=bool(p.get("preference_hyde_enabled", False)),
-            preference_hyde_timeout_ms=max(
-                200, int(p.get("preference_hyde_timeout_ms", 2000))
-            ),
-            judge_weight_urgency=float(p.get("judge_weight_urgency", 0.15)),
-            judge_weight_balance=float(p.get("judge_weight_balance", 0.10)),
-            judge_weight_dynamics=float(p.get("judge_weight_dynamics", 0.10)),
-            judge_weight_information_gap=float(
-                p.get("judge_weight_information_gap", 0.25)
-            ),
-            judge_weight_relevance=float(p.get("judge_weight_relevance", 0.20)),
-            judge_weight_expected_impact=float(
-                p.get("judge_weight_expected_impact", 0.20)
-            ),
-            judge_urgency_horizon_hours=float(
-                p.get("judge_urgency_horizon_hours", 12.0)
-            ),
-            judge_balance_daily_max=max(1, int(p.get("judge_balance_daily_max", 8))),
-            judge_veto_balance_min=float(p.get("judge_veto_balance_min", 0.1)),
-            judge_veto_llm_dim_min=max(1, int(p.get("judge_veto_llm_dim_min", 2))),
-            judge_send_threshold=float(p.get("judge_send_threshold", 0.60)),
-            bg_context_main_topic_min_interval_hours=max(
-                1, int(p.get("bg_context_main_topic_min_interval_hours", 6))
-            ),
-            # 三源统一配置
-            context_as_assist_enabled=bool(p.get("context_as_assist_enabled", True)),
-            context_only_enabled=bool(p.get("context_only_enabled", True)),
-            context_only_daily_max=max(0, int(p.get("context_only_daily_max", 1))),
-            context_only_min_interval_hours=max(
-                1, int(p.get("context_only_min_interval_hours", 12))
-            ),
-            context_only_judge_threshold=float(
-                p.get("context_only_judge_threshold", 0.72)
-            ),
-            context_only_judge_threshold_with_evidence=float(
-                p.get("context_only_judge_threshold_with_evidence", 0.68)
-            ),
-            # Evidence-First Research 配置
-            research_enabled=bool(p.get("research_enabled", True)),
-            research_max_iterations=max(1, int(p.get("research_max_iterations", 10))),
-            research_tools=list(p.get("research_tools", ["web_search", "web_fetch", "read_file"])),
-            research_min_body_chars=max(0, int(p.get("research_min_body_chars", 500))),
-            research_timeout_seconds=max(1, int(p.get("research_timeout_seconds", 30))),
-            research_apply_on_context_only=bool(p.get("research_apply_on_context_only", True)),
-            research_include_all_mcp_tools=bool(p.get("research_include_all_mcp_tools", True)),
-            research_fail_policy=str(p.get("research_fail_policy", "drop")),
-            research_transparent_message=str(p.get("research_transparent_message", "")),
-            research_skip_alert=bool(p.get("research_skip_alert", True)),
-        )
-        interest_filter = p.get("interest_filter") or {}
-        proactive.interest_filter = SimpleNamespace(
-            enabled=bool(interest_filter.get("enabled", False)),
-            memory_max_chars=max(1, int(interest_filter.get("memory_max_chars", 4000))),
-            keyword_max_count=max(1, int(interest_filter.get("keyword_max_count", 80))),
-            min_token_len=max(1, int(interest_filter.get("min_token_len", 2))),
-            min_score=float(interest_filter.get("min_score", 0.14)),
-            top_k=max(1, int(interest_filter.get("top_k", 10))),
-            exploration_ratio=float(interest_filter.get("exploration_ratio", 0.2)),
-        )
+        try:
+            proactive = load_proactive_config(p)
+        except ProactiveConfigError as e:
+            print(f"❌ Proactive 配置错误: {e}", file=sys.stderr)
+            sys.exit(1)
 
     mv2 = data.get("memory_v2", {})
     for key, message in _DEPRECATED_MEMORY_V2_KEYS.items():
