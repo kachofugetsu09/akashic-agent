@@ -267,6 +267,20 @@ def load_config(path: str | Path = "config.json") -> Config:
             context_only_judge_threshold=float(
                 p.get("context_only_judge_threshold", 0.72)
             ),
+            context_only_judge_threshold_with_evidence=float(
+                p.get("context_only_judge_threshold_with_evidence", 0.68)
+            ),
+            # Evidence-First Research 配置
+            research_enabled=bool(p.get("research_enabled", True)),
+            research_max_iterations=max(1, int(p.get("research_max_iterations", 10))),
+            research_tools=list(p.get("research_tools", ["web_search", "web_fetch", "read_file"])),
+            research_min_body_chars=max(0, int(p.get("research_min_body_chars", 500))),
+            research_timeout_seconds=max(1, int(p.get("research_timeout_seconds", 30))),
+            research_apply_on_context_only=bool(p.get("research_apply_on_context_only", True)),
+            research_include_all_mcp_tools=bool(p.get("research_include_all_mcp_tools", True)),
+            research_fail_policy=str(p.get("research_fail_policy", "drop")),
+            research_transparent_message=str(p.get("research_transparent_message", "")),
+            research_skip_alert=bool(p.get("research_skip_alert", True)),
         )
         interest_filter = p.get("interest_filter") or {}
         proactive.interest_filter = SimpleNamespace(

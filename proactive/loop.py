@@ -74,6 +74,7 @@ class ProactiveLoop:
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
         observe_writer=None,
+        tool_registry: dict | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -89,6 +90,7 @@ class ProactiveLoop:
         self._light_model = light_model or (config.model or model)
         self._observe_writer = observe_writer
         self._passive_busy_fn = passive_busy_fn
+        self._tool_registry = tool_registry
         self._init_runtime_state(config)
         self._init_runtime_components()
 
@@ -215,6 +217,8 @@ class ProactiveLoop:
             anyaction=self._anyaction,
             message_deduper=self._message_deduper,
             skill_action_runner=self._build_skill_action_runner(),
+            provider=self._provider,
+            model=self._model,
             light_provider=self._light_provider,
             light_model=self._light_model,
             passive_busy_fn=self._passive_busy_fn,
@@ -224,6 +228,7 @@ class ProactiveLoop:
                 )
             ),
             observe_writer=self._observe_writer,
+            tool_registry=self._tool_registry,
         )
 
     def _init_runtime_components(self) -> None:

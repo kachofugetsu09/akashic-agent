@@ -166,6 +166,7 @@ def _build_proactive_prompt_context(
     format_items: Callable[[list[ContentEvent]], str],
     format_recent: Callable[[list[dict]], str],
     background_context: list[dict] | None = None,
+    research_result: object | None = None,
 ) -> ProactivePromptContext:
     now = datetime.now().astimezone()
     # context-only 模式：使用 background_context 作为 feed_text
@@ -235,7 +236,21 @@ class Composer:
         preference_block: str = "",
         no_content_token: str = "<no_content/>",
         background_context: list[dict] | None = None,
+        research_result: object | None = None,  # ResearchResult
+        fail_policy: str = "drop",
+        transparent_message: str = "",
     ) -> str:
+        # 0. 如果有 research_result 且状态非 success，按 fail_policy 处理
+        if research_result is not None:
+            status = getattr(research_result, "status", "success")
+            if status != "success":
+                if fail_policy == "transparent" and transparent_message:
+                    logger.info("[composer] research 失败，返回透明消息: %s", transparent_message)
+                    return transparent_message
+                else:
+                    logger.info("[composer] research 失败，返回 no_content: status=%s", status)
+                    return no_content_token
+
         # 1. 先统一补抓 compose 候选正文，避免上游和这里重复抓取。
         items = await self._enrich_items(items)
         # 2. 再构造最小 compose prompt，只做生成，不做额外判断。
@@ -247,6 +262,7 @@ class Composer:
                 format_items=self._format_items,
                 format_recent=self._format_recent,
                 background_context=background_context,
+                research_result=research_result,
             )
         else:
             prompt_context = _build_proactive_prompt_context(
@@ -254,11 +270,13 @@ class Composer:
                 recent=recent,
                 format_items=self._format_items,
                 format_recent=self._format_recent,
+                research_result=research_result,
             )
         system_msg, user_msg = build_compose_prompt_messages(
             prompt_context=prompt_context,
             preference_block=preference_block,
             no_content_token=no_content_token,
+            research_result=research_result,
         )
         # 3. 最后请求模型，显式支持 no_content token。
         try:

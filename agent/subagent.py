@@ -134,6 +134,8 @@ class SubAgent:
         self._mandatory_exit_tools = list(mandatory_exit_tools)
         self._memory = memory
         self.last_exit_reason: str = "idle"
+        self.iterations_used: int = 0  # 实际使用的迭代次数
+        self.tools_called: list[str] = []  # 实际调用的工具名称列表
         prepared = prepare_toolset(tools)
         self._tool_map: dict[str, Tool] = prepared.tool_map
         self._tool_schemas: list[dict[str, Any]] = prepared.schemas
@@ -147,6 +149,8 @@ class SubAgent:
         """
         messages: list[dict[str, Any]] = []
         self.last_exit_reason = "running"
+        self.iterations_used = 0
+        self.tools_called = []
         if self._system_prompt:
             messages.append({"role": "system", "content": self._system_prompt})
         messages.append({"role": "user", "content": task})
@@ -155,6 +159,7 @@ class SubAgent:
         injected_proc_ids: set[str] = set()
 
         for iteration in range(self._max_iterations):
+            self.iterations_used = iteration + 1
             try:
                 response = await self._provider.chat(
                     messages=_trim_tool_results(messages),
@@ -206,6 +211,9 @@ class SubAgent:
             for tc in response.tool_calls:
                 tool = self._tool_map.get(tc.name)
                 if tool:
+                    # 记录实际调用的工具
+                    if tc.name not in self.tools_called:
+                        self.tools_called.append(tc.name)
                     logger.info(
                         "[subagent] 调用工具 %s args=%s",
                         tc.name,

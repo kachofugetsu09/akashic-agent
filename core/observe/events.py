@@ -111,3 +111,10 @@ class ProactiveDecisionTrace:
     error: str | None = None
     sent_message: str | None = None     # act 阶段：实际发送的消息正文
     candidates_json: str | None = None  # JSON: [{kind, source_type, source_name, title, content, url, severity?}]
+    # Evidence-First Research 字段
+    research_status: str | None = None  # success | insufficient | error
+    research_rounds_used: int | None = None
+    research_tools_called: list[str] = field(default_factory=list)
+    research_evidence_count: int | None = None
+    research_reason: str | None = None
+    fact_claims_count: int | None = None

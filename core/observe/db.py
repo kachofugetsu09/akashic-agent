@@ -155,6 +155,12 @@ _PROACTIVE_DECISION_COLUMNS: dict[str, str] = {
     "evidence_item_ids": "TEXT",
     "source_refs_json": "TEXT",
     "fetched_urls": "TEXT",
+    "research_status": "TEXT",
+    "research_rounds_used": "INTEGER",
+    "research_tools_called": "TEXT",
+    "research_evidence_count": "INTEGER",
+    "research_reason": "TEXT",
+    "fact_claims_count": "INTEGER",
 }
 
 _RAG_EVENT_COLUMNS: dict[str, str] = {

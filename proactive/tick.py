@@ -176,6 +176,8 @@ class FetchSnapshot:
     content_items: list[ContentEvent] = field(default_factory=list)
     selected_primary_source: str = "none"  # alert|content|context|none
     context_mode: str = "none"  # none|assist|context_only
+    # Evidence-First Research
+    research_result: object | None = None  # ResearchResult
 
 
 @dataclass
@@ -378,11 +380,14 @@ class ProactiveTick:
         anyaction: AnyActionGate | None = None,
         message_deduper: Any | None = None,
         skill_action_runner: SkillActionRunner | None = None,
+        provider: Any | None = None,
+        model: str = "",
         light_provider: Any | None = None,
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
         stage_trace_writer: Callable[[dict[str, Any]], None] | None = None,
         observe_writer: Any | None = None,
+        tool_registry: dict | None = None,
     ) -> None:
         self._cfg = cfg
         self._state = state
@@ -397,8 +402,11 @@ class ProactiveTick:
         self._anyaction = anyaction
         self._message_deduper = message_deduper
         self._skill_action_runner = skill_action_runner
+        self._provider = provider
+        self._model = model
         self._light_provider = light_provider
         self._light_model = light_model
+        self._tool_registry = tool_registry
         # 可选：AgentLoop 注入的被动处理信号，用于跳过与被动回复并发的主动发送
         self._passive_busy_fn = passive_busy_fn
         self._trace_writer = stage_trace_writer
@@ -418,6 +426,12 @@ class ProactiveTick:
         self._trace(ctx, stage="evaluate", result=evaluate_result)
         if not evaluate_result.proceed:
             return evaluate_result.return_score
+
+        # Research 阶段：对 content/alert 主源进行事实检索
+        research_result = await self._research(ctx)
+        if research_result is not None:
+            ctx.ensure_fetch().research_result = research_result
+            self._trace(ctx, stage="research", result=research_result)
 
         compose_result = await self._compose(ctx)
         self._trace(ctx, stage="compose", result=compose_result)
@@ -797,6 +811,175 @@ class ProactiveTick:
             has_memory=fetch.has_memory,
         )
 
+    async def _research(self, ctx: DecisionContext) -> object | None:
+        """Research 阶段：对候选主源进行事实检索。
+
+        Returns:
+            ResearchResult | None: 检索结果，None 表示跳过 research
+        """
+        fetch = ctx.ensure_fetch()
+
+        # 检查是否启用 research
+        if not getattr(self._cfg, "research_enabled", True):
+            logger.debug("[proactive] research_enabled=False，跳过 research")
+            return None
+
+        # 检查主源类型
+        primary_source = fetch.selected_primary_source
+        if primary_source == "none":
+            return None
+
+        # alert 可配置跳过
+        if primary_source == "alert" and getattr(self._cfg, "research_skip_alert", True):
+            logger.info("[proactive] alert 主源跳过 research")
+            return None
+
+        # context-only 根据配置决定
+        if primary_source == "context" and not getattr(self._cfg, "research_apply_on_context_only", False):
+            logger.info("[proactive] context-only 跳过 research")
+            return None
+
+        # 确定候选 items
+        if primary_source == "alert":
+            items = fetch.alert_items
+        elif primary_source == "content":
+            items = fetch.content_items
+        elif primary_source == "context":
+            # context-only: 从 background_context 构造 research items
+            items = self._build_context_research_items(fetch)
+        else:
+            items = []
+
+        if not items:
+            logger.info("[proactive] 无候选 items，跳过 research")
+            return None
+
+        # 调用 Researcher
+        try:
+            from proactive.researcher import Researcher
+
+            # 获取 provider 和 model
+            provider = getattr(self, "_provider", None)
+            model = getattr(self, "_model", "") or getattr(self._cfg, "model", "")
+            tool_registry = getattr(self, "_tool_registry", None)
+
+            researcher = Researcher(
+                max_iterations=getattr(self._cfg, "research_max_iterations", 10),
+                allowed_tools=getattr(self._cfg, "research_tools", ["web_search", "web_fetch", "read_file"]),
+                min_body_chars=getattr(self._cfg, "research_min_body_chars", 200),
+                timeout_seconds=getattr(self._cfg, "research_timeout_seconds", 30),
+                provider=provider,
+                model=model,
+                tool_registry=tool_registry,
+                include_all_mcp_tools=getattr(self._cfg, "research_include_all_mcp_tools", False),
+            )
+
+            logger.info("[proactive] 开始 research primary_source=%s items_count=%d", primary_source, len(items))
+            result = await researcher.research(items=items, primary_source=primary_source)
+            logger.info(
+                "[proactive] research 完成 status=%s rounds=%d evidence_count=%d",
+                result.status,
+                result.rounds_used,
+                len(result.evidence),
+            )
+            return result
+        except Exception as e:
+            logger.warning("[proactive] research 失败: %s", e, exc_info=True)
+            # 返回 error 状态的 ResearchResult
+            from proactive.researcher import ResearchResult
+            return ResearchResult(
+                status="error",
+                rounds_used=0,
+                reason=f"research_exception: {e}",
+            )
+
+    def _build_context_research_items(self, fetch: FetchSnapshot) -> list:
+        """从 background_context 构造 research items。
+
+        Returns:
+            list: 候选项列表，每个项包含 title/content/url
+        """
+        if not fetch.background_context:
+            return []
+
+        items = []
+        # background_context 可能是 dict 或 list
+        if isinstance(fetch.background_context, dict):
+            # 格式: {source_name: {topic, summary, items: [{title, content, ...}]}}
+            for source_name, context_data in fetch.background_context.items():
+                topic = context_data.get("topic", "")
+                summary = context_data.get("summary", "")
+                context_items = context_data.get("items", [])
+
+                # 如果有具体的 items，使用 items
+                if context_items:
+                    for item in context_items[:3]:  # 最多取前 3 个
+                        items.append(type('obj', (object,), {
+                            'source_name': source_name,
+                            'source_type': 'context',
+                            'title': item.get("title", topic),
+                            'content': item.get("content", summary),
+                            'url': item.get("url", ""),
+                        })())
+                # 否则使用 topic/summary 构造一个候选项
+                elif topic or summary:
+                    items.append(type('obj', (object,), {
+                        'source_name': source_name,
+                        'source_type': 'context',
+                        'title': topic or "用户最近活动",
+                        'content': summary or topic,
+                        'url': "",
+                    })())
+        elif isinstance(fetch.background_context, list):
+            # 格式: [{_source, topic, summary, ...}] 或 Steam 格式
+            for context_data in fetch.background_context[:5]:
+                source_name = context_data.get("_source", "context")
+
+                # 处理 Steam 类型的 context（原始结构：games/realtime）
+                if source_name == "steam" and context_data.get("available") is not False:
+                    realtime = context_data.get("realtime", {})
+                    games = context_data.get("games", [])
+                    currently_playing = realtime.get("currently_playing")
+
+                    if currently_playing:
+                        items.append(type('obj', (object,), {
+                            'source_name': 'steam',
+                            'source_type': 'context',
+                            'title': f"Steam: 正在游玩 {currently_playing}",
+                            'content': f"用户当前正在 Steam 上游玩 {currently_playing}",
+                            'url': "",
+                        })())
+                    elif games:
+                        # 提取近期活跃游戏（recent_2w_hours >= 5）
+                        active_games = []
+                        for g in games[:5]:
+                            hours = float(g.get("recent_2w_hours", 0) or 0)
+                            if hours >= 5:
+                                active_games.append(g.get("name", ""))
+                        if active_games:
+                            items.append(type('obj', (object,), {
+                                'source_name': 'steam',
+                                'source_type': 'context',
+                                'title': f"Steam: 近期活跃游戏",
+                                'content': f"用户近期在 Steam 上活跃游玩的游戏: {', '.join(active_games[:3])}",
+                                'url': "",
+                            })())
+                # 处理通用 topic/summary 结构
+                else:
+                    topic = context_data.get("topic", "")
+                    summary = context_data.get("summary", "")
+                    if topic or summary:
+                        items.append(type('obj', (object,), {
+                            'source_name': source_name,
+                            'source_type': 'context',
+                            'title': topic or "用户最近活动",
+                            'content': summary or topic,
+                            'url': "",
+                        })())
+
+        logger.info("[proactive] context-only 构造 research items: %d", len(items))
+        return items
+
     async def _compose(self, ctx: DecisionContext) -> ComposeResult:
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
@@ -894,6 +1077,9 @@ class ProactiveTick:
             preference_block=decide.preference_block,
             no_content_token=no_content_token,
             background_context=fetch.background_context if fetch.context_mode == "context_only" else None,
+            research_result=fetch.research_result,
+            fail_policy=getattr(self._cfg, "research_fail_policy", "drop"),
+            transparent_message=getattr(self._cfg, "research_transparent_message", ""),
         )
         message = (decide.decision_message or "").strip()
         if message and message != no_content_token:
@@ -971,14 +1157,32 @@ class ProactiveTick:
             decide.judge_vetoed_by = getattr(judge_result, "vetoed_by", None)
             decide.should_send = bool(getattr(judge_result, "should_send", False))
 
-        # context-only 应用更高阈值
+        # context-only 应用更高阈值（但有证据时降低阈值）
         if fetch.context_mode == "context_only":
-            context_only_threshold = getattr(self._cfg, "context_only_judge_threshold", 0.72)
+            # 检查是否有 research 证据
+            has_evidence = (
+                fetch.research_result is not None
+                and getattr(fetch.research_result, "status", "") == "success"
+                and len(getattr(fetch.research_result, "evidence", [])) > 0
+            )
+
+            if has_evidence:
+                # 有证据时使用较低阈值
+                context_only_threshold = getattr(self._cfg, "context_only_judge_threshold_with_evidence", 0.68)
+                logger.info(
+                    "[proactive] context-only 有证据，使用较低阈值 threshold=%.3f",
+                    context_only_threshold,
+                )
+            else:
+                # 无证据时使用默认阈值
+                context_only_threshold = getattr(self._cfg, "context_only_judge_threshold", 0.72)
+
             if decide.judge_final_score < context_only_threshold:
                 logger.info(
-                    "[proactive] context-only judge 分数不足 score=%.3f threshold=%.3f",
+                    "[proactive] context-only judge 分数不足 score=%.3f threshold=%.3f has_evidence=%s",
                     decide.judge_final_score,
                     context_only_threshold,
+                    has_evidence,
                 )
                 decide.should_send = False
                 decide.judge_vetoed_by = "context_only_threshold"
@@ -1911,6 +2115,37 @@ class ProactiveTick:
             error=error,
             sent_message=sent_message,
             candidates_json=candidates_json,
+            # Evidence-First Research 字段
+            research_status=(
+                getattr(fetch.research_result, "status", None)
+                if fetch is not None and fetch.research_result is not None
+                else None
+            ),
+            research_rounds_used=(
+                getattr(fetch.research_result, "rounds_used", None)
+                if fetch is not None and fetch.research_result is not None
+                else None
+            ),
+            research_tools_called=(
+                list(getattr(fetch.research_result, "tools_called", []))
+                if fetch is not None and fetch.research_result is not None
+                else []
+            ),
+            research_evidence_count=(
+                len(getattr(fetch.research_result, "evidence", []))
+                if fetch is not None and fetch.research_result is not None
+                else None
+            ),
+            research_reason=(
+                getattr(fetch.research_result, "reason", None)
+                if fetch is not None and fetch.research_result is not None
+                else None
+            ),
+            fact_claims_count=(
+                len(getattr(fetch.research_result, "fact_claims", []))
+                if fetch is not None and fetch.research_result is not None
+                else None
+            ),
         )
         try:
             writer.emit(trace)

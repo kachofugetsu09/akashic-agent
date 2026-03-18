@@ -276,6 +276,16 @@ def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
         ),
         "sent_message": e.sent_message,
         "candidates_json": e.candidates_json,
+        "research_status": e.research_status,
+        "research_rounds_used": e.research_rounds_used,
+        "research_tools_called": (
+            json.dumps(e.research_tools_called, ensure_ascii=False)
+            if e.research_tools_called
+            else None
+        ),
+        "research_evidence_count": e.research_evidence_count,
+        "research_reason": e.research_reason,
+        "fact_claims_count": e.fact_claims_count,
         "gate_result_json": (
             stage_json if "gate_result_json" in stage_json_columns else None
         ),
@@ -339,6 +349,12 @@ def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
         "fetched_urls",
         "sent_message",
         "candidates_json",
+        "research_status",
+        "research_rounds_used",
+        "research_tools_called",
+        "research_evidence_count",
+        "research_reason",
+        "fact_claims_count",
         "gate_result_json",
         "sense_result_json",
         "pre_score_result_json",

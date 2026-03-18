@@ -109,3 +109,20 @@ class ProactiveConfig:
     context_only_daily_max: int = 1
     context_only_min_interval_hours: int = 12
     context_only_judge_threshold: float = 0.72
+    context_only_judge_threshold_with_evidence: float = 0.68
+    # Evidence-First Research 配置
+    research_enabled: bool = True
+    research_max_iterations: int = 10
+    research_tools: list[str] = None  # default in __post_init__
+    research_min_body_chars: int = 500  # 提升到 500 字符
+    research_timeout_seconds: int = 30
+    research_apply_on_context_only: bool = True
+    research_include_all_mcp_tools: bool = True
+    research_fail_policy: str = "drop"  # drop | transparent
+    research_transparent_message: str = ""
+    research_skip_alert: bool = True  # alert 可跳过 research
+
+    def __post_init__(self):
+        if self.research_tools is None:
+            self.research_tools = ["web_search", "web_fetch", "read_file"]
+
