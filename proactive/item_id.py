@@ -1,8 +1,8 @@
 """
 proactive/item_id.py — FeedItem 标识计算公共模块。
 
-统一 item_id / source_key 的计算逻辑，供 FeedBuffer、ProactiveEngine、
-ProactiveItemFilter 等共用，避免各自维护私有副本。
+统一 item_id / source_key 的计算逻辑，供 proactive 主链路与兼容层共用，
+避免各自维护私有副本。
 """
 
 from __future__ import annotations

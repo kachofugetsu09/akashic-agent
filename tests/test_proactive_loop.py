@@ -1232,11 +1232,9 @@ def test_rejection_cooldown_disabled_when_hours_zero(tmp_path):
 
 
 def test_rejection_cooldown_filters_in_next_tick(tmp_path):
-    """LLM 拒绝后条目进入 rejection_cooldown，下轮 filter_new_items 跳过该条目。"""
+    """LLM 拒绝后条目进入 rejection_cooldown，状态层能识别冷却命中。"""
     from proactive.state import ProactiveStateStore
-    from proactive.components import ProactiveItemFilter
     from proactive.item_id import compute_item_id, compute_source_key
-    from unittest.mock import MagicMock
 
     item = FeedItem(
         source_name="test",
@@ -1251,26 +1249,8 @@ def test_rejection_cooldown_filters_in_next_tick(tmp_path):
     item_id = compute_item_id(item)
 
     state = ProactiveStateStore(tmp_path / "state.json")
-    # 模拟 LLM 已拒绝，写入 cooldown
     state.mark_rejection_cooldown([(source_key, item_id)], hours=12)
-
-    cfg = MagicMock()
-    cfg.dedupe_seen_ttl_hours = 336
-    cfg.semantic_dedupe_enabled = False
-    cfg.llm_reject_cooldown_hours = 12
-
-    item_filter = ProactiveItemFilter(
-        cfg=cfg,
-        state=state,
-        source_key_fn=compute_source_key,
-        item_id_fn=compute_item_id,
-        semantic_text_fn=lambda i, n: "",
-        build_tfidf_vectors_fn=lambda texts, n: [],
-        cosine_fn=lambda a, b: 0.0,
-    )
-
-    new_items, new_entries, _ = item_filter.filter_new_items([item])
-    assert len(new_items) == 0, "rejection_cooldown 中的条目应被过滤掉"
+    assert state.is_rejection_cooled(source_key, item_id, ttl_hours=12) is True
 
 
 def _build_event(*, event_id: str, source_name: str, title: str, published_at=None):

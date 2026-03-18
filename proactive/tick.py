@@ -2383,13 +2383,6 @@ class ProactiveTick:
     ) -> list[tuple[str, str]]:
         return entries[:1]
 
-    def _cfg_int(self, name: str, default: int) -> int:
-        try:
-            value = int(getattr(self._cfg, name, default))
-        except Exception:
-            value = default
-        return max(1, value)
-
     @staticmethod
     def _feed_items(events: list[ContentEvent]) -> list[FeedItem]:
         """从 ContentEvent 列表中提取 FeedItem 视图，供仍接受 FeedItem 的 port 接口使用。
