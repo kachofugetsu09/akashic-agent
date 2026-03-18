@@ -21,14 +21,16 @@ from core.net.http import (
     configure_default_shared_http_resources,
 )
 from feeds.base import FeedItem
-from proactive.components import ProactiveJudge
+from proactive.composer import Composer
 from proactive.config import ProactiveConfig
-from proactive.engine import DecisionContext, ProactiveEngine
+from proactive.decide import DefaultDecidePort
 from proactive.event import GenericContentEvent
 from proactive.item_id import compute_item_id, compute_source_key
-from proactive.loop_runtime import _semantic_text
-from proactive.ports import DefaultDecidePort, DefaultMemoryRetrievalPort
+from proactive.judge import Judge
+from proactive.loop_helpers import _semantic_text
+from proactive.ports import DefaultMemoryRetrievalPort
 from proactive.state import ProactiveStateStore
+from proactive.tick import DecisionContext, ProactiveEngine
 
 _WORKSPACE = Path("/home/huashen/.akasic/workspace")
 _OBSERVE_DB = _WORKSPACE / "observe" / "observe.db"
@@ -132,11 +134,17 @@ def _format_recent(recent: list[dict]) -> str:
 
 
 def _build_decide_port(cfg: object, provider: LLMProvider) -> DefaultDecidePort:
-    judge = ProactiveJudge(
+    composer = Composer(
         provider=provider,
         model=cfg.model,
         max_tokens=cfg.max_tokens,
         format_items=_format_items,
+        format_recent=_format_recent,
+    )
+    judge = Judge(
+        provider=provider,
+        model=cfg.model,
+        max_tokens=cfg.max_tokens,
         format_recent=_format_recent,
         cfg=cfg.proactive,
     )
@@ -146,6 +154,7 @@ def _build_decide_port(cfg: object, provider: LLMProvider) -> DefaultDecidePort:
         item_id_fn=compute_item_id,
         semantic_text_fn=_semantic_text,
         semantic_text_max_chars=cfg.proactive.semantic_dedupe_text_max_chars,
+        composer=composer,
         judge=judge,
     )
 

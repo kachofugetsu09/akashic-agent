@@ -302,7 +302,3 @@ class MessageDeduper:
             {"role": "system", "content": system_msg},
             {"role": "user", "content": user_msg},
         ]
-
-
-ProactiveJudge = Judge
-ProactiveMessageDeduper = MessageDeduper

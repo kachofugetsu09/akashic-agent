@@ -22,7 +22,7 @@ from agent.tools.filesystem import (
 from bus.events import OutboundMessage
 from bus.queue import MessageBus
 from channels.ipc_server import IPCServerChannel
-from proactive.loop_factory import ProactiveLoopFactoryMixin
+from proactive.loop import ProactiveLoop
 
 
 class _Pipe:
@@ -56,7 +56,7 @@ class _Proc:
         return None
 
 
-class _FactoryHarness(ProactiveLoopFactoryMixin):
+class _FactoryHarness(ProactiveLoop):
     def __init__(self, workspace: Path | None, skill_path: str):
         self._cfg = SimpleNamespace(
             skill_actions_enabled=True,
@@ -234,10 +234,10 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
         await client._recv(expected_id=1)
 
     monkeypatch.setattr(
-        "proactive.loop_factory._build_sandboxed_shell", lambda workspace: "shell-tool"
+        "proactive.loop._build_sandboxed_shell", lambda workspace: "shell-tool"
     )
     monkeypatch.setattr(
-        "proactive.loop_factory.get_default_http_requester", lambda name: "requester"
+        "proactive.loop.get_default_http_requester", lambda name: "requester"
     )
 
     class _Registry:

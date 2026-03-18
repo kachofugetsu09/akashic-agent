@@ -133,6 +133,3 @@ class Sender:
                 }
             )
         return payload
-
-
-ProactiveSender = Sender

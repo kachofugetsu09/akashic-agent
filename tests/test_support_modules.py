@@ -23,7 +23,7 @@ from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from core.common import timekit
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
-from proactive.loop_trigger import ProactiveLoopTriggerMixin
+from proactive.loop import ProactiveLoop
 
 
 class _DummyTool(Tool):
@@ -423,7 +423,7 @@ async def test_loop_trigger_and_main_entry_cover_paths(
         def get(self, action_id: str):
             return self.action if action_id == "a1" else None
 
-    class _Loop(ProactiveLoopTriggerMixin):
+    class _Loop(ProactiveLoop):
         def __init__(self):
             self._cfg = SimpleNamespace(skill_actions_enabled=True, anyaction_enabled=True)
             self._manual_trigger_lock = asyncio.Lock()

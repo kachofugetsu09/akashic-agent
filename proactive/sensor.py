@@ -251,6 +251,3 @@ class Sensor:
         if ts.tzinfo is None:
             return ts.replace(tzinfo=datetime.now().astimezone().tzinfo)
         return ts
-
-
-DefaultSensePort = Sensor

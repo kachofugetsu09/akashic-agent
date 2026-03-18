@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from agent.looping.memory_gate import AgentLoopMemoryGateMixin
 from core.common.strategy_trace import build_strategy_trace_envelope
-from proactive.loop_traces import ProactiveLoopTraceMixin
+from proactive.loop import ProactiveLoop
 
 
 def test_build_strategy_trace_envelope_uses_subject_scope():
@@ -48,7 +48,7 @@ def test_route_trace_writes_strategy_envelope(tmp_path: Path):
     assert line["session_key"] == "telegram:1"
 
 
-class _ProactiveTraceLoop(ProactiveLoopTraceMixin):
+class _ProactiveTraceLoop(ProactiveLoop):
     def __init__(self, workspace: Path) -> None:
         self._sessions = SimpleNamespace(workspace=workspace)
         self._cfg = SimpleNamespace(

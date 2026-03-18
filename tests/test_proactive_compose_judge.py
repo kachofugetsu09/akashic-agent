@@ -5,10 +5,10 @@ from datetime import datetime, timezone
 import pytest
 
 from feeds.base import FeedItem
-from proactive.components import ProactiveJudgeResult
-from proactive.components import ProactiveJudge
+from proactive.composer import Composer
 from proactive.config import ProactiveConfig
-from proactive.engine import ProactiveEngine
+from proactive.judge import Judge, ProactiveJudgeResult
+from proactive.tick import ProactiveEngine
 from proactive.ports import ProactiveRetrievedMemory
 from proactive.state import ProactiveStateStore
 
@@ -39,6 +39,28 @@ def _portal_item() -> FeedItem:
         url="https://www.videogameschronicle.com/news/playstation-portal-is-getting-a-new-1080p-high-quality-mode-this-week/",
         author=None,
         published_at=datetime.now(timezone.utc),
+    )
+
+
+def _build_composer(provider=object()) -> Composer:
+    return Composer(
+        provider=provider,
+        model="m",
+        max_tokens=128,
+        format_items=lambda items: "\n".join(
+            f"- {item.title}\n原文链接: {item.url}" for item in items if item is not None
+        ),
+        format_recent=lambda _: "",
+    )
+
+
+def _build_judge(provider, cfg: ProactiveConfig) -> Judge:
+    return Judge(
+        provider=provider,
+        model="m",
+        max_tokens=128,
+        format_recent=lambda _: "",
+        cfg=cfg,
     )
 
 
@@ -214,7 +236,7 @@ async def test_compose_judge_veto_skip_send(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_compose_for_judge_prompt_includes_portal_negative_preference(monkeypatch):
+async def test_compose_for_judge_prompt_includes_portal_negative_preference():
     preference_block = (
         "## 【流程规范】用户偏好与规则\n"
         "- 用户明确要求：禁止推送任何主机（PS5、Xbox、Switch）相关的硬件新闻、独占游戏、系统更新等内容。"
@@ -235,22 +257,8 @@ async def test_compose_for_judge_prompt_includes_portal_negative_preference(monk
 
             return _Resp()
 
-    judge = ProactiveJudge(
-        provider=_Provider(),
-        model="m",
-        max_tokens=128,
-        format_items=lambda items: "\n".join(
-            f"- {item.title}\n原文链接: {item.url}" for item in items
-        ),
-        format_recent=lambda _: "",
-        cfg=ProactiveConfig(),
-    )
-    monkeypatch.setattr(
-        judge,
-        "_enrich_items_for_compose",
-        lambda items: __import__("asyncio").sleep(0, result=items),
-    )
-    result = await judge.compose_for_judge(
+    composer = _build_composer(_Provider())
+    result = await composer.compose_for_judge(
         items=[_portal_item()],
         recent=[],
         preference_block=preference_block,
@@ -261,13 +269,12 @@ async def test_compose_for_judge_prompt_includes_portal_negative_preference(monk
 
 @pytest.mark.asyncio
 async def test_compose_enrich_items_parses_fetch_json(monkeypatch):
-    judge = ProactiveJudge(
+    composer = Composer(
         provider=object(),
         model="m",
         max_tokens=128,
         format_items=lambda _: "",
         format_recent=lambda _: "",
-        cfg=ProactiveConfig(),
     )
     item = FeedItem(
         source_name="Test",
@@ -283,15 +290,15 @@ async def test_compose_enrich_items_parses_fetch_json(monkeypatch):
         return '{"text": "' + ("x" * 500) + '"}'
 
     monkeypatch.setattr(
-        "proactive.components.get_default_http_requester",
+        "proactive.composer.get_default_http_requester",
         lambda *_: object(),
     )
     monkeypatch.setattr(
-        "proactive.components.WebFetchTool.execute",
+        "proactive.composer.WebFetchTool.execute",
         _fake_execute,
     )
 
-    items = await judge._enrich_items_for_compose([item])
+    items = await composer._enrich_items([item])
 
     assert items[0].content == "x" * 500
     assert getattr(items[0], "content_status", "") == "fetched"
@@ -319,14 +326,7 @@ async def test_judge_prompt_includes_portal_negative_preference():
 
             return _Resp()
 
-    judge = ProactiveJudge(
-        provider=_Provider(),
-        model="m",
-        max_tokens=128,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        cfg=ProactiveConfig(judge_veto_llm_dim_min=2),
-    )
+    judge = _build_judge(_Provider(), ProactiveConfig(judge_veto_llm_dim_min=2))
     result = await judge.judge_message(
         message="PlayStation Portal 即将上线 1080p 高画质模式，通过更高码率流传输，让远程游戏体验更清晰流畅。",
         recent=[],
@@ -456,13 +456,9 @@ class _StubProvider:
 
 @pytest.mark.asyncio
 async def test_judge_does_not_veto_by_urgency():
-    judge = ProactiveJudge(
-        provider=_StubProvider(),
-        model="m",
-        max_tokens=128,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        cfg=ProactiveConfig(
+    judge = _build_judge(
+        _StubProvider(),
+        ProactiveConfig(
             judge_urgency_horizon_hours=12.0,
             judge_veto_urgency_min=0.2,
             judge_send_threshold=0.0,
@@ -482,13 +478,9 @@ async def test_judge_does_not_veto_by_urgency():
 
 @pytest.mark.asyncio
 async def test_judge_veto_by_balance():
-    judge = ProactiveJudge(
-        provider=_StubProvider(),
-        model="m",
-        max_tokens=128,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        cfg=ProactiveConfig(
+    judge = _build_judge(
+        _StubProvider(),
+        ProactiveConfig(
             judge_balance_daily_max=4,
             judge_veto_balance_min=0.2,
         ),
@@ -514,14 +506,7 @@ class _LowDimProvider:
 
 @pytest.mark.asyncio
 async def test_judge_veto_by_llm_dim():
-    judge = ProactiveJudge(
-        provider=_LowDimProvider(),
-        model="m",
-        max_tokens=128,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        cfg=ProactiveConfig(judge_veto_llm_dim_min=2),
-    )
+    judge = _build_judge(_LowDimProvider(), ProactiveConfig(judge_veto_llm_dim_min=2))
     result = await judge.judge_message(
         message="msg",
         recent=[],
@@ -535,13 +520,9 @@ async def test_judge_veto_by_llm_dim():
 
 @pytest.mark.asyncio
 async def test_judge_score_is_zero_when_all_weights_zero():
-    judge = ProactiveJudge(
-        provider=_StubProvider(),
-        model="m",
-        max_tokens=128,
-        format_items=lambda _: "",
-        format_recent=lambda _: "",
-        cfg=ProactiveConfig(
+    judge = _build_judge(
+        _StubProvider(),
+        ProactiveConfig(
             judge_weight_urgency=0.0,
             judge_weight_balance=0.0,
             judge_weight_dynamics=0.0,

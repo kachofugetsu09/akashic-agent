@@ -27,12 +27,13 @@ from core.common.strategy_trace import build_strategy_trace_envelope
 from core.net.http import get_default_http_requester
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.composer import Composer
-from proactive.components import ProactiveJudge, ProactiveMessageDeduper, ProactiveSender
+from proactive.decide import Decider
 from proactive.energy import (
     compute_energy,
     d_energy,
     next_tick_from_score,
 )
+from proactive.judge import Judge, MessageDeduper
 from proactive.config import ProactiveConfig
 from proactive.loop_helpers import (
     _build_sandboxed_shell,
@@ -43,9 +44,11 @@ from proactive.loop_helpers import (
     _semantic_text,
     _source_key,
 )
+from proactive.memory_retrieval import MemoryRetrievalService
 from proactive.memory_sampler import sample_memory_chunks
-from proactive.ports import DefaultDecidePort, DefaultMemoryRetrievalPort, DefaultSensePort
 from proactive.presence import PresenceStore
+from proactive.sender import Sender
+from proactive.sensor import Sensor
 from proactive.state import ProactiveStateStore
 from proactive.tick import ProactiveTick
 from session.manager import SessionManager
@@ -114,20 +117,19 @@ class ProactiveLoop:
             sleeping_modifier=self._cfg.sleep_modifier_sleeping,
         )
 
-    def _build_sender(self) -> ProactiveSender:
-        return ProactiveSender(
+    def _build_sender(self) -> Sender:
+        return Sender(
             cfg=self._cfg,
             push_tool=self._push,
             sessions=self._sessions,
             presence=self._presence,
         )
 
-    def _build_judge(self) -> ProactiveJudge:
-        return ProactiveJudge(
+    def _build_judge(self) -> Judge:
+        return Judge(
             provider=self._light_provider or self._provider,
             model=self._light_model or self._model,
             max_tokens=self._max_tokens,
-            format_items=_format_items,
             format_recent=_format_recent,
             cfg=self._cfg,
         )
@@ -152,8 +154,8 @@ class ProactiveLoop:
             rng=self._rng,
         )
 
-    def _build_sense(self, fitbit_provider) -> DefaultSensePort:
-        return DefaultSensePort(
+    def _build_sense(self, fitbit_provider) -> Sensor:
+        return Sensor(
             cfg=self._cfg,
             sessions=self._sessions,
             state=self._state,
@@ -163,8 +165,8 @@ class ProactiveLoop:
             fitbit=fitbit_provider,
         )
 
-    def _build_decide(self) -> DefaultDecidePort:
-        return DefaultDecidePort(
+    def _build_decide(self) -> Decider:
+        return Decider(
             randomize_fn=lambda decision: _decision_with_randomized_score(
                 decision,
                 strength=self._cfg.decision_score_random_strength,
@@ -178,8 +180,8 @@ class ProactiveLoop:
             composer=self._composer,
         )
 
-    def _build_memory_retriever(self) -> DefaultMemoryRetrievalPort:
-        return DefaultMemoryRetrievalPort(
+    def _build_memory_retriever(self) -> MemoryRetrievalService:
+        return MemoryRetrievalService(
             cfg=self._cfg,
             memory=self._memory,
             item_id_fn=_item_id,
@@ -189,10 +191,10 @@ class ProactiveLoop:
             light_model=self._light_model,
         )
 
-    def _build_message_deduper(self) -> ProactiveMessageDeduper | None:
+    def _build_message_deduper(self) -> MessageDeduper | None:
         if not self._cfg.message_dedupe_enabled:
             return None
-        return ProactiveMessageDeduper(
+        return MessageDeduper(
             provider=self._provider,
             model=self._model,
             max_tokens=self._max_tokens,

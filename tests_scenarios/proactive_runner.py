@@ -32,9 +32,10 @@ from core.net.http import (
 )
 from feeds.base import FeedItem
 from proactive.anyaction import AnyActionGate, QuotaStore
-from proactive.components import ProactiveJudge
+from proactive.composer import Composer
 from proactive.config import ProactiveConfig
-from proactive.engine import (
+from proactive.decide import DefaultDecidePort
+from proactive.tick import (
     DecisionContext,
     FetchFilterResult,
     FetchSnapshot,
@@ -42,6 +43,7 @@ from proactive.engine import (
 )
 from proactive.event import AlertEvent, GenericAlertEvent
 from proactive.event import GenericContentEvent
+from proactive.judge import Judge
 from proactive.loop_helpers import (
     _decision_with_randomized_score,
     _format_items,
@@ -51,7 +53,6 @@ from proactive.loop_helpers import (
     _source_key,
 )
 from proactive.ports import (
-    DefaultDecidePort,
     DefaultMemoryRetrievalPort,
     ProactiveRetrievedMemory,
     ProactiveSourceRef,
@@ -474,11 +475,17 @@ class ProactiveScenarioRunner:
         fallback_model: str = "",
     ) -> DefaultDecidePort:
         model = p_cfg.model or fallback_model
-        judge = ProactiveJudge(
+        composer = Composer(
             provider=provider,
             model=model,
             max_tokens=1024,
             format_items=_format_items,
+            format_recent=_format_recent,
+        )
+        judge = Judge(
+            provider=provider,
+            model=model,
+            max_tokens=1024,
             format_recent=_format_recent,
             cfg=p_cfg,
         )
@@ -491,6 +498,7 @@ class ProactiveScenarioRunner:
             item_id_fn=_item_id,
             semantic_text_fn=_semantic_text,
             semantic_text_max_chars=p_cfg.semantic_dedupe_text_max_chars,
+            composer=composer,
             judge=judge,
         )
 

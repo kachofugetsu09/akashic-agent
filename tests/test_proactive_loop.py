@@ -15,7 +15,7 @@ from core.net.http import (
 from feeds.base import FeedItem
 from proactive.event import GenericContentEvent
 from proactive.config import ProactiveConfig
-from proactive.engine import (
+from proactive.tick import (
     DecisionContext,
     GateResult,
     ProactiveEngine,
@@ -921,7 +921,7 @@ async def test_send_records_proactive_sent_in_presence(tmp_path):
 @pytest.mark.asyncio
 async def test_gate_quota_exhausted_returns_zero(tmp_path):
     """gate 拒绝原因为 quota_exhausted → tick 返回 0.0（调度最长间隔）。"""
-    from proactive.engine import ProactiveEngine
+    from proactive.tick import ProactiveEngine
     from proactive.state import ProactiveStateStore
     from proactive.anyaction import AnyActionGate, QuotaStore
     from datetime import timezone
@@ -1028,7 +1028,7 @@ async def test_gate_quota_exhausted_returns_zero(tmp_path):
 @pytest.mark.asyncio
 async def test_gate_min_interval_returns_none(tmp_path):
     """gate 拒绝原因为 min_interval → tick 返回 None（调度器按能量自算）。"""
-    from proactive.engine import ProactiveEngine
+    from proactive.tick import ProactiveEngine
     from proactive.state import ProactiveStateStore
 
     state = ProactiveStateStore(tmp_path / "state.json")
@@ -1269,7 +1269,7 @@ def _build_event(*, event_id: str, source_name: str, title: str, published_at=No
 
 def test_prepare_compose_candidates_prefers_interest_ranked_items():
     from types import SimpleNamespace
-    from proactive.engine import ProactiveEngine, DecisionContext
+    from proactive.tick import ProactiveEngine, DecisionContext
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
@@ -1323,7 +1323,7 @@ def test_select_compose_items_sorts_group_by_published_at_asc():
     from types import SimpleNamespace
     from datetime import datetime, timezone, timedelta
     from feeds.base import FeedItem
-    from proactive.engine import ProactiveEngine
+    from proactive.tick import ProactiveEngine
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
@@ -1362,7 +1362,7 @@ def test_select_compose_items_sorts_group_by_published_at_asc():
 def test_select_compose_items_keeps_top_interest_single_item_over_larger_lower_interest_group():
     from datetime import datetime, timezone, timedelta
     from feeds.base import FeedItem
-    from proactive.engine import ProactiveEngine
+    from proactive.tick import ProactiveEngine
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
 
@@ -1415,7 +1415,7 @@ def test_select_compose_items_aggregates_same_source_short_news():
     from types import SimpleNamespace
     from datetime import datetime, timezone, timedelta
     from feeds.base import FeedItem
-    from proactive.engine import ProactiveEngine
+    from proactive.tick import ProactiveEngine
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
@@ -1448,7 +1448,7 @@ def test_select_compose_items_aggregates_same_topic_across_sources():
     from types import SimpleNamespace
     from datetime import datetime, timezone, timedelta
     from feeds.base import FeedItem
-    from proactive.engine import ProactiveEngine
+    from proactive.tick import ProactiveEngine
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
@@ -1479,7 +1479,7 @@ def test_select_compose_items_aggregates_same_topic_across_sources():
 
 def test_prepare_compose_candidates_prefers_hot_single_over_same_source_news_bundle():
     from types import SimpleNamespace
-    from proactive.engine import ProactiveEngine, DecisionContext
+    from proactive.tick import ProactiveEngine, DecisionContext
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
@@ -1526,7 +1526,7 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
     from types import SimpleNamespace
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
-    from proactive.engine import ProactiveEngine, DecisionContext
+    from proactive.tick import ProactiveEngine, DecisionContext
     from proactive.components import ProactiveJudgeResult
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
@@ -1586,7 +1586,7 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
 async def test_compose_judge_without_candidates_uses_user_recent_only():
     from types import SimpleNamespace
     from datetime import datetime, timezone
-    from proactive.engine import ProactiveEngine, DecisionContext
+    from proactive.tick import ProactiveEngine, DecisionContext
 
     compose_calls: list[dict] = []
 
