@@ -690,7 +690,52 @@ class ProactiveTick:
         )
         fetch.new_items = list(fetch.items)
 
-        # 2. 再做 rejection cooldown 过滤，避免刚被拒过的内容立刻重试。
+        # 2. 先过滤已使用的 items（seen_items），避免重复处理
+        seen_ttl_hours = getattr(self._cfg, "delivery_dedupe_hours", 10) * 2  # 使用 2 倍的去重时间
+        original_count = len(fetch.new_items)
+        filtered_events: list[ContentEvent] = []
+        filtered_entries: list[tuple[str, str]] = []
+        for event, (source_key, item_id) in zip(fetch.new_items, fetch.new_entries):
+            if self._state.is_item_seen(
+                source_key=source_key,
+                item_id=item_id,
+                ttl_hours=seen_ttl_hours,
+                now=ctx.state.now_utc,
+            ):
+                logger.info(
+                    "[proactive] evaluate seen_items 跳过 source=%s item_id=%s ttl_hours=%d",
+                    source_key,
+                    item_id[:16],
+                    seen_ttl_hours,
+                )
+                continue
+            filtered_events.append(event)
+            filtered_entries.append((source_key, item_id))
+        fetch.items = filtered_events
+        fetch.new_items = filtered_events
+        fetch.new_entries = filtered_entries
+        if original_count > len(fetch.items):
+            logger.info(
+                "[proactive] seen_items 过滤：原始 %d 条 → 剩余 %d 条（过滤了 %d 条）",
+                original_count,
+                len(fetch.items),
+                original_count - len(fetch.items),
+            )
+        # 输出剩余 items 的前几条，用于调试
+        if fetch.items:
+            logger.info(
+                "[proactive] 剩余 items 前 3 条: %s",
+                [
+                    {
+                        "title": getattr(item, "title", "")[:50],
+                        "item_id": self._item_id_for(item)[:16],
+                        "source_key": compute_source_key(item),
+                    }
+                    for item in fetch.items[:3]
+                ],
+            )
+
+        # 3. 再做 rejection cooldown 过滤，避免刚被拒过的内容立刻重试。
         cooldown_hours = getattr(self._cfg, "llm_reject_cooldown_hours", 0)
         if cooldown_hours > 0:
             filtered_events: list[ContentEvent] = []
@@ -1197,13 +1242,26 @@ class ProactiveTick:
             judge_vetoed_by=decide.judge_vetoed_by,
         )
 
-        # 2. judge 不通过时直接返回 base_score，并保留 rejection cooldown 行为。
+        # 2. judge 不通过时直接返回 base_score，并根据拒绝原因决定是否 ACK。
         if not decide.should_send:
-            if decide.judge_vetoed_by != "balance":
-                self._state.mark_rejection_cooldown(
-                    compose_entries,
-                    hours=self._judge_rejection_cooldown_hours(decide.judge_vetoed_by),
+            # 判断是否应该 ACK（标记为已使用）
+            should_ack = self._should_ack_on_judge_reject(decide)
+
+            if should_ack:
+                # 用户不感兴趣或 LLM 维度太低，直接 ACK，不再重试
+                logger.info(
+                    "[proactive] judge 拒绝且 ACK evidence vetoed_by=%s",
+                    decide.judge_vetoed_by,
                 )
+                self._consume_evidence_entries(evidence)
+            else:
+                # balance veto 或分数不足但还有希望，只记录 rejection cooldown
+                if decide.judge_vetoed_by != "balance":
+                    self._state.mark_rejection_cooldown(
+                        compose_entries,
+                        hours=self._judge_rejection_cooldown_hours(decide.judge_vetoed_by),
+                    )
+
             self._trace(ctx, stage="judge_and_send", result=guard)
             return score.base_score
 
@@ -1328,6 +1386,41 @@ class ProactiveTick:
         if vetoed_by == "llm_dim":
             return 12
         return 8
+
+    def _should_ack_on_judge_reject(self, decide: DecideState) -> bool:
+        """判断 judge 拒绝时是否应该 ACK（标记为已使用）
+
+        ACK 策略：
+        - llm_dim veto（relevance/expected_impact 太低）→ ACK（用户不感兴趣）
+        - balance veto（配额用完）→ 不 ACK（明天可以再试）
+        - context_only_threshold（分数不足）→ 不 ACK（下次可能通过）
+        - 其他情况：检查 LLM 维度，如果 relevance 或 expected_impact < 0.25 → ACK
+        """
+        vetoed_by = decide.judge_vetoed_by
+
+        # balance veto：配额用完，明天可以再试
+        if vetoed_by == "balance":
+            return False
+
+        # llm_dim veto：LLM 维度太低，用户不感兴趣
+        if vetoed_by == "llm_dim":
+            return True
+
+        # context_only_threshold：分数不足，但下次可能通过
+        if vetoed_by == "context_only_threshold":
+            return False
+
+        # 其他情况：检查 LLM 维度
+        llm_dims = decide.judge_dims.get("llm", {})
+        relevance = float(llm_dims.get("relevance", 0.5))
+        expected_impact = float(llm_dims.get("expected_impact", 0.5))
+
+        # 如果 relevance 或 expected_impact < 0.25（对应原始分数 < 2），认为用户不感兴趣
+        if relevance < 0.25 or expected_impact < 0.25:
+            return True
+
+        # 默认不 ACK，给内容再次尝试的机会
+        return False
 
     def _compute_score_snapshot(self, ctx: DecisionContext) -> float:
         """把 score 阶段的纯计算部分集中到一个 helper，避免和副作用混在一起。"""
@@ -1703,6 +1796,11 @@ class ProactiveTick:
         await self._try_skill_action(now_utc=state.now_utc)
 
     def _consume_evidence_entries(self, evidence: EvidenceBundle) -> None:
+        logger.info(
+            "[proactive] 消费证据条目 evidence_entries=%d evidence_item_ids=%s",
+            len(evidence.evidence_entries),
+            evidence.evidence_item_ids[:5] if evidence.evidence_item_ids else [],
+        )
         self._state.mark_items_seen(evidence.evidence_entries)
         self._state.mark_semantic_items(
             self._decide.semantic_entries(evidence.evidence_items)

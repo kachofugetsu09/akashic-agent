@@ -75,11 +75,11 @@ class ProactiveStateStore:
                 added += 1
             source_map[item_id] = ts
         self._save()
-        logger.debug(
-            "[proactive.state] 已记录已见条目 count=%d newly_added=%d ts=%s",
+        logger.info(
+            "[proactive.state] 已标记已见条目 count=%d newly_added=%d entries=%s",
             len(entries),
             added,
-            ts,
+            [(sk, iid[:16]) for sk, iid in entries[:3]],
         )
 
     def is_delivery_duplicate(

@@ -118,6 +118,11 @@ class Judge:
         )
         low_dim_reason = self._llm_dim_reject_reason(llm_dims)
         if low_dim_reason is not None:
+            logger.info(
+                "[judge] LLM 维度否决 vetoed_by=%s llm_dims=%s",
+                low_dim_reason,
+                {k: f"{v:.2f}" for k, v in llm_dims.items()},
+            )
             return ProactiveJudgeResult(
                 0.0,
                 False,
@@ -128,9 +133,18 @@ class Judge:
             )
         final_score = self._compute_final_score(deterministic, llm_dims)
         threshold = float(getattr(self._cfg, "judge_send_threshold", 0.60))
+        should_send = final_score >= threshold
+        logger.info(
+            "[judge] 最终决策 final_score=%.3f threshold=%.3f should_send=%s deterministic=%s llm=%s",
+            final_score,
+            threshold,
+            should_send,
+            {k: f"{v:.2f}" for k, v in deterministic.items()},
+            {k: f"{v:.2f}" for k, v in llm_dims.items()},
+        )
         return ProactiveJudgeResult(
             final_score,
-            final_score >= threshold,
+            should_send,
             None,
             deterministic,
             llm_dims,
