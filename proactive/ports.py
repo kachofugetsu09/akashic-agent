@@ -8,7 +8,7 @@ import random as _random_module
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 _MAX_PROCEDURE_RETRIEVE_K = 3
@@ -57,69 +57,6 @@ class RecentProactiveMessage:
     state_summary_tag: str = "none"
     source_refs: list[ProactiveSourceRef] = field(default_factory=list)
 
-
-class SensePort(Protocol):
-    def compute_energy(self) -> float: ...
-    def collect_recent(self) -> list[dict]: ...
-    def collect_recent_proactive(self, n: int = 5) -> list[RecentProactiveMessage]: ...
-    def compute_interruptibility(
-        self,
-        *,
-        now_hour: int,
-        now_utc: datetime,
-        recent_msg_count: int,
-    ) -> tuple[float, dict[str, float]]: ...
-    def read_memory_text(self) -> str: ...
-    def has_global_memory(self) -> bool: ...
-    def last_user_at(self) -> datetime | None: ...
-    def refresh_sleep_context(self) -> bool: ...
-    def target_session_key(self) -> str: ...
-
-
-class DecidePort(Protocol):
-    async def compose_for_judge(
-        self,
-        *,
-        items: list[FeedItem],
-        recent: list[dict],
-        preference_block: str = "",
-        no_content_token: str = "<no_content/>",
-    ) -> str: ...
-    async def judge_message(
-        self,
-        *,
-        message: str,
-        recent: list[dict],
-        recent_proactive_text: str,
-        preference_block: str = "",
-        age_hours: float,
-        sent_24h: int,
-        interrupt_factor: float,
-    ) -> Any: ...
-    def pre_compose_veto(
-        self,
-        *,
-        age_hours: float,
-        sent_24h: int,
-        interrupt_factor: float,
-    ) -> str | None: ...
-    def randomize_decision(self, decision: Any) -> tuple[Any, float]: ...
-    def resolve_evidence_item_ids(
-        self, decision: Any, items: list[FeedItem]
-    ) -> list[str]: ...
-    def build_delivery_key(self, item_ids: list[str], message: str) -> str: ...
-    def semantic_entries(self, items: list[FeedItem]) -> list[dict[str, str]]: ...
-    def item_id_for(self, item: FeedItem) -> str: ...
-
-
-class ActPort(Protocol):
-    async def send(
-        self,
-        message: str,
-        meta: ProactiveSendMeta | None = None,
-    ) -> bool: ...
-
-
 @dataclass
 class ProactiveRetrievedMemory:
     query: str = ""
@@ -137,22 +74,6 @@ class ProactiveRetrievedMemory:
     @classmethod
     def empty(cls, fallback_reason: str = "") -> "ProactiveRetrievedMemory":
         return cls(fallback_reason=fallback_reason)
-
-
-class MemoryRetrievalPort(Protocol):
-    async def retrieve_proactive_context(
-        self,
-        *,
-        session_key: str,
-        channel: str,
-        chat_id: str,
-        items: list[FeedItem],
-        recent: list[dict],
-        decision_signals: dict[str, object],
-        is_crisis: bool,
-        tick_id: str = "",
-    ) -> ProactiveRetrievedMemory: ...
-
 
 class DefaultMemoryRetrievalPort:
     """Event-only proactive retrieval with fail-open behavior."""
@@ -857,6 +778,7 @@ class DefaultDecidePort:
         item_id_fn: Callable[[FeedItem], str],
         semantic_text_fn: Callable[[FeedItem, int], str],
         semantic_text_max_chars: int,
+        composer: Any | None = None,
         judge: Any | None = None,
     ) -> None:
         self._randomize_fn = randomize_fn
@@ -864,6 +786,7 @@ class DefaultDecidePort:
         self._item_id = item_id_fn
         self._semantic_text = semantic_text_fn
         self._semantic_text_max_chars = semantic_text_max_chars
+        self._composer = composer
         self._judge = judge
 
     async def compose_for_judge(
@@ -874,6 +797,13 @@ class DefaultDecidePort:
         preference_block: str = "",
         no_content_token: str = "<no_content/>",
     ) -> str:
+        if self._composer is not None:
+            return await self._composer.compose_for_judge(
+                items=items,
+                recent=recent,
+                preference_block=preference_block,
+                no_content_token=no_content_token,
+            )
         if not self._judge:
             return ""
         return await self._judge.compose_for_judge(

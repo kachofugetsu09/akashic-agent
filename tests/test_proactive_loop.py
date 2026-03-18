@@ -461,7 +461,6 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         interest_filter=SimpleNamespace(enabled=False),
-        pending_queue_enabled=False,
         items_per_source=3,
     )
     engine._sense = SimpleNamespace(
@@ -475,7 +474,6 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
     assert result.discovered_count == 1
     assert result.selected_count == 1
     assert result.semantic_duplicate_count == 0
-    assert result.pending_enabled is False
     assert result.has_memory is True
     feed_events = ctx.ensure_fetch().new_items
     assert len(feed_events) == 1

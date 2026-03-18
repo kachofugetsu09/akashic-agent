@@ -29,13 +29,11 @@ class ProactiveLoopFactoryMixin:
         agent_tasks_dir = (Path(workspace) / "agent-tasks") if workspace else None
         if agent_tasks_dir:
             agent_tasks_dir.mkdir(parents=True, exist_ok=True)
-
-        subagent_factory = self._build_subagent_factory()
-        runner = SkillActionRunner(
+        return SkillActionRunner(
             registry,
             rng=self._rng,
             state_path=state_path,
-            subagent_factory=subagent_factory,
+            subagent_factory=self._build_subagent_factory(),
             agent_tasks_dir=agent_tasks_dir,
             memory_retrieve_fn=(
                 self._memory.retrieve_related if self._memory is not None else None
@@ -46,14 +44,6 @@ class ProactiveLoopFactoryMixin:
                 else None
             ),
         )
-        enabled_count = len(registry.list_enabled())
-        logger.info(
-            "[proactive] skill_action_runner 已初始化 path=%s enabled_actions=%d subagent_factory=%s",
-            skill_path,
-            enabled_count,
-            "yes" if subagent_factory else "no",
-        )
-        return runner
 
     def _build_subagent_factory(self):
         from agent.background.subagent_profiles import (
@@ -68,16 +58,12 @@ class ProactiveLoopFactoryMixin:
             return None
         agent_tasks_dir = Path(workspace) / "agent-tasks"
         agent_tasks_dir.mkdir(parents=True, exist_ok=True)
-
-        channel = self._cfg.default_channel or ""
-        chat_id = self._cfg.default_chat_id or ""
         runtime = SubagentRuntime(
             provider=self._provider,
             model=self._model,
             max_tokens=self._max_tokens,
             memory=self._memory,
         )
-        push = self._push
         db_path = agent_tasks_dir / "task_notes.db"
         shell_tool = _build_sandboxed_shell(agent_tasks_dir)
         fetch_requester = get_default_http_requester("external_default")
@@ -86,7 +72,6 @@ class ProactiveLoopFactoryMixin:
             action_id: str,
             system_prompt_override: str = SKILL_ACTION_AGENT_BASE_PROMPT,
         ):
-            assert system_prompt_override is not None
             action_dir = agent_tasks_dir / action_id
             action_dir.mkdir(parents=True, exist_ok=True)
             spec = build_skill_action_spec(
@@ -95,12 +80,19 @@ class ProactiveLoopFactoryMixin:
                 fetch_requester=fetch_requester,
                 shell_tool=shell_tool,
                 db_path=db_path,
-                push_tool=push,
-                channel=channel,
-                chat_id=chat_id,
+                push_tool=self._push,
+                channel=self._cfg.default_channel or "",
+                chat_id=self._cfg.default_chat_id or "",
                 system_prompt=system_prompt_override,
                 max_iterations=40,
             )
             return spec.build(runtime)
 
         return factory
+
+
+__all__ = [
+    "ProactiveLoopFactoryMixin",
+    "_build_sandboxed_shell",
+    "get_default_http_requester",
+]
