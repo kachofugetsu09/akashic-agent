@@ -429,9 +429,9 @@ async def test_engine_evaluate_no_candidates_falls_through_to_draw_threshold():
     result = await engine._evaluate(ctx)
 
     assert result.proceed is False
-    assert result.reason_code == "draw_score_below_threshold"
-    assert result.base_score == score.base_score
-    assert result.draw_score == score.draw_score
+    assert result.reason_code == "no_valid_source"
+    assert result.base_score == 0.0
+    assert result.draw_score == 0.0
     assert result.force_reflect is False
 
 
@@ -1699,6 +1699,10 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
         _build_event(event_id="n1", source_name="HLTV", title="Niko semifinal")
     ]
     fetch.new_entries = [("rss:hltv", "Niko semifinal")]
+    # 设置主源为 content，确保能进入 compose
+    fetch.selected_primary_source = "content"
+    fetch.context_mode = "none"
+    fetch.content_items = fetch.new_items
 
     # 1. 先走 compose，再走 judge，验证现行主链路会写 cooldown。
     compose = await engine._compose(ctx)
@@ -1733,8 +1737,16 @@ async def test_compose_judge_without_candidates_uses_user_recent_only():
         llm_reject_cooldown_hours=12,
         score_llm_threshold=0.0,
         threshold=0.7,
+        context_as_assist_enabled=True,
+        bg_context_main_topic_min_interval_hours=6,
     )
-    engine._state = SimpleNamespace(mark_rejection_cooldown=lambda *a, **kw: None)
+    engine._state = SimpleNamespace(
+        mark_rejection_cooldown=lambda *a, **kw: None,
+        get_bg_context_last_main_at=lambda: None,
+    )
+    engine._sense = SimpleNamespace(
+        collect_recent_proactive=lambda n: [],
+    )
     engine._decide = SimpleNamespace(
         item_id_for=lambda item: item.title,
         pre_compose_veto=lambda **kw: None,
@@ -1745,6 +1757,7 @@ async def test_compose_judge_without_candidates_uses_user_recent_only():
     ctx = DecisionContext()
     sense = ctx.ensure_sense()
     score = ctx.ensure_score()
+    fetch = ctx.ensure_fetch()
     ctx.state.now_utc = datetime.now(timezone.utc)
     sense.recent = [
         {"role": "assistant", "content": "旧的主动资讯"},
@@ -1758,6 +1771,10 @@ async def test_compose_judge_without_candidates_uses_user_recent_only():
         "f_fatigue": 1.0,
     }
     score.sent_24h = 0
+    # 设置主源为 context-only，确保能进入 compose
+    fetch.selected_primary_source = "context"
+    fetch.context_mode = "context_only"
+    fetch.background_context = [{"topic": "test", "summary": "test context"}]
 
     compose = await engine._compose(ctx)
 

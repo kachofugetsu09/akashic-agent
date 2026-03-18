@@ -171,6 +171,11 @@ class FetchSnapshot:
     semantic_duplicate_entries: list[tuple[str, str]] = field(default_factory=list)
     has_memory: bool = False
     background_context: list[dict] = field(default_factory=list)
+    # 三源分离
+    alert_items: list[AlertEvent] = field(default_factory=list)
+    content_items: list[ContentEvent] = field(default_factory=list)
+    selected_primary_source: str = "none"  # alert|content|context|none
+    context_mode: str = "none"  # none|assist|context_only
 
 
 @dataclass
@@ -296,6 +301,7 @@ class EvaluateResult:
         "continue",
         "draw_score_below_threshold",
         "draw_score_force_reflect",
+        "no_valid_source",
     ]
     base_score: float
     draw_score: float
@@ -325,7 +331,7 @@ class _ScoreDecision:
 class ComposeResult:
     proceed: bool
     return_score: float | None
-    reason_code: Literal["continue", "compose_no_content", "judge_reject"]
+    reason_code: Literal["continue", "compose_no_content", "judge_reject", "no_valid_source"]
     decision_message: str
     compose_no_content: bool
     history_gate_reason: str
@@ -696,7 +702,79 @@ class ProactiveTick:
             fetch.new_entries = filtered_entries
         logger.debug("[proactive] 从 MCP 拉取到 %d 条内容", len(fetch.items))
 
-        # 3. 最后计算 base_score / draw_score，并决定是否进入 LLM 路径。
+        # 3. 分离三类源并决定主源
+        sense = ctx.ensure_sense()
+        fetch.alert_items = sense.health_events  # alert 来自 sense 阶段
+        fetch.content_items = fetch.new_items  # content 来自 MCP content
+        # context 来自 background_context（已在 _load_content_snapshot 中加载）
+
+        # 按优先级决定主源
+        has_alert = len(fetch.alert_items) > 0
+        has_content = len(fetch.content_items) > 0
+        has_context = len(fetch.background_context) > 0
+
+        context_as_assist_enabled = getattr(self._cfg, "context_as_assist_enabled", True)
+        context_only_enabled = getattr(self._cfg, "context_only_enabled", True)
+
+        if has_alert:
+            fetch.selected_primary_source = "alert"
+            fetch.context_mode = "assist" if (context_as_assist_enabled and has_context) else "none"
+            logger.info("[proactive] 主源=alert context_mode=%s", fetch.context_mode)
+        elif has_content:
+            fetch.selected_primary_source = "content"
+            fetch.context_mode = "assist" if (context_as_assist_enabled and has_context) else "none"
+            logger.info("[proactive] 主源=content context_mode=%s", fetch.context_mode)
+        elif has_context and context_only_enabled:
+            # context-only 需要检查配额
+            session_key = state.session_key or ""
+            context_only_daily_max = getattr(self._cfg, "context_only_daily_max", 1)
+            context_only_min_interval_hours = getattr(self._cfg, "context_only_min_interval_hours", 12)
+
+            count_24h = self._state.count_context_only_in_window(session_key, 24, state.now_utc)
+            if count_24h >= context_only_daily_max:
+                fetch.selected_primary_source = "none"
+                fetch.context_mode = "none"
+                logger.info("[proactive] context-only 24h 配额已满 count=%d max=%d", count_24h, context_only_daily_max)
+            else:
+                last_context_only_at = self._state.get_last_context_only_at(session_key)
+                if last_context_only_at is not None:
+                    elapsed_hours = (state.now_utc - last_context_only_at).total_seconds() / 3600
+                    if elapsed_hours < context_only_min_interval_hours:
+                        fetch.selected_primary_source = "none"
+                        fetch.context_mode = "none"
+                        logger.info("[proactive] context-only 最小间隔未满足 elapsed=%.1fh min=%dh", elapsed_hours, context_only_min_interval_hours)
+                    else:
+                        fetch.selected_primary_source = "context"
+                        fetch.context_mode = "context_only"
+                        logger.info("[proactive] 主源=context context_mode=context_only")
+                else:
+                    fetch.selected_primary_source = "context"
+                    fetch.context_mode = "context_only"
+                    logger.info("[proactive] 主源=context context_mode=context_only (首次)")
+        else:
+            fetch.selected_primary_source = "none"
+            fetch.context_mode = "none"
+            logger.info("[proactive] 无可用主源")
+
+        # 如果主源是 none，提前返回
+        if fetch.selected_primary_source == "none":
+            logger.info("[proactive] 无可用主源，跳过本轮")
+            await self._try_skill_action(now_utc=state.now_utc)
+            return EvaluateResult(
+                proceed=False,
+                return_score=None,
+                reason_code="no_valid_source",
+                base_score=0.0,
+                draw_score=0.0,
+                force_reflect=False,
+                total_items=len(fetch.items),
+                discovered_count=len(fetch.new_items),
+                selected_count=0,
+                semantic_duplicate_count=len(fetch.semantic_duplicate_entries),
+                has_memory=fetch.has_memory,
+            )
+
+        # 4. 最后计算 base_score / draw_score，并决定是否进入 LLM 路径。
         fetch.has_memory = self._sense.has_global_memory()
         w_random = self._compute_score_snapshot(ctx)
         self._refresh_presence_state(ctx)
@@ -725,6 +803,49 @@ class ProactiveTick:
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
+
+        # 0. 根据主源选择 compose 候选
+        if fetch.selected_primary_source == "alert":
+            # alert 主源：将 alert 转换为 ContentEvent 格式供 compose 使用
+            alert_as_content = []
+            for alert in fetch.alert_items:
+                # 将 AlertEvent 转换为 ContentEvent 格式
+                content_event = type('obj', (object,), {
+                    'source_name': getattr(alert, 'source_name', 'alert'),
+                    'source_type': getattr(alert, 'source_type', 'alert'),
+                    'title': getattr(alert, 'title', ''),
+                    'content': getattr(alert, 'content', ''),
+                    'url': getattr(alert, 'url', None),
+                    'event_id': getattr(alert, 'event_id', ''),
+                    'severity': getattr(alert, 'severity', 'high'),
+                    'published_at': getattr(alert, 'published_at', None),
+                })()
+                alert_as_content.append(content_event)
+            # 覆盖 fetch.new_items，确保 compose 使用 alert 作为主源
+            fetch.new_items = alert_as_content
+            fetch.new_entries = [(f"alert:{a.event_id}", a.event_id) for a in fetch.alert_items]
+            logger.info("[proactive] compose 使用 alert 作为主源 count=%d", len(alert_as_content))
+        elif fetch.selected_primary_source == "content":
+            # content 主源：保持原有逻辑
+            logger.info("[proactive] compose 使用 content 作为主源 count=%d", len(fetch.content_items))
+        elif fetch.selected_primary_source == "context":
+            # context-only：清空 items，让 compose 基于 background_context 生成
+            fetch.new_items = []
+            fetch.new_entries = []
+            logger.info("[proactive] compose 使用 context-only 模式")
+        else:
+            # 不应该到这里，因为 evaluate 阶段已经过滤了
+            logger.warning("[proactive] compose 阶段遇到无效主源: %s", fetch.selected_primary_source)
+            return ComposeResult(
+                proceed=False,
+                return_score=score.base_score,
+                reason_code="no_valid_source",
+                decision_message="",
+                compose_no_content=False,
+                history_gate_reason="",
+                history_scope_mode="",
+            )
+
         # 1. 先补 decision signals 和 retrieval memory，后续 compose/judge 都只读 ctx。
         self._populate_decision_signals(ctx)
         await self._retrieve_decision_memory(ctx)
@@ -772,6 +893,7 @@ class ProactiveTick:
             recent=compose_recent,
             preference_block=decide.preference_block,
             no_content_token=no_content_token,
+            background_context=fetch.background_context if fetch.context_mode == "context_only" else None,
         )
         message = (decide.decision_message or "").strip()
         if message and message != no_content_token:
@@ -848,6 +970,19 @@ class ProactiveTick:
             )
             decide.judge_vetoed_by = getattr(judge_result, "vetoed_by", None)
             decide.should_send = bool(getattr(judge_result, "should_send", False))
+
+        # context-only 应用更高阈值
+        if fetch.context_mode == "context_only":
+            context_only_threshold = getattr(self._cfg, "context_only_judge_threshold", 0.72)
+            if decide.judge_final_score < context_only_threshold:
+                logger.info(
+                    "[proactive] context-only judge 分数不足 score=%.3f threshold=%.3f",
+                    decide.judge_final_score,
+                    context_only_threshold,
+                )
+                decide.should_send = False
+                decide.judge_vetoed_by = "context_only_threshold"
+
         guard = GuardResult(
             should_send=decide.should_send,
             return_score=None if decide.should_send else score.base_score,
@@ -1179,7 +1314,14 @@ class ProactiveTick:
             ),
         }
         # background_context：持久背景感知数据（如 Steam 游戏活动），每次反思均可读取。
-        if fetch.background_context:
+        # 注入条件：
+        # 1. context_mode != "none" (assist 或 context_only) 时必须注入
+        # 2. context_mode == "none" 时，仅当 context_as_assist_enabled=True 才注入
+        should_inject_context = fetch.background_context and (
+            fetch.context_mode != "none"
+            or getattr(self._cfg, "context_as_assist_enabled", True)
+        )
+        if should_inject_context:
             processed_bg = _process_bg_context_sources(fetch.background_context)
             decide.decision_signals["background_context"] = {
                 "_description": (
@@ -1504,12 +1646,20 @@ class ProactiveTick:
     ) -> None:
         state = ctx.state
         sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
         if self._cfg.anyaction_enabled and getattr(self, "_anyaction", None):
             self._anyaction.record_action(now_utc=state.now_utc)
         self._consume_evidence_entries(evidence)
         # 若本次发送无 feed 证据（纯 background_context 驱动），更新主 topic 冷却时间。
         if not evidence.evidence_item_ids:
             self._state.mark_bg_context_main_send(state.now_utc)
+        # 若本次是 context-only 发送，记录 context-only 状态
+        if fetch.context_mode == "context_only" and state.session_key:
+            self._state.mark_context_only_send(state.session_key, state.now_utc)
+            logger.info(
+                "[proactive] context-only 发送已记录 session=%s",
+                state.session_key,
+            )
         if state.session_key:
             self._state.mark_delivery(state.session_key, delivery_key)
         try:

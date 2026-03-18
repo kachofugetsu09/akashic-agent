@@ -103,3 +103,9 @@ class ProactiveConfig:
     judge_veto_llm_dim_min: int = 2
     judge_send_threshold: float = 0.60
     bg_context_main_topic_min_interval_hours: int = 6
+    # 三源统一配置
+    context_as_assist_enabled: bool = True
+    context_only_enabled: bool = True
+    context_only_daily_max: int = 1
+    context_only_min_interval_hours: int = 12
+    context_only_judge_threshold: float = 0.72

@@ -165,12 +165,46 @@ def _build_proactive_prompt_context(
     recent: list[dict],
     format_items: Callable[[list[ContentEvent]], str],
     format_recent: Callable[[list[dict]], str],
+    background_context: list[dict] | None = None,
 ) -> ProactivePromptContext:
     now = datetime.now().astimezone()
+    # context-only 模式：使用 background_context 作为 feed_text
+    if background_context and not items:
+        context_lines = []
+        for ctx in background_context[:5]:
+            source = ctx.get("_source", "")
+            # 处理 steam 类型的 context（原始结构：games/realtime）
+            if source == "steam" and ctx.get("available") is not False:
+                realtime = ctx.get("realtime", {})
+                games = ctx.get("games", [])
+                currently_playing = realtime.get("currently_playing")
+                if currently_playing:
+                    context_lines.append(f"Steam: 正在游玩 {currently_playing}")
+                elif games:
+                    # 提取近期活跃游戏（recent_2w_hours > 0）
+                    active_games = []
+                    for g in games[:5]:
+                        hours = float(g.get("recent_2w_hours", 0) or 0)
+                        if hours >= 5:  # moderate 或 heavy
+                            active_games.append(g.get("name", ""))
+                    if active_games:
+                        context_lines.append(f"Steam: 近期活跃游戏 {', '.join(active_games[:3])}")
+            # 处理通用 topic/summary 结构
+            else:
+                topic = ctx.get("topic", "")
+                summary = ctx.get("summary", "")
+                if topic:
+                    context_lines.append(f"话题: {topic}")
+                if summary:
+                    context_lines.append(f"  {summary}")
+        feed_text = "\n".join(context_lines) if context_lines else "（暂无背景上下文）"
+    else:
+        feed_text = format_items(items) or "（暂无订阅内容）"
+
     return ProactivePromptContext(
         now_str=now.strftime("%Y-%m-%d %H:%M:%S %Z"),
         now_iso=now.isoformat(),
-        feed_text=format_items(items) or "（暂无订阅内容）",
+        feed_text=feed_text,
         chat_text=format_recent(recent) or "（无近期对话记录）",
         memory_text="",
     )
@@ -200,16 +234,27 @@ class Composer:
         recent: list[dict],
         preference_block: str = "",
         no_content_token: str = "<no_content/>",
+        background_context: list[dict] | None = None,
     ) -> str:
         # 1. 先统一补抓 compose 候选正文，避免上游和这里重复抓取。
         items = await self._enrich_items(items)
         # 2. 再构造最小 compose prompt，只做生成，不做额外判断。
-        prompt_context = _build_proactive_prompt_context(
-            items=items,
-            recent=recent,
-            format_items=self._format_items,
-            format_recent=self._format_recent,
-        )
+        # context-only 模式：使用 background_context 替代 items
+        if background_context and not items:
+            prompt_context = _build_proactive_prompt_context(
+                items=[],
+                recent=recent,
+                format_items=self._format_items,
+                format_recent=self._format_recent,
+                background_context=background_context,
+            )
+        else:
+            prompt_context = _build_proactive_prompt_context(
+                items=items,
+                recent=recent,
+                format_items=self._format_items,
+                format_recent=self._format_recent,
+            )
         system_msg, user_msg = build_compose_prompt_messages(
             prompt_context=prompt_context,
             preference_block=preference_block,

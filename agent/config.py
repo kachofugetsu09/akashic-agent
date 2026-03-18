@@ -254,6 +254,19 @@ def load_config(path: str | Path = "config.json") -> Config:
             judge_veto_urgency_min=float(p.get("judge_veto_urgency_min", 0.05)),
             judge_veto_llm_dim_min=max(1, int(p.get("judge_veto_llm_dim_min", 2))),
             judge_send_threshold=float(p.get("judge_send_threshold", 0.60)),
+            bg_context_main_topic_min_interval_hours=max(
+                1, int(p.get("bg_context_main_topic_min_interval_hours", 6))
+            ),
+            # 三源统一配置
+            context_as_assist_enabled=bool(p.get("context_as_assist_enabled", True)),
+            context_only_enabled=bool(p.get("context_only_enabled", True)),
+            context_only_daily_max=max(0, int(p.get("context_only_daily_max", 1))),
+            context_only_min_interval_hours=max(
+                1, int(p.get("context_only_min_interval_hours", 12))
+            ),
+            context_only_judge_threshold=float(
+                p.get("context_only_judge_threshold", 0.72)
+            ),
         )
         interest_filter = p.get("interest_filter") or {}
         proactive.interest_filter = SimpleNamespace(

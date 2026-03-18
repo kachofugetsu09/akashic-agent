@@ -263,14 +263,40 @@ class ProactiveStateStore:
                 "rejection_cooldown",
                 now - timedelta(hours=rejection_cooldown_ttl_hours),
             )
+        # 清理 context-only 时间戳（24h 窗口）
+        removed_context_only = self._cleanup_context_only_timestamps(24, now)
         self._save()
         logger.debug(
-            "[proactive.state] cleanup 完成 removed_seen=%d removed_delivery=%d removed_semantic=%d removed_cooldown=%d",
+            "[proactive.state] cleanup 完成 removed_seen=%d removed_delivery=%d removed_semantic=%d removed_cooldown=%d removed_context_only=%d",
             removed_seen,
             removed_delivery,
             removed_semantic,
             removed_cooldown,
+            removed_context_only,
         )
+
+    def _cleanup_context_only_timestamps(
+        self, window_hours: int, now: datetime
+    ) -> int:
+        """清理过期的 context-only 时间戳。"""
+        cutoff = now - timedelta(hours=max(window_hours, 1))
+        removed = 0
+        for session_key in list(
+            self._state.get("context_only_sent_timestamps", {}).keys()
+        ):
+            timestamps = self._state["context_only_sent_timestamps"][session_key]
+            before = len(timestamps)
+            self._state["context_only_sent_timestamps"][session_key] = [
+                ts
+                for ts in timestamps
+                if (_parse_iso(ts) or datetime.min.replace(tzinfo=timezone.utc))
+                >= cutoff
+            ]
+            after = len(self._state["context_only_sent_timestamps"][session_key])
+            removed += before - after
+            if not self._state["context_only_sent_timestamps"][session_key]:
+                del self._state["context_only_sent_timestamps"][session_key]
+        return removed
 
     def get_bg_context_last_main_at(self) -> datetime | None:
         raw = self._state.get("bg_context_last_main_at")
@@ -284,6 +310,45 @@ class ProactiveStateStore:
             "[proactive.state] bg_context 主 topic 发送已记录 ts=%s",
             now.isoformat(),
         )
+
+    # ── context-only 配额管理 ──────────────────────────────────────────
+
+    def get_last_context_only_at(self, session_key: str) -> datetime | None:
+        """获取指定 session 最后一次 context-only 发送时间。"""
+        raw = self._state.get("context_only_last_at", {}).get(session_key)
+        return _parse_iso(raw) if raw else None
+
+    def mark_context_only_send(
+        self, session_key: str, now: datetime | None = None
+    ) -> None:
+        """记录 context-only 发送时间。"""
+        now = now or _utcnow()
+        ts = now.isoformat()
+        self._state.setdefault("context_only_last_at", {})[session_key] = ts
+        self._state.setdefault("context_only_sent_timestamps", {}).setdefault(
+            session_key, []
+        ).append(ts)
+        self._save()
+        logger.info(
+            "[proactive.state] context-only 发送已记录 session=%s ts=%s",
+            session_key,
+            ts,
+        )
+
+    def count_context_only_in_window(
+        self, session_key: str, window_hours: int, now: datetime | None = None
+    ) -> int:
+        """统计指定 session 在窗口内的 context-only 发送次数。"""
+        now = now or _utcnow()
+        cutoff = now - timedelta(hours=max(window_hours, 1))
+        count = 0
+        for raw_ts in self._state.get("context_only_sent_timestamps", {}).get(
+            session_key, []
+        ):
+            ts = _parse_iso(raw_ts)
+            if ts and ts >= cutoff:
+                count += 1
+        return count
 
     def _cleanup_nested_map(self, key: str, cutoff: datetime) -> int:
         removed = 0
@@ -323,6 +388,15 @@ class ProactiveStateStore:
             raw.get("semantic_items", [])
         )
         state["bg_context_last_main_at"] = raw.get("bg_context_last_main_at")
+        # context_only_last_at 是 dict[session_key, iso_ts]，不是嵌套 map
+        raw_last_at = raw.get("context_only_last_at", {})
+        if isinstance(raw_last_at, dict):
+            state["context_only_last_at"] = {str(k): str(v) for k, v in raw_last_at.items() if v}
+        else:
+            state["context_only_last_at"] = {}
+        state["context_only_sent_timestamps"] = self._normalize_context_only_timestamps(
+            raw.get("context_only_sent_timestamps", {})
+        )
         logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)
         return state
 
@@ -339,6 +413,8 @@ class ProactiveStateStore:
             "semantic_items": [],
             "rejection_cooldown": {},
             "bg_context_last_main_at": None,
+            "context_only_last_at": {},
+            "context_only_sent_timestamps": {},
         }
 
     @staticmethod
@@ -374,4 +450,16 @@ class ProactiveStateStore:
                     "ts": str(row.get("ts", "")),
                 }
             )
+        return normalized
+
+    @staticmethod
+    def _normalize_context_only_timestamps(raw: Any) -> dict[str, list[str]]:
+        """规范化 context_only_sent_timestamps 结构。"""
+        if not isinstance(raw, dict):
+            return {}
+        normalized: dict[str, list[str]] = {}
+        for session_key, timestamps in raw.items():
+            if not isinstance(timestamps, list):
+                continue
+            normalized[str(session_key)] = [str(ts) for ts in timestamps if ts]
         return normalized
