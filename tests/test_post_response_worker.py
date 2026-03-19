@@ -15,6 +15,25 @@ class _DummyProvider:
         raise AssertionError("provider.chat should not be called in this test")
 
 
+class _PromptCaptureProvider:
+    def __init__(self, response_text: str = "[]"):
+        self.calls = 0
+        self.last_prompt = ""
+        self._response_text = response_text
+
+    async def chat(self, **kwargs):
+        self.calls += 1
+        messages = kwargs.get("messages") or []
+        if messages:
+            self.last_prompt = str(messages[-1].get("content", ""))
+
+        class _Resp:
+            def __init__(self, content: str):
+                self.content = content
+
+        return _Resp(self._response_text)
+
+
 class _DummyRetriever:
     def __init__(self, results):
         self._results = results
@@ -382,3 +401,28 @@ def test_extract_invalidation_topics_skips_when_token_budget_exhausted():
     assert remain == 0
     assert provider.calls == 0
 
+
+def test_extract_implicit_prompt_is_conservative_for_preference_upgrade():
+    provider = _PromptCaptureProvider()
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, provider),
+        light_model="test",
+    )
+
+    items, remain = asyncio.run(
+        worker._extract_implicit(
+            user_msg="没买呢 感觉不太玩的下去慢节奏的游戏",
+            agent_response="《红色沙漠》可能确实偏慢，你可以先别买。",
+            already_memorized=[],
+            token_budget=worker.TOKENS_EXTRACT_IMPLICIT,
+        )
+    )
+
+    assert items == []
+    assert remain == 0
+    assert "宁可少写，也不要过度解读" in provider.last_prompt
+    assert "USER 只表达单次差评 → 不能写成" in provider.last_prompt
+    assert "summary 中出现的作品名、题材、作者、来源，必须能在 USER 原话中找到" in provider.last_prompt
+    assert "没有明确未来约束词，就不要自动补出未来禁令" in provider.last_prompt
