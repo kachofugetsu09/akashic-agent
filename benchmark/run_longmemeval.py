@@ -273,6 +273,17 @@ class LMEMemAgent:
         except Exception as exc:
             logger.warning("clear_question_memory failed qid=%s: %s", question_id, exc)
 
+    def count_superseded(self, question_id: str) -> int:
+        row = self._store._db.execute(
+            """SELECT COUNT(*)
+               FROM memory_items
+               WHERE status='superseded'
+                 AND json_extract(extra_json,'$.scope_channel')=?
+                 AND json_extract(extra_json,'$.scope_chat_id')=?""",
+            (LME_SCOPE_CHANNEL, question_id),
+        ).fetchone()
+        return int(row[0] if row else 0)
+
 
 # ─── Response ────────────────────────────────────────────────────────
 
@@ -334,7 +345,7 @@ class LMEResponseAgent:
             logger.info("  retrieving for: %s", question[:80])
             recent_history = self._format_gate_history(haystack_sessions, max_turns=3)
             runtime_metadata = self._build_runtime_metadata()
-            items, context_text = asyncio.run(
+            items, context_text, retrieve_trace = asyncio.run(
                 self._retrieve(
                     question=question,
                     question_id=question_id,
@@ -353,10 +364,16 @@ class LMEResponseAgent:
                 "answer": answer,
                 "retrieved_content": context_text,
                 "retrieved_count": len(items),
+                "retrieve_trace": retrieve_trace,
             }
         except Exception as exc:
             logger.error("answer_question failed qid=%s: %s", question_id, exc)
-            return {"answer": "", "retrieved_content": "", "retrieved_count": 0}
+            return {
+                "answer": "",
+                "retrieved_content": "",
+                "retrieved_count": 0,
+                "retrieve_trace": {},
+            }
 
     async def _retrieve(
         self,
@@ -365,7 +382,7 @@ class LMEResponseAgent:
         question_id: str,
         recent_history: str,
         runtime_metadata: dict[str, object],
-    ) -> tuple[list[dict], str]:
+    ) -> tuple[list[dict], str, dict[str, object]]:
         # 1. 先做 gate 决策，并始终并发检索 procedure/preference 规则记忆。
         gate = await self._decide_gate(
             question=question,
@@ -418,7 +435,14 @@ class LMEResponseAgent:
                     p_items,
                     h_items + extra_h_items,
                 )
-        return selected, block
+                h_items = h_items + extra_h_items
+        trace = self._build_retrieve_trace(
+            gate=gate,
+            procedure_items=p_items,
+            history_items=h_items,
+            selected_items=selected,
+        )
+        return selected, block, trace
 
     async def _decide_gate(
         self,
@@ -458,6 +482,36 @@ class LMEResponseAgent:
         selected = memory.select_for_injection(merged)
         block, _ids = memory.build_injection_block(merged)
         return selected, block
+
+    @staticmethod
+    def _build_retrieve_trace(
+        *,
+        gate: dict[str, str],
+        procedure_items: list[dict],
+        history_items: list[dict],
+        selected_items: list[dict],
+    ) -> dict[str, object]:
+        # 1. 统计 type 命中数（基于最终 selected，贴近注入有效命中）。
+        type_hits: dict[str, int] = {}
+        for item in selected_items:
+            mtype = str(item.get("memory_type", "") or "")
+            if not mtype:
+                continue
+            type_hits[mtype] = type_hits.get(mtype, 0) + 1
+        # 2. 统计 path 命中数（procedure 固定 procedure，history 按 raw/hyde）。
+        path_hits: dict[str, int] = {}
+        if procedure_items:
+            path_hits["procedure"] = len(procedure_items)
+        for item in history_items:
+            path = str(item.get("_retrieval_path", "history_raw") or "history_raw")
+            path_hits[path] = path_hits.get(path, 0) + 1
+        # 3. 返回可聚合 trace 字段。
+        return {
+            "gate_type": gate.get("gate_type", ""),
+            "route_decision": gate.get("route_decision", ""),
+            "type_hits": type_hits,
+            "path_hits": path_hits,
+        }
 
     async def _retry_with_sufficiency(
         self,
@@ -627,6 +681,7 @@ class AkasicLMETester:
         answer = str(answer)
         haystack_sessions: list[list[dict]] = item.get("haystack_sessions", [])
         haystack_dates: list[str] = item.get("haystack_dates", [])
+        superseded_before = self.mem_agent.count_superseded(qid)
 
         # 日期列表不足时用空字符串补齐
         while len(haystack_dates) < len(haystack_sessions):
@@ -653,6 +708,8 @@ class AkasicLMETester:
         )
         generated_answer = resp.get("answer", "")
         retrieved_content = resp.get("retrieved_content", "")
+        retrieve_trace = resp.get("retrieve_trace", {}) if isinstance(resp, dict) else {}
+        superseded_after = self.mem_agent.count_superseded(qid)
 
         # Evaluate
         logger.info(f"[{idx+1}/{total}] {qid} evaluating...")
@@ -690,6 +747,8 @@ class AkasicLMETester:
             "standard_answer": answer,
             "is_correct": is_correct,
             "retrieved_count": resp.get("retrieved_count", 0),
+            "retrieve_trace": retrieve_trace,
+            "superseded_delta": max(0, superseded_after - superseded_before),
             "explanation": explanation,
         }
 
@@ -728,6 +787,7 @@ class AkasicLMETester:
         total = len(results)
         correct = sum(1 for r in results if r.get("is_correct"))
         overall_acc = correct / total if total else 0.0
+        phase4_stats = self._build_phase4_stats(results)
 
         by_type: dict[str, dict] = {}
         for r in results:
@@ -757,6 +817,7 @@ class AkasicLMETester:
             "config_embed_model": self.components.embedder._model,
             "config_top_k": self.components.retriever._top_k,
             "type_stats": type_stats,
+            "phase4_stats": phase4_stats,
         }
 
         logger.info("\n" + "=" * 60)
@@ -768,9 +829,51 @@ class AkasicLMETester:
                 f"({stats['correct']}/{stats['total']})"
             )
         logger.info(f"Processing time: {self.processing_time:.1f}s")
+        logger.info("Gate distribution: %s", phase4_stats.get("gate_distribution", {}))
+        logger.info("Supersede: %s", phase4_stats.get("supersede_stats", {}))
         logger.info("=" * 60)
 
         return {"summary": summary, "details": results}
+
+    def _build_phase4_stats(self, results: list[dict]) -> dict[str, object]:
+        total = len(results)
+        gate_distribution: dict[str, int] = {}
+        type_hit_questions: dict[str, int] = {}
+        path_hit_questions: dict[str, int] = {}
+        superseded_total = 0
+        superseded_questions = 0
+
+        # 1. 聚合 gate/type/path 命中与 supersede 增量。
+        for row in results:
+            trace = row.get("retrieve_trace", {}) if isinstance(row, dict) else {}
+            route = str(trace.get("route_decision", "UNKNOWN") or "UNKNOWN")
+            gate_distribution[route] = gate_distribution.get(route, 0) + 1
+            for mtype, count in (trace.get("type_hits", {}) or {}).items():
+                if int(count or 0) > 0:
+                    type_hit_questions[str(mtype)] = type_hit_questions.get(str(mtype), 0) + 1
+            for path, count in (trace.get("path_hits", {}) or {}).items():
+                if int(count or 0) > 0:
+                    path_hit_questions[str(path)] = path_hit_questions.get(str(path), 0) + 1
+            delta = max(0, int(row.get("superseded_delta", 0) or 0))
+            superseded_total += delta
+            if delta > 0:
+                superseded_questions += 1
+
+        # 2. 计算命中率（按 question 维度）。
+        denom = total if total > 0 else 1
+        type_hit_rate = {k: round(v / denom, 4) for k, v in sorted(type_hit_questions.items())}
+        path_hit_rate = {k: round(v / denom, 4) for k, v in sorted(path_hit_questions.items())}
+
+        # 3. 输出 Phase4 统计切面。
+        return {
+            "gate_distribution": gate_distribution,
+            "type_hit_rate": type_hit_rate,
+            "path_hit_rate": path_hit_rate,
+            "supersede_stats": {
+                "questions_with_supersede": superseded_questions,
+                "superseded_items_delta": superseded_total,
+            },
+        }
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────
