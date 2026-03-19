@@ -168,6 +168,9 @@ class FetchSnapshot:
     items: list[ContentEvent] = field(default_factory=list)
     new_items: list[ContentEvent] = field(default_factory=list)
     new_entries: list[tuple[str, str]] = field(default_factory=list)
+    # MCP 原始返回，在 is_item_seen / rejection_cooldown 过滤前保存，用于 tick 结束时 ack 所有 fetched items
+    raw_content_items: list[ContentEvent] = field(default_factory=list)
+    raw_content_entries: list[tuple[str, str]] = field(default_factory=list)
     semantic_duplicate_entries: list[tuple[str, str]] = field(default_factory=list)
     has_memory: bool = False
     background_context: list[dict] = field(default_factory=list)
@@ -436,6 +439,9 @@ class ProactiveTick:
         compose_result = await self._compose(ctx)
         self._trace(ctx, stage="compose", result=compose_result)
         if not compose_result.proceed:
+            # compose_no_content / judge_reject(pre-veto)：MCP items 短暂压制 8h 后重新可见
+            if compose_result.reason_code in ("compose_no_content", "judge_reject"):
+                self._ack_raw_content(ctx, 8)
             return compose_result.return_score
 
         return await self._judge_and_send(ctx)
@@ -689,6 +695,9 @@ class ProactiveTick:
             await self._load_content_snapshot(ctx)
         )
         fetch.new_items = list(fetch.items)
+        # 保存 MCP 原始返回（过滤前），供 tick 结束时对所有 fetched items 做 ack
+        fetch.raw_content_items = list(fetch.items)
+        fetch.raw_content_entries = list(fetch.new_entries)
 
         # 2. 先过滤已使用的 items（seen_items），避免重复处理
         seen_ttl_hours = getattr(self._cfg, "delivery_dedupe_hours", 10) * 2  # 使用 2 倍的去重时间
@@ -1274,7 +1283,8 @@ class ProactiveTick:
                     "[proactive] judge 拒绝且 ACK evidence vetoed_by=%s",
                     decide.judge_vetoed_by,
                 )
-                self._consume_evidence_entries(evidence)
+                # write_seen=False：feed-mcp 8h ack 为权威，本地不写 seen_items
+                self._consume_evidence_entries(evidence, write_seen=False)
             else:
                 # balance veto 或分数不足但还有希望，只记录 rejection cooldown
                 if decide.judge_vetoed_by != "balance":
@@ -1282,6 +1292,8 @@ class ProactiveTick:
                         compose_entries,
                         hours=self._judge_rejection_cooldown_hours(decide.judge_vetoed_by),
                     )
+            # 无论哪条路径，MCP raw items 都用 8h 短 TTL ack，保证和本地 rejection_cooldown 对齐
+            self._ack_raw_content(ctx, 8)
 
             self._trace(ctx, stage="judge_and_send", result=guard)
             return score.base_score
@@ -1302,7 +1314,9 @@ class ProactiveTick:
             delivery_key=delivery_key,
             window_hours=self._cfg.delivery_dedupe_hours,
         ):
-            self._consume_evidence_entries(evidence)
+            # write_seen=False：feed-mcp 24h ack 为权威
+            self._consume_evidence_entries(evidence, write_seen=False)
+            self._ack_raw_content(ctx, 24)
             guard = GuardResult(
                 should_send=False,
                 return_score=score.base_score,
@@ -1816,16 +1830,53 @@ class ProactiveTick:
         state = ctx.state
         await self._try_skill_action(now_utc=state.now_utc)
 
-    def _consume_evidence_entries(self, evidence: EvidenceBundle) -> None:
+    def _consume_evidence_entries(
+        self,
+        evidence: EvidenceBundle,
+        write_seen: bool = True,
+    ) -> None:
+        """消费证据条目。
+        write_seen=True（默认）时写本地 seen_items（sent 路径，作为 safety net）。
+        write_seen=False 时跳过 seen_items，由 feed-mcp ack TTL 作为权威去重（短 TTL 场景）。
+        semantic mark 始终写入，与去重 TTL 无关。
+        """
         logger.info(
-            "[proactive] 消费证据条目 evidence_entries=%d evidence_item_ids=%s",
+            "[proactive] 消费证据条目 evidence_entries=%d evidence_item_ids=%s write_seen=%s",
             len(evidence.evidence_entries),
             evidence.evidence_item_ids[:5] if evidence.evidence_item_ids else [],
+            write_seen,
         )
-        self._state.mark_items_seen(evidence.evidence_entries)
+        if write_seen:
+            self._state.mark_items_seen(evidence.evidence_entries)
         self._state.mark_semantic_items(
             self._decide.semantic_entries(evidence.evidence_items)
         )
+
+    def _ack_raw_content(self, ctx: "DecisionContext", ttl_hours: int) -> None:
+        """对本轮 MCP 原始 fetched content items 做 ack，压制到 ttl_hours 后重新可见。
+        只在 content 为主源时执行，避免 alert/context tick 误压 content 通道。
+        """
+        fetch = ctx.fetch
+        if not fetch or not fetch.raw_content_entries:
+            return
+        if fetch.selected_primary_source != "content":
+            logger.debug(
+                "[proactive] _ack_raw_content 跳过：primary_source=%s 非 content",
+                fetch.selected_primary_source,
+            )
+            return
+        try:
+            from proactive import mcp_sources
+            mcp_sources.acknowledge_content_entries(
+                fetch.raw_content_entries, ttl_hours=ttl_hours
+            )
+            logger.info(
+                "[proactive] raw content ack ttl=%dh entries=%d",
+                ttl_hours,
+                len(fetch.raw_content_entries),
+            )
+        except Exception as e:
+            logger.warning("[proactive] raw content ack 失败 ttl=%dh: %s", ttl_hours, e)
 
     def _prepare_delivery_attempt(
         self,
@@ -1904,6 +1955,7 @@ class ProactiveTick:
                 delivery_attempted=False,
                 delivery_result="state_summary_repeat",
             )
+            self._ack_raw_content(ctx, 24)
             await self._reject_and_try_skill_action(ctx, evidence)
             return False
 
@@ -1922,6 +1974,7 @@ class ProactiveTick:
                 delivery_attempted=False,
                 delivery_result="state_summary_repeat",
             )
+            self._ack_raw_content(ctx, 24)
             await self._reject_and_try_skill_action(ctx, evidence)
             return False
 
@@ -1948,8 +2001,9 @@ class ProactiveTick:
             return True
         logger.info("[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason)
         logger.info("[proactive] selected_action=idle reason=message_dedupe")
-        # 命中消息去重时，也应消费本轮证据条目，避免同内容反复进入候选。
-        self._consume_evidence_entries(evidence)
+        # write_seen=False：feed-mcp 24h ack 为权威，本地不写 seen_items
+        self._consume_evidence_entries(evidence, write_seen=False)
+        self._ack_raw_content(ctx, 24)
         self._emit_observe_decision(
             ctx,
             stage="act",
@@ -1989,9 +2043,21 @@ class ProactiveTick:
             self._state.mark_delivery(state.session_key, delivery_key)
         try:
             from proactive import mcp_sources
-            # 只 ack 本次作为证据发出的条目（7天不再返回）。
-            # 未用到的候选保持 eligible，下次 tick 继续参与评分，避免错过感兴趣的内容。
+            # evidence items：默认 TTL 168h（7天），已由 acknowledge_content_entries 使用 config 默认值。
             mcp_sources.acknowledge_content_entries(evidence.evidence_entries)
+            # 非 evidence 的 raw fetched items：24h 短压制，避免下轮重复评估。
+            # 仅限 content 主源，alert tick 不应误压 content 通道。
+            if fetch.selected_primary_source == "content":
+                evidence_ids = {entry[1] for entry in evidence.evidence_entries}
+                non_evidence = [
+                    e for e in fetch.raw_content_entries
+                    if e[1] not in evidence_ids
+                ]
+                if non_evidence:
+                    mcp_sources.acknowledge_content_entries(non_evidence, ttl_hours=24)
+                    logger.info(
+                        "[proactive] 非 evidence raw items ack 24h count=%d", len(non_evidence)
+                    )
         except Exception as _ack_err:
             logger.warning("[proactive] MCP content ack 失败: %s", _ack_err)
         if not sense.health_events:

@@ -94,10 +94,13 @@ class ProactiveLoop:
         self._init_runtime_state(config)
         self._init_runtime_components()
 
+    _FEED_POLL_INTERVAL_S: int = 1800  # 固定 30min，不读远程配置
+
     def _init_runtime_state(self, config: ProactiveConfig) -> None:
         self._running = False
         self._manual_trigger_event = asyncio.Event()
         self._manual_trigger_lock = asyncio.Lock()
+        self._feed_poll_lock = asyncio.Lock()
 
     def _build_state_store(
         self,
@@ -446,15 +449,43 @@ class ProactiveLoop:
         except Exception as exc:
             logger.warning("[proactive] write trace failed %s: %s", filename, exc)
 
+    async def _poll_feeds_once(self) -> None:
+        """执行一次 feed 轮询，加锁保证不并发。
+        MCP tool 层已将系统级失败序列化为 "error: ..." 字符串返回，
+        此处统一检测并 warning 记录，不阻断 loop 主流程。
+        """
+        if self._feed_poll_lock.locked():
+            logger.debug("[proactive] feed poll 仍在进行，跳过本次")
+            return
+        async with self._feed_poll_lock:
+            try:
+                from proactive import mcp_sources
+                await asyncio.get_event_loop().run_in_executor(
+                    None, mcp_sources.poll_content_feeds
+                )
+                logger.info("[proactive] feed poll 完成")
+            except Exception as e:
+                logger.warning("[proactive] feed poll 系统级失败: %s", e)
+
+    async def _poll_loop(self) -> None:
+        """每 _FEED_POLL_INTERVAL_S 秒周期性触发 feed 轮询。"""
+        while self._running:
+            await asyncio.sleep(self._FEED_POLL_INTERVAL_S)
+            if not self._running:
+                break
+            await self._poll_feeds_once()
+
     async def run(self) -> None:
         self._running = True
         logger.info(
             f"ProactiveLoop 已启动  阈值={self._cfg.threshold}  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
+        # 启动时先同步完成首次 feed 轮询，保证首次 tick 能拿到新鲜数据
+        await self._poll_feeds_once()
+        # 后台周期轮询
+        asyncio.create_task(self._poll_loop())
         last_base_score: float | None = None
-        # 启动后立即执行一次 tick，避免首次触达还要额外等待一个 interval。
-        # last_base_score = await self._tick()
         while self._running:
             interval = self._next_interval(last_base_score)
             logger.info("[proactive] 下次 tick 间隔=%ds", interval)

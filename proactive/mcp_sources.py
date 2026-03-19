@@ -83,6 +83,42 @@ def _run_in_thread(coro, *, timeout: float = 30.0) -> Any:
 # Public API
 # ---------------------------------------------------------------------------
 
+def poll_content_feeds() -> None:
+    """调用所有配置了 poll_tool 的 content 源，触发 feed 侧轮询更新 DB。
+    单源失败不影响其他源继续 poll；所有源尝试完毕后，若有失败则统一抛聚合异常。
+    由 proactive loop 按固定 1800s 周期调用。
+    """
+    sources = _load_sources()
+    failed_servers: list[str] = []
+    for src in sources:
+        if str(src.get("channel", "")).strip().lower() != "content":
+            continue
+        poll_tool = src.get("poll_tool")
+        if not poll_tool:
+            continue
+        server = src.get("server", "")
+        cfg = _get_server_cfg(server)
+        if not cfg:
+            logger.warning("[mcp_sources] poll_content_feeds: 找不到 server 配置: %s", server)
+            continue
+        command = cfg.get("command", [])
+        env = cfg.get("env") or {}
+        if not command:
+            continue
+        try:
+            result = _run_in_thread(
+                _call_tool_async(server, command, env, poll_tool, {})
+            )
+            if isinstance(result, str) and result.startswith("error:"):
+                raise RuntimeError(f"poll_feeds 系统级失败: {result}")
+            logger.info("[mcp_sources] poll_content_feeds: %s.%s 完成", server, poll_tool)
+        except Exception as e:
+            logger.warning("[mcp_sources] poll_content_feeds: %s.%s 失败: %s", server, poll_tool, e)
+            failed_servers.append(server)
+    if failed_servers:
+        raise RuntimeError(f"poll_content_feeds 以下源失败: {failed_servers}")
+
+
 def fetch_alert_events() -> list[dict]:
     """从所有已配置 MCP 源拉取 alert 类 proactive events。
 
@@ -248,7 +284,7 @@ def acknowledge_events(events: list[AlertEvent]) -> None:
             logger.warning("[mcp_sources] ack 失败 %s.%s: %s", server, ack_tool, e)
 
 
-def acknowledge_content_entries(entries: list[tuple[str, str]]) -> None:
+def acknowledge_content_entries(entries: list[tuple[str, str]], ttl_hours: int | None = None) -> None:
     """按 mcp:<server> source_key 回调内容事件 ack。"""
     if not entries:
         return
@@ -275,8 +311,11 @@ def acknowledge_content_entries(entries: list[tuple[str, str]]) -> None:
         command = cfg.get("command", [])
         env = cfg.get("env") or {}
         try:
+            args: dict = {"event_ids": ids}
+            if ttl_hours is not None and ttl_hours > 0:
+                args["ttl_hours"] = ttl_hours
             _run_in_thread(
-                _call_tool_async(server, command, env, ack_tool, {"event_ids": ids})
+                _call_tool_async(server, command, env, ack_tool, args)
             )
         except Exception as e:
             logger.warning("[mcp_sources] content ack 失败 %s.%s: %s", server, ack_tool, e)
