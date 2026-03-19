@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +28,106 @@ from memory2.store import MemoryStore2
 logger = logging.getLogger(__name__)
 
 LME_SCOPE_CHANNEL = "lme_benchmark"
+
+
+class _MultiProgressBoard:
+    """并发 worker 多行进度板。"""
+
+    _lock = threading.Lock()
+    _order: list[str] = []
+    _rows: dict[str, str] = {}
+    _started = False
+
+    @classmethod
+    def _enabled(cls) -> bool:
+        return sys.stderr.isatty()
+
+    @classmethod
+    def _register_locked(cls, slot: str) -> None:
+        if slot in cls._order:
+            return
+        cls._order.append(slot)
+        cls._rows[slot] = ""
+        sys.stderr.write("\n")
+        cls._started = True
+
+    @classmethod
+    def _render_locked(cls) -> None:
+        if not cls._started or not cls._enabled() or not cls._order:
+            return
+        line_count = len(cls._order)
+        sys.stderr.write(f"\x1b[{line_count}A")
+        for slot in cls._order:
+            text = cls._rows.get(slot, "")
+            sys.stderr.write(f"\r\x1b[2K{text}\n")
+        sys.stderr.flush()
+
+    @classmethod
+    def update(cls, slot: str, text: str) -> None:
+        if not cls._enabled():
+            return
+        with cls._lock:
+            cls._register_locked(slot)
+            cls._rows[slot] = text
+            cls._render_locked()
+
+
+class _ProgressLine:
+    """终端单行动态进度条（类似 uv 风格）。"""
+
+    _SPIN = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+    def __init__(
+        self,
+        total: int,
+        *,
+        enabled: bool = True,
+        slot: str = "",
+        label: str = "ingest",
+        min_interval_s: float = 0.12,
+    ) -> None:
+        self._total = max(1, int(total))
+        self._enabled = bool(enabled and sys.stderr.isatty())
+        self._slot = slot.strip()
+        self._label = label.strip() or "ingest"
+        self._min_interval_s = max(0.05, float(min_interval_s))
+        self._start = time.monotonic()
+        self._tick = 0
+        self._last = 0.0
+
+    def update(self, done: int, *, pending_post: int = 0) -> None:
+        if not self._enabled:
+            return
+        now = time.monotonic()
+        if now - self._last < self._min_interval_s and done < self._total:
+            return
+        self._last = now
+        self._tick = (self._tick + 1) % len(self._SPIN)
+        pct = min(100.0, (done / self._total) * 100.0)
+        elapsed = max(0.001, now - self._start)
+        speed = done / elapsed
+        bar_len = 24
+        fill = int((done / self._total) * bar_len)
+        bar = "█" * fill + "░" * (bar_len - fill)
+        body = (
+            f"{self._SPIN[self._tick]} {self._label} [{bar}] {pct:6.2f}% "
+            f"{done}/{self._total} turns  {speed:5.1f} t/s  post_pending={pending_post}"
+        )
+        if self._slot:
+            _MultiProgressBoard.update(self._slot, body)
+            return
+        sys.stderr.write(f"\r{body}")
+        sys.stderr.flush()
+
+    def close(self) -> None:
+        if not self._enabled:
+            return
+        self._last = 0.0
+        self.update(self._total, pending_post=0)
+        if self._slot:
+            return
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
 
 @dataclass
@@ -156,6 +259,10 @@ class LMEProductionIngestor:
         light_client: openai.OpenAI,
         light_model: str,
         memory_window: int,
+        post_worker_concurrency: int = 4,
+        progress_enabled: bool = True,
+        progress_slot: str = "",
+        progress_min_interval_s: float = 0.12,
     ) -> None:
         self._store = store
         self._memory_store = MemoryStore(workspace)
@@ -184,6 +291,10 @@ class LMEProductionIngestor:
             profile_supersede_enabled=True,
             observe_writer=None,
         )
+        self._post_worker_concurrency = max(1, int(post_worker_concurrency))
+        self._progress_enabled = bool(progress_enabled)
+        self._progress_slot = progress_slot.strip()
+        self._progress_min_interval_s = max(0.05, float(progress_min_interval_s))
 
     def ingest_question_sync(
         self,
@@ -217,45 +328,148 @@ class LMEProductionIngestor:
         )
 
         # 2. 按 turn 顺序回放：每条消息后检查 consolidation；每轮 user/assistant 后立刻跑 post-response worker。
-        for sess_idx, turns in enumerate(haystack_sessions):
-            date_str = haystack_dates[sess_idx] if sess_idx < len(haystack_dates) else ""
-            pending_users: list[str] = []
-            for turn_idx, turn in enumerate(turns):
-                msg = self._build_message(question_id, sess_idx, turn_idx, turn, date_str)
-                if msg is None:
-                    continue
-                session.messages.append(msg)
+        total_turns = sum(
+            1
+            for sess in haystack_sessions
+            for turn in sess
+            if str(turn.get("role", "")).strip().lower() in {"user", "assistant"}
+            and str(turn.get("content", "")).strip()
+        )
+        progress = _ProgressLine(
+            total_turns,
+            enabled=self._progress_enabled,
+            slot=self._progress_slot,
+            label=f"{self._progress_slot or 'ingest'}:{question_id[:8]}",
+            min_interval_s=self._progress_min_interval_s,
+        )
+        done_turns = 0
+        post_sem = asyncio.Semaphore(self._post_worker_concurrency)
+        post_tasks: list[asyncio.Task] = []
+        post_backlog_limit = self._post_worker_concurrency * 3
+        consolidation_task: asyncio.Task | None = None
+        try:
+            for sess_idx, turns in enumerate(haystack_sessions):
+                date_str = haystack_dates[sess_idx] if sess_idx < len(haystack_dates) else ""
+                pending_users: list[str] = []
+                for turn_idx, turn in enumerate(turns):
+                    msg = self._build_message(question_id, sess_idx, turn_idx, turn, date_str)
+                    if msg is None:
+                        continue
+                    session.messages.append(msg)
+                    done_turns += 1
+                    consolidation_task = await self._schedule_consolidation_if_needed(
+                        session=session,
+                        task=consolidation_task,
+                    )
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if role == "user":
+                        pending_users.append(content)
+                        progress.update(done_turns, pending_post=len(post_tasks))
+                        continue
+                    if role == "assistant" and pending_users:
+                        merged_user = "\n".join(pending_users).strip()
+                        post_tasks = [t for t in post_tasks if not t.done()]
+                        while len(post_tasks) >= post_backlog_limit:
+                            done, pending = await asyncio.wait(
+                                post_tasks,
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            post_tasks = list(pending)
+                            progress.update(done_turns, pending_post=len(post_tasks))
+                        post_tasks.append(
+                            asyncio.create_task(
+                                self._run_post_worker_once(
+                                    sem=post_sem,
+                                    question_id=question_id,
+                                    sess_idx=sess_idx,
+                                    turn_idx=turn_idx,
+                                    user_msg=merged_user,
+                                    assistant_msg=content,
+                                )
+                    )
+                        )
+                        pending_users.clear()
+                    progress.update(done_turns, pending_post=len(post_tasks))
+
+            # 3. 对未归档尾段做一次 archive_all 收尾，避免最后窗口消息漏写。
+            if consolidation_task is not None:
+                await consolidation_task
+            # 3.1 若仍有超窗 backlog，按主窗口补齐几轮 consolidation，避免尾段一次性压缩过宽。
+            while self._backlog_size(session) > int(self._runner.memory_window):
                 await self._runner._consolidate_memory(
                     session,
                     await_vector_store=True,
                 )
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                if role == "user":
-                    pending_users.append(content)
-                    continue
-                if role == "assistant" and pending_users:
-                    merged_user = "\n".join(pending_users).strip()
-                    await self._post_worker.run(
-                        user_msg=merged_user,
-                        agent_response=content,
-                        tool_chain=[],
-                        source_ref=f"lme:{question_id}:{sess_idx}:{turn_idx}@post_response",
-                        session_key=f"lme:{question_id}",
+            tail_session = self._build_tail_session(session)
+            if tail_session is not None:
+                await self._runner._consolidate_memory(
+                    tail_session,
+                    archive_all=True,
+                    await_vector_store=True,
+                )
+            if post_tasks:
+                while post_tasks:
+                    done, pending = await asyncio.wait(
+                        post_tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
-                    pending_users.clear()
-
-        # 3. 对未归档尾段做一次 archive_all 收尾，避免最后窗口消息漏写。
-        tail_session = self._build_tail_session(session)
-        if tail_session is not None:
-            await self._runner._consolidate_memory(
-                tail_session,
-                archive_all=True,
-                await_vector_store=True,
-            )
+                    post_tasks = list(pending)
+                    progress.update(done_turns, pending_post=len(post_tasks))
+        finally:
+            progress.close()
 
         # 4. 返回该 question 在 memory2 中的 event 数，供日志统计。
         return self._count_scope_events(question_id)
+
+    async def _schedule_consolidation_if_needed(
+        self,
+        *,
+        session: SimpleNamespace,
+        task: asyncio.Task | None,
+    ) -> asyncio.Task | None:
+        # 1. 先回收已完成任务，避免悬挂异常。
+        if task is not None and task.done():
+            await task
+            task = None
+        # 2. 回放速度远高于线上时，若 backlog 过大则先等待在跑任务，防止一次压缩覆盖过长窗口。
+        if task is not None and self._backlog_size(session) > int(self._runner.memory_window) * 2:
+            await task
+            task = None
+        # 3. 再按窗口 backlog 调度下一次 consolidation。
+        if task is None and self._backlog_size(session) > int(self._runner.memory_window):
+            task = asyncio.create_task(
+                self._runner._consolidate_memory(
+                    session,
+                    await_vector_store=True,
+                )
+            )
+        # 4. 返回最新任务句柄供下一轮复用。
+        return task
+
+    @staticmethod
+    def _backlog_size(session: SimpleNamespace) -> int:
+        consolidated = int(getattr(session, "last_consolidated", 0) or 0)
+        return max(0, len(session.messages) - consolidated)
+
+    async def _run_post_worker_once(
+        self,
+        *,
+        sem: asyncio.Semaphore,
+        question_id: str,
+        sess_idx: int,
+        turn_idx: int,
+        user_msg: str,
+        assistant_msg: str,
+    ) -> None:
+        async with sem:
+            await self._post_worker.run(
+                user_msg=user_msg,
+                agent_response=assistant_msg,
+                tool_chain=[],
+                source_ref=f"lme:{question_id}:{sess_idx}:{turn_idx}@post_response",
+                session_key=f"lme:{question_id}",
+            )
 
     def _build_tail_session(self, session: SimpleNamespace) -> SimpleNamespace | None:
         # 1. 计算尾段起点：即最后一次增量 consolidation 处理到的位置。

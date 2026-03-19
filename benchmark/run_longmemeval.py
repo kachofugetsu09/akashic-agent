@@ -22,10 +22,12 @@ Akasic Benchmark on LongMemEval Dataset
   --db-path PATH          benchmark 专用 DB 路径（默认: /tmp/akasic_benchmark/lme_parity/lme_parity.db）
   --data PATH             longmemeval JSON 路径（默认: data/longmemeval/longmemeval_s.json）
   --max-samples N         最多处理 N 个 question（默认: 全部）
+  --question-workers N    question 分片并发数（默认: 1）
   --question-type TYPE    只测指定 question_type（逗号分隔，默认: 全部）
   --max-workers N         并发线程数（默认: 2）
   --skip-ingest           跳过 ingest（使用已有 DB）
-  --use-flash             response/evaluate 走 light model（更快）
+  --use-flash             全链路 LLM 走 light model（更快）
+  --all-flash             --use-flash 的别名
   --output PATH           结果 JSON 路径（默认: /tmp/akasic_benchmark/lme_parity/result_lme.json）
 """
 
@@ -37,6 +39,7 @@ import json
 import logging
 import shutil
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -218,8 +221,18 @@ def _assert_output_in_run_root(output_path: str, run_root: Path) -> Path:
 # ─── Ingest ───────────────────────────────────────────────────────────
 
 class LMEMemAgent:
-    def __init__(self, components: BenchmarkComponents, workspace: Path, memory_window: int) -> None:
+    def __init__(
+        self,
+        components: BenchmarkComponents,
+        workspace: Path,
+        memory_window: int,
+        post_worker_concurrency: int,
+        progress_enabled: bool = True,
+        progress_slot: str = "",
+        quiet_logs: bool = False,
+    ) -> None:
         self._store = components.store
+        self._quiet_logs = bool(quiet_logs)
         self._ingestor = LMEProductionIngestor(
             workspace=workspace,
             store=components.store,
@@ -228,6 +241,9 @@ class LMEMemAgent:
             light_client=components.light_llm_client,
             light_model=components.light_model,
             memory_window=memory_window,
+            post_worker_concurrency=post_worker_concurrency,
+            progress_enabled=progress_enabled,
+            progress_slot=progress_slot,
         )
 
     def ingest_haystack(
@@ -240,14 +256,16 @@ class LMEMemAgent:
         摄取一个 question 的所有 haystack sessions，返回该 question 的 event 条目数。
         """
         total_sessions = len(haystack_sessions)
-        logger.info("  consolidation ingest %d sessions...", total_sessions)
+        if not self._quiet_logs:
+            logger.info("  consolidation ingest %d sessions...", total_sessions)
         try:
             saved = self._ingestor.ingest_question_sync(
                 question_id=question_id,
                 haystack_sessions=haystack_sessions,
                 haystack_dates=haystack_dates,
             )
-            logger.info("  consolidation ingest done: qid=%s events=%d", question_id, saved)
+            if not self._quiet_logs:
+                logger.info("  consolidation ingest done: qid=%s events=%d", question_id, saved)
             return saved
         except Exception as exc:
             logger.warning("consolidation ingest failed qid=%s: %s", question_id, exc)
@@ -290,10 +308,17 @@ class LMEMemAgent:
 class LMEResponseAgent:
     """从记忆库检索后，生成对 LongMemEval 问题的回答。"""
 
-    def __init__(self, components: BenchmarkComponents, runtime_cfg, use_hyde: bool = False) -> None:
+    def __init__(
+        self,
+        components: BenchmarkComponents,
+        runtime_cfg,
+        use_hyde: bool = False,
+        quiet_logs: bool = False,
+    ) -> None:
         self._retriever = components.retriever
         self._llm = components.llm_client
         self._model = components.model
+        self._quiet_logs = bool(quiet_logs)
         self._top_k_procedure = runtime_cfg.memory_v2.top_k_procedure
         self._top_k_history = runtime_cfg.memory_v2.top_k_history
         self._light_provider = _LightProviderAdapter(
@@ -342,7 +367,8 @@ class LMEResponseAgent:
         haystack_sessions: list[list[dict]],
     ) -> dict:
         try:
-            logger.info("  retrieving for: %s", question[:80])
+            if not self._quiet_logs:
+                logger.info("  retrieving for: %s", question[:80])
             recent_history = self._format_gate_history(haystack_sessions, max_turns=3)
             runtime_metadata = self._build_runtime_metadata()
             items, context_text, retrieve_trace = asyncio.run(
@@ -353,13 +379,16 @@ class LMEResponseAgent:
                     runtime_metadata=runtime_metadata,
                 )
             )
-            logger.info("  retrieved %d items (selected)", len(items))
+            if not self._quiet_logs:
+                logger.info("  retrieved %d items (selected)", len(items))
             if not context_text:
                 context_text = "\n".join(item.get("summary", "") for item in items)
-            logger.info("  context_text len=%d", len(context_text))
-            logger.info("  calling LLM for answer...")
+            if not self._quiet_logs:
+                logger.info("  context_text len=%d", len(context_text))
+                logger.info("  calling LLM for answer...")
             answer = self._generate_answer(question, context_text)
-            logger.info("  answer: %s", answer[:100])
+            if not self._quiet_logs:
+                logger.info("  answer: %s", answer[:100])
             return {
                 "answer": answer,
                 "retrieved_content": context_text,
@@ -614,16 +643,34 @@ class LMEResponseAgent:
 # ─── Main Tester ─────────────────────────────────────────────────────
 
 class AkasicLMETester:
+    _progress_lock = threading.Lock()
+
     def __init__(
         self,
         config_path: str,
         db_path: str,
         workspace: str,
-        max_workers: int = 2,
+        max_workers: int = 1,
+        post_worker_concurrency: int = 4,
         question_type_filter: list[str] | None = None,
         use_flash: bool = False,
         use_hyde: bool = False,
+        progress_enabled: bool = True,
+        progress_slot: str = "",
+        quiet_logs: bool = False,
+        progress_file: str = "",
     ) -> None:
+        # 1. 保存初始化参数，供多 worker 分片时复用。
+        self._config_path = config_path
+        self._db_path = db_path
+        self._post_worker_concurrency = post_worker_concurrency
+        self._use_flash = use_flash
+        self._use_hyde = use_hyde
+        self._quiet_logs = bool(quiet_logs)
+        self._progress_slot = progress_slot
+        self._progress_file = str(progress_file or "").strip()
+        if self._quiet_logs:
+            logging.getLogger("evaluate_agent").setLevel(logging.WARNING)
         runtime_cfg = load_config(config_path)
         self.workspace = Path(workspace).expanduser().resolve()
         self.components = load_benchmark_components(
@@ -641,15 +688,28 @@ class AkasicLMETester:
         else:
             qa_components = self.components
 
+        if not self._quiet_logs:
+            logger.info(
+                "Model routing: ingest=%s answer=%s evaluate=%s",
+                self.components.light_model,
+                qa_components.model,
+                qa_components.model,
+            )
+
         self.mem_agent = LMEMemAgent(
             components=self.components,
             workspace=self.workspace,
             memory_window=runtime_cfg.memory_window,
+            post_worker_concurrency=post_worker_concurrency,
+            progress_enabled=progress_enabled,
+            progress_slot=progress_slot,
+            quiet_logs=quiet_logs,
         )
         self.response_agent = LMEResponseAgent(
             components=qa_components,
             runtime_cfg=runtime_cfg,
             use_hyde=use_hyde,
+            quiet_logs=quiet_logs,
         )
         self.evaluate_agent = EvaluateAgent(
             chat_deployment=qa_components.model,
@@ -689,18 +749,22 @@ class AkasicLMETester:
 
         # Ingest
         if not skip_ingest:
-            logger.info(f"[{idx+1}/{total}] {qid} ({qtype}) ingest start — {len(haystack_sessions)} sessions")
+            if not self._quiet_logs:
+                logger.info(f"[{idx+1}/{total}] {qid} ({qtype}) ingest start — {len(haystack_sessions)} sessions")
             fact_count = self.mem_agent.ingest_haystack(
                 question_id=qid,
                 haystack_sessions=haystack_sessions,
                 haystack_dates=haystack_dates,
             )
-            logger.info(f"[{idx+1}/{total}] {qid} ingest done — {fact_count} facts total")
+            if not self._quiet_logs:
+                logger.info(f"[{idx+1}/{total}] {qid} ingest done — {fact_count} facts total")
         else:
-            logger.info(f"[{idx+1}/{total}] {qid} ({qtype}) skip ingest")
+            if not self._quiet_logs:
+                logger.info(f"[{idx+1}/{total}] {qid} ({qtype}) skip ingest")
 
         # Answer
-        logger.info(f"[{idx+1}/{total}] {qid} answering...")
+        if not self._quiet_logs:
+            logger.info(f"[{idx+1}/{total}] {qid} answering...")
         resp = self.response_agent.answer_question(
             question,
             qid,
@@ -712,7 +776,8 @@ class AkasicLMETester:
         superseded_after = self.mem_agent.count_superseded(qid)
 
         # Evaluate
-        logger.info(f"[{idx+1}/{total}] {qid} evaluating...")
+        if not self._quiet_logs:
+            logger.info(f"[{idx+1}/{total}] {qid} evaluating...")
         eval_result = self.evaluate_agent.evaluate_answer_accuracy(
             question=question,
             generated_answer=generated_answer,
@@ -722,10 +787,11 @@ class AkasicLMETester:
         explanation = eval_result.get("explanation", "")
 
         mark = "✓" if is_correct else "✗"
-        logger.info(
-            f"[{idx+1}/{total}] {qid} {mark} type={qtype} "
-            f"gen=\"{generated_answer[:60]}\" std=\"{answer[:60]}\""
-        )
+        if not self._quiet_logs:
+            logger.info(
+                f"[{idx+1}/{total}] {qid} {mark} type={qtype} "
+                f"gen=\"{generated_answer[:60]}\" std=\"{answer[:60]}\""
+            )
 
         if not is_correct:
             self._log_error(
@@ -750,7 +816,27 @@ class AkasicLMETester:
             "retrieve_trace": retrieve_trace,
             "superseded_delta": max(0, superseded_after - superseded_before),
             "explanation": explanation,
+            "_order": idx,
         }
+
+    def _append_progress(self, row: dict, *, idx: int, total: int) -> None:
+        if not self._progress_file:
+            return
+        payload = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "worker": self._progress_slot or "main",
+            "index": idx + 1,
+            "total": total,
+            "question_id": row.get("question_id", ""),
+            "question_type": row.get("question_type", ""),
+            "is_correct": bool(row.get("is_correct", False)),
+            "retrieved_count": int(row.get("retrieved_count", 0) or 0),
+            "generated_answer": str(row.get("generated_answer", ""))[:160],
+            "standard_answer": str(row.get("standard_answer", ""))[:160],
+        }
+        with self._progress_lock:
+            with open(self._progress_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def _log_error(self, **kw) -> None:
         try:
@@ -774,14 +860,104 @@ class AkasicLMETester:
         total = len(data)
         results: list[dict] = []
 
-        # 顺序处理（ingest 和 query 绑定 question_id，不互相干扰）
+        # 1. 单 worker：保持原有顺序逻辑。
+        if self.max_workers <= 1:
+            for idx, item in enumerate(data):
+                r = self._process_question(item, skip_ingest=skip_ingest, idx=idx, total=total)
+                if not r.get("skip"):
+                    results.append(r)
+                    self._append_progress(r, idx=idx, total=total)
+            self.processing_time = time.time() - t0
+            return self._compile_results(results)
+
+        # 2. 多 worker：按 question 分片并发，每个分片独立 DB/workspace，session 内流程不变。
+        if skip_ingest:
+            raise SystemExit("暂不支持 question-workers 与 --skip-ingest 同时使用")
+
+        shard_count = max(1, int(self.max_workers))
+        shards: list[list[dict]] = [[] for _ in range(shard_count)]
         for idx, item in enumerate(data):
-            r = self._process_question(item, skip_ingest=skip_ingest, idx=idx, total=total)
-            if not r.get("skip"):
-                results.append(r)
+            shards[idx % shard_count].append(item)
+
+        jobs = []
+        with ThreadPoolExecutor(max_workers=shard_count) as pool:
+            for shard_idx, shard_data in enumerate(shards):
+                if not shard_data:
+                    continue
+                jobs.append(
+                    pool.submit(
+                        self._run_shard,
+                        shard_idx=shard_idx,
+                        shard_data=shard_data,
+                    )
+                )
+            for fut in as_completed(jobs):
+                shard_rows = fut.result()
+                if shard_rows:
+                    results.extend(shard_rows)
+
+        # 3. 并发模式统一在主线程输出结果行，避免被进度板覆盖。
+        for row in sorted(results, key=lambda r: int(r.get("_order", 0))):
+            mark = "✓" if row.get("is_correct") else "✗"
+            logger.info(
+                "[result] %s %s type=%s gen=\"%s\" std=\"%s\"",
+                row.get("question_id", ""),
+                mark,
+                row.get("question_type", ""),
+                str(row.get("generated_answer", ""))[:60],
+                str(row.get("standard_answer", ""))[:60],
+            )
 
         self.processing_time = time.time() - t0
         return self._compile_results(results)
+
+    def _run_shard(self, *, shard_idx: int, shard_data: list[dict]) -> list[dict]:
+        # 1. 每个分片使用独立目录，避免 SQLite 并发写冲突。
+        shard_root = self.workspace.parent / f"qworker_{shard_idx:02d}"
+        shard_workspace = shard_root / "workspace"
+        shard_db = shard_root / "lme_parity.db"
+        shutil.rmtree(shard_root, ignore_errors=True)
+        shard_workspace.mkdir(parents=True, exist_ok=True)
+
+        # 2. 分片内部仍然单线程串行，保持 question 内链路语义一致。
+        shard_tester = AkasicLMETester(
+            config_path=self._config_path,
+            db_path=str(shard_db),
+            workspace=str(shard_workspace),
+            max_workers=1,
+            post_worker_concurrency=self._post_worker_concurrency,
+            question_type_filter=self.question_type_filter,
+            use_flash=self._use_flash,
+            use_hyde=self._use_hyde,
+            progress_enabled=False,
+            progress_slot=f"w{shard_idx:02d}",
+            quiet_logs=True,
+            progress_file=self._progress_file,
+        )
+        # 1. 分片内部逐题执行，并输出稳定的题级进度，避免动态条刷屏。
+        rows: list[dict] = []
+        total = len(shard_data)
+        for idx, item in enumerate(shard_data):
+            row = shard_tester._process_question(
+                item,
+                skip_ingest=False,
+                idx=idx,
+                total=total,
+            )
+            if row.get("skip"):
+                continue
+            rows.append(row)
+            shard_tester._append_progress(row, idx=idx, total=total)
+            mark = "✓" if row.get("is_correct") else "✗"
+            logger.info(
+                "[w%02d %d/%d] %s %s",
+                shard_idx,
+                len(rows),
+                total,
+                row.get("question_id", ""),
+                mark,
+            )
+        return rows
 
     def _compile_results(self, results: list[dict]) -> dict:
         total = len(results)
@@ -885,17 +1061,23 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--db-path", default=str(DEFAULT_LME_DB))
     p.add_argument("--data", default=str(_HERE / "data" / "longmemeval" / "longmemeval_s"))
     p.add_argument("--max-samples", type=int, default=None)
+    p.add_argument("--question-workers", type=int, default=1, help="question 分片并发数（默认1）")
+    p.add_argument("--post-workers", type=int, default=4, help="post-response worker 并发数（默认4）")
     p.add_argument("--question-type", default=None, help="逗号分隔的 question_type（默认全部）")
     p.add_argument("--skip-ingest", action="store_true")
-    p.add_argument("--use-flash", action="store_true", help="response/evaluate 走 light model")
+    p.add_argument("--use-flash", action="store_true", help="全链路 LLM 走 light model")
+    p.add_argument("--all-flash", action="store_true", help="--use-flash 的别名")
     p.add_argument("--use-hyde", action="store_true", help="检索时启用 HyDE 增强")
     p.add_argument("--question-ids", default=None, help="只测指定 question_id（逗号分隔）")
     p.add_argument("--output", default=str(DEFAULT_LME_OUTPUT))
+    p.add_argument("--progress-file", default="", help="实时进度 JSONL 文件路径（默认: <output>.progress.jsonl）")
     return p.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+    # 1. 统一全链路 flash 开关：--all-flash 与 --use-flash 等价。
+    args.use_flash = bool(args.use_flash or args.all_flash)
     resolved_db, resolved_workspace = _prepare_phase0_guardrails(
         config_path=args.config,
         db_path=args.db_path,
@@ -903,6 +1085,13 @@ def main() -> None:
         skip_ingest=args.skip_ingest,
     )
     resolved_output = _assert_output_in_run_root(args.output, resolved_workspace.parent)
+    progress_path = (
+        _assert_output_in_run_root(args.progress_file, resolved_workspace.parent)
+        if args.progress_file
+        else resolved_output.with_suffix(resolved_output.suffix + ".progress.jsonl")
+    )
+    progress_path.write_text("", encoding="utf-8")
+    logger.info(f"Progress file: {progress_path}")
     question_type_filter = (
         [qt.strip() for qt in args.question_type.split(",")]
         if args.question_type
@@ -933,9 +1122,13 @@ def main() -> None:
         config_path=args.config,
         db_path=str(resolved_db),
         workspace=str(resolved_workspace),
+        max_workers=max(1, int(args.question_workers)),
+        post_worker_concurrency=args.post_workers,
         question_type_filter=question_type_filter,
         use_flash=args.use_flash,
         use_hyde=args.use_hyde,
+        progress_enabled=True,
+        progress_file=str(progress_path),
     )
     results = tester.run(data, skip_ingest=args.skip_ingest)
 

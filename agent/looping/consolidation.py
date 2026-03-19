@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -89,6 +90,13 @@ def _build_consolidation_source_ref(window: ConsolidationWindow) -> str:
     """
     ids = [str(msg["id"]) for msg in window.old_messages if msg.get("id")]
     return json.dumps(ids, ensure_ascii=False)
+
+
+def _build_entry_source_ref(base_source_ref: str, entry: str) -> str:
+    """为单条 history_entry 生成稳定子键，避免同窗口多条写入互相覆盖。"""
+    text = (entry or "").strip()
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12] if text else "empty"
+    return f"{base_source_ref}#h:{digest}"
 
 
 def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
@@ -329,11 +337,13 @@ class AgentLoopConsolidationMixin:
             scope_chat_id = getattr(session, "_chat_id", "")
             save_tasks: list[asyncio.Task] = []
             for entry in history_entries:
+                # 1. 使用条目级 source_ref，避免同窗口多条 history 共用同一幂等键。
+                entry_source_ref = _build_entry_source_ref(source_ref, entry)
                 task = asyncio.create_task(
                     self._memory_port.save_from_consolidation(
                         history_entry=entry,
                         behavior_updates=[],
-                        source_ref=source_ref,
+                        source_ref=entry_source_ref,
                         scope_channel=scope_channel,
                         scope_chat_id=scope_chat_id,
                     )
