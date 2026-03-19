@@ -142,6 +142,7 @@ class LMEMemAgent:
             workspace=workspace,
             store=components.store,
             embedder=components.embedder,
+            retriever=components.retriever,
             light_client=components.light_llm_client,
             light_model=components.light_model,
             memory_window=memory_window,

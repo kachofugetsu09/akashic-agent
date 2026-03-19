@@ -18,6 +18,7 @@ import openai
 from agent.looping.consolidation import AgentLoopConsolidationMixin
 from agent.memory import MemoryStore
 from memory2.memorizer import Memorizer
+from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.profile_extractor import ProfileFactExtractor
 from memory2.store import MemoryStore2
 
@@ -79,6 +80,50 @@ class _MemoryPortAdapter:
         return await self._memorizer.save_item(*args, **kwargs)
 
 
+class _ScopedMemorizerAdapter:
+    """为 post-response 写入补齐 benchmark scope，避免跨 question 污染。"""
+
+    def __init__(self, memorizer: Memorizer, scope_channel: str) -> None:
+        self._memorizer = memorizer
+        self._scope_channel = scope_channel
+
+    async def save_item(
+        self,
+        summary: str,
+        memory_type: str,
+        extra: dict,
+        source_ref: str,
+        happened_at: str | None = None,
+    ) -> str:
+        payload = dict(extra or {})
+        # 1. 若上游未写 scope，再按 source_ref 补齐 question 作用域。
+        if not payload.get("scope_channel"):
+            payload["scope_channel"] = self._scope_channel
+        if not payload.get("scope_chat_id"):
+            qid = self._extract_question_id(source_ref)
+            if qid:
+                payload["scope_chat_id"] = qid
+        # 2. 复用原 memorizer 保存，保持去重/强化逻辑不变。
+        return await self._memorizer.save_item(
+            summary=summary,
+            memory_type=memory_type,
+            extra=payload,
+            source_ref=source_ref,
+            happened_at=happened_at,
+        )
+
+    def supersede_batch(self, ids: list[str]) -> None:
+        self._memorizer.supersede_batch(ids)
+
+    @staticmethod
+    def _extract_question_id(source_ref: str) -> str:
+        text = str(source_ref or "")
+        if not text.startswith("lme:"):
+            return ""
+        parts = text.split(":")
+        return parts[1] if len(parts) >= 2 else ""
+
+
 class _ConsolidationRunner(AgentLoopConsolidationMixin):
     """最小运行器：仅提供 _consolidate_memory 需要的属性。"""
 
@@ -107,24 +152,37 @@ class LMEProductionIngestor:
         workspace: Path,
         store: MemoryStore2,
         embedder,
+        retriever,
         light_client: openai.OpenAI,
         light_model: str,
         memory_window: int,
     ) -> None:
         self._store = store
         self._memory_store = MemoryStore(workspace)
+        self._provider = _ProviderAdapter(light_client, light_model)
+        self._memorizer = Memorizer(store, embedder)
         self._profile_extractor = ProfileFactExtractor(
-            llm_client=_ProviderAdapter(light_client, light_model),
+            llm_client=self._provider,
             model=light_model,
             max_tokens=600,
             timeout_ms=5000,
         )
         self._runner = _ConsolidationRunner(
-            memory_port=_MemoryPortAdapter(self._memory_store, Memorizer(store, embedder)),
-            provider=_ProviderAdapter(light_client, light_model),
+            memory_port=_MemoryPortAdapter(self._memory_store, self._memorizer),
+            provider=self._provider,
             model=light_model,
             memory_window=memory_window,
             profile_extractor=self._profile_extractor,
+        )
+        self._post_worker = PostResponseMemoryWorker(
+            memorizer=_ScopedMemorizerAdapter(self._memorizer, LME_SCOPE_CHANNEL),
+            retriever=retriever,
+            light_provider=self._provider,
+            light_model=light_model,
+            tagger=None,
+            profile_extractor=self._profile_extractor,
+            profile_supersede_enabled=True,
+            observe_writer=None,
         )
 
     def ingest_question_sync(
@@ -158,18 +216,43 @@ class LMEProductionIngestor:
             _chat_id=question_id,
         )
 
-        # 2. 按 session 顺序追加消息并执行真实 consolidation。
+        # 2. 按 turn 顺序回放：每条消息后检查 consolidation；每轮 user/assistant 后立刻跑 post-response worker。
         for sess_idx, turns in enumerate(haystack_sessions):
             date_str = haystack_dates[sess_idx] if sess_idx < len(haystack_dates) else ""
-            session.messages.extend(
-                self._build_messages(question_id, sess_idx, turns, date_str)
-            )
-            await self._runner._consolidate_memory(session)
+            pending_users: list[str] = []
+            for turn_idx, turn in enumerate(turns):
+                msg = self._build_message(question_id, sess_idx, turn_idx, turn, date_str)
+                if msg is None:
+                    continue
+                session.messages.append(msg)
+                await self._runner._consolidate_memory(
+                    session,
+                    await_vector_store=True,
+                )
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == "user":
+                    pending_users.append(content)
+                    continue
+                if role == "assistant" and pending_users:
+                    merged_user = "\n".join(pending_users).strip()
+                    await self._post_worker.run(
+                        user_msg=merged_user,
+                        agent_response=content,
+                        tool_chain=[],
+                        source_ref=f"lme:{question_id}:{sess_idx}:{turn_idx}@post_response",
+                        session_key=f"lme:{question_id}",
+                    )
+                    pending_users.clear()
 
         # 3. 对未归档尾段做一次 archive_all 收尾，避免最后窗口消息漏写。
         tail_session = self._build_tail_session(session)
         if tail_session is not None:
-            await self._runner._consolidate_memory(tail_session, archive_all=True)
+            await self._runner._consolidate_memory(
+                tail_session,
+                archive_all=True,
+                await_vector_store=True,
+            )
 
         # 4. 返回该 question 在 memory2 中的 event 数，供日志统计。
         return self._count_scope_events(question_id)
@@ -192,31 +275,27 @@ class LMEProductionIngestor:
             _chat_id=getattr(session, "_chat_id", ""),
         )
 
-    def _build_messages(
+    def _build_message(
         self,
         question_id: str,
         sess_idx: int,
-        turns: list[dict],
+        turn_idx: int,
+        turn: dict,
         session_date: str,
-    ) -> list[dict]:
-        messages: list[dict] = []
+    ) -> dict | None:
         day = (session_date or "1970-01-01").strip()
-        for turn_idx, turn in enumerate(turns):
-            role = str(turn.get("role", "")).strip().lower()
-            content = str(turn.get("content", "")).strip()
-            if role not in {"user", "assistant"} or not content:
-                continue
-            hh = (turn_idx // 60) % 24
-            mm = turn_idx % 60
-            messages.append(
-                {
-                    "id": f"lme:{question_id}:{sess_idx}:{turn_idx}",
-                    "role": role,
-                    "content": content,
-                    "timestamp": f"{day} {hh:02d}:{mm:02d}",
-                }
-            )
-        return messages
+        role = str(turn.get("role", "")).strip().lower()
+        content = str(turn.get("content", "")).strip()
+        if role not in {"user", "assistant"} or not content:
+            return None
+        hh = (turn_idx // 60) % 24
+        mm = turn_idx % 60
+        return {
+            "id": f"lme:{question_id}:{sess_idx}:{turn_idx}",
+            "role": role,
+            "content": content,
+            "timestamp": f"{day} {hh:02d}:{mm:02d}",
+        }
 
     def _count_scope_events(self, question_id: str) -> int:
         row = self._store._db.execute(
