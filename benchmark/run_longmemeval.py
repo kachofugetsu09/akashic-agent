@@ -5,8 +5,8 @@ Akasic Benchmark on LongMemEval Dataset
 与 LoCoMo 的主要区别：
   - 对话格式为 user-assistant（贴近生产环境）
   - 每个 question 自带独立的 haystack_sessions
-  - ingest 走 LMEExtractor（提取 event / profile / preference）
-  - retrieve 覆盖三类：event + profile + preference
+  - ingest 走主链路 consolidation（Phase 1）
+  - retrieve 当前覆盖 event + profile + preference（Phase 1 主要写入 event）
 
 下载数据：
   pip install huggingface_hub
@@ -55,7 +55,7 @@ if str(_HERE) not in sys.path:
 
 from config_loader import BenchmarkComponents, load_benchmark_components
 from evaluate_agent import EvaluateAgent
-from lme_ingestor import LMEProductionIngestor, IngestFact
+from lme_ingestor import LMEProductionIngestor
 from agent.config import load_config
 from memory2.hyde_enhancer import _union_dedup
 from memory2.store import MemoryStore2
@@ -136,12 +136,15 @@ def _assert_output_in_run_root(output_path: str, run_root: Path) -> Path:
 # ─── Ingest ───────────────────────────────────────────────────────────
 
 class LMEMemAgent:
-    def __init__(self, components: BenchmarkComponents) -> None:
+    def __init__(self, components: BenchmarkComponents, workspace: Path, memory_window: int) -> None:
         self._store = components.store
-        self._embedder = components.embedder
         self._ingestor = LMEProductionIngestor(
+            workspace=workspace,
+            store=components.store,
+            embedder=components.embedder,
             light_client=components.light_llm_client,
             light_model=components.light_model,
+            memory_window=memory_window,
         )
 
     def ingest_haystack(
@@ -149,76 +152,40 @@ class LMEMemAgent:
         question_id: str,
         haystack_sessions: list[list[dict]],
         haystack_dates: list[str],
-        concurrency: int = 12,
     ) -> int:
         """
-        摄取一个 question 的所有 haystack sessions，返回写入 fact 数。
-        所有 session 并发提取（3 条 pipeline × concurrency 组），embed+upsert 串行。
+        摄取一个 question 的所有 haystack sessions，返回该 question 的 event 条目数。
         """
-        n_sessions = len(haystack_sessions)
-        logger.info("  extracting %d sessions (concurrency=%d)...", n_sessions, concurrency)
-
-        # 并发提取：所有 session 同时跑三条 pipeline
-        all_session_facts = self._ingestor.extract_all_sessions_sync(
-            sessions=haystack_sessions,
-            dates=haystack_dates,
-            concurrency=concurrency,
-        )
-
-        # 统计
-        by_source: dict[str, int] = {}
-        total_extracted = 0
-        for facts in all_session_facts:
-            for f in facts:
-                by_source[f.source] = by_source.get(f.source, 0) + 1
-                total_extracted += 1
-        logger.info("  extracted %d facts total %s", total_extracted, by_source)
-
-        # 展平所有 facts，批量 embed，再串行 upsert（避免 SQLite 并发写）
-        flat_facts: list[IngestFact] = []
-        flat_refs: list[str] = []
-        for sess_idx, facts in enumerate(all_session_facts):
-            for fact_idx, fact in enumerate(facts):
-                flat_facts.append(fact)
-                flat_refs.append(f"lme:{question_id}:{sess_idx}:{fact_idx}")
-
-        logger.info("  embedding %d facts (batch)...", len(flat_facts))
+        total_sessions = len(haystack_sessions)
+        logger.info("  consolidation ingest %d sessions...", total_sessions)
         try:
-            embeddings = self._embedder._embed_batch_sync([f.summary for f in flat_facts])
+            saved = self._ingestor.ingest_question_sync(
+                question_id=question_id,
+                haystack_sessions=haystack_sessions,
+                haystack_dates=haystack_dates,
+            )
+            logger.info("  consolidation ingest done: qid=%s events=%d", question_id, saved)
+            return saved
         except Exception as exc:
-            logger.warning("batch embed failed qid=%s: %s", question_id, exc)
+            logger.warning("consolidation ingest failed qid=%s: %s", question_id, exc)
             return 0
-
-        total_saved = 0
-        for fact, source_ref, embedding in zip(flat_facts, flat_refs, embeddings):
-            if not embedding:
-                continue
-            try:
-                self._store.upsert_item(
-                    memory_type=fact.memory_type,
-                    summary=fact.summary,
-                    embedding=embedding,
-                    source_ref=source_ref,
-                    extra={
-                        "scope_channel": LME_SCOPE_CHANNEL,
-                        "scope_chat_id": question_id,
-                        "lme_source": fact.source,
-                    },
-                    happened_at=fact.happened_at,
-                )
-                total_saved += 1
-            except Exception as exc:
-                logger.warning("upsert_item failed qid=%s: %s", question_id, exc)
-        return total_saved
 
     def clear_question_memory(self, question_id: str) -> None:
         try:
+            # 1. 清理 memory2 中该 question 的条目，确保重跑时范围干净。
             self._store._db.execute(
                 """DELETE FROM memory_items
                    WHERE json_extract(extra_json,'$.scope_channel')=?
                      AND json_extract(extra_json,'$.scope_chat_id')=?""",
                 (LME_SCOPE_CHANNEL, question_id),
             )
+            # 2. 同步清理 consolidation_events，避免 source_ref 幂等索引残留影响重跑。
+            self._store._db.execute(
+                """DELETE FROM consolidation_events
+                   WHERE source_ref LIKE ?""",
+                (f'%"lme:{question_id}:%',),
+            )
+            # 3. 提交删除事务。
             self._store._db.commit()
         except Exception as exc:
             logger.warning("clear_question_memory failed qid=%s: %s", question_id, exc)
@@ -344,6 +311,7 @@ class AkasicLMETester:
         use_flash: bool = False,
         use_hyde: bool = False,
     ) -> None:
+        runtime_cfg = load_config(config_path)
         self.workspace = Path(workspace).expanduser().resolve()
         self.components = load_benchmark_components(
             config_path=config_path,
@@ -360,7 +328,11 @@ class AkasicLMETester:
         else:
             qa_components = self.components
 
-        self.mem_agent = LMEMemAgent(components=self.components)
+        self.mem_agent = LMEMemAgent(
+            components=self.components,
+            workspace=self.workspace,
+            memory_window=runtime_cfg.memory_window,
+        )
         self.response_agent = LMEResponseAgent(components=qa_components, use_hyde=use_hyde)
         self.evaluate_agent = EvaluateAgent(
             chat_deployment=qa_components.model,
