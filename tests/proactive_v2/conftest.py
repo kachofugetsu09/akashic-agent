@@ -155,6 +155,7 @@ def make_agent_tick(
     llm_fn: Any = None,
     rng: Any = None,
     recent_proactive_fn: Any = None,
+    workspace_context_fn: Any = None,
 ):
     from proactive_v2.agent_tick import AgentTick
 
@@ -200,4 +201,5 @@ def make_agent_tick(
         llm_fn=llm_fn,
         rng=rng,
         recent_proactive_fn=recent_proactive_fn,
+        workspace_context_fn=workspace_context_fn,
     )
