@@ -262,15 +262,18 @@ class AgentTick:
         fallback_status = "允许" if ctx.context_as_fallback_open else "不允许"
 
         memory_block = ""
+        self_block = ""
         if self._tool_deps.memory is not None:
             try:
                 raw = self._tool_deps.memory.read_long_term().strip()
                 if raw:
-                    memory_block = (
-                        "\n【用户长期记忆（快速参考）】\n"
-                        + raw[:2000]
-                        + "\n── 细粒度偏好请用 recall_memory 检索。\n"
-                    )
+                    memory_block = "\n【用户长期记忆】\n" + raw + "\n"
+            except Exception:
+                pass
+            try:
+                self_content = self._tool_deps.memory.read_self().strip()
+                if self_content:
+                    self_block = f"## Akashic 自我认知\n\n{self_content}\n\n"
             except Exception:
                 pass
 
@@ -322,8 +325,13 @@ class AgentTick:
                 + "\n\n"
             )
 
+        from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
+
         return (
-            "你是主动关怀型 AI 的决策核心，判断现在是否该给用户发一条消息。\n"
+            f"{AKASHIC_IDENTITY}\n\n"
+            f"{PERSONALITY_RULES}\n\n"
+            f"{self_block}"
+            "你现在处于主动推送决策模式：判断现在是否该给花月发一条消息，以及发什么。\n"
             "数据已预取完毕，基于下方数据直接决策。\n\n"
             f"{alert_block}"
             f"{content_block}"
