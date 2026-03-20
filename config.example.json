@@ -60,7 +60,16 @@
     "fitbit_poll_seconds": 300,
     "fitbit_monitor_path": "",
     "skill_actions_path": "",
-    "overrides": {}
+    "overrides": {},
+    "agent_tick": {
+      "enabled": false,
+      "model": "",
+      "max_steps": 20,
+      "content_limit": 5,
+      "web_fetch_max_chars": 8000,
+      "context_prob": 0.03,
+      "delivery_cooldown_hours": 1
+    }
   },
   "tool_search_enabled": true,
   "memory_optimizer_enabled": true,

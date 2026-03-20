@@ -132,6 +132,8 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
         "fitbit_monitor_path",
         # Skill actions（独立子系统）
         "skill_actions_path",
+        # v2 Agent Tick（独立子系统）
+        "agent_tick",
     }
 
     forbidden = set(p.keys()) - allowed_root_keys
@@ -280,5 +282,21 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         top_k=max(1, int(interest_filter.get("top_k", 10))),
         exploration_ratio=float(interest_filter.get("exploration_ratio", 0.2)),
     )
+
+    # v2 Agent Tick 配置（独立子系统）
+    at = p.get("agent_tick") or {}
+    config.use_agent_tick = bool(at.get("enabled", False))
+    if at.get("model"):
+        config.agent_tick_model = str(at["model"])
+    if "max_steps" in at:
+        config.agent_tick_max_steps = max(1, int(at["max_steps"]))
+    if "content_limit" in at:
+        config.agent_tick_content_limit = max(1, int(at["content_limit"]))
+    if "web_fetch_max_chars" in at:
+        config.agent_tick_web_fetch_max_chars = max(1000, int(at["web_fetch_max_chars"]))
+    if "context_prob" in at:
+        config.agent_tick_context_prob = max(0.0, min(1.0, float(at["context_prob"])))
+    if "delivery_cooldown_hours" in at:
+        config.agent_tick_delivery_cooldown_hours = max(0, int(at["delivery_cooldown_hours"]))
 
     return config

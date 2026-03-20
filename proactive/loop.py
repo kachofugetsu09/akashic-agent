@@ -196,6 +196,134 @@ class ProactiveLoop:
             light_model=self._light_model,
         )
 
+    def _build_agent_tick(self):
+        if not self._cfg.use_agent_tick:
+            return None
+        from proactive_v2.agent_tick import AgentTick
+        from proactive_v2.tools import ToolDeps
+        from proactive import mcp_sources
+        from agent.tools.web_fetch import WebFetchTool
+
+        try:
+            session_key = self._sense.target_session_key()
+        except Exception:
+            session_key = self._cfg.default_chat_id or ""
+
+        last_user_at_fn = (
+            (lambda: self._presence.get_last_user_at(session_key))
+            if self._presence
+            else (lambda: None)
+        )
+
+        # ── llm_fn ─────────────────────────────────────────────────────────
+        agent_model = self._cfg.agent_tick_model or self._model
+        provider = self._provider
+
+        async def _llm_fn(messages: list[dict], schemas: list[dict]) -> dict | None:
+            resp = await provider.chat(
+                messages=messages,
+                tools=schemas,
+                model=agent_model,
+                max_tokens=self._max_tokens,
+                tool_choice="auto",
+            )
+            if not resp.tool_calls:
+                return None
+            tc = resp.tool_calls[0]
+            return {"id": tc.id, "name": tc.name, "input": tc.arguments}
+
+        # ── data source fns ────────────────────────────────────────────────
+        # 注意：loop 在 async 函数内获取（asyncio.get_running_loop），避免 build 时无 loop
+
+        async def _alert_fn() -> list[dict]:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, mcp_sources.fetch_alert_events
+            )
+
+        async def _feed_fn(limit: int = 5) -> list[dict]:
+            events = await asyncio.get_running_loop().run_in_executor(
+                None, mcp_sources.fetch_content_events
+            )
+            return events[:limit]
+
+        async def _context_fn() -> list[dict]:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, mcp_sources.fetch_context_data
+            )
+
+        sense = self._sense
+
+        async def _recent_chat_fn(n: int = 20) -> list[dict]:
+            # Sensor.collect_recent() 无参数
+            return await asyncio.get_running_loop().run_in_executor(
+                None, sense.collect_recent
+            )
+
+        # ── ack_fn ─────────────────────────────────────────────────────────
+        async def _ack_fn(compound_key: str, ttl_hours: int) -> None:
+            """compound_key 格式："{ack_server}:{id}"，如 "feed-mcp:c1"."""
+            parts = compound_key.split(":", 1)
+            if len(parts) != 2:
+                return
+            ack_server, item_id = parts
+            source_key = f"mcp:{ack_server}"
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: mcp_sources.acknowledge_content_entries(
+                    [(source_key, item_id)], ttl_hours=ttl_hours
+                ),
+            )
+
+        # ── alert_ack_fn ───────────────────────────────────────────────────
+        async def _alert_ack_fn(compound_key: str) -> None:
+            """Alert 专用通道，走 acknowledge_events（非 content entries）。
+            compound_key 格式："{ack_server}:{id}"，如 "alert-mcp:evt42"。
+            """
+            import types as _types
+            parts = compound_key.split(":", 1)
+            if len(parts) != 2:
+                return
+            ack_server, ack_id = parts
+            event_proxy = _types.SimpleNamespace(_ack_server=ack_server, ack_id=ack_id)
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: mcp_sources.acknowledge_events([event_proxy]),
+            )
+
+        tool_deps = ToolDeps(
+            web_fetch_tool=WebFetchTool(),
+            memory=self._memory,
+            alert_fn=_alert_fn,
+            feed_fn=_feed_fn,
+            context_fn=_context_fn,
+            recent_chat_fn=_recent_chat_fn,
+            ack_fn=_ack_fn,
+            alert_ack_fn=_alert_ack_fn,
+            max_chars=self._cfg.agent_tick_web_fetch_max_chars,
+        )
+
+        recent_n = getattr(self._cfg, "message_dedupe_recent_n", 5)
+        recent_proactive_fn = (
+            (lambda: self._sense.collect_recent_proactive(recent_n))
+            if hasattr(self._sense, "collect_recent_proactive")
+            else None
+        )
+
+        return AgentTick(
+            cfg=self._cfg,
+            session_key=session_key,
+            state_store=self._state,
+            any_action_gate=self._anyaction,
+            last_user_at_fn=last_user_at_fn,
+            passive_busy_fn=self._passive_busy_fn,
+            sender=self._sender,
+            deduper=self._message_deduper,
+            tool_deps=tool_deps,
+            llm_fn=_llm_fn,
+            rng=self._rng,
+            recent_proactive_fn=recent_proactive_fn,
+        )
+
     def _build_message_deduper(self) -> MessageDeduper | None:
         if not self._cfg.message_dedupe_enabled:
             return None
@@ -244,6 +372,7 @@ class ProactiveLoop:
         self._memory_retrieval = self._build_memory_retriever()
         self._message_deduper = self._build_message_deduper()
         self._engine = self._build_tick()
+        self._agent_tick = self._build_agent_tick()
         self._trace_proactive_config_snapshot()
 
     def _build_skill_action_runner(self):
@@ -584,7 +713,10 @@ class ProactiveLoop:
     async def _tick(self) -> float | None:
         """执行一次主动判断循环。
         返回 base_score 供调度器调整间隔；None 表示 gate 按能量自算（不强制最长间隔）。
+        use_agent_tick=True 时走 v2 AgentTick，否则走 v1 ProactiveTick。
         """
+        if self._cfg.use_agent_tick:
+            return await self._agent_tick.tick()
         return await self._engine.tick()
 
     def _collect_recent(self) -> list[dict]:

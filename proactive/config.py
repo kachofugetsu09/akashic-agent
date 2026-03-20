@@ -150,3 +150,12 @@ class ProactiveConfig:
     bg_context_main_topic_min_interval_hours: int = 6
     context_as_assist_enabled: bool = True
     sleep_modifier_sleeping: float = 0.15
+
+    # === v2 Agent Tick ===
+    use_agent_tick: bool = False
+    agent_tick_max_steps: int = 20
+    agent_tick_model: str = ""
+    agent_tick_content_limit: int = 5
+    agent_tick_web_fetch_max_chars: int = 8_000
+    agent_tick_context_prob: float = 0.03
+    agent_tick_delivery_cooldown_hours: int = 1

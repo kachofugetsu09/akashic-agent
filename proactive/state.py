@@ -146,7 +146,7 @@ class ProactiveStateStore:
         now: datetime | None = None,
     ) -> int:
         now = now or _utcnow()
-        cutoff = now - timedelta(hours=max(window_hours, 1))
+        cutoff = now - timedelta(hours=window_hours)
         count = 0
         for raw_ts in self._state["deliveries"].get(session_key, {}).values():
             ts = _parse_iso(raw_ts)
@@ -161,7 +161,7 @@ class ProactiveStateStore:
         now: datetime | None = None,
     ) -> list[dict[str, str]]:
         now = now or _utcnow()
-        cutoff = now - timedelta(hours=max(window_hours, 1))
+        cutoff = now - timedelta(hours=window_hours)
         items: list[dict[str, str]] = []
         for raw in self._state["semantic_items"]:
             ts = _parse_iso(str(raw.get("ts", "")))
@@ -298,7 +298,7 @@ class ProactiveStateStore:
         self, window_hours: int, now: datetime
     ) -> int:
         """清理过期的 context-only 时间戳。"""
-        cutoff = now - timedelta(hours=max(window_hours, 1))
+        cutoff = now - timedelta(hours=window_hours)
         removed = 0
         for session_key in list(
             self._state.get("context_only_sent_timestamps", {}).keys()
@@ -359,7 +359,7 @@ class ProactiveStateStore:
     ) -> int:
         """统计指定 session 在窗口内的 context-only 发送次数。"""
         now = now or _utcnow()
-        cutoff = now - timedelta(hours=max(window_hours, 1))
+        cutoff = now - timedelta(hours=window_hours)
         count = 0
         for raw_ts in self._state.get("context_only_sent_timestamps", {}).get(
             session_key, []
