@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from proactive.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
+from proactive_v2.gateway import DataGateway, GatewayResult
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, execute
 
 logger = logging.getLogger(__name__)
@@ -182,68 +183,119 @@ class AgentTick:
 
         logger.info("[proactive_v2] tick: pre-gate passed, starting loop (context_fallback=%s)", ctx.context_as_fallback_open)
         await self._run_loop(ctx)
-        return await self._post_loop(ctx)
+        result = await self._post_loop(ctx)
+        ctx.content_store.clear()  # 清理 hashmap，防止内存泄漏
+        return result
 
-    def _build_system_prompt(self, ctx: AgentTickContext) -> str:
+    def _build_system_prompt(self, ctx: AgentTickContext, gw: GatewayResult) -> str:
         fallback_status = "允许" if ctx.context_as_fallback_open else "不允许"
 
-        # 长期记忆注入（截断至 2000 chars）
         memory_block = ""
         if self._tool_deps.memory is not None:
             try:
                 raw = self._tool_deps.memory.read_long_term().strip()
                 if raw:
                     memory_block = (
-                        "\n【用户记忆与偏好】\n"
+                        "\n【用户长期记忆（快速参考）】\n"
                         + raw[:2000]
-                        + "\n── 仅为快速参考；细粒度偏好在向量库中，务必通过 recall_memory 检索。\n"
+                        + "\n── 细粒度偏好请用 recall_memory 检索。\n"
                     )
             except Exception:
                 pass
 
+        alert_block = ""
+        if gw.alerts:
+            lines = []
+            for i, a in enumerate(gw.alerts):
+                aid = f"{a.get('ack_server','?')}:{a.get('event_id') or a.get('id','?')}"
+                lines.append(f"  [{i+1}] id={aid}  {a.get('title','')}")
+            alert_block = "【Alerts（时效性高，优先处理）】\n" + "\n".join(lines) + "\n\n"
+
+        context_block = ""
+        if gw.context:
+            context_block = (
+                "【背景上下文】\n"
+                + json.dumps(gw.context, ensure_ascii=False)[:800]
+                + "\n\n"
+            )
+
+        content_block = ""
+        if gw.content_meta:
+            lines = []
+            for i, m in enumerate(gw.content_meta):
+                has_content = bool(gw.content_store.get(m["id"]))
+                status = "✓" if has_content else "✗(预取失败)"
+                lines.append(
+                    f"  [{i+1}] id={m['id']}\n"
+                    f"       title={m['title']}\n"
+                    f"       source={m['source']}  正文:{status}"
+                )
+            content_block = (
+                "【Content 列表（正文通过 get_content 按需获取）】\n"
+                + "\n".join(lines)
+                + "\n\n"
+            )
+
         return (
-            "你是主动关怀型 AI 的决策核心，判断现在是否该给用户发一条消息。\n\n"
-            "【当前状态】\n"
-            f"- Context fallback 本轮：{fallback_status}\n"
+            "你是主动关怀型 AI 的决策核心，判断现在是否该给用户发一条消息。\n"
+            "数据已预取完毕，基于下方数据直接决策。\n\n"
+            f"{alert_block}"
+            f"{content_block}"
+            f"{context_block}"
             f"{memory_block}\n"
-            "【优先级规则】Alert > Content > Context-fallback"
-            "（仅本轮允许 且 alert/content 均无结果时才考虑）\n\n"
-            "【各路径行为】\n\n"
-            "Alert：\n"
-            "  get_alert_events → 有 alert → [可选] get_context_data 补充背景 → send_message\n\n"
-            "Content：\n"
-            "  1. get_content_events（最多 5 条）\n"
-            "  2. 对每条无条件调用 web_fetch(url) 阅读正文\n"
-            "  3. 阅读后立即调用 recall_memory(标题+正文摘要)，确认偏好是否匹配、是否触碰雷点\n"
-            "  4. 每条内容必须明确分类（不能留未分类）：\n"
-            "     - 感兴趣 → mark_interesting\n"
-            "     - 明确不感兴趣 → mark_not_interesting\n"
-            "     ⚠️ 判断原则：recall_memory 无命中≠不感兴趣。用户没有明确记录的话题，若内容本身有价值，\n"
-            "        倾向于标记 interesting 并推送，让用户自己判断。只有明确触碰雷点（如手机游戏、营销脚本）才 mark_not_interesting。\n"
-            "  5. 所有条目分类完毕后：\n"
-            "     - 有 interesting 条目 → 必须立即调用 send_message(text, cited_ids) 发送消息\n"
-            "     - 无 interesting 条目 → skip(no_content)\n"
-            "     ⚠️ mark_interesting / mark_not_interesting 不是终止动作，必须在之后调用 send_message 或 skip\n"
-            "  6. get_recent_chat：判断用户当前是否真的在忙\n"
-            "     忙碌信号：连续工作对话、正在处理紧急事项；无明显信号时不要以\u300c可能在忙\u300d为由跳过\n"
-            "  7. 所有感兴趣条目聚合成一条消息 → send_message(text, cited_ids)\n\n"
-            "Context-fallback（本轮允许 且 alert/content 均无结果时）：\n"
-            "  get_context_data → 有亮点 → send_message / 否则 skip(no_content)\n\n"
+            f"【优先级】Alert > Content > Context-fallback（本轮：{fallback_status}）\n\n"
+            "【决策流程】\n\n"
+            "Alert（若有）→ 直接 send_message\n\n"
+            "Content如果recall不能回答用户对该内容的偏好：\n"
+            "  1. recall_memory × 2（负向雷点假设 + 正向兴趣假设）\n"
+            "     - 负向 query：「用户对《标题》完全不感兴趣甚至厌恶」\n"
+            "       命中雷点 → mark_not_interesting，不读正文\n"
+            "     - 正向 query：「用户对《标题》很感兴趣」\n"
+            "       有信号 → 继续读正文\n"
+            "     - 无命中 ≠ 不感兴趣，结合标题和来源常识判断\n"
+            "  2. 对感兴趣条目批量 get_content([id,...]) 读正文\n"
+            "     正文为空（预取失败）→ 可用 web_fetch 降级，或凭标题判断\n"
+            "  3. 读完正文后最终分类：mark_interesting / mark_not_interesting\n"
+            "  4. 所有条目分类完毕：\n"
+            "     有 interesting → get_recent_chat 判断是否打扰 → send_message\n"
+            "     全部不感兴趣 → skip(no_content)\n"
+            "  ⚠️ mark_* 不是终止动作，之后必须调 send_message 或 skip\n\n"
+            "Context-fallback（本轮允许且 alert/content 均无结果）：\n"
+            "  context 数据已在上方，有亮点 → send_message，否则 skip\n\n"
             "【发送要求】\n"
-            "- 消息语气自然，像朋友分享，不是推送通知\n"
-            "- 没有实质内容时，skip 是正确选择，不要为发而发\n"
-            "- web_fetch 失败时，可基于标题和记忆判断；失败本身不代表不感兴趣，不要 mark_not_interesting\n"
-            "- cited_ids 只填实际引用的条目，格式：\"{ack_server}:{id}\"，如 \"feed-mcp:abc123\"\n\n"
-            "【skip reason 枚举】no_content | user_busy | already_sent_similar | other"
+            "- 语气自然，像朋友分享，不是推送通知\n"
+            "- cited_ids 格式：\"{ack_server}:{event_id}\"，如 \"feed:fmcp_abc123\"\n"
+            "- 没有实质内容时 skip 是正确选择\n\n"
+            "【skip reason】no_content | user_busy | already_sent_similar | other"
         )
 
     async def _run_loop(self, ctx: AgentTickContext) -> float | None:
-        """Agent loop（P5）。P6 将在此之后追加 post-guard + ACK + send。"""
+        """Agent loop（P5）。先调 DataGateway 预取数据，再启动 agent loop。"""
         if self._llm_fn is None:
             self.last_ctx = ctx
             return 0.0
 
-        system_msg = {"role": "system", "content": self._build_system_prompt(ctx)}
+        # ── Gateway 预取 ──────────────────────────────────────────────────
+        gw = DataGateway(
+            alert_fn=self._tool_deps.alert_fn,
+            feed_fn=self._tool_deps.feed_fn,
+            context_fn=self._tool_deps.context_fn,
+            web_fetch_tool=self._tool_deps.web_fetch_tool,
+            max_chars=self._tool_deps.max_chars,
+            content_limit=self._cfg.agent_tick_content_limit,
+        )
+        gw_result = await gw.run()
+
+        # 填充 ctx（供 ACK 路径使用）
+        ctx.fetched_alerts = gw_result.alerts
+        ctx.fetched_contents = [
+            {"ack_server": m["id"].split(":", 1)[0], "event_id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"]}
+            for m in gw_result.content_meta
+        ]
+        ctx.fetched_context = gw_result.context
+        ctx.content_store = gw_result.content_store
+
+        system_msg = {"role": "system", "content": self._build_system_prompt(ctx, gw_result)}
         messages: list[dict] = [system_msg]
 
         while ctx.steps_taken < self._cfg.agent_tick_max_steps:

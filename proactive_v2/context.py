@@ -13,13 +13,12 @@ class AgentTickContext:
     session_key: str = ""
     context_as_fallback_open: bool = False
 
-    # 工具缓存（首次调用后不再重新拉取）
+    # Gateway 预取结果（_run_loop 启动前由 DataGateway 填充）
     fetched_alerts: list[dict] = field(default_factory=list)    # 含 ack_server 字段
-    fetched_contents: list[dict] = field(default_factory=list)  # 含 ack_server 字段
+    fetched_contents: list[dict] = field(default_factory=list)  # 含 ack_server 字段（从 content_meta 还原）
     fetched_context: list[dict] = field(default_factory=list)
-    _alerts_fetched: bool = False
-    _contents_fetched: bool = False
-    _context_fetched: bool = False                              # get_context_data 最多调用 1 次
+    # compound_key → 正文（fetch 失败时为 ""）；tick 结束后由 agent_tick 清空
+    content_store: dict[str, str] = field(default_factory=dict)
 
     # 过滤结果（loop 中逐步写入，均为复合键 "{ack_server}:{id}"）
     discarded_item_ids: set[str] = field(default_factory=set)   # mark_not_interesting 写入
