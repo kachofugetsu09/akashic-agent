@@ -282,7 +282,14 @@ class AgentTick:
             lines = []
             for i, a in enumerate(gw.alerts):
                 aid = f"{a.get('ack_server','?')}:{a.get('event_id') or a.get('id','?')}"
-                lines.append(f"  [{i+1}] id={aid}  {a.get('title','')}")
+                content = str(a.get("content") or a.get("body") or "").strip()
+                tone = str(a.get("suggested_tone") or "").strip()
+                line = f"  [{i+1}] id={aid}\n       title={a.get('title','')}"
+                if content:
+                    line += f"\n       内容：{content}"
+                if tone:
+                    line += f"\n       建议语气：{tone}"
+                lines.append(line)
             alert_block = "【Alerts（时效性高，优先处理）】\n" + "\n".join(lines) + "\n\n"
 
         context_block = ""
@@ -400,6 +407,7 @@ class AgentTick:
             "  context 数据已在上方，有亮点 → send_message，否则 skip\n\n"
             "【发送要求】\n"
             "- 语气自然，像朋友分享，不是推送通知\n"
+            "- 消息里出现的具体数字、比分、排名、阵容、结果，必须来自本轮已提供的 Alerts/Content 数据；严禁基于训练知识或记忆脑补任何可验证事实。\n"
             "- 当某段内容基于外部来源且该来源有可靠链接时，在这段内容结束后自然附上对应原始链接，方便用户立即溯源\n"
             "- 链接要紧跟相关内容，不要把所有链接集中堆到整条消息末尾，也不要做成生硬的参考文献区\n"
             "- 如果一段内容对应多个来源，可以在该段后连续附上多个链接；没有可靠链接时不要强行补链接\n"

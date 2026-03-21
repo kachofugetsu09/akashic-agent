@@ -199,7 +199,16 @@ async def _web_search(ctx: AgentTickContext, args: dict, *, web_search_tool) -> 
 async def _get_recent_chat(ctx: AgentTickContext, args: dict, *, recent_chat_fn) -> str:
     n = args.get("n", 20)
     messages = await recent_chat_fn(n=n) if recent_chat_fn else []
-    return json.dumps(messages or [], ensure_ascii=False)
+    # 过滤规则：
+    #   role=user           → 保留（判断用户是否在忙、最近关心什么）
+    #   role=assistant, proactive 为假 → 保留（被动回复，代表用户主动发起的对话上下文）
+    #   role=assistant, proactive=True → 过滤（主动推送，不能当成事实被循环引用；
+    #                                           去重逻辑由 recent_proactive_fn 独立负责）
+    filtered = [
+        m for m in (messages or [])
+        if m.get("role") == "user" or (m.get("role") == "assistant" and not m.get("proactive"))
+    ]
+    return json.dumps(filtered, ensure_ascii=False)
 
 
 def _mark_interesting(ctx: AgentTickContext, args: dict) -> str:
