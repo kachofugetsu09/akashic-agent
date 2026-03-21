@@ -49,3 +49,8 @@ benchmark/data/
 qa_error_log_*.txt
 lme_error_log_*.txt
 /config.json.bak
+
+# Local AI assistant docs and fitbit event cache
+/CLAUDE.md
+/AGENTS.md
+/scripts/fitbit-monitor/stat_events.json
