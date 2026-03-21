@@ -294,9 +294,17 @@ class AgentTick:
 
         context_block = ""
         if gw.context:
+            # 补充 awake_prob 派生字段，防止 agent 把"睡眠概率 8%"误读成"清醒概率 8%"
+            annotated_context = []
+            for item in gw.context:
+                item = dict(item)
+                if "sleep_prob" in item and item["sleep_prob"] is not None:
+                    item["awake_prob"] = round(1.0 - float(item["sleep_prob"]), 3)
+                annotated_context.append(item)
             context_block = (
                 "【背景上下文】\n"
-                + json.dumps(gw.context, ensure_ascii=False)[:800]
+                "注：sleep_prob=睡眠概率，awake_prob=清醒概率（= 1 - sleep_prob）。\n"
+                + json.dumps(annotated_context, ensure_ascii=False)[:900]
                 + "\n\n"
             )
 
@@ -380,7 +388,13 @@ class AgentTick:
             "4. 即使 Workspace 主动上下文里出现了队伍名、选手名、游戏名、技术主题，也不能把这些名字直接当作本轮候选内容去展开、补全或脑补。\n"
             "5. 严禁根据长期记忆或 Workspace 主动上下文自行脑补具体新闻、比赛结果、转会、更新或其他外部事件。\n"
             "6. 当候选条目已自带来源 URL 时，先直接 web_fetch 该来源页面；不要凭记忆补细节，也不要跳过来源确认。\n"
-            "7. 当本轮 alert 和 content 都为空时，不允许自己枚举题材再去 recall_memory；只有在 Context-fallback 允许时，才能基于本轮给出的 context 决策，否则直接 skip(no_content)。\n\n"
+            "7. 当本轮 alert 和 content 都为空时，你只有两条路：\n"
+            "   a. skip(no_content)（默认，大多数情况选这条）\n"
+            "   b. get_recent_chat → 若最近对话有自然延伸的未完成话题，可 send_message 轻松挑起对话；\n"
+            "      此时 cited_ids 必须为空 []，消息里不得引用任何外部事件或可验证事实。\n"
+            "   禁止在这两条路之外做任何事：不允许 recall_memory、不允许 get_content、\n"
+            "   不允许 web_fetch、严禁捏造任何 item_id（包括 'feed:xxx' 格式）。\n"
+            "   路径 b 是低概率选项——若 recent_chat 没有明显未完成话题，必须选 a。\n\n"
             "【决策流程】\n\n"
             "【Alert 快速路径】本轮如有 Alert：\n"
             "  → get_recent_chat 确认用户不在忙\n"
@@ -388,6 +402,7 @@ class AgentTick:
             "  → 结束，可以不调用 recall_memory / mark_* / get_content / web_fetch\n\n"
             "【Content 路径】本轮无 Alert 时，Content 的主要任务不是做研究，而是把本轮候选逐条分成 interesting 或 not_interesting。\n"
             "Content 评估必须逐条进行，不能把不同主题的多条内容打包成一次统一判断。\n"
+            "每条 Content 必须单独给出 mark_interesting 或 mark_not_interesting 结论，不能因为先评估的条目不感兴趣就跳过剩余条目直接 skip。\n"
             "你只能对本轮 Content 列表里真实存在的条目做 recall_memory / get_content / mark_*；不要对列表外的假想标题、假想比赛、假想转会或假想更新调用 recall_memory。\n"
             "只有当某一条内容本身与你已知的用户兴趣明显匹配时，才能把这一条标记为 interesting。\n"
             "如果一批条目里只有部分相关，必须只标记相关的那几条，其他条目继续判断或标记为 not_interesting。\n"
@@ -413,6 +428,7 @@ class AgentTick:
             "- 如果一段内容对应多个来源，可以在该段后连续附上多个链接；没有可靠链接时不要强行补链接\n"
             "- 链接直接使用原始 url，不要杜撰、不要改写、不要省略协议头\n"
             "- cited_ids 格式：\"{ack_server}:{event_id}\"，如 \"feed:fmcp_abc123\"\n"
+            "- 当本轮 content 和 alerts 均为空时，cited_ids 必须为 []；任何 'feed:xxx' 格式的 id 只能来自本轮真实提供的候选列表，不能自行捏造\n"
             "- 没有实质内容时 skip 是正确选择\n\n"
             "【skip reason】no_content | user_busy | already_sent_similar | other"
         )
@@ -495,6 +511,60 @@ class AgentTick:
             if ctx.terminal_action is not None:
                 break
 
+        # ── Classification completeness check ─────────────────────────────
+        # 若 agent 已 skip 但仍有未分类 content 条目，重置并强制补完。
+        # 这捕捉的场景：agent 评完部分条目后急着 skip，剩余条目从未被评估。
+        if ctx.terminal_action == "skip" and gw_result.content_meta:
+            all_content_ids = {m["id"] for m in gw_result.content_meta}
+            classified_ids = ctx.interesting_item_ids | ctx.discarded_item_ids
+            unclassified_ids = all_content_ids - classified_ids
+            if unclassified_ids:
+                ctx.terminal_action = None
+                ctx.skip_reason = ""
+                ctx.skip_note = ""
+                titles_hint = "; ".join(
+                    f"{m['id']}（{m['title'][:40]}）"
+                    for m in gw_result.content_meta
+                    if m["id"] in unclassified_ids
+                )
+                completeness_msg = (
+                    f"【系统提示】以下 {len(unclassified_ids)} 个条目尚未完成分类：\n"
+                    f"{titles_hint}\n"
+                    "请对每条调用 mark_interesting 或 mark_not_interesting，"
+                    "全部分类完毕后再决定 skip 或 send_message。"
+                )
+                logger.info(
+                    "[proactive_v2] completeness-check: %d unclassified items, resetting skip → %s",
+                    len(unclassified_ids),
+                    sorted(unclassified_ids),
+                )
+                messages.append({"role": "user", "content": completeness_msg})
+                for _ in range(5):
+                    if ctx.terminal_action is not None or ctx.steps_taken >= self._cfg.agent_tick_max_steps:
+                        break
+                    tool_call = await self._llm_fn(messages, TOOL_SCHEMAS)
+                    if tool_call is None:
+                        break
+                    tool_name = tool_call.get("name", "")
+                    tool_args = tool_call.get("input", {})
+                    _arg_summary = json.dumps(tool_args, ensure_ascii=False)[:200]
+                    logger.info("[proactive_v2] complete step %d: %s  args=%s", ctx.steps_taken, tool_name, _arg_summary)
+                    try:
+                        result = await execute(tool_name, tool_args, ctx, self._tool_deps)
+                    except ValueError as e:
+                        logger.warning("[proactive_v2] complete: tool error: %s", e)
+                        break
+                    call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
+                    messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{"id": call_id, "type": "function", "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(tool_args, ensure_ascii=False),
+                        }}],
+                    })
+                    messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
         # ── Reflection pass ───────────────────────────────────────────────
         # 若 agent 已标记 interesting 条目但忘记调用 send_message / skip，
         # 注入一条确定性提示，强制其完成终止动作（最多再跑 3 步）。
@@ -555,6 +625,21 @@ class AgentTick:
                         ctx.terminal_action or "none", ctx.steps_taken, len(ctx.discarded_item_ids),
                         len(ctx.interesting_item_ids),
                         getattr(ctx, "skip_reason", ""), getattr(ctx, "skip_note", ""))
+            await ack_discarded(ctx, ack_fn)
+            return 0.0
+
+        # ── Hallucination guard ───────────────────────────────────────────
+        # 本轮 content=0 且 alerts=0，但 agent 引用了 cited_ids → 幻觉引用，直接降级 skip
+        if ctx.cited_item_ids and not ctx.fetched_contents and not ctx.fetched_alerts:
+            logger.warning(
+                "[proactive_v2] hallucination-guard: content=0 alerts=0 but cited_ids=%s → force skip",
+                ctx.cited_item_ids,
+            )
+            ctx.terminal_action = "skip"
+            ctx.skip_reason = "other"
+            ctx.skip_note = "hallucinated_citation"
+            ctx.final_message = ""
+            ctx.cited_item_ids = []
             await ack_discarded(ctx, ack_fn)
             return 0.0
 

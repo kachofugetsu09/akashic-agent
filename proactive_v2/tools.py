@@ -170,8 +170,28 @@ async def _recall_memory(ctx: AgentTickContext, args: dict, *, memory) -> str:
     return json.dumps({"result": "\n---\n".join(texts), "hits": len(hits)}, ensure_ascii=False)
 
 
+def _valid_content_ids(ctx: AgentTickContext) -> set[str]:
+    """返回本轮真实存在的 compound ID 集合。content=0 时为空集。"""
+    if ctx.content_store:
+        return set(ctx.content_store.keys())
+    # content_store 为空时退回 fetched_contents 元数据（fetch 失败但 meta 存在的情况）
+    return {
+        f"{e['ack_server']}:{e['event_id']}"
+        for e in ctx.fetched_contents
+        if e.get("ack_server") and e.get("event_id")
+    }
+
+
 def _get_content(ctx: AgentTickContext, args: dict) -> str:
     item_ids: list[str] = args.get("item_ids", [])
+    valid = _valid_content_ids(ctx)
+    unknown = [i for i in item_ids if i not in valid]
+    if unknown:
+        logger.warning("[proactive_v2] get_content: unknown item_ids=%s (valid=%s)", unknown, sorted(valid))
+        return json.dumps(
+            {"error": f"以下 id 不在本轮候选列表中，禁止操作：{unknown}。本轮有效 id：{sorted(valid)}"},
+            ensure_ascii=False,
+        )
     result = {}
     for item_id in item_ids:
         result[item_id] = ctx.content_store.get(item_id, "")
@@ -214,6 +234,14 @@ async def _get_recent_chat(ctx: AgentTickContext, args: dict, *, recent_chat_fn)
 def _mark_interesting(ctx: AgentTickContext, args: dict) -> str:
     item_ids: list[str] = args.get("item_ids", [])
     reason = str(args.get("reason", "") or "").strip()
+    valid = _valid_content_ids(ctx)
+    unknown = [i for i in item_ids if i not in valid]
+    if unknown:
+        logger.warning("[proactive_v2] mark_interesting: unknown item_ids=%s", unknown)
+        return json.dumps(
+            {"error": f"以下 id 不在本轮候选列表中，无法标记：{unknown}。本轮有效 id：{sorted(valid)}"},
+            ensure_ascii=False,
+        )
     for key in item_ids:
         if key not in ctx.discarded_item_ids:
             ctx.interesting_item_ids.add(key)
@@ -228,6 +256,14 @@ def _mark_interesting(ctx: AgentTickContext, args: dict) -> str:
 def _mark_not_interesting(ctx: AgentTickContext, args: dict) -> str:
     item_ids: list[str] = args.get("item_ids", [])
     reason = str(args.get("reason", "") or "").strip()
+    valid = _valid_content_ids(ctx)
+    unknown = [i for i in item_ids if i not in valid]
+    if unknown:
+        logger.warning("[proactive_v2] mark_not_interesting: unknown item_ids=%s", unknown)
+        return json.dumps(
+            {"error": f"以下 id 不在本轮候选列表中，无法标记：{unknown}。本轮有效 id：{sorted(valid)}"},
+            ensure_ascii=False,
+        )
     ctx.discarded_item_ids.update(item_ids)
     ctx.interesting_item_ids -= set(item_ids)
     logger.info(
