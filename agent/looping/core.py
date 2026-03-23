@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +38,43 @@ logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
 
 
+@dataclass
+class AgentLoopDeps:
+    bus: MessageBus
+    provider: LLMProvider
+    tools: ToolRegistry
+    session_manager: SessionManager
+    workspace: Path
+    presence: PresenceStore | None = None
+    light_provider: LLMProvider | None = None
+    processing_state: ProcessingState | None = None
+    memory_runtime: "MemoryRuntime | None" = None
+    memory_port: "MemoryPort | None" = None
+    post_mem_worker: PostResponseMemoryWorker | None = None
+    observe_writer: object | None = None
+    query_rewriter: QueryRewriter | None = None
+    sufficiency_checker: SufficiencyChecker | None = None
+    profile_extractor: ProfileFactExtractor | None = None
+
+
+@dataclass
+class AgentLoopConfig:
+    model: str = "deepseek-chat"
+    light_model: str = ""
+    max_iterations: int = 10
+    max_tokens: int = 8192
+    memory_window: int = 40
+    memory_top_k_procedure: int = 4
+    memory_top_k_history: int = 8
+    memory_route_intention_enabled: bool = False
+    memory_sop_guard_enabled: bool = True
+    memory_gate_llm_timeout_ms: int = 800
+    memory_gate_max_tokens: int = 96
+    tool_search_enabled: bool = False
+    memory_hyde_enabled: bool = False
+    memory_hyde_timeout_ms: int = 2000
+
+
 class AgentLoop(
     AgentLoopSafetyRetryMixin,
     AgentLoopMemoryGateMixin,
@@ -54,71 +92,50 @@ class AgentLoop(
 
     def __init__(
         self,
-        bus: MessageBus,
-        provider: LLMProvider,
-        tools: ToolRegistry,
-        session_manager: SessionManager,
-        workspace: Path,
-        model: str = "deepseek-chat",
-        max_iterations: int = 10,
-        max_tokens: int = 8192,
-        memory_window: int = 40,
-        presence: PresenceStore | None = None,
-        light_model: str = "",
-        light_provider: LLMProvider | None = None,
-        processing_state: ProcessingState | None = None,
-        memory_top_k_procedure: int = 4,
-        memory_top_k_history: int = 8,
-        memory_route_intention_enabled: bool = False,
-        memory_sop_guard_enabled: bool = True,
-        memory_gate_llm_timeout_ms: int = 800,
-        memory_gate_max_tokens: int = 96,
-        memory_port: "MemoryPort | None" = None,
-        post_mem_worker: PostResponseMemoryWorker | None = None,
-        memory_runtime: "MemoryRuntime | None" = None,
-        tool_search_enabled: bool = False,
-        memory_hyde_enabled: bool = False,
-        memory_hyde_timeout_ms: int = 2000,
-        observe_writer=None,
-        query_rewriter: QueryRewriter | None = None,
-        sufficiency_checker: SufficiencyChecker | None = None,
-        profile_extractor: ProfileFactExtractor | None = None,
+        deps: AgentLoopDeps,
+        config: AgentLoopConfig,
     ) -> None:
-        self.bus = bus
-        self.provider = provider
-        self.tools = tools
-        self.session_manager = session_manager
-        self.workspace = workspace
-        self.model = model
-        self.light_model = light_model or model
-        self.light_provider = light_provider or provider
-        self.max_iterations = max_iterations
-        self.max_tokens = max_tokens
-        self.memory_window = memory_window
-        self._presence = presence
+        self.bus = deps.bus
+        self.provider = deps.provider
+        self.tools = deps.tools
+        self.session_manager = deps.session_manager
+        self.workspace = deps.workspace
+        self.model = config.model
+        self.light_model = config.light_model or config.model
+        self.light_provider = deps.light_provider or deps.provider
+        self.max_iterations = config.max_iterations
+        self.max_tokens = config.max_tokens
+        self.memory_window = config.memory_window
+        self._presence = deps.presence
         self._running = False
         self._consolidating: set[str] = set()
-        self._processing_state = processing_state
+        self._processing_state = deps.processing_state
         self._memory_top_k_procedure = min(
             _MAX_PROCEDURE_RETRIEVE_K,
-            max(1, int(memory_top_k_procedure)),
+            max(1, int(config.memory_top_k_procedure)),
         )
-        self._memory_top_k_history = max(1, int(memory_top_k_history))
-        self._memory_route_intention_enabled = bool(memory_route_intention_enabled)
-        self._memory_sop_guard_enabled = bool(memory_sop_guard_enabled)
-        self._memory_gate_llm_timeout_ms = max(100, int(memory_gate_llm_timeout_ms))
-        self._memory_gate_max_tokens = max(32, int(memory_gate_max_tokens))
+        self._memory_top_k_history = max(1, int(config.memory_top_k_history))
+        self._memory_route_intention_enabled = bool(
+            config.memory_route_intention_enabled
+        )
+        self._memory_sop_guard_enabled = bool(config.memory_sop_guard_enabled)
+        self._memory_gate_llm_timeout_ms = max(
+            100, int(config.memory_gate_llm_timeout_ms)
+        )
+        self._memory_gate_max_tokens = max(32, int(config.memory_gate_max_tokens))
 
-        if memory_runtime is not None:
-            memory_port = memory_runtime.port
-            post_mem_worker = memory_runtime.post_response_worker
+        memory_port = deps.memory_port
+        post_mem_worker = deps.post_mem_worker
+        if deps.memory_runtime is not None:
+            memory_port = deps.memory_runtime.port
+            post_mem_worker = deps.memory_runtime.post_response_worker
         if memory_port is None:
             raise ValueError("AgentLoop requires memory_port or memory_runtime")
 
-        self._tool_search_enabled = bool(tool_search_enabled)
+        self._tool_search_enabled = bool(config.tool_search_enabled)
 
-        if memory_hyde_enabled:
-            if not light_model:
+        if config.memory_hyde_enabled:
+            if not config.light_model:
                 logger.warning(
                     "hyde_enabled=True 但未配置独立 light_model，"
                     "为避免主模型被额外调用，HyDE 已自动禁用。"
@@ -131,7 +148,7 @@ class AgentLoop(
                 self._hyde_enhancer = HyDEEnhancer(
                     light_provider=self.light_provider,
                     light_model=self.light_model,
-                    timeout_s=memory_hyde_timeout_ms / 1000.0,
+                    timeout_s=config.memory_hyde_timeout_ms / 1000.0,
                 )
         else:
             self._hyde_enhancer = None
@@ -142,12 +159,12 @@ class AgentLoop(
         self._unlocked_tools: dict[str, OrderedDict[str, None]] = {}
         self._post_mem_worker = post_mem_worker
         self._memory_port = memory_port
-        self.context = ContextBuilder(workspace, memory=self._memory_port)
+        self.context = ContextBuilder(self.workspace, memory=self._memory_port)
         self._post_mem_failures = 0
-        self._observe_writer = observe_writer
-        self._query_rewriter = query_rewriter
-        self._sufficiency_checker = sufficiency_checker
-        self._profile_extractor = profile_extractor
+        self._observe_writer = deps.observe_writer
+        self._query_rewriter = deps.query_rewriter
+        self._sufficiency_checker = deps.sufficiency_checker
+        self._profile_extractor = deps.profile_extractor
         self._conversation_handler = ConversationTurnHandler(self)
         self._internal_event_handler = InternalEventHandler(self)
 

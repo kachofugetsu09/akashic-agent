@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.looping.core import AgentLoop
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
@@ -62,15 +62,16 @@ def _make_loop(light_model: str = "qwen-flash", **kwargs: Any) -> AgentLoop:
     provider = cast(Any, _FakeProvider())
     light_provider = cast(Any, _FakeProvider())
     return AgentLoop(
-        bus=MagicMock(),
-        provider=provider,
-        light_provider=light_provider,
-        light_model=light_model,
-        tools=tools,
-        session_manager=MagicMock(),
-        workspace=workspace,
-        memory_port=DefaultMemoryPort(MemoryStore(workspace)),
-        **kwargs,
+        AgentLoopDeps(
+            bus=MagicMock(),
+            provider=provider,
+            light_provider=light_provider,
+            tools=tools,
+            session_manager=MagicMock(),
+            workspace=workspace,
+            memory_port=DefaultMemoryPort(MemoryStore(workspace)),
+        ),
+        AgentLoopConfig(light_model=light_model, **kwargs),
     )
 
 

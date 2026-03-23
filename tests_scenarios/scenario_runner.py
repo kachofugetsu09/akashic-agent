@@ -13,7 +13,7 @@ from typing import Any
 
 from agent.config import load_config
 from agent.config_models import Config
-from agent.looping.core import AgentLoop
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.registry import ToolRegistry
 from bootstrap.providers import build_providers
@@ -262,28 +262,32 @@ class ScenarioRunner:
         loop_provider = RecordingProvider(runtime_provider)
         session_manager = SessionManager(workspace)
         loop = AgentLoop(
-            bus=bus,
-            provider=loop_provider,
-            tools=tools,
-            session_manager=session_manager,
-            workspace=workspace,
-            model=config.model,
-            max_iterations=config.max_iterations,
-            max_tokens=config.max_tokens,
-            presence=PresenceStore(workspace / "presence.json"),
-            light_model=config.light_model or config.model,
-            light_provider=light_provider or runtime_provider,
-            processing_state=ProcessingState(),
-            memory_top_k_procedure=config.memory_v2.top_k_procedure,
-            memory_top_k_history=config.memory_v2.top_k_history,
-            memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
-            memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
-            memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-            memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
-            memory_runtime=memory_runtime,
-            tool_search_enabled=config.tool_search_enabled,
-            memory_hyde_enabled=config.memory_v2.hyde_enabled,
-            memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
+            AgentLoopDeps(
+                bus=bus,
+                provider=loop_provider,
+                tools=tools,
+                session_manager=session_manager,
+                workspace=workspace,
+                presence=PresenceStore(workspace / "presence.json"),
+                light_provider=light_provider or runtime_provider,
+                processing_state=ProcessingState(),
+                memory_runtime=memory_runtime,
+            ),
+            AgentLoopConfig(
+                model=config.model,
+                light_model=config.light_model or config.model,
+                max_iterations=config.max_iterations,
+                max_tokens=config.max_tokens,
+                memory_top_k_procedure=config.memory_v2.top_k_procedure,
+                memory_top_k_history=config.memory_v2.top_k_history,
+                memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
+                memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
+                memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+                memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
+                tool_search_enabled=config.tool_search_enabled,
+                memory_hyde_enabled=config.memory_v2.hyde_enabled,
+                memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
+            ),
         )
         scheduler.agent_loop = loop
         return ScenarioRuntime(

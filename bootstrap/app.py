@@ -12,7 +12,7 @@ from bootstrap.channels import start_channels
 from bootstrap.memory import build_memory_runtime
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.providers import build_providers
-from bootstrap.tools import build_core_runtime
+from bootstrap.tools import CoreRuntime, build_core_runtime
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -61,6 +61,7 @@ class AppRuntime:
         self.ipc = None
         self.tg_channel = None
         self.qq_channel = None
+        self.core: CoreRuntime | None = None
         self.agent_loop = None
         self.bus = None
         self.tools = None
@@ -96,46 +97,26 @@ class AppRuntime:
             build_core_kwargs = {}
             if "observe_writer" in inspect.signature(build_core_runtime).parameters:
                 build_core_kwargs["observe_writer"] = self.observe_writer
-            (
-                self.agent_loop,
-                self.bus,
-                self.tools,
-                self.push_tool,
-                self.session_manager,
-                self.scheduler,
-                self.provider,
-                self.light_provider,
-                self.mcp_registry,
-                self.memory_runtime,
-                self.presence,
-                self.peer_process_manager,
-                self.peer_poller,
-            ) = build_core_runtime(
+            self.core = build_core_runtime(
                 self.config,
                 self.workspace,
                 self.http_resources,
                 **build_core_kwargs,
             )
-            await self.mcp_registry.load_and_connect_all()
-
-            # 异步发现并注册 peer agent 工具
-            if self.peer_poller is not None and self.config.peer_agents:
-                from agent.peer_agent.registry import PeerAgentRegistry
-                peer_registry = PeerAgentRegistry(
-                    process_manager=self.peer_process_manager,
-                    poller=self.peer_poller,
-                    requester=self.http_resources.local_service,
-                )
-                peer_tools = await peer_registry.discover_all(self.config.peer_agents)
-                for t in peer_tools:
-                    self.tools.register(
-                        t,
-                        always_on=False,
-                        tags=["peer", "research"],
-                        risk="external-side-effect",
-                        search_keywords=["深度调研", "调研报告", "综合分析", "对比研究", "系统性调研"],
-                    )
-                self.peer_poller.start()
+            self.agent_loop = self.core.loop
+            self.bus = self.core.bus
+            self.tools = self.core.tools
+            self.push_tool = self.core.push_tool
+            self.session_manager = self.core.session_manager
+            self.scheduler = self.core.scheduler
+            self.provider = self.core.provider
+            self.light_provider = self.core.light_provider
+            self.mcp_registry = self.core.mcp_registry
+            self.memory_runtime = self.core.memory_runtime
+            self.presence = self.core.presence
+            self.peer_process_manager = self.core.peer_process_manager
+            self.peer_poller = self.core.peer_poller
+            await self.core.start()
 
             self.ipc, self.tg_channel, self.qq_channel = await start_channels(
                 self.config,
@@ -202,14 +183,7 @@ class AppRuntime:
                 except asyncio.CancelledError:
                     pass
             await _run_cleanup_steps(
-                (
-                    "peer_poller.stop",
-                    self.peer_poller.stop if self.peer_poller else _noop_async,
-                ),
-                (
-                    "peer_process_manager.shutdown_all",
-                    self.peer_process_manager.shutdown_all if self.peer_process_manager else _noop_async,
-                ),
+                ("core.stop", self.core.stop if self.core else _noop_async),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
                 (
                     "telegram.stop",

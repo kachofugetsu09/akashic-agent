@@ -1,40 +1,29 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
-from agent.background.subagent_manager import SubagentManager
 from agent.config_models import Config
-from agent.peer_agent.process_manager import PeerProcessConfig, PeerProcessManager
+from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
-from agent.policies.delegation import DelegationPolicy
-from agent.looping.core import AgentLoop
-from agent.mcp.manage_tools import McpAddTool, McpListTool, McpRemoveTool
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
 from agent.mcp.registry import McpServerRegistry
-from agent.scheduler import LatencyTracker, SchedulerService
-from agent.tool_bundles import build_fitbit_tools, build_readonly_research_tools
+from agent.provider import LLMProvider
+from agent.scheduler import SchedulerService
 from agent.tools.message_push import MessagePushTool
-from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.registry import ToolRegistry
-from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
-from agent.tools.shell import ShellTool
-from agent.tools.spawn import SpawnTool
-from agent.tools.skill_action_tool import (
-    SkillActionListTool,
-    SkillActionRegisterTool,
-    SkillActionResetTool,
-    SkillActionRestartTool,
-    SkillActionRewriteTool,
-    SkillActionStatusTool,
-    SkillActionUnregisterTool,
-    SkillActionUpdateTool,
+from bootstrap.toolsets.fitbit import register_fitbit_tools
+from bootstrap.toolsets.mcp import register_mcp_tools
+from bootstrap.toolsets.memory import build_memory_toolset
+from bootstrap.toolsets.meta import (
+    build_readonly_tools,
+    register_meta_and_common_tools,
+    register_spawn_tool,
 )
-from agent.tools.list_tools import ListToolsTool
-from agent.tools.tool_search import ToolSearchTool
-from agent.tools.update_now import UpdateNowTool
-from agent.tools.web_fetch import WebFetchTool
-from agent.tools.web_search import WebSearchTool
-from bootstrap.memory import build_memory_runtime
+from bootstrap.toolsets.peer import build_peer_agent_resources
+from bootstrap.toolsets.schedule import build_scheduler, register_scheduler_tools
+from bootstrap.toolsets.skill_actions import register_skill_action_tools
 from bootstrap.providers import build_providers
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -47,173 +36,49 @@ from proactive.presence import PresenceStore
 from session.manager import SessionManager
 
 
-def _build_readonly_tools(http_resources: SharedHttpResources) -> dict[str, object]:
-    return {
-        tool.name: tool
-        for tool in build_readonly_research_tools(
-            fetch_requester=http_resources.external_default,
-            include_list_dir=True,
-        )
-    }
+@dataclass
+class CoreRuntime:
+    config: Config
+    http_resources: SharedHttpResources
+    loop: AgentLoop
+    bus: MessageBus
+    tools: ToolRegistry
+    push_tool: MessagePushTool
+    session_manager: SessionManager
+    scheduler: SchedulerService
+    provider: LLMProvider
+    light_provider: LLMProvider | None
+    mcp_registry: McpServerRegistry
+    memory_runtime: MemoryRuntime
+    presence: PresenceStore
+    peer_process_manager: PeerProcessManager | None
+    peer_poller: PeerAgentPoller | None
 
+    async def start(self) -> None:
+        await self.mcp_registry.load_and_connect_all()
 
-def _register_meta_and_common_tools(
-    tools: ToolRegistry,
-    readonly_tools: dict[str, object],
-    session_store,
-) -> MessagePushTool:
-    tools.register(ToolSearchTool(tools), always_on=True, tags=["meta"], risk="read-only")
-    tools.register(ListToolsTool(tools), always_on=True, tags=["meta"], risk="read-only")
-    tools.register(
-        ShellTool(),
-        always_on=True,
-        tags=["system"],
-        risk="external-side-effect",
-        search_keywords=["终端", "命令", "bash", "运行命令", "执行脚本", "shell"],
-    )
-    tools.register(
-        readonly_tools["web_search"],
-        always_on=True,
-        tags=["web"],
-        risk="read-only",
-        search_keywords=["搜索", "网络搜索", "谷歌", "bing", "查资料"],
-    )
-    tools.register(
-        readonly_tools["web_fetch"],
-        always_on=True,
-        tags=["web"],
-        risk="read-only",
-        search_keywords=["网页", "抓取网页", "读取网址", "fetch", "浏览网页"],
-    )
-    tools.register(
-        readonly_tools["read_file"],
-        always_on=True,
-        tags=["filesystem"],
-        risk="read-only",
-        search_keywords=["读文件", "查看文件", "文件内容", "read"],
-    )
-    tools.register(
-        readonly_tools["list_dir"],
-        always_on=True,
-        tags=["filesystem"],
-        risk="read-only",
-        search_keywords=["查看目录", "列出文件", "ls", "目录内容", "浏览目录", "dir"],
-    )
-    tools.register(
-        FetchMessagesTool(session_store),
-        always_on=True,
-        tags=["memory", "session"],
-        risk="read-only",
-        search_keywords=["消息回溯", "按ID查消息", "fetch messages", "source_ref"],
-    )
-    tools.register(
-        SearchMessagesTool(session_store),
-        always_on=True,
-        tags=["memory", "session"],
-        risk="read-only",
-        search_keywords=["搜索历史消息", "全文检索消息", "search messages", "原始对话", "你之前说", "聊过什么", "具体内容"],
-    )
-    push_tool = MessagePushTool()
-    tools.register(
-        push_tool,
-        tags=["message"],
-        risk="external-side-effect",
-        search_keywords=["推送消息", "发送消息", "通知用户", "给用户发消息", "push"],
-    )
-    return push_tool
+        if self.peer_poller is not None and self.config.peer_agents:
+            peer_registry = PeerAgentRegistry(
+                process_manager=self.peer_process_manager,
+                poller=self.peer_poller,
+                requester=self.http_resources.local_service,
+            )
+            peer_tools = await peer_registry.discover_all(self.config.peer_agents)
+            for t in peer_tools:
+                self.tools.register(
+                    t,
+                    always_on=False,
+                    tags=["peer", "delegate"],
+                    risk="external-side-effect",
+                    search_keywords=["agent", "专家"],
+                )
+            self.peer_poller.start()
 
-
-def _register_skill_action_tools(tools: ToolRegistry, workspace: Path) -> None:
-    skill_actions_path = workspace / "skill_actions.json"
-    agent_tasks_dir = workspace / "agent-tasks"
-    db_path = agent_tasks_dir / "task_notes.db"
-    tools.register(SkillActionRegisterTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir), tags=["skill", "task"], risk="write", search_keywords=["注册技能", "创建技能", "添加skill", "新建技能"])
-    tools.register(SkillActionUnregisterTool(skill_actions_path), tags=["skill", "task"], risk="write", search_keywords=["删除技能", "注销技能", "移除skill"])
-    tools.register(SkillActionListTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir), tags=["skill", "task"], risk="read-only", search_keywords=["技能列表", "查看技能", "skill列表", "有哪些技能"])
-    tools.register(SkillActionStatusTool(agent_tasks_dir), tags=["skill", "task"], risk="read-only", search_keywords=["技能状态", "任务进度", "skill状态", "任务运行情况"])
-    tools.register(SkillActionUpdateTool(agent_tasks_dir), tags=["skill", "task"], risk="write", search_keywords=["更新技能", "修改技能", "skill更新"])
-    tools.register(SkillActionRestartTool(agent_tasks_dir, db_path=db_path), tags=["skill", "task"], risk="write", search_keywords=["重启技能", "重新运行skill", "skill重启"])
-    tools.register(SkillActionResetTool(agent_tasks_dir), tags=["skill", "task"], risk="write", search_keywords=["重置技能", "清空技能状态", "skill重置"])
-    tools.register(SkillActionRewriteTool(agent_tasks_dir, db_path=db_path), tags=["skill", "task"], risk="write", search_keywords=["重写技能", "重构skill", "skill重写"])
-
-
-def _register_fitbit_tools(
-    tools: ToolRegistry,
-    config: Config,
-    http_resources: SharedHttpResources,
-) -> None:
-    if not getattr(config.proactive, "fitbit_enabled", False):
-        return
-    fitbit_tools = {
-        tool.name: tool
-        for tool in build_fitbit_tools(
-            fitbit_url=getattr(config.proactive, "fitbit_url", "http://127.0.0.1:18765"),
-            requester=http_resources.local_service,
-        )
-    }
-    tools.register(fitbit_tools["fitbit_health_snapshot"], tags=["health", "fitbit"], risk="read-only", search_keywords=["健康数据", "运动数据", "fitbit", "心率", "步数", "卡路里"])
-    tools.register(fitbit_tools["fitbit_sleep_report"], tags=["health", "fitbit"], risk="read-only", search_keywords=["睡眠报告", "睡眠数据", "睡眠质量", "fitbit", "sleep"])
-
-
-def _register_spawn_tool(
-    tools: ToolRegistry,
-    config: Config,
-    workspace: Path,
-    bus: MessageBus,
-    provider,
-    http_resources: SharedHttpResources,
-):
-    subagent_manager = SubagentManager(
-        provider=provider,
-        workspace=workspace,
-        bus=bus,
-        model=config.model,
-        max_tokens=config.max_tokens,
-        fetch_requester=http_resources.external_default,
-    )
-    if config.spawn_enabled:
-        # 暂时注释掉 spawn 工具注册，仅保留 subagent_manager 初始化，避免影响其他依赖链路。
-        # tools.register(
-        #     SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
-        #     always_on=True,
-        #     tags=["meta", "background"],
-        #     risk="write",
-        #     search_keywords=["后台", "长任务", "异步", "继续处理", "spawn", "阻塞", "后台执行"],
-        # )
-        pass
-    return subagent_manager
-
-
-def _build_scheduler(workspace: Path, push_tool: MessagePushTool) -> SchedulerService:
-    return SchedulerService(
-        store_path=workspace / "schedules.json",
-        push_tool=push_tool,
-        agent_loop=None,
-        tracker=LatencyTracker(),
-    )
-
-
-def _register_scheduler_tools(
-    tools: ToolRegistry,
-    scheduler: SchedulerService,
-) -> None:
-    tools.register(ScheduleTool(scheduler), tags=["scheduling"], risk="write", search_keywords=["定时任务", "设置提醒", "计划任务", "cron", "延时执行", "timer"])
-    tools.register(ListSchedulesTool(scheduler), tags=["scheduling"], risk="read-only", search_keywords=["查看定时任务", "定时列表", "提醒列表", "有哪些计划"])
-    tools.register(CancelScheduleTool(scheduler), tags=["scheduling"], risk="write", search_keywords=["取消定时", "删除提醒", "取消任务", "cancel schedule"])
-
-
-def _register_mcp_tools(
-    tools: ToolRegistry,
-    workspace: Path,
-) -> McpServerRegistry:
-    mcp_registry = McpServerRegistry(
-        config_path=workspace / "mcp_servers.json",
-        tool_registry=tools,
-    )
-    tools.register(McpAddTool(mcp_registry), tags=["mcp", "system"], risk="external-side-effect", search_keywords=["添加MCP", "连接MCP", "注册MCP服务器", "mcp add"])
-    tools.register(McpRemoveTool(mcp_registry), tags=["mcp", "system"], risk="write", search_keywords=["删除MCP", "移除MCP服务器", "mcp remove"])
-    tools.register(McpListTool(mcp_registry), tags=["mcp", "system"], risk="read-only", search_keywords=["MCP列表", "查看MCP服务器", "mcp list"])
-    return mcp_registry
+    async def stop(self) -> None:
+        if self.peer_poller is not None:
+            await self.peer_poller.stop()
+        if self.peer_process_manager is not None:
+            await self.peer_process_manager.shutdown_all()
 
 
 def build_registered_tools(
@@ -230,12 +95,12 @@ def build_registered_tools(
 ) -> tuple[ToolRegistry, MessagePushTool, SchedulerService, McpServerRegistry, MemoryRuntime, PeerProcessManager | None, PeerAgentPoller | None]:
     from session.store import SessionStore
     tools = tools or ToolRegistry()
-    readonly_tools = _build_readonly_tools(http_resources)
+    readonly_tools = build_readonly_tools(http_resources)
     store = session_store or SessionStore(workspace / "sessions.db")
-    push_tool = _register_meta_and_common_tools(tools, readonly_tools, store)
-    _register_skill_action_tools(tools, workspace)
-    _register_fitbit_tools(tools, config, http_resources)
-    subagent_manager = _register_spawn_tool(
+    push_tool = register_meta_and_common_tools(tools, readonly_tools, store)
+    register_skill_action_tools(tools, workspace)
+    register_fitbit_tools(tools, config, http_resources)
+    subagent_manager = register_spawn_tool(
         tools,
         config,
         workspace,
@@ -243,7 +108,7 @@ def build_registered_tools(
         provider,
         http_resources,
     )
-    memory_runtime = build_memory_runtime(
+    memory_runtime = build_memory_toolset(
         config,
         workspace,
         tools,
@@ -253,47 +118,15 @@ def build_registered_tools(
         observe_writer=observe_writer,
     )
     subagent_manager.set_memory_port(memory_runtime.port)
-    tools.register(
-        UpdateNowTool(memory_runtime.port),
-        tags=["memory"],
-        risk="write",
-        search_keywords=["更新记忆", "同步记忆", "刷新知识库", "memory更新"],
-    )
-    scheduler = _build_scheduler(workspace, push_tool)
-    _register_scheduler_tools(tools, scheduler)
-    mcp_registry = _register_mcp_tools(tools, workspace)
+    scheduler = build_scheduler(workspace, push_tool)
+    register_scheduler_tools(tools, scheduler)
+    mcp_registry = register_mcp_tools(tools, workspace)
 
     # Peer agent 工具（异步注册，需在 event loop 中运行）
-    peer_process_manager, peer_poller = _build_peer_agent_resources(
+    peer_process_manager, peer_poller = build_peer_agent_resources(
         config, bus, http_resources
     )
     return tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_process_manager, peer_poller
-
-
-def _build_peer_agent_resources(
-    config: Config,
-    bus: MessageBus,
-    http_resources: SharedHttpResources,
-) -> tuple[PeerProcessManager | None, PeerAgentPoller | None]:
-    """构建 PeerProcessManager 和 PeerAgentPoller（同步部分），工具发现在异步启动时完成。"""
-    if not config.peer_agents:
-        return None, None
-
-    proc_configs = [
-        PeerProcessConfig(
-            name=pa.name,
-            base_url=pa.base_url,
-            launcher=pa.launcher,
-            cwd=pa.cwd,
-            health_path=pa.health_path,
-            startup_timeout_s=pa.startup_timeout_s,
-            shutdown_timeout_s=pa.shutdown_timeout_s,
-        )
-        for pa in config.peer_agents
-    ]
-    pm = PeerProcessManager(configs=proc_configs, requester=http_resources.local_service)
-    poller = PeerAgentPoller(bus=bus, process_manager=pm, requester=http_resources.local_service)
-    return pm, poller
 
 
 def build_core_runtime(
@@ -301,7 +134,7 @@ def build_core_runtime(
     workspace: Path,
     http_resources: SharedHttpResources,
     observe_writer=None,
-) -> tuple:
+) -> CoreRuntime:
     bus = MessageBus()
     provider, light_provider = build_providers(config)
     session_manager = SessionManager(workspace)
@@ -318,72 +151,78 @@ def build_core_runtime(
     presence = PresenceStore(workspace / "presence.json")
     processing_state = ProcessingState()
     loop = AgentLoop(
-        bus=bus,
-        provider=provider,
-        tools=tools,
-        session_manager=session_manager,
-        workspace=workspace,
-        model=config.model,
-        max_iterations=config.max_iterations,
-        max_tokens=config.max_tokens,
-        memory_window=config.memory_window,
-        presence=presence,
-        light_model=config.light_model,
-        light_provider=light_provider,
-        processing_state=processing_state,
-        memory_top_k_procedure=config.memory_v2.top_k_procedure,
-        memory_top_k_history=config.memory_v2.top_k_history,
-        memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
-        memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
-        memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-        memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
-        memory_runtime=memory_runtime,
-        tool_search_enabled=config.tool_search_enabled,
-        memory_hyde_enabled=config.memory_v2.hyde_enabled,
-        memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
-        observe_writer=observe_writer,
-        query_rewriter=(
-            QueryRewriter(
-                llm_client=light_provider or provider,
-                model=config.light_model or config.model,
-                max_tokens=config.memory_v2.gate_max_tokens,
-                timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-            )
-            if config.memory_v2.route_intention_enabled
-            else None
+        AgentLoopDeps(
+            bus=bus,
+            provider=provider,
+            tools=tools,
+            session_manager=session_manager,
+            workspace=workspace,
+            presence=presence,
+            light_provider=light_provider,
+            processing_state=processing_state,
+            memory_runtime=memory_runtime,
+            observe_writer=observe_writer,
+            query_rewriter=(
+                QueryRewriter(
+                    llm_client=light_provider or provider,
+                    model=config.light_model or config.model,
+                    max_tokens=config.memory_v2.gate_max_tokens,
+                    timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+                )
+                if config.memory_v2.route_intention_enabled
+                else None
+            ),
+            sufficiency_checker=(
+                SufficiencyChecker(
+                    llm_client=light_provider or provider,
+                    model=config.light_model or config.model,
+                )
+                if config.memory_v2.sufficiency_check_enabled
+                else None
+            ),
+            profile_extractor=(
+                ProfileFactExtractor(
+                    llm_client=light_provider or provider,
+                    model=config.light_model or config.model,
+                )
+                if config.memory_v2.profile_extraction_enabled
+                else None
+            ),
         ),
-        sufficiency_checker=(
-            SufficiencyChecker(
-                llm_client=light_provider or provider,
-                model=config.light_model or config.model,
-            )
-            if config.memory_v2.sufficiency_check_enabled
-            else None
-        ),
-        profile_extractor=(
-            ProfileFactExtractor(
-                llm_client=light_provider or provider,
-                model=config.light_model or config.model,
-            )
-            if config.memory_v2.profile_extraction_enabled
-            else None
+        AgentLoopConfig(
+            model=config.model,
+            light_model=config.light_model,
+            max_iterations=config.max_iterations,
+            max_tokens=config.max_tokens,
+            memory_window=config.memory_window,
+            memory_top_k_procedure=config.memory_v2.top_k_procedure,
+            memory_top_k_history=config.memory_v2.top_k_history,
+            memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
+            memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
+            memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+            memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
+            tool_search_enabled=config.tool_search_enabled,
+            memory_hyde_enabled=config.memory_v2.hyde_enabled,
+            memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
         ),
     )
 
     scheduler.agent_loop = loop
 
-    return (
-        loop,
-        bus,
-        tools,
-        push_tool,
-        session_manager,
-        scheduler,
-        provider,
-        light_provider,
-        mcp_registry,
-        memory_runtime,
-        presence,
-        peer_pm,
-        peer_poller,
+    return CoreRuntime(
+        config=config,
+        http_resources=http_resources,
+        loop=loop,
+        bus=bus,
+        tools=tools,
+        push_tool=push_tool,
+        session_manager=session_manager,
+        scheduler=scheduler,
+        provider=provider,
+        light_provider=light_provider,
+        mcp_registry=mcp_registry,
+        memory_runtime=memory_runtime,
+        presence=presence,
+        peer_process_manager=peer_pm,
+        peer_poller=peer_poller,
     )

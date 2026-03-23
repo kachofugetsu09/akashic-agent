@@ -474,6 +474,7 @@ class AgentTick:
         while ctx.steps_taken < self._cfg.agent_tick_max_steps:
             tool_call = await self._llm_fn(messages, TOOL_SCHEMAS)
             if tool_call is None:
+                logger.warning("[proactive_v2] loop: llm_fn returned None at step %d, stopping", ctx.steps_taken)
                 break
 
             tool_name = tool_call.get("name", "")

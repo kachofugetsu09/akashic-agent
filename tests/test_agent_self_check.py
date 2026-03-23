@@ -5,19 +5,22 @@ from unittest.mock import MagicMock
 from unittest.mock import AsyncMock
 
 import pytest
-from agent.looping.core import AgentLoop
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
 from core.memory.port import DefaultMemoryPort
 
 
 def _make_loop(tmp_path: Path) -> AgentLoop:
     return AgentLoop(
-        bus=MagicMock(),
-        provider=MagicMock(),
-        tools=MagicMock(),
-        session_manager=MagicMock(),
-        workspace=tmp_path,
-        memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+        AgentLoopDeps(
+            bus=MagicMock(),
+            provider=MagicMock(),
+            tools=MagicMock(),
+            session_manager=MagicMock(),
+            workspace=tmp_path,
+            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+        ),
+        AgentLoopConfig(),
     )
 
 

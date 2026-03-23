@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
-from agent.looping.core import AgentLoop
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
@@ -66,16 +66,18 @@ def _make_loop(
     tools = ToolRegistry()
     tools.register(tool)
     return AgentLoop(
-        bus=MagicMock(),
-        provider=cast(Any, provider),
-        tools=tools,
-        session_manager=MagicMock(),
-        workspace=tmp_path,
-        max_iterations=5,
-        memory_port=cast(
-            Any,
-            memory or DefaultMemoryPort(MemoryStore(tmp_path)),
+        AgentLoopDeps(
+            bus=MagicMock(),
+            provider=cast(Any, provider),
+            tools=tools,
+            session_manager=MagicMock(),
+            workspace=tmp_path,
+            memory_port=cast(
+                Any,
+                memory or DefaultMemoryPort(MemoryStore(tmp_path)),
+            ),
         ),
+        AgentLoopConfig(max_iterations=5),
     )
 
 

@@ -7,7 +7,7 @@ import pytest
 
 from bootstrap import app as bootstrap_app
 from agent.config import Config
-from agent.looping.core import AgentLoop
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
@@ -100,12 +100,15 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     tools = ToolRegistry()
     tools.register(_NoopTool())
     loop = AgentLoop(
-        bus=MagicMock(),
-        provider=cast(Any, _FakeProvider()),
-        tools=tools,
-        session_manager=MagicMock(),
-        workspace=tmp_path,
-        memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+        AgentLoopDeps(
+            bus=MagicMock(),
+            provider=cast(Any, _FakeProvider()),
+            tools=tools,
+            session_manager=MagicMock(),
+            workspace=tmp_path,
+            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+        ),
+        AgentLoopConfig(),
     )
     session = Session("telegram:1")
 
@@ -188,12 +191,15 @@ def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
     )
 
     loop = AgentLoop(
-        bus=MagicMock(),
-        provider=cast(Any, _FakeProvider()),
-        tools=tools,
-        session_manager=MagicMock(),
-        workspace=tmp_path,
-        memory_runtime=runtime,
+        AgentLoopDeps(
+            bus=MagicMock(),
+            provider=cast(Any, _FakeProvider()),
+            tools=tools,
+            session_manager=MagicMock(),
+            workspace=tmp_path,
+            memory_runtime=runtime,
+        ),
+        AgentLoopConfig(),
     )
 
     assert loop._memory_port is memory_port

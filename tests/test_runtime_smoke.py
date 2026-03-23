@@ -30,6 +30,7 @@ def _write_config(path: Path, socket_path: Path) -> None:
         "memory_optimizer_enabled": False,
         "proactive": {
             "enabled": False,
+            "preset": "quiet",
         },
         "channels": {
             "cli": {
@@ -51,21 +52,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
 
     def _patched_build_core_runtime(config, workspace, http_resources):
         runtime = original_build_core_runtime(config, workspace, http_resources)
-        (
-            agent_loop,
-            bus,
-            _tools,
-            _push_tool,
-            _session_manager,
-            scheduler,
-            _provider,
-            _light_provider,
-            _mcp_registry,
-            _memory_runtime,
-            _presence,
-            _peer_pm,
-            _peer_poller,
-        ) = runtime
+        agent_loop = runtime.loop
+        bus = runtime.bus
+        scheduler = runtime.scheduler
 
         async def _agent_loop_run():
             return None

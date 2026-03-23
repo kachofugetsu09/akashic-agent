@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,6 +72,37 @@ def load_config(path: str | Path = "config.json") -> Config:
         data = json.load(f)
 
     provider = data["provider"]
+    channels = _load_channels_config(data)
+    proactive = _load_proactive_config(data)
+    memory_v2 = _load_memory_v2_config(data)
+    peer_agents = _load_peer_agents_config(data)
+
+    return Config(
+        provider=provider,
+        model=data["model"],
+        api_key=_resolve(data.get("api_key", "")),
+        system_prompt=data.get("system_prompt", "You are a helpful assistant."),
+        max_tokens=data.get("max_tokens", 8192),
+        max_iterations=data.get("max_iterations", 10),
+        base_url=data.get("base_url") or _PRESETS.get(provider),
+        extra_body=data.get("extra_body", {}),
+        channels=channels,
+        proactive=proactive,
+        memory_optimizer_enabled=bool(data.get("memory_optimizer_enabled", True)),
+        memory_optimizer_interval_seconds=int(
+            data.get("memory_optimizer_interval_seconds", 3600)
+        ),
+        light_model=data.get("light_model", ""),
+        light_api_key=_resolve(data.get("light_api_key", "")),
+        light_base_url=data.get("light_base_url", ""),
+        memory_v2=memory_v2,
+        tool_search_enabled=bool(data.get("tool_search_enabled", False)),
+        spawn_enabled=bool(data.get("spawn_enabled", True)),
+        peer_agents=peer_agents,
+    )
+
+
+def _load_channels_config(data: dict) -> ChannelsConfig:
     channels_data = data.get("channels", {})
 
     telegram = None
@@ -102,7 +134,10 @@ def load_config(path: str | Path = "config.json") -> Config:
         socket=channels_data.get("cli", {}).get("socket", DEFAULT_SOCKET),
     )
     channels.socket = channels.socket or DEFAULT_SOCKET
+    return channels
 
+
+def _load_proactive_config(data: dict) -> ProactiveConfig:
     proactive = ProactiveConfig()
     if p := data.get("proactive"):
         try:
@@ -110,7 +145,10 @@ def load_config(path: str | Path = "config.json") -> Config:
         except ProactiveConfigError as e:
             print(f"❌ Proactive 配置错误: {e}", file=sys.stderr)
             sys.exit(1)
+    return proactive
 
+
+def _load_memory_v2_config(data: dict) -> MemoryV2Config:
     mv2 = data.get("memory_v2", {})
     for key, message in _DEPRECATED_MEMORY_V2_KEYS.items():
         if key in mv2:
@@ -123,7 +161,7 @@ def load_config(path: str | Path = "config.json") -> Config:
             mv2.get("recall_top_k", mv2.get("retrieve_top_k", 8)),
         )
     )
-    memory_v2 = MemoryV2Config(
+    return MemoryV2Config(
         enabled=bool(mv2.get("enabled", False)),
         db_path=mv2.get("db_path", ""),
         embed_model=mv2.get("embed_model", "text-embedding-v3"),
@@ -151,41 +189,21 @@ def load_config(path: str | Path = "config.json") -> Config:
         hyde_timeout_ms=int(mv2.get("hyde_timeout_ms", 2000)),
     )
 
-    return Config(
-        provider=provider,
-        model=data["model"],
-        api_key=_resolve(data.get("api_key", "")),
-        system_prompt=data.get("system_prompt", "You are a helpful assistant."),
-        max_tokens=data.get("max_tokens", 8192),
-        max_iterations=data.get("max_iterations", 10),
-        base_url=data.get("base_url") or _PRESETS.get(provider),
-        extra_body=data.get("extra_body", {}),
-        channels=channels,
-        proactive=proactive,
-        memory_optimizer_enabled=bool(data.get("memory_optimizer_enabled", True)),
-        memory_optimizer_interval_seconds=int(
-            data.get("memory_optimizer_interval_seconds", 3600)
-        ),
-        light_model=data.get("light_model", ""),
-        light_api_key=_resolve(data.get("light_api_key", "")),
-        light_base_url=data.get("light_base_url", ""),
-        memory_v2=memory_v2,
-        tool_search_enabled=bool(data.get("tool_search_enabled", False)),
-        spawn_enabled=bool(data.get("spawn_enabled", True)),
-        peer_agents=[
-            PeerAgentConfig(
-                name=pa["name"],
-                base_url=pa["base_url"],
-                launcher=pa["launcher"],
-                cwd=pa.get("cwd"),
-                description=pa.get("description", ""),
-                health_path=pa.get("health_path", "/health"),
-                startup_timeout_s=int(pa.get("startup_timeout_s", 30)),
-                shutdown_timeout_s=int(pa.get("shutdown_timeout_s", 10)),
-            )
-            for pa in data.get("peer_agents", [])
-        ],
-    )
+
+def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
+    return [
+        PeerAgentConfig(
+            name=pa["name"],
+            base_url=pa["base_url"],
+            launcher=pa["launcher"],
+            cwd=pa.get("cwd"),
+            description=pa.get("description", ""),
+            health_path=pa.get("health_path", "/health"),
+            startup_timeout_s=int(pa.get("startup_timeout_s", 30)),
+            shutdown_timeout_s=int(pa.get("shutdown_timeout_s", 10)),
+        )
+        for pa in data.get("peer_agents", [])
+    ]
 
 
 def _resolve(value: str) -> str:

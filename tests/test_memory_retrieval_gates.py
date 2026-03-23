@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agent.looping.core import AgentLoop
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
 from agent.looping.handlers import ConversationTurnHandler
 from agent.memory import MemoryStore
 from agent.policies.history_route import DecisionMeta, RouteDecision
@@ -74,17 +74,20 @@ def _make_loop(provider: _Provider, **kwargs: Any) -> AgentLoop:
     tools = ToolRegistry()
     tools.register(_NoopTool())
     workspace = kwargs.pop("workspace", Path(tempfile.mkdtemp(prefix="loop-test-")))
+    memory_port = kwargs.pop(
+        "memory_port", DefaultMemoryPort(MemoryStore(workspace))
+    )
     return AgentLoop(
-        bus=MagicMock(),
-        provider=cast(Any, provider),
-        light_provider=cast(Any, provider),
-        tools=tools,
-        session_manager=MagicMock(),
-        workspace=workspace,
-        memory_port=kwargs.pop(
-            "memory_port", DefaultMemoryPort(MemoryStore(workspace))
+        AgentLoopDeps(
+            bus=MagicMock(),
+            provider=cast(Any, provider),
+            light_provider=cast(Any, provider),
+            tools=tools,
+            session_manager=MagicMock(),
+            workspace=workspace,
+            memory_port=memory_port,
         ),
-        **kwargs,
+        AgentLoopConfig(**kwargs),
     )
 
 

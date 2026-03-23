@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
-from agent.looping.core import AgentLoop
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
 
 import pytest
 
@@ -74,14 +74,15 @@ def _make_loop(
     tool_search_enabled: bool = True,
 ) -> AgentLoop:
     return AgentLoop(
-        bus=MagicMock(),
-        provider=cast(Any, provider),
-        tools=registry,
-        session_manager=MagicMock(),
-        workspace=tmp_path,
-        max_iterations=10,
-        memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
-        tool_search_enabled=tool_search_enabled,
+        AgentLoopDeps(
+            bus=MagicMock(),
+            provider=cast(Any, provider),
+            tools=registry,
+            session_manager=MagicMock(),
+            workspace=tmp_path,
+            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+        ),
+        AgentLoopConfig(max_iterations=10, tool_search_enabled=tool_search_enabled),
     )
 
 

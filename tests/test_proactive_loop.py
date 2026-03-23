@@ -154,6 +154,8 @@ async def test_proactive_loop_run_waits_before_first_tick():
         default_chat_id="7674283004",
     )
     loop._manual_trigger_event = asyncio.Event()
+    loop._manual_trigger_lock = asyncio.Lock()
+    loop._feed_poll_lock = asyncio.Lock()
     ticked = {"done": False}
 
     async def _tick():
@@ -410,6 +412,7 @@ async def test_engine_evaluate_no_candidates_falls_through_to_draw_threshold():
     engine._presence = None
     engine._state = SimpleNamespace()
     engine._try_skill_action = AsyncMock()
+    engine._state.is_item_seen = MagicMock(return_value=False)
     ctx = DecisionContext()
     sense = ctx.ensure_sense()
     fetch = ctx.ensure_fetch()
@@ -452,6 +455,7 @@ async def test_engine_evaluate_draw_threshold_still_triggers_skill_action():
     )
     engine._presence = None
     engine._state = SimpleNamespace()
+    engine._state.is_item_seen = MagicMock(return_value=False)
     engine._try_skill_action = AsyncMock()
     ctx = DecisionContext()
     sense = ctx.ensure_sense()
@@ -520,6 +524,7 @@ async def test_engine_evaluate_returns_structured_snapshot():
     engine._presence = None
     engine._rng = None
     engine._state = SimpleNamespace()
+    engine._state.is_item_seen = MagicMock(return_value=False)
     engine._try_skill_action = AsyncMock()
     ctx = DecisionContext()
     sense = ctx.ensure_sense()
@@ -1681,7 +1686,11 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
         score_llm_threshold=0.0,
         threshold=0.7,
     )
-    engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
+    engine._state = SimpleNamespace(
+        mark_rejection_cooldown=MagicMock(),
+        mark_items_seen=MagicMock(),
+        mark_semantic_items=MagicMock(),
+    )
     async def _compose_for_judge(**kw):
         return "content"
 
@@ -1689,7 +1698,7 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
         return ProactiveJudgeResult(
             final_score=0.1,
             should_send=False,
-            vetoed_by="llm_dim",
+            vetoed_by="context_only_threshold",
             dims_deterministic={"urgency": 0.5, "balance": 1.0, "dynamics": 1.0},
             dims_llm={"information_gap": 0.0, "relevance": 0.0, "expected_impact": 0.0},
             dims_llm_raw={"information_gap": 1, "relevance": 1, "expected_impact": 1},
@@ -1701,6 +1710,7 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
         compose_for_judge=_compose_for_judge,
         judge_message=_judge_message,
         resolve_evidence_item_ids=lambda decision, items: [item.title for item in items],
+        semantic_entries=lambda items: items,
     )
 
     ctx = DecisionContext()
@@ -1731,12 +1741,12 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
     result = await engine._judge_and_send(ctx)
     assert result == score.base_score
     assert ctx.ensure_decide().should_send is False
-    assert ctx.ensure_decide().judge_vetoed_by == "llm_dim"
+    assert ctx.ensure_decide().judge_vetoed_by == "context_only_threshold"
 
     # 2. LLM 拒绝应写入本轮真正进入 compose 的条目，而不是原始候选首条。
     engine._state.mark_rejection_cooldown.assert_called_once_with(
         [("rss:hltv", "Niko semifinal")],
-        hours=12,
+        hours=8,
     )
 
 
