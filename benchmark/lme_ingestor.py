@@ -18,7 +18,7 @@ from typing import Any
 
 import openai
 
-from agent.looping.consolidation import AgentLoopConsolidationMixin
+from agent.looping.consolidation import ConsolidationService
 from agent.memory import MemoryStore
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -227,8 +227,8 @@ class _ScopedMemorizerAdapter:
         return parts[1] if len(parts) >= 2 else ""
 
 
-class _ConsolidationRunner(AgentLoopConsolidationMixin):
-    """最小运行器：仅提供 _consolidate_memory 需要的属性。"""
+class _ConsolidationRunner:
+    """最小运行器：封装 ConsolidationService。"""
 
     def __init__(
         self,
@@ -239,11 +239,26 @@ class _ConsolidationRunner(AgentLoopConsolidationMixin):
         memory_window: int,
         profile_extractor: ProfileFactExtractor | None,
     ) -> None:
-        self._memory_port = memory_port
-        self.provider = provider
-        self.model = model
         self.memory_window = memory_window
-        self._profile_extractor = profile_extractor
+        self._service = ConsolidationService(
+            memory_port=memory_port,
+            provider=provider,
+            model=model,
+            memory_window=memory_window,
+            profile_extractor=profile_extractor,
+        )
+
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        await_vector_store: bool = False,
+    ) -> None:
+        await self._service.consolidate(
+            session,
+            archive_all=archive_all,
+            await_vector_store=await_vector_store,
+        )
 
 
 class LMEProductionIngestor:

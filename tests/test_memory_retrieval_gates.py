@@ -80,6 +80,7 @@ def _make_loop(
     *,
     workspace: Any = None,
     memory_port: Any = None,
+    profile_extractor: Any = None,
     memory_route_intention_enabled: bool = False,
     **_unused: Any,
 ) -> AgentLoop:
@@ -96,6 +97,7 @@ def _make_loop(
             session_manager=MagicMock(),
             workspace=_workspace,
             memory_port=_memory_port,
+            profile_extractor=profile_extractor,
         ),
         AgentLoopConfig(
             memory=MemoryConfig(route_intention_enabled=memory_route_intention_enabled),
@@ -643,7 +645,6 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
 
 
 def test_consolidate_memory_calls_profile_extractor_when_set():
-    loop = _make_loop(_Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']))
     memory_port = MagicMock()
     memory_port.read_long_term = MagicMock(return_value="MEMORY")
     memory_port.append_history_once = MagicMock(return_value=True)
@@ -652,8 +653,11 @@ def test_consolidate_memory_calls_profile_extractor_when_set():
     memory_port.save_item = AsyncMock(return_value="new:profile-1")
     profile_extractor = MagicMock()
     profile_extractor.extract = AsyncMock(return_value=[])
-    loop._consolidation._memory_port = memory_port
-    loop._consolidation._profile_extractor = profile_extractor
+    loop = _make_loop(
+        _Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']),
+        memory_port=memory_port,
+        profile_extractor=profile_extractor,
+    )
     session = _DummySession("cli:1")
     session.messages = [
         {"role": "user", "content": "我买了 Zigbee 网关和加湿器", "timestamp": "2026-03-15T10:00:00"},
@@ -675,15 +679,17 @@ def test_consolidate_memory_calls_profile_extractor_when_set():
 
 
 def test_consolidate_memory_works_without_profile_extractor():
-    loop = _make_loop(_Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']))
     memory_port = MagicMock()
     memory_port.read_long_term = MagicMock(return_value="MEMORY")
     memory_port.append_history_once = MagicMock(return_value=True)
     memory_port.append_pending_once = MagicMock(return_value=True)
     memory_port.save_from_consolidation = AsyncMock()
     memory_port.save_item = AsyncMock(return_value="new:profile-1")
-    loop._consolidation._memory_port = memory_port
-    loop._consolidation._profile_extractor = None
+    loop = _make_loop(
+        _Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']),
+        memory_port=memory_port,
+        profile_extractor=None,
+    )
     session = _DummySession("cli:1")
     session.messages = [
         {"role": "user", "content": "我买了 Zigbee 网关和加湿器", "timestamp": "2026-03-15T10:00:00"},

@@ -11,13 +11,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.looping.consolidation import (
-    AgentLoopConsolidationMixin,
+    ConsolidationService,
     _build_consolidation_source_ref,
     _format_conversation_for_consolidation,
     _format_pending_items,
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
+from agent.looping.ports import TurnScheduler
 from memory2.profile_extractor import ProfileFactExtractor
 from memory2.post_response_worker import PostResponseMemoryWorker
 from proactive.fitbit_sleep import (
@@ -32,11 +33,8 @@ class _Resp:
         self.content = content
 
 
-class _ConsolidationHarness(AgentLoopConsolidationMixin):
+class _ConsolidationHarness:
     def __init__(self, payload: str) -> None:
-        self._post_mem_failures = 0
-        self._consolidating = set()
-        self.memory_window = 4
         self._memory_port = SimpleNamespace(
             read_long_term=MagicMock(return_value="MEM"),
             append_history_once=MagicMock(return_value=True),
@@ -44,8 +42,44 @@ class _ConsolidationHarness(AgentLoopConsolidationMixin):
             save_from_consolidation=AsyncMock(),
         )
         self.provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp(payload)))
-        self.model = "lm"
         self.session_manager = SimpleNamespace(save_async=AsyncMock())
+        self._consolidation = ConsolidationService(
+            memory_port=self._memory_port,
+            provider=self.provider,
+            model="lm",
+            memory_window=4,
+            profile_extractor=None,
+        )
+        self._scheduler = TurnScheduler(
+            post_mem_worker=None,
+            consolidation_runner=self._consolidate_and_save,
+            memory_window=4,
+        )
+
+    def set_profile_extractor(self, extractor) -> None:
+        self._consolidation = ConsolidationService(
+            memory_port=self._memory_port,
+            provider=self.provider,
+            model="lm",
+            memory_window=4,
+            profile_extractor=extractor,
+        )
+
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        await_vector_store: bool = False,
+    ) -> None:
+        await self._consolidation.consolidate(
+            session,
+            archive_all=archive_all,
+            await_vector_store=await_vector_store,
+        )
+
+    async def _consolidate_and_save(self, session: object) -> None:
+        await self._consolidate_memory(session)
+        await self.session_manager.save_async(session)
 
 
 @pytest.mark.asyncio
@@ -148,31 +182,31 @@ async def test_consolidation_helpers(
 @pytest.mark.asyncio
 async def test_consolidation_background_and_error_accounting(monkeypatch: pytest.MonkeyPatch):
     harness = _ConsolidationHarness('{"history_entry":"[2025-01-01 10:00] old"}')
-    harness._consolidating.add("telegram:1")
+    harness._scheduler.mark_manual_start("telegram:1")
     session = SimpleNamespace(
         key="telegram:1",
         messages=[{"role": "user", "content": "u1", "timestamp": "2025-01-01T10:00:00"}] * 5,
         last_consolidated=0,
     )
-    await harness._consolidate_memory_bg(session, "telegram:1")
-    assert "telegram:1" not in harness._consolidating
+    await harness._scheduler._run_consolidation_bg(session, "telegram:1")
+    assert harness._scheduler.is_consolidating("telegram:1") is False
     harness.session_manager.save_async.assert_awaited_once()
 
     ok = asyncio.create_task(asyncio.sleep(0))
     await ok
-    harness._on_post_mem_task_done(ok, "s1")
+    harness._scheduler._on_post_mem_done(ok, "s1")
     bad = asyncio.create_task(asyncio.sleep(0))
     bad.cancel()
     with pytest.raises(asyncio.CancelledError):
         await bad
-    harness._on_post_mem_task_done(bad, "s1")
+    harness._scheduler._on_post_mem_done(bad, "s1")
 
     class _BrokenTask:
         def exception(self):
             raise RuntimeError("inspect failed")
 
-    harness._on_post_mem_task_done(_BrokenTask(), "s2")
-    assert harness._post_mem_failures == 1
+    harness._scheduler._on_post_mem_done(_BrokenTask(), "s2")
+    assert harness._scheduler._post_mem_failures == 1
 
 
 @pytest.mark.asyncio
@@ -284,7 +318,7 @@ async def test_consolidation_profile_extractor_skips_memory_test_question():
         )
     )
     profile_client = _ProfileClient()
-    harness._profile_extractor = ProfileFactExtractor(llm_client=profile_client)
+    harness.set_profile_extractor(ProfileFactExtractor(llm_client=profile_client))
     harness._memory_port.save_item = AsyncMock(return_value="new:profile-1")
     session = SimpleNamespace(
         key="telegram:fitbit",

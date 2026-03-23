@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.looping.safety_retry import AgentLoopSafetyRetryMixin
+from agent.looping.safety_retry import SafetyRetryService
+from agent.looping.tool_execution import ToolDiscoveryState
 from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
 from agent.tools.shell import ShellTool, _truncate, _validate_network_command
 from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
@@ -32,19 +33,28 @@ from proactive.loop_helpers import (
 )
 
 
-class _SafetyHarness(AgentLoopSafetyRetryMixin):
+class _SafetyHarness:
     def __init__(self, outcomes):
-        self.memory_window = 10
-        self._tool_search_enabled = True
-        self._unlocked_tools = {"s:1": OrderedDict({"old": None})}
         self.tools = SimpleNamespace(get_always_on_names=lambda: {"always"})
         self.context = SimpleNamespace(
             build_messages=lambda **kwargs: kwargs["history"] + [{"role": "user"}]
         )
         self.session_manager = SimpleNamespace(save_async=AsyncMock())
         self._outcomes = list(outcomes)
+        self.discovery = ToolDiscoveryState()
+        self.discovery._unlocked = {"s:1": OrderedDict({"old": None})}
+        self.executor = SimpleNamespace(execute=AsyncMock(side_effect=self._run_executor))
+        self.service = SafetyRetryService(
+            executor=self.executor,
+            context=self.context,
+            session_manager=self.session_manager,
+            tools=self.tools,
+            discovery=self.discovery,
+            tool_search_enabled=True,
+            memory_window=10,
+        )
 
-    async def _run_agent_loop(self, initial_messages, **kwargs):
+    async def _run_executor(self, initial_messages, **kwargs):
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -72,21 +82,21 @@ async def test_safety_retry_shell_and_task_note_cover_branches(tmp_path: Path):
             ("ok", ["tool_search", "x", "y"], [{"calls": []}], None, None),
         ]
     )
-    content, tools_used, _, _ = await harness._run_with_safety_retry(msg, session)
+    content, tools_used, _, _ = await harness.service.run(msg, session)
     assert content == "ok"
     assert tools_used == ["tool_search", "x", "y"]
-    assert list(harness._unlocked_tools["s:1"].keys())[-2:] == ["x", "y"]
+    assert list(harness.discovery._unlocked["s:1"].keys())[-2:] == ["x", "y"]
 
     harness = _SafetyHarness([ContextLengthError("long")] * 3)
-    content, tools_used, chain, _ = await harness._run_with_safety_retry(msg, session)
+    content, tools_used, chain, _ = await harness.service.run(msg, session)
     assert "上下文过长" in content
     assert tools_used == []
     assert chain == []
 
     harness = _SafetyHarness([("ok", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], [], None, None)])
-    harness._update_lru("s:1", ["always", "tool_search", "a", "b", "c", "d", "e", "f"])
-    assert "always" not in harness._unlocked_tools["s:1"]
-    assert len(harness._unlocked_tools["s:1"]) == 5
+    harness.discovery.update("s:1", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], harness.tools.get_always_on_names())
+    assert "always" not in harness.discovery._unlocked["s:1"]
+    assert len(harness.discovery._unlocked["s:1"]) == 5
 
     tool = ShellTool()
     assert "命令不能为空" in await tool.execute(command="")

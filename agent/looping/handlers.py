@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 _WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -41,6 +41,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("agent.loop_handlers")
 
 
+class TurnRunner(Protocol):
+    async def run(
+        self,
+        msg: InboundMessage,
+        session: Any,
+        skill_names: list[str] | None = None,
+        base_history: list[dict] | None = None,
+        retrieved_memory_block: str = "",
+    ) -> tuple[str, list[str], list[dict], str | None]:
+        ...
+
+
 class ConversationTurnHandler:
     """Phase 2 过渡形态：持有显式 ports，不再持有 AgentLoop 引用。
 
@@ -52,7 +64,7 @@ class ConversationTurnHandler:
         self,
         llm: LLMServices,
         llm_config: LLMConfig,
-        turn_runner: Any,
+        turn_runner: TurnRunner,
         memory: MemoryServices,
         memory_config: MemoryConfig,
         session: SessionServices,
