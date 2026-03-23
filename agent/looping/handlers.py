@@ -3,11 +3,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 _WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
+from agent.looping.memory_gate import (
+    _decide_history_route,
+    _format_gate_history,
+    _trace_memory_retrieve,
+    _trace_route_reason,
+    _update_session_runtime_metadata,
+)
+from agent.looping.ports import (
+    LLMConfig,
+    LLMServices,
+    MemoryConfig,
+    MemoryServices,
+    ObservabilityServices,
+    SessionServices,
+    TurnScheduler,
+)
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import parse_spawn_completion
 from memory2.injection_planner import (
@@ -17,23 +34,50 @@ from memory2.injection_planner import (
 from memory2.query_rewriter import GateDecision
 
 if TYPE_CHECKING:
-    from agent.looping.core import AgentLoop
+    from agent.context import ContextBuilder
+    from agent.tools.registry import ToolRegistry
     from core.observe.events import RagItemTrace, RagTrace, TurnTrace
 
 logger = logging.getLogger("agent.loop_handlers")
 
 
 class ConversationTurnHandler:
-    def __init__(self, loop: "AgentLoop") -> None:
-        self._loop = loop
+    """Phase 2 过渡形态：持有显式 ports，不再持有 AgentLoop 引用。
+
+    9 个参数超过 ≤3 规则的硬性限制，属于设计文档明确说明的过渡例外；
+    Phase 4 完成后子组件各自满足该规则，本类也随之收敛。
+    """
+
+    def __init__(
+        self,
+        llm: LLMServices,
+        llm_config: LLMConfig,
+        memory: MemoryServices,
+        memory_config: MemoryConfig,
+        session: SessionServices,
+        scheduler: TurnScheduler,
+        trace: ObservabilityServices,
+        tools: ToolRegistry,
+        context: ContextBuilder,
+    ) -> None:
+        self._llm = llm
+        self._llm_config = llm_config
+        self._memory = memory
+        self._memory_config = memory_config
+        self._session = session
+        self._scheduler = scheduler
+        self._trace = trace
+        self._tools = tools
+        self._context = context
+        # Resolved light_model: fall back to primary model when not configured
+        self._light_model = llm_config.light_model or llm_config.model
 
     async def process(self, msg: InboundMessage, key: str) -> OutboundMessage:
-        """处理一次普通用户消息，把“检索 -> 执行 -> 持久化 -> 回包”串成主路径。"""
-        loop = self._loop
-        session = loop.session_manager.get_or_create(key)
+        """处理一次普通用户消息，把"检索 -> 执行 -> 持久化 -> 回包"串成主路径。"""
+        session = self._session.session_manager.get_or_create(key)
         # 1. 先解析 skill 提及和主会话历史，准备这轮上下文。
         skill_mentions = self._collect_skill_mentions(msg)
-        main_history = session.get_history(max_messages=loop.memory_window)
+        main_history = session.get_history(max_messages=self._memory_config.window)
         # 2. 再独立跑 memory 注入，尽量让主执行链只拿最终 block。
         retrieved_block, rag_trace = await self._retrieve_memory_block(
             msg=msg,
@@ -61,7 +105,6 @@ class ConversationTurnHandler:
         )
         # 5. 写入 observe trace（非阻塞）。
         self._emit_observe_traces(
-            loop=loop,
             key=key,
             msg=msg,
             final_content=final_content,
@@ -77,29 +120,38 @@ class ConversationTurnHandler:
         )
 
     def _collect_skill_mentions(self, msg: InboundMessage) -> list[str]:
-        loop = self._loop
-        skill_mentions = loop._collect_skill_mentions(msg.content)
-        if skill_mentions:
-            logger.info(f"检测到 $skill 提及，直接注入完整内容: {skill_mentions}")
-        return skill_mentions
+        raw_names = re.findall(r"\$([a-zA-Z0-9_-]+)", msg.content)
+        if not raw_names:
+            return []
+        available = {
+            s["name"] for s in self._context.skills.list_skills(filter_unavailable=False)
+        }
+        seen: set[str] = set()
+        result: list[str] = []
+        for name in raw_names:
+            if name in available and name not in seen:
+                seen.add(name)
+                result.append(name)
+        if result:
+            logger.info(f"检测到 $skill 提及，直接注入完整内容: {result}")
+        return result
 
     async def _retrieve_memory_block(
         self,
         *,
         msg: InboundMessage,
         key: str,
-        session,
+        session: Any,
         main_history: list[dict],
-    ) -> tuple[str, "RagTrace | None"]:
+    ) -> tuple[str, RagTrace | None]:
         """为主对话路径准备 memory block，并把 route / injection 细节写入 trace。"""
-        loop = self._loop
         retrieved_block = ""
         rag_trace: RagTrace | None = None
         gate_type = "history_route"
         sufficiency_trace: dict[str, object] = self._empty_sufficiency_state()
         try:
-            # 1. 先整理 gate 和 HyDE 需要的最近上下文，作为“要不要检索历史”的输入。
-            recent_turns = loop._format_gate_history(main_history, max_turns=3)
+            # 1. 先整理 gate 和 HyDE 需要的最近上下文，作为"要不要检索历史"的输入。
+            recent_turns = _format_gate_history(main_history, max_turns=3)
             hyde_context = self._build_hyde_context(main_history)
 
             # 2. 再做 memory gate：
@@ -169,7 +221,8 @@ class ConversationTurnHandler:
             )
         except Exception as e:
             logger.warning(f"memory2 retrieve 失败，跳过: {e}")
-            loop._trace_memory_retrieve(
+            _trace_memory_retrieve(
+                self._trace.workspace,
                 session_key=key,
                 channel=msg.channel,
                 chat_id=msg.chat_id,
@@ -211,7 +264,7 @@ class ConversationTurnHandler:
     def _build_hyde_context(self, main_history: list[dict]) -> str:
         now = datetime.now()
         date_str = now.strftime(f"%Y-%m-%d {_WEEKDAY_CN[now.weekday()]} %H:%M")
-        hyde_turns = self._loop._format_gate_history(
+        hyde_turns = _format_gate_history(
             main_history,
             max_turns=3,
             max_content_len=None,
@@ -222,19 +275,18 @@ class ConversationTurnHandler:
         self,
         *,
         msg: InboundMessage,
-        session,
+        session: Any,
         recent_turns: str,
     ) -> tuple[dict[str, object], list[dict]]:
-        loop = self._loop
-        if loop._query_rewriter is not None:
-            decision: GateDecision = await loop._query_rewriter.decide(
+        if self._memory.query_rewriter is not None:
+            decision: GateDecision = await self._memory.query_rewriter.decide(
                 user_msg=msg.content,
                 recent_history=recent_turns,
             )
             p_items = await retrieve_procedure_items(
-                loop._memory_port,
+                self._memory.port,
                 query=msg.content,
-                top_k=loop._memory_top_k_procedure,
+                top_k=self._memory_config.top_k_procedure,
             )
             return {
                 "gate_type": "query_rewriter",
@@ -254,27 +306,31 @@ class ConversationTurnHandler:
         self,
         *,
         msg: InboundMessage,
-        session,
+        session: Any,
         recent_turns: str,
     ) -> tuple[dict[str, object], list[dict]]:
-        loop = self._loop
         runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
         p_task = asyncio.create_task(
             retrieve_procedure_items(
-                loop._memory_port,
+                self._memory.port,
                 query=msg.content,
-                top_k=loop._memory_top_k_procedure,
+                top_k=self._memory_config.top_k_procedure,
             )
         )
         route_task = asyncio.create_task(
-            loop._decide_history_route(
+            _decide_history_route(
                 user_msg=msg.content,
                 metadata=runtime_md,
                 recent_history=recent_turns,
+                light_provider=self._llm.light_provider,
+                light_model=self._light_model,
+                route_intention_enabled=self._memory_config.route_intention_enabled,
+                gate_llm_timeout_ms=self._memory_config.gate_llm_timeout_ms,
+                gate_max_tokens=self._memory_config.gate_max_tokens,
             )
         )
         p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
-        route_reason = loop._trace_route_reason(route_decision_obj)
+        route_reason = _trace_route_reason(route_decision_obj)
         return {
             "gate_type": "history_route",
             "episodic_query": route_decision_obj.rewritten_query,
@@ -295,12 +351,12 @@ class ConversationTurnHandler:
         if route_decision != "RETRIEVE" or not history_memory_types:
             return [], "disabled", None
         return await retrieve_episodic(
-            self._loop._memory_port,
+            self._memory.port,
             rewritten_query,
             memory_types=history_memory_types,
-            top_k=self._loop._memory_top_k_history,
+            top_k=self._memory_config.top_k_history,
             context=hyde_context,
-            hyde_enhancer=self._loop._hyde_enhancer,
+            hyde_enhancer=self._memory.hyde_enhancer,
         )
 
     def _build_injection_payload(
@@ -309,7 +365,7 @@ class ConversationTurnHandler:
         procedure_items: list[dict],
         history_items: list[dict],
     ) -> tuple[list[dict], str, list[str]]:
-        memory = self._loop._memory_port
+        memory = self._memory.port
         merged = self._merge_memory_items(procedure_items + history_items)
         selected_items = memory.select_for_injection(merged)
         block, item_ids = memory.build_injection_block(merged)
@@ -331,7 +387,7 @@ class ConversationTurnHandler:
         injected_item_ids: list[str],
         sufficiency_trace: dict[str, object],
     ) -> tuple[list[dict], str, list[dict], str, list[str]]:
-        checker = getattr(self._loop, "_sufficiency_checker", None)
+        checker = self._memory.sufficiency_checker
         if route_decision != "RETRIEVE" or checker is None or retrieved_block:
             return (
                 history_items,
@@ -359,12 +415,12 @@ class ConversationTurnHandler:
                 injected_item_ids,
             )
         extra_h_items, extra_scope_mode, _retry_hypothesis = await retrieve_episodic(
-            self._loop._memory_port,
+            self._memory.port,
             result.refined_query,
             memory_types=history_memory_types,
-            top_k=self._loop._memory_top_k_history,
+            top_k=self._memory_config.top_k_history,
             context=recent_turns,
-            hyde_enhancer=self._loop._hyde_enhancer,
+            hyde_enhancer=self._memory.hyde_enhancer,
         )
         sufficiency_trace["retry_count"] = 1
         history_items = history_items + extra_h_items
@@ -406,7 +462,7 @@ class ConversationTurnHandler:
         retrieved_block: str,
         injected_item_ids: list[str],
         sufficiency_trace: dict[str, object],
-    ) -> "RagTrace":
+    ) -> RagTrace:
         # 1. 先打本轮命中日志，便于排查注入结果。
         logger.info(
             "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，选出 %d 条，注入 %d 条%s",
@@ -422,7 +478,8 @@ class ConversationTurnHandler:
         self._log_memory_injection(selected_items)
         # 2. 再把检索细节写入 jsonl trace。
         sop_guard_applied = self._has_sop_guard_hit(p_items, injected_item_ids)
-        self._loop._trace_memory_retrieve(
+        _trace_memory_retrieve(
+            self._trace.workspace,
             session_key=key,
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -489,7 +546,7 @@ class ConversationTurnHandler:
             and item.get("id")
         }
         return bool(
-            self._loop._memory_sop_guard_enabled
+            self._memory_config.sop_guard_enabled
             and any(item_id in protected_ids for item_id in injected_item_ids)
         )
 
@@ -497,17 +554,16 @@ class ConversationTurnHandler:
         self,
         *,
         msg: InboundMessage,
-        session,
+        session: Any,
         skill_mentions: list[str],
         main_history: list[dict],
         retrieved_block: str,
     ) -> tuple[str, list[str], list[dict], str | None]:
         """真正执行一轮 agent 对话，并返回内容、工具使用、tool_chain 和 thinking。"""
-        loop = self._loop
         # 1. 先把 channel/chat_id 写进 tool context，保证工具知道当前会话来源。
-        loop._set_tool_context(msg.channel, msg.chat_id)
+        self._tools.set_context(channel=msg.channel, chat_id=msg.chat_id)
         # 2. 再统一走 safety retry 包装，避免模型输出异常直接打断主流程。
-        final_content, tools_used, tool_chain, thinking = await loop._run_with_safety_retry(
+        final_content, tools_used, tool_chain, thinking = await self._llm.run_turn_fn(
             msg,
             session,
             skill_names=skill_mentions or None,
@@ -525,23 +581,21 @@ class ConversationTurnHandler:
         *,
         msg: InboundMessage,
         key: str,
-        session,
+        session: Any,
         final_content: str,
         tools_used: list[str],
         tool_chain: list[dict],
         thinking: str | None = None,
     ) -> None:
         """把本轮结果统一写回 session、presence 和 post-response worker。"""
-        loop = self._loop
         preview = (
             final_content[:120] + "..." if len(final_content) > 120 else final_content
         )
         logger.info(f"Response to {msg.channel}:{msg.sender}: {preview}")
 
         # 1. 先把 user/assistant 两条消息落到 session 内存对象中。
-        # final_content 已由 provider 层剥离 thinking，直接存入 session。
-        if loop._presence:
-            loop._presence.record_user_message(key)
+        if self._session.presence:
+            self._session.presence.record_user_message(key)
         session.add_message("user", msg.content, media=msg.media if msg.media else None)
         session.add_message(
             "assistant",
@@ -550,15 +604,15 @@ class ConversationTurnHandler:
             tool_chain=tool_chain if tool_chain else None,
         )
         # 2. 再补 runtime metadata，让后续 memory gate / proactive 能读到这轮工具状态。
-        loop._update_session_runtime_metadata(
+        _update_session_runtime_metadata(
             session,
             tools_used=tools_used,
             tool_chain=tool_chain,
         )
         # 3. 最后做持久化 append，并异步调度 consolidation / post-response memory。
-        await loop.session_manager.append_messages(session, session.messages[-2:])
-        loop._schedule_consolidation_if_needed(session, key)
-        loop._schedule_post_response_memory(
+        await self._session.session_manager.append_messages(session, session.messages[-2:])
+        self._scheduler.schedule_consolidation(session, key)
+        self._scheduler.schedule_post_response_memory(
             msg=msg,
             key=key,
             final_content=final_content,
@@ -586,17 +640,16 @@ class ConversationTurnHandler:
             },
         )
 
-    @staticmethod
     def _emit_observe_traces(
+        self,
         *,
-        loop: "AgentLoop",
         key: str,
         msg: InboundMessage,
         final_content: str,
         tool_chain: list[dict],
-        rag_trace: "RagTrace | None",
+        rag_trace: RagTrace | None,
     ) -> None:
-        writer = getattr(loop, "_observe_writer", None)
+        writer = self._trace.observe_writer
         if writer is None:
             return
         import json as _json
@@ -611,7 +664,7 @@ class ConversationTurnHandler:
             for group in tool_chain
             for call in (group.get("calls") or [])
         ]
-        # 完整迭代链路：包含每轮 LLM 推理文本 + 工具调用（args/result 分别限 800/1200 字）
+
         def _slim_chain(chain: list[dict]) -> list[dict]:
             out = []
             for group in chain:
@@ -660,12 +713,12 @@ def _build_agent_rag_trace(
     sufficiency_check: dict[str, object],
     fallback_reason: str = "",
     error: str | None = None,
-) -> "RagTrace":
+) -> RagTrace:
     """把本次 agent memory 检索的原始数据组装成 RagTrace。"""
     from core.observe.events import RagItemTrace, RagTrace
     import json as _json
 
-    def _item_to_trace(item: dict, path: str) -> "RagItemTrace":
+    def _item_to_trace(item: dict, path: str) -> RagItemTrace:
         raw_extra = item.get("extra_json")
         extra_str = _json.dumps(raw_extra, ensure_ascii=False) if raw_extra else None
         return RagItemTrace(
@@ -681,11 +734,9 @@ def _build_agent_rag_trace(
 
     trace_items: list[RagItemTrace] = []
 
-    # procedure items
     for item in p_items:
         trace_items.append(_item_to_trace(item, "procedure"))
 
-    # history items：retrieve_episodic 已直接标好 raw / hyde 路径。
     for item in h_items:
         path = str(item.get("_retrieval_path", "history_raw") or "history_raw")
         trace_items.append(_item_to_trace(item, path))
@@ -710,14 +761,24 @@ def _build_agent_rag_trace(
 
 
 class InternalEventHandler:
-    def __init__(self, loop: "AgentLoop") -> None:
-        self._loop = loop
+    def __init__(
+        self,
+        session_svc: SessionServices,
+        context: ContextBuilder,
+        tools: ToolRegistry,
+        memory_window: int,
+        run_agent_loop_fn: Any,
+    ) -> None:
+        self._session = session_svc
+        self._context = context
+        self._tools = tools
+        self._memory_window = memory_window
+        self._run_agent_loop = run_agent_loop_fn
 
     async def process_spawn_completion(
         self, msg: InboundMessage, key: str
     ) -> OutboundMessage:
-        loop = self._loop
-        session = loop.session_manager.get_or_create(key)
+        session = self._session.session_manager.get_or_create(key)
         event = parse_spawn_completion(msg)
         label = event.label or "后台任务"
         task = event.task.strip()
@@ -745,15 +806,15 @@ class InternalEventHandler:
             "必要时你可以读取结果里提到的文件来补充说明。"
         )
 
-        loop._set_tool_context(msg.channel, msg.chat_id)
-        initial_messages = loop.context.build_messages(
-            history=session.get_history(max_messages=loop.memory_window),
+        self._tools.set_context(channel=msg.channel, chat_id=msg.chat_id)
+        initial_messages = self._context.build_messages(
+            history=session.get_history(max_messages=self._memory_window),
             current_message=current_message,
             channel=msg.channel,
             chat_id=msg.chat_id,
             message_timestamp=msg.timestamp,
         )
-        final_content, tools_used, tool_chain, _, _thinking = await loop._run_agent_loop(
+        final_content, tools_used, tool_chain, _, _thinking = await self._run_agent_loop(
             initial_messages,
             request_time=msg.timestamp,
             preloaded_tools=None,
@@ -776,12 +837,12 @@ class InternalEventHandler:
             tools_used=tools_used if tools_used else None,
             tool_chain=tool_chain if tool_chain else None,
         )
-        loop._update_session_runtime_metadata(
+        _update_session_runtime_metadata(
             session,
             tools_used=tools_used,
             tool_chain=tool_chain,
         )
-        await loop.session_manager.append_messages(session, session.messages[-2:])
+        await self._session.session_manager.append_messages(session, session.messages[-2:])
 
         return OutboundMessage(
             channel=msg.channel,

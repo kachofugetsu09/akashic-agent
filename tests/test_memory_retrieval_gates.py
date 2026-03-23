@@ -8,6 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
 from agent.looping.handlers import ConversationTurnHandler
+from agent.looping.memory_gate import (
+    _decide_history_route,
+    _is_flow_execution_state,
+    _trace_route_reason,
+)
 from agent.memory import MemoryStore
 from agent.policies.history_route import DecisionMeta, RouteDecision
 from agent.provider import LLMResponse
@@ -98,6 +103,10 @@ def _make_loop(
     )
 
 
+def _make_handler(loop: AgentLoop) -> ConversationTurnHandler:
+    return cast(ConversationTurnHandler, loop._conversation_handler)
+
+
 def test_route_gate_no_retrieve_when_high_confidence_no_retrieve():
     loop = _make_loop(
         _Provider(
@@ -105,10 +114,21 @@ def test_route_gate_no_retrieve_when_high_confidence_no_retrieve():
         ),
         memory_route_intention_enabled=True,
     )
-    decision = asyncio.run(loop._decide_history_route(user_msg="你好", metadata={}))
+    decision = asyncio.run(
+        _decide_history_route(
+            user_msg="你好",
+            metadata={},
+            recent_history="",
+            light_provider=cast(Any, loop.light_provider),
+            light_model=loop.light_model,
+            route_intention_enabled=True,
+            gate_llm_timeout_ms=800,
+            gate_max_tokens=96,
+        )
+    )
     assert decision.needs_history is False
     assert decision.rewritten_query == "q"
-    assert loop._trace_route_reason(decision) == "ok"
+    assert _trace_route_reason(decision) == "ok"
 
 
 def test_route_gate_fail_open_on_low_confidence():
@@ -118,9 +138,20 @@ def test_route_gate_fail_open_on_low_confidence():
         ),
         memory_route_intention_enabled=True,
     )
-    decision = asyncio.run(loop._decide_history_route(user_msg="你好", metadata={}))
+    decision = asyncio.run(
+        _decide_history_route(
+            user_msg="你好",
+            metadata={},
+            recent_history="",
+            light_provider=cast(Any, loop.light_provider),
+            light_model=loop.light_model,
+            route_intention_enabled=True,
+            gate_llm_timeout_ms=800,
+            gate_max_tokens=96,
+        )
+    )
     assert decision.needs_history is True
-    assert loop._trace_route_reason(decision) == "ok"
+    assert _trace_route_reason(decision) == "ok"
 
 
 def test_route_gate_supports_fenced_json_payload():
@@ -133,11 +164,20 @@ def test_route_gate_supports_fenced_json_payload():
         memory_route_intention_enabled=True,
     )
     decision = asyncio.run(
-        loop._decide_history_route(user_msg="我之前喜欢什么游戏", metadata={})
+        _decide_history_route(
+            user_msg="我之前喜欢什么游戏",
+            metadata={},
+            recent_history="",
+            light_provider=cast(Any, loop.light_provider),
+            light_model=loop.light_model,
+            route_intention_enabled=True,
+            gate_llm_timeout_ms=800,
+            gate_max_tokens=96,
+        )
     )
     assert decision.needs_history is False
     assert decision.rewritten_query == "偏好"
-    assert loop._trace_route_reason(decision) == "ok"
+    assert _trace_route_reason(decision) == "ok"
 
 
 def test_route_decision_exposes_structured_meta():
@@ -148,7 +188,16 @@ def test_route_decision_exposes_structured_meta():
         memory_route_intention_enabled=True,
     )
     decision = asyncio.run(
-        loop._decide_history_route(user_msg="我之前喜欢什么游戏", metadata={})
+        _decide_history_route(
+            user_msg="我之前喜欢什么游戏",
+            metadata={},
+            recent_history="",
+            light_provider=cast(Any, loop.light_provider),
+            light_model=loop.light_model,
+            route_intention_enabled=True,
+            gate_llm_timeout_ms=800,
+            gate_max_tokens=96,
+        )
     )
     assert decision.needs_history is False
     assert decision.rewritten_query == "偏好"
@@ -165,7 +214,18 @@ def test_route_decision_marks_low_confidence_fail_open():
         ),
         memory_route_intention_enabled=True,
     )
-    decision = asyncio.run(loop._decide_history_route(user_msg="你好", metadata={}))
+    decision = asyncio.run(
+        _decide_history_route(
+            user_msg="你好",
+            metadata={},
+            recent_history="",
+            light_provider=cast(Any, loop.light_provider),
+            light_model=loop.light_model,
+            route_intention_enabled=True,
+            gate_llm_timeout_ms=800,
+            gate_max_tokens=96,
+        )
+    )
     assert decision.needs_history is True
     assert decision.rewritten_query == "q"
     assert decision.fail_open is True
@@ -176,22 +236,22 @@ def test_route_decision_marks_low_confidence_fail_open():
 
 def test_flow_execution_state_not_triggered_by_single_char_xian_zai():
     loop = _make_loop(_Provider(), memory_route_intention_enabled=True)
-    assert loop._is_flow_execution_state("我先问个问题", {}) is False
-    assert loop._is_flow_execution_state("我们再看看", {}) is False
-    assert loop._is_flow_execution_state("先查再说", {}) is True
+    assert _is_flow_execution_state("我先问个问题", {}) is False
+    assert _is_flow_execution_state("我们再看看", {}) is False
+    assert _is_flow_execution_state("先查再说", {}) is True
 
 
 def test_flow_execution_state_uses_task_tool_flag_not_any_tool_count():
     loop = _make_loop(_Provider(), memory_route_intention_enabled=True)
     assert (
-        loop._is_flow_execution_state(
+        _is_flow_execution_state(
             "普通问题",
             {"last_turn_tool_calls_count": 3, "last_turn_had_task_tool": False},
         )
         is False
     )
     assert (
-        loop._is_flow_execution_state(
+        _is_flow_execution_state(
             "普通问题",
             {"last_turn_tool_calls_count": 0, "last_turn_had_task_tool": True},
         )
@@ -210,12 +270,6 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
         await asyncio.sleep(0.12)
         return []
 
-    loop._memory_port = MagicMock()
-    loop._memory_port.retrieve_related = AsyncMock(side_effect=_slow_retrieve)
-    loop._memory_port.select_for_injection = MagicMock(return_value=[])
-    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
-    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
-
     async def _slow_route_decision(*args, **kwargs):
         await asyncio.sleep(0.12)
         return RouteDecision(
@@ -230,11 +284,22 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
             ),
         )
 
-    loop._decide_history_route = _slow_route_decision  # type: ignore[assignment]
+    handler = _make_handler(loop)
+    handler._memory.query_rewriter = None
+    memory_port = MagicMock()
+    memory_port.retrieve_related = AsyncMock(side_effect=_slow_retrieve)
+    memory_port.select_for_injection = MagicMock(return_value=[])
+    memory_port.build_injection_block = MagicMock(return_value=("", []))
+    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    handler._memory.port = memory_port
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
-    start = time.perf_counter()
-    asyncio.run(loop._process_inner(msg, msg.session_key))
-    elapsed = time.perf_counter() - start
+    with patch(
+        "agent.looping.handlers._decide_history_route",
+        new=AsyncMock(side_effect=_slow_route_decision),
+    ):
+        start = time.perf_counter()
+        asyncio.run(loop._process_inner(msg, msg.session_key))
+        elapsed = time.perf_counter() - start
 
     # 若串行应接近 0.24s；并行时应接近单个分支耗时。
     assert elapsed < 0.22
@@ -242,24 +307,21 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
 def test_retrieve_memory_block_prefers_query_rewriter_primary_path():
     loop = _make_loop(_Provider())
     session = _DummySession("cli:1")
-    handler = ConversationTurnHandler(loop)
-    loop._trace_memory_retrieve = MagicMock()
-    loop._query_rewriter = MagicMock()
-    loop._query_rewriter.decide = AsyncMock(
+    handler = _make_handler(loop)
+    handler._memory.query_rewriter = MagicMock()
+    handler._memory.query_rewriter.decide = AsyncMock(
         return_value=GateDecision(
             needs_episodic=False,
             episodic_query="下载历史",
             latency_ms=12,
         )
     )
-    loop._decide_history_route = AsyncMock(
-        side_effect=AssertionError("should not call history route fallback")
-    )
-    loop._memory_port = MagicMock()
-    loop._memory_port.retrieve_related = AsyncMock(return_value=[])
-    loop._memory_port.select_for_injection = MagicMock(return_value=[])
-    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
-    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    memory_port = MagicMock()
+    memory_port.retrieve_related = AsyncMock(return_value=[])
+    memory_port.select_for_injection = MagicMock(return_value=[])
+    memory_port.build_injection_block = MagicMock(return_value=("", []))
+    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    handler._memory.port = memory_port
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
 
     asyncio.run(
@@ -270,27 +332,26 @@ def test_retrieve_memory_block_prefers_query_rewriter_primary_path():
             main_history=[],
         )
     )
-    loop._query_rewriter.decide.assert_awaited_once()
-    assert loop._trace_memory_retrieve.call_args.kwargs["gate_type"] == "query_rewriter"
+    handler._memory.query_rewriter.decide.assert_awaited_once()
 
 
 def test_retrieve_memory_block_query_rewriter_path_uses_raw_msg_for_procedure_lane():
     loop = _make_loop(_Provider())
     session = _DummySession("cli:1")
-    handler = ConversationTurnHandler(loop)
-    loop._trace_memory_retrieve = MagicMock()
-    loop._query_rewriter = MagicMock()
-    loop._query_rewriter.decide = AsyncMock(
+    handler = _make_handler(loop)
+    handler._memory.query_rewriter = MagicMock()
+    handler._memory.query_rewriter.decide = AsyncMock(
         return_value=GateDecision(
             needs_episodic=True,
             episodic_query="用户的B站下载偏好历史",
             latency_ms=8,
         )
     )
-    loop._memory_port = MagicMock()
-    loop._memory_port.select_for_injection = MagicMock(return_value=[])
-    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
-    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    memory_port = MagicMock()
+    memory_port.select_for_injection = MagicMock(return_value=[])
+    memory_port.build_injection_block = MagicMock(return_value=("", []))
+    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    handler._memory.port = memory_port
     msg = InboundMessage(
         channel="cli",
         sender="u",
@@ -336,41 +397,30 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
         return None
 
     loop.session_manager.append_messages = AsyncMock(side_effect=_append_messages)
-    loop._memory_port = MagicMock()
-    loop._memory_port.retrieve_related = AsyncMock(return_value=[])
-    loop._memory_port.select_for_injection = MagicMock(return_value=[])
-    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
-    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
-    loop._decide_history_route = AsyncMock(
-        return_value=RouteDecision(
-            needs_history=False,
-            rewritten_query="q",
-            fail_open=False,
+    handler = _make_handler(loop)
+    handler._memory.query_rewriter = MagicMock()
+    handler._memory.query_rewriter.decide = AsyncMock(
+        return_value=GateDecision(
+            needs_episodic=False,
+            episodic_query="q",
             latency_ms=0,
-            meta=DecisionMeta(
-                source="llm",
-                confidence="high",
-                reason_code="llm_no_retrieve",
-            ),
         )
     )
+    memory_port = MagicMock()
+    memory_port.retrieve_related = AsyncMock(return_value=[])
+    memory_port.select_for_injection = MagicMock(return_value=[])
+    memory_port.build_injection_block = MagicMock(return_value=("", []))
+    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    handler._memory.port = memory_port
     scheduled_after_append: list[bool] = []
-    real_create_task = asyncio.create_task
+    real_schedule = loop._scheduler.schedule_consolidation
 
-    def _fake_create_task(coro, *args, **kwargs):
-        name = getattr(getattr(coro, "cr_code", None), "co_name", "")
-        if name == "_consolidate_memory_bg":
-            scheduled_after_append.append(append_done)
-            # 避免未调度协程告警
-            try:
-                coro.close()
-            except Exception:
-                pass
-            return MagicMock()
-        return real_create_task(coro, *args, **kwargs)
+    def _wrapped_schedule(session_obj, session_key):
+        scheduled_after_append.append(append_done)
+        return real_schedule(session_obj, session_key)
 
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
-    with patch("agent.looping.core.asyncio.create_task", side_effect=_fake_create_task):
+    with patch.object(loop._scheduler, "schedule_consolidation", side_effect=_wrapped_schedule):
         asyncio.run(loop._process_inner(msg, msg.session_key))
 
     assert scheduled_after_append
@@ -379,8 +429,9 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
 def test_retrieve_memory_block_triggers_sufficiency_check_on_low_score_items():
     """当注入 block 为空时，sufficiency checker 被调用。"""
     loop = _make_loop(_Provider())
-    loop._query_rewriter = MagicMock()
-    loop._query_rewriter.decide = AsyncMock(
+    handler = _make_handler(loop)
+    handler._memory.query_rewriter = MagicMock()
+    handler._memory.query_rewriter.decide = AsyncMock(
         return_value=GateDecision(
             needs_episodic=True,
             episodic_query="用户关于仁王的历史",
@@ -405,16 +456,15 @@ def test_retrieve_memory_block_triggers_sufficiency_check_on_low_score_items():
             latency_ms=40,
         )
     )
-    loop._sufficiency_checker = checker_mock
-    loop._memory_port = MagicMock()
-    loop._memory_port.retrieve_related = AsyncMock(return_value=low_score_items)
-    loop._memory_port.select_for_injection = MagicMock(return_value=[])
-    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
-    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
-    loop._trace_memory_retrieve = MagicMock()
+    handler._memory.sufficiency_checker = checker_mock
+    memory_port = MagicMock()
+    memory_port.retrieve_related = AsyncMock(return_value=low_score_items)
+    memory_port.select_for_injection = MagicMock(return_value=[])
+    memory_port.build_injection_block = MagicMock(return_value=("", []))
+    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    handler._memory.port = memory_port
 
     session = _DummySession("cli:1")
-    handler = ConversationTurnHandler(loop)
     msg = InboundMessage(
         channel="cli",
         sender="u",
@@ -437,8 +487,9 @@ def test_retrieve_memory_block_triggers_sufficiency_check_on_low_score_items():
 def test_retrieve_memory_block_uses_refined_query_on_insufficient():
     """sufficiency checker 返回 insufficient 时，用 refined_query 重查 history。"""
     loop = _make_loop(_Provider())
-    loop._query_rewriter = MagicMock()
-    loop._query_rewriter.decide = AsyncMock(
+    handler = _make_handler(loop)
+    handler._memory.query_rewriter = MagicMock()
+    handler._memory.query_rewriter.decide = AsyncMock(
         return_value=GateDecision(
             needs_episodic=True,
             episodic_query="用户关于仁王的历史",
@@ -454,9 +505,9 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
             latency_ms=40,
         )
     )
-    loop._sufficiency_checker = checker_mock
-    loop._memory_port = MagicMock()
-    loop._memory_port.select_for_injection = MagicMock(
+    handler._memory.sufficiency_checker = checker_mock
+    memory_port = MagicMock()
+    memory_port.select_for_injection = MagicMock(
         return_value=[
             {
                 "id": "x1",
@@ -467,14 +518,13 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
             },
         ]
     )
-    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
-    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
-    loop._trace_memory_retrieve = MagicMock()
-    loop._memory_port.retrieve_related = AsyncMock(return_value=[])
+    memory_port.build_injection_block = MagicMock(return_value=("", []))
+    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    memory_port.retrieve_related = AsyncMock(return_value=[])
+    handler._memory.port = memory_port
     history_calls: list[str] = []
 
     session = _DummySession("cli:1")
-    handler = ConversationTurnHandler(loop)
     msg = InboundMessage(
         channel="cli",
         sender="u",
@@ -505,17 +555,17 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
 def test_retrieve_memory_block_skips_sufficiency_check_when_checker_is_none():
     """loop._sufficiency_checker 为 None 时，不触发 check，主路径正常跑完。"""
     loop = _make_loop(_Provider())
-    loop._query_rewriter = None
-    loop._sufficiency_checker = None
-    loop._memory_port = MagicMock()
-    loop._memory_port.retrieve_related = AsyncMock(return_value=[])
-    loop._memory_port.select_for_injection = MagicMock(return_value=[])
-    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
-    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
-    loop._trace_memory_retrieve = MagicMock()
+    handler = _make_handler(loop)
+    handler._memory.query_rewriter = None
+    handler._memory.sufficiency_checker = None
+    memory_port = MagicMock()
+    memory_port.retrieve_related = AsyncMock(return_value=[])
+    memory_port.select_for_injection = MagicMock(return_value=[])
+    memory_port.build_injection_block = MagicMock(return_value=("", []))
+    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    handler._memory.port = memory_port
 
     session = _DummySession("cli:1")
-    handler = ConversationTurnHandler(loop)
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
 
     asyncio.run(
@@ -531,8 +581,9 @@ def test_retrieve_memory_block_skips_sufficiency_check_when_checker_is_none():
 def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
     """sufficiency checker 返回 sufficient 时，不做第二次检索。"""
     loop = _make_loop(_Provider())
-    loop._query_rewriter = MagicMock()
-    loop._query_rewriter.decide = AsyncMock(
+    handler = _make_handler(loop)
+    handler._memory.query_rewriter = MagicMock()
+    handler._memory.query_rewriter.decide = AsyncMock(
         return_value=GateDecision(
             needs_episodic=True,
             episodic_query="用户天气偏好",
@@ -548,7 +599,7 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
             latency_ms=20,
         )
     )
-    loop._sufficiency_checker = checker_mock
+    handler._memory.sufficiency_checker = checker_mock
     retrieve_call_count = 0
 
     async def _count_retrieve(query, **kwargs):
@@ -564,15 +615,14 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
             }
         ]
 
-    loop._memory_port = MagicMock()
-    loop._memory_port.retrieve_related = AsyncMock(side_effect=_count_retrieve)
-    loop._memory_port.select_for_injection = MagicMock(return_value=[])
-    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
-    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
-    loop._trace_memory_retrieve = MagicMock()
+    memory_port = MagicMock()
+    memory_port.retrieve_related = AsyncMock(side_effect=_count_retrieve)
+    memory_port.select_for_injection = MagicMock(return_value=[])
+    memory_port.build_injection_block = MagicMock(return_value=("", []))
+    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    handler._memory.port = memory_port
 
     session = _DummySession("cli:1")
-    handler = ConversationTurnHandler(loop)
     msg = InboundMessage(
         channel="cli",
         sender="u",

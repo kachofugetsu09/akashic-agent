@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.looping.memory_gate import AgentLoopMemoryGateMixin
+from agent.looping.memory_gate import _trace_memory_retrieve
 from core.common.strategy_trace import build_strategy_trace_envelope
 from proactive.loop import ProactiveLoop
 
@@ -23,15 +23,9 @@ def test_build_strategy_trace_envelope_uses_subject_scope():
     assert payload["payload"] == {"status": "completed"}
 
 
-class _TraceLoop(AgentLoopMemoryGateMixin):
-    def __init__(self, workspace: Path) -> None:
-        self.workspace = workspace
-
-
 def test_route_trace_writes_strategy_envelope(tmp_path: Path):
-    loop = _TraceLoop(tmp_path)
-
-    loop._trace_memory_retrieve(
+    _trace_memory_retrieve(
+        tmp_path,
         session_key="telegram:1",
         channel="telegram",
         chat_id="1",

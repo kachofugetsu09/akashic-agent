@@ -14,7 +14,24 @@ from agent.looping.consolidation import (
     _select_consolidation_window,
 )
 from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
-from agent.looping.memory_gate import AgentLoopMemoryGateMixin
+from agent.looping.ports import (
+    LLMConfig,
+    LLMServices,
+    MemoryConfig,
+    MemoryServices,
+    ObservabilityServices,
+    SessionServices,
+    TurnScheduler,
+)
+
+# Re-export for backward-compat: existing callers import these from core.py
+__all__ = [
+    "AgentLoop",
+    "AgentLoopConfig",
+    "AgentLoopDeps",
+    "LLMConfig",
+    "MemoryConfig",
+]
 from agent.looping.safety_retry import AgentLoopSafetyRetryMixin
 from agent.looping.tool_execution import AgentLoopToolExecutionMixin
 from bus.events import InboundMessage, OutboundMessage
@@ -33,6 +50,7 @@ from session.manager import SessionManager
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
     from core.memory.runtime import MemoryRuntime
+    from memory2.hyde_enhancer import HyDEEnhancer
 
 logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
@@ -58,28 +76,6 @@ class AgentLoopDeps:
 
 
 @dataclass
-class LLMConfig:
-    model: str = "deepseek-chat"
-    light_model: str = ""
-    max_iterations: int = 10
-    max_tokens: int = 8192
-    tool_search_enabled: bool = False
-
-
-@dataclass
-class MemoryConfig:
-    window: int = 40
-    top_k_procedure: int = 4
-    top_k_history: int = 8
-    route_intention_enabled: bool = False
-    sop_guard_enabled: bool = True
-    gate_llm_timeout_ms: int = 800
-    gate_max_tokens: int = 96
-    hyde_enabled: bool = False
-    hyde_timeout_ms: int = 2000
-
-
-@dataclass
 class AgentLoopConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
@@ -87,7 +83,6 @@ class AgentLoopConfig:
 
 class AgentLoop(
     AgentLoopSafetyRetryMixin,
-    AgentLoopMemoryGateMixin,
     AgentLoopToolExecutionMixin,
     AgentLoopConsolidationMixin,
 ):
@@ -118,21 +113,7 @@ class AgentLoop(
         self.memory_window = config.memory.window
         self._presence = deps.presence
         self._running = False
-        self._consolidating: set[str] = set()
         self._processing_state = deps.processing_state
-        self._memory_top_k_procedure = min(
-            _MAX_PROCEDURE_RETRIEVE_K,
-            max(1, int(config.memory.top_k_procedure)),
-        )
-        self._memory_top_k_history = max(1, int(config.memory.top_k_history))
-        self._memory_route_intention_enabled = bool(
-            config.memory.route_intention_enabled
-        )
-        self._memory_sop_guard_enabled = bool(config.memory.sop_guard_enabled)
-        self._memory_gate_llm_timeout_ms = max(
-            100, int(config.memory.gate_llm_timeout_ms)
-        )
-        self._memory_gate_max_tokens = max(32, int(config.memory.gate_max_tokens))
 
         memory_port = deps.memory_port
         post_mem_worker = deps.post_mem_worker
@@ -144,6 +125,15 @@ class AgentLoop(
 
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
 
+        # Processes-internal LRU: session_key → recently-used non-core tools (cap 5)
+        # Used by AgentLoopSafetyRetryMixin; cleared on restart.
+        self._unlocked_tools: dict[str, OrderedDict[str, None]] = {}
+        self._memory_port = memory_port
+        self.context = ContextBuilder(self.workspace, memory=self._memory_port)
+        self._profile_extractor = deps.profile_extractor
+
+        # ── Build HyDE enhancer ────────────────────────────────────────────────
+        hyde_enhancer: HyDEEnhancer | None = None
         if config.memory.hyde_enabled:
             if not config.llm.light_model:
                 logger.warning(
@@ -151,32 +141,75 @@ class AgentLoop(
                     "为避免主模型被额外调用，HyDE 已自动禁用。"
                     "请在配置中设置 light_model 后重启。"
                 )
-                self._hyde_enhancer: HyDEEnhancer | None = None
             else:
                 from memory2.hyde_enhancer import HyDEEnhancer
 
-                self._hyde_enhancer = HyDEEnhancer(
+                hyde_enhancer = HyDEEnhancer(
                     light_provider=self.light_provider,
                     light_model=self.light_model,
                     timeout_s=config.memory.hyde_timeout_ms / 1000.0,
                 )
-        else:
-            self._hyde_enhancer = None
 
-        # 进程内 LRU 缓存：session_key → 最近实际调用的非核心工具（容量 5）
-        # 只记录 agent 真正调用过的工具，发现未用的不写入
-        # 重启后清空（重新搜索一次即可恢复），不写入 session 持久化
-        self._unlocked_tools: dict[str, OrderedDict[str, None]] = {}
-        self._post_mem_worker = post_mem_worker
-        self._memory_port = memory_port
-        self.context = ContextBuilder(self.workspace, memory=self._memory_port)
-        self._post_mem_failures = 0
-        self._observe_writer = deps.observe_writer
-        self._query_rewriter = deps.query_rewriter
-        self._sufficiency_checker = deps.sufficiency_checker
-        self._profile_extractor = deps.profile_extractor
-        self._conversation_handler = ConversationTurnHandler(self)
-        self._internal_event_handler = InternalEventHandler(self)
+        # ── Assemble ports ─────────────────────────────────────────────────────
+        llm_svc = LLMServices(
+            provider=deps.provider,
+            light_provider=self.light_provider,
+            run_turn_fn=self._run_with_safety_retry,
+        )
+        memory_svc = MemoryServices(
+            port=memory_port,
+            query_rewriter=deps.query_rewriter,
+            hyde_enhancer=hyde_enhancer,
+            sufficiency_checker=deps.sufficiency_checker,
+        )
+        session_svc = SessionServices(
+            session_manager=deps.session_manager,
+            presence=deps.presence,
+        )
+        trace_svc = ObservabilityServices(
+            workspace=deps.workspace,
+            observe_writer=deps.observe_writer,
+        )
+
+        # Resolved MemoryConfig with clamped values for the handler
+        handler_memory_config = MemoryConfig(
+            window=config.memory.window,
+            top_k_procedure=min(
+                _MAX_PROCEDURE_RETRIEVE_K, max(1, int(config.memory.top_k_procedure))
+            ),
+            top_k_history=max(1, int(config.memory.top_k_history)),
+            route_intention_enabled=config.memory.route_intention_enabled,
+            sop_guard_enabled=config.memory.sop_guard_enabled,
+            gate_llm_timeout_ms=max(100, int(config.memory.gate_llm_timeout_ms)),
+            gate_max_tokens=max(32, int(config.memory.gate_max_tokens)),
+            hyde_enabled=config.memory.hyde_enabled,
+            hyde_timeout_ms=config.memory.hyde_timeout_ms,
+        )
+
+        self._scheduler = TurnScheduler(
+            post_mem_worker=post_mem_worker,
+            consolidation_runner=self._consolidate_and_save,
+            memory_window=config.memory.window,
+        )
+
+        self._conversation_handler = ConversationTurnHandler(
+            llm=llm_svc,
+            llm_config=config.llm,
+            memory=memory_svc,
+            memory_config=handler_memory_config,
+            session=session_svc,
+            scheduler=self._scheduler,
+            trace=trace_svc,
+            tools=deps.tools,
+            context=self.context,
+        )
+        self._internal_event_handler = InternalEventHandler(
+            session_svc=session_svc,
+            context=self.context,
+            tools=deps.tools,
+            memory_window=config.memory.window,
+            run_agent_loop_fn=self._run_agent_loop,
+        )
 
     async def run(self) -> None:
         self._running = True
@@ -293,7 +326,7 @@ class AgentLoop(
         )
         if window is None:
             return False
-        if session_key in self._consolidating:
+        if self._scheduler.is_consolidating(session_key):
             # 2. 若后台已在跑，同步等待那次 consolidation 完成，避免返回语义含糊的 False。
             await self._wait_for_consolidation_idle(session_key)
             session = self.session_manager.get_or_create(session_key)
@@ -305,7 +338,8 @@ class AgentLoop(
             if window is None:
                 return True
         # 2. 再复用现有真实 consolidation 逻辑执行一次，避免测试绕过主实现。
-        self._consolidating.add(session_key)
+        if not self._scheduler.mark_manual_start(session_key):
+            return False
         try:
             await self._consolidate_memory(
                 session,
@@ -315,12 +349,12 @@ class AgentLoop(
             await self.session_manager.save_async(session)
             return True
         finally:
-            self._consolidating.discard(session_key)
+            self._scheduler.mark_manual_end(session_key)
 
     async def _wait_for_consolidation_idle(self, session_key: str) -> None:
-        # 1. 后台 consolidation 是异步任务，这里短轮询等待它退出运行态。
+        # 后台 consolidation 是异步任务，这里短轮询等待它退出运行态。
         deadline = time.perf_counter() + self._CONSOLIDATION_WAIT_S
-        while session_key in self._consolidating:
+        while self._scheduler.is_consolidating(session_key):
             if time.perf_counter() >= deadline:
                 raise TimeoutError(
                     f"等待 consolidation 完成超时: session_key={session_key}"
@@ -331,31 +365,11 @@ class AgentLoop(
     def _is_spawn_completion(msg: InboundMessage) -> bool:
         return is_spawn_completion_message(msg)
 
-    def _schedule_consolidation_if_needed(self, session, key: str) -> None:
-        if (
-            len(session.messages) > self.memory_window
-            and key not in self._consolidating
-        ):
-            self._consolidating.add(key)
-            asyncio.create_task(self._consolidate_memory_bg(session, key))
+    async def _consolidate_and_save(self, session: object) -> None:
+        """Consolidation runner passed to TurnScheduler.
 
-    def _schedule_post_response_memory(
-        self,
-        *,
-        msg: InboundMessage,
-        key: str,
-        final_content: str,
-        tool_chain: list[dict],
-    ) -> None:
-        if self._post_mem_worker:
-            task = asyncio.create_task(
-                self._post_mem_worker.run(
-                    user_msg=msg.content,
-                    agent_response=final_content,
-                    tool_chain=tool_chain,
-                    source_ref=f"{key}@post_response",
-                    session_key=key,
-                ),
-                name=f"post_mem:{key}",
-            )
-            task.add_done_callback(lambda t: self._on_post_mem_task_done(t, key))
+        Runs _consolidate_memory + session_manager.save_async.
+        _consolidating set management is TurnScheduler's responsibility.
+        """
+        await self._consolidate_memory(session)  # type: ignore[arg-type]
+        await self.session_manager.save_async(session)  # type: ignore[arg-type]

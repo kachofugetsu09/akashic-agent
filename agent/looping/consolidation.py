@@ -153,38 +153,6 @@ class AgentLoopConsolidationMixin:
         except Exception as e:
             logger.warning("profile fact extraction failed: %s", e)
 
-    def _on_post_mem_task_done(self, task: asyncio.Task, session_key: str) -> None:
-        try:
-            exc = task.exception()
-        except asyncio.CancelledError:
-            logger.info("post_response_memorize task cancelled: %s", session_key)
-            return
-        except Exception as e:
-            self._post_mem_failures += 1
-            logger.warning(
-                "post_response_memorize task inspection failed session=%s failures=%d err=%s",
-                session_key,
-                self._post_mem_failures,
-                e,
-            )
-            return
-
-        if exc is not None:
-            self._post_mem_failures += 1
-            logger.warning(
-                "post_response_memorize task failed session=%s failures=%d err=%s",
-                session_key,
-                self._post_mem_failures,
-                exc,
-            )
-
-    async def _consolidate_memory_bg(self, session, key: str) -> None:
-        try:
-            await self._consolidate_memory(session)
-            await self.session_manager.save_async(session)
-        finally:
-            self._consolidating.discard(key)
-
     async def _consolidate_memory(
         self,
         session,
