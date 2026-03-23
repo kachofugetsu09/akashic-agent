@@ -611,7 +611,9 @@ class AgentTick:
 
         # skip 或无 terminal → 只 ACK discarded
         if ctx.terminal_action != "send":
-            # 兜底：fetched 但未分类的条目自动 discard（720h），避免下次 tick 重复评估
+            # 兜底：fetched 但未分类的条目自动 discard（720h），避免下次 tick 重复评估。
+            # 仅在 agent 实际跑过（steps>0）时才 discard——说明 agent 主动忽略了这些条目。
+            # steps=0 说明 LLM 连工具都没调，条目根本没被评估，不应 discard，下次 tick 重新分类。
             all_fetched_keys = {
                 f"{e.get('ack_server', '')}:{e.get('event_id', '')}"
                 for e in ctx.fetched_contents
@@ -619,8 +621,13 @@ class AgentTick:
             }
             unclassified = all_fetched_keys - ctx.interesting_item_ids - ctx.discarded_item_ids
             if unclassified:
-                ctx.discarded_item_ids.update(unclassified)
-                logger.info("[proactive_v2] post-loop: auto-discarded %d unclassified items", len(unclassified))
+                if ctx.steps_taken > 0:
+                    ctx.discarded_item_ids.update(unclassified)
+                    logger.info("[proactive_v2] post-loop: auto-discarded %d unclassified items (steps=%d)",
+                                len(unclassified), ctx.steps_taken)
+                else:
+                    logger.info("[proactive_v2] post-loop: skipping auto-discard for %d items (steps=0, will retry next tick)",
+                                len(unclassified))
             logger.info("[proactive_v2] post-loop: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
                         ctx.terminal_action or "none", ctx.steps_taken, len(ctx.discarded_item_ids),
                         len(ctx.interesting_item_ids),
