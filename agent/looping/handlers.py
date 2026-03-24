@@ -40,7 +40,13 @@ class ConversationTurnHandler:
         self._tools = deps.tools
         self._context = deps.context
 
-    async def process(self, msg: InboundMessage, key: str) -> OutboundMessage:
+    async def process(
+        self,
+        msg: InboundMessage,
+        key: str,
+        *,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
         """处理一次普通用户消息，把"检索 -> 执行 -> 持久化 -> 回包"串成主路径。"""
         session = self._session.session_manager.get_or_create(key)
         retrieval_history = session.get_history()
@@ -85,6 +91,7 @@ class ConversationTurnHandler:
         return await self._orchestrator.handle_turn(
             msg=msg,
             result=result,
+            dispatch_outbound=dispatch_outbound,
         )
 
     def _collect_skill_mentions(self, msg: InboundMessage) -> list[str]:

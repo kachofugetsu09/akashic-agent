@@ -29,6 +29,7 @@ from agent.postturn.protocol import PostTurnPipeline
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
+from agent.turns.outbound import BusOutboundPort
 
 # Re-export for backward-compat: existing callers import these from core.py
 __all__ = [
@@ -238,6 +239,7 @@ class AgentLoop:
                 session=session_svc,
                 trace=trace_svc,
                 post_turn=post_turn_pipeline,
+                outbound=BusOutboundPort(self.bus),
             )
         )
 
@@ -270,8 +272,7 @@ class AgentLoop:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
                 try:
-                    response = await self._process(msg)
-                    await self.bus.publish_outbound(response)
+                    await self._process(msg)
                 except Exception as e:
                     logger.error(f"处理消息出错: {e}", exc_info=True)
                     await self.bus.publish_outbound(
@@ -311,7 +312,10 @@ class AgentLoop:
         return result
 
     async def _process(
-        self, msg: InboundMessage, session_key: str | None = None
+        self,
+        msg: InboundMessage,
+        session_key: str | None = None,
+        dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         started = time.time()
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
@@ -322,7 +326,7 @@ class AgentLoop:
             self._processing_state.enter(key)
         try:
             return await asyncio.wait_for(
-                self._process_inner(msg, key),
+                self._process_inner(msg, key, dispatch_outbound=dispatch_outbound),
                 timeout=self._MESSAGE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
@@ -340,10 +344,20 @@ class AgentLoop:
                 self._processing_state.exit(key)
             _ = started
 
-    async def _process_inner(self, msg: InboundMessage, key: str) -> OutboundMessage:
+    async def _process_inner(
+        self,
+        msg: InboundMessage,
+        key: str,
+        *,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
         if self._is_spawn_completion(msg):
             return await self._internal_event_handler.process_spawn_completion(msg, key)
-        return await self._conversation_handler.process(msg, key)
+        return await self._conversation_handler.process(
+            msg,
+            key,
+            dispatch_outbound=dispatch_outbound,
+        )
 
     async def process_direct(
         self,
@@ -358,7 +372,11 @@ class AgentLoop:
             chat_id=chat_id,
             content=content,
         )
-        response = await self._process(msg, session_key=session_key)
+        response = await self._process(
+            msg,
+            session_key=session_key,
+            dispatch_outbound=False,
+        )
         return response.content if response else ""
 
     async def _run_agent_loop(

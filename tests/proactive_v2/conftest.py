@@ -6,11 +6,16 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from proactive.config import ProactiveConfig
 from proactive_v2.tools import ToolDeps
+from agent.looping.ports import ObservabilityServices, SessionServices
+from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
+from agent.turns.outbound import OutboundDispatch
 
 
 # ── FakeStateStore ────────────────────────────────────────────────────────
@@ -113,6 +118,24 @@ class FakeAlertAckSink:
         return key in self.keys
 
 
+class _FakeSession:
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.messages: list[dict] = []
+        self.metadata: dict[str, Any] = {}
+        self.last_consolidated = 0
+
+    def get_history(self, max_messages: int = 500) -> list[dict]:
+        return self.messages[-max_messages:]
+
+    def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
+        msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat()}
+        if media:
+            msg["media"] = list(media)
+        msg.update(kwargs)
+        self.messages.append(msg)
+
+
 # ── FakeLLM ──────────────────────────────────────────────────────────────
 
 class FakeLLM:
@@ -195,6 +218,34 @@ def make_agent_tick(
     if rng is None:
         rng = FakeRng(value=1.0)  # random() > context_prob → gate 关
 
+    session = _FakeSession(session_key)
+    session_manager = SimpleNamespace(
+        get_or_create=lambda _key: session,
+        append_messages=AsyncMock(return_value=None),
+    )
+    session_svc = SessionServices(
+        session_manager=session_manager,
+        presence=SimpleNamespace(record_proactive_sent=lambda _key: None),
+    )
+    trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
+
+    class _PostTurn:
+        def schedule(self, event) -> None:
+            return
+
+    class _Outbound:
+        async def dispatch(self, outbound: OutboundDispatch) -> bool:
+            return await sender.send(outbound.content)
+
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=session_svc,
+            trace=trace_svc,
+            post_turn=_PostTurn(),
+            outbound=_Outbound(),
+        )
+    )
+
     return AgentTick(
         cfg=cfg or ProactiveConfig(),
         session_key=session_key,
@@ -202,7 +253,7 @@ def make_agent_tick(
         any_action_gate=any_action_gate,
         last_user_at_fn=last_user_at_fn or (lambda: None),
         passive_busy_fn=passive_busy_fn,
-        sender=sender,
+        turn_orchestrator=orchestrator,
         deduper=deduper,
         tool_deps=tool_deps,
         llm_fn=llm_fn,

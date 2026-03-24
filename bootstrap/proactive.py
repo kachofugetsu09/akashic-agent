@@ -53,7 +53,6 @@ def build_proactive_runtime(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
         observe_writer=observe_writer,
-        tool_registry=getattr(agent_loop, "tools", None),
     )
     tasks.append(proactive_loop.run())
 

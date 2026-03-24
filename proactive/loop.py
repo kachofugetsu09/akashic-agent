@@ -5,7 +5,7 @@ ProactiveLoop — 主动触达核心循环。
   1. 拉取所有内容源的最新候选事件
   2. 获取用户最近聊天上下文
   3. 调用 LLM 反思：有没有值得主动说的
-  4. 高于阈值时通过 MessagePushTool 发送消息
+  4. 产出 TurnResult 并由统一 OutboundPort 发送消息
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
+from agent.turns.outbound import PushToolOutboundPort
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
 from proactive.anyaction import AnyActionGate, QuotaStore
@@ -36,7 +37,6 @@ from proactive.judge import MessageDeduper
 from proactive.config import ProactiveConfig
 from proactive.memory_sampler import sample_memory_chunks
 from proactive.presence import PresenceStore
-from proactive.sender import Sender
 from proactive.sensor import Sensor
 from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
@@ -74,7 +74,6 @@ class ProactiveLoop:
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
         observe_writer=None,
-        tool_registry: dict | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -90,7 +89,6 @@ class ProactiveLoop:
         self._light_model = light_model or (config.model or model)
         self._observe_writer = observe_writer
         self._passive_busy_fn = passive_busy_fn
-        self._tool_registry = tool_registry
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -122,14 +120,6 @@ class ProactiveLoop:
             sleeping_modifier=self._cfg.sleep_modifier_sleeping,
         )
 
-    def _build_sender(self) -> Sender:
-        return Sender(
-            cfg=self._cfg,
-            push_tool=self._push,
-            sessions=self._sessions,
-            presence=self._presence,
-        )
-
     def _build_turn_orchestrator(self) -> TurnOrchestrator:
         class _NoopPostTurn:
             def schedule(self, event) -> None:
@@ -146,27 +136,9 @@ class ProactiveLoop:
                     observe_writer=self._observe_writer,
                 ),
                 post_turn=_NoopPostTurn(),
+                outbound=PushToolOutboundPort(self._push),
             )
         )
-
-    def _build_outbound_send_fn(self) -> Callable[[str], Any]:
-        async def _send(message: str) -> bool:
-            msg = str(message or "").strip()
-            channel = str(self._cfg.default_channel or "").strip()
-            chat_id = str(self._cfg.default_chat_id or "").strip()
-            if not msg or not channel or not chat_id:
-                return False
-            try:
-                result = await self._push.execute(
-                    channel=channel,
-                    chat_id=chat_id,
-                    message=msg,
-                )
-            except Exception:
-                return False
-            return "已发送" in result
-
-        return _send
 
     def _build_anyaction_gate(self) -> AnyActionGate:
         if hasattr(self._state, "path"):
@@ -205,9 +177,7 @@ class ProactiveLoop:
                 state_store=self._state,
                 any_action_gate=self._anyaction,
                 passive_busy_fn=self._passive_busy_fn,
-                sender=self._sender,
                 turn_orchestrator=self._turn_orchestrator,
-                outbound_send_fn=self._outbound_send_fn,
                 deduper=self._message_deduper,
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
@@ -228,9 +198,7 @@ class ProactiveLoop:
     def _init_runtime_components(self) -> None:
         self._ensure_workspace_proactive_context_file()
         self._read_workspace_proactive_context()
-        self._sender = self._build_sender()
         self._turn_orchestrator = self._build_turn_orchestrator()
-        self._outbound_send_fn = self._build_outbound_send_fn()
         self._anyaction = self._build_anyaction_gate()
         self._sense = self._build_sense(self._build_fitbit_provider())
         self._message_deduper = self._build_message_deduper()

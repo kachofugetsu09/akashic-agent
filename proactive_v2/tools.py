@@ -332,27 +332,6 @@ def _mark_not_interesting(ctx: AgentTickContext, args: dict) -> str:
     return json.dumps({"ok": True}, ensure_ascii=False)
 
 
-def _send_message(ctx: AgentTickContext, args: dict) -> str:
-    cited: list[str] = args.get("cited_ids", [])
-    ctx.final_message = args["text"]
-    ctx.cited_item_ids = cited
-    ctx.terminal_action = "send"
-    for key in cited:
-        ctx.interesting_item_ids.add(key)
-        ctx.discarded_item_ids.discard(key)
-    return json.dumps({"ok": True}, ensure_ascii=False)
-
-
-def _skip(ctx: AgentTickContext, args: dict) -> str:
-    reason = args["reason"]
-    if reason not in _VALID_SKIP_REASONS:
-        raise ValueError(f"invalid skip reason: {reason!r}. must be one of {sorted(_VALID_SKIP_REASONS)}")
-    ctx.skip_reason = reason
-    ctx.skip_note = args.get("note", "")
-    ctx.terminal_action = "skip"
-    return json.dumps({"ok": True}, ensure_ascii=False)
-
-
 def _finish_turn(ctx: AgentTickContext, args: dict) -> str:
     decision = str(args.get("decision", "") or "").strip()
     if decision not in {"reply", "skip"}:
@@ -364,12 +343,21 @@ def _finish_turn(ctx: AgentTickContext, args: dict) -> str:
     if decision == "reply":
         if not content.strip():
             raise ValueError("finish_turn: decision=reply requires non-empty content")
-        _send_message(ctx, {"text": content, "cited_ids": evidence})
+        ctx.final_message = content
+        ctx.cited_item_ids = evidence
+        ctx.terminal_action = "reply"
+        for key in evidence:
+            ctx.interesting_item_ids.add(key)
+            ctx.discarded_item_ids.discard(key)
         return json.dumps({"ok": True}, ensure_ascii=False)
 
     reason = str(args.get("reason", "other") or "other")
     note = str(args.get("note", "") or "")
-    _skip(ctx, {"reason": reason, "note": note})
+    if reason not in _VALID_SKIP_REASONS:
+        raise ValueError(f"invalid skip reason: {reason!r}. must be one of {sorted(_VALID_SKIP_REASONS)}")
+    ctx.skip_reason = reason
+    ctx.skip_note = note
+    ctx.terminal_action = "skip"
     ctx.cited_item_ids = evidence
     return json.dumps({"ok": True}, ensure_ascii=False)
 
@@ -416,12 +404,5 @@ async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolD
 
     if tool_name == "finish_turn":
         return _finish_turn(ctx, args)
-
-    # 兼容旧链路：schema 不再暴露 send_message/skip，但保留执行分支。
-    if tool_name == "send_message":
-        return _send_message(ctx, args)
-
-    if tool_name == "skip":
-        return _skip(ctx, args)
 
     raise ValueError(f"unknown tool: {tool_name!r}")

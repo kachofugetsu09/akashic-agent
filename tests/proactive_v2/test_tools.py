@@ -28,8 +28,6 @@ from proactive_v2.tools import (
     _web_search,
     _recall_memory,
     _finish_turn,
-    _send_message,
-    _skip,
     _mark_not_interesting,
     _get_alert_events,
     _get_content_events,
@@ -317,91 +315,51 @@ async def test_recall_memory_separator_between_hits():
     assert "---" in result["result"]
 
 
-# ── _send_message ─────────────────────────────────────────────────────────
+# ── _finish_turn 终止语义 ─────────────────────────────────────────────────
 
-def test_send_message_sets_terminal_send():
+def test_finish_turn_reply_sets_terminal_reply():
     ctx = AgentTickContext()
-    result = json.loads(_send_message(ctx, {"text": "hello", "cited_ids": ["feed-mcp:1"]}))
-    assert ctx.terminal_action == "send"
+    result = json.loads(_finish_turn(ctx, {"decision": "reply", "content": "hello", "evidence": ["feed-mcp:1"]}))
+    assert ctx.terminal_action == "reply"
     assert result["ok"] is True
 
 
-def test_send_message_writes_final_message():
+def test_finish_turn_reply_writes_content_and_evidence():
     ctx = AgentTickContext()
-    _send_message(ctx, {"text": "hello world", "cited_ids": []})
+    _finish_turn(ctx, {"decision": "reply", "content": "hello world", "evidence": ["feed-mcp:1", "alert-mcp:2"]})
     assert ctx.final_message == "hello world"
-
-
-def test_send_message_writes_cited_ids():
-    ctx = AgentTickContext()
-    _send_message(ctx, {"text": "msg", "cited_ids": ["feed-mcp:1", "alert-mcp:2"]})
     assert ctx.cited_item_ids == ["feed-mcp:1", "alert-mcp:2"]
 
 
-def test_send_message_cited_ids_defaults_empty():
-    ctx = AgentTickContext()
-    _send_message(ctx, {"text": "msg"})
-    assert ctx.cited_item_ids == []
-
-
-def test_send_message_cited_ids_added_to_interesting():
-    """cited_ids 全部加入 interesting_set（含与 discarded 冲突的项，cited 优先）"""
+def test_finish_turn_reply_evidence_added_to_interesting():
     ctx = AgentTickContext()
     ctx.discarded_item_ids = {"feed-mcp:99"}
-    _send_message(ctx, {"text": "msg", "cited_ids": ["feed-mcp:1", "feed-mcp:99"]})
+    _finish_turn(ctx, {"decision": "reply", "content": "msg", "evidence": ["feed-mcp:1", "feed-mcp:99"]})
     assert "feed-mcp:1" in ctx.interesting_item_ids
-    assert "feed-mcp:99" in ctx.interesting_item_ids   # cited 优先，冲突时加入 interesting
+    assert "feed-mcp:99" in ctx.interesting_item_ids
+    assert "feed-mcp:99" not in ctx.discarded_item_ids
 
 
-def test_send_message_cited_wins_over_discarded_conflict():
-    """cited vs discarded 冲突：cited 优先，移出 discarded"""
+def test_finish_turn_skip_sets_reason_and_note():
     ctx = AgentTickContext()
-    ctx.discarded_item_ids = {"feed-mcp:1"}
-    _send_message(ctx, {"text": "msg", "cited_ids": ["feed-mcp:1"]})
-    assert "feed-mcp:1" in ctx.interesting_item_ids
-    assert "feed-mcp:1" not in ctx.discarded_item_ids
-
-
-# ── _skip ─────────────────────────────────────────────────────────────────
-
-def test_skip_sets_terminal_skip():
-    ctx = AgentTickContext()
-    result = json.loads(_skip(ctx, {"reason": "no_content"}))
+    result = json.loads(_finish_turn(ctx, {"decision": "skip", "reason": "other", "note": "debug info"}))
     assert ctx.terminal_action == "skip"
+    assert ctx.skip_reason == "other"
+    assert ctx.skip_note == "debug info"
     assert result["ok"] is True
 
 
-def test_skip_writes_reason():
+@pytest.mark.parametrize("reason", ["no_content", "user_busy", "already_sent_similar", "other"])
+def test_finish_turn_skip_valid_reasons(reason):
     ctx = AgentTickContext()
-    _skip(ctx, {"reason": "user_busy"})
-    assert ctx.skip_reason == "user_busy"
-
-
-def test_skip_writes_optional_note():
-    ctx = AgentTickContext()
-    _skip(ctx, {"reason": "other", "note": "debug info"})
-    assert ctx.skip_note == "debug info"
-
-
-def test_skip_note_defaults_empty():
-    ctx = AgentTickContext()
-    _skip(ctx, {"reason": "no_content"})
-    assert ctx.skip_note == ""
-
-
-@pytest.mark.parametrize("reason", [
-    "no_content", "user_busy", "already_sent_similar", "other"
-])
-def test_skip_valid_reasons(reason):
-    ctx = AgentTickContext()
-    _skip(ctx, {"reason": reason})
+    _finish_turn(ctx, {"decision": "skip", "reason": reason})
     assert ctx.skip_reason == reason
 
 
-def test_skip_invalid_reason_raises():
+def test_finish_turn_skip_invalid_reason_raises():
     ctx = AgentTickContext()
     with pytest.raises(ValueError):
-        _skip(ctx, {"reason": "invalid_reason"})
+        _finish_turn(ctx, {"decision": "skip", "reason": "invalid_reason"})
 
 
 # ── _mark_not_interesting ─────────────────────────────────────────────────
@@ -587,18 +545,18 @@ async def test_execute_increments_each_call():
 
 
 @pytest.mark.asyncio
-async def test_execute_dispatches_send_message():
+async def test_execute_dispatches_finish_turn_reply():
     ctx = AgentTickContext()
     deps = ToolDeps()
-    await execute("send_message", {"text": "hi", "cited_ids": []}, ctx, deps)
-    assert ctx.terminal_action == "send"
+    await execute("finish_turn", {"decision": "reply", "content": "hi", "evidence": []}, ctx, deps)
+    assert ctx.terminal_action == "reply"
 
 
 @pytest.mark.asyncio
-async def test_execute_dispatches_skip():
+async def test_execute_dispatches_finish_turn_skip():
     ctx = AgentTickContext()
     deps = ToolDeps()
-    await execute("skip", {"reason": "no_content"}, ctx, deps)
+    await execute("finish_turn", {"decision": "skip", "reason": "no_content"}, ctx, deps)
     assert ctx.terminal_action == "skip"
 
 

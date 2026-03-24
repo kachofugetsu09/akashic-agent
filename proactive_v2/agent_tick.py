@@ -202,9 +202,7 @@ class AgentTick:
         any_action_gate: Any | None,
         last_user_at_fn: Callable[[], datetime | None],
         passive_busy_fn: Callable[[str], bool] | None,
-        sender: Any,
         turn_orchestrator: TurnOrchestrator | None = None,
-        outbound_send_fn: Callable[[str], Awaitable[bool]] | None = None,
         deduper: Any,
         tool_deps: ToolDeps,
         workspace_context_fn: Callable[[], str] | None = None,
@@ -218,9 +216,7 @@ class AgentTick:
         self._any_action_gate = any_action_gate
         self._last_user_at_fn = last_user_at_fn
         self._passive_busy_fn = passive_busy_fn
-        self._sender = sender
         self._turn_orchestrator = turn_orchestrator
-        self._outbound_send_fn = outbound_send_fn
         self._deduper = deduper
         self._tool_deps = tool_deps
         self._workspace_context_fn = workspace_context_fn
@@ -631,21 +627,19 @@ class AgentTick:
     async def _post_loop(self, ctx: AgentTickContext) -> float:
         """收口到 TurnResult；发送与副作用交给 orchestrator。"""
         result = await self._build_turn_result(ctx)
-        if self._turn_orchestrator is not None and self._outbound_send_fn is not None:
-            await self._turn_orchestrator.handle_proactive_turn(
-                result=result,
-                session_key=self._session_key,
-                channel=str(self._cfg.default_channel or "").strip(),
-                chat_id=str(self._cfg.default_chat_id or "").strip(),
-                dispatch_outbound=self._outbound_send_fn,
-            )
-            return 0.0
-        await self._legacy_apply_turn_result(result)
+        if self._turn_orchestrator is None:
+            raise RuntimeError("proactive turn_orchestrator is required")
+        await self._turn_orchestrator.handle_proactive_turn(
+            result=result,
+            session_key=self._session_key,
+            channel=str(self._cfg.default_channel or "").strip(),
+            chat_id=str(self._cfg.default_chat_id or "").strip(),
+        )
         return 0.0
 
     async def _build_turn_result(self, ctx: AgentTickContext) -> TurnResult:
         ack_fn = self._tool_deps.ack_fn
-        if ctx.terminal_action != "send":
+        if ctx.terminal_action != "reply":
             logger.info(
                 "[proactive_v2] post-loop: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
                 ctx.terminal_action or "none",
@@ -783,22 +777,6 @@ class AgentTick:
                 )
             ],
         )
-
-    async def _legacy_apply_turn_result(self, result: TurnResult) -> None:
-        if result.decision != "reply" or result.outbound is None:
-            for effect in result.side_effects:
-                await effect.run()
-            return
-        send_ok = await self._sender.send(result.outbound.content)
-        if send_ok:
-            for effect in result.success_side_effects:
-                await effect.run()
-            for effect in result.side_effects:
-                await effect.run()
-            return
-        for effect in result.failure_side_effects:
-            await effect.run()
-
 
 @dataclass
 class _CallbackSideEffect:

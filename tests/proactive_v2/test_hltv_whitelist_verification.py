@@ -263,9 +263,9 @@ async def test_b8_hltv_news_triggers_web_fetch_for_ranking():
 
     # B8 不在 top15，应该被过滤
     assert tick.last_ctx.terminal_action in ("skip", None) or (
-        tick.last_ctx.terminal_action == "send"
+        tick.last_ctx.terminal_action == "reply"
         and "feed-mcp:hltv_b8_lineup_2026" not in (tick.last_ctx.cited_item_ids or [])
-    ), "B8 新闻不应该被 send_message 引用"
+    ), "B8 新闻不应该被 finish_turn(reply) 引用"
 
 
 @pytest.mark.skipif(not _RUN, reason=_SKIP_REASON)

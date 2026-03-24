@@ -197,10 +197,10 @@ def test_interesting_set_stores_compound_keys():
 
 # ── terminal_action Literal 类型值 ───────────────────────────────────────
 
-def test_terminal_action_accepts_send():
+def test_terminal_action_accepts_reply():
     ctx = AgentTickContext()
-    ctx.terminal_action = "send"
-    assert ctx.terminal_action == "send"
+    ctx.terminal_action = "reply"
+    assert ctx.terminal_action == "reply"
 
 
 def test_terminal_action_accepts_skip():

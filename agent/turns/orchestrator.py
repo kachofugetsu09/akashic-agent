@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.looping.turn_types import ToolCall, ToolCallGroup
 from agent.postturn.protocol import PostTurnEvent
+from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult
 from bus.events import InboundMessage, OutboundMessage
 
@@ -28,6 +29,7 @@ class TurnOrchestratorDeps:
     session: SessionServices
     trace: ObservabilityServices
     post_turn: PostTurnPipeline
+    outbound: OutboundPort
 
 
 class TurnOrchestrator:
@@ -35,12 +37,14 @@ class TurnOrchestrator:
         self._session = deps.session
         self._trace = deps.trace
         self._post_turn = deps.post_turn
+        self._outbound = deps.outbound
 
     async def handle_turn(
         self,
         *,
         msg: InboundMessage,
         result: TurnResult,
+        dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         if result.decision != "reply" or result.outbound is None:
             raise ValueError("passive turn result must be reply with outbound")
@@ -80,7 +84,7 @@ class TurnOrchestrator:
             )
         )
         await self._run_side_effects(result)
-        return OutboundMessage(
+        outbound = OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
@@ -91,6 +95,17 @@ class TurnOrchestrator:
                 "tool_chain": tool_chain,
             },
         )
+        if dispatch_outbound:
+            await self._outbound.dispatch(
+                OutboundDispatch(
+                    channel=outbound.channel,
+                    chat_id=outbound.chat_id,
+                    content=outbound.content,
+                    thinking=outbound.thinking,
+                    metadata=outbound.metadata,
+                )
+            )
+        return outbound
 
     async def handle_proactive_turn(
         self,
@@ -99,7 +114,6 @@ class TurnOrchestrator:
         session_key: str,
         channel: str,
         chat_id: str,
-        dispatch_outbound: Callable[[str], Awaitable[bool]],
     ) -> bool:
         if result.decision == "skip":
             self._emit_proactive_observe(
@@ -124,13 +138,6 @@ class TurnOrchestrator:
         )
         await self._session.session_manager.append_messages(session, session.messages[-1:])
 
-        self._emit_proactive_observe(
-            key=session_key,
-            channel=channel,
-            chat_id=chat_id,
-            result=result,
-            sent=False,
-        )
         self._schedule_proactive_post_turn(
             session_key=session_key,
             channel=channel,
@@ -141,7 +148,15 @@ class TurnOrchestrator:
 
         sent = False
         try:
-            sent = await dispatch_outbound(content)
+            await self._run_effects(result.side_effects)
+            sent = await self._outbound.dispatch(
+                OutboundDispatch(
+                    channel=channel,
+                    chat_id=chat_id,
+                    content=content,
+                    metadata={},
+                )
+            )
         except Exception as e:
             logger.warning("proactive outbound dispatch failed: %s", e)
 
@@ -149,7 +164,6 @@ class TurnOrchestrator:
             if self._session.presence:
                 self._session.presence.record_proactive_sent(session_key)
             await self._run_effects(result.success_side_effects)
-            await self._run_effects(result.side_effects)
         else:
             await self._run_effects(result.failure_side_effects)
 

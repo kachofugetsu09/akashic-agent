@@ -9,6 +9,7 @@ import pytest
 
 from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.looping.turn_types import RetrievalTrace
+from agent.turns.outbound import OutboundDispatch
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from bus.events import InboundMessage
@@ -67,12 +68,20 @@ async def test_orchestrator_passive_order_and_outbound_metadata():
             self.events.append(event)
 
     post_turn = _PostTurn()
+    dispatched: list[OutboundDispatch] = []
+
+    class _Outbound:
+        async def dispatch(self, outbound: OutboundDispatch) -> bool:
+            order.append("dispatch")
+            dispatched.append(outbound)
+            return True
 
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=session_svc,
             trace=trace_svc,
             post_turn=post_turn,
+            outbound=_Outbound(),
         )
     )
 
@@ -112,4 +121,5 @@ async def test_orchestrator_passive_order_and_outbound_metadata():
     assert out.metadata["req_id"] == "r1"
     assert out.metadata["tools_used"] == ["noop"]
     assert len(writer.events) == 2
-    assert order == ["persist", "observe", "observe", "post_turn", "side_effect"]
+    assert dispatched[0].content == "收到"
+    assert order == ["persist", "observe", "observe", "post_turn", "side_effect", "dispatch"]

@@ -134,7 +134,6 @@ def _make_system_prompt() -> str:
         any_action_gate=gate,
         last_user_at_fn=lambda: None,
         passive_busy_fn=None,
-        sender=MagicMock(),
         deduper=MagicMock(),
         tool_deps=__import__("proactive_v2.tools", fromlist=["ToolDeps"]).ToolDeps(
             alert_fn=AsyncMock(return_value=[]),
