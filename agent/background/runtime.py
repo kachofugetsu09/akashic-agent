@@ -6,7 +6,7 @@ from typing import Callable, Literal
 
 from agent.subagent import SubAgent
 
-AgentBackgroundJobKind = Literal["conversation_spawn", "skill_action_agent"]
+AgentBackgroundJobKind = Literal["conversation_spawn"]
 AgentBackgroundCompletionMode = Literal["message_bus", "direct_notify"]
 AgentBackgroundPersistenceMode = Literal["ephemeral", "task_dir"]
 AgentBackgroundStatus = Literal["completed", "incomplete", "error"]

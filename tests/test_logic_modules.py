@@ -241,43 +241,26 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     )
     loop._poll_feeds_once = AsyncMock(return_value=None)
     assert loop._sample_random_memory(1)
-    assert "Workspace 导航" in loop._build_context_block()
-    assert await loop._send("hi") is True
+    assert loop._has_global_memory() is True
+    assert loop._read_memory_text() == "mem"
+    assert loop._compute_energy() == 0.5
+    assert loop._compute_interruptibility(
+        now_hour=10,
+        now_utc=datetime.now(timezone.utc),
+        recent_msg_count=0,
+    ) == (0.5, {"x": 1})
+    loop._agent_tick = SimpleNamespace(tick=AsyncMock(return_value=0.2))
     assert await loop._tick() == 0.2
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("proactive.loop.compute_energy", lambda last_user_at: 0.8)
         mp.setattr("proactive.loop.d_energy", lambda energy: 0.5)
         mp.setattr("proactive.loop.next_tick_from_score", lambda *args, **kwargs: 7)
         assert loop._next_interval() == 7
-    loop._cfg.use_global_memory = False
-    assert "禁用" in loop._collect_global_memory()
-    loop._cfg.use_global_memory = True
-    loop._memory = None
-    assert "无全局记忆" in loop._collect_global_memory()
-    loop._manual_trigger_event = asyncio.Event()
     loop._cfg.threshold = 0.5
     loop._cfg.default_channel = "telegram"
     loop._cfg.default_chat_id = "42"
-    wait_results = iter([None, asyncio.TimeoutError()])
-
-    async def _fake_wait_for(awaitable, timeout):
-        if hasattr(awaitable, "close"):
-            awaitable.close()
-        result = next(wait_results)
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-    tick_calls = {"count": 0}
-
-    async def _fake_tick():
-        tick_calls["count"] += 1
-        loop._running = False
-        return 0.1
-
-    loop._tick = _fake_tick
-    loop._manual_trigger_event.set()
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("proactive.loop.asyncio.wait_for", _fake_wait_for)
-        await loop.run()
-    assert tick_calls["count"] == 1
+    loop._run_loop = AsyncMock(return_value=None)
+    await loop.run()
+    loop._mcp_pool.connect_all.assert_awaited_once()
+    loop._run_loop.assert_awaited_once()
+    loop._mcp_pool.disconnect_all.assert_awaited_once()

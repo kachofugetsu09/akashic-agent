@@ -120,18 +120,12 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
         # Feed poller（独立子系统）
         "feed_poller_enabled",
         "feed_poller_interval_seconds",
-        "feed_poller_fetch_limit",
-        "feed_poller_buffer_ttl_hours",
-        "feed_poller_buffer_max_per_source",
-        "feed_poller_read_limit",
         # Interest filter（独立子系统）
         "interest_filter",
         # Fitbit（独立子系统）
         "fitbit_url",
         "fitbit_poll_seconds",
         "fitbit_monitor_path",
-        # Skill actions（独立子系统）
-        "skill_actions_path",
         # v2 Agent Tick（独立子系统）
         "agent_tick",
     }
@@ -142,6 +136,38 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
             f"proactive 配置中出现非法的根级键: {', '.join(sorted(forbidden))}。\n"
             f"请使用 preset + overrides 方式配置。\n"
             f"允许的根级键: {', '.join(sorted(allowed_root_keys))}"
+        )
+
+
+def _validate_feature_keys(features: dict[str, Any]) -> None:
+    allowed = {
+        "memory_retrieval_enabled",
+        "preference_retrieval_enabled",
+        "research_enabled",
+        "fitbit_enabled",
+    }
+    forbidden = set(features.keys()) - allowed
+    if forbidden:
+        raise ProactiveConfigError(
+            f"proactive.features 出现非法键: {', '.join(sorted(forbidden))}。"
+            f"允许键: {', '.join(sorted(allowed))}"
+        )
+
+
+def _validate_agent_tick_keys(agent_tick: dict[str, Any]) -> None:
+    allowed = {
+        "model",
+        "max_steps",
+        "content_limit",
+        "web_fetch_max_chars",
+        "context_prob",
+        "delivery_cooldown_hours",
+    }
+    forbidden = set(agent_tick.keys()) - allowed
+    if forbidden:
+        raise ProactiveConfigError(
+            f"proactive.agent_tick 出现非法键: {', '.join(sorted(forbidden))}。"
+            f"允许键: {', '.join(sorted(allowed))}"
         )
 
 
@@ -179,27 +205,19 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
 
     # 功能开关
     features = p.get("features", {})
+    _validate_feature_keys(features)
     memory_retrieval_enabled = features.get("memory_retrieval_enabled", True)
     preference_retrieval_enabled = features.get("preference_retrieval_enabled", True)
     research_enabled = features.get("research_enabled", True)
     fitbit_enabled = features.get("fitbit_enabled", False)
-    skill_actions_enabled = features.get("skill_actions_enabled", False)
-
     # Fitbit 配置
     fitbit_url = p.get("fitbit_url", "http://127.0.0.1:18765")
     fitbit_poll_seconds = p.get("fitbit_poll_seconds", 300)
     fitbit_monitor_path = p.get("fitbit_monitor_path", "")
 
-    # Skill Actions 配置
-    skill_actions_path = p.get("skill_actions_path", "")
-
     # Feed Poller 配置
     feed_poller_enabled = p.get("feed_poller_enabled", True)
     feed_poller_interval_seconds = p.get("feed_poller_interval_seconds", 150)
-    feed_poller_fetch_limit = p.get("feed_poller_fetch_limit", 20)
-    feed_poller_buffer_ttl_hours = p.get("feed_poller_buffer_ttl_hours", 48)
-    feed_poller_buffer_max_per_source = p.get("feed_poller_buffer_max_per_source", 100)
-    feed_poller_read_limit = p.get("feed_poller_read_limit", 50)
 
     # 合并预设和覆盖
     overrides = p.get("overrides", {})
@@ -232,17 +250,11 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         "preference_retrieval_enabled",
         "research_enabled",
         "fitbit_enabled",
-        "skill_actions_enabled",
         "fitbit_url",
         "fitbit_poll_seconds",
         "fitbit_monitor_path",
-        "skill_actions_path",
         "feed_poller_enabled",
         "feed_poller_interval_seconds",
-        "feed_poller_fetch_limit",
-        "feed_poller_buffer_ttl_hours",
-        "feed_poller_buffer_max_per_source",
-        "feed_poller_read_limit",
     }
     for key in explicit_keys:
         final_config.pop(key, None)
@@ -257,17 +269,11 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         preference_retrieval_enabled=preference_retrieval_enabled,
         research_enabled=research_enabled,
         fitbit_enabled=fitbit_enabled,
-        skill_actions_enabled=skill_actions_enabled,
         fitbit_url=fitbit_url,
         fitbit_poll_seconds=fitbit_poll_seconds,
         fitbit_monitor_path=fitbit_monitor_path,
-        skill_actions_path=skill_actions_path,
         feed_poller_enabled=feed_poller_enabled,
         feed_poller_interval_seconds=feed_poller_interval_seconds,
-        feed_poller_fetch_limit=feed_poller_fetch_limit,
-        feed_poller_buffer_ttl_hours=feed_poller_buffer_ttl_hours,
-        feed_poller_buffer_max_per_source=feed_poller_buffer_max_per_source,
-        feed_poller_read_limit=feed_poller_read_limit,
         **final_config,
     )
 
@@ -285,7 +291,7 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
 
     # v2 Agent Tick 配置（独立子系统）
     at = p.get("agent_tick") or {}
-    config.use_agent_tick = bool(at.get("enabled", False))
+    _validate_agent_tick_keys(at)
     if at.get("model"):
         config.agent_tick_model = str(at["model"])
     if "max_steps" in at:

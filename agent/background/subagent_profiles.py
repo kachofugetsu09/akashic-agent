@@ -9,10 +9,7 @@ from agent.subagent import SubAgent
 from agent.tool_bundles import build_readonly_research_tools
 from agent.tools.base import Tool
 from agent.tools.filesystem import EditFileTool, WriteFileTool
-from agent.tools.message_push import MessagePushTool
-from agent.tools.notify_owner import NotifyOwnerTool
 from agent.tools.shell import ShellTool
-from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
 from core.memory.port import MemoryPort
 from core.net.http import HttpRequester
 
@@ -66,37 +63,4 @@ def build_spawn_spec(
         tools=tools,
         system_prompt=system_prompt,
         max_iterations=max_iterations,
-    )
-
-
-def build_skill_action_spec(
-    *,
-    agent_tasks_dir: Path,
-    action_dir: Path,
-    fetch_requester: HttpRequester,
-    shell_tool: Tool,
-    db_path: Path,
-    push_tool: MessagePushTool,
-    channel: str,
-    chat_id: str,
-    system_prompt: str,
-    max_iterations: int = 40,
-) -> SubagentSpec:
-    tools = build_readonly_research_tools(
-        fetch_requester=fetch_requester,
-        allowed_dir=agent_tasks_dir,
-        include_list_dir=True,
-    ) + [
-        WriteFileTool(allowed_dir=agent_tasks_dir),
-        shell_tool,
-        TaskNoteTool(db_path),
-        TaskRecallTool(db_path),
-        TaskDoneTool(action_dir),
-        NotifyOwnerTool(push_tool, channel, chat_id),
-    ]
-    return SubagentSpec(
-        tools=tools,
-        system_prompt=system_prompt,
-        max_iterations=max_iterations,
-        mandatory_exit_tools=("task_note", "notify_owner"),
     )

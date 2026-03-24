@@ -18,7 +18,6 @@ from channels.group_filter import DefaultGroupFilter, strip_at_segments
 from memory2.models import MemoryItem
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.memory_sampler import sample_memory_chunks, split_memory_chunks
-from trigger_skill_action import DEFAULT_SOCKET, main as trigger_main, trigger
 
 
 class _Response:
@@ -257,42 +256,6 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     )
     assert item.id == "1"
 
-    reader = MagicMock()
-    reader.readline = AsyncMock(return_value=b'{"ok": true, "message": "done"}\n')
-    writer = MagicMock()
-    writer.write = MagicMock()
-    writer.drain = AsyncMock()
-    writer.close = MagicMock()
-    monkeypatch.setattr(
-        "trigger_skill_action.asyncio.open_unix_connection",
-        AsyncMock(return_value=(reader, writer)),
-    )
-    with pytest.raises(SystemExit) as exc:
-        await trigger("/tmp/sock", "abc")
-    assert exc.value.code == 0
-    assert '"action_id": "abc"' in capsys.readouterr().out
-
-    monkeypatch.setattr(
-        "trigger_skill_action.asyncio.open_unix_connection",
-        AsyncMock(side_effect=FileNotFoundError()),
-    )
-    with pytest.raises(SystemExit) as exc:
-        await trigger("/tmp/missing", None)
-    assert exc.value.code == 1
-
-    monkeypatch.setattr(sys, "argv", ["trigger_skill_action.py", "--socket", "/tmp/x", "aid"])
-    called = {}
-
-    def _fake_run(coro):
-        called["ran"] = True
-        coro.close()
-        return None
-
-    monkeypatch.setattr("trigger_skill_action.asyncio.run", _fake_run)
-    trigger_main()
-    assert called["ran"] is True
-    assert DEFAULT_SOCKET == "/tmp/akasic.sock"
-
     monkeypatch.setattr("pathlib.Path.exists", lambda self: False)
     monkeypatch.setattr(sys, "argv", ["main.py", "--config", "missing.json"])
     with pytest.raises(SystemExit) as exc:
@@ -337,8 +300,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     cfg = SimpleNamespace(
         proactive=SimpleNamespace(
             enabled=False,
-            skill_actions_enabled=False,
-            skill_actions_path="",
             fitbit_enabled=False,
             fitbit_monitor_path="",
         ),
@@ -384,8 +345,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     cfg = SimpleNamespace(
         proactive=SimpleNamespace(
             enabled=True,
-            skill_actions_enabled=True,
-            skill_actions_path="",
             fitbit_enabled=True,
             fitbit_monitor_path="/tmp/fitbit.json",
             fitbit_url="http://fitbit",
@@ -409,7 +368,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     )
     assert tasks == ["loop-task", ("fitbit-task", "/tmp/fitbit.json", "http://fitbit")]
     assert loop is proactive_loop
-    assert cfg.proactive.skill_actions_path.endswith("skill_actions.json")
     mem_tasks = build_memory_optimizer_task(
         cfg,
         provider=MagicMock(),

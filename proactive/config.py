@@ -20,23 +20,15 @@ class ProactiveConfig:
     preference_retrieval_enabled: bool = True
     research_enabled: bool = True
     fitbit_enabled: bool = False
-    skill_actions_enabled: bool = False
 
     # Fitbit 配置
     fitbit_url: str = "http://127.0.0.1:18765"
     fitbit_poll_seconds: int = 300
     fitbit_monitor_path: str = ""
 
-    # Skill Actions 配置
-    skill_actions_path: str = ""
-
     # Feed Poller 配置（保留，因为是独立子系统）
     feed_poller_enabled: bool = True
     feed_poller_interval_seconds: int = 150
-    feed_poller_fetch_limit: int = 20
-    feed_poller_buffer_ttl_hours: int = 48
-    feed_poller_buffer_max_per_source: int = 100
-    feed_poller_read_limit: int = 50
 
     # Interest Filter 配置（保留，因为是独立子系统）
     interest_filter: object = None  # SimpleNamespace
@@ -151,8 +143,7 @@ class ProactiveConfig:
     context_as_assist_enabled: bool = True
     sleep_modifier_sleeping: float = 0.15
 
-    # === v2 Agent Tick ===
-    use_agent_tick: bool = False
+    # === v2 Agent Tick（唯一实现） ===
     agent_tick_max_steps: int = 20
     agent_tick_model: str = ""
     agent_tick_content_limit: int = 5

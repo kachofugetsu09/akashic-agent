@@ -38,15 +38,10 @@
       "memory_retrieval_enabled": true,
       "preference_retrieval_enabled": true,
       "research_enabled": true,
-      "fitbit_enabled": false,
-      "skill_actions_enabled": false
+      "fitbit_enabled": false
     },
     "feed_poller_enabled": true,
     "feed_poller_interval_seconds": 150,
-    "feed_poller_fetch_limit": 20,
-    "feed_poller_buffer_ttl_hours": 48,
-    "feed_poller_buffer_max_per_source": 100,
-    "feed_poller_read_limit": 50,
     "interest_filter": {
       "enabled": true,
       "memory_max_chars": 4000,
@@ -59,10 +54,8 @@
     "fitbit_url": "http://127.0.0.1:18765",
     "fitbit_poll_seconds": 300,
     "fitbit_monitor_path": "",
-    "skill_actions_path": "",
     "overrides": {},
     "agent_tick": {
-      "enabled": false,
       "model": "",
       "max_steps": 20,
       "content_limit": 5,

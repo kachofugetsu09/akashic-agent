@@ -23,7 +23,6 @@ from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from core.common import timekit
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
-from proactive.loop import ProactiveLoop
 
 
 class _DummyTool(Tool):
@@ -400,62 +399,6 @@ async def test_message_bus_covers_flows(
 async def test_loop_trigger_and_main_entry_cover_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    class _Action:
-        def __init__(self, enabled: bool = True) -> None:
-            self.id = "a1"
-            self.name = "Action"
-            self.enabled = enabled
-
-    class _Runner:
-        def __init__(self) -> None:
-            self._registry = {"a1": _Action()}
-
-        def pick(self):
-            return _Action()
-
-        async def run(self, action):
-            return True, "hello"
-
-    class _Registry:
-        def __init__(self) -> None:
-            self.action = _Action()
-
-        def get(self, action_id: str):
-            return self.action if action_id == "a1" else None
-
-    class _Loop(ProactiveLoop):
-        def __init__(self):
-            self._cfg = SimpleNamespace(skill_actions_enabled=True, anyaction_enabled=True)
-            self._manual_trigger_lock = asyncio.Lock()
-            self._manual_trigger_event = asyncio.Event()
-            runner = _Runner()
-            runner._registry = _Registry()
-            self._engine = SimpleNamespace(
-                _skill_action_runner=runner,
-                _anyaction=SimpleNamespace(record_action=MagicMock()),
-                _try_send_proactive_text=AsyncMock(),
-            )
-
-    loop = _Loop()
-    ok, msg = await loop.trigger_skill_action("a1")
-    assert ok is True
-    assert "已完成" in msg
-    loop._engine._try_send_proactive_text.assert_awaited_once()
-    assert await loop.trigger_skill_action("missing") == (False, "找不到 action_id='missing'")
-    loop._engine._skill_action_runner._registry.action.enabled = False
-    assert await loop.trigger_skill_action("a1") == (False, "action_id='a1' 已禁用")
-    loop._engine._skill_action_runner._registry.action.enabled = True
-    loop._engine._skill_action_runner.pick = lambda: None
-    assert await loop.trigger_skill_action() == (
-        False,
-        "当前无可用 skill action（配额已满或间隔未到）",
-    )
-    loop._cfg.skill_actions_enabled = False
-    assert await loop.trigger_skill_action() == (
-        False,
-        "skill_actions 未启用（skill_actions_enabled=false）",
-    )
-
     module = __import__("main")
     monkeypatch.setattr(module.Config, "load", classmethod(lambda cls, path="config.json": SimpleNamespace(channels=SimpleNamespace(socket="/tmp/sock"))))
     monkeypatch.setitem(sys.modules, "channels.cli_tui", SimpleNamespace(run_tui=MagicMock()))

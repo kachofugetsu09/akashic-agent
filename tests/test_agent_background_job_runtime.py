@@ -56,7 +56,7 @@ async def test_background_job_runner_marks_incomplete():
     result = await runner.run(
         AgentBackgroundJobSpec(
             job_id="j2",
-            job_kind="skill_action_agent",
+            job_kind="conversation_spawn",
             label="job",
             task="do work",
             max_iterations=40,
@@ -78,7 +78,7 @@ async def test_background_job_runner_can_preserve_caller_error_contract():
     result = await runner.run(
         AgentBackgroundJobSpec(
             job_id="j3",
-            job_kind="skill_action_agent",
+            job_kind="conversation_spawn",
             label="job",
             task="do work",
             max_iterations=40,

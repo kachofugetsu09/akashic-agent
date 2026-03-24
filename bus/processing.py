@@ -2,7 +2,7 @@
 bus/processing.py — 会话级被动处理信号
 
 AgentLoop 在处理每条入站消息时调用 enter/exit；
-ProactiveEngine 在发送前调用 is_busy(session_key) 检查目标会话，
+ProactiveLoop/AgentTick 在发送前调用 is_busy(session_key) 检查目标会话，
 避免被动回复正在运行时同时发出主动消息。
 
 设计约束：

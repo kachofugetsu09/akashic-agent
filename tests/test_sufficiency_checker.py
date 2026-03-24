@@ -72,7 +72,7 @@ def test_should_not_check_when_forced_procedure_present():
             "memory_type": "procedure",
             "score": 0.42,
             "summary": "必须先查工具状态",
-            "extra_json": {"tool_requirement": "skill_action_status"},
+            "extra_json": {"tool_requirement": "task_note"},
         },
     ]
     assert should_check_sufficiency(items) is False

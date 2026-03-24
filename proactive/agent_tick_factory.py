@@ -48,9 +48,9 @@ class AgentTickFactory:
     def __init__(self, deps: AgentTickDeps) -> None:
         self._deps = deps
 
-    def build(self) -> AgentTick | None:
-        if not self._deps.cfg.use_agent_tick:
-            return None
+    def build(self) -> AgentTick:
+        if self._deps.pool is None:
+            raise RuntimeError("proactive_v2 依赖 MCP 连接池，pool 不能为空")
 
         session_key = self._get_session_key()
         last_user_at_fn = self._build_last_user_at_fn(session_key)
@@ -114,39 +114,29 @@ class AgentTickFactory:
 
     def _build_alert_fn(self) -> AlertFn:
         pool = self._deps.pool
+        assert pool is not None
 
         async def alert_fn() -> list[dict]:
-            if pool is not None:
-                return await mcp_sources.fetch_alert_events_async(pool)
-            return await asyncio.get_running_loop().run_in_executor(
-                None, mcp_sources.fetch_alert_events
-            )
+            return await mcp_sources.fetch_alert_events_async(pool)
 
         return alert_fn
 
     def _build_feed_fn(self) -> FeedFn:
         pool = self._deps.pool
+        assert pool is not None
 
         async def feed_fn(limit: int = 5) -> list[dict]:
-            if pool is not None:
-                events = await mcp_sources.fetch_content_events_async(pool)
-            else:
-                events = await asyncio.get_running_loop().run_in_executor(
-                    None, mcp_sources.fetch_content_events
-                )
+            events = await mcp_sources.fetch_content_events_async(pool)
             return events[:limit]
 
         return feed_fn
 
     def _build_context_fn(self) -> ContextFn:
         pool = self._deps.pool
+        assert pool is not None
 
         async def context_fn() -> list[dict]:
-            if pool is not None:
-                return await mcp_sources.fetch_context_data_async(pool)
-            return await asyncio.get_running_loop().run_in_executor(
-                None, mcp_sources.fetch_context_data
-            )
+            return await mcp_sources.fetch_context_data_async(pool)
 
         return context_fn
 
@@ -163,6 +153,7 @@ class AgentTickFactory:
 
     def _build_ack_fn(self) -> AckFn:
         pool = self._deps.pool
+        assert pool is not None
 
         async def ack_fn(compound_key: str, ttl_hours: int) -> None:
             """compound_key 格式："{ack_server}:{id}"，如 "feed-mcp:c1"."""
@@ -171,22 +162,15 @@ class AgentTickFactory:
                 return
             ack_server, item_id = parts
             source_key = f"mcp:{ack_server}"
-            if pool is not None:
-                await mcp_sources.acknowledge_content_entries_async(
-                    pool, [(source_key, item_id)], ttl_hours=ttl_hours
-                )
-            else:
-                await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda: mcp_sources.acknowledge_content_entries(
-                        [(source_key, item_id)], ttl_hours=ttl_hours
-                    ),
-                )
+            await mcp_sources.acknowledge_content_entries_async(
+                pool, [(source_key, item_id)], ttl_hours=ttl_hours
+            )
 
         return ack_fn
 
     def _build_alert_ack_fn(self) -> AlertAckFn:
         pool = self._deps.pool
+        assert pool is not None
 
         async def alert_ack_fn(compound_key: str) -> None:
             """Alert 专用通道，走 acknowledge_events（非 content entries）。"""
@@ -196,13 +180,7 @@ class AgentTickFactory:
                 return
             ack_server, ack_id = parts
             event_proxy = _types.SimpleNamespace(_ack_server=ack_server, ack_id=ack_id)
-            if pool is not None:
-                await mcp_sources.acknowledge_events_async(pool, [event_proxy])
-            else:
-                await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda: mcp_sources.acknowledge_events([event_proxy]),
-                )
+            await mcp_sources.acknowledge_events_async(pool, [event_proxy])
 
         return alert_ack_fn
 

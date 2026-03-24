@@ -7,11 +7,8 @@ tests/test_mcp_proactive_pipeline.py
 """
 
 import json
-import os
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -76,14 +73,6 @@ def _start_mock_server() -> tuple[HTTPServer, int]:
     return server, port
 
 
-# ── 读取 fitbit-mcp 配置 ──────────────────────────────────────────────────────
-
-def _fitbit_command() -> list[str]:
-    config_path = Path.home() / ".akasic/workspace/mcp_servers.json"
-    data = json.loads(config_path.read_text())
-    return data["servers"]["fitbit"]["command"]
-
-
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 class TestMcpProactivePipeline:
@@ -91,8 +80,9 @@ class TestMcpProactivePipeline:
     def setup_method(self):
         _MockFitbitHandler.acked_ids = []
 
-    def test_fetch_alert_events_returns_test_event(self):
-        """fitbit-mcp → mcp_sources.fetch_alert_events() 能正确拿到测试告警。"""
+    @pytest.mark.asyncio
+    async def test_fetch_alert_events_returns_test_event(self):
+        """fitbit-mcp → mcp_sources.fetch_alert_events_async() 能正确拿到测试告警。"""
         server, port = _start_mock_server()
         try:
             # 把 fitbit-mcp 指向 mock server
@@ -100,8 +90,6 @@ class TestMcpProactivePipeline:
                 "FITBIT_MONITOR_HOST": "127.0.0.1",
                 "FITBIT_MONITOR_PORT": str(port),
             }
-            command = _fitbit_command()
-
             # 临时替换 mcp_servers.json 里的 command env
             from proactive import mcp_sources
 
@@ -115,7 +103,10 @@ class TestMcpProactivePipeline:
                 return cfg
 
             with patch.object(mcp_sources, "_get_server_cfg", side_effect=patched_cfg):
-                events = mcp_sources.fetch_alert_events()
+                pool = mcp_sources.McpClientPool()
+                await pool.connect_all()
+                events = await mcp_sources.fetch_alert_events_async(pool)
+                await pool.disconnect_all()
 
             assert len(events) == 1, f"期望 1 条事件，实际: {events}"
             evt = events[0]
@@ -161,8 +152,9 @@ class TestMcpProactivePipeline:
         assert sig["severity"] == "high"
         assert sig["message"] == evt.content   # _extra_signal_fields backward compat
 
-    def test_acknowledge_events_calls_ack_endpoint(self):
-        """acknowledge_events() 正确把 ack_id 送回 fitbit-monitor。"""
+    @pytest.mark.asyncio
+    async def test_acknowledge_events_calls_ack_endpoint(self):
+        """acknowledge_events_async() 正确把 ack_id 送回 fitbit-monitor。"""
         server, port = _start_mock_server()
         try:
             from proactive.event import GenericAlertEvent
@@ -194,7 +186,10 @@ class TestMcpProactivePipeline:
                 return cfg
 
             with patch.object(mcp_sources, "_get_server_cfg", side_effect=patched_cfg):
-                mcp_sources.acknowledge_events([evt])
+                pool = mcp_sources.McpClientPool()
+                await pool.connect_all()
+                await mcp_sources.acknowledge_events_async(pool, [evt])
+                await pool.disconnect_all()
 
             assert "TEST-0001" in _MockFitbitHandler.acked_ids, (
                 f"期望 TEST-0001 被 ack，实际 acked: {_MockFitbitHandler.acked_ids}"

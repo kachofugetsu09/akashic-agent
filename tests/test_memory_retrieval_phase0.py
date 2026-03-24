@@ -115,13 +115,13 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
 
     _update_session_runtime_metadata(
         session,
-        tools_used=["web_search", "skill_action_status", "update_now"],
+        tools_used=["web_search", "task_note", "update_now"],
         tool_chain=[{"calls": [{"name": "a"}, {"name": "b"}]}],
     )
 
     assert session.metadata["last_turn_tool_calls_count"] == 2
     assert session.metadata["last_turn_had_task_tool"] is True
-    assert "skill_action_status" in session.metadata["recent_task_tools"]
+    assert "task_note" in session.metadata["recent_task_tools"]
     assert "update_now" in session.metadata["recent_task_tools"]
     assert isinstance(session.metadata.get("last_turn_ts"), str)
 
@@ -159,7 +159,7 @@ async def test_memorize_tool_uses_memory_port():
     result = await tool.execute(
         summary="以后先查工具状态",
         memory_type="procedure",
-        tool_requirement="skill_action_status",
+        tool_requirement="task_note",
         steps=["先查", "再执行"],
     )
 
@@ -167,13 +167,13 @@ async def test_memorize_tool_uses_memory_port():
         summary="以后先查工具状态",
         memory_type="procedure",
         extra={
-            "tool_requirement": "skill_action_status",
+            "tool_requirement": "task_note",
             "steps": ["先查", "再执行"],
             "persist_file": None,
             "rule_schema": {
-                "required_tools": ["skill_action_status"],
+                "required_tools": ["task_note"],
                 "forbidden_tools": [],
-                "mentioned_tools": ["skill_action_status"],
+                "mentioned_tools": ["task_note"],
             },
         },
         source_ref="memorize_tool",
@@ -345,7 +345,7 @@ def test_retriever_select_for_injection_keeps_protected_procedure():
             "memory_type": "procedure",
             "score": 0.42,
             "summary": "必须先查工具状态",
-            "extra_json": {"tool_requirement": "skill_action_status"},
+            "extra_json": {"tool_requirement": "task_note"},
         },
         {"id": "e1", "memory_type": "event", "score": 0.75, "summary": "普通历史"},
     ]
@@ -374,7 +374,7 @@ def test_retriever_select_for_injection_can_drop_protected_when_guard_disabled()
             "memory_type": "procedure",
             "score": 0.42,
             "summary": "必须先查工具状态",
-            "extra_json": {"tool_requirement": "skill_action_status"},
+            "extra_json": {"tool_requirement": "task_note"},
         },
     ]
 

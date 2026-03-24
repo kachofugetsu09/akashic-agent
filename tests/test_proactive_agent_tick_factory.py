@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from proactive.agent_tick_factory import AgentTickDeps, AgentTickFactory
+from proactive.mcp_sources import McpClientPool
 from bootstrap.proactive import build_proactive_runtime
 
 
@@ -11,9 +12,8 @@ class _FakeProvider:
         return SimpleNamespace(tool_calls=[])
 
 
-def _build_deps(use_agent_tick: bool):
+def _build_deps(*, with_pool: bool):
     cfg = SimpleNamespace(
-        use_agent_tick=use_agent_tick,
         default_chat_id="cid",
         agent_tick_model="",
         agent_tick_web_fetch_max_chars=4000,
@@ -40,16 +40,21 @@ def _build_deps(use_agent_tick: bool):
         rng=SimpleNamespace(),
         workspace_context_fn=lambda: "",
         observe_writer=None,
+        pool=McpClientPool() if with_pool else None,
     )
 
 
-def test_agent_tick_factory_build_returns_none_when_disabled():
-    deps = _build_deps(use_agent_tick=False)
-    assert AgentTickFactory(deps).build() is None
+def test_agent_tick_factory_build_requires_pool():
+    deps = _build_deps(with_pool=False)
+    try:
+        AgentTickFactory(deps).build()
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "pool 不能为空" in str(e)
 
 
-def test_agent_tick_factory_build_returns_tick_when_enabled():
-    deps = _build_deps(use_agent_tick=True)
+def test_agent_tick_factory_build_returns_tick():
+    deps = _build_deps(with_pool=True)
     tick = AgentTickFactory(deps).build()
     assert tick is not None
 
@@ -58,8 +63,6 @@ def test_build_proactive_runtime_accepts_light_agent_loop_stub(tmp_path):
     cfg = SimpleNamespace(
         proactive=SimpleNamespace(
             enabled=False,
-            skill_actions_enabled=False,
-            skill_actions_path="",
             fitbit_enabled=False,
             fitbit_monitor_path="",
         ),

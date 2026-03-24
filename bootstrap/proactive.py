@@ -36,8 +36,6 @@ def build_proactive_runtime(
 
     proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
     proactive_cfg = config.proactive
-    if proactive_cfg.skill_actions_enabled and not proactive_cfg.skill_actions_path:
-        proactive_cfg.skill_actions_path = str(workspace / "skill_actions.json")
 
     proactive_loop = ProactiveLoop(
         session_manager=session_manager,

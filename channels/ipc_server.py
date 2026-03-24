@@ -6,8 +6,7 @@ IPC Server Channel（服务端）
   CLI client → socket → MessageBus → AgentLoop → socket → CLI client
 
 特殊命令（type="command"）：
-  trigger_skill_action  手动触发一次 skill action，阻断当前 proactive tick 的等待
-    参数：action_id（可选，字符串）；留空则按权重随机抽取
+  当前无内置命令，统一返回 unknown。
 """
 
 import asyncio
@@ -56,9 +55,9 @@ class IPCServerChannel:
         Path(self._socket_path).unlink(missing_ok=True)
 
     def set_proactive_loop(self, proactive_loop: "ProactiveLoop") -> None:
-        """在 IPC server 启动后注入 ProactiveLoop，用于手动触发 skill action。"""
+        """在 IPC server 启动后注入 ProactiveLoop。"""
         self._proactive_loop = proactive_loop
-        logger.info("[cli] ProactiveLoop 已注入，trigger_skill_action 命令已就绪")
+        logger.info("[cli] ProactiveLoop 已注入")
 
     # ── 私有方法 ──────────────────────────────────────────────────
 
@@ -110,42 +109,11 @@ class IPCServerChannel:
         cmd = data.get("command", "")
         logger.info("[cli] 收到命令 cmd=%r session=%s", cmd, chat_id)
 
-        if cmd == "trigger_skill_action":
-            await self._cmd_trigger_skill_action(data, chat_id, writer)
-        else:
-            await self._write_command_result(
-                writer,
-                ok=False,
-                message=f"未知命令: {cmd!r}",
-            )
-
-    async def _cmd_trigger_skill_action(
-        self,
-        data: dict,
-        chat_id: str,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        """触发手动 skill action，把结果写回客户端。"""
-        if self._proactive_loop is None:
-            await self._write_command_result(
-                writer, ok=False, message="ProactiveLoop 未启用或未注入"
-            )
-            return
-
-        action_id: str | None = data.get("action_id") or None
-        logger.info(
-            "[cli] trigger_skill_action action_id=%s session=%s",
-            action_id or "(随机)",
-            chat_id,
+        await self._write_command_result(
+            writer,
+            ok=False,
+            message=f"未知命令: {cmd!r}",
         )
-        try:
-            success, message = await self._proactive_loop.trigger_skill_action(
-                action_id
-            )
-            await self._write_command_result(writer, ok=success, message=message)
-        except Exception as e:
-            logger.exception("[cli] trigger_skill_action 异常")
-            await self._write_command_result(writer, ok=False, message=str(e))
 
     @staticmethod
     async def _write_command_result(

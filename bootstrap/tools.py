@@ -23,7 +23,6 @@ from bootstrap.toolsets.meta import (
 )
 from bootstrap.toolsets.peer import build_peer_agent_resources
 from bootstrap.toolsets.schedule import build_scheduler, register_scheduler_tools
-from bootstrap.toolsets.skill_actions import register_skill_action_tools
 from bootstrap.providers import build_providers
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -116,7 +115,6 @@ def build_registered_tools(
 
     # ── 第二阶段：注册工具（所有服务已就绪）──────────────────────────────────
     register_meta_and_common_tools(tools, readonly_tools, store, push_tool=push_tool)
-    register_skill_action_tools(tools, workspace)
     register_fitbit_tools(tools, config, http_resources)
     register_spawn_tool(
         tools,

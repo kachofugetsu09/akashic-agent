@@ -2,7 +2,7 @@
 SubAgent — 通用子 Agent
 
 有固定工具集、独立的 LLM 循环，执行单个任务后返回结果。
-可作为 skill_action agent 类型的执行引擎，也可用于未来其他子 Agent 场景。
+可作为后台任务执行引擎，也可用于未来其他子 Agent 场景。
 
 用法示例：
     agent = SubAgent(

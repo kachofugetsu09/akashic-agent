@@ -92,7 +92,7 @@ def _trace_memory_retrieve(
 def _extract_task_tools(tools_used: list[str]) -> list[str]:
     task_tools = []
     for name in tools_used:
-        if name.startswith("skill_action_") or name in {"task_note", "update_now"}:
+        if name in {"task_note", "update_now"}:
             task_tools.append(name)
     return task_tools
 

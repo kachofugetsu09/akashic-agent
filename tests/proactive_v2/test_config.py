@@ -3,7 +3,7 @@ TDD — Phase 2: proactive/config.py v2 新字段
 
 测试覆盖：
   - 新增 v2 字段的默认值
-  - use_agent_tick=False 安全默认
+  - v2-only 语义（不再存在 use_agent_tick）
   - 复用 v1 已有字段（不重复定义）
   - 字段类型正确
 """
@@ -13,14 +13,10 @@ import pytest
 from proactive.config import ProactiveConfig
 
 
-# ── feature flag ──────────────────────────────────────────────────────────
+# ── v2-only ───────────────────────────────────────────────────────────────
 
-def test_use_agent_tick_defaults_false():
-    assert ProactiveConfig().use_agent_tick is False
-
-
-def test_use_agent_tick_is_bool():
-    assert isinstance(ProactiveConfig().use_agent_tick, bool)
+def test_use_agent_tick_removed():
+    assert not hasattr(ProactiveConfig(), "use_agent_tick")
 
 
 # ── agent loop ───────────────────────────────────────────────────────────
@@ -108,10 +104,6 @@ def test_message_dedupe_recent_n_exists():
 
 
 # ── 字段可被覆盖（dataclass override） ────────────────────────────────────
-
-def test_use_agent_tick_can_be_overridden():
-    cfg = ProactiveConfig(use_agent_tick=True)
-    assert cfg.use_agent_tick is True
 
 
 def test_max_steps_can_be_overridden():

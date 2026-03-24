@@ -14,10 +14,6 @@
   - 管理和查询 RSS/信息来源订阅，支持列订阅、查最新、查概况、关键词搜索。
   - 文件：`/mnt/data/coding/akasic-agent/skills/feed-manage/SKILL.md`
 
-- `skill-action-manager`
-  - 管理后台空闲时执行的 skill action（注册、取消、查询）。
-  - 文件：`/mnt/data/coding/akasic-agent/skills/skill-action-manager/SKILL.md`
-
 - `skill-creater`
   - 创建或改写技能 `SKILL.md`，用于新增技能与结构迁移。
   - 文件：`/mnt/data/coding/akasic-agent/skills/skill-creater/SKILL.md`
