@@ -4,15 +4,14 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.looping.ports import (
     AgentLoopRunner,
     ConversationTurnDeps,
     SessionLike,
     SessionServices,
 )
-from agent.looping.turn_types import HistoryMessage, RetrievalTrace, ToolCall, ToolCallGroup
-from agent.postturn.protocol import PostTurnEvent
+from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
+from agent.looping.turn_types import HistoryMessage, ToolCall, ToolCallGroup
 from agent.retrieval.protocol import RetrievalRequest
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import parse_spawn_completion
@@ -20,7 +19,6 @@ from bus.internal_events import parse_spawn_completion
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.tools.registry import ToolRegistry
-    from core.observe.events import TurnTrace
 
 logger = logging.getLogger("agent.loop_handlers")
 
@@ -37,9 +35,8 @@ class ConversationTurnHandler:
         self._llm_config = deps.llm_config
         self._turn_runner = deps.turn_runner
         self._retrieval = deps.retrieval
-        self._post_turn = deps.post_turn
+        self._orchestrator = deps.orchestrator
         self._session = deps.session
-        self._trace = deps.trace
         self._tools = deps.tools
         self._context = deps.context
 
@@ -68,39 +65,26 @@ class ConversationTurnHandler:
             skill_mentions=skill_mentions,
             retrieved_block=retrieval_result.block,
         )
-        await self._persist_session(
-            msg=msg,
-            session=session,
-            final_content=final_content,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
+        result = TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(session_key=key, content=final_content),
+            trace=TurnTrace(
+                source="passive",
+                retrieval={
+                    "raw": retrieval_result.trace.raw
+                    if retrieval_result.trace is not None
+                    else None
+                },
+                extra={
+                    "tools_used": tools_used,
+                    "tool_chain": tool_chain,
+                    "thinking": thinking,
+                },
+            ),
         )
-        self._post_turn.schedule(
-            PostTurnEvent(
-                session_key=key,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                user_message=msg.content,
-                assistant_response=final_content,
-                tools_used=tools_used,
-                tool_chain=_to_tool_call_groups(tool_chain),
-                session=session,
-                timestamp=msg.timestamp,
-            )
-        )
-        self._emit_observe_traces(
-            key=key,
+        return await self._orchestrator.handle_turn(
             msg=msg,
-            final_content=final_content,
-            tool_chain=tool_chain,
-            retrieval_trace=retrieval_result.trace,
-        )
-        return self._build_outbound_message(
-            msg=msg,
-            final_content=final_content,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
-            thinking=thinking,
+            result=result,
         )
 
     def _collect_skill_mentions(self, msg: InboundMessage) -> list[str]:
@@ -144,116 +128,6 @@ class ConversationTurnHandler:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
         return final_content, tools_used, tool_chain, thinking
-
-    async def _persist_session(
-        self,
-        *,
-        msg: InboundMessage,
-        session: SessionLike,
-        final_content: str,
-        tools_used: list[str],
-        tool_chain: list[dict],
-    ) -> None:
-        """把本轮结果统一写回 session、presence 和 post-response worker。"""
-        preview = (
-            final_content[:120] + "..." if len(final_content) > 120 else final_content
-        )
-        logger.info(f"Response to {msg.channel}:{msg.sender}: {preview}")
-
-        # 1. 先把 user/assistant 两条消息落到 session 内存对象中。
-        if self._session.presence:
-            self._session.presence.record_user_message(session.key)
-        session.add_message("user", msg.content, media=msg.media if msg.media else None)
-        session.add_message(
-            "assistant",
-            final_content,
-            tools_used=tools_used if tools_used else None,
-            tool_chain=tool_chain if tool_chain else None,
-        )
-        # 2. 再补 runtime metadata，让后续 memory gate / proactive 能读到这轮工具状态。
-        _update_session_runtime_metadata(
-            session,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
-        )
-        # 3. 最后做持久化 append。
-        await self._session.session_manager.append_messages(session, session.messages[-2:])
-
-    @staticmethod
-    def _build_outbound_message(
-        *,
-        msg: InboundMessage,
-        final_content: str,
-        tools_used: list[str],
-        tool_chain: list[dict],
-        thinking: str | None = None,
-    ) -> OutboundMessage:
-        return OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=final_content,
-            thinking=thinking,
-            metadata={
-                **(msg.metadata or {}),
-                "tools_used": tools_used,
-                "tool_chain": tool_chain,
-            },
-        )
-
-    def _emit_observe_traces(
-        self,
-        *,
-        key: str,
-        msg: InboundMessage,
-        final_content: str,
-        tool_chain: list[dict],
-        retrieval_trace: RetrievalTrace | None,
-    ) -> None:
-        writer = self._trace.observe_writer
-        if writer is None:
-            return
-        import json as _json
-        from core.observe.events import TurnTrace
-
-        tool_calls = [
-            {
-                "name": call.get("name", ""),
-                "args": str(call.get("arguments", ""))[:300],
-                "result": str(call.get("result", ""))[:500],
-            }
-            for group in tool_chain
-            for call in (group.get("calls") or [])
-        ]
-
-        def _slim_chain(chain: list[dict]) -> list[dict]:
-            out = []
-            for group in chain:
-                text = str(group.get("text") or "")
-                calls = [
-                    {
-                        "name": c.get("name", ""),
-                        "args": str(c.get("arguments", ""))[:800],
-                        "result": str(c.get("result", ""))[:1200],
-                    }
-                    for c in (group.get("calls") or [])
-                ]
-                out.append({"text": text, "calls": calls})
-            return out
-
-        tool_chain_json = _json.dumps(_slim_chain(tool_chain), ensure_ascii=False) if tool_chain else None
-
-        writer.emit(
-            TurnTrace(
-                source="agent",
-                session_key=key,
-                user_msg=msg.content,
-                llm_output=final_content,
-                tool_calls=tool_calls,
-                tool_chain_json=tool_chain_json,
-            )
-        )
-        if retrieval_trace is not None and retrieval_trace.raw is not None:
-            writer.emit(retrieval_trace.raw)
 
 
 def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:

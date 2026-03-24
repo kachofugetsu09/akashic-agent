@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from agent.postturn.protocol import PostTurnPipeline
     from agent.provider import LLMProvider
     from agent.retrieval.protocol import MemoryRetrievalPipeline
+    from agent.turns.orchestrator import TurnOrchestrator
     from agent.tools.registry import ToolRegistry
     from bus.events import InboundMessage
     from core.memory.port import MemoryPort
@@ -120,9 +121,8 @@ class ConversationTurnDeps:
     llm_config: LLMConfig
     turn_runner: TurnRunner
     retrieval: MemoryRetrievalPipeline
-    post_turn: PostTurnPipeline
+    orchestrator: TurnOrchestrator
     session: SessionServices
-    trace: ObservabilityServices
     tools: ToolRegistry
     context: ContextBuilder
 

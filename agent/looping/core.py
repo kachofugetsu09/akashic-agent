@@ -28,6 +28,7 @@ from agent.postturn.default_pipeline import DefaultPostTurnPipeline
 from agent.postturn.protocol import PostTurnPipeline
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
+from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 
 # Re-export for backward-compat: existing callers import these from core.py
 __all__ = [
@@ -232,6 +233,13 @@ class AgentLoop:
             scheduler=self._scheduler,
             post_mem_worker=post_mem_worker,
         )
+        turn_orchestrator = TurnOrchestrator(
+            TurnOrchestratorDeps(
+                session=session_svc,
+                trace=trace_svc,
+                post_turn=post_turn_pipeline,
+            )
+        )
 
         self._conversation_handler = ConversationTurnHandler(
             ConversationTurnDeps(
@@ -239,9 +247,8 @@ class AgentLoop:
                 llm_config=config.llm,
                 turn_runner=self._safety_retry,
                 retrieval=retrieval_pipeline,
-                post_turn=post_turn_pipeline,
+                orchestrator=turn_orchestrator,
                 session=session_svc,
-                trace=trace_svc,
                 tools=deps.tools,
                 context=self.context,
             )
