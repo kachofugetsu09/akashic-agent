@@ -25,6 +25,7 @@ TEST_EVENT = {
     "message": "[TEST] 这是一条测试告警事件，请忽略",
     "created_at": "2099-01-01 00:00",
     "suggested_tone": "测试专用，无需关心语气",
+    "metrics": {"test_value": 42, "test_label": "unit_test"},
 }
 
 MOCK_AGENT_RESPONSE = {
@@ -125,6 +126,7 @@ class TestMcpProactivePipeline:
             assert evt["source_type"] == "health_event"
             assert evt["severity"] == "high"
             assert "[TEST]" in evt["content"]
+            assert evt.get("metrics") == {"test_value": 42, "test_label": "unit_test"}
         finally:
             server.shutdown()
 

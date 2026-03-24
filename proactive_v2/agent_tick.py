@@ -298,11 +298,15 @@ class AgentTick:
             lines = []
             for i, a in enumerate(gw.alerts):
                 aid = f"{a.get('ack_server','?')}:{a.get('event_id') or a.get('id','?')}"
+                severity = str(a.get("severity") or "").strip()
                 content = str(a.get("content") or a.get("body") or "").strip()
                 tone = str(a.get("suggested_tone") or "").strip()
-                line = f"  [{i+1}] id={aid}\n       title={a.get('title','')}"
+                metrics = a.get("metrics")
+                line = f"  [{i+1}] id={aid}  severity={severity}\n       title={a.get('title','')}"
                 if content:
                     line += f"\n       内容：{content}"
+                if metrics and isinstance(metrics, dict):
+                    line += f"\n       metrics：{json.dumps(metrics, ensure_ascii=False)}"
                 if tone:
                     line += f"\n       建议语气：{tone}"
                 lines.append(line)
