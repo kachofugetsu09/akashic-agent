@@ -18,6 +18,11 @@ from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from proactive.config import ProactiveConfig
+from proactive_v2.contracts import (
+    normalize_alert,
+    normalize_content,
+    normalize_context,
+)
 from proactive_v2.context import AgentTickContext
 from proactive_v2.gateway import DataGateway, GatewayResult
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, execute
@@ -293,40 +298,8 @@ class AgentTick:
             except Exception:
                 pass
 
-        alert_block = ""
-        if gw.alerts:
-            lines = []
-            for i, a in enumerate(gw.alerts):
-                aid = f"{a.get('ack_server','?')}:{a.get('event_id') or a.get('id','?')}"
-                severity = str(a.get("severity") or "").strip()
-                content = str(a.get("content") or a.get("body") or "").strip()
-                tone = str(a.get("suggested_tone") or "").strip()
-                metrics = a.get("metrics")
-                line = f"  [{i+1}] id={aid}  severity={severity}\n       title={a.get('title','')}"
-                if content:
-                    line += f"\n       内容：{content}"
-                if metrics and isinstance(metrics, dict):
-                    line += f"\n       metrics：{json.dumps(metrics, ensure_ascii=False)}"
-                if tone:
-                    line += f"\n       建议语气：{tone}"
-                lines.append(line)
-            alert_block = "【Alerts（时效性高，优先处理）】\n" + "\n".join(lines) + "\n\n"
-
-        context_block = ""
-        if gw.context:
-            # 补充 awake_prob 派生字段，防止 agent 把"睡眠概率 8%"误读成"清醒概率 8%"
-            annotated_context = []
-            for item in gw.context:
-                item = dict(item)
-                if "sleep_prob" in item and item["sleep_prob"] is not None:
-                    item["awake_prob"] = round(1.0 - float(item["sleep_prob"]), 3)
-                annotated_context.append(item)
-            context_block = (
-                "【背景上下文】\n"
-                "注：sleep_prob=睡眠概率，awake_prob=清醒概率（= 1 - sleep_prob）。\n"
-                + json.dumps(annotated_context, ensure_ascii=False)[:900]
-                + "\n\n"
-            )
+        alert_block = self._render_alert_block(gw.alerts)
+        context_block = self._render_context_block(gw.context)
 
         workspace_context_block = ""
         if self._workspace_context_fn is not None:
@@ -341,24 +314,7 @@ class AgentTick:
             except Exception:
                 pass
 
-        content_block = ""
-        if gw.content_meta:
-            lines = []
-            for i, m in enumerate(gw.content_meta):
-                has_content = bool(gw.content_store.get(m["id"]))
-                status = "✓" if has_content else "✗(预取失败)"
-                url_part = f"\n       url={m['url']}" if m.get("url") else ""
-                lines.append(
-                    f"  [{i+1}] id={m['id']}\n"
-                    f"       title={m['title']}\n"
-                    f"       source={m['source']}  正文:{status}"
-                    f"{url_part}"
-                )
-            content_block = (
-                "【Content 列表（正文通过 get_content 按需获取）】\n"
-                + "\n".join(lines)
-                + "\n\n"
-            )
+        content_block = self._render_content_block(gw.content_meta, gw.content_store)
 
         from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
 
@@ -455,6 +411,38 @@ class AgentTick:
             "- 当本轮 content 和 alerts 均为空时，cited_ids 必须为 []；任何 'feed:xxx' 格式的 id 只能来自本轮真实提供的候选列表，不能自行捏造\n"
             "- 没有实质内容时 skip 是正确选择\n\n"
             "【skip reason】no_content | user_busy | already_sent_similar | other"
+        )
+
+    def _render_alert_block(self, alerts: list[dict]) -> str:
+        if not alerts:
+            return ""
+        lines = [
+            normalize_alert(raw).to_prompt_line(index=i)
+            for i, raw in enumerate(alerts, 1)
+        ]
+        return "【Alerts（时效性高，优先处理）】\n" + "\n".join(lines) + "\n\n"
+
+    def _render_content_block(
+        self, content_meta: list[dict], content_store: dict[str, str]
+    ) -> str:
+        if not content_meta:
+            return ""
+        lines: list[str] = []
+        for i, raw in enumerate(content_meta, 1):
+            contract = normalize_content(raw)
+            has_content = bool(content_store.get(contract.item_id))
+            lines.append(contract.to_prompt_line(index=i, has_content=has_content))
+        return "【Content 列表（正文通过 get_content 按需获取）】\n" + "\n".join(lines) + "\n\n"
+
+    def _render_context_block(self, context: list[dict]) -> str:
+        if not context:
+            return ""
+        annotated_context = [normalize_context(item).to_prompt_item() for item in context]
+        return (
+            "【背景上下文】\n"
+            "注：sleep_prob=睡眠概率，awake_prob=清醒概率（= 1 - sleep_prob）。\n"
+            + json.dumps(annotated_context, ensure_ascii=False)[:900]
+            + "\n\n"
         )
 
     async def _run_loop(self, ctx: AgentTickContext) -> float | None:

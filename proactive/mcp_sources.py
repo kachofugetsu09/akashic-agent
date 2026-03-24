@@ -416,82 +416,107 @@ class McpClientPool:
 
 
 async def fetch_alert_events_async(pool: McpClientPool) -> list[dict]:
-    sources = _load_sources()
-    result: list[dict] = []
-    for src in sources:
-        if str(src.get("channel", "")).strip().lower() in ("content", "context"):
-            continue
-        server = src.get("server", "")
-        get_tool = src.get("get_tool", "get_proactive_events")
-        try:
-            events = await pool.call(server, get_tool, {})
-            if isinstance(events, list):
-                for event in events:
-                    if not isinstance(event, dict) or event.get("kind") != "alert":
-                        continue
-                    enriched = dict(event)
-                    enriched.setdefault("ack_server", server)
-                    result.append(enriched)
-                logger.debug("[mcp_sources] %s 返回 %d 条 alert 事件", server, len(result))
-        except Exception as e:
-            logger.warning("[mcp_sources] fetch_alert %s.%s failed: %s", server, get_tool, e)
-    return result
+    return await _fetch_by_channel_async(pool, channel="alert")
 
 
 async def fetch_content_events_async(pool: McpClientPool) -> list[dict]:
-    sources = _load_sources()
-    result: list[dict] = []
-    for src in sources:
-        if str(src.get("channel", "")).strip().lower() in ("alert", "context"):
-            continue
-        server = src.get("server", "")
-        get_tool = src.get("get_tool", "get_proactive_events")
-        try:
-            events = await pool.call(server, get_tool, {})
-            if isinstance(events, list):
-                for event in events:
-                    if not isinstance(event, dict) or event.get("kind") != "content":
-                        continue
-                    enriched = dict(event)
-                    enriched.setdefault("ack_server", server)
-                    result.append(enriched)
-        except Exception as e:
-            logger.warning("[mcp_sources] fetch_content %s.%s failed: %s", server, get_tool, e)
-    return result
+    return await _fetch_by_channel_async(pool, channel="content")
 
 
 async def fetch_context_data_async(pool: McpClientPool) -> list[dict]:
-    sources = _load_sources()
+    return await _fetch_by_channel_async(pool, channel="context")
+
+
+def _extract_proactive_events(data: Any, *, server: str, kind: str) -> list[dict]:
+    if not isinstance(data, list):
+        return []
     result: list[dict] = []
-    for src in sources:
-        if str(src.get("channel", "")).strip().lower() != "context":
+    for event in data:
+        if not isinstance(event, dict) or event.get("kind") != kind:
             continue
-        server = src.get("server", "")
-        get_tool = src.get("get_tool", "get_context")
-        try:
-            data = await pool.call(server, get_tool, {})
-            if isinstance(data, dict):
-                data = dict(data)
-                data.setdefault("_source", server)
-                result.append(data)
-            elif isinstance(data, list):
-                for item in data:
-                    if isinstance(item, dict):
-                        item = dict(item)
-                        item.setdefault("_source", server)
-                        result.append(item)
-            logger.debug("[mcp_sources] context 源 %s 返回 %d 条", server, len(result))
-        except Exception as e:
-            logger.warning("[mcp_sources] fetch_context %s.%s failed: %s", server, get_tool, e)
+        enriched = dict(event)
+        enriched.setdefault("ack_server", server)
+        result.append(enriched)
     return result
 
 
-async def poll_content_feeds_async(pool: McpClientPool) -> None:
+def _extract_context_items(data: Any, *, server: str) -> list[dict]:
+    if isinstance(data, dict):
+        item = dict(data)
+        item.setdefault("_source", server)
+        return [item]
+    if isinstance(data, list):
+        result: list[dict] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            enriched = dict(item)
+            enriched.setdefault("_source", server)
+            result.append(enriched)
+        return result
+    return []
+
+
+async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[dict]:
+    result: list[dict] = []
+    for src in _iter_sources_by_channel(channel):
+        server = src.get("server", "")
+        get_tool = src.get(
+            "get_tool",
+            "get_context" if channel == "context" else "get_proactive_events",
+        )
+        try:
+            data = await pool.call(server, get_tool, {})
+            if channel == "context":
+                items = _extract_context_items(data, server=server)
+                result.extend(items)
+                logger.debug("[mcp_sources] context 源 %s 返回 %d 条", server, len(items))
+            else:
+                events = _extract_proactive_events(data, server=server, kind=channel)
+                result.extend(events)
+                logger.debug("[mcp_sources] %s 返回 %d 条 %s 事件", server, len(events), channel)
+        except Exception as e:
+            logger.warning(
+                "[mcp_sources] fetch_%s %s.%s failed: %s",
+                channel,
+                server,
+                get_tool,
+                e,
+            )
+    return result
+
+
+def _iter_sources_by_channel(channel: str) -> list[dict]:
     sources = _load_sources()
-    failed_servers: list[str] = []
+    result: list[dict] = []
     for src in sources:
-        if str(src.get("channel", "")).strip().lower() != "content":
+        src_channel = str(src.get("channel", "")).strip().lower()
+        if channel == "context":
+            if src_channel == "context":
+                result.append(src)
             continue
+        if src_channel in ("context",):
+            continue
+        if channel == "alert" and src_channel in ("content",):
+            continue
+        if channel == "content" and src_channel in ("alert",):
+            continue
+        result.append(src)
+    return result
+
+
+def _build_ack_map(sources: list[dict]) -> dict[str, tuple[str, list[str]]]:
+    ack_map: dict[str, tuple[str, list[str]]] = {}
+    for src in sources:
+        ack_tool = src.get("ack_tool")
+        if ack_tool:
+            ack_map[src["server"]] = (ack_tool, [])
+    return ack_map
+
+
+async def poll_content_feeds_async(pool: McpClientPool) -> None:
+    failed_servers: list[str] = []
+    for src in _iter_sources_by_channel("content"):
         poll_tool = src.get("poll_tool")
         if not poll_tool:
             continue
@@ -512,12 +537,7 @@ async def poll_content_feeds_async(pool: McpClientPool) -> None:
 
 
 async def acknowledge_events_async(pool: McpClientPool, events: list) -> None:
-    sources = _load_sources()
-    ack_map: dict[str, tuple[str, list[str]]] = {}
-    for src in sources:
-        ack_tool = src.get("ack_tool")
-        if ack_tool:
-            ack_map[src["server"]] = (ack_tool, [])
+    ack_map = _build_ack_map(_load_sources())
     for e in events:
         ack_server: str = getattr(e, "_ack_server", None) or ""
         if not ack_server:
@@ -542,12 +562,7 @@ async def acknowledge_content_entries_async(
 ) -> None:
     if not entries:
         return
-    sources = _load_sources()
-    ack_map: dict[str, tuple[str, list[str]]] = {}
-    for src in sources:
-        ack_tool = src.get("ack_tool")
-        if ack_tool:
-            ack_map[src["server"]] = (ack_tool, [])
+    ack_map = _build_ack_map(_load_sources())
     for source_key, item_id in entries:
         if not source_key.startswith("mcp:"):
             continue
