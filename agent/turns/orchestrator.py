@@ -4,7 +4,7 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.looping.turn_types import ToolCall, ToolCallGroup
@@ -92,6 +92,76 @@ class TurnOrchestrator:
             },
         )
 
+    async def handle_proactive_turn(
+        self,
+        *,
+        result: TurnResult,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        dispatch_outbound: Callable[[str], Awaitable[bool]],
+    ) -> bool:
+        if result.decision == "skip":
+            self._emit_proactive_observe(
+                key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                result=result,
+                sent=False,
+            )
+            await self._run_side_effects(result)
+            return False
+
+        if result.outbound is None:
+            raise ValueError("proactive reply result requires outbound")
+
+        content = result.outbound.content
+        session = self._session.session_manager.get_or_create(session_key)
+        self._persist_proactive_session(
+            session=session,
+            content=content,
+            result=result,
+        )
+        await self._session.session_manager.append_messages(session, session.messages[-1:])
+
+        self._emit_proactive_observe(
+            key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            result=result,
+            sent=False,
+        )
+        self._schedule_proactive_post_turn(
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            session=session,
+            result=result,
+        )
+
+        sent = False
+        try:
+            sent = await dispatch_outbound(content)
+        except Exception as e:
+            logger.warning("proactive outbound dispatch failed: %s", e)
+
+        if sent:
+            if self._session.presence:
+                self._session.presence.record_proactive_sent(session_key)
+            await self._run_effects(result.success_side_effects)
+            await self._run_effects(result.side_effects)
+        else:
+            await self._run_effects(result.failure_side_effects)
+
+        self._emit_proactive_observe(
+            key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            result=result,
+            sent=sent,
+        )
+        return sent
+
     async def _persist_session(
         self,
         *,
@@ -174,13 +244,107 @@ class TurnOrchestrator:
             writer.emit(retrieval_raw)
 
     async def _run_side_effects(self, result: TurnResult) -> None:
-        for effect in result.side_effects:
+        await self._run_effects(result.side_effects)
+
+    async def _run_effects(self, effects: list[Any]) -> None:
+        for effect in effects:
             try:
                 maybe = effect.run()
                 if inspect.isawaitable(maybe):
                     await maybe
             except Exception as e:
                 logger.warning("turn side effect failed: %s", e)
+
+    def _persist_proactive_session(
+        self,
+        *,
+        session: SessionLike,
+        content: str,
+        result: TurnResult,
+    ) -> None:
+        source_refs = []
+        state_summary_tag = "none"
+        if result.trace is not None and isinstance(result.trace.extra, dict):
+            raw_refs = result.trace.extra.get("source_refs", [])
+            if isinstance(raw_refs, list):
+                source_refs = [ref for ref in raw_refs if isinstance(ref, dict)]
+            state_summary_tag = str(result.trace.extra.get("state_summary_tag", "none"))
+        session.add_message(
+            "assistant",
+            content,
+            proactive=True,
+            tools_used=["message_push"],
+            evidence_item_ids=[str(item_id) for item_id in result.evidence],
+            source_refs=source_refs,
+            state_summary_tag=state_summary_tag,
+        )
+
+    def _schedule_proactive_post_turn(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        session: SessionLike,
+        result: TurnResult,
+    ) -> None:
+        tool_chain = _trace_tool_chain(result.trace)
+        tools_used = _trace_tools_used(result.trace)
+        self._post_turn.schedule(
+            PostTurnEvent(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                user_message="",
+                assistant_response=result.outbound.content if result.outbound else "",
+                tools_used=tools_used,
+                tool_chain=_to_tool_call_groups(tool_chain),
+                session=session,
+            )
+        )
+
+    def _emit_proactive_observe(
+        self,
+        *,
+        key: str,
+        channel: str,
+        chat_id: str,
+        result: TurnResult,
+        sent: bool,
+    ) -> None:
+        writer = self._trace.observe_writer
+        if writer is None:
+            return
+        from core.observe.events import TurnTrace
+
+        trace = result.trace
+        extra = trace.extra if trace is not None and isinstance(trace.extra, dict) else {}
+        writer.emit(
+            TurnTrace(
+                source="proactive",
+                session_key=key,
+                user_msg="",
+                llm_output=result.outbound.content if result.outbound else "",
+                tool_calls=[
+                    {
+                        "name": "proactive_turn",
+                        "args": json.dumps(
+                            {
+                                "channel": channel,
+                                "chat_id": chat_id,
+                                "decision": result.decision,
+                                "evidence": list(result.evidence),
+                                "sent": sent,
+                                "steps_taken": int(extra.get("steps_taken", 0) or 0),
+                                "skip_reason": str(extra.get("skip_reason", "")),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "result": "",
+                    }
+                ],
+            )
+        )
 
 
 def _to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:

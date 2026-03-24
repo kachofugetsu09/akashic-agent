@@ -5,8 +5,7 @@ TDD — Phase 3: proactive_v2/tools.py
   - TOOL_SCHEMAS 结构与必填字段
   - _web_fetch: 截断、错误透传
   - _recall_memory: list[dict] → {result, hits}
-  - _send_message: 写 ctx 终止状态
-  - _skip: 写 ctx 终止状态、reason 枚举校验
+  - _finish_turn: 写 ctx 终止状态
   - _mark_not_interesting: 写 ctx.discarded_item_ids
   - _get_alert_events / _get_content_events: 缓存保护
   - _get_context_data: 最多调用一次
@@ -28,6 +27,7 @@ from proactive_v2.tools import (
     _web_fetch,
     _web_search,
     _recall_memory,
+    _finish_turn,
     _send_message,
     _skip,
     _mark_not_interesting,
@@ -61,8 +61,7 @@ def test_all_tools_present():
         "get_recent_chat",
         "mark_interesting",
         "mark_not_interesting",
-        "send_message",
-        "skip",
+        "finish_turn",
     }
     assert required <= names  # 允许超集（未来可加工具），但必须包含以上全部
 
@@ -77,19 +76,25 @@ def test_each_schema_has_openai_format():
         assert "parameters" in fn, f"function missing parameters: {s}"
 
 
-def test_send_message_schema_cited_ids_is_array():
-    props = _fn("send_message")["parameters"]["properties"]
-    assert "cited_ids" in props
-    assert props["cited_ids"]["type"] == "array"
-    assert props["cited_ids"]["items"]["type"] == "string"
+def test_finish_turn_schema_evidence_is_array():
+    props = _fn("finish_turn")["parameters"]["properties"]
+    assert "evidence" in props
+    assert props["evidence"]["type"] == "array"
+    assert props["evidence"]["items"]["type"] == "string"
 
 
-def test_send_message_schema_text_required():
-    assert "text" in _fn("send_message")["parameters"]["required"]
+def test_finish_turn_schema_decision_required():
+    assert "decision" in _fn("finish_turn")["parameters"]["required"]
 
 
-def test_skip_schema_reason_required():
-    assert "reason" in _fn("skip")["parameters"]["required"]
+def test_finish_turn_schema_reason_is_supported():
+    assert "reason" in _fn("finish_turn")["parameters"]["properties"]
+
+
+def test_finish_turn_reply_requires_non_empty_content():
+    ctx = AgentTickContext()
+    with pytest.raises(ValueError, match="requires non-empty content"):
+        _finish_turn(ctx, {"decision": "reply", "content": "   ", "evidence": []})
 
 
 def test_mark_not_interesting_schema_item_ids_is_array():

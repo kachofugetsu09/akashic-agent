@@ -5,7 +5,7 @@ proactive_v2/tools.py — Tool schemas + execute dispatcher
   recall_memory  — 检索偏好记忆（HyDE 正/负假设）
   get_content    — 按需取预 fetch 正文（批量，失败时可降级 web_fetch）
   web_fetch      — 补正文/核实来源页面
-  get_recent_chat / mark_interesting / mark_not_interesting / send_message / skip
+  get_recent_chat / mark_interesting / mark_not_interesting / finish_turn
 """
 from __future__ import annotations
 
@@ -114,7 +114,7 @@ TOOL_SCHEMAS: list[dict] = [
             (
                 "将指定 item 明确标记为「感兴趣」。只用于你已单独评估且明确相关的条目，"
                 "不能因为其中一条相关就把整批不同主题内容一起标记。"
-                "被标记但未被 send_message 引用的条目将得到 24h ACK。"
+                "被标记但未被 finish_turn.evidence 引用的条目将得到 24h ACK。"
                 "可选传 reason，简短说明为什么 interesting。"
             ),
             {"type": "object", "properties": {
@@ -147,32 +147,29 @@ TOOL_SCHEMAS: list[dict] = [
                 },
             }, "required": ["item_ids"]}),
 
-    _schema("send_message",
+    _schema("finish_turn",
             (
-                "【终止工具】向用户发送消息，调用后 loop 立即结束。\n"
-                "cited_ids 只填实际引用的条目。"
+                "【终止工具】声明本轮最终决策，调用后 loop 立即结束。\n"
+                "decision=reply 时需要 content；evidence 只填实际引用条目。"
             ),
             {"type": "object", "properties": {
-                "text": {"type": "string", "description": "要发送的消息正文"},
-                "cited_ids": {
+                "decision": {
+                    "type": "string",
+                    "enum": ["reply", "skip"],
+                },
+                "content": {"type": "string", "description": "最终输出消息；skip 可为空"},
+                "evidence": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "引用的内容复合键列表",
                 },
-            }, "required": ["text"]}),
-
-    _schema("skip",
-            (
-                "【终止工具】决定本轮不发送消息，调用后 loop 立即结束。\n"
-                "reason 枚举：no_content | user_busy | already_sent_similar | other"
-            ),
-            {"type": "object", "properties": {
                 "reason": {
                     "type": "string",
                     "enum": ["no_content", "user_busy", "already_sent_similar", "other"],
+                    "description": "decision=skip 时建议填写",
                 },
                 "note": {"type": "string", "description": "可选补充说明（写入日志）"},
-            }, "required": ["reason"]}),
+            }, "required": ["decision"]}),
 ]
 
 
@@ -356,6 +353,27 @@ def _skip(ctx: AgentTickContext, args: dict) -> str:
     return json.dumps({"ok": True}, ensure_ascii=False)
 
 
+def _finish_turn(ctx: AgentTickContext, args: dict) -> str:
+    decision = str(args.get("decision", "") or "").strip()
+    if decision not in {"reply", "skip"}:
+        raise ValueError("finish_turn.decision must be one of: reply, skip")
+
+    content = str(args.get("content", "") or "")
+    evidence_raw = args.get("evidence", [])
+    evidence = [str(item_id) for item_id in evidence_raw if str(item_id).strip()] if isinstance(evidence_raw, list) else []
+    if decision == "reply":
+        if not content.strip():
+            raise ValueError("finish_turn: decision=reply requires non-empty content")
+        _send_message(ctx, {"text": content, "cited_ids": evidence})
+        return json.dumps({"ok": True}, ensure_ascii=False)
+
+    reason = str(args.get("reason", "other") or "other")
+    note = str(args.get("note", "") or "")
+    _skip(ctx, {"reason": reason, "note": note})
+    ctx.cited_item_ids = evidence
+    return json.dumps({"ok": True}, ensure_ascii=False)
+
+
 # ── execute 分发 ──────────────────────────────────────────────────────────
 
 async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolDeps) -> str:
@@ -396,6 +414,10 @@ async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolD
     if tool_name == "mark_not_interesting":
         return _mark_not_interesting(ctx, args)
 
+    if tool_name == "finish_turn":
+        return _finish_turn(ctx, args)
+
+    # 兼容旧链路：schema 不再暴露 send_message/skip，但保留执行分支。
     if tool_name == "send_message":
         return _send_message(ctx, args)
 

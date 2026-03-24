@@ -31,4 +31,5 @@ class TurnResult:
     evidence: list[str] = field(default_factory=list)
     trace: TurnTrace | None = None
     side_effects: list[Any] = field(default_factory=list)
-
+    success_side_effects: list[Any] = field(default_factory=list)
+    failure_side_effects: list[Any] = field(default_factory=list)

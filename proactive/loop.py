@@ -21,8 +21,10 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
 
+from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
+from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.energy import (
@@ -128,6 +130,44 @@ class ProactiveLoop:
             presence=self._presence,
         )
 
+    def _build_turn_orchestrator(self) -> TurnOrchestrator:
+        class _NoopPostTurn:
+            def schedule(self, event) -> None:
+                return
+
+        return TurnOrchestrator(
+            TurnOrchestratorDeps(
+                session=SessionServices(
+                    session_manager=self._sessions,
+                    presence=self._presence,
+                ),
+                trace=ObservabilityServices(
+                    workspace=self._sessions.workspace,
+                    observe_writer=self._observe_writer,
+                ),
+                post_turn=_NoopPostTurn(),
+            )
+        )
+
+    def _build_outbound_send_fn(self) -> Callable[[str], Any]:
+        async def _send(message: str) -> bool:
+            msg = str(message or "").strip()
+            channel = str(self._cfg.default_channel or "").strip()
+            chat_id = str(self._cfg.default_chat_id or "").strip()
+            if not msg or not channel or not chat_id:
+                return False
+            try:
+                result = await self._push.execute(
+                    channel=channel,
+                    chat_id=chat_id,
+                    message=msg,
+                )
+            except Exception:
+                return False
+            return "已发送" in result
+
+        return _send
+
     def _build_anyaction_gate(self) -> AnyActionGate:
         if hasattr(self._state, "path"):
             quota_path = self._state.path.parent / "proactive_quota.json"
@@ -166,6 +206,8 @@ class ProactiveLoop:
                 any_action_gate=self._anyaction,
                 passive_busy_fn=self._passive_busy_fn,
                 sender=self._sender,
+                turn_orchestrator=self._turn_orchestrator,
+                outbound_send_fn=self._outbound_send_fn,
                 deduper=self._message_deduper,
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
@@ -187,6 +229,8 @@ class ProactiveLoop:
         self._ensure_workspace_proactive_context_file()
         self._read_workspace_proactive_context()
         self._sender = self._build_sender()
+        self._turn_orchestrator = self._build_turn_orchestrator()
+        self._outbound_send_fn = self._build_outbound_send_fn()
         self._anyaction = self._build_anyaction_gate()
         self._sense = self._build_sense(self._build_fitbit_provider())
         self._message_deduper = self._build_message_deduper()

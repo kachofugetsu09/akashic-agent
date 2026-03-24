@@ -12,11 +12,14 @@ from __future__ import annotations
 import json
 import logging
 import random as _random_module
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from agent.turns.orchestrator import TurnOrchestrator
+from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from proactive.config import ProactiveConfig
 from proactive_v2.contracts import (
     normalize_alert,
@@ -200,6 +203,8 @@ class AgentTick:
         last_user_at_fn: Callable[[], datetime | None],
         passive_busy_fn: Callable[[str], bool] | None,
         sender: Any,
+        turn_orchestrator: TurnOrchestrator | None = None,
+        outbound_send_fn: Callable[[str], Awaitable[bool]] | None = None,
         deduper: Any,
         tool_deps: ToolDeps,
         workspace_context_fn: Callable[[], str] | None = None,
@@ -214,6 +219,8 @@ class AgentTick:
         self._last_user_at_fn = last_user_at_fn
         self._passive_busy_fn = passive_busy_fn
         self._sender = sender
+        self._turn_orchestrator = turn_orchestrator
+        self._outbound_send_fn = outbound_send_fn
         self._deduper = deduper
         self._tool_deps = tool_deps
         self._workspace_context_fn = workspace_context_fn
@@ -331,15 +338,15 @@ class AgentTick:
             f"{memory_block}\n"
             f"【优先级】Alert > Content > Context-fallback（本轮：{fallback_status}）\n\n"
             "【你的任务】\n"
-            "⚡ 如果本轮有 Alert：把本轮所有 Alert 整合成一条消息后立即 send_message，cited_ids 填写本轮全部 Alert 的 id。Alert 是系统触发的高优先级通知，不走内容筛选流程。\n"
+            "⚡ 如果本轮有 Alert：把本轮所有 Alert 整合成一条消息后立即 finish_turn(decision=reply)，evidence 填写本轮全部 Alert 的 id。Alert 是系统触发的高优先级通知，不走内容筛选流程。\n"
             "1. 对本轮 Content 逐条判断：这条内容是否可能让用户不感兴趣，是否可能不符合规则，是否值得进入 interesting。\n"
             "2. 你的主工作是分类，不是主动研究新题材，不是主动扩展候选池。\n"
             "3. 你要基于规则和用户偏好，把本轮 Content 分成 interesting 和 not_interesting。\n\n"
             "【你的输出】\n"
-            "1. 有 Alert → 把本轮所有 Alert 整合成一条消息，cited_ids 填写全部 Alert id，直接 send_message（跳过一切分类步骤）。\n"
+            "1. 有 Alert → 把本轮所有 Alert 整合成一条消息，evidence 填写全部 Alert id，直接 finish_turn(decision=reply)（跳过一切分类步骤）。\n"
             "2. 无 Alert：对每条 Content 给出最终分类：mark_interesting 或 mark_not_interesting。\n"
-            "3. 如果最终没有 interesting，调用 skip(no_content)。\n"
-            "4. 如果最终有 interesting，生成一条最终消息并 send_message。\n\n"
+            "3. 如果最终没有 interesting，调用 finish_turn(decision=skip, reason=no_content)。\n"
+            "4. 如果最终有 interesting，生成一条最终消息并 finish_turn(decision=reply)。\n\n"
             "【工具职责】\n"
             "1. Workspace 主动上下文：这是用户当前明确提出并要求你遵守的规则集合。它定义你该怎么筛、哪些要先验证、哪些必须过滤；它不提供新闻事实。\n"
             "2. recall_memory：仅用于 Content 评估——判断单条内容是否可能是用户雷点，或是否可能让用户感兴趣。Alert 不需要调用此工具。\n"
@@ -349,7 +356,7 @@ class AgentTick:
             "4. web_fetch：优先用于抓取当前候选条目的直接来源页面或正文；当条目已经有明确 URL，且你需要补正文、核实细节、核实规则时，先用它。\n"
             "5. get_recent_chat：只用于最后判断现在是否适合打扰用户。\n"
             "6. mark_interesting / mark_not_interesting：写入最终分类结果。\n"
-            "7. send_message / skip：结束本轮。\n\n"
+            "7. finish_turn：结束本轮。\n\n"
             "【规则优先级】\n"
             "1. Workspace 主动上下文代表用户当前对主动推送的明确要求，应视为规则而不是建议。\n"
             "2. 当 Workspace 主动上下文规定了过滤条件、白名单、黑名单、必须先验证的步骤时，你必须遵守，不要凭常识跳过。\n"
@@ -367,17 +374,17 @@ class AgentTick:
             "5. 严禁根据长期记忆或 Workspace 主动上下文自行脑补具体新闻、比赛结果、转会、更新或其他外部事件。\n"
             "6. 当候选条目已自带来源 URL 时，先直接 web_fetch 该来源页面；不要凭记忆补细节，也不要跳过来源确认。\n"
             "7. 当本轮 alert 和 content 都为空时，你只有两条路：\n"
-            "   a. skip(no_content)（默认，大多数情况选这条）\n"
-            "   b. get_recent_chat → 若最近对话有自然延伸的未完成话题，可 send_message 轻松挑起对话；\n"
-            "      此时 cited_ids 必须为空 []，消息里不得引用任何外部事件或可验证事实。\n"
+            "   a. finish_turn(decision=skip, reason=no_content)（默认，大多数情况选这条）\n"
+            "   b. get_recent_chat → 若最近对话有自然延伸的未完成话题，可 finish_turn(decision=reply) 轻松挑起对话；\n"
+            "      此时 evidence 必须为空 []，消息里不得引用任何外部事件或可验证事实。\n"
             "   禁止在这两条路之外做任何事：不允许 recall_memory、不允许 get_content、\n"
             "   不允许 web_fetch、严禁捏造任何 item_id（包括 'feed:xxx' 格式）。\n"
             "   路径 b 是低概率选项——若 recent_chat 没有明显未完成话题，必须选 a。\n\n"
             "【决策流程】\n\n"
             "【Alert 快速路径】本轮如有 Alert：\n"
             "  → get_recent_chat 确认用户不在忙\n"
-            "  → 把本轮所有 Alert 的内容整合成一条消息，cited_ids 必须填写本轮全部 Alert 的 id\n"
-            "  → send_message 发送\n"
+            "  → 把本轮所有 Alert 的内容整合成一条消息，evidence 必须填写本轮全部 Alert 的 id\n"
+            "  → finish_turn(decision=reply) 结束\n"
             "  → 结束，可以不调用 recall_memory / mark_* / get_content / web_fetch\n\n"
             "【Content 路径】本轮无 Alert 时，Content 的主要任务不是做研究，而是把本轮候选逐条分成 interesting 或 not_interesting。\n"
             "Content 评估必须逐条进行，不能把不同主题的多条内容打包成一次统一判断。\n"
@@ -396,10 +403,10 @@ class AgentTick:
             "  4. web_fetch 只在必要时使用：当前候选已有直接 URL 时，先抓直接来源页面或正文；规则确认、细节核实都优先走它。\n"
             "     ⚠️ web_fetch 失败（404/超时/二进制图片）不能直接 mark_not_interesting；应退回 recall_memory 以 source/作者名为关键词判断用户兴趣。\n"
             "  5. 最终把每条内容分类为 mark_interesting 或 mark_not_interesting。\n"
-            "  6. 所有条目分类完毕后：有 interesting → get_recent_chat 判断是否打扰 → send_message；全部不感兴趣 → skip(no_content)\n"
-            "  ⚠️ mark_* 不是终止动作，之后必须调 send_message 或 skip\n\n"
+            "  6. 所有条目分类完毕后：有 interesting → get_recent_chat 判断是否打扰 → finish_turn(decision=reply)；全部不感兴趣 → finish_turn(decision=skip, reason=no_content)\n"
+            "  ⚠️ mark_* 不是终止动作，之后必须调 finish_turn\n\n"
             "Context-fallback（本轮允许且 alert/content 均无结果）：\n"
-            "  context 数据已在上方，有亮点 → send_message，否则 skip\n\n"
+            "  context 数据已在上方，有亮点 → finish_turn(decision=reply)，否则 finish_turn(decision=skip)\n\n"
             "【发送要求】\n"
             "- 语气自然，像朋友分享，不是推送通知\n"
             "- 消息里出现的具体数字、比分、排名、阵容、结果，必须来自本轮已提供的 Alerts/Content 数据；严禁基于训练知识或记忆脑补任何可验证事实。\n"
@@ -407,10 +414,10 @@ class AgentTick:
             "- 链接要紧跟相关内容，不要把所有链接集中堆到整条消息末尾，也不要做成生硬的参考文献区\n"
             "- 如果一段内容对应多个来源，可以在该段后连续附上多个链接；没有可靠链接时不要强行补链接\n"
             "- 链接直接使用原始 url，不要杜撰、不要改写、不要省略协议头\n"
-            "- cited_ids 格式：\"{ack_server}:{event_id}\"，如 \"feed:fmcp_abc123\"\n"
-            "- 当本轮 content 和 alerts 均为空时，cited_ids 必须为 []；任何 'feed:xxx' 格式的 id 只能来自本轮真实提供的候选列表，不能自行捏造\n"
-            "- 没有实质内容时 skip 是正确选择\n\n"
-            "【skip reason】no_content | user_busy | already_sent_similar | other"
+            "- evidence 格式：\"{ack_server}:{event_id}\"，如 \"feed:fmcp_abc123\"\n"
+            "- 当本轮 content 和 alerts 均为空时，evidence 必须为 []；任何 'feed:xxx' 格式的 id 只能来自本轮真实提供的候选列表，不能自行捏造\n"
+            "- 没有实质内容时 finish_turn(decision=skip) 是正确选择\n\n"
+            "【finish_turn.reason】no_content | user_busy | already_sent_similar | other"
         )
 
     def _render_alert_block(self, alerts: list[dict]) -> str:
@@ -528,8 +535,8 @@ class AgentTick:
                 break
 
         # ── Classification completeness check ─────────────────────────────
-        # 若 agent 已 skip 但仍有未分类 content 条目，重置并强制补完。
-        # 这捕捉的场景：agent 评完部分条目后急着 skip，剩余条目从未被评估。
+        # 若 agent 已 finish_turn(skip) 但仍有未分类 content 条目，重置并强制补完。
+        # 这捕捉的场景：agent 评完部分条目后急着结束，剩余条目从未被评估。
         if ctx.terminal_action == "skip" and gw_result.content_meta:
             all_content_ids = {m["id"] for m in gw_result.content_meta}
             classified_ids = ctx.interesting_item_ids | ctx.discarded_item_ids
@@ -547,10 +554,10 @@ class AgentTick:
                     f"【系统提示】以下 {len(unclassified_ids)} 个条目尚未完成分类：\n"
                     f"{titles_hint}\n"
                     "请对每条调用 mark_interesting 或 mark_not_interesting，"
-                    "全部分类完毕后再决定 skip 或 send_message。"
+                    "全部分类完毕后再调用 finish_turn。"
                 )
                 logger.info(
-                    "[proactive_v2] completeness-check: %d unclassified items, resetting skip → %s",
+                    "[proactive_v2] completeness-check: %d unclassified items, resetting terminal_action → %s",
                     len(unclassified_ids),
                     sorted(unclassified_ids),
                 )
@@ -582,14 +589,14 @@ class AgentTick:
                     messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
 
         # ── Reflection pass ───────────────────────────────────────────────
-        # 若 agent 已标记 interesting 条目但忘记调用 send_message / skip，
+        # 若 agent 已标记 interesting 条目但忘记调用 finish_turn，
         # 注入一条确定性提示，强制其完成终止动作（最多再跑 3 步）。
         if ctx.terminal_action is None and ctx.interesting_item_ids and ctx.steps_taken < self._cfg.agent_tick_max_steps:
             ids_str = ", ".join(sorted(ctx.interesting_item_ids))
             reflection = (
                 f"【系统提示】你已将以下条目标记为 interesting：{ids_str}。\n"
-                "所有条目均已分类完毕。你必须现在调用 send_message 撰写并发送推送，"
-                "或调用 skip（若你认为不应发送）。不允许直接结束。"
+                "所有条目均已分类完毕。你必须现在调用 finish_turn(decision=reply) 撰写推送，"
+                "或调用 finish_turn(decision=skip)。不允许直接结束。"
             )
             logger.info("[proactive_v2] reflection: interesting=%d, injecting send prompt", len(ctx.interesting_item_ids))
             messages.append({"role": "user", "content": reflection})
@@ -622,31 +629,78 @@ class AgentTick:
         self.last_ctx = ctx
 
     async def _post_loop(self, ctx: AgentTickContext) -> float:
-        """Post-composition guards + send + ACK（P6）。"""
-        ack_fn = self._tool_deps.ack_fn
-
-        # skip 或无 terminal → 只 ACK discarded
-        if ctx.terminal_action != "send":
-            logger.info("[proactive_v2] post-loop: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
-                        ctx.terminal_action or "none", ctx.steps_taken, len(ctx.discarded_item_ids),
-                        len(ctx.interesting_item_ids),
-                        getattr(ctx, "skip_reason", ""), getattr(ctx, "skip_note", ""))
-            await ack_discarded(ctx, ack_fn)
+        """收口到 TurnResult；发送与副作用交给 orchestrator。"""
+        result = await self._build_turn_result(ctx)
+        if self._turn_orchestrator is not None and self._outbound_send_fn is not None:
+            await self._turn_orchestrator.handle_proactive_turn(
+                result=result,
+                session_key=self._session_key,
+                channel=str(self._cfg.default_channel or "").strip(),
+                chat_id=str(self._cfg.default_chat_id or "").strip(),
+                dispatch_outbound=self._outbound_send_fn,
+            )
             return 0.0
+        await self._legacy_apply_turn_result(result)
+        return 0.0
 
-        # ── Post-composition guards ───────────────────────────────────────
+    async def _build_turn_result(self, ctx: AgentTickContext) -> TurnResult:
+        ack_fn = self._tool_deps.ack_fn
+        if ctx.terminal_action != "send":
+            logger.info(
+                "[proactive_v2] post-loop: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
+                ctx.terminal_action or "none",
+                ctx.steps_taken,
+                len(ctx.discarded_item_ids),
+                len(ctx.interesting_item_ids),
+                getattr(ctx, "skip_reason", ""),
+                getattr(ctx, "skip_note", ""),
+            )
+            return TurnResult(
+                decision="skip",
+                outbound=None,
+                trace=TurnTrace(
+                    source="proactive",
+                    extra={
+                        "steps_taken": ctx.steps_taken,
+                        "skip_reason": getattr(ctx, "skip_reason", ""),
+                        "skip_note": getattr(ctx, "skip_note", ""),
+                    },
+                ),
+                side_effects=[
+                    _CallbackSideEffect(
+                        callback=lambda: ack_discarded(ctx, ack_fn),
+                        name="ack_discarded_skip",
+                    )
+                ],
+            )
 
         delivery_key = build_delivery_key(ctx)
-
-        # delivery_dedupe
         if self._state_store.is_delivery_duplicate(
             self._session_key, delivery_key, self._cfg.delivery_dedupe_hours
         ):
             logger.info("[proactive_v2] delivery_dedupe hit")
-            await ack_post_guard_fail(ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn)
-            return 0.0
+            return TurnResult(
+                decision="skip",
+                outbound=None,
+                evidence=list(ctx.cited_item_ids),
+                trace=TurnTrace(
+                    source="proactive",
+                    extra={
+                        "steps_taken": ctx.steps_taken,
+                        "skip_reason": "already_sent_similar",
+                        "dedupe": "delivery",
+                    },
+                ),
+                side_effects=[
+                    _CallbackSideEffect(
+                        callback=lambda: ack_post_guard_fail(
+                            ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn
+                        ),
+                        name="ack_post_guard_delivery",
+                    )
+                ],
+            )
 
-        # message_dedupe
         if self._cfg.message_dedupe_enabled and self._deduper is not None:
             recent_proactive = (
                 self._recent_proactive_fn()
@@ -660,23 +714,111 @@ class AgentTick:
             )
             if is_dup:
                 logger.info("[proactive_v2] message_dedupe hit: %s", reason)
-                await ack_post_guard_fail(ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn)
-                return 0.0
+                return TurnResult(
+                    decision="skip",
+                    outbound=None,
+                    evidence=list(ctx.cited_item_ids),
+                    trace=TurnTrace(
+                        source="proactive",
+                        extra={
+                            "steps_taken": ctx.steps_taken,
+                            "skip_reason": "already_sent_similar",
+                            "dedupe": "message",
+                            "dedupe_note": str(reason or ""),
+                        },
+                    ),
+                    side_effects=[
+                        _CallbackSideEffect(
+                            callback=lambda: ack_post_guard_fail(
+                                ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn
+                            ),
+                            name="ack_post_guard_message",
+                        )
+                    ],
+                )
 
-        # ── Send ──────────────────────────────────────────────────────────
+        return TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(session_key=self._session_key, content=ctx.final_message),
+            evidence=list(ctx.cited_item_ids),
+            trace=TurnTrace(
+                source="proactive",
+                extra={
+                    "steps_taken": ctx.steps_taken,
+                    "skip_reason": "",
+                    "state_summary_tag": "none",
+                },
+            ),
+            success_side_effects=[
+                _CallbackSideEffect(
+                    callback=lambda: _mark_delivery(
+                        state_store=self._state_store,
+                        session_key=self._session_key,
+                        delivery_key=delivery_key,
+                    ),
+                    name="mark_delivery",
+                ),
+                _CallbackSideEffect(
+                    callback=lambda: _mark_context_only_send(
+                        state_store=self._state_store,
+                        session_key=self._session_key,
+                        context_as_fallback_open=ctx.context_as_fallback_open,
+                        has_cited=bool(ctx.cited_item_ids),
+                    ),
+                    name="mark_context_only_send",
+                ),
+                _CallbackSideEffect(
+                    callback=lambda: ack_on_success(
+                        ctx,
+                        ack_fn,
+                        alert_ack_fn=self._tool_deps.alert_ack_fn,
+                    ),
+                    name="ack_on_success",
+                ),
+            ],
+            failure_side_effects=[
+                _CallbackSideEffect(
+                    callback=lambda: ack_discarded(ctx, ack_fn),
+                    name="ack_discarded_send_fail",
+                )
+            ],
+        )
 
-        send_ok = await self._sender.send(ctx.final_message)
-        if not send_ok:
-            await ack_discarded(ctx, ack_fn)
-            return 0.0
+    async def _legacy_apply_turn_result(self, result: TurnResult) -> None:
+        if result.decision != "reply" or result.outbound is None:
+            for effect in result.side_effects:
+                await effect.run()
+            return
+        send_ok = await self._sender.send(result.outbound.content)
+        if send_ok:
+            for effect in result.success_side_effects:
+                await effect.run()
+            for effect in result.side_effects:
+                await effect.run()
+            return
+        for effect in result.failure_side_effects:
+            await effect.run()
 
-        # ── Send success ──────────────────────────────────────────────────
 
-        self._state_store.mark_delivery(self._session_key, delivery_key)
+@dataclass
+class _CallbackSideEffect:
+    callback: Callable[[], Awaitable[None]]
+    name: str = "callback"
 
-        # context-only 配额：cited_ids 为空说明是纯 context-fallback 路径
-        if ctx.context_as_fallback_open and not ctx.cited_item_ids:
-            self._state_store.mark_context_only_send(self._session_key)
+    async def run(self) -> None:
+        await self.callback()
 
-        await ack_on_success(ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn)
-        return 0.0
+
+async def _mark_delivery(*, state_store: Any, session_key: str, delivery_key: str) -> None:
+    state_store.mark_delivery(session_key, delivery_key)
+
+
+async def _mark_context_only_send(
+    *,
+    state_store: Any,
+    session_key: str,
+    context_as_fallback_open: bool,
+    has_cited: bool,
+) -> None:
+    if context_as_fallback_open and not has_cited:
+        state_store.mark_context_only_send(session_key)

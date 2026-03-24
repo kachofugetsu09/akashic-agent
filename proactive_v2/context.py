@@ -27,7 +27,7 @@ class AgentTickContext:
     discarded_item_ids: set[str] = field(default_factory=set)   # mark_not_interesting 写入
     interesting_item_ids: set[str] = field(default_factory=set) # recall_memory 后立即写入，不可撤销
 
-    # 终止状态（由 send_message / skip 写入）
+    # 终止状态（由 finish_turn 写入；内部仍映射为 send/skip）
     terminal_action: Literal["send", "skip"] | None = None
     skip_reason: str = ""
     skip_note: str = ""
