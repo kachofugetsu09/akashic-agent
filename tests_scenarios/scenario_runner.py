@@ -244,6 +244,7 @@ class ScenarioRunner:
         runtime_provider, light_provider = build_providers(config)
         tools = RecordingToolRegistry()
         bus = MessageBus()
+        loop_ref: dict[str, AgentLoop] = {}
         (
             tools,
             _push_tool,
@@ -258,6 +259,7 @@ class ScenarioRunner:
             provider=runtime_provider,
             light_provider=light_provider,
             tools=tools,
+            agent_loop_provider=lambda: loop_ref.get("loop"),
         )
         loop_provider = RecordingProvider(runtime_provider)
         session_manager = SessionManager(workspace)
@@ -294,7 +296,7 @@ class ScenarioRunner:
                 ),
             ),
         )
-        scheduler.agent_loop = loop
+        loop_ref["loop"] = loop
         return ScenarioRuntime(
             config=config,
             workspace=workspace,

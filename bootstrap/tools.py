@@ -2,17 +2,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 from agent.config_models import Config
+from agent.context import ContextBuilder
+from agent.looping.consolidation import ConsolidationService
+from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
 from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
+from agent.looping.ports import (
+    ConversationTurnDeps,
+    LLMServices,
+    MemoryServices,
+    ObservabilityServices,
+    SessionServices,
+    TurnScheduler,
+)
+from agent.looping.safety_retry import SafetyRetryService
+from agent.looping.tool_execution import ToolDiscoveryState, TurnExecutor
 from agent.mcp.registry import McpServerRegistry
+from agent.postturn.default_pipeline import DefaultPostTurnPipeline
 from agent.provider import LLMProvider
+from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
+from agent.turns.outbound import BusOutboundPort
 from bootstrap.toolsets.fitbit import register_fitbit_tools
 from bootstrap.toolsets.mcp import register_mcp_tools
 from bootstrap.toolsets.memory import build_memory_toolset
@@ -91,6 +109,7 @@ def build_registered_tools(
     session_store=None,
     tools: ToolRegistry | None = None,
     observe_writer=None,
+    agent_loop_provider: Callable[[], Any] | None = None,
 ) -> tuple[ToolRegistry, MessagePushTool, SchedulerService, McpServerRegistry, MemoryRuntime, PeerProcessManager | None, PeerAgentPoller | None]:
     from session.store import SessionStore
 
@@ -108,7 +127,11 @@ def build_registered_tools(
         http_resources,
         observe_writer=observe_writer,
     )
-    scheduler = build_scheduler(workspace, push_tool)
+    scheduler = build_scheduler(
+        workspace,
+        push_tool,
+        agent_loop_provider=agent_loop_provider,
+    )
     peer_process_manager, peer_poller = build_peer_agent_resources(
         config, bus, http_resources
     )
@@ -131,6 +154,204 @@ def build_registered_tools(
     return tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_process_manager, peer_poller
 
 
+def _build_loop_deps(
+    *,
+    config: Config,
+    workspace: Path,
+    bus: MessageBus,
+    provider: LLMProvider,
+    light_provider: LLMProvider | None,
+    tools: ToolRegistry,
+    session_manager: SessionManager,
+    presence: PresenceStore,
+    processing_state: ProcessingState,
+    memory_runtime: MemoryRuntime,
+    observe_writer: object | None,
+) -> AgentLoopDeps:
+    llm_config = LLMConfig(
+        model=config.model,
+        light_model=config.light_model,
+        max_iterations=config.max_iterations,
+        max_tokens=config.max_tokens,
+        tool_search_enabled=config.tool_search_enabled,
+    )
+    memory_config = MemoryConfig(
+        window=config.memory_window,
+        top_k_procedure=config.memory_v2.top_k_procedure,
+        top_k_history=config.memory_v2.top_k_history,
+        route_intention_enabled=config.memory_v2.route_intention_enabled,
+        sop_guard_enabled=config.memory_v2.sop_guard_enabled,
+        gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+        gate_max_tokens=config.memory_v2.gate_max_tokens,
+        hyde_enabled=config.memory_v2.hyde_enabled,
+        hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
+    )
+    resolved_memory_config = MemoryConfig(
+        window=memory_config.window,
+        top_k_procedure=min(3, max(1, int(memory_config.top_k_procedure))),
+        top_k_history=max(1, int(memory_config.top_k_history)),
+        route_intention_enabled=memory_config.route_intention_enabled,
+        sop_guard_enabled=memory_config.sop_guard_enabled,
+        gate_llm_timeout_ms=max(100, int(memory_config.gate_llm_timeout_ms)),
+        gate_max_tokens=max(32, int(memory_config.gate_max_tokens)),
+        hyde_enabled=memory_config.hyde_enabled,
+        hyde_timeout_ms=memory_config.hyde_timeout_ms,
+    )
+
+    light = light_provider or provider
+    query_rewriter = (
+        QueryRewriter(
+            llm_client=light,
+            model=config.light_model or config.model,
+            max_tokens=config.memory_v2.gate_max_tokens,
+            timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+        )
+        if config.memory_v2.route_intention_enabled
+        else None
+    )
+    sufficiency_checker = (
+        SufficiencyChecker(
+            llm_client=light,
+            model=config.light_model or config.model,
+        )
+        if config.memory_v2.sufficiency_check_enabled
+        else None
+    )
+    profile_extractor = (
+        ProfileFactExtractor(
+            llm_client=light,
+            model=config.light_model or config.model,
+        )
+        if config.memory_v2.profile_extraction_enabled
+        else None
+    )
+    hyde_enhancer = None
+    if memory_config.hyde_enabled and llm_config.light_model:
+        from memory2.hyde_enhancer import HyDEEnhancer
+
+        hyde_enhancer = HyDEEnhancer(
+            light_provider=light,
+            light_model=llm_config.light_model,
+            timeout_s=memory_config.hyde_timeout_ms / 1000.0,
+        )
+
+    context = ContextBuilder(workspace, memory=memory_runtime.port)
+    llm_services = LLMServices(provider=provider, light_provider=light)
+    memory_services = MemoryServices(
+        port=memory_runtime.port,
+        query_rewriter=query_rewriter,
+        hyde_enhancer=hyde_enhancer,
+        sufficiency_checker=sufficiency_checker,
+    )
+    session_services = SessionServices(session_manager=session_manager, presence=presence)
+    trace_services = ObservabilityServices(workspace=workspace, observe_writer=observe_writer)
+    tool_discovery = ToolDiscoveryState()
+    turn_executor = TurnExecutor(
+        llm=llm_services,
+        llm_config=llm_config,
+        tools=tools,
+        discovery=tool_discovery,
+        memory_port=memory_runtime.port,
+        tool_search_enabled=bool(llm_config.tool_search_enabled),
+    )
+    safety_retry = SafetyRetryService(
+        executor=turn_executor,
+        context=context,
+        session_manager=session_manager,
+        tools=tools,
+        discovery=tool_discovery,
+        tool_search_enabled=bool(llm_config.tool_search_enabled),
+        memory_window=memory_config.window,
+    )
+    consolidation = ConsolidationService(
+        memory_port=memory_runtime.port,
+        provider=provider,
+        model=config.model,
+        memory_window=memory_config.window,
+        profile_extractor=profile_extractor,
+    )
+
+    async def _consolidate_and_save(session: object) -> None:
+        await consolidation.consolidate(session)  # type: ignore[arg-type]
+        await session_manager.save_async(session)  # type: ignore[arg-type]
+
+    turn_scheduler = TurnScheduler(
+        post_mem_worker=memory_runtime.post_response_worker,
+        consolidation_runner=_consolidate_and_save,
+        memory_window=memory_config.window,
+    )
+    retrieval_pipeline = DefaultMemoryRetrievalPipeline(
+        memory=memory_services,
+        memory_config=resolved_memory_config,
+        llm=llm_services,
+        workspace=workspace,
+        light_model=llm_config.light_model or llm_config.model,
+    )
+    post_turn_pipeline = DefaultPostTurnPipeline(
+        scheduler=turn_scheduler,
+        post_mem_worker=memory_runtime.post_response_worker,
+    )
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=session_services,
+            trace=trace_services,
+            post_turn=post_turn_pipeline,
+            outbound=BusOutboundPort(bus),
+        )
+    )
+    conversation_handler = ConversationTurnHandler(
+        ConversationTurnDeps(
+            llm=llm_services,
+            llm_config=llm_config,
+            turn_runner=safety_retry,
+            retrieval=retrieval_pipeline,
+            orchestrator=orchestrator,
+            session=session_services,
+            tools=tools,
+            context=context,
+        )
+    )
+    internal_event_handler = InternalEventHandler(
+        session_svc=session_services,
+        context=context,
+        tools=tools,
+        memory_window=memory_config.window,
+        run_agent_loop_fn=turn_executor.execute,
+        orchestrator=orchestrator,
+    )
+    return AgentLoopDeps(
+        bus=bus,
+        provider=provider,
+        tools=tools,
+        session_manager=session_manager,
+        workspace=workspace,
+        presence=presence,
+        light_provider=light_provider,
+        processing_state=processing_state,
+        memory_runtime=memory_runtime,
+        observe_writer=observe_writer,
+        query_rewriter=query_rewriter,
+        sufficiency_checker=sufficiency_checker,
+        profile_extractor=profile_extractor,
+        retrieval_pipeline=retrieval_pipeline,
+        post_turn_pipeline=post_turn_pipeline,
+        context=context,
+        llm_services=llm_services,
+        memory_services=memory_services,
+        session_services=session_services,
+        observability_services=trace_services,
+        hyde_enhancer=hyde_enhancer,
+        tool_discovery=tool_discovery,
+        turn_executor=turn_executor,
+        safety_retry=safety_retry,
+        consolidation_service=consolidation,
+        scheduler=turn_scheduler,
+        orchestrator=orchestrator,
+        conversation_handler=conversation_handler,
+        internal_event_handler=internal_event_handler,
+    )
+
+
 def build_core_runtime(
     config: Config,
     workspace: Path,
@@ -140,6 +361,7 @@ def build_core_runtime(
     bus = MessageBus()
     provider, light_provider = build_providers(config)
     session_manager = SessionManager(workspace)
+    loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = build_registered_tools(
         config,
         workspace,
@@ -149,48 +371,25 @@ def build_core_runtime(
         light_provider=light_provider,
         session_store=session_manager._store,
         observe_writer=observe_writer,
+        agent_loop_provider=lambda: loop_ref.get("loop"),
     )
     presence = PresenceStore(workspace / "presence.json")
     processing_state = ProcessingState()
+    loop_deps = _build_loop_deps(
+        config=config,
+        workspace=workspace,
+        bus=bus,
+        provider=provider,
+        light_provider=light_provider,
+        tools=tools,
+        session_manager=session_manager,
+        presence=presence,
+        processing_state=processing_state,
+        memory_runtime=memory_runtime,
+        observe_writer=observe_writer,
+    )
     loop = AgentLoop(
-        AgentLoopDeps(
-            bus=bus,
-            provider=provider,
-            tools=tools,
-            session_manager=session_manager,
-            workspace=workspace,
-            presence=presence,
-            light_provider=light_provider,
-            processing_state=processing_state,
-            memory_runtime=memory_runtime,
-            observe_writer=observe_writer,
-            query_rewriter=(
-                QueryRewriter(
-                    llm_client=light_provider or provider,
-                    model=config.light_model or config.model,
-                    max_tokens=config.memory_v2.gate_max_tokens,
-                    timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-                )
-                if config.memory_v2.route_intention_enabled
-                else None
-            ),
-            sufficiency_checker=(
-                SufficiencyChecker(
-                    llm_client=light_provider or provider,
-                    model=config.light_model or config.model,
-                )
-                if config.memory_v2.sufficiency_check_enabled
-                else None
-            ),
-            profile_extractor=(
-                ProfileFactExtractor(
-                    llm_client=light_provider or provider,
-                    model=config.light_model or config.model,
-                )
-                if config.memory_v2.profile_extraction_enabled
-                else None
-            ),
-        ),
+        loop_deps,
         AgentLoopConfig(
             llm=LLMConfig(
                 model=config.model,
@@ -212,8 +411,7 @@ def build_core_runtime(
             ),
         ),
     )
-
-    scheduler.agent_loop = loop
+    loop_ref["loop"] = loop
 
     return CoreRuntime(
         config=config,

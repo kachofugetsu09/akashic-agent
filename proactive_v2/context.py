@@ -49,3 +49,27 @@ class AgentTickContext:
     def mark_context_prefetched(self, context_rows: list[dict]) -> None:
         self.fetched_context = context_rows
         self.context_fetched = True
+
+    @property
+    def _alerts_fetched(self) -> bool:
+        return self.alerts_fetched
+
+    @_alerts_fetched.setter
+    def _alerts_fetched(self, value: bool) -> None:
+        self.alerts_fetched = value
+
+    @property
+    def _contents_fetched(self) -> bool:
+        return self.contents_fetched
+
+    @_contents_fetched.setter
+    def _contents_fetched(self, value: bool) -> None:
+        self.contents_fetched = value
+
+    @property
+    def _context_fetched(self) -> bool:
+        return self.context_fetched
+
+    @_context_fetched.setter
+    def _context_fetched(self, value: bool) -> None:
+        self.context_fetched = value

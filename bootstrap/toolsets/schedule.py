@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Callable
 
 from agent.scheduler import LatencyTracker, SchedulerService
 from agent.tools.message_push import MessagePushTool
@@ -8,11 +9,17 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
 
 
-def build_scheduler(workspace: Path, push_tool: MessagePushTool) -> SchedulerService:
+def build_scheduler(
+    workspace: Path,
+    push_tool: MessagePushTool,
+    *,
+    agent_loop_provider: Callable[[], Any] | None = None,
+) -> SchedulerService:
     return SchedulerService(
         store_path=workspace / "schedules.json",
         push_tool=push_tool,
         agent_loop=None,
+        agent_loop_provider=agent_loop_provider,
         tracker=LatencyTracker(),
     )
 

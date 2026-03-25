@@ -44,6 +44,18 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
         self._llm = llm
         self._workspace = workspace
         self._light_model = light_model
+        self._gate_resolver = _GateResolver(
+            memory=memory,
+            config=memory_config,
+            llm=llm,
+            light_model=light_model,
+        )
+        self._episodic_retriever = _EpisodicRetriever(memory=memory, config=memory_config)
+        self._finalizer = _MemoryRetrievalFinalizer(
+            memory=memory,
+            config=memory_config,
+            workspace=workspace,
+        )
 
     async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
         block, rag_trace = await _retrieve_memory_block_impl(
@@ -53,11 +65,9 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
             chat_id=request.chat_id,
             history=request.history,
             session_metadata=request.session_metadata,
-            memory=self._memory,
-            config=self._config,
-            llm=self._llm,
-            workspace=self._workspace,
-            light_model=self._light_model,
+            gate_resolver=self._gate_resolver,
+            episodic_retriever=self._episodic_retriever,
+            finalizer=self._finalizer,
         )
         if rag_trace is None:
             return RetrievalResult(block=block)
@@ -73,78 +83,140 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
         return RetrievalResult(block=block, trace=trace)
 
 
-async def _retrieve_memory_block_impl(
-    *,
-    message: str,
-    session_key: str,
-    channel: str,
-    chat_id: str,
-    history: list[HistoryMessage],
-    session_metadata: dict[str, object],
-    memory: MemoryServices,
-    config: MemoryConfig,
-    llm: LLMServices,
-    workspace: Path,
-    light_model: str,
-) -> tuple[str, RagTrace | None]:
-    retrieved_block = ""
-    rag_trace: RagTrace | None = None
-    gate_type = "history_route"
-    sufficiency_trace: dict[str, object] = _empty_sufficiency_state()
-    try:
-        main_history = _to_history_dicts(history[-config.window:])
-        recent_turns = _format_gate_history(main_history, max_turns=3)
-        hyde_context = _build_hyde_context(main_history)
-        gate_result, p_items = await _resolve_memory_gate(
+class _GateResolver:
+    def __init__(
+        self,
+        *,
+        memory: MemoryServices,
+        config: MemoryConfig,
+        llm: LLMServices,
+        light_model: str,
+    ) -> None:
+        self._memory = memory
+        self._config = config
+        self._llm = llm
+        self._light_model = light_model
+
+    @property
+    def memory_window(self) -> int:
+        return self._config.window
+
+    async def resolve(
+        self,
+        *,
+        message: str,
+        session_metadata: dict[str, object],
+        recent_turns: str,
+    ) -> tuple[dict[str, object], list[dict]]:
+        return await _resolve_memory_gate(
             message=message,
             session_metadata=session_metadata,
             recent_turns=recent_turns,
-            memory=memory,
-            config=config,
-            llm=llm,
-            light_model=light_model,
+            memory=self._memory,
+            config=self._config,
+            llm=self._llm,
+            light_model=self._light_model,
         )
-        gate_type = str(gate_result["gate_type"])
-        rewritten_query = str(gate_result["episodic_query"])
-        route_decision = str(gate_result["route_decision"])
-        route_ms = int(gate_result["route_latency_ms"])
-        fallback_reason = str(gate_result["fallback_reason"])
-        history_memory_types = list(gate_result["history_memory_types"])
-        gate_latency_ms = {"route": route_ms}
 
-        h_items, h_scope_mode, hyde_hypothesis = await _retrieve_episodic_items(
+
+class _EpisodicRetriever:
+    def __init__(
+        self,
+        *,
+        memory: MemoryServices,
+        config: MemoryConfig,
+    ) -> None:
+        self._memory = memory
+        self._config = config
+
+    async def retrieve(
+        self,
+        *,
+        message: str,
+        recent_turns: str,
+        route_decision: str,
+        rewritten_query: str,
+        history_memory_types: list[str],
+        procedure_items: list[dict],
+        hyde_context: str,
+        sufficiency_trace: dict[str, object],
+    ) -> tuple[list[dict], str, str | None, list[dict], str, list[str]]:
+        history_items, history_scope_mode, hyde_hypothesis = await _retrieve_episodic_items(
             route_decision=route_decision,
             rewritten_query=rewritten_query,
             history_memory_types=history_memory_types,
             hyde_context=hyde_context,
-            memory=memory,
-            config=config,
+            memory=self._memory,
+            config=self._config,
         )
         selected_items, retrieved_block, injected_item_ids = _build_injection_payload(
-            procedure_items=p_items,
-            history_items=h_items,
-            memory=memory,
+            procedure_items=procedure_items,
+            history_items=history_items,
+            memory=self._memory,
         )
-
-        h_items, h_scope_mode, selected_items, retrieved_block, injected_item_ids = (
+        history_items, history_scope_mode, selected_items, retrieved_block, injected_item_ids = (
             await _retry_empty_episodic_block(
                 message=message,
                 recent_turns=recent_turns,
                 route_decision=route_decision,
                 rewritten_query=rewritten_query,
                 history_memory_types=history_memory_types,
-                procedure_items=p_items,
-                history_items=h_items,
-                history_scope_mode=h_scope_mode,
+                procedure_items=procedure_items,
+                history_items=history_items,
+                history_scope_mode=history_scope_mode,
                 selected_items=selected_items,
                 retrieved_block=retrieved_block,
                 injected_item_ids=injected_item_ids,
                 sufficiency_trace=sufficiency_trace,
-                memory=memory,
-                config=config,
+                memory=self._memory,
+                config=self._config,
             )
         )
-        rag_trace = _finalize_memory_retrieval(
+        return (
+            history_items,
+            history_scope_mode,
+            hyde_hypothesis,
+            selected_items,
+            retrieved_block,
+            injected_item_ids,
+        )
+
+
+class _MemoryRetrievalFinalizer:
+    def __init__(
+        self,
+        *,
+        memory: MemoryServices,
+        config: MemoryConfig,
+        workspace: Path,
+    ) -> None:
+        self._memory = memory
+        self._config = config
+        self._workspace = workspace
+
+    def finalize(
+        self,
+        *,
+        session_key: str,
+        message: str,
+        channel: str,
+        chat_id: str,
+        gate_type: str,
+        route_decision: str,
+        rewritten_query: str,
+        route_ms: int,
+        fallback_reason: str,
+        gate_latency_ms: dict[str, int],
+        p_items: list[dict],
+        h_items: list[dict],
+        h_scope_mode: str,
+        hyde_hypothesis: str | None,
+        selected_items: list[dict],
+        retrieved_block: str,
+        injected_item_ids: list[str],
+        sufficiency_trace: dict[str, object],
+    ) -> RagTrace:
+        return _finalize_memory_retrieval(
             session_key=session_key,
             message=message,
             channel=channel,
@@ -163,13 +235,23 @@ async def _retrieve_memory_block_impl(
             retrieved_block=retrieved_block,
             injected_item_ids=injected_item_ids,
             sufficiency_trace=sufficiency_trace,
-            workspace=workspace,
-            config=config,
+            workspace=self._workspace,
+            config=self._config,
         )
-    except Exception as e:
-        logger.warning("memory2 retrieve 失败，跳过: %s", e)
+
+    def trace_exception(
+        self,
+        *,
+        session_key: str,
+        message: str,
+        channel: str,
+        chat_id: str,
+        gate_type: str,
+        sufficiency_trace: dict[str, object],
+        error: Exception,
+    ) -> RagTrace:
         _trace_memory_retrieve(
-            workspace,
+            self._workspace,
             session_key=session_key,
             channel=channel,
             chat_id=chat_id,
@@ -179,9 +261,9 @@ async def _retrieve_memory_block_impl(
             gate_type=gate_type,
             fallback_reason="retrieve_exception",
             sufficiency_check=sufficiency_trace,
-            error=str(e),
+            error=str(error),
         )
-        rag_trace = _build_agent_rag_trace(
+        return _build_agent_rag_trace(
             session_key=session_key,
             user_msg=message,
             rewritten_query=message,
@@ -196,7 +278,85 @@ async def _retrieve_memory_block_impl(
             injected_block="",
             sufficiency_check=sufficiency_trace,
             fallback_reason="retrieve_exception",
-            error=str(e),
+            error=str(error),
+        )
+
+
+async def _retrieve_memory_block_impl(
+    *,
+    message: str,
+    session_key: str,
+    channel: str,
+    chat_id: str,
+    history: list[HistoryMessage],
+    session_metadata: dict[str, object],
+    gate_resolver: _GateResolver,
+    episodic_retriever: _EpisodicRetriever,
+    finalizer: _MemoryRetrievalFinalizer,
+) -> tuple[str, RagTrace | None]:
+    retrieved_block = ""
+    rag_trace: RagTrace | None = None
+    gate_type = "history_route"
+    sufficiency_trace: dict[str, object] = _empty_sufficiency_state()
+    try:
+        main_history = _to_history_dicts(history[-gate_resolver.memory_window :])
+        recent_turns = _format_gate_history(main_history, max_turns=3)
+        hyde_context = _build_hyde_context(main_history)
+        gate_result, p_items = await gate_resolver.resolve(
+            message=message,
+            session_metadata=session_metadata,
+            recent_turns=recent_turns,
+        )
+        gate_type = str(gate_result["gate_type"])
+        rewritten_query = str(gate_result["episodic_query"])
+        route_decision = str(gate_result["route_decision"])
+        route_ms = int(gate_result["route_latency_ms"])
+        fallback_reason = str(gate_result["fallback_reason"])
+        history_memory_types = list(gate_result["history_memory_types"])
+        gate_latency_ms = {"route": route_ms}
+
+        h_items, h_scope_mode, hyde_hypothesis, selected_items, retrieved_block, injected_item_ids = (
+            await episodic_retriever.retrieve(
+                message=message,
+                recent_turns=recent_turns,
+                route_decision=route_decision,
+                rewritten_query=rewritten_query,
+                history_memory_types=history_memory_types,
+                procedure_items=p_items,
+                hyde_context=hyde_context,
+                sufficiency_trace=sufficiency_trace,
+            )
+        )
+        rag_trace = finalizer.finalize(
+            session_key=session_key,
+            message=message,
+            channel=channel,
+            chat_id=chat_id,
+            gate_type=gate_type,
+            route_decision=route_decision,
+            rewritten_query=rewritten_query,
+            route_ms=route_ms,
+            fallback_reason=fallback_reason,
+            gate_latency_ms=gate_latency_ms,
+            p_items=p_items,
+            h_items=h_items,
+            h_scope_mode=h_scope_mode,
+            hyde_hypothesis=hyde_hypothesis,
+            selected_items=selected_items,
+            retrieved_block=retrieved_block,
+            injected_item_ids=injected_item_ids,
+            sufficiency_trace=sufficiency_trace,
+        )
+    except Exception as e:
+        logger.warning("memory2 retrieve 失败，跳过: %s", e)
+        rag_trace = finalizer.trace_exception(
+            session_key=session_key,
+            message=message,
+            channel=channel,
+            chat_id=chat_id,
+            gate_type=gate_type,
+            sufficiency_trace=sufficiency_trace,
+            error=e,
         )
     return retrieved_block, rag_trace
 

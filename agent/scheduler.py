@@ -342,13 +342,15 @@ class SchedulerService:
         self,
         store_path: Path,
         push_tool: Any,
-        agent_loop: Any,
+        agent_loop: Any = None,
+        agent_loop_provider: Callable[[], Any] | None = None,
         tracker: LatencyTracker | None = None,
         _now_fn: Callable[[], datetime] | None = None,
     ) -> None:
         self.store = JobStore(store_path)
         self.push_tool = push_tool
         self.agent_loop = agent_loop
+        self._agent_loop_provider = agent_loop_provider
         self.tracker = tracker or LatencyTracker()
         self._now = _now_fn or (lambda: datetime.now(timezone.utc))
         self._jobs: dict[str, ScheduledJob] = {}
@@ -479,8 +481,9 @@ class SchedulerService:
             )
             logger.info(f"[scheduler] instant 推送完成 {label!r}: {result}")
         else:
+            loop = self._get_agent_loop()
             t0 = time.monotonic()
-            content = await self.agent_loop.process_direct(
+            content = await loop.process_direct(
                 content=job.prompt,
                 channel=job.channel,
                 chat_id=job.chat_id,
@@ -500,6 +503,12 @@ class SchedulerService:
                 logger.info(f"[scheduler] soft 推送完成 {label!r}: {result}")
             else:
                 logger.warning(f"[scheduler] soft AI 返回空内容 {label!r}，跳过推送")
+
+    def _get_agent_loop(self) -> Any:
+        loop = self._agent_loop_provider() if self._agent_loop_provider else self.agent_loop
+        if loop is None:
+            raise RuntimeError("scheduler soft job requires agent_loop")
+        return loop
 
     def _advance_every(self, job: ScheduledJob, after: datetime) -> datetime:
         """将 every job 的 fire_at 推进到 after 之后的下一个触发时间。"""

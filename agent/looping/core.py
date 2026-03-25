@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -84,6 +85,20 @@ class AgentLoopDeps:
     profile_extractor: ProfileFactExtractor | None = None
     retrieval_pipeline: MemoryRetrievalPipeline | None = None
     post_turn_pipeline: PostTurnPipeline | None = None
+    context: ContextBuilder | None = None
+    llm_services: LLMServices | None = None
+    memory_services: MemoryServices | None = None
+    session_services: SessionServices | None = None
+    observability_services: ObservabilityServices | None = None
+    hyde_enhancer: "HyDEEnhancer | None" = None
+    tool_discovery: ToolDiscoveryState | None = None
+    turn_executor: TurnExecutor | None = None
+    safety_retry: SafetyRetryService | None = None
+    consolidation_service: ConsolidationService | None = None
+    scheduler: TurnScheduler | None = None
+    orchestrator: TurnOrchestrator | None = None
+    conversation_handler: ConversationTurnHandler | None = None
+    internal_event_handler: InternalEventHandler | None = None
 
 
 @dataclass
@@ -134,12 +149,12 @@ class AgentLoop:
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
 
         self._memory_port = memory_port
-        self.context = ContextBuilder(self.workspace, memory=self._memory_port)
+        self.context = deps.context or ContextBuilder(self.workspace, memory=self._memory_port)
         self._profile_extractor = deps.profile_extractor
 
         # ── Build HyDE enhancer ────────────────────────────────────────────────
-        hyde_enhancer: HyDEEnhancer | None = None
-        if config.memory.hyde_enabled:
+        hyde_enhancer = deps.hyde_enhancer
+        if hyde_enhancer is None and config.memory.hyde_enabled:
             if not config.llm.light_model:
                 logger.warning(
                     "hyde_enabled=True 但未配置独立 light_model，"
@@ -157,26 +172,26 @@ class AgentLoop:
         self._hyde_enhancer = hyde_enhancer
 
         # ── Assemble ports ─────────────────────────────────────────────────────
-        llm_svc = LLMServices(
+        llm_svc = deps.llm_services or LLMServices(
             provider=deps.provider,
             light_provider=self.light_provider,
         )
-        memory_svc = MemoryServices(
+        memory_svc = deps.memory_services or MemoryServices(
             port=memory_port,
             query_rewriter=deps.query_rewriter,
             hyde_enhancer=hyde_enhancer,
             sufficiency_checker=deps.sufficiency_checker,
         )
-        session_svc = SessionServices(
+        session_svc = deps.session_services or SessionServices(
             session_manager=deps.session_manager,
             presence=deps.presence,
         )
-        trace_svc = ObservabilityServices(
+        trace_svc = deps.observability_services or ObservabilityServices(
             workspace=deps.workspace,
             observe_writer=deps.observe_writer,
         )
-        self._tool_discovery = ToolDiscoveryState()
-        self._turn_executor = TurnExecutor(
+        self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
+        self._turn_executor = deps.turn_executor or TurnExecutor(
             llm=llm_svc,
             llm_config=config.llm,
             tools=deps.tools,
@@ -184,7 +199,7 @@ class AgentLoop:
             memory_port=self._memory_port,
             tool_search_enabled=self._tool_search_enabled,
         )
-        self._safety_retry = SafetyRetryService(
+        self._safety_retry = deps.safety_retry or SafetyRetryService(
             executor=self._turn_executor,
             context=self.context,
             session_manager=self.session_manager,
@@ -193,7 +208,7 @@ class AgentLoop:
             tool_search_enabled=self._tool_search_enabled,
             memory_window=self.memory_window,
         )
-        self._consolidation = ConsolidationService(
+        self._consolidation = deps.consolidation_service or ConsolidationService(
             memory_port=self._memory_port,
             provider=self.provider,
             model=self.model,
@@ -216,7 +231,7 @@ class AgentLoop:
             hyde_timeout_ms=config.memory.hyde_timeout_ms,
         )
 
-        self._scheduler = TurnScheduler(
+        self._scheduler = deps.scheduler or TurnScheduler(
             post_mem_worker=post_mem_worker,
             consolidation_runner=self._consolidate_and_save,
             memory_window=config.memory.window,
@@ -233,7 +248,7 @@ class AgentLoop:
             scheduler=self._scheduler,
             post_mem_worker=post_mem_worker,
         )
-        turn_orchestrator = TurnOrchestrator(
+        turn_orchestrator = deps.orchestrator or TurnOrchestrator(
             TurnOrchestratorDeps(
                 session=session_svc,
                 trace=trace_svc,
@@ -242,7 +257,7 @@ class AgentLoop:
             )
         )
 
-        self._conversation_handler = ConversationTurnHandler(
+        self._conversation_handler = deps.conversation_handler or ConversationTurnHandler(
             ConversationTurnDeps(
                 llm=llm_svc,
                 llm_config=config.llm,
@@ -254,7 +269,7 @@ class AgentLoop:
                 context=self.context,
             )
         )
-        self._internal_event_handler = InternalEventHandler(
+        self._internal_event_handler = deps.internal_event_handler or InternalEventHandler(
             session_svc=session_svc,
             context=self.context,
             tools=deps.tools,
@@ -470,3 +485,18 @@ class AgentLoop:
         """
         await self._consolidate_memory(session)  # type: ignore[arg-type]
         await self.session_manager.save_async(session)  # type: ignore[arg-type]
+
+    def _collect_skill_mentions(self, content: str) -> list[str]:
+        raw_names = re.findall(r"\$([a-zA-Z0-9_-]+)", content)
+        if not raw_names:
+            return []
+        available = {
+            s["name"] for s in self.context.skills.list_skills(filter_unavailable=False)
+        }
+        seen: set[str] = set()
+        result: list[str] = []
+        for name in raw_names:
+            if name in available and name not in seen:
+                seen.add(name)
+                result.append(name)
+        return result
