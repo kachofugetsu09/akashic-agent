@@ -2,8 +2,13 @@ import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from memory2.dedup_decider import DedupDecision, DedupResult, ExistingAction, MemoryAction
+from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.rule_schema import build_procedure_rule_schema
+from memory2.store import MemoryStore2
 
 
 class _DummyProvider:
@@ -48,6 +53,23 @@ class _DummyMemorizer:
     def __init__(self):
         self.save_item = AsyncMock(return_value="new:testid")
         self.supersede_batch = MagicMock()
+        self.merge_item = AsyncMock()
+
+
+class _FixedDedupDecider:
+    def __init__(self, result: DedupResult):
+        self._result = result
+
+    async def decide(self, candidate: dict, *, batch_vecs=None) -> DedupResult:
+        return self._result
+
+
+class _StaticEmbedder:
+    def __init__(self, mapping: dict[str, list[float]]):
+        self._mapping = mapping
+
+    async def embed(self, text: str) -> list[float]:
+        return list(self._mapping.get(text, [0.0, 0.0]))
 
 
 def test_post_worker_skips_implicit_when_semantic_dup_to_explicit():
@@ -400,6 +422,231 @@ def test_extract_invalidation_topics_skips_when_token_budget_exhausted():
     assert topics == []
     assert remain == 0
     assert provider.calls == 0
+
+
+def test_dedup_none_should_not_delete_when_merge_cannot_complete():
+    memorizer = _DummyMemorizer()
+    dedup_result = DedupResult(
+        decision=DedupDecision.NONE,
+        candidate_summary="新的 Steam 查询规则，补充了必须先确认区服",
+        candidate_type="procedure",
+        similar_items=[
+            {"id": "old-merge-target", "summary": "Steam 查询规则：先用 steam_mcp"},
+            {"id": "old-delete-target", "summary": "Steam 查询废弃旧流程"},
+        ],
+        actions=[
+            ExistingAction(
+                item_id="old-merge-target",
+                summary="Steam 查询规则：先用 steam_mcp",
+                action=MemoryAction.MERGE,
+                reason="same topic partial update",
+            ),
+            ExistingAction(
+                item_id="old-delete-target",
+                summary="Steam 查询废弃旧流程",
+                action=MemoryAction.DELETE,
+                reason="obsolete",
+            ),
+        ],
+        reason="merge one + delete one",
+        query_vector=[1.0, 0.0],
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+        dedup_decider=cast(Any, _FixedDedupDecider(dedup_result)),
+    )
+
+    asyncio.run(
+        worker._save_with_dedup(
+            {
+                "summary": "新的 Steam 查询规则，补充了必须先确认区服",
+                "memory_type": "procedure",
+                "tool_requirement": "steam_mcp",
+                "steps": [],
+            },
+            "test@post_response",
+            protected_ids=None,
+            token_budget=0,  # 强制 merge 摘要生成失败
+            batch_vecs=[],
+        )
+    )
+
+    memorizer.merge_item.assert_not_called()
+    memorizer.supersede_batch.assert_not_called()
+
+
+def test_dedup_none_with_delete_only_should_still_delete():
+    memorizer = _DummyMemorizer()
+    dedup_result = DedupResult(
+        decision=DedupDecision.NONE,
+        candidate_summary="用户明确废弃旧的 Steam 查询流程",
+        candidate_type="procedure",
+        similar_items=[
+            {"id": "old-delete-target", "summary": "Steam 查询废弃旧流程"},
+        ],
+        actions=[
+            ExistingAction(
+                item_id="old-delete-target",
+                summary="Steam 查询废弃旧流程",
+                action=MemoryAction.DELETE,
+                reason="fully obsolete",
+            ),
+        ],
+        reason="delete obsolete memory only",
+        query_vector=[1.0, 0.0],
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+        dedup_decider=cast(Any, _FixedDedupDecider(dedup_result)),
+    )
+
+    asyncio.run(
+        worker._save_with_dedup(
+            {
+                "summary": "用户明确废弃旧的 Steam 查询流程",
+                "memory_type": "procedure",
+                "tool_requirement": None,
+                "steps": [],
+            },
+            "test@post_response",
+            protected_ids=None,
+            token_budget=256,
+            batch_vecs=[],
+        )
+    )
+
+    memorizer.merge_item.assert_not_called()
+    memorizer.supersede_batch.assert_called_once_with(["old-delete-target"])
+
+
+def test_merge_item_should_keep_procedure_metadata_consistent():
+    embedder = _StaticEmbedder(
+        {
+            "查 Steam 必须先用 steam_mcp，不能直接使用 web_search": [1.0, 0.0],
+            "合并后的 Steam 查询规则：先用 steam_mcp，再补充区服确认": [0.9, 0.1],
+        }
+    )
+    store = MemoryStore2(":memory:")
+    memorizer = Memorizer(store, cast(Any, embedder))
+
+    row_ref = store.upsert_item(
+        memory_type="procedure",
+        summary="查 Steam 必须先用 steam_mcp，不能直接使用 web_search",
+        embedding=[1.0, 0.0],
+        extra={
+            "tool_requirement": "steam_mcp",
+            "steps": [],
+            "rule_schema": {
+                "required_tools": ["steam_mcp"],
+                "forbidden_tools": ["web_search"],
+                "mentioned_tools": ["steam_mcp", "web_search"],
+            },
+        },
+    )
+    item_id = row_ref.split(":", 1)[1]
+
+    asyncio.run(
+        memorizer.merge_item(
+            item_id,
+            "合并后的 Steam 查询规则：先用 steam_mcp，再补充区服确认",
+        )
+    )
+
+    row = store._db.execute(
+        "SELECT summary, extra_json FROM memory_items WHERE id=?",
+        (item_id,),
+    ).fetchone()
+    assert row is not None
+    summary, extra_json = row
+    assert "补充区服确认" in summary
+    assert extra_json is not None
+
+    import json
+
+    extra = json.loads(extra_json)
+    assert extra["tool_requirement"] == "steam_mcp"
+    assert "区服确认" in str(extra), "merge 后的 extra_json 应与新摘要保持一致"
+
+
+def test_merge_item_should_refresh_trigger_tags_for_procedure():
+    embedder = _StaticEmbedder(
+        {
+            "查 Steam 必须直接使用 web_search": [1.0, 0.0],
+            "查 Steam 必须先使用 steam_mcp": [0.9, 0.1],
+        }
+    )
+    store = MemoryStore2(":memory:")
+    memorizer = Memorizer(store, cast(Any, embedder))
+
+    row_ref = store.upsert_item(
+        memory_type="procedure",
+        summary="查 Steam 必须直接使用 web_search",
+        embedding=[1.0, 0.0],
+        extra={
+            "tool_requirement": "web_search",
+            "steps": [],
+            "rule_schema": {
+                "required_tools": ["web_search"],
+                "forbidden_tools": [],
+                "mentioned_tools": ["web_search"],
+            },
+            "trigger_tags": {
+                "tools": ["web_search"],
+                "skills": [],
+                "keywords": ["web_search"],
+                "scope": "tool_triggered",
+            },
+        },
+    )
+    item_id = row_ref.split(":", 1)[1]
+
+    asyncio.run(
+        memorizer.merge_item(
+            item_id,
+            "查 Steam 必须先使用 steam_mcp",
+        )
+    )
+
+    row = store._db.execute(
+        "SELECT extra_json FROM memory_items WHERE id=?",
+        (item_id,),
+    ).fetchone()
+    assert row is not None and row[0] is not None
+
+    import json
+
+    extra = json.loads(row[0])
+    tags = extra.get("trigger_tags") or {}
+    assert "web_search" not in (tags.get("keywords") or []), "merge 后不应保留旧关键词"
+
+
+def test_implicit_language_reply_rule_should_not_stay_procedure():
+    item = PostResponseMemoryWorker._normalize_extracted_item(
+        {
+            "summary": "之后跟我说话只用中文，不要夹杂英文，专有名词也尽量翻译。",
+            "memory_type": "procedure",
+            "tool_requirement": None,
+            "steps": [],
+        }
+    )
+
+    assert item["memory_type"] == "preference"
+
+
+def test_extract_obvious_preferences_catches_language_reply_rule():
+    items = PostResponseMemoryWorker._extract_obvious_preferences(
+        "之后跟我说话只用中文，不要夹杂英文，哪怕专有名词也尽量翻译。"
+    )
+
+    assert len(items) == 1
+    assert items[0]["memory_type"] == "preference"
+    assert "中文" in items[0]["summary"]
 
 
 def test_extract_implicit_prompt_is_conservative_for_preference_upgrade():

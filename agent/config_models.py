@@ -60,6 +60,11 @@ class MemoryV2Config:
     sufficiency_check_enabled: bool = True
     profile_extraction_enabled: bool = True
     profile_supersede_enabled: bool = True
+    dedup_enabled: bool = False
+    dedup_similarity_threshold: float = 0.45   # 库内预筛阈值（宽松，找候选送 LLM）
+    batch_dedup_threshold: float = 0.90        # 批内去重阈值（严格，同轮同义检测）
+    hotness_alpha: float = 0.0                 # 热度融合权重（0=纯语义）
+    hotness_half_life_days: float = 14.0       # 热度半衰期（天）
 
 
 @dataclass

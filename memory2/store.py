@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import time
@@ -54,6 +55,25 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     a_norm = float(np.linalg.norm(va)) + 1e-9
     b_norm = float(np.linalg.norm(vb)) + 1e-9
     return float(va @ vb) / a_norm / b_norm
+
+
+def _hotness_score(
+    reinforcement: int,
+    updated_at: datetime,
+    now: datetime | None = None,
+    half_life_days: float = 14.0,
+) -> float:
+    """计算热度分：频度 * 时间衰减，结果在 (0, 1) 区间。"""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    freq    = 1.0 / (1.0 + math.exp(-math.log1p(max(0, reinforcement))))
+    age_d   = max((now - updated_at).total_seconds() / 86400.0, 0.0)
+    recency = math.exp(-math.log(2) / max(half_life_days, 0.1) * age_d)
+    return freq * recency
 
 
 class MemoryStore2:
@@ -256,16 +276,21 @@ class MemoryStore2:
         self._db.commit()
 
     def get_all_with_embedding(self, include_superseded: bool = False) -> list[tuple]:
-        """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at)]"""
+        """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at)]
+        extra_json_dict 中注入 _reinforcement 和 _updated_at（_ 前缀，不污染用户字段）。
+        """
         where = "" if include_superseded else "AND status='active'"
         rows = self._db.execute(
-            "SELECT id, memory_type, summary, embedding, extra_json, happened_at "
+            "SELECT id, memory_type, summary, embedding, extra_json, happened_at, "
+            "reinforcement, updated_at "
             f"FROM memory_items WHERE embedding IS NOT NULL {where}"
         ).fetchall()
         result = []
-        for row_id, mtype, summary, emb_json, extra_json, happened_at in rows:
+        for row_id, mtype, summary, emb_json, extra_json, happened_at, reinforcement, updated_at in rows:
             emb = json.loads(emb_json) if emb_json else None
             extra = json.loads(extra_json) if extra_json else {}
+            extra["_reinforcement"] = reinforcement
+            extra["_updated_at"] = updated_at
             result.append((row_id, mtype, summary, emb, extra, happened_at))
         return result
 
@@ -279,8 +304,12 @@ class MemoryStore2:
         scope_channel: str | None = None,
         scope_chat_id: str | None = None,
         require_scope_match: bool = False,
+        hotness_alpha: float = 0.0,
+        hotness_half_life_days: float = 14.0,
     ) -> list[dict]:
-        """cosine similarity 检索，返回 top-k 结果"""
+        """cosine similarity 检索，返回 top-k 结果。
+        hotness_alpha > 0 时启用热度融合：final = (1-alpha)*semantic + alpha*hotness。
+        """
         rows = self.get_all_with_embedding(include_superseded=include_superseded)
         if not rows:
             return []
@@ -303,15 +332,32 @@ class MemoryStore2:
 
         q = np.array(query_vec, dtype=np.float32)
         q_norm = float(np.linalg.norm(q)) + 1e-9
+        now = datetime.now(timezone.utc)
 
         scored = []
         for row_id, mtype, summary, emb, extra, happened_at in rows:
             if emb is None:
                 continue
             e = np.array(emb, dtype=np.float32)
-            score = float(e @ q) / (float(np.linalg.norm(e)) + 1e-9) / q_norm
-            if score < score_threshold:
+            semantic = float(e @ q) / (float(np.linalg.norm(e)) + 1e-9) / q_norm
+            if semantic < score_threshold:
                 continue
+
+            hotness = 0.0
+            if hotness_alpha > 0:
+                reinforcement = extra.get("_reinforcement", 1)
+                updated_at_str = extra.get("_updated_at")
+                if updated_at_str:
+                    try:
+                        updated_at = datetime.fromisoformat(updated_at_str)
+                        hotness = _hotness_score(
+                            reinforcement, updated_at, now, hotness_half_life_days
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+            final = (1.0 - hotness_alpha) * semantic + hotness_alpha * hotness
+
             scored.append(
                 {
                     "id": row_id,
@@ -319,12 +365,74 @@ class MemoryStore2:
                     "summary": summary,
                     "extra_json": extra,
                     "happened_at": happened_at,
-                    "score": round(score, 4),
+                    "score": round(final, 4),
+                    "_score_debug": {
+                        "semantic": round(semantic, 4),
+                        "hotness": round(hotness, 4),
+                        "final": round(final, 4),
+                    },
                 }
             )
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:top_k]
+
+    def merge_item_raw(
+        self,
+        item_id: str,
+        new_summary: str,
+        new_hash: str,
+        new_embedding: list[float],
+        new_extra: dict | None = None,
+    ) -> None:
+        """原子更新 merge 目标：summary + content_hash + embedding + reinforcement。
+        new_extra 若提供则同步更新 extra_json。
+        若 content_hash 冲突（极低概率），则 supersede 旧条目并由 upsert_item 写入新摘要。
+        """
+        try:
+            if new_extra is not None:
+                self._db.execute(
+                    """UPDATE memory_items
+                       SET summary=?, content_hash=?, embedding=?, extra_json=?,
+                           reinforcement=reinforcement+1, updated_at=?
+                       WHERE id=?""",
+                    (
+                        new_summary, new_hash, json.dumps(new_embedding),
+                        json.dumps(new_extra), _now_iso(), item_id,
+                    ),
+                )
+            else:
+                self._db.execute(
+                    """UPDATE memory_items
+                       SET summary=?, content_hash=?, embedding=?,
+                           reinforcement=reinforcement+1, updated_at=?
+                       WHERE id=?""",
+                    (new_summary, new_hash, json.dumps(new_embedding), _now_iso(), item_id),
+                )
+            self._db.commit()
+
+        except sqlite3.IntegrityError:
+            # content_hash 撞上库中已有条目（极低概率）
+            # 安全降级：supersede 旧条目，让 upsert_item 走 reinforce 路径
+            logger.warning(
+                "merge_item_raw: content_hash collision for item %s, "
+                "superseding and falling back to upsert",
+                item_id,
+            )
+            try:
+                self._db.execute("ROLLBACK")
+            except Exception:
+                pass
+            row = self._db.execute(
+                "SELECT memory_type FROM memory_items WHERE id=?", (item_id,)
+            ).fetchone()
+            if row:
+                self.mark_superseded(item_id)
+                self.upsert_item(
+                    memory_type=row[0],
+                    summary=new_summary,
+                    embedding=new_embedding,
+                )
 
     def list_by_type(self, memory_type: str) -> list[dict]:
         rows = self._db.execute(

@@ -17,6 +17,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _coerce_memory_type(
+    memory_type: str,
+    tool_requirement: str | None,
+    steps: list[str] | None,
+) -> str:
+    """procedure 若无 tool_requirement 也无 steps，极大概率是偏好被误分类，纠正为 preference。"""
+    if memory_type != "procedure":
+        return memory_type
+    has_tool = bool(tool_requirement and tool_requirement.strip())
+    has_steps = bool(steps and any(s.strip() for s in steps))
+    if not has_tool and not has_steps:
+        return "preference"
+    return memory_type
+
+
 def _append_to_sop_file(
     persist_file: str, summary: str, steps: list[str] | None
 ) -> None:
@@ -86,6 +101,8 @@ class MemorizeTool(Tool):
         persist_file: str | None = None,
         **_: Any,
     ) -> str:
+        # 0. 类型纠正：无 tool_requirement 且无 steps 的 procedure → preference。
+        memory_type = _coerce_memory_type(memory_type, tool_requirement, steps)
         # 1. 先构造基础 extra，保留原有 tool_requirement / steps / persist_file 字段。
         extra: dict = {
             "tool_requirement": tool_requirement,
@@ -111,7 +128,7 @@ class MemorizeTool(Tool):
                     )
             except Exception as e:
                 logger.warning("memorize: trigger_tags generation failed: %s", e)
-        result = await self._memory.save_item(
+        result = await self._memory.save_item_with_supersede(
             summary=summary,
             memory_type=memory_type,
             extra=extra,

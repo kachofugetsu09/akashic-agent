@@ -24,6 +24,7 @@ def build_memory_runtime(
     from agent.tools.memorize import MemorizeTool
     from agent.tools.filesystem import EditFileTool, WriteFileTool
     from core.memory.port import DefaultMemoryPort
+    from memory2.dedup_decider import DedupDecider
     from memory2.embedder import Embedder
     from memory2.memorizer import Memorizer
     from memory2.procedure_tagger import ProcedureTagger
@@ -79,6 +80,8 @@ def build_memory_runtime(
         inject_max_event_profile=config.memory_v2.inject_max_event_profile,
         inject_line_max=config.memory_v2.inject_line_max,
         sop_guard_enabled=config.memory_v2.sop_guard_enabled,
+        hotness_alpha=config.memory_v2.hotness_alpha,
+        hotness_half_life_days=config.memory_v2.hotness_half_life_days,
     )
 
     port = DefaultMemoryPort(store, memorizer=memorizer, retriever=retriever)
@@ -91,6 +94,17 @@ def build_memory_runtime(
             s["name"] for s in _skills_loader.list_skills(filter_unavailable=False)
         ],
     )
+
+    dedup_decider = None
+    if config.memory_v2.dedup_enabled:
+        dedup_decider = DedupDecider(
+            store=mem2_store,
+            embedder=embedder,
+            provider=light_provider or provider,
+            model=config.light_model or config.model,
+            similarity_threshold=config.memory_v2.dedup_similarity_threshold,
+            batch_dedup_threshold=config.memory_v2.batch_dedup_threshold,
+        )
 
     post_mem_worker = PostResponseMemoryWorker(
         memorizer=memorizer,
@@ -108,6 +122,7 @@ def build_memory_runtime(
         ),
         profile_supersede_enabled=config.memory_v2.profile_supersede_enabled,
         observe_writer=observe_writer,
+        dedup_decider=dedup_decider,
     )
     tools.register(
         MemorizeTool(port, tagger=tagger),

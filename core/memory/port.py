@@ -401,6 +401,29 @@ class DefaultMemoryPort:
             logger.warning("[memory_port] save_item failed: %s", e)
             return ""
 
+    async def save_item_with_supersede(
+        self,
+        summary: str,
+        memory_type: str,
+        extra: dict,
+        source_ref: str,
+        happened_at: str | None = None,
+    ) -> str:
+        """显式写入：先 supersede 高相似旧条目，再写入新条目（memorize 工具专用）。"""
+        if not self._memorizer:
+            return ""
+        try:
+            return await self._memorizer.save_item_with_supersede(
+                summary=summary,
+                memory_type=memory_type,
+                extra=extra,
+                source_ref=source_ref,
+                happened_at=happened_at,
+            )
+        except Exception as e:
+            logger.warning("[memory_port] save_item_with_supersede failed: %s", e)
+            return ""
+
     async def save_from_consolidation(
         self,
         history_entry: str,

@@ -133,10 +133,12 @@ class ScenarioRunner:
         *,
         config_path: str | Path = "config.json",
         artifact_root: str | Path = ".pytest_artifacts/agent-loop-mvp",
+        config_patch: dict | None = None,
     ) -> None:
         self._config_path = Path(config_path)
         self._artifact_root = Path(artifact_root)
         self._repo_root = Path(__file__).resolve().parent.parent
+        self._config_patch: dict = config_patch or {}
 
     async def run(self, spec: ScenarioSpec) -> ScenarioResult:
         session_key = self._resolve_session_key(spec)
@@ -155,8 +157,8 @@ class ScenarioRunner:
             # 2. 再发送一条固定消息，真实跑一轮 AgentLoop 主路径。
             outbound = await runtime.loop._process(self._build_message(spec))
             final_content = outbound.content
-            session_after = self._snapshot_session(runtime.session_manager, session_key)
-            memory_trace = self._load_memory_trace(runtime.workspace)
+            session_after = self._safe_snapshot_session(runtime.session_manager, session_key)
+            memory_trace = self._safe_load_memory_trace(runtime.workspace)
             memory_rows = await self._await_memory_rows_if_needed(
                 runtime.workspace,
                 spec.assertions,
@@ -251,6 +253,7 @@ class ScenarioRunner:
             scheduler,
             _mcp_registry,
             memory_runtime,
+            *_,
         ) = build_registered_tools(
             config,
             workspace,
@@ -336,6 +339,14 @@ class ScenarioRunner:
         config = copy.deepcopy(load_config(self._config_path))
         config.channels.socket = str(workspace / "akasic.sock")
         config.memory_v2.db_path = str(workspace / "memory" / "memory2.db")
+        for key, value in self._config_patch.items():
+            if "." in key:
+                obj_name, field_name = key.split(".", 1)
+                obj = getattr(config, obj_name, None)
+                if obj is not None:
+                    setattr(obj, field_name, value)
+            else:
+                setattr(config, key, value)
         return config
 
     async def _seed_runtime(
@@ -438,11 +449,14 @@ class ScenarioRunner:
         trace_path = workspace / "memory" / "memory2_retrieve_trace.jsonl"
         if not trace_path.exists():
             return {}
-        lines = [
-            json.loads(line)
-            for line in trace_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        lines = []
+        for line in trace_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                lines.append(json.loads(line))
+            except Exception:
+                continue
         return lines[-1] if lines else {}
 
     def _safe_load_memory_trace(self, workspace: Path) -> dict[str, Any]:

@@ -22,7 +22,10 @@ from agent.tools.web_search import WebSearchTool
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from core.common import timekit
+from core.memory.port import DefaultMemoryPort
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
+from memory2.memorizer import Memorizer
+from memory2.store import MemoryStore2
 
 
 class _DummyTool(Tool):
@@ -128,7 +131,7 @@ async def test_notify_owner_tool_and_memorize_tool_cover_branches(
     assert "- 一步" in content
 
     memory = MagicMock()
-    memory.save_item = AsyncMock(return_value="mem-1")
+    memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
 
     class _Tagger:
         async def tag(self, summary: str) -> dict[str, str]:
@@ -144,7 +147,7 @@ async def test_notify_owner_tool_and_memorize_tool_cover_branches(
     )
 
     assert "已记住（mem-1）" in result
-    extra = memory.save_item.await_args.kwargs["extra"]
+    extra = memory.save_item_with_supersede.await_args.kwargs["extra"]
     assert extra["trigger_tags"] == {"scope": "task"}
     assert extra["persist_file"] == "ops.md"
     assert extra["rule_schema"]["required_tools"] == []
@@ -157,6 +160,56 @@ async def test_notify_owner_tool_and_memorize_tool_cover_branches(
     bad = MemorizeTool(memory, tagger=_BadTagger())
     await bad.execute(summary="普通偏好", memory_type="procedure")
     await bad.execute(summary="偏好", memory_type="preference")
+
+
+@pytest.mark.asyncio
+async def test_memorize_tool_should_not_create_second_active_procedure_when_incremental_update():
+    class _Embedder:
+        async def embed(self, text: str) -> list[float]:
+            return [1.0, 0.0]
+
+    store = MemoryStore2(":memory:")
+    memorizer = Memorizer(store, _Embedder())
+    memory = DefaultMemoryPort(MagicMock(), memorizer=memorizer, retriever=None)
+    tool = MemorizeTool(memory)
+
+    await memorizer.save_item(
+        summary="查询 Steam 游戏信息时，必须先使用 steam_mcp 工具查询游戏详情，再用 web_search 补充验证价格和评价信息。",
+        memory_type="procedure",
+        extra={
+            "steps": ["使用 steam_mcp 工具查询游戏详情", "使用 web_search 补充验证价格和评价"],
+            "tool_requirement": "steam_mcp",
+        },
+        source_ref="seed",
+    )
+
+    await tool.execute(
+        summary="查询 Steam 游戏信息时，先判断区服（大陆区/港区/美区），再使用 steam_mcp 工具查询游戏详情。",
+        memory_type="procedure",
+        tool_requirement="steam_mcp",
+        steps=["判断目标区服", "使用 steam_mcp 工具查询游戏详情"],
+    )
+
+    rows = store._db.execute(
+        "SELECT id, summary FROM memory_items WHERE memory_type='procedure' AND status='active'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert "steam_mcp" in rows[0][1]
+    assert "区服" in rows[0][1]
+
+
+@pytest.mark.asyncio
+async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
+    memory = MagicMock()
+    memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
+    tool = MemorizeTool(memory)
+
+    await tool.execute(
+        summary="之后跟我说话只用中文，不要夹杂英文，专有名词也尽量翻译。",
+        memory_type="procedure",
+    )
+
+    assert memory.save_item_with_supersede.await_args.kwargs["memory_type"] == "preference"
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,8 @@ class Retriever:
         inject_max_event_profile: int = 2,
         inject_line_max: int = 180,
         sop_guard_enabled: bool = True,
+        hotness_alpha: float = 0.0,
+        hotness_half_life_days: float = 14.0,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -53,6 +55,8 @@ class Retriever:
         self._inject_max_event_profile = max(0, int(inject_max_event_profile))
         self._inject_line_max = max(60, int(inject_line_max))
         self._sop_guard_enabled = bool(sop_guard_enabled)
+        self._hotness_alpha = max(0.0, min(1.0, float(hotness_alpha)))
+        self._hotness_half_life_days = max(1.0, float(hotness_half_life_days))
 
     async def retrieve(
         self,
@@ -74,6 +78,8 @@ class Retriever:
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
             require_scope_match=require_scope_match,
+            hotness_alpha=self._hotness_alpha,
+            hotness_half_life_days=self._hotness_half_life_days,
         )
         logger.debug(f"memory2 retrieve: query={query[:60]!r} hits={len(items)}")
         return items
@@ -101,6 +107,8 @@ class Retriever:
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
             require_scope_match=require_scope_match,
+            hotness_alpha=self._hotness_alpha,
+            hotness_half_life_days=self._hotness_half_life_days,
         )
         logger.debug(f"memory2 retrieve_with_vec: hits={len(items)}")
         return items
