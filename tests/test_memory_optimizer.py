@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 from agent.memory import MemoryStore
 from core.memory.port import DefaultMemoryPort
-from proactive.memory_optimizer import (
+from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
     _parse_cleanup_json,

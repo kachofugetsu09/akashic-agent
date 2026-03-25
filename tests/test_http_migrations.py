@@ -6,7 +6,7 @@ import pytest
 
 from agent.tools.fitbit import FitbitHealthSnapshotTool, FitbitSleepReportTool
 from agent.tools.web_fetch import WebFetchTool
-from channels.qq_channel import _download_to_temp
+from infra.channels.qq_channel import _download_to_temp
 from core.net.http import (
     HttpRequester,
     RequestBudget,

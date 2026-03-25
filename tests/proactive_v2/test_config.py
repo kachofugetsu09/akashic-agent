@@ -10,7 +10,7 @@ TDD — Phase 2: proactive/config.py v2 新字段
 
 import pytest
 
-from proactive.config import ProactiveConfig
+from proactive_v2.config import ProactiveConfig
 
 
 # ── v2-only ───────────────────────────────────────────────────────────────

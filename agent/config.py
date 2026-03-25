@@ -107,26 +107,28 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
 
     telegram = None
     if tg := channels_data.get("telegram"):
-        telegram = TelegramChannelConfig(
-            token=_resolve(tg["token"]),
-            allow_from=[str(u) for u in tg.get("allowFrom", [])],
-        )
+        if bool(tg.get("enabled", True)):
+            telegram = TelegramChannelConfig(
+                token=_resolve(tg["token"]),
+                allow_from=[str(u) for u in tg.get("allowFrom", [])],
+            )
 
     qq = None
     if qq_data := channels_data.get("qq"):
-        groups = [
-            QQGroupConfig(
-                group_id=str(g["groupId"]),
-                allow_from=[str(u) for u in g.get("allowFrom", [])],
-                require_at=g.get("requireAt", True),
+        if bool(qq_data.get("enabled", True)):
+            groups = [
+                QQGroupConfig(
+                    group_id=str(g["groupId"]),
+                    allow_from=[str(u) for u in g.get("allowFrom", [])],
+                    require_at=g.get("requireAt", True),
+                )
+                for g in qq_data.get("groups", [])
+            ]
+            qq = QQChannelConfig(
+                bot_uin=str(qq_data["bot_uin"]),
+                allow_from=[str(u) for u in qq_data.get("allowFrom", [])],
+                groups=groups,
             )
-            for g in qq_data.get("groups", [])
-        ]
-        qq = QQChannelConfig(
-            bot_uin=str(qq_data["bot_uin"]),
-            allow_from=[str(u) for u in qq_data.get("allowFrom", [])],
-            groups=groups,
-        )
 
     channels = ChannelsConfig(
         telegram=telegram,

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from proactive.event import GenericContentEvent
+from proactive_v2.event import GenericContentEvent
 from tests_scenarios.fixtures import ScenarioJudgeSpec
 
 

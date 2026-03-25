@@ -24,7 +24,7 @@ async def start_channels(
     print(f"Agent 已启动  |  CLI 连接地址: {config.channels.socket}")
 
     tg_channel = None
-    if config.channels.telegram:
+    if config.channels.telegram and config.channels.telegram.token:
         from infra.channels.telegram_channel import TelegramChannel
 
         tg = config.channels.telegram
@@ -44,7 +44,7 @@ async def start_channels(
         print("Telegram Bot 已启动")
 
     qq_channel = None
-    if config.channels.qq:
+    if config.channels.qq and config.channels.qq.bot_uin:
         from infra.channels.qq_channel import QQChannel
 
         qq = config.channels.qq

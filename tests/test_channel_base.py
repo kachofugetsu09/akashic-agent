@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
+from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
 from session.manager import SessionManager
 
 

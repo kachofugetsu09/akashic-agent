@@ -23,7 +23,7 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
-from proactive.presence import PresenceStore
+from proactive_v2.presence import PresenceStore
 from session.manager import SessionManager
 from tests_scenarios.fixtures import (
     ScenarioAssertions,

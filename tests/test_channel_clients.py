@@ -142,8 +142,8 @@ def _import_cli_tui(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "textual.app", textual_app)
     monkeypatch.setitem(sys.modules, "textual.containers", textual_containers)
     monkeypatch.setitem(sys.modules, "textual.widgets", textual_widgets)
-    sys.modules.pop("channels.cli_tui", None)
-    return importlib.import_module("channels.cli_tui")
+    sys.modules.pop("infra.channels.cli_tui", None)
+    return importlib.import_module("infra.channels.cli_tui")
 
 
 def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
@@ -273,8 +273,8 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "telegram.constants", telegram_constants)
     monkeypatch.setitem(sys.modules, "telegram.error", telegram_error)
     monkeypatch.setitem(sys.modules, "telegram.ext", telegram_ext)
-    sys.modules.pop("channels.telegram_channel", None)
-    return importlib.import_module("channels.telegram_channel")
+    sys.modules.pop("infra.channels.telegram_channel", None)
+    return importlib.import_module("infra.channels.telegram_channel")
 
 
 def _import_qq_channel(monkeypatch: pytest.MonkeyPatch):
@@ -348,8 +348,8 @@ def _import_qq_channel(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setitem(sys.modules, "ncatbot.core", ncatbot_core)
     monkeypatch.setitem(sys.modules, "ncatbot.utils", ncatbot_utils)
-    sys.modules.pop("channels.qq_channel", None)
-    return importlib.import_module("channels.qq_channel")
+    sys.modules.pop("infra.channels.qq_channel", None)
+    return importlib.import_module("infra.channels.qq_channel")
 
 
 @pytest.mark.asyncio

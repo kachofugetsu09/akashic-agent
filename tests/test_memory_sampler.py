@@ -7,7 +7,7 @@ TDD for proactive/memory_sampler.py
 
 import random
 import pytest
-from proactive.memory_sampler import split_memory_chunks, sample_memory_chunks
+from proactive_v2.memory_sampler import split_memory_chunks, sample_memory_chunks
 
 MEMORY_MD = """\
 ## 用户偏好

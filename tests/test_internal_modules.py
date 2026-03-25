@@ -21,7 +21,7 @@ from agent.looping.consolidation import (
 from agent.looping.ports import TurnScheduler
 from memory2.profile_extractor import ProfileFactExtractor
 from memory2.post_response_worker import PostResponseMemoryWorker
-from proactive.fitbit_sleep import (
+from proactive_v2.fitbit_sleep import (
     FitbitSleepProvider,
     SleepContext,
     _bootstrap_monitor_data,
@@ -423,22 +423,22 @@ async def test_fitbit_sleep_provider_and_bootstrap_paths(
         if len(sleep_calls) >= 2:
             raise RuntimeError("stop loop")
 
-    monkeypatch.setattr("proactive.fitbit_sleep.time.sleep", _sleep)
+    monkeypatch.setattr("proactive_v2.fitbit_sleep.time.sleep", _sleep)
     with pytest.raises(RuntimeError, match="stop loop"):
         provider2._loop()
     assert sleep_calls[0] == 5
 
-    monkeypatch.setattr("proactive.fitbit_sleep.asyncio.to_thread", AsyncMock(return_value=None))
+    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.to_thread", AsyncMock(return_value=None))
     await _bootstrap_monitor_data("http://x", max_wait_sec=1)
 
     async def _fail_to_thread(*args, **kwargs):
         raise RuntimeError("not ready")
 
-    monkeypatch.setattr("proactive.fitbit_sleep.asyncio.to_thread", _fail_to_thread)
-    monkeypatch.setattr("proactive.fitbit_sleep.asyncio.sleep", AsyncMock(return_value=None))
+    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.to_thread", _fail_to_thread)
+    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.sleep", AsyncMock(return_value=None))
     monotonic_values = [0.0, 0.2, 1.2]
     monkeypatch.setattr(
-        "proactive.fitbit_sleep.time.monotonic",
+        "proactive_v2.fitbit_sleep.time.monotonic",
         lambda: monotonic_values.pop(0) if monotonic_values else 1.2,
     )
     await _bootstrap_monitor_data("http://x", max_wait_sec=1)
@@ -469,9 +469,9 @@ async def test_run_fitbit_monitor_restart_loop(monkeypatch: pytest.MonkeyPatch, 
     async def _never_done(*args, **kwargs):
         await asyncio.sleep(10)
 
-    monkeypatch.setattr("proactive.fitbit_sleep.asyncio.create_subprocess_exec", _create_proc)
-    monkeypatch.setattr("proactive.fitbit_sleep._bootstrap_monitor_data", _never_done)
-    monkeypatch.setattr("proactive.fitbit_sleep.asyncio.sleep", AsyncMock(return_value=None))
+    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.create_subprocess_exec", _create_proc)
+    monkeypatch.setattr("proactive_v2.fitbit_sleep._bootstrap_monitor_data", _never_done)
+    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.sleep", AsyncMock(return_value=None))
 
     await run_fitbit_monitor(server_dir)
 

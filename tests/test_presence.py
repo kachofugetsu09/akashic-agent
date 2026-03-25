@@ -1,6 +1,6 @@
 from datetime import datetime, timezone, timedelta
 import pytest
-from proactive.presence import PresenceStore
+from proactive_v2.presence import PresenceStore
 
 
 def _utc(year, month, day, hour=0, minute=0) -> datetime:

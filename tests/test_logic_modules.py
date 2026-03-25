@@ -12,7 +12,7 @@ from agent.provider import LLMResponse
 from core.memory.port import DefaultMemoryPort
 from memory2.sop_indexer import SopIndexer, _parse_sop_chunks
 from proactive_v2.loop import ProactiveLoop
-from proactive.memory_optimizer import (
+from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
     _parse_cleanup_json,

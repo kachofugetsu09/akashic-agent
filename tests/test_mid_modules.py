@@ -18,19 +18,7 @@ from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
 from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text, _validate_url_target
 from memory2.procedure_tagger import ProcedureTagger, _validate
 from memory2.store import MemoryStore2
-from proactive.event import GenericContentEvent
-from proactive.loop_helpers import (
-    _Decision,
-    _build_delivery_key,
-    _build_tfidf_vectors,
-    _cosine_sparse,
-    _decision_with_randomized_score,
-    _format_items,
-    _format_recent,
-    _parse_decision,
-    _resolve_evidence_item_ids,
-    _semantic_entries,
-)
+from proactive_v2.event import GenericContentEvent
 
 
 class _SafetyHarness:
@@ -210,32 +198,3 @@ async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: P
     assert results and results[0]["memory_type"] == "event"
     assert store.list_by_type("event")
     store.close()
-
-
-def test_loop_helpers_cover_formatting_parsing_and_similarity():
-    item = GenericContentEvent(
-        event_id="loop-helper-item",
-        source_name="Source",
-        source_type="rss",
-        title="Title",
-        content="Long content " * 40,
-        url="https://x",
-        published_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
-    )
-    assert "原文链接" in _format_items([item])
-    assert "用户" in _format_recent([{"role": "user", "content": "hello"}])
-    assert "助手" in _format_recent([{"role": "assistant", "content": [{"text": "hi"}]}])
-    decision = _parse_decision("```json\n{\"score\":0.5,\"should_send\":\"yes\",\"message\":\"m\",\"reasoning\":\"r\",\"evidence_item_ids\":[\"i1\"]}\n```")
-    assert decision.should_send is True
-    randomized, delta = _decision_with_randomized_score(decision, strength=0.0)
-    assert randomized.score == decision.score
-    assert delta == 0.0
-    assert _resolve_evidence_item_ids(decision, [item]) == ["i1"]
-    assert _build_delivery_key(["b", "a"], " msg ") == "a,b|msg"
-    entries = _semantic_entries([item], 20)
-    assert entries[0]["text"]
-    vecs = _build_tfidf_vectors(["abcabc", "abdddd"], 2)
-    assert _cosine_sparse(vecs[0], vecs[0]) == pytest.approx(1.0)
-    assert _cosine_sparse({}, vecs[0]) == 0.0
-    bad = _parse_decision("not json")
-    assert bad.should_send is False

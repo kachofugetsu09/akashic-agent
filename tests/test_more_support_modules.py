@@ -13,11 +13,11 @@ import pytest
 
 from agent.mcp.registry import McpServerRegistry, _mcp_search_keywords
 from agent.provider import ContextLengthError, ContentSafetyError, LLMProvider
-from channels.cli import CLIClient, _print_banner
-from channels.group_filter import DefaultGroupFilter, strip_at_segments
+from infra.channels.cli import CLIClient, _print_banner
+from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 from memory2.models import MemoryItem
-from proactive.anyaction import AnyActionGate, QuotaStore
-from proactive.memory_sampler import sample_memory_chunks, split_memory_chunks
+from proactive_v2.anyaction import AnyActionGate, QuotaStore
+from proactive_v2.memory_sampler import sample_memory_chunks, split_memory_chunks
 
 
 class _Response:
@@ -215,7 +215,7 @@ async def test_group_filter_and_cli_paths(
     writer.drain = AsyncMock()
     writer.close = MagicMock()
     monkeypatch.setattr(
-        "channels.cli.asyncio.open_unix_connection",
+        "infra.channels.cli.asyncio.open_unix_connection",
         AsyncMock(return_value=(reader, writer)),
     )
     lines = iter(["hello\n", "exit\n"])
@@ -223,13 +223,13 @@ async def test_group_filter_and_cli_paths(
     async def _fake_read_line() -> str:
         return next(lines)
 
-    monkeypatch.setattr("channels.cli._read_line", _fake_read_line)
+    monkeypatch.setattr("infra.channels.cli._read_line", _fake_read_line)
     await CLIClient("/tmp/sock").run()
     writer.write.assert_called()
     assert "再见" in capsys.readouterr().out
 
     monkeypatch.setattr(
-        "channels.cli.asyncio.open_unix_connection",
+        "infra.channels.cli.asyncio.open_unix_connection",
         AsyncMock(side_effect=FileNotFoundError()),
     )
     await CLIClient("/tmp/missing").run()

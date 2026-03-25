@@ -7,7 +7,7 @@ TDD for proactive/energy.py
 """
 
 from datetime import datetime, timezone, timedelta
-from proactive.energy import compute_energy
+from proactive_v2.energy import compute_energy
 
 
 def _ago(minutes: float) -> datetime:
@@ -71,7 +71,7 @@ def test_energy_accepts_custom_decay_params():
 
 # ── random_weight ─────────────────────────────────────────────────
 
-from proactive.energy import random_weight
+from proactive_v2.energy import random_weight
 import random as _random_module
 
 

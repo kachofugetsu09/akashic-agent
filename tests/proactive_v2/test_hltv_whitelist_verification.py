@@ -331,7 +331,7 @@ async def test_system_prompt_contains_training_data_warning():
     """
     from proactive_v2.agent_tick import AgentTick, AgentTickContext
     from proactive_v2.gateway import GatewayResult
-    from proactive.config import ProactiveConfig
+    from proactive_v2.config import ProactiveConfig
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
 

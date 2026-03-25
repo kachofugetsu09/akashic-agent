@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from proactive.config import ProactiveConfig
+from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 
 

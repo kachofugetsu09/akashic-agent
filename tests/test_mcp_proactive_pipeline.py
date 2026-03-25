@@ -91,7 +91,7 @@ class TestMcpProactivePipeline:
                 "FITBIT_MONITOR_PORT": str(port),
             }
             # 临时替换 mcp_servers.json 里的 command env
-            from proactive import mcp_sources
+            from proactive_v2 import mcp_sources
 
             original_get_server_cfg = mcp_sources._get_server_cfg
 
@@ -123,7 +123,7 @@ class TestMcpProactivePipeline:
 
     def test_generic_alert_event_from_mcp_payload(self):
         """GenericAlertEvent.from_mcp_payload() 正确解析标准 schema。"""
-        from proactive.event import GenericAlertEvent
+        from proactive_v2.event import GenericAlertEvent
 
         # 模拟 fetch_alert_events() 返回的 dict
         payload = {
@@ -157,8 +157,8 @@ class TestMcpProactivePipeline:
         """acknowledge_events_async() 正确把 ack_id 送回 fitbit-monitor。"""
         server, port = _start_mock_server()
         try:
-            from proactive.event import GenericAlertEvent
-            from proactive import mcp_sources
+            from proactive_v2.event import GenericAlertEvent
+            from proactive_v2 import mcp_sources
 
             payload = {
                 "event_id": "TEST-0001",

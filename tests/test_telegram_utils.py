@@ -1,6 +1,6 @@
 import pytest
 
-from channels.telegram_utils import send_markdown
+from infra.channels.telegram_utils import send_markdown
 
 
 class BotStub:
@@ -44,7 +44,7 @@ async def test_send_markdown_falls_back_to_plain_text(monkeypatch):
         raise TypeError("boom")
 
     monkeypatch.setattr(
-        "channels.telegram_utils.convert_with_segments", fake_convert_with_segments
+        "infra.channels.telegram_utils.convert_with_segments", fake_convert_with_segments
     )
 
     await send_markdown(bot, 456, "line1\nline2")

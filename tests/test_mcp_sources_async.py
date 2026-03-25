@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from proactive import mcp_sources
+from proactive_v2 import mcp_sources
 
 
 class _FakePool:

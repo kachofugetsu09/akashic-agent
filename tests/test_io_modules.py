@@ -19,7 +19,7 @@ from agent.tools.filesystem import (
 )
 from bus.events import OutboundMessage
 from bus.queue import MessageBus
-from channels.ipc_server import IPCServerChannel
+from infra.channels.ipc_server import IPCServerChannel
 
 
 class _Pipe:
@@ -130,9 +130,9 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     channel = IPCServerChannel(bus, str(tmp_path / "agent.sock"), loop)
 
     server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
-    monkeypatch.setattr("channels.ipc_server.asyncio.start_unix_server", AsyncMock(return_value=server))
+    monkeypatch.setattr("infra.channels.ipc_server.asyncio.start_unix_server", AsyncMock(return_value=server))
     chmod = MagicMock()
-    monkeypatch.setattr("channels.ipc_server.os.chmod", chmod)
+    monkeypatch.setattr("infra.channels.ipc_server.os.chmod", chmod)
     await channel.start()
     chmod.assert_called_once()
     await channel.stop()
