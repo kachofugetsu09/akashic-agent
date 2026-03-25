@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent.config_models import Config
 from agent.provider import LLMProvider
+from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
@@ -35,17 +36,10 @@ def build_memory_runtime(
 
     store = MemoryStore(workspace)
     if not config.memory_v2.enabled:
-        tools.register(
-            WriteFileTool(),
-            tags=["filesystem", "memory"],
-            risk="write",
-            search_keywords=["写文件", "保存文件", "创建文件", "写入文件", "新建文件"],
-        )
-        tools.register(
-            EditFileTool(),
-            tags=["filesystem", "memory"],
-            risk="write",
-            search_keywords=["编辑文件", "修改文件", "更新文件", "patch文件"],
+        register_memory_meta_tools(
+            tools,
+            write_file_tool=WriteFileTool(),
+            edit_file_tool=EditFileTool(),
         )
         return MemoryRuntime(port=DefaultMemoryPort(store))
 
@@ -124,25 +118,15 @@ def build_memory_runtime(
         observe_writer=observe_writer,
         dedup_decider=dedup_decider,
     )
-    tools.register(
-        MemorizeTool(port, tagger=tagger),
-        always_on=True,
-        tags=["memory"],
-        risk="write",
-        search_keywords=["记忆", "存储知识", "记录信息", "备忘", "memorize"],
+    register_memory_meta_tools(
+        tools,
+        memorize_tool=MemorizeTool(port, tagger=tagger),
     )
     sop_indexer = SopIndexer(mem2_store, embedder, workspace / "sop")
-    tools.register(
-        WriteFileTool(sop_indexer=sop_indexer),
-        tags=["filesystem", "memory"],
-        risk="write",
-        search_keywords=["写文件", "保存文件", "创建文件", "写入文件", "新建文件"],
-    )
-    tools.register(
-        EditFileTool(sop_indexer=sop_indexer),
-        tags=["filesystem", "memory"],
-        risk="write",
-        search_keywords=["编辑文件", "修改文件", "更新文件", "patch文件"],
+    register_memory_meta_tools(
+        tools,
+        write_file_tool=WriteFileTool(sop_indexer=sop_indexer),
+        edit_file_tool=EditFileTool(sop_indexer=sop_indexer),
     )
 
     return MemoryRuntime(
