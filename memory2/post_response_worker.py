@@ -176,12 +176,8 @@ class PostResponseMemoryWorker:
         tool_requirement: str | None,
         steps: list[str] | None,
     ) -> str:
-        if memory_type != "procedure":
-            return memory_type
-        has_tool = bool(tool_requirement and tool_requirement.strip())
-        has_steps = bool(steps and any(str(s).strip() for s in steps))
-        if not has_tool and not has_steps:
-            return "preference"
+        if memory_type not in ("procedure", "preference", "event", "profile"):
+            return "procedure"
         return memory_type
 
     @staticmethod
@@ -468,87 +464,62 @@ class PostResponseMemoryWorker:
             lines = "\n".join(f"- {s}" for s in already_memorized if s)
             exclusion_block = f"\n\n【本轮已显式记录，不要重复提取】\n{lines}"
 
-        prompt = f"""你是记忆提取专家。从以下对话中提取两类长期有效的信息：
-1. 用户对 agent 行为的隐式偏好或操作规范
-2. 用户对内容题材/作品/游戏/作者/来源的稳定喜欢或厌恶
+        prompt = f"""你是记忆提取专家。从对话中提取对 agent 有长期价值的记忆条目。
 
-【唯一有效依据来源：USER 说的话】
-ASSISTANT 的回复只是当前对话背景，只能帮助你理解 USER 在谈什么对象，绝不能当作记忆证据。
-即使 ASSISTANT 提到了某个作品、流程、规则，只要 USER 没有明确说出来，就不能写进 summary。
+默认答案是 []。只有通过以下三步检查，才写入一条条目。
 
-【总原则：宁可少写，也不要过度解读】
-- 只要你不能非常笃定这条信息跨对话长期成立，就返回 []
-- 只要 summary 比 USER 原话更强、更绝对、更像未来禁令，就不要写
-- 不要把“理解场景”自动升级成“长期偏好”或“未来规则”
+【步骤一：引用 USER 原话】
+提取任何条目前，先在脑中写出引用：USER 说了哪句话支撑这条记忆？
+- 无法在 USER 原话中找到直接支撑句 → 不提取，返回 []
+- ASSISTANT 的回复只是背景，不能作为证据；即使 ASSISTANT 描述了正确的流程或规则，只要 USER 没有说出对应要求，就不能提取
 
-【提取标准——必须同时满足以下全部条件】
-1. 能从 USER 原话中直接引用出明确的纠正/不满/要求/偏好信号
-   - 行为规范信号示例："你应该""你不能""你之前错了""下次要"
-   - 内容偏好信号示例："我就讨厌《X》""我特别喜欢《Y》""以后别给我推 X"
-   无法直接引用 USER 原话中的对应证据 → 直接返回 []
-2. 该信号具有跨对话持久意义
-   - 新对话开始后大概率仍成立，才写入
-3. summary 不得比 USER 原话更强
-   - USER 只说"感觉不太玩得下去" → 不能写成"无法接受"
-   - USER 只表达单次差评 → 不能写成"以后不要再推送/引用/打比方"
-4. summary 中出现的作品名、题材、作者、来源，必须能在 USER 原话中找到
-   - 若某名称只出现在 ASSISTANT 回复中，不能写入
+【步骤二：判断主体与类型】
+此步骤只输出 procedure 或 preference，不输出 event（event 由其他模块负责）。
 
-【preference 的保守判定】
-✓ 用户明确表达长期稳定的喜欢/厌恶，可提取为 preference
-✓ 用户明确表达未来规避意图，如"以后别再推""别再提""别拿 X 打比方"，可提取为 preference
-✓ 用户对 agent 操作提出长期要求，如"以后查 Steam 必须先用 MCP"，可提取为 procedure
+类型判断（二选一，不要混用）：
 
-【event 的保守判定】
-✓ 若 USER 表达的是当前决定、当前倾向、一次性感受，但有一定记忆价值，应优先写成 event
-✓ 示例：USER 说"没买，感觉不太玩得下去慢节奏游戏"
-  - 可以写成 event：用户目前还没买某游戏，因为觉得自己可能不太适合慢节奏游戏
-  - 不要写成 preference：用户无法接受慢节奏游戏
+问题 A：这条规则是否在说"agent 做某类事情时应该怎么做"？
+  （讲解方式、调查方式、回复风格、工具使用、操作流程）
+  是 → procedure
+  例："查资料时别只看 GitHub" / "讲流程时不能省略前置步骤" / "简单问题直接回答"
 
-【明确不写】
-✗ ASSISTANT 回复中描述的任何流程、规则、步骤（即使正确）
-✗ USER 只是在查询/确认 agent 的行为（"你的流程是什么""你是怎么做的"）
-✗ 无法在 USER 原话中找到对应证据的条目
-✗ agent 自己选择的回复格式/风格（用户没有要求）
-✗ 用户对自身情况的随口感慨、困惑、模糊倾向
-✗ 一次性操作记录
-✗ 带明确时间锚点的短期计划、近期打算、当前想做的事（如"这周末最想重玩 X""最近想看 Y"）不能写成 preference；若确有记忆价值，应写成 event
-✗ USER 只是单次强烈评价某作品好坏，但没有明确表现出稳定喜欢/厌恶或未来规避意图
-✗ 仅凭 USER 的一次吐槽，就自动扩写成"以后不要再推荐/不要再引用/不要再提"
-✗ 显式 memorize 内容（见排除列表）{exclusion_block}
+问题 B：这条规则是否在说"用户喜欢或厌恶某类内容本身"？
+  （作品、题材、游戏、音乐、技术框架、信息来源的个人喜好）
+  是 → preference（必须有"以后""下次""不要再""别再"等未来约束词或稳定喜好信号）
+  例："用户讨厌恐怖游戏" / "用户不喜欢某作者" / "以后别推荐 X 框架"
 
-【preference vs event 判断标准】
-1. 6 个月后是否仍然大概率适用？
-   - 是 → 才可能是 preference
-   - 否 → event 或不写
-2. 是否有明确的未来约束词？
-   - 有"以后别再/不要再/别提/别拿来举例"这类表达，才可写成带未来约束的 preference
-   - 没有明确未来约束词，就不要自动补出未来禁令
+两个问题都不是，或只是一次性感受/感悟 → 不提取
+✗ 主体是外部系统、技术协议、算法 → 不提取
+
+【步骤三：泛化检查】
+summary 中不得出现任何具体实体名称（项目名、产品名、平台名、人名）：
+- 将 summary 中所有具体实体名替换成"某X"，若规则失去意义 → 无法泛化，不提取
+- 若规则仍然成立 → 按泛化后的无实体名形式写入
 
 【输出要求】
-- 大多数对话不包含可提取的长期偏好，返回 [] 是正常且正确的结果
-- 最多 2 条
-- 只写有 USER 原文依据的内容
-- 语言要克制，避免"明确厌恶""绝不接受""必须禁止"等升级表达，除非 USER 原话就是这个强度
+- 返回 [] 是正常且正确的结果，绝大多数对话应返回 []
+- 每条条目独立通过三步检查；不要为了凑数写第二条
+- summary 以客观规则形式书写（如"遇到简单概念类问题时应直接回答""调查时应参考多方来源"），
+  不得以 agent 第一人称表达（"以后我会...""以后简单问题就直接答"这类均不合格）
+- summary 语气不得强于 USER 原话；不要把"单次评价"升级成"长期禁令"
+- 已显式记录的内容不要重复提取{exclusion_block}
 
 【对话内容】
 USER: {user_msg}
 ASSISTANT: {agent_response}
 
 只返回合法 JSON 数组，无内容时返回 []。
-每项格式：{{"summary": "...", "memory_type": "procedure|preference|event", "tool_requirement": null或"工具名", "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
+每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null或"工具名", "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
 
 【tool_requirement 填写规则】
-- 若该条目要求 agent 在某类请求下必须调用特定工具/skill（如"查询天气时必须用 weather skill"、"查 Steam 必须用 MCP 工具"），则填写触发该工具的关键名称（如 "weather_skill"、"steam_mcp"）
-- 这样系统才能在相关请求时强制注入该规则，不受相似度分数影响
-- 若无强制工具要求，填 null
+- 若该条目要求 agent 在某类请求下必须调用特定工具/skill，填写工具关键名称；否则填 null
 
 【rule_schema 填写规则】
 - 仅对 procedure 填写；preference 可省略或填空对象
-- `required_tools` 只放用户明确要求必须使用的工具
-- `forbidden_tools` 只放用户明确禁止或要求不要直接使用的工具
-- `mentioned_tools` 放该规则涉及到的工具别名
-- 若无法确认某个约束，就留空，不要猜"""
+- required_tools：用户明确要求必须使用的工具
+- forbidden_tools：用户明确禁止的工具
+- mentioned_tools：规则涉及的工具别名
+- 无法确认的约束留空，不要猜"""
 
         ok, token_budget = self._consume_budget(
             token_budget,
