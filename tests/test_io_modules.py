@@ -8,11 +8,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.mcp.client import McpClient, _infer_cwd
+from agent.tool_runtime import append_tool_result
+from agent.tools.base import ToolResult
 from agent.tools.filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,
     WriteFileTool,
+    _IMAGE_TARGET_B64_LEN,
     _read_xls,
     _read_xlsx,
     _resolve_path,
@@ -99,6 +102,28 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert "不存在" in await reader.execute("missing.txt")
     assert "不是文件" in await reader.execute(".")
 
+    image = base / "a.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    image_result = await reader.execute("a.png")
+    assert isinstance(image_result, ToolResult)
+    assert "已读取图片文件" in image_result.text
+    assert image_result.content_blocks[0]["type"] == "image_url"
+    assert image_result.content_blocks[0]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+
+    from PIL import Image
+
+    big = base / "big.png"
+    noisy = Image.effect_noise((4000, 3000), 100).convert("RGB")
+    noisy.save(big, format="PNG")
+    big_result = await reader.execute("big.png")
+    assert isinstance(big_result, ToolResult)
+    assert "已自动压缩" in big_result.text
+    big_url = big_result.content_blocks[0]["image_url"]["url"]
+    assert big_url.startswith("data:image/jpeg;base64,")
+    assert len(big_url.split(",", 1)[1]) <= _IMAGE_TARGET_B64_LEN
+
     # 验证行号前缀格式（改动九）
     full_content = await reader.execute("a.txt")
     assert "     1\u2192line1" in full_content, "read_file 应输出 '     1→line1' 格式的行号前缀"
@@ -143,6 +168,29 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     empty.mkdir()
     assert "为空" in await lister.execute("empty")
     assert "不是目录" in await lister.execute("a.txt")
+
+
+def test_append_tool_result_supports_multimodal_blocks() -> None:
+    messages: list[dict] = []
+    append_tool_result(
+        messages,
+        tool_call_id="call_1",
+        tool_name="read_file",
+        content=ToolResult(
+            text="[已读取图片文件 a.png，图片内容已提供给多模态模型]",
+            content_blocks=[
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                }
+            ],
+        ),
+    )
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["content"].startswith("[已读取图片文件")
+    assert messages[1]["role"] == "user"
+    assert messages[1]["content"][0]["type"] == "text"
+    assert messages[1]["content"][1]["type"] == "image_url"
 
 
 @pytest.mark.asyncio

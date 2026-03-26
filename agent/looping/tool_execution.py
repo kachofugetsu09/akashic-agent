@@ -19,6 +19,7 @@ from agent.procedure_hint import (
     build_procedure_hint,
 )
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
+from agent.tools.base import normalize_tool_result
 
 logger = logging.getLogger("agent.loop")
 
@@ -251,9 +252,17 @@ class TurnExecutor:
 
                     tools_used.append(tc.name)
                     result = await self._tools.execute(tc.name, tc.arguments)
-                    result_preview = result[:80] + "..." if len(result) > 80 else result
+                    normalized = normalize_tool_result(result)
+                    result_preview = normalized.preview()
+                    if len(result_preview) > 80:
+                        result_preview = result_preview[:80] + "..."
                     logger.info("  ← 工具 %s  结果: %r", tc.name, result_preview)
-                    append_tool_result(messages, tool_call_id=tc.id, content=result)
+                    append_tool_result(
+                        messages,
+                        tool_call_id=tc.id,
+                        content=result,
+                        tool_name=tc.name,
+                    )
 
                     hint_items = [
                         item for item in all_items if not bool(item.get("intercept", False))
@@ -268,14 +277,14 @@ class TurnExecutor:
                             pending_hints.append(raw_hint.split("\n", 1)[1])
 
                     if tc.name == "tool_search" and visible_names is not None:
-                        _unlock_from_tool_search(result, visible_names)
+                        _unlock_from_tool_search(normalized.text, visible_names)
                         logger.debug("tool_search 解锁后 visible=%d 个工具", len(visible_names))
                     iter_calls.append(
                         {
                             "call_id": tc.id,
                             "name": tc.name,
                             "arguments": tc.arguments,
-                            "result": result,
+                            "result": normalized.preview(),
                         }
                     )
                 tool_chain.append({"text": response.content, "calls": iter_calls})

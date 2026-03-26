@@ -45,3 +45,23 @@ def test_update_persists_metrics_into_pending(tmp_path):
     assert len(events) == 1
     assert events[0]["id"] == "evt-001"
     assert events[0]["metrics"] == {"sleep_hours": 5.1, "debt_hours": 2.3}
+
+
+def test_spo2_no_longer_emits_persistent_low_oxygen():
+    mod = _import_health_event_v2()
+    engine = mod.HealthEventV2Engine()
+
+    rows = [
+        {
+            "poll_time": f"2099-01-01 12:{minute:02d}:00",
+            "state": "awake",
+            "spo2": 88.5,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        }
+        for minute in (0, 5, 10, 15, 20, 25)
+    ]
+
+    events = engine.process(rows)
+
+    assert not any(e.type == "persistent_low_oxygen" for e in events)

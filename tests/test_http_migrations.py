@@ -79,7 +79,12 @@ async def test_fitbit_tools_use_injected_requester():
                     "summary": {"heart_rate": 72, "spo2": 98.1, "steps": 1234},
                     "sleep": {"state": "awake"},
                     "signals": {"sleep_prob": 0.1},
-                    "data_meta": {"data_lag_min": 15, "latest_hr_time": "08:00"},
+                    "data_meta": {
+                        "data_lag_min": 15,
+                        "latest_hr_time": "08:00",
+                        "latest_sleep_spo2_time": "07:10:00",
+                        "spo2_lag_min": 65,
+                    },
                     "last_updated": "2026-03-08T08:15:00+08:00",
                 },
             )
@@ -122,6 +127,8 @@ async def test_fitbit_tools_use_injected_requester():
         )
         snapshot = await snapshot_tool.execute()
         assert '"heart_rate": 72' in snapshot
+        assert '"latest_sleep_spo2": 98.1' in snapshot
+        assert "最近一次睡眠血氧：98.1%" in snapshot
 
         sleep_tool = FitbitSleepReportTool(
             "http://monitor.local",

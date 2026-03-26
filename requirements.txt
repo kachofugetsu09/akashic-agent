@@ -22,6 +22,7 @@ mdit-py-plugins>=0.5.0
 ncatbot>=4.4.0
 numpy>=2.4.0
 openai>=2.0.0
+Pillow>=11.0.0
 pydantic>=2.12.0
 python-telegram-bot>=22.0
 PyYAML>=6.0.0

@@ -26,13 +26,13 @@ def _fmt_duration(minutes: int | None) -> str:
 
 
 class FitbitHealthSnapshotTool(Tool):
-    """获取当前健康快照（心率 / 血氧 / 步数 / 睡眠状态）"""
+    """获取当前健康快照（心率 / 最近一次睡眠血氧 / 步数 / 睡眠状态）"""
 
     name = "fitbit_health_snapshot"
     description = (
-        "获取用户当前实时健康状态快照，包括：当前心率（bpm）、血氧（SpO₂）、"
+        "获取用户当前健康状态快照，包括：当前心率（bpm）、最近一次睡眠 SpO₂、"
         "今日步数、睡眠状态（sleeping/awake/uncertain）及睡眠概率。"
-        "数据来自本地 Fitbit monitor 缓存，含 Fitbit 设备同步延迟约 15-30 分钟。"
+        "其中 SpO₂ 按 Fitbit 官方语义视为最近一次睡眠估算值，不是白天实时血氧。"
         "适用于：用户询问当前状态、agent 判断是否适合打扰、了解用户能量水平。"
     )
     parameters = {
@@ -94,6 +94,8 @@ class FitbitHealthSnapshotTool(Tool):
         source = signals.get("prob_source", "")
         lag = meta.get("data_lag_min")
         hr_time = meta.get("latest_hr_time")
+        spo2_time = meta.get("latest_sleep_spo2_time")
+        spo2_lag = meta.get("spo2_lag_min")
         updated = data.get("last_updated", "")
 
         lines = [f"【Fitbit 健康快照】{updated}"]
@@ -105,7 +107,16 @@ class FitbitHealthSnapshotTool(Tool):
                 else ""
             )
         )
-        lines.append(f"血氧：{'%.1f%%' % spo2 if spo2 else '无数据'}")
+        if spo2 is not None:
+            spo2_line = f"最近一次睡眠血氧：{spo2:.1f}%"
+            if spo2_time:
+                spo2_line += f"（数据时间 {spo2_time}"
+                if spo2_lag is not None:
+                    spo2_line += f"，距今约 {spo2_lag} 分钟"
+                spo2_line += "）"
+            lines.append(spo2_line)
+        else:
+            lines.append("最近一次睡眠血氧：无数据")
         lines.append(
             f"今日步数：{int(steps):,} 步" if steps is not None else "今日步数：无数据"
         )
@@ -118,13 +129,16 @@ class FitbitHealthSnapshotTool(Tool):
         if since:
             lines.append(f"  持续自：{since}")
 
-        lines.append("注：Fitbit 数据含设备→手机→云端同步延迟，约 15-30 分钟。")
+        lines.append("注：心率/步数是当前缓存；SpO₂ 表示最近一次睡眠估算值，不代表白天实时血氧。")
         result = {
             "available": True,
             "data_lag_min": lag,
+            "spo2_lag_min": spo2_lag,
             "last_updated": updated,
             "heart_rate": hr,
             "spo2": spo2,
+            "latest_sleep_spo2": spo2,
+            "latest_sleep_spo2_time": spo2_time,
             "steps": steps,
             "sleep_state": state,
             "sleep_prob": prob,

@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass, field
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ class ToolRegistry:
                 deduped.append(r)
         return score, deduped
 
-    async def execute(self, name: str, arguments: dict) -> str:
+    async def execute(self, name: str, arguments: dict) -> str | ToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return f"工具 '{name}' 不存在"

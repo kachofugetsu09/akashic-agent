@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolResult, normalize_tool_result
 
 
 @dataclass(frozen=True)
@@ -84,12 +84,22 @@ def append_tool_result(
     messages: list[dict[str, Any]],
     *,
     tool_call_id: str,
-    content: str,
+    content: str | ToolResult,
+    tool_name: str | None = None,
 ) -> None:
+    result = normalize_tool_result(content)
     messages.append(
         {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": content,
+            "content": result.text or "工具执行完成。",
         }
     )
+    if result.content_blocks:
+        prefix = f"以下是工具 {tool_name} 读取到的文件内容，请直接查看。" if tool_name else "以下是工具读取到的文件内容，请直接查看。"
+        messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prefix}, *result.content_blocks],
+            }
+        )

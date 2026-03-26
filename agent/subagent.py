@@ -27,7 +27,7 @@ from agent.tool_runtime import (
     prepare_toolset,
     tool_call_signature,
 )
-from agent.tools.base import Tool
+from agent.tools.base import Tool, normalize_tool_result
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
@@ -223,24 +223,30 @@ class SubAgent:
                         result = await tool.execute(**tc.arguments)
                     except Exception as e:
                         result = f"工具执行出错: {e}"
-                    result, new_ids = prepend_procedure_hint(
+                    normalized = normalize_tool_result(result)
+                    result_text, new_ids = prepend_procedure_hint(
                         memory=self._memory,
                         tool_name=tc.name,
                         tool_arguments=tc.arguments,
-                        result=result,
+                        result=normalized.text,
                         injected_ids=injected_proc_ids,
                         logger=logger,
                     )
+                    normalized.text = result_text
                     if new_ids:
                         injected_proc_ids.update(new_ids)
-                    logger.info("[subagent] 工具结果 %s: %s", tc.name, result[:120])
+                    logger.info(
+                        "[subagent] 工具结果 %s: %s",
+                        tc.name,
+                        normalized.preview()[:120],
+                    )
                 else:
-                    result = f"未知工具: {tc.name}"
+                    normalized = normalize_tool_result(f"未知工具: {tc.name}")
                 # 兜底截断：防止超长结果撑爆 LLM 上下文
-                if len(result) > _MAX_TOOL_RESULT_CHARS:
-                    original_len = len(result)
-                    result = (
-                        result[:_MAX_TOOL_RESULT_CHARS]
+                if len(normalized.text) > _MAX_TOOL_RESULT_CHARS:
+                    original_len = len(normalized.text)
+                    normalized.text = (
+                        normalized.text[:_MAX_TOOL_RESULT_CHARS]
                         + f"\n...[结果已截断，原始长度 {original_len} 字符，超出上限 {_MAX_TOOL_RESULT_CHARS}]"
                     )
                     logger.warning(
@@ -248,7 +254,12 @@ class SubAgent:
                         tc.name,
                         original_len,
                     )
-                append_tool_result(messages, tool_call_id=tc.id, content=result)
+                append_tool_result(
+                    messages,
+                    tool_call_id=tc.id,
+                    content=normalized,
+                    tool_name=tc.name,
+                )
 
             remaining = self._max_iterations - iteration - 1
             if remaining == 0:
@@ -354,9 +365,17 @@ class SubAgent:
                     result = await tool.execute(**tc.arguments)
                 except Exception as e:
                     result = f"工具执行出错: {e}"
+                normalized = normalize_tool_result(result)
                 logger.info(
-                    "[subagent] mandatory_exit %s 结果: %s", tc.name, str(result)[:120]
+                    "[subagent] mandatory_exit %s 结果: %s",
+                    tc.name,
+                    normalized.preview()[:120],
                 )
             else:
-                result = f"未知工具: {tc.name}"
-            append_tool_result(messages, tool_call_id=tc.id, content=result)
+                normalized = normalize_tool_result(f"未知工具: {tc.name}")
+            append_tool_result(
+                messages,
+                tool_call_id=tc.id,
+                content=normalized,
+                tool_name=tc.name,
+            )

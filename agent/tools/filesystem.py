@@ -1,11 +1,14 @@
 """文件系统工具：读取、写入、编辑文件，以及列举目录。"""
 
 import asyncio
+import base64
+import io
 import logging
+import mimetypes
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolResult
 
 if TYPE_CHECKING:
     from memory2.sop_indexer import SopIndexer
@@ -72,6 +75,66 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
 
 _READ_MAX_CHARS = 10_000  # 默认单次最多返回 10K 字符，大文件须分页读取
 _XLSX_MAX_CHARS = 30_000  # xlsx/xls 表格内容上限（表格行通常比代码行长）
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+_IMAGE_MAX_EDGE = 1568
+_IMAGE_TARGET_B64_LEN = 8_000_000
+_IMAGE_MIN_QUALITY = 45
+
+
+def _encode_image_for_model(file_path: Path) -> tuple[str, str, bool]:
+    raw = file_path.read_bytes()
+    raw_b64 = base64.b64encode(raw).decode()
+    mime, _ = mimetypes.guess_type(file_path.name)
+    if mime and mime.startswith("image/") and len(raw_b64) <= _IMAGE_TARGET_B64_LEN:
+        return mime, raw_b64, False
+
+    try:
+        from PIL import Image, ImageOps
+    except ModuleNotFoundError as e:
+        raise RuntimeError(
+            "当前环境未安装 Pillow，无法压缩大图片；请安装 Pillow 后重试"
+        ) from e
+
+    with Image.open(file_path) as img:
+        img = ImageOps.exif_transpose(img)
+        if img.mode not in ("RGB", "L"):
+            canvas = Image.new("RGB", img.size, (255, 255, 255))
+            alpha = img.getchannel("A") if "A" in img.getbands() else None
+            canvas.paste(img.convert("RGB"), mask=alpha)
+            img = canvas
+        elif img.mode == "L":
+            img = img.convert("RGB")
+
+        if max(img.size) > _IMAGE_MAX_EDGE:
+            img.thumbnail((_IMAGE_MAX_EDGE, _IMAGE_MAX_EDGE))
+
+        chosen: bytes | None = None
+        for quality in (85, 75, 65, 55, _IMAGE_MIN_QUALITY):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            candidate = buf.getvalue()
+            candidate_b64 = base64.b64encode(candidate).decode()
+            chosen = candidate
+            if len(candidate_b64) <= _IMAGE_TARGET_B64_LEN:
+                return "image/jpeg", candidate_b64, True
+
+    if chosen is None:
+        raise RuntimeError("图片压缩失败")
+    return "image/jpeg", base64.b64encode(chosen).decode(), True
+
+
+def _read_image(file_path: Path) -> ToolResult:
+    mime, b64, compressed = _encode_image_for_model(file_path)
+    note = "，已自动压缩" if compressed else ""
+    return ToolResult(
+        text=f"[已读取图片文件 {file_path.name}{note}，图片内容已提供给多模态模型]",
+        content_blocks=[
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+            }
+        ],
+    )
 
 
 class ReadFileTool(Tool):
@@ -88,11 +151,12 @@ class ReadFileTool(Tool):
     def description(self) -> str:
         return (
             "读取文件内容。文本文件输出带行号格式（如 '     1→内容'），便于 edit_file 精确定位；"
-            "Excel 文件（.xlsx/.xls）返回表格文本，不带行号。\n"
+            "Excel 文件（.xlsx/.xls）返回表格文本，不带行号；"
+            "图片文件会直接提供给多模态模型查看。\n"
             "默认每次最多 10K 字符；大文件须用 limit 分页，不要依赖字符截断后的自动续读。\n\n"
             "推荐策略：先 limit=50 预览文件结构，再按需读取目标行段（offset=N limit=M）。\n"
             "并行读取：可在同一次响应中同时读取多个文件，无需逐一等待。\n"
-            "参数说明：offset=跳过的行数（0-based），limit=读取行数。"
+            "参数说明：offset=跳过的行数（0-based），limit=读取行数；二者仅对文本文件生效。"
         )
 
     @property
@@ -119,7 +183,7 @@ class ReadFileTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
         offset: int = int(kwargs.get("offset", 0))
         limit: int | None = kwargs.get("limit")
         if limit is not None:
@@ -132,6 +196,8 @@ class ReadFileTool(Tool):
                 return f"错误：路径不是文件：{path}"
 
             suffix = file_path.suffix.lower()
+            if suffix in _IMAGE_SUFFIXES:
+                return _read_image(file_path)
             if suffix == ".xlsx":
                 return _read_xlsx(file_path)
             if suffix == ".xls":
