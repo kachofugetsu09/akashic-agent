@@ -106,8 +106,12 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
     with conn:
         conn.execute(
             """
-            INSERT INTO turns (ts, source, session_key, user_msg, llm_output, tool_calls, tool_chain_json, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO turns (
+                ts, source, session_key, user_msg, llm_output,
+                raw_llm_output, meme_tag, meme_media_count,
+                tool_calls, tool_chain_json, error
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -115,6 +119,9 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 e.session_key,
                 e.user_msg,
                 e.llm_output,
+                e.raw_llm_output,
+                e.meme_tag,
+                e.meme_media_count,
                 _serialize_tool_calls(e.tool_calls),
                 e.tool_chain_json,
                 e.error,

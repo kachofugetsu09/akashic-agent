@@ -53,12 +53,15 @@ class TurnOrchestrator:
             raise ValueError("passive turn result must be reply with outbound")
         key = result.outbound.session_key
         session = self._session.session_manager.get_or_create(key)
-        final_content = result.outbound.content
+        raw_content = result.outbound.content
+        final_content = raw_content
         meme_media: list[str] = []
+        meme_tag: str | None = None
         if self._meme_decorator is not None:
             decorated = self._meme_decorator.decorate(final_content)
             final_content = decorated.content
             meme_media = decorated.media
+            meme_tag = decorated.tag
         tools_used = _trace_tools_used(result.trace)
         tool_chain = _trace_tool_chain(result.trace)
         thinking = _trace_thinking(result.trace)
@@ -75,6 +78,9 @@ class TurnOrchestrator:
             key=key,
             msg=msg,
             final_content=final_content,
+            raw_content=raw_content,
+            meme_tag=meme_tag,
+            meme_media_count=len(meme_media),
             tool_chain=tool_chain,
             retrieval_raw=retrieval_raw,
         )
@@ -222,6 +228,9 @@ class TurnOrchestrator:
         key: str,
         msg: InboundMessage,
         final_content: str,
+        raw_content: str,
+        meme_tag: str | None,
+        meme_media_count: int,
         tool_chain: list[dict],
         retrieval_raw: Any | None,
     ) -> None:
@@ -265,6 +274,9 @@ class TurnOrchestrator:
                 session_key=key,
                 user_msg=msg.content,
                 llm_output=final_content,
+                raw_llm_output=raw_content,
+                meme_tag=meme_tag,
+                meme_media_count=meme_media_count,
                 tool_calls=tool_calls,
                 tool_chain_json=tool_chain_json,
             )

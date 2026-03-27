@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS turns (
     session_key TEXT    NOT NULL,
     user_msg    TEXT,
     llm_output  TEXT    NOT NULL DEFAULT '',
+    raw_llm_output TEXT,
+    meme_tag    TEXT,
+    meme_media_count INTEGER,
     tool_calls  TEXT,                       -- JSON: [{name, args, result}]（每次 tool 调用）
     tool_chain_json TEXT,                   -- JSON: [{text, calls:[{name,args,result}]}] 完整迭代链路
     error       TEXT                        -- NULL = 正常
@@ -171,6 +174,9 @@ _RAG_EVENT_COLUMNS: dict[str, str] = {
 
 _TURNS_COLUMNS: dict[str, str] = {
     "tool_chain_json": "TEXT",
+    "raw_llm_output": "TEXT",
+    "meme_tag": "TEXT",
+    "meme_media_count": "INTEGER",
 }
 
 

@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS turns (
     session_key TEXT    NOT NULL,
     user_msg    TEXT,                       -- agent: 用户原文; proactive: NULL
     llm_output  TEXT    NOT NULL DEFAULT '', -- LLM 最终输出完整文本
+    raw_llm_output TEXT,                    -- 装饰/清洗前的原始模型输出
+    meme_tag    TEXT,                       -- 命中的 <meme:tag>
+    meme_media_count INTEGER,               -- 命中的媒体数量
     tool_calls  TEXT,                       -- JSON: [{name, args, result}]（每次 tool 调用）
     tool_chain_json TEXT,                   -- JSON: [{text, calls:[{name,args,result}]}] 完整迭代链路
     error       TEXT                        -- NULL = 正常

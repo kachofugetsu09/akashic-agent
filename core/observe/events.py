@@ -50,6 +50,9 @@ class TurnTrace:
     session_key: str
     user_msg: str | None            # agent: 用户原文; proactive: None
     llm_output: str                 # LLM 最终输出完整文本
+    raw_llm_output: str | None = None       # 装饰/清洗前的原始模型输出
+    meme_tag: str | None = None             # 命中的 <meme:tag>
+    meme_media_count: int | None = None     # 命中的媒体数量
     tool_calls: list[dict] = field(default_factory=list)
     # 每个 tool call: {name, args, result}（args/result 会截断）
     error: str | None = None

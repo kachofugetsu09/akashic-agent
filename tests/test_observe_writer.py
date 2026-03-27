@@ -1,8 +1,8 @@
 import sqlite3
 
 from core.observe.db import open_db
-from core.observe.events import ProactiveDecisionTrace
-from core.observe.writer import _write_proactive_decision
+from core.observe.events import ProactiveDecisionTrace, TurnTrace
+from core.observe.writer import _write_proactive_decision, _write_turn
 
 
 def test_write_proactive_decision_backfills_legacy_columns_for_gate_and_sense(tmp_path):
@@ -91,3 +91,37 @@ def test_write_proactive_decision_backfills_legacy_columns_for_evaluate_and_judg
     assert judge_row[0] == "judge_and_send"
     assert judge_row[1] == '{"reason_code":"sent_ready"}'
     assert judge_row[2] == '{"reason_code":"sent_ready"}'
+
+
+def test_write_turn_persists_raw_output_and_meme_fields(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        _write_turn(
+            conn,
+            TurnTrace(
+                source="agent",
+                session_key="telegram:1",
+                user_msg="我好喜欢你",
+                llm_output="我也喜欢你。",
+                raw_llm_output="我也喜欢你。 <meme:shy>",
+                meme_tag="shy",
+                meme_media_count=1,
+            ),
+            "2026-03-27T00:00:00+00:00",
+        )
+        row = conn.execute(
+            """
+            select llm_output, raw_llm_output, meme_tag, meme_media_count
+            from turns
+            where session_key = ?
+            """,
+            ("telegram:1",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row[0] == "我也喜欢你。"
+    assert row[1] == "我也喜欢你。 <meme:shy>"
+    assert row[2] == "shy"
+    assert row[3] == 1

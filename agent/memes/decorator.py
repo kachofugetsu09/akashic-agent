@@ -12,6 +12,7 @@ _MEME_RE = re.compile(r"<meme:([a-zA-Z0-9_-]+)>", re.IGNORECASE)
 class DecorateResult:
     content: str
     media: list[str] = field(default_factory=list)
+    tag: str | None = None
 
 
 class MemeDecorator:
@@ -28,4 +29,4 @@ class MemeDecorator:
         tag = first.group(1).lower()
         image = self._catalog.pick_image(tag)
         media = [image] if image else []
-        return DecorateResult(content=cleaned, media=media)
+        return DecorateResult(content=cleaned, media=media, tag=tag)
