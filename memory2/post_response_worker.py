@@ -35,6 +35,7 @@ class PostResponseMemoryWorker:
     TOKEN_BUDGET_PER_RUN = 1000
     TOKENS_EXTRACT_IMPLICIT = 384
     TOKENS_EXTRACT_INVALIDATION = 96
+    TOKENS_FINALIZE_IMPLICIT = 220
     TOKENS_CHECK_INVALIDATE = 96
     TOKENS_CHECK_SUPERSEDE = 96
     TOKENS_EXTRACT_PROFILE = 200
@@ -506,6 +507,12 @@ class PostResponseMemoryWorker:
                     item for item in llm_items
                     if not PostResponseMemoryWorker._should_drop_by_heuristic(item)
                 ]
+                llm_items, token_budget = await self._finalize_implicit_candidates(
+                    user_msg=user_msg,
+                    agent_response=agent_response,
+                    candidates=llm_items,
+                    token_budget=token_budget,
+                )
                 items = self._merge_extracted_items(fallback_items, llm_items)
                 log_fn = logger.info if items else logger.debug
                 log_fn(
@@ -521,6 +528,59 @@ class PostResponseMemoryWorker:
         except Exception as e:
             logger.warning(f"post_response_memorize extract failed: {e}")
         return fallback_items, token_budget
+
+    async def _finalize_implicit_candidates(
+        self,
+        *,
+        user_msg: str,
+        agent_response: str,
+        candidates: list[dict],
+        token_budget: int,
+    ) -> tuple[list[dict], int]:
+        """二阶段收口：判断候选是否真的值得进入长期 procedure/preference。"""
+        if not candidates:
+            return [], token_budget
+
+        ok, token_budget = self._consume_budget(
+            token_budget,
+            self.TOKENS_FINALIZE_IMPLICIT,
+        )
+        if not ok:
+            logger.info(
+                "post_response finalize_implicit skipped: token budget exhausted"
+            )
+            return [], token_budget
+
+        prompt = self._build_finalize_prompt(
+            user_msg=user_msg,
+            agent_response=agent_response,
+            candidates=candidates,
+        )
+        try:
+            resp = await self._provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+                model=self._model,
+                max_tokens=self.TOKENS_FINALIZE_IMPLICIT,
+            )
+            text = (resp.content or "").strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            result = json_repair.loads(text)
+            if isinstance(result, list):
+                finalized = [
+                    self._normalize_extracted_item(item)
+                    for item in result
+                    if isinstance(item, dict) and item.get("summary")
+                ]
+                finalized = [
+                    item for item in finalized
+                    if not PostResponseMemoryWorker._should_drop_by_heuristic(item)
+                ]
+                return finalized, token_budget
+        except Exception as e:
+            logger.warning(f"post_response finalize_implicit failed: {e}")
+        return [], token_budget
 
     @staticmethod
     def _build_implicit_prompt(
@@ -606,6 +666,7 @@ class PostResponseMemoryWorker:
 - 不要把技术知识点写成 procedure
 - 不要把当前项目讨论中的观点写成全局长期规则
 - 不要把单次测试里的补救办法写成长期规则
+- 若内容明显依赖当前时间窗、当前任务或这一次情境，先优先判断为 event 或丢弃，不要硬升成长期 memory
 
 【summary 要求】
 - summary 必须脱离原对话也能独立成立
@@ -631,6 +692,55 @@ ASSISTANT: {agent_response}
 - forbidden_tools：用户明确禁止的工具
 - mentioned_tools：规则涉及的工具别名
 - 无法确认的约束留空，不要猜"""
+
+    @staticmethod
+    def _build_finalize_prompt(
+        *,
+        user_msg: str,
+        agent_response: str,
+        candidates: list[dict],
+    ) -> str:
+        candidate_lines = []
+        for idx, item in enumerate(candidates, start=1):
+            candidate_lines.append(
+                f"{idx}. type={item.get('memory_type', 'procedure')} | summary={item.get('summary', '')}"
+            )
+        candidate_block = "\n".join(candidate_lines) if candidate_lines else "(none)"
+        return f"""你在做“长期记忆入库决策”，不是重新抽取。
+
+目标：判断下面这些候选，哪些真的值得进入长期 memory。
+默认答案是 []。宁可少留，也不要把短期情境、assistant 顺势建议、当前任务局部策略写成长期 memory。
+
+【核心原则】
+1. 证据必须以 USER 为主；ASSISTANT 回复只能帮助理解语境，不能单独构成证据
+2. candidate 不等于最终 memory；只有跨 session 仍稳定有用的内容才保留
+3. 若候选主要描述：
+   - 当前一次事件、计划、deadline、考试、今晚/明天这类时间窗
+   - assistant 针对当前语境给出的安慰、建议、提醒
+   - 当前任务/当前项目/当前对话里的局部策略
+   则应视为 event 或 drop，这里不要输出
+4. 只有真正长期稳定的用户偏好，或用户明确要求 agent 以后长期遵守的规则，才保留
+
+【允许保留的类型】
+- procedure：agent 未来跨任务可复用的长期执行规则
+- preference：用户跨 session 稳定成立的偏好/长期倾向
+
+【必须丢弃的情况】
+- 实际更像 event / profile
+- 只是当前场景的取舍、一次性决定或短期状态
+- 语气强于 USER 原话，把单次评价升级成长期禁令
+- 从 ASSISTANT 的建议反推用户长期偏好
+
+【原对话】
+USER: {user_msg}
+ASSISTANT: {agent_response}
+
+【候选 memory】
+{candidate_block}
+
+请只保留真正值得入长期库的条目，并做必要的 type 修正。
+只返回 JSON 数组，无内容时返回 []。
+每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null, "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}"""
 
     @staticmethod
     def _merge_extracted_items(

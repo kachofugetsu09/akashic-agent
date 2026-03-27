@@ -24,6 +24,7 @@ class _PromptCaptureProvider:
     def __init__(self, response_text: str = "[]"):
         self.calls = 0
         self.last_prompt = ""
+        self.prompts: list[str] = []
         self._response_text = response_text
 
     async def chat(self, **kwargs):
@@ -31,6 +32,7 @@ class _PromptCaptureProvider:
         messages = kwargs.get("messages") or []
         if messages:
             self.last_prompt = str(messages[-1].get("content", ""))
+            self.prompts.append(self.last_prompt)
 
         class _Resp:
             def __init__(self, content: str):
@@ -748,7 +750,7 @@ def test_extract_obvious_preferences_catches_language_reply_rule():
 
 
 def test_extract_implicit_prompt_is_conservative_for_preference_upgrade():
-    provider = _PromptCaptureProvider()
+    provider = _PromptCaptureProvider(response_text="[]")
     worker = PostResponseMemoryWorker(
         memorizer=cast(Any, _DummyMemorizer()),
         retriever=cast(Any, _DummyRetriever([])),
@@ -767,10 +769,11 @@ def test_extract_implicit_prompt_is_conservative_for_preference_upgrade():
 
     assert items == []
     assert remain == 0
-    assert "宁可少写，也不要把局部上下文误写成长期记忆" in provider.last_prompt
-    assert "不要把用户对 A 的厌恶，迁移成对 B 的厌恶" in provider.last_prompt
-    assert "不要把\u201c别在这个话题里乱比喻\u201d升级成\u201c用户厌恶该对象本身\u201d" in provider.last_prompt
-    assert "summary 语气不得强于 USER 原话，不要把单次评价升级成长期禁令" in provider.last_prompt
+    extract_prompt = provider.prompts[0]
+    assert "宁可少写，也不要把局部上下文误写成长期记忆" in extract_prompt
+    assert "不要把用户对 A 的厌恶，迁移成对 B 的厌恶" in extract_prompt
+    assert "不要把\u201c别在这个话题里乱比喻\u201d升级成\u201c用户厌恶该对象本身\u201d" in extract_prompt
+    assert "summary 语气不得强于 USER 原话，不要把单次评价升级成长期禁令" in extract_prompt
 
 
 def test_build_implicit_prompt_uses_four_memory_classes():
@@ -788,6 +791,51 @@ def test_build_implicit_prompt_uses_four_memory_classes():
     assert '优先把\u201c用户对 assistant 的长期行为偏好\u201d记为 preference' in prompt
     assert '不要把技术知识点写成 procedure' in prompt
     assert '不要把当前项目讨论中的观点写成全局长期规则' in prompt
+
+
+def test_build_finalize_prompt_is_user_first_and_temporal_conservative():
+    prompt = PostResponseMemoryWorker._build_finalize_prompt(
+        user_msg="可惜今天不能看 falcons 比赛了，明天早上有个美团笔试",
+        agent_response="那今晚先早点休息，比赛回头再补。",
+        candidates=[
+            {
+                "summary": "为了确保明天笔试状态，应避免熬夜并优先保证睡眠",
+                "memory_type": "procedure",
+            }
+        ],
+    )
+
+    assert "长期记忆入库决策" in prompt
+    assert "candidate 不等于最终 memory" in prompt
+    assert "证据必须以 USER 为主" in prompt
+    assert "当前一次事件、计划、deadline、考试、今晚/明天这类时间窗" in prompt
+    assert "从 ASSISTANT 的建议反推用户长期偏好" in prompt
+
+
+def test_extract_implicit_runs_finalize_stage_before_return():
+    provider = _PromptCaptureProvider(
+        response_text='[{"summary":"规则A","memory_type":"procedure","tool_requirement":null,"steps":[]}]'
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, provider),
+        light_model="test",
+    )
+
+    async def _run():
+        return await worker._extract_implicit(
+            user_msg="以后这样做",
+            agent_response="好的",
+            already_memorized=[],
+            token_budget=worker.TOKEN_BUDGET_PER_RUN,
+        )
+
+    items, _ = asyncio.run(_run())
+    assert items == [{"summary": "规则A", "memory_type": "procedure", "tool_requirement": None, "steps": [], "rule_schema": build_procedure_rule_schema(summary="规则A", tool_requirement=None, steps=[], rule_schema=None)}]
+    assert provider.calls == 2
+    assert "记忆提取专家" in provider.prompts[0]
+    assert "长期记忆入库决策" in provider.prompts[1]
 
 
 # ---------------------------------------------------------------------------

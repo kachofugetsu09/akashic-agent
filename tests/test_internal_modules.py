@@ -241,9 +241,17 @@ async def test_post_response_worker_extract_save_and_supersede_paths():
     assert ids == ["x1"]
 
     provider.chat = AsyncMock(
-        return_value=_Resp('[{"summary":"新规则","memory_type":"procedure","tool_requirement":null,"steps":[]}]')
+        side_effect=[
+            _Resp('[{"summary":"新规则","memory_type":"procedure","tool_requirement":null,"steps":[]}]'),
+            _Resp('[{"summary":"新规则","memory_type":"procedure","tool_requirement":null,"steps":[]}]'),
+        ]
     )
-    items, remain = await worker._extract_implicit("以后这样做", "ok", [], remain)
+    items, remain = await worker._extract_implicit(
+        "以后这样做",
+        "ok",
+        [],
+        worker.TOKEN_BUDGET_PER_RUN,
+    )
     assert items[0]["summary"] == "新规则"
 
     provider.chat = AsyncMock(return_value=_Resp('["x1"]'))
