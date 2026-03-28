@@ -123,6 +123,7 @@ class TurnExecutor:
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
+        # 1. 先初始化本轮对话状态：消息上下文、工具使用轨迹、循环检测状态。
         messages = initial_messages
         tools_used: list[str] = []
         tool_chain: list[dict] = []
@@ -130,6 +131,7 @@ class TurnExecutor:
         repeat_count = 0
         injected_proc_ids: set[str] = set()
 
+        # 2. tool_search 模式下，只向 LLM 暴露 always_on + LRU 预加载工具。
         visible_names: set[str] | None = None
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
@@ -147,9 +149,11 @@ class TurnExecutor:
             "所有时间相关判断必须与该锚点一致；无法验证时必须明确不确定。\n\n"
             + _PRE_FLIGHT_PROMPT
         )
+        # 3. 每轮开始前都补一条 preflight 提示，约束时间判断和工具使用方式。
         messages = messages + [{"role": "user", "content": preflight_prompt}]
 
         for iteration in range(self._llm_config.max_iterations):
+            # 4. 用当前 messages + visible tools 调一次 LLM。
             logger.debug("LLM 调用  iteration=%d", iteration + 1)
             response = await self._llm.provider.chat(
                 messages=messages,
@@ -159,6 +163,7 @@ class TurnExecutor:
                 tool_choice="auto",
             )
 
+            # 5. 模型请求了工具时，先检测是否陷入重复工具调用循环。
             if response.tool_calls:
                 signature = _tool_call_signature(response.tool_calls)
                 if signature and signature == last_tool_signature:
@@ -192,9 +197,11 @@ class TurnExecutor:
                     tool_calls=response.tool_calls,
                 )
 
+                # 6. 逐个执行本轮 tool calls，并把结果回写进消息历史。
                 iter_calls: list[dict] = []
                 pending_hints: list[str] = []
                 for tc in response.tool_calls:
+                    # 6.1 当前工具若还不可见，先判断是“可自动解锁”还是“必须转 tool_search”。
                     if visible_names is not None and tc.name not in visible_names:
                         if self._tools.has_tool(tc.name):
                             visible_names.add(tc.name)
@@ -221,6 +228,7 @@ class TurnExecutor:
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info("  → 工具 %s  参数: %s", tc.name, args_str[:120])
 
+                    # 6.2 在真正执行前，先按关键词匹配 procedure 规范。
                     all_items = _match_procedure_items(
                         memory=self._memory_port,
                         tool_name=tc.name,
@@ -250,6 +258,7 @@ class TurnExecutor:
                         logger.info("  ⛔ 工具 %s 被规范拦截，未执行", tc.name)
                         continue
 
+                    # 6.3 未被拦截时才真正执行工具，并把结果追加为 tool message。
                     tools_used.append(tc.name)
                     result = await self._tools.execute(tc.name, tc.arguments)
                     normalized = normalize_tool_result(result)
@@ -276,6 +285,7 @@ class TurnExecutor:
                         if raw_hint:
                             pending_hints.append(raw_hint.split("\n", 1)[1])
 
+                    # 6.4 tool_search 的返回结果会继续解锁一批工具，供下一轮 LLM 可见。
                     if tc.name == "tool_search" and visible_names is not None:
                         _unlock_from_tool_search(normalized.text, visible_names)
                         logger.debug("tool_search 解锁后 visible=%d 个工具", len(visible_names))
@@ -287,6 +297,8 @@ class TurnExecutor:
                             "result": normalized.preview(),
                         }
                     )
+
+                # 7. 本轮工具执行完后，补一条 reflect 提示，让模型基于结果继续下一轮决策。
                 tool_chain.append({"text": response.content, "calls": iter_calls})
                 messages.append(
                     {
@@ -300,6 +312,7 @@ class TurnExecutor:
                 )
                 continue
 
+            # 8. 没有 tool_calls 时，说明模型已经给出最终回答，本轮结束。
             logger.info("LLM 返回最终回复  iteration=%d", iteration + 1)
             messages.append({"role": "assistant", "content": response.content})
             return (
@@ -310,6 +323,7 @@ class TurnExecutor:
                 response.thinking,
             )
 
+        # 9. 如果超过最大迭代次数还没收尾，就生成一个不完整进展总结返回。
         logger.warning("已达到最大迭代次数 %d", self._llm_config.max_iterations)
         summary = await self._summarize_incomplete_progress(
             messages,

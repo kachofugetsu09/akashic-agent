@@ -299,9 +299,14 @@ async def _retrieve_memory_block_impl(
     gate_type = "history_route"
     sufficiency_trace: dict[str, object] = _empty_sufficiency_state()
     try:
+        # 1. 先从近期对话里整理出 gate / HyDE 需要的轻量上下文。
         main_history = _to_history_dicts(history[-gate_resolver.memory_window :])
         recent_turns = _format_gate_history(main_history, max_turns=3)
         hyde_context = _build_hyde_context(main_history)
+
+        # 2. 再做检索门控：
+        #    - 产出 route_decision / rewritten_query
+        #    - 同时拿到 procedure/preference 记忆命中
         gate_result, p_items = await gate_resolver.resolve(
             message=message,
             session_metadata=session_metadata,
@@ -315,6 +320,7 @@ async def _retrieve_memory_block_impl(
         history_memory_types = list(gate_result["history_memory_types"])
         gate_latency_ms = {"route": route_ms}
 
+        # 3. 如果 gate 允许，再补查 episodic memory（event / profile）。
         h_items, h_scope_mode, hyde_hypothesis, selected_items, retrieved_block, injected_item_ids = (
             await episodic_retriever.retrieve(
                 message=message,
@@ -327,6 +333,8 @@ async def _retrieve_memory_block_impl(
                 sufficiency_trace=sufficiency_trace,
             )
         )
+
+        # 4. 最后统一做 trace / injected block 收尾，返回给上层拼进 system prompt。
         rag_trace = finalizer.finalize(
             session_key=session_key,
             message=message,
@@ -420,6 +428,8 @@ async def _resolve_memory_gate(
     light_model: str,
 ) -> tuple[dict[str, object], list[dict]]:
     if memory.query_rewriter is not None:
+        # 1. 新门控路径：light model 直接判断要不要查 episodic，
+        #    procedure/preference 仍然照常检索。
         decision: GateDecision = await memory.query_rewriter.decide(
             user_msg=message,
             recent_history=recent_turns,
@@ -458,6 +468,9 @@ async def _resolve_fallback_memory_gate(
     llm: LLMServices,
     light_model: str,
 ) -> tuple[dict[str, object], list[dict]]:
+    # 1. 旧门控路径把两个动作并发执行，降低主链延迟：
+    #    - procedure/preference 检索
+    #    - history route 判定
     p_task = asyncio.create_task(
         retrieve_procedure_items(
             memory.port,
@@ -498,8 +511,11 @@ async def _retrieve_episodic_items(
     memory: MemoryServices,
     config: MemoryConfig,
 ) -> tuple[list[dict], str, str | None]:
+    # 1. gate 没放行时，event/profile 一律不查，直接返回空结果。
     if route_decision != "RETRIEVE" or not history_memory_types:
         return [], "disabled", None
+
+    # 2. gate 放行后，再走 episodic 检索；HyDE 是否介入由下层决定。
     return await retrieve_episodic(
         memory.port,
         rewritten_query,
@@ -516,7 +532,11 @@ def _build_injection_payload(
     history_items: list[dict],
     memory: MemoryServices,
 ) -> tuple[list[dict], str, list[str]]:
+    # 1. procedure + episodic 先合并去重。
     merged = _merge_memory_items(procedure_items + history_items)
+
+    # 2. select_for_injection 决定“哪些条目值得注入”；
+    #    build_injection_block 负责真正拼成给模型看的文本块。
     selected_items = memory.port.select_for_injection(merged)
     block, item_ids = memory.port.build_injection_block(merged)
     return selected_items, block, item_ids
@@ -540,6 +560,7 @@ async def _retry_empty_episodic_block(
     config: MemoryConfig,
 ) -> tuple[list[dict], str, list[dict], str, list[str]]:
     checker = memory.sufficiency_checker
+    # 1. 只有“本来决定查 history，但第一次没注入出有效块”时，才做 sufficiency retry。
     if route_decision != "RETRIEVE" or checker is None or retrieved_block:
         return (
             history_items,
@@ -566,6 +587,8 @@ async def _retry_empty_episodic_block(
             retrieved_block,
             injected_item_ids,
         )
+
+    # 2. sufficiency checker 给出 refined query 后，补做一次 episodic 检索。
     extra_h_items, extra_scope_mode, _retry_hypothesis = await retrieve_episodic(
         memory.port,
         result.refined_query,

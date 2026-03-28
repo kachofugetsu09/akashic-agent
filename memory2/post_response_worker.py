@@ -74,6 +74,7 @@ class PostResponseMemoryWorker:
         source_ref: str,
         session_key: str = "",
     ) -> None:
+        # 1. 初始化本轮异步提炼的上下文和 token 预算。
         self._current_run_session_key = session_key
         token_budget = self.TOKEN_BUDGET_PER_RUN
         logger.debug(
@@ -85,6 +86,7 @@ class PostResponseMemoryWorker:
             len(tool_chain or []),
         )
         try:
+            # 2. 先从本轮 tool_chain 里找显式 memorize 结果，后续去重和 supersede 都要用。
             already_memorized, protected_ids = self._collect_explicit_memorized(
                 tool_chain
             )
@@ -95,7 +97,7 @@ class PostResponseMemoryWorker:
                 len(protected_ids),
             )
 
-            # 先处理"旧的有误/需要遗忘"的显式废弃信号，无需新规则即可 supersede
+            # 3. 先处理“旧的有误/需要遗忘”的显式废弃信号，优先退休旧记忆。
             token_budget = await self._handle_invalidations(
                 user_msg,
                 source_ref,
@@ -103,6 +105,7 @@ class PostResponseMemoryWorker:
                 token_budget,
             )
 
+            # 4. 再从 user_msg + agent_response 里提取隐式长期记忆候选。
             new_items, token_budget = await self._extract_implicit(
                 user_msg,
                 agent_response,
@@ -115,6 +118,8 @@ class PostResponseMemoryWorker:
                 len(new_items),
                 token_budget,
             )
+
+            # 5. 用本轮显式 memorize 结果过滤隐式候选，避免同轮重复写入。
             new_items = await self._dedupe_against_explicit(
                 new_items,
                 already_memorized,
@@ -126,6 +131,8 @@ class PostResponseMemoryWorker:
                 len(new_items),
                 token_budget,
             )
+
+            # 6. 逐条做去重 / supersede / 保存；batch_vecs 用来复用本轮向量结果。
             batch_vecs: list[tuple[list[float], dict]] = []
             for item in new_items:
                 token_budget = await self._save_with_dedup(
@@ -135,6 +142,8 @@ class PostResponseMemoryWorker:
                     token_budget,
                     batch_vecs=batch_vecs,
                 )
+
+            # 7. 最后按需补做 profile 提取，这条链和普通 preference/procedure 分开。
             if self._profile_extractor is not None:
                 token_budget = await self._run_profile_extraction(
                     user_msg,
@@ -264,6 +273,7 @@ class PostResponseMemoryWorker:
         token_budget: int = TOKEN_BUDGET_PER_RUN,
     ) -> int:
         """检测用户明确指出 agent 旧行为有误的情况，无需替代规则即直接 supersede 旧条目。"""
+        # 1. 先从当前用户消息里提取“要废弃什么旧行为”的主题。
         topics, token_budget = await self._extract_invalidation_topics(
             user_msg,
             token_budget,
@@ -279,6 +289,7 @@ class PostResponseMemoryWorker:
             return token_budget
         _protected = protected_ids or set()
         for topic in topics:
+            # 2. 再到现有 procedure/preference 里召回和该主题最相关的旧条目。
             candidates = await self._retriever.retrieve(
                 topic,
                 memory_types=["procedure", "preference"],
@@ -292,6 +303,8 @@ class PostResponseMemoryWorker:
             ][: self.SUPERSEDE_CANDIDATE_K]
             if not high_sim:
                 continue
+
+            # 3. 最后让 light model 判断这些旧条目里哪些该真正 supersede。
             supersede_ids, token_budget = await self._check_invalidate(
                 topic,
                 high_sim,
@@ -323,6 +336,7 @@ class PostResponseMemoryWorker:
         token_budget: int,
     ) -> tuple[list[str], int]:
         """从用户消息中提取被明确声明为有误/需废弃的 agent 行为主题。"""
+        # 1. 这里只负责抽取“被否定的行为主题”，不直接做 supersede 决策。
         prompt = f"""判断用户消息是否在明确声明 agent 某个现有行为/流程有误，且希望废弃它。
 
 用户消息：{user_msg}
@@ -346,10 +360,6 @@ class PostResponseMemoryWorker:
         if not ok:
             logger.debug("post_response invalidation skipped: token budget exhausted")
             return [], token_budget
-        fallback_items = [
-            self._normalize_extracted_item(item)
-            for item in self._extract_obvious_preferences(user_msg)
-        ]
 
         try:
             resp = await self._provider.chat(
@@ -433,19 +443,20 @@ class PostResponseMemoryWorker:
 
         summaries: list[str] = []
         protected_ids: set[str] = set()
+        # 1. 遍历本轮工具调用，只关心 memorize 工具。
         for step in tool_chain:
             if not isinstance(step, dict):
                 continue
             for call in step.get("calls", []):
                 if not isinstance(call, dict) or call.get("name") != "memorize":
                     continue
+                # 2. 从参数里拿 summary，后面给隐式提取做排重。
                 args = call.get("arguments")
                 if isinstance(args, dict):
                     summary = (args.get("summary") or "").strip()
                     if summary:
                         summaries.append(summary)
-                # 从 tool result 中解析写入的 DB id
-                # 格式："已记住（new:0e750b742fa4）：..."
+                # 3. 再从工具结果文本里解析真实写入的 DB id，避免后续误删本轮新记忆。
                 result = call.get("result") or ""
                 m = _id_pattern.search(result)
                 if m:
@@ -460,6 +471,7 @@ class PostResponseMemoryWorker:
         token_budget: int,
     ) -> tuple[list[dict], int]:
         """light model 提取隐式偏好，返回 behavior_updates 格式列表。"""
+        # 1. 先把本轮显式 memorize 的内容做成排除块，避免重复抽取。
         exclusion_block = ""
         if already_memorized:
             lines = "\n".join(f"- {s}" for s in already_memorized if s)
@@ -481,12 +493,14 @@ class PostResponseMemoryWorker:
             )
             return [], token_budget
 
+        # 2. 再准备一个确定性 fallback，兜底少量高置信偏好规则。
         fallback_items = [
             self._normalize_extracted_item(item)
             for item in self._extract_obvious_preferences(user_msg)
         ]
 
         try:
+            # 3. 主路径由 light model 产出候选，再经过 normalize + heuristic 过滤。
             resp = await self._provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -507,6 +521,7 @@ class PostResponseMemoryWorker:
                     item for item in llm_items
                     if not PostResponseMemoryWorker._should_drop_by_heuristic(item)
                 ]
+                # 4. 二阶段收口：不是所有候选都值得进长期记忆。
                 llm_items, token_budget = await self._finalize_implicit_candidates(
                     user_msg=user_msg,
                     agent_response=agent_response,
@@ -538,6 +553,7 @@ class PostResponseMemoryWorker:
         token_budget: int,
     ) -> tuple[list[dict], int]:
         """二阶段收口：判断候选是否真的值得进入长期 procedure/preference。"""
+        # 1. 第一阶段只是“提候选”；这里才决定是否真的入长期库。
         if not candidates:
             return [], token_budget
 
@@ -557,6 +573,7 @@ class PostResponseMemoryWorker:
             candidates=candidates,
         )
         try:
+            # 2. 让 light model 做最后一轮筛选和 type 修正。
             resp = await self._provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -993,6 +1010,7 @@ ASSISTANT: {agent_response}
 
         mtype = item.get("memory_type", "procedure")
 
+        # 1. 强制创建项直接写入，不参与本轮 dedup 决策。
         if item.get("_force_create"):
             remain, saved_id = await self._save_item_direct(item, source_ref, token_budget)
             if saved_id and batch_vecs is not None and self._dedup_decider is not None:
@@ -1010,7 +1028,7 @@ ASSISTANT: {agent_response}
                 )
             return remain
 
-        # 类型守卫：非 procedure/preference，或未启用 dedup，走原路径
+        # 2. 只有 procedure/preference 且启用了 dedup，才走新决策器。
         if mtype not in self.DEDUP_TYPES or self._dedup_decider is None:
             return await self._save_with_supersede(item, source_ref, protected_ids, token_budget)
 
@@ -1028,16 +1046,15 @@ ASSISTANT: {agent_response}
             if a.action == MemoryAction.DELETE and a.item_id not in _protected
         ]
 
-        # SKIP → 不写不改
+        # 3. SKIP：候选和旧记忆等价，直接什么都不做。
         if result.decision == DedupDecision.SKIP:
             logger.debug("dedup skip: %s", summary[:60])
             return token_budget
 
-        # NONE → 不写候选，处理旧条目
+        # 4. NONE：不写新候选，只对已有条目做 merge / delete。
         if result.decision == DedupDecision.NONE:
             if merge_actions:
-                # 有 merge：先尝试 merge，成功后才执行 delete
-                # 顺序重要：避免"先删后并失败"导致信息丢失
+                # 4.1 有 merge 时先 merge 再 delete，避免先删后并失败。
                 target = merge_actions[0]  # MVP 守卫保证最多 1 个
                 merged_summary = await self._build_merge_summary(
                     candidate_summary=summary,
@@ -1064,12 +1081,12 @@ ASSISTANT: {agent_response}
                         "candidate dropped: %s", summary[:60],
                     )
             elif delete_ids:
-                # 无 merge，只有 delete：直接执行（无信息丢失风险）
+                # 4.2 无 merge 只有 delete 时，直接退休旧条目。
                 self._memorizer.supersede_batch(delete_ids)
                 logger.info("dedup delete(supersede) ids=%s", delete_ids)
             return token_budget
 
-        # CREATE → 先执行 delete，再写入新条目
+        # 5. CREATE：先清理需要淘汰的旧条目，再写入新条目。
         old_items = self._get_store_items(delete_ids) if delete_ids else []
         if delete_ids:
             self._memorizer.supersede_batch(delete_ids)
@@ -1164,6 +1181,7 @@ ASSISTANT: {agent_response}
                 token_budget,
             )
             for fact in facts:
+                # 4. profile 逐条单独写入并按需 supersede 旧 profile。
                 token_budget = await self._save_profile_with_supersede(
                     fact,
                     source_ref,

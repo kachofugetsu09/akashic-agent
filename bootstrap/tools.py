@@ -274,6 +274,7 @@ def _build_loop_deps(
     )
 
     async def _consolidate_and_save(session: object) -> None:
+        # scheduler 只负责起后台任务；真正的工作是“consolidate + save session”这两步。
         await consolidation.consolidate(session)  # type: ignore[arg-type]
         await session_manager.save_async(session)  # type: ignore[arg-type]
 

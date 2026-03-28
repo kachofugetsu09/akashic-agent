@@ -188,6 +188,7 @@ class ConsolidationService:
         await_vector_store: bool = False,
     ) -> None:
         memory = self._memory_port
+        # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
         window = _select_consolidation_window(
             session,
             memory_window=self._memory_window,
@@ -226,6 +227,7 @@ class ConsolidationService:
         if window is None:
             return
 
+        # 2. 把窗口消息格式化成一段对话文本，并准备好 source_ref / 现有长期记忆 / 最近 history。
         source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
         current_memory = await asyncio.to_thread(memory.read_long_term)
@@ -312,6 +314,7 @@ class ConsolidationService:
 只返回合法 JSON，不要 markdown 代码块。"""
 
         try:
+            # 3. 调主模型把这段旧对话提炼成结构化结果。
             response = await self._provider.chat(
                 messages=[
                     {
@@ -339,6 +342,7 @@ class ConsolidationService:
                 )
                 return
 
+            # 4. 先处理 history_entries / pending_items 这两类文本产物。
             raw_entries = result.get("history_entries")
             if isinstance(raw_entries, list):
                 history_entries = [
@@ -372,6 +376,7 @@ class ConsolidationService:
                         len(pending_items.splitlines()),
                     )
 
+            # 5. 再把 history_entries 写入向量记忆，供后续 retrieval 使用。
             scope_channel = getattr(session, "_channel", "")
             scope_chat_id = getattr(session, "_chat_id", "")
             save_tasks: list[asyncio.Task] = []
@@ -395,6 +400,7 @@ class ConsolidationService:
                     len(history_entries),
                 )
 
+            # 6. 最后按需补做 profile facts 提取，这条链和 history_entries 分开。
             profile_task = None
             if self._profile_extractor and conversation.strip():
                 profile_task = asyncio.create_task(
@@ -410,6 +416,7 @@ class ConsolidationService:
             if await_vector_store and profile_task is not None:
                 await profile_task
 
+            # 7. 更新 session.last_consolidated，表示这批旧消息已经被归档过。
             if archive_all:
                 session.last_consolidated = 0
             else:

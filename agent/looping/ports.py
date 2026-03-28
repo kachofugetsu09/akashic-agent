@@ -165,6 +165,7 @@ class TurnScheduler:
 
     def schedule_consolidation(self, session: SessionLike, key: str) -> None:
         """Fire-and-forget consolidation; deduplicates by key."""
+        # 1. 只有消息数超过 memory_window，且当前 session 没在 consolidate 中，才起后台任务。
         if len(session.messages) > self._memory_window and key not in self._consolidating:
             self._consolidating.add(key)
             task = asyncio.create_task(
@@ -175,6 +176,7 @@ class TurnScheduler:
 
     async def _run_consolidation_bg(self, session: SessionLike, key: str) -> None:
         try:
+            # 2. 真正的 consolidate/save 细节由外部注入的 runner 负责。
             await self._consolidation_runner(session)
         finally:
             self._consolidating.discard(key)
