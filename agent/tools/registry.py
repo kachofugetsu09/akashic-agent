@@ -154,19 +154,24 @@ class ToolRegistry:
         allowed_risk: list[str] | None = None,
     ) -> list[dict]:
         """关键词搜索工具目录，返回匹配的工具信息列表。"""
+        # 1. 先把用户 query 展开成搜索词集合。
         keywords = _expand_query(query)
         risk_filter = set(allowed_risk) if allowed_risk else None
 
         results = []
+        # 2. 遍历当前所有已注册工具，逐个计算匹配分数。
         for name, tool in self._tools.items():
             meta = self._metadata.get(name, ToolMeta())
 
+            # 3. 元工具不参与搜索结果展示。
             if name in ("tool_search", "list_tools"):
                 continue
 
+            # 4. 如果调用方限制了风险等级，先在这里过滤。
             if risk_filter and meta.risk not in risk_filter:
                 continue
 
+            # 5. 按名称 / 关键词 / 标签 / 描述 / 参数名打分。
             score, matched_reasons = self._score_tool(tool, meta, keywords)
             if score > 0:
                 params = tool.parameters or {}
@@ -183,20 +188,19 @@ class ToolRegistry:
                     }
                 )
 
+        # 6. 按分数从高到低排序，再去掉内部字段。
         results.sort(key=lambda x: x["_score"], reverse=True)
         for r in results:
             del r["_score"]
+
+        # 7. 最后只返回前 top_k 个候选。
         return results[:top_k]
 
     @staticmethod
     def _score_tool(
         tool: Tool, meta: ToolMeta, keywords: set[str]
     ) -> tuple[int, list[str]]:
-        """给单个工具打分，返回 (score, matched_reasons)。
-
-        权重：name=3, search_keywords=3, tags=2, description=2, param_names=1
-        每个 keyword 只取最高命中字段（elif），避免重复计分。
-        """
+        """给单个工具打分，返回 (score, matched_reasons)。"""
         name_lower = tool.name.lower()
         kw_str = " ".join(meta.search_keywords).lower()
         tag_str = " ".join(meta.tags).lower()
@@ -208,7 +212,10 @@ class ToolRegistry:
         score = 0
         reasons: list[str] = []
 
+        # 1. 逐个 keyword 检查它命中了工具的哪个字段。
         for kw in keywords:
+            # 2. 同一个 keyword 只记一次分。
+            #    这里故意用 if/elif：谁先命中高优先级字段，就不再继续往下加分。
             if kw in name_lower:
                 score += 3
                 reasons.append(f"名称:{kw}")
@@ -225,7 +232,7 @@ class ToolRegistry:
                 score += 1
                 reasons.append(f"参数:{kw}")
 
-        # 去重保序
+        # 3. why_matched 里的原因可能重复，这里做一次去重保序。
         seen: set[str] = set()
         deduped = []
         for r in reasons:

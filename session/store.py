@@ -52,12 +52,31 @@ class SessionStore:
 
     def _ensure_fts(self) -> None:
         try:
+            # Migrate to trigram tokenizer if the table exists without it.
+            # trigram supports CJK substring matching; the old unicode61 default does not.
+            existing = self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+            ).fetchone()
+            if existing:
+                try:
+                    cfg = dict(
+                        self._conn.execute("SELECT * FROM messages_fts_config").fetchall()
+                    )
+                    is_trigram = "trigram" in cfg.get("tokenize", "")
+                except sqlite3.OperationalError:
+                    is_trigram = False
+                if not is_trigram:
+                    self._conn.execute("DROP TABLE IF EXISTS messages_fts")
+                    for trig in ("messages_ai", "messages_ad", "messages_au"):
+                        self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+
             self._conn.execute(
                 """
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                     content,
                     content='messages',
-                    content_rowid='rowid'
+                    content_rowid='rowid',
+                    tokenize='trigram'
                 )
                 """
             )
@@ -85,6 +104,9 @@ class SessionStore:
                 END
                 """
             )
+            # Rebuild index so existing messages are covered by trigram.
+            self._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+            self._conn.commit()
             self._has_fts = True
         except sqlite3.OperationalError:
             self._has_fts = False
@@ -364,17 +386,19 @@ class SessionStore:
             # FTS5 returned empty or had a syntax error (e.g. special chars like %)
             # fall through to LIKE
 
+        # Split into individual terms so multi-keyword queries work (e.g. "抖音 支付 AI").
+        terms = [t for t in query.split() if t]
+        if not terms:
+            terms = [query]
+        term_conditions = " AND ".join("m.content LIKE ?" for _ in terms)
         like_sql = (
             "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts "
             "FROM messages m "
-            f"{where_sql} "
         )
         like_params = params[:]
-        if where_sql:
-            like_sql += "AND m.content LIKE ? "
-        else:
-            like_sql += "WHERE m.content LIKE ? "
-        like_params.append(f"%{query}%")
+        connector = "AND" if where_sql else "WHERE"
+        like_sql += f"{where_sql} {connector} {term_conditions} "
+        like_params.extend(f"%{t}%" for t in terms)
         like_sql += "ORDER BY m.seq DESC LIMIT ?"
         like_params.append(limit)
         with self._lock:

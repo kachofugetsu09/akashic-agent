@@ -228,6 +228,8 @@ class AgentTick:
         self.last_ctx: AgentTickContext | None = None  # 供测试检查
 
     async def tick(self) -> float | None:
+        # 1. 每次 tick 先创建一个新的上下文容器。
+        #    后续 gateway 输入、分类结果、最终消息、ack 相关状态都写在这里。
         ctx = AgentTickContext(
             session_key=self._session_key,
             now_utc=datetime.now(timezone.utc),
@@ -278,6 +280,7 @@ class AgentTick:
         ctx.context_as_fallback_open = context_as_fallback_open
         self.last_ctx = ctx
 
+        # 2. 通过 pre-gate 后，才真正进入“预取数据 -> agent loop -> post_loop”主流程。
         logger.info("[proactive_v2] tick: pre-gate passed, starting loop (context_fallback=%s)", ctx.context_as_fallback_open)
         await self._run_loop(ctx)
         result = await self._post_loop(ctx)
@@ -457,6 +460,8 @@ class AgentTick:
             return 0.0
 
         # ── Gateway 预取 ──────────────────────────────────────────────────
+        # 1. 先把 alerts / content / context 在 loop 外一次性预取完，
+        #    避免模型在 loop 内自己反复拉源。
         gateway_deps = self._gateway_deps or GatewayDeps(
             alert_fn=None,
             feed_fn=None,
@@ -476,7 +481,8 @@ class AgentTick:
         gw_result = await gw.run()
         _log_content_candidates(gw_result)
 
-        # 填充 ctx（供 ACK 路径使用）
+        # 2. 把 gateway 的输入快照灌进 ctx。
+        #    后续 tools、post-guard、ack 都只读 ctx，不再回头碰 gateway。
         ctx.mark_alerts_prefetched(gw_result.alerts)
         fetched_contents = [
             {
@@ -493,9 +499,12 @@ class AgentTick:
         ctx.mark_contents_prefetched(fetched_contents, gw_result.content_store)
         ctx.mark_context_prefetched(gw_result.context)
 
+        # 3. 构造本轮 proactive 专用 system prompt，把预取数据一次性注入给模型。
         system_msg = {"role": "system", "content": self._build_system_prompt(ctx, gw_result)}
         messages: list[dict] = [system_msg]
 
+        # 4. 主 loop：每轮强制要求模型返回一个 tool call。
+        #    直到 finish_turn 写入 terminal_action，或达到步数上限。
         while ctx.steps_taken < self._cfg.agent_tick_max_steps:
             ok = await self._run_tool_step(
                 messages,
@@ -549,8 +558,8 @@ class AgentTick:
                         break
 
         # ── Reflection pass ───────────────────────────────────────────────
-        # 若 agent 已标记 interesting 条目但忘记调用 finish_turn，
-        # 注入一条确定性提示，强制其完成终止动作（最多再跑 3 步）。
+        # 5. 若 agent 已经把 interesting 标好了，但还没 finish_turn，
+        #    就注入一条确定性反思提示，逼它在下一轮完成 reply/skip 收尾。
         if ctx.terminal_action is None and ctx.interesting_item_ids and ctx.steps_taken < self._cfg.agent_tick_max_steps:
             ids_str = ", ".join(sorted(ctx.interesting_item_ids))
             reflection = (
@@ -582,6 +591,7 @@ class AgentTick:
         loop_tag: str,
         tool_choice: str | dict = "auto",
     ) -> bool:
+        # 1. 用当前 messages + TOOL_SCHEMAS 调一次模型，拿到本轮唯一的 tool call。
         tool_call = await self._llm_fn(messages, TOOL_SCHEMAS, tool_choice)
         if tool_call is None:
             logger.warning(
@@ -601,11 +611,14 @@ class AgentTick:
             arg_summary,
         )
         try:
+            # 2. 真正执行 proactive_v2.tools.execute() 里的工具实现。
             result = await execute(tool_name, tool_args, ctx, self._tool_deps)
         except ValueError as e:
             logger.warning("[proactive_v2] %s: tool error: %s", loop_tag, e)
             return False
         call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
+        # 3. 把 assistant tool_call + tool result 都回写到 messages。
+        #    下一轮模型就能看到上一轮工具做了什么、返回了什么。
         self._append_tool_messages(
             messages,
             tool_name=tool_name,
@@ -650,9 +663,11 @@ class AgentTick:
 
     async def _post_loop(self, ctx: AgentTickContext) -> float:
         """收口到 TurnResult；发送与副作用交给 orchestrator。"""
+        # 1. 先把 ctx 归并成 TurnResult（reply/skip、evidence、副作用）。
         result = await self._build_turn_result(ctx)
         if self._turn_orchestrator is None:
             raise RuntimeError("proactive turn_orchestrator is required")
+        # 2. 再统一交给 TurnOrchestrator 落会话、发送消息、执行 side effects。
         await self._turn_orchestrator.handle_proactive_turn(
             result=result,
             session_key=self._session_key,
@@ -663,6 +678,7 @@ class AgentTick:
 
     async def _build_turn_result(self, ctx: AgentTickContext) -> TurnResult:
         ack_fn = self._tool_deps.ack_fn
+        # 1. 如果最终不是 reply，直接构造成 skip，并只保留 skip 路径需要的副作用。
         if ctx.terminal_action != "reply":
             logger.info(
                 "[proactive_v2] post-loop: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
@@ -692,6 +708,7 @@ class AgentTick:
                 ],
             )
 
+        # 2. 先做 delivery 去重：同一批来源内容短时间内不重复发。
         delivery_key = build_delivery_key(ctx)
         if self._state_store.is_delivery_duplicate(
             self._session_key, delivery_key, self._cfg.delivery_dedupe_hours
@@ -719,6 +736,7 @@ class AgentTick:
                 ],
             )
 
+        # 3. 再做 message 语义去重：新消息和最近主动消息如果实质重复，也跳过。
         if self._cfg.message_dedupe_enabled and self._deduper is not None:
             recent_proactive = (
                 self._recent_proactive_fn()
@@ -755,6 +773,8 @@ class AgentTick:
                     ],
                 )
 
+        # 4. 两层 post-guard 都通过后，才真正产出 reply 类型 TurnResult。
+        #    发送成功/失败后的状态更新和 ACK 都以 side effect 形式挂在这里。
         return TurnResult(
             decision="reply",
             outbound=TurnOutbound(session_key=self._session_key, content=ctx.final_message),

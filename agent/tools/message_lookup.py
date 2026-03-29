@@ -13,7 +13,11 @@ _MAX_CONTEXT = 5
 
 class FetchMessagesTool(Tool):
     name = "fetch_messages"
-    description = "按消息 ID 列表精确拉取原始对话内容。通常在找到 memory 条目后追溯 source_ref 使用。支持 context 参数扩展前后文。"
+    description = (
+        "按消息 ID 精确拉取原始对话内容。"
+        "当记忆注入块中的条目附带 (src: ...) 标记时，优先用此工具获取原文，而非用关键词模糊搜索。"
+        "支持 context 参数扩展前后文，适合还原完整上下文片段。"
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -59,7 +63,11 @@ class FetchMessagesTool(Tool):
 
 class SearchMessagesTool(Tool):
     name = "search_messages"
-    description = "在原始对话历史中全文检索。用于想不起 ID 或需模糊查找时。支持 context 参数扩展匹配结果的前后文。"
+    description = (
+        "在原始对话历史中全文检索消息。"
+        "仅在没有可用的消息 ID（即记忆条目无 src 标记）时使用；若记忆块中已有 (src: id) 标记，应优先调用 fetch_messages。"
+        "支持多关键词（空格分隔，各词之间为 AND 关系）和 context 参数扩展前后文。"
+    )
     parameters = {
         "type": "object",
         "properties": {

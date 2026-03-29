@@ -54,12 +54,16 @@ class AgentTickFactory:
         if self._deps.pool is None:
             raise RuntimeError("proactive_v2 依赖 MCP 连接池，pool 不能为空")
 
+        # 1. 先确定本轮 proactive 要服务哪个 session。
         session_key = self._get_session_key()
+        # 2. 再把 tick 运行期依赖逐项组装好：
+        #    最近用户时间 / 工具依赖 / gateway 数据依赖 / 近期主动消息读取函数。
         last_user_at_fn = self._build_last_user_at_fn(session_key)
         tool_deps = self._build_tool_deps()
         gateway_deps = self._build_gateway_deps(tool_deps)
         recent_proactive_fn = self._build_recent_proactive_fn()
 
+        # 3. 最后产出 AgentTick。后续每次 proactive loop 触发时都调用它的 tick()。
         return AgentTick(
             cfg=self._deps.cfg,
             session_key=session_key,
@@ -97,6 +101,8 @@ class AgentTickFactory:
             schemas: list[dict],
             tool_choice: str | dict = "auto",
         ) -> dict | None:
+            # AgentTick 自己维护 messages 和工具 schema；
+            # factory 这里只负责把 provider.chat 包成“返回首个 tool_call”的薄适配层。
             resp = await provider.chat(
                 messages=messages,
                 tools=schemas,

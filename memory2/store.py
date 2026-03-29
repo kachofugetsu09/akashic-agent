@@ -414,22 +414,22 @@ class MemoryStore2:
         self._db.commit()
 
     def get_all_with_embedding(self, include_superseded: bool = False) -> list[tuple]:
-        """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at)]
+        """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at, source_ref)]
         extra_json_dict 中注入 _reinforcement 和 _updated_at（_ 前缀，不污染用户字段）。
         """
         where = "" if include_superseded else "AND status='active'"
         rows = self._db.execute(
             "SELECT id, memory_type, summary, embedding, extra_json, happened_at, "
-            "reinforcement, updated_at "
+            "reinforcement, updated_at, source_ref "
             f"FROM memory_items WHERE embedding IS NOT NULL {where}"
         ).fetchall()
         result = []
-        for row_id, mtype, summary, emb_json, extra_json, happened_at, reinforcement, updated_at in rows:
+        for row_id, mtype, summary, emb_json, extra_json, happened_at, reinforcement, updated_at, source_ref in rows:
             emb = json.loads(emb_json) if emb_json else None
             extra = json.loads(extra_json) if extra_json else {}
             extra["_reinforcement"] = reinforcement
             extra["_updated_at"] = updated_at
-            result.append((row_id, mtype, summary, emb, extra, happened_at))
+            result.append((row_id, mtype, summary, emb, extra, happened_at, source_ref))
         return result
 
     def vector_search(
@@ -473,7 +473,7 @@ class MemoryStore2:
         now = datetime.now(timezone.utc)
 
         scored = []
-        for row_id, mtype, summary, emb, extra, happened_at in rows:
+        for row_id, mtype, summary, emb, extra, happened_at, source_ref in rows:
             if emb is None:
                 continue
             e = np.array(emb, dtype=np.float32)
@@ -503,6 +503,7 @@ class MemoryStore2:
                     "summary": summary,
                     "extra_json": extra,
                     "happened_at": happened_at,
+                    "source_ref": source_ref,
                     "score": round(final, 4),
                     "_score_debug": {
                         "semantic": round(semantic, 4),

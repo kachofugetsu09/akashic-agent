@@ -4,6 +4,7 @@ Memory v2 检索器：查询 → top-k items + 格式化注入块
 
 from __future__ import annotations
 
+import json
 import logging
 
 from memory2.store import MemoryStore2
@@ -222,7 +223,8 @@ class Retriever:
                 norms.append((item_id, f"- {summary}"))
             elif mtype in ("event", "profile"):
                 ts = f"[{happened_at}] " if happened_at else ""
-                events.append((item_id, f"- {ts}{summary}"))
+                src_tag = _format_source_tag(item.get("source_ref"))
+                events.append((item_id, f"- {ts}{summary}{src_tag}"))
 
         return selected, forced, norms, events
 
@@ -284,3 +286,26 @@ class Retriever:
                     seen_ids.add(item_id)
                     injected_ids.append(item_id)
         return "\n\n".join(final_parts), injected_ids
+
+
+def _format_source_tag(source_ref: str | None) -> str:
+    """从 source_ref（格式如 '["id1","id2"]#h:abc' 或 'channel@seq1-seq2#tag'）中提取消息 ID，
+    返回供注入块附加的短标记，如 ' (src: telegram:7674283004:1087)'。
+    最多显示 2 个 ID，保持注入文本简洁。
+    """
+    if not source_ref:
+        return ""
+    raw = source_ref.split("#h:")[0].strip()
+    ids: list[str] = []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            ids = [str(i) for i in parsed if i]
+    except (json.JSONDecodeError, ValueError):
+        if raw:
+            ids = [raw]
+    if not ids:
+        return ""
+    shown = ids[:2]
+    tag = ", ".join(shown)
+    return f" (src: {tag})"

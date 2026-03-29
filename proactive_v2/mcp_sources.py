@@ -190,6 +190,8 @@ async def fetch_context_data_async(pool: McpClientPool) -> list[dict]:
 
 
 def _extract_proactive_events(data: Any, *, server: str, kind: str) -> list[dict]:
+    # 1. proactive 事件源约定返回 list[dict]。
+    # 2. 这里只保留 kind 匹配当前 channel 的事件，并补上 ack_server。
     if not isinstance(data, list):
         return []
     result: list[dict] = []
@@ -203,6 +205,9 @@ def _extract_proactive_events(data: Any, *, server: str, kind: str) -> list[dict
 
 
 def _extract_context_items(data: Any, *, server: str) -> list[dict]:
+    # context 源兼容两种返回形态：
+    # 1. 单个 dict：包装成长度为 1 的列表
+    # 2. list[dict]：逐条补 _source 后原样返回
     if isinstance(data, dict):
         item = dict(data)
         item.setdefault("_source", server)
@@ -221,23 +226,34 @@ def _extract_context_items(data: Any, *, server: str) -> list[dict]:
 
 async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[dict]:
     result: list[dict] = []
+    # 1. 先按 channel 从 proactive_sources.json 中挑出本轮该访问的源。
     for src in _iter_sources_by_channel(channel):
         server = src.get("server", "")
+        # 2. 每个源默认调用：
+        #    - context 走 get_context
+        #    - alert/content 走 get_proactive_events
+        #    也允许在配置里用 get_tool 覆盖。
         get_tool = src.get(
             "get_tool",
             "get_context" if channel == "context" else "get_proactive_events",
         )
         try:
+            # 3. 通过常驻 McpClientPool 调远端 MCP 工具。
+            #    pool.call() 内部会负责串行、断线重连、JSON 反序列化。
             data = await pool.call(server, get_tool, {})
             if channel == "context":
+                # 4a. context 通道不看 kind，直接把返回值规范成 list[dict]。
                 items = _extract_context_items(data, server=server)
                 result.extend(items)
                 logger.debug("[mcp_sources] context 源 %s 返回 %d 条", server, len(items))
             else:
+                # 4b. alert/content 通道要求远端返回 proactive event 列表，
+                #     再按 kind 过滤出当前通道的事件。
                 events = _extract_proactive_events(data, server=server, kind=channel)
                 result.extend(events)
                 logger.debug("[mcp_sources] %s 返回 %d 条 %s 事件", server, len(events), channel)
         except Exception as e:
+            # 5. 单个源失败只记日志，不阻断其他源。
             logger.warning(
                 "[mcp_sources] fetch_%s %s.%s failed: %s",
                 channel,
@@ -251,6 +267,10 @@ async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[
 def _iter_sources_by_channel(channel: str) -> list[dict]:
     sources = _load_sources()
     result: list[dict] = []
+    # 根据 channel 做一层静态路由：
+    # - context 只取 channel=context 的源
+    # - alert 排除纯 content 源
+    # - content 排除纯 alert 源
     for src in sources:
         src_channel = str(src.get("channel", "")).strip().lower()
         if channel == "context":

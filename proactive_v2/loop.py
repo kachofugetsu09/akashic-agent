@@ -165,6 +165,8 @@ class ProactiveLoop:
     def _build_agent_tick(self):
         from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
 
+        # 1. 把 loop 级公共依赖收束成 AgentTickDeps。
+        # 2. 交给 factory 组装出“单次 tick 执行器”。
         return AgentTickFactory(
             AgentTickDeps(
                 cfg=self._cfg,
@@ -196,13 +198,17 @@ class ProactiveLoop:
         )
 
     def _init_runtime_components(self) -> None:
+        # 1. 准备主动规则面板文件（PROACTIVE_CONTEXT.md）。
         self._ensure_workspace_proactive_context_file()
+        # 2. 预读规则面板内容并做缓存。
         self._read_workspace_proactive_context()
+        # 3. 构建发送编排器、前置 gate、传感器、去重器和单次 tick 执行器。
         self._turn_orchestrator = self._build_turn_orchestrator()
         self._anyaction = self._build_anyaction_gate()
         self._sense = self._build_sense(self._build_fitbit_provider())
         self._message_deduper = self._build_message_deduper()
         self._agent_tick = self._build_agent_tick()
+        # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
 
     def _workspace_proactive_context_path(self) -> Path | None:
@@ -439,6 +445,7 @@ class ProactiveLoop:
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
+        # 真正的“主动决策 + 生成回复 + 发送”主链都在 AgentTick.tick() 里。
         return await self._agent_tick.tick()
 
 

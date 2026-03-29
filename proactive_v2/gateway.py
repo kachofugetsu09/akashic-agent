@@ -55,10 +55,13 @@ class DataGateway:
 
     async def run(self) -> GatewayResult:
         """并行拉取所有数据源，返回 GatewayResult。单源失败不影响其他源。"""
+        # 1. 在 agent 真正开始决策前，先把三路输入源并行预取完：
+        #    alerts / context / content。
         alerts_task = asyncio.create_task(self._fetch_alerts())
         context_task = asyncio.create_task(self._fetch_context())
         content_task = asyncio.create_task(self._fetch_content())
 
+        # 2. gather 后得到一份本 tick 的静态输入快照。
         alerts, ctx_data, (content_meta, content_store) = await asyncio.gather(
             alerts_task, context_task, content_task
         )
@@ -101,7 +104,8 @@ class DataGateway:
         if not events:
             return [], {}
 
-        # 并行 web_fetch
+        # 1. 对 content 先保留轻量 meta，再提前并行抓正文。
+        #    后续 agent loop 默认只看 meta，需要时再 get_content 读取缓存正文。
         fetch_tasks = [asyncio.create_task(self._fetch_one_url(e.get("url", ""))) for e in events]
         fetch_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
 
@@ -125,6 +129,7 @@ class DataGateway:
                 logger.debug("[gateway] web_fetch failed for %s: %s", compound_key, result)
                 content_store[compound_key] = ""
             else:
+                # 2. 正文统一收敛到 hashmap，供 get_content 按 item_id 读取。
                 content_store[compound_key] = result
 
         return content_meta, content_store

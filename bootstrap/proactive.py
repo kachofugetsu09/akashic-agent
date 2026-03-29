@@ -31,12 +31,17 @@ def build_proactive_runtime(
     observe_writer=None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
+    # 1. 总开关关闭时，主动链路完全不启动。
     if not config.proactive.enabled:
         return tasks, None
 
+    # 2. 先准备 proactive 独立状态存储和配置快照。
     proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
     proactive_cfg = config.proactive
 
+    # 3. 构建 ProactiveLoop。
+    #    这里把主动链路需要的外部依赖一次性注入进去：
+    #    session / provider / push_tool / memory / presence / passive_busy_fn。
     proactive_loop = ProactiveLoop(
         session_manager=session_manager,
         provider=provider,
@@ -54,12 +59,15 @@ def build_proactive_runtime(
         ),
         observe_writer=observe_writer,
     )
+
+    # 4. 主动链路本体以后台任务方式常驻运行。
     tasks.append(proactive_loop.run())
 
     fitbit_path = getattr(config.proactive, "fitbit_monitor_path", "").strip()
     if config.proactive.fitbit_enabled and fitbit_path:
         from proactive_v2.fitbit_sleep import run_fitbit_monitor
 
+        # 5. 可选挂载 fitbit 监控子任务，给主动链路提供睡眠上下文。
         tasks.append(run_fitbit_monitor(fitbit_path, config.proactive.fitbit_url))
         print(f"fitbit-monitor 已启动  |  路径={fitbit_path}")
 

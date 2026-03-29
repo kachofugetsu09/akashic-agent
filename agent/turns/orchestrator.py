@@ -136,6 +136,7 @@ class TurnOrchestrator:
         channel: str,
         chat_id: str,
     ) -> bool:
+        # 1. proactive 先处理 skip：不发消息，只跑 skip 路径副作用并记 trace。
         if result.decision == "skip":
             self._emit_proactive_observe(
                 key=session_key,
@@ -152,6 +153,7 @@ class TurnOrchestrator:
 
         content = result.outbound.content
         session = self._session.session_manager.get_or_create(session_key)
+        # 2. reply 路径先把主动消息写进 session，再安排 post_turn。
         self._persist_proactive_session(
             session=session,
             content=content,
@@ -169,6 +171,7 @@ class TurnOrchestrator:
 
         sent = False
         try:
+            # 3. 先执行发送前 side_effects，再真正 dispatch 到 outbound。
             await self._run_effects(result.side_effects)
             sent = await self._outbound.dispatch(
                 OutboundDispatch(
@@ -181,6 +184,7 @@ class TurnOrchestrator:
         except Exception as e:
             logger.warning("proactive outbound dispatch failed: %s", e)
 
+        # 4. 根据是否真正发送成功，分别执行 success / failure side_effects。
         if sent:
             if self._session.presence:
                 self._session.presence.record_proactive_sent(session_key)
