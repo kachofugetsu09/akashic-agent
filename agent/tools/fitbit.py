@@ -31,7 +31,7 @@ class FitbitHealthSnapshotTool(Tool):
     name = "fitbit_health_snapshot"
     description = (
         "获取用户当前健康状态快照，包括：当前心率（bpm）、最近一次睡眠 SpO₂、"
-        "今日步数、睡眠状态（sleeping/awake/uncertain）及睡眠概率。"
+        "今日步数、睡眠状态（sleeping/awake）及睡眠概率。"
         "其中 SpO₂ 按 Fitbit 官方语义视为最近一次睡眠估算值，不是白天实时血氧。"
         "适用于：用户询问当前状态、agent 判断是否适合打扰、了解用户能量水平。"
     )
@@ -56,7 +56,7 @@ class FitbitHealthSnapshotTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         try:
             r = await self._requester.get(
-                f"{self._url}/api/data",
+                f"{self._url}/api/tool/fitbit_health_snapshot",
                 budget=RequestBudget(total_timeout_s=5.0),
             )
             r.raise_for_status()
@@ -65,37 +65,42 @@ class FitbitHealthSnapshotTool(Tool):
             return f"[fitbit_health_snapshot] 无法连接 Fitbit monitor：{e}"
 
         sleep_24h: dict[str, Any] = {}
+        reason = ""
+        since = None
         try:
-            r_agent = await self._requester.get(
-                f"{self._url}/api/agent",
+            r_detail = await self._requester.get(
+                f"{self._url}/api/data",
                 budget=RequestBudget(total_timeout_s=5.0),
             )
-            r_agent.raise_for_status()
-            agent_data = r_agent.json()
-            if isinstance(agent_data, dict):
-                sleep_24h_obj = agent_data.get("sleep_24h")
+            r_detail.raise_for_status()
+            detail_data = r_detail.json()
+            if isinstance(detail_data, dict):
+                sleep_obj = detail_data.get("sleep")
+                if isinstance(sleep_obj, dict):
+                    reason = str(sleep_obj.get("reason") or "").strip()
+                    since = sleep_obj.get("since")
+        except Exception:
+            reason = ""
+            since = None
+
+        try:
+            if isinstance(data, dict):
+                sleep_24h_obj = data.get("sleep_24h")
                 if isinstance(sleep_24h_obj, dict):
                     sleep_24h = sleep_24h_obj
         except Exception:
             sleep_24h = {}
 
-        summary = data.get("summary", {})
-        sleep = data.get("sleep", {})
-        signals = data.get("signals", {}) or {}
-        meta = data.get("data_meta", {}) or {}
-
-        hr = summary.get("heart_rate")
-        spo2 = summary.get("spo2")
-        steps = summary.get("steps")
-        state = sleep.get("state", "unknown")
-        reason = sleep.get("reason", "")
-        since = sleep.get("since")
-        prob = signals.get("sleep_prob")
-        source = signals.get("prob_source", "")
-        lag = meta.get("data_lag_min")
-        hr_time = meta.get("latest_hr_time")
-        spo2_time = meta.get("latest_sleep_spo2_time")
-        spo2_lag = meta.get("spo2_lag_min")
+        hr = data.get("heart_rate")
+        spo2 = data.get("spo2")
+        steps = data.get("steps")
+        state = data.get("sleep_state", "unknown")
+        prob = data.get("sleep_prob")
+        lag = data.get("data_lag_min")
+        hr_time = None
+        source = ""
+        spo2_time = data.get("latest_sleep_spo2_time")
+        spo2_lag = data.get("spo2_lag_min")
         updated = data.get("last_updated", "")
 
         lines = [f"【Fitbit 健康快照】{updated}"]

@@ -71,21 +71,30 @@ async def test_web_fetch_tool_uses_injected_requester():
 @pytest.mark.asyncio
 async def test_fitbit_tools_use_injected_requester():
     def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tool/fitbit_health_snapshot":
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "heart_rate": 72,
+                    "spo2": 98.1,
+                    "steps": 1234,
+                    "sleep_state": "sleeping",
+                    "sleep_state_raw": "uncertain",
+                    "sleep_prob": 0.1,
+                    "sleep_24h": {"00:00-01:00": "sleeping"},
+                    "data_lag_min": 15,
+                    "latest_sleep_spo2_time": "07:10:00",
+                    "spo2_lag_min": 65,
+                    "last_updated": "2026-03-08T08:15:00+08:00",
+                },
+            )
         if request.url.path == "/api/data":
             return httpx.Response(
                 200,
                 request=request,
                 json={
-                    "summary": {"heart_rate": 72, "spo2": 98.1, "steps": 1234},
-                    "sleep": {"state": "awake"},
-                    "signals": {"sleep_prob": 0.1},
-                    "data_meta": {
-                        "data_lag_min": 15,
-                        "latest_hr_time": "08:00",
-                        "latest_sleep_spo2_time": "07:10:00",
-                        "spo2_lag_min": 65,
-                    },
-                    "last_updated": "2026-03-08T08:15:00+08:00",
+                    "sleep": {"state": "uncertain", "reason": "测试原因", "since": "2026-03-08 08:00:00"},
                 },
             )
         assert request.url.path == "/api/sleep_report"
@@ -128,7 +137,10 @@ async def test_fitbit_tools_use_injected_requester():
         snapshot = await snapshot_tool.execute()
         assert '"heart_rate": 72' in snapshot
         assert '"latest_sleep_spo2": 98.1' in snapshot
+        assert '"sleep_state": "sleeping"' in snapshot
         assert "最近一次睡眠血氧：98.1%" in snapshot
+        assert "睡眠状态：sleeping" in snapshot
+        assert "原因：测试原因" in snapshot
 
         sleep_tool = FitbitSleepReportTool(
             "http://monitor.local",

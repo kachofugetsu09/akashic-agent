@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _import_health_event_v2():
     module_dir = Path(__file__).resolve().parents[1] / "scripts" / "fitbit-monitor"
@@ -65,3 +67,78 @@ def test_spo2_no_longer_emits_persistent_low_oxygen():
     events = engine.process(rows)
 
     assert not any(e.type == "persistent_low_oxygen" for e in events)
+
+
+def test_uncertain_counts_as_sleeping_for_recovery_debt_daily_aggregation():
+    mod = _import_health_event_v2()
+    engine = mod.HealthEventV2Engine()
+
+    engine.ingest_row(
+        {
+            "poll_time": "2099-01-01 02:00:00",
+            "state": "uncertain",
+            "spo2": 91.2,
+            "spo2_time": "07:10:00",
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        }
+    )
+
+    day = engine._daily["2099-01-01"]
+    assert day["sleeping_polls"] == 1
+    assert day["night_spo2"] == [91.2]
+
+
+def test_spo2_uses_spo2_time_and_deduplicates_same_sample():
+    mod = _import_health_event_v2()
+    engine = mod.HealthEventV2Engine()
+
+    engine.ingest_row(
+        {
+            "poll_time": "2099-01-01 07:00:00",
+            "state": "sleeping",
+            "data_lag_min": 1,
+            "signals": {"zero_steps_count": 20},
+        }
+    )
+    engine.ingest_row(
+        {
+            "poll_time": "2099-01-01 08:00:00",
+            "state": "awake",
+            "data_lag_min": 1,
+            "signals": {"zero_steps_count": 0},
+        }
+    )
+    engine.ingest_row(
+        {
+            "poll_time": "2099-01-01 09:00:00",
+            "state": "awake",
+            "spo2": 90.1,
+            "spo2_time": "08:10:00",
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 0},
+        }
+    )
+    engine.ingest_row(
+        {
+            "poll_time": "2099-01-01 09:05:00",
+            "state": "awake",
+            "spo2": 90.1,
+            "spo2_time": "08:10:00",
+            "data_lag_min": 10,
+            "signals": {"zero_steps_count": 0},
+        }
+    )
+    engine.ingest_row(
+        {
+            "poll_time": "2099-01-01 09:10:00",
+            "state": "awake",
+            "spo2": 89.8,
+            "spo2_time": "08:15:00",
+            "data_lag_min": 15,
+            "signals": {"zero_steps_count": 0},
+        }
+    )
+
+    day = engine._daily["2099-01-01"]
+    assert day["night_spo2"] == pytest.approx([89.95])
