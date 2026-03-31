@@ -20,5 +20,5 @@ def register_fitbit_tools(
             requester=http_resources.local_service,
         )
     }
-    tools.register(fitbit_tools["fitbit_health_snapshot"], tags=["health", "fitbit"], risk="read-only", search_keywords=["健康数据", "运动数据", "fitbit", "心率", "步数", "卡路里"])
-    tools.register(fitbit_tools["fitbit_sleep_report"], tags=["health", "fitbit"], risk="read-only", search_keywords=["睡眠报告", "睡眠数据", "睡眠质量", "fitbit", "sleep"])
+    tools.register(fitbit_tools["fitbit_health_snapshot"], risk="read-only", search_hint="卡路里 运动数据")
+    tools.register(fitbit_tools["fitbit_sleep_report"], risk="read-only")

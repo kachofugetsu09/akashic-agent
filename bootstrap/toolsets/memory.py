@@ -31,8 +31,6 @@ def build_memory_toolset(
     )
     tools.register(
         UpdateNowTool(memory_runtime.port),
-        tags=["memory"],
         risk="write",
-        search_keywords=["更新记忆", "同步记忆", "刷新知识库", "memory更新"],
     )
     return memory_runtime

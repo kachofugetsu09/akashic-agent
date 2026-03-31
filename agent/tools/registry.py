@@ -1,82 +1,13 @@
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from agent.tools.base import Tool, ToolResult
+from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
 
 logger = logging.getLogger(__name__)
 
-# token 级：单个词命中后追加同义词
-_TOKEN_SYNONYMS: dict[str, list[str]] = {
-    # 文件系统
-    "目录": ["list_dir", "dir", "ls"],
-    "文件": ["file", "read_file"],
-    "写入": ["write", "write_file"],
-    "编辑": ["edit", "edit_file"],
-    "修改": ["edit", "edit_file"],
-    "读取": ["read", "read_file"],
-    "保存": ["write", "write_file"],
-    # 网络
-    "搜索": ["search", "web_search"],
-    "查询": ["query", "search"],
-    "浏览": ["fetch", "web_fetch"],
-    "网页": ["web", "fetch", "web_fetch"],
-    # 定时
-    "定时": ["schedule", "cron"],
-    "提醒": ["schedule", "remind"],
-    "计划": ["schedule"],
-    "任务": ["task", "schedule", "skill"],
-    # 消息推送
-    "推送": ["push", "message_push"],
-    "通知": ["notify", "message_push", "push"],
-    "发送": ["send", "push"],
-    "消息": ["message", "push"],
-    "对话": ["message", "search_messages"],
-    # 订阅
-    "订阅": ["feed", "rss", "subscribe"],
-    "rss": ["feed", "rss"],
-    # 健康
-    "健康": ["health", "fitbit"],
-    "睡眠": ["sleep", "fitbit"],
-    "步数": ["fitbit", "health"],
-    "心率": ["fitbit", "health"],
-    # 记忆
-    "记忆": ["memory", "memorize"],
-    "记录": ["memorize", "write"],
-    "备忘": ["memorize", "memory"],
-    # 技能
-    "技能": ["skill"],
-    # 系统
-    "命令": ["shell", "command"],
-    "终端": ["shell", "terminal"],
-    "脚本": ["shell", "script"],
-    "bash": ["shell"],
-    # MCP
-    "mcp": ["mcp"],
-    # 更新
-    "更新": ["update", "edit"],
-    "刷新": ["update"],
-}
-
-
-def _expand_query(query: str) -> set[str]:
-    """将查询字符串展开为搜索词集合（原词 + token 同义词）。
-
-    处理顺序：
-    1. 空格切分得到 tokens（含原始词）
-    2. token 级：token 命中 _TOKEN_SYNONYMS → 追加对应词
-    各工具领域同义词通过 search_keywords 注册时指定，不在此处硬编码。
-    """
-    query_lower = query.lower().strip()
-    tokens = [t for t in query_lower.split() if t]
-    expanded: set[str] = set(tokens)
-
-    for token in tokens:
-        # token 级匹配：token 本身，或 token 中包含某个 token_key
-        for tk, syns in _TOKEN_SYNONYMS.items():
-            if tk == token or tk in token:
-                expanded.update(syns)
-
-    return expanded
+# 元工具（不参与搜索结果，也不出现在 deferred 工具目录里）
+_META_TOOLS: frozenset[str] = frozenset({"tool_search"})
 
 
 # ── ToolMeta ──────────────────────────────────────────────────────────────────
@@ -84,10 +15,49 @@ def _expand_query(query: str) -> set[str]:
 
 @dataclass
 class ToolMeta:
-    tags: list[str] = field(default_factory=list)
     risk: str = "read-only"  # "read-only" | "write" | "external-side-effect"
     always_on: bool = False
-    search_keywords: list[str] = field(default_factory=list)
+    # 可选：3–10 词短语，补充工具名和描述中没有的别名或口语化表达。
+    # 不需要重复名称或描述里已有的词——搜索后端自动索引 name + description。
+    search_hint: str | None = None
+
+
+# ── ToolDocument ──────────────────────────────────────────────────────────────
+
+
+@dataclass
+class ToolDocument:
+    """工具的索引态视图，派生自 Tool + ToolMeta，供搜索后端使用。
+
+    搜索后端自动索引：name、description。
+    search_hint 是可选补充，仅在名称和描述无法覆盖某些口语别名时填写。
+    """
+
+    name: str
+    description: str
+    risk: str
+    always_on: bool
+    search_hint: str | None
+    source_type: str  # "builtin" | "mcp"
+    source_name: str  # mcp server 名，builtin 为空字符串
+
+    @classmethod
+    def from_tool_and_meta(
+        cls,
+        tool: "Tool",
+        meta: ToolMeta,
+        source_type: str = "builtin",
+        source_name: str = "",
+    ) -> "ToolDocument":
+        return cls(
+            name=tool.name,
+            description=tool.description,
+            risk=meta.risk,
+            always_on=meta.always_on,
+            search_hint=meta.search_hint,
+            source_type=source_type,
+            source_name=source_name,
+        )
 
 
 # ── ToolRegistry ──────────────────────────────────────────────────────────────
@@ -96,10 +66,12 @@ class ToolMeta:
 class ToolRegistry:
     """管理所有可用工具"""
 
-    def __init__(self) -> None:
+    def __init__(self, backend: SearchBackend | None = None) -> None:
         self._tools: dict[str, Tool] = {}
         self._metadata: dict[str, ToolMeta] = {}
+        self._documents: dict[str, ToolDocument] = {}
         self._context: dict[str, str] = {}
+        self._backend: SearchBackend = backend or KeywordSearchBackend()
 
     def set_context(self, **kwargs: str) -> None:
         """设置当前会话上下文（channel、chat_id 等），供工具按需读取。"""
@@ -112,23 +84,31 @@ class ToolRegistry:
         self,
         tool: Tool,
         *,
-        tags: list[str] | None = None,
         risk: str = "read-only",
         always_on: bool = False,
-        search_keywords: list[str] | None = None,
+        search_hint: str | None = None,
+        source_type: str = "builtin",
+        source_name: str = "",
     ) -> None:
         self._tools[tool.name] = tool
-        self._metadata[tool.name] = ToolMeta(
-            tags=tags or [],
+        meta = ToolMeta(
             risk=risk,
             always_on=always_on,
-            search_keywords=search_keywords or [],
+            search_hint=search_hint,
         )
+        self._metadata[tool.name] = meta
+        doc = ToolDocument.from_tool_and_meta(
+            tool, meta, source_type=source_type, source_name=source_name
+        )
+        self._documents[tool.name] = doc
+        self._backend.add(doc)
         logger.debug(f"注册工具: {tool.name}")
 
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
         self._metadata.pop(name, None)
+        self._documents.pop(name, None)
+        self._backend.remove(name)
         logger.debug(f"注销工具: {name}")
 
     def has_tool(self, name: str) -> bool:
@@ -147,99 +127,34 @@ class ToolRegistry:
         """返回标记为 always_on 的工具名称集合。"""
         return {name for name, meta in self._metadata.items() if meta.always_on}
 
-    def search(
-        self,
-        query: str,
-        top_k: int = 5,
-        allowed_risk: list[str] | None = None,
-    ) -> list[dict]:
-        """关键词搜索工具目录，返回匹配的工具信息列表。"""
-        # 1. 先把用户 query 展开成搜索词集合。
-        keywords = _expand_query(query)
-        risk_filter = set(allowed_risk) if allowed_risk else None
+    def get_documents(self) -> list[ToolDocument]:
+        """返回所有已注册工具的索引文档列表。"""
+        return list(self._documents.values())
 
-        results = []
-        # 2. 遍历当前所有已注册工具，逐个计算匹配分数。
-        for name, tool in self._tools.items():
-            meta = self._metadata.get(name, ToolMeta())
+    def get_deferred_names(self, visible: set[str] | None = None) -> dict[str, list[str]]:
+        """返回所有 deferred 工具名，按来源分组。
 
-            # 3. 元工具不参与搜索结果展示。
-            if name in ("tool_search", "list_tools"):
+        visible: 当前 turn 已可见工具名（always_on + preloaded），从结果中排除。
+        deferred = 全量注册工具 - always_on - meta_tools - visible
+        格式: {"builtin": [...], "mcp": {"server_name": [...], ...}}
+        """
+        always_on = self.get_always_on_names()
+        excluded = always_on | _META_TOOLS | (visible or set())
+        builtin: list[str] = []
+        mcp: dict[str, list[str]] = {}
+
+        for name, doc in self._documents.items():
+            if name in excluded:
                 continue
+            if doc.source_type == "mcp":
+                mcp.setdefault(doc.source_name, []).append(name)
+            else:
+                builtin.append(name)
 
-            # 4. 如果调用方限制了风险等级，先在这里过滤。
-            if risk_filter and meta.risk not in risk_filter:
-                continue
-
-            # 5. 按名称 / 关键词 / 标签 / 描述 / 参数名打分。
-            score, matched_reasons = self._score_tool(tool, meta, keywords)
-            if score > 0:
-                params = tool.parameters or {}
-                key_params = list((params.get("properties") or {}).keys())[:5]
-                results.append(
-                    {
-                        "name": name,
-                        "summary": tool.description[:120],
-                        "why_matched": matched_reasons,
-                        "key_params": key_params,
-                        "tags": meta.tags,
-                        "risk": meta.risk,
-                        "_score": score,
-                    }
-                )
-
-        # 6. 按分数从高到低排序，再去掉内部字段。
-        results.sort(key=lambda x: x["_score"], reverse=True)
-        for r in results:
-            del r["_score"]
-
-        # 7. 最后只返回前 top_k 个候选。
-        return results[:top_k]
-
-    @staticmethod
-    def _score_tool(
-        tool: Tool, meta: ToolMeta, keywords: set[str]
-    ) -> tuple[int, list[str]]:
-        """给单个工具打分，返回 (score, matched_reasons)。"""
-        name_lower = tool.name.lower()
-        kw_str = " ".join(meta.search_keywords).lower()
-        tag_str = " ".join(meta.tags).lower()
-        desc_lower = tool.description.lower()
-        param_names = " ".join(
-            (tool.parameters or {}).get("properties", {}).keys()
-        ).lower()
-
-        score = 0
-        reasons: list[str] = []
-
-        # 1. 逐个 keyword 检查它命中了工具的哪个字段。
-        for kw in keywords:
-            # 2. 同一个 keyword 只记一次分。
-            #    这里故意用 if/elif：谁先命中高优先级字段，就不再继续往下加分。
-            if kw in name_lower:
-                score += 3
-                reasons.append(f"名称:{kw}")
-            elif kw in kw_str:
-                score += 3
-                reasons.append(f"关键词:{kw}")
-            elif kw in tag_str:
-                score += 2
-                reasons.append(f"标签:{kw}")
-            elif kw in desc_lower:
-                score += 2
-                reasons.append(f"描述:{kw}")
-            elif kw in param_names:
-                score += 1
-                reasons.append(f"参数:{kw}")
-
-        # 3. why_matched 里的原因可能重复，这里做一次去重保序。
-        seen: set[str] = set()
-        deduped = []
-        for r in reasons:
-            if r not in seen:
-                seen.add(r)
-                deduped.append(r)
-        return score, deduped
+        return {
+            "builtin": sorted(builtin),
+            "mcp": {k: sorted(v) for k, v in sorted(mcp.items())},
+        }
 
     async def execute(self, name: str, arguments: dict) -> str | ToolResult:
         tool = self._tools.get(name)
@@ -253,3 +168,43 @@ class ToolRegistry:
         except Exception as e:
             logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
             return f"工具执行出错: {e}"
+
+    def get_schemas_as_doc_results(self, names: list[str]) -> list[dict]:
+        """将工具名列表转为与 search() 相同格式的结果列表。
+
+        供 select: 精确加载路径使用，why_matched 固定为"名称:精确匹配"。
+        """
+        results = []
+        for name in names:
+            doc = self._documents.get(name)
+            if doc:
+                results.append(
+                    {
+                        "name": doc.name,
+                        "summary": doc.description[:120],
+                        "why_matched": ["名称:精确匹配"],
+                        "risk": doc.risk,
+                        "always_on": doc.always_on,
+                    }
+                )
+        return results
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        allowed_risk: list[str] | None = None,
+        excluded_names: set[str] | None = None,
+    ) -> list[dict]:
+        """关键词搜索工具目录，返回匹配的工具信息列表。
+
+        excluded_names: 调用方（当前 turn）传入的排除集合，通常为已可见工具名。
+        meta_tools 始终被排除。搜索逻辑委托给 SearchBackend。
+        """
+        excluded = _META_TOOLS | (excluded_names or set())
+        return self._backend.search(
+            query=query,
+            top_k=top_k,
+            allowed_risk=allowed_risk,
+            excluded_names=excluded,
+        )

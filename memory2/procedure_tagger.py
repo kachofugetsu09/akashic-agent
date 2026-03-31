@@ -36,7 +36,6 @@ KNOWN_TOOLS = [
     "task_done",
     "task_note",
     "task_recall",
-    "list_tools",
     "tool_search",
     "update_now",
     "fitbit_health_snapshot",

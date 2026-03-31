@@ -1,10 +1,19 @@
 import json
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from agent.tools.base import Tool
+from agent.tools.registry import _META_TOOLS
 
 if TYPE_CHECKING:
     from agent.tools.registry import ToolRegistry
+
+# 当前 tool_search 调用的 excluded_names，由 TurnExecutor 在调用前通过 ContextVar 注入。
+# 不走 execute() 参数，避免污染 RecordingToolRegistry 记录的 arguments dict。
+# asyncio 单线程 + ContextVar per-task 语义保证并发安全。
+_excluded_names_ctx: ContextVar[set[str] | None] = ContextVar(
+    "_tool_search_excluded", default=None
+)
 
 
 class ToolSearchTool(Tool):
@@ -27,11 +36,13 @@ class ToolSearchTool(Tool):
             "调用时机：\n"
             "- 需要某类功能，但不知道工具名称 → 必须调用\n"
             "- 知道工具名且已可见 → 直接调用，不要先搜索\n"
-            "- 知道工具名但不可见 → 可直接调用（系统会自动解锁），或先搜索确认\n"
+            "- 知道工具名但不可见 → 用 select: 前缀精确加载（见下）\n"
             "- 收到'工具不存在'错误 → 必须调用，用错误中的建议关键词搜索\n"
             "- 纯对话/推理，不涉及工具能力 → 不调用\n\n"
-            "正确流程：tool_search(query) → 从结果中选择工具 → 立即调用（不需二次搜索）\n"
-            "查询示例：'发送消息给用户'、'定时提醒'、'RSS订阅管理'、'Fitbit健康数据'"
+            "查询形式：\n"
+            "- \"select:工具名\" → 精确加载已知工具，支持逗号分隔多个：\"select:A,B,C\"\n"
+            "- \"关键词\" → 模糊搜索，例如：\"定时提醒\"、\"RSS订阅管理\"、\"Fitbit健康数据\"\n\n"
+            "正确流程：tool_search(query) → 从结果中选择工具 → 立即调用（不需二次搜索）"
         )
 
     @property
@@ -41,11 +52,15 @@ class ToolSearchTool(Tool):
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "搜索关键词，描述你需要的功能，例如：'定时任务'、'文件读取'、'订阅管理'",
+                    "description": (
+                        "搜索查询。两种形式：\n"
+                        "1. \"select:工具名\" 精确加载（支持逗号分隔多个）\n"
+                        "2. 关键词描述功能，例如：\"定时任务\"、\"文件读取\"、\"订阅管理\""
+                    ),
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "返回的最大工具数量，默认 5，最大 10",
+                    "description": "关键词搜索时返回的最大工具数量，默认 5，最大 10",
                     "default": 5,
                 },
                 "allowed_risk": {
@@ -67,9 +82,32 @@ class ToolSearchTool(Tool):
         allowed_risk: list[str] | None = None,
         **_: Any,
     ) -> str:
+        # excluded_names 由 TurnExecutor 通过 ContextVar 注入，不走 execute() 参数，
+        # 避免 set 进入 RecordingToolRegistry 记录的 arguments dict（JSON 不可序列化）。
+        excluded_names = _excluded_names_ctx.get()
+
+        query = (query or "").strip()
+        if not query:
+            return json.dumps(
+                {"matched": [], "tip": "query 不能为空，请描述你需要的功能"},
+                ensure_ascii=False,
+            )
+
+        # ── select: 精确加载路径 ──────────────────────────────────────────
+        if query.lower().startswith("select:"):
+            return self._handle_select(
+                query[7:],
+                allowed_risk=allowed_risk,
+                excluded_names=excluded_names,
+            )
+
+        # ── 关键词搜索路径 ────────────────────────────────────────────────
         top_k = min(max(1, int(top_k)), 10)
         results = self._registry.search(
-            query=query, top_k=top_k, allowed_risk=allowed_risk
+            query=query,
+            top_k=top_k,
+            allowed_risk=allowed_risk,
+            excluded_names=excluded_names,
         )
         if not results:
             return json.dumps(
@@ -77,3 +115,62 @@ class ToolSearchTool(Tool):
                 ensure_ascii=False,
             )
         return json.dumps({"matched": results}, ensure_ascii=False, indent=2)
+
+    def _handle_select(
+        self,
+        names_str: str,
+        *,
+        allowed_risk: list[str] | None = None,
+        excluded_names: set[str] | None = None,
+    ) -> str:
+        """处理 select:A,B,C 精确加载路径。
+
+        与 search() 使用相同的过滤语义：
+        - excluded_names 中的工具已可见，无需加载（返回 tip 提示直接调用）
+        - allowed_risk 不为空时，风险等级不符的工具不返回
+        """
+        requested = [n.strip() for n in names_str.split(",") if n.strip()]
+        if not requested:
+            return json.dumps(
+                {"matched": [], "tip": "select: 后面需要提供工具名"},
+                ensure_ascii=False,
+            )
+
+        excluded = _META_TOOLS | (set(excluded_names) if excluded_names else set())
+        risk_filter = set(allowed_risk) if allowed_risk else None
+
+        already_loaded: list[str] = []
+        found: list[str] = []
+        missing: list[str] = []
+        risk_blocked: list[str] = []
+
+        for name in requested:
+            if name in excluded:
+                already_loaded.append(name)
+            elif not self._registry.has_tool(name):
+                missing.append(name)
+            else:
+                doc = self._registry._documents.get(name)
+                if risk_filter and doc and doc.risk not in risk_filter:
+                    risk_blocked.append(name)
+                else:
+                    found.append(name)
+
+        matched = self._registry.get_schemas_as_doc_results(found)
+        result: dict[str, Any] = {"matched": matched}
+
+        tip_parts: list[str] = []
+        if already_loaded:
+            tip_parts.append(f"已加载可直接调用: {', '.join(already_loaded)}")
+        if missing:
+            tip_parts.append(
+                f"未找到工具: {', '.join(missing)}，请用关键词搜索确认正确名称"
+            )
+        if risk_blocked:
+            tip_parts.append(
+                f"风险等级不符（allowed_risk={allowed_risk}）: {', '.join(risk_blocked)}"
+            )
+        if tip_parts:
+            result["tip"] = "; ".join(tip_parts)
+
+        return json.dumps(result, ensure_ascii=False, indent=2)

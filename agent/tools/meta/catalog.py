@@ -14,7 +14,6 @@ META_TOOLBOX_GROUPS: tuple[MetaToolGroup, ...] = (
         title="Meta",
         tools=(
             ("tool_search", "搜索并解锁其他工具"),
-            ("list_tools", "查看当前可用工具"),
         ),
     ),
     MetaToolGroup(

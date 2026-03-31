@@ -1,0 +1,64 @@
+[
+  {
+    "query": "写文件",
+    "expected_top1": "write_file",
+    "comment": "描述含'写入'+'文件'，bigram 自动召回"
+  },
+  {
+    "query": "编辑文件",
+    "expected_top1": "edit_file",
+    "comment": "描述含'编辑'+'文件'"
+  },
+  {
+    "query": "查看目录",
+    "expected_top1": "list_dir",
+    "comment": "描述含'目录'，bigram '目录' 命中"
+  },
+  {
+    "query": "定时任务",
+    "expected_top1": "schedule",
+    "comment": "描述含'定时任务'，直接命中"
+  },
+  {
+    "query": "设置提醒",
+    "expected_top1": "schedule",
+    "comment": "描述含'提醒'，无需手写 search_keywords"
+  },
+  {
+    "query": "RSS订阅",
+    "expected_top3": ["feed_manage"],
+    "comment": "描述含'RSS'+'订阅'"
+  },
+  {
+    "query": "添加订阅",
+    "expected_top3": ["feed_manage"],
+    "comment": "描述含'添加'+'订阅'"
+  },
+  {
+    "query": "推送消息给用户",
+    "expected_top3": ["message_push"],
+    "comment": "描述含'推送'+'消息'，bigram 召回"
+  },
+  {
+    "query": "记忆存储",
+    "expected_top3": ["memorize"],
+    "comment": "描述含'记忆'+'存入'"
+  },
+  {
+    "query": "健康数据",
+    "expected_top1": "fitbit_health_snapshot",
+    "comment": "描述含'健康'+'数据'"
+  },
+  {
+    "query": "文件",
+    "expected_top3": ["edit_file"],
+    "comment": "通用词，四个文件工具同分；tie-break 按 name 字母序，edit_file 首位可预测"
+  },
+  {
+    "query": "写文件",
+    "expected_top3": [],
+    "allowed_risk": ["read-only"],
+    "expected_excluded": ["write_file"],
+    "comment": "risk filter: write_file 不应出现在 read-only 结果中"
+  }
+]

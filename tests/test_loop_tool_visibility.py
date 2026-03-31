@@ -89,7 +89,7 @@ def _make_loop(
 def _base_registry() -> ToolRegistry:
     """只含 tool_search 的最小 registry。"""
     reg = ToolRegistry()
-    reg.register(ToolSearchTool(reg), always_on=True, tags=["meta"], risk="read-only")
+    reg.register(ToolSearchTool(reg), always_on=True, risk="read-only")
     return reg
 
 
@@ -115,11 +115,12 @@ class TestVisibilityGuard:
         assert final == "ok"
         assert "ghost_tool" not in tools_used  # 被拦截，不计入 tools_used
 
-    def test_hidden_but_registered_tool_is_auto_unlocked(self, tmp_path):
-        """在 registry 里但不在 visible_names 里的工具 → 自动解锁并执行。"""
+    def test_deferred_tool_direct_call_blocked_with_select_hint(self, tmp_path):
+        """在 registry 里但不在 visible_names 里的工具（deferred）直接调用
+        → 不执行，返回 select: 引导错误，模型收到后给出最终回复。"""
         reg = _base_registry()
         hidden = _DummyTool("hidden_tool")
-        reg.register(hidden)  # 不设 always_on
+        reg.register(hidden)  # 不设 always_on → deferred
 
         provider = _FakeProvider(
             [
@@ -129,13 +130,19 @@ class TestVisibilityGuard:
         )
         loop = _make_loop(tmp_path, provider, reg)
 
-        final, tools_used, _, _, _ = asyncio.run(
+        final, tools_used, tool_chain, _, _ = asyncio.run(
             loop._run_agent_loop([{"role": "user", "content": "test"}])
         )
 
         assert final == "done"
-        assert "hidden_tool" in tools_used
-        assert len(hidden.calls) == 1
+        assert "hidden_tool" not in tools_used  # 未执行，不计入 tools_used
+        assert len(hidden.calls) == 0           # 工具实体未被调用
+
+        # 第一轮 tool_chain 应有 select: 引导错误
+        calls = tool_chain[0]["calls"] if tool_chain else []
+        hidden_call = next((c for c in calls if c["name"] == "hidden_tool"), None)
+        assert hidden_call is not None
+        assert "select:" in hidden_call["result"]
 
     def test_tool_search_enabled_false_exposes_all_tools(self, tmp_path):
         """tool_search_enabled=False 时全量暴露，hidden tool 直接可用。"""
@@ -161,10 +168,7 @@ class TestVisibilityGuard:
         """调用 tool_search 后，返回结果里的工具名加入 visible_names。"""
         reg = _base_registry()
         target = _DummyTool("target_tool")
-        reg.register(
-            target,
-            search_keywords=["target", "目标工具"],
-        )
+        reg.register(target)
 
         # tool_search 直接返回匹配结果（模拟 registry.search 找到了 target_tool）
         tool_search_result = json.dumps(

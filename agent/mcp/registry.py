@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -11,40 +10,6 @@ from agent.mcp.tool import McpToolWrapper
 from agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
-
-
-def _mcp_search_keywords(info: McpToolInfo, server_name: str) -> list[str]:
-    """从 MCP 工具信息中提取搜索关键词。
-
-    来源：server 名、工具名拆词、description 前几个词。
-    """
-    keywords: list[str] = [server_name.lower()]
-
-    # 工具名拆词：下划线、连字符、驼峰
-    raw_name = re.sub(r"([a-z])([A-Z])", r"\1_\2", info.name)  # camelCase → snake
-    parts = re.split(r"[_\-]+", raw_name)
-    keywords.extend(p.lower() for p in parts if len(p) > 1)
-
-    # description 前 8 个词（过滤短词和标点）
-    desc_words = re.split(r"\s+", info.description[:120])
-    for w in desc_words[:8]:
-        w_clean = w.strip(".,;:!?\"'()[]").lower()
-        if len(w_clean) > 2:
-            keywords.append(w_clean)
-
-    # 去重保序
-    seen: set[str] = set()
-    result: list[str] = []
-    for kw in keywords:
-        if kw not in seen:
-            seen.add(kw)
-            result.append(kw)
-    if server_name == "feed":
-        if info.name == "feed_manage":
-            result.extend(["rss订阅", "添加订阅", "删除订阅", "取消订阅", "订阅管理"])
-        if info.name == "feed_query":
-            result.extend(["查询订阅", "最近新闻", "最新资讯", "这个源有什么新闻", "rss查询"])
-    return result
 
 
 class McpServerRegistry:
@@ -128,9 +93,9 @@ class McpServerRegistry:
             wrapper = McpToolWrapper(client, info)
             self._tool_registry.register(
                 wrapper,
-                tags=["mcp", name],
                 risk="external-side-effect",
-                search_keywords=_mcp_search_keywords(info, name),
+                source_type="mcp",
+                source_name=name,
             )
             tool_names.append(wrapper.name)
         self._clients[name] = client

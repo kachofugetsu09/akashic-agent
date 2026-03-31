@@ -503,7 +503,7 @@
 - `tags`
 - `risk`
 - `always_on`
-- `search_keywords`
+- `search_hint`
 
 这带来两个直接收益：
 

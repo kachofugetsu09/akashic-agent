@@ -20,6 +20,7 @@ from agent.procedure_hint import (
 )
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
 from agent.tools.base import normalize_tool_result
+from agent.tools.tool_search import _excluded_names_ctx
 
 logger = logging.getLogger("agent.loop")
 
@@ -50,7 +51,7 @@ def _build_reflect_content(
     # 动态工具状态提示
     tool_state_hint = ""
     if visible_names is not None and always_on_names is not None:
-        unlocked_extra = visible_names - always_on_names - {"tool_search", "list_tools"}
+        unlocked_extra = visible_names - always_on_names - {"tool_search"}
         if unlocked_extra:
             tool_state_hint = (
                 f"【当前会话已额外解锁工具: {', '.join(sorted(unlocked_extra))}】\n"
@@ -58,8 +59,8 @@ def _build_reflect_content(
         else:
             tool_state_hint = (
                 "【当前仅 always-on 工具可见】\n"
-                "若需其他工具：已知工具名可直接调用（系统自动解锁）；"
-                "不知道工具名时调用 tool_search 搜索。\n"
+                "若需其他工具：已知工具名 → tool_search(query=\"select:工具名\") 加载；"
+                "不知道工具名 → tool_search(query=\"关键词\") 搜索。\n"
             )
 
     if not pending_hints:
@@ -73,6 +74,36 @@ def _build_reflect_content(
         + tool_state_hint
         + _REFLECT_PROMPT
     )
+
+
+def _build_deferred_tools_hint(
+    tools: "ToolRegistry", visible: set[str] | None = None
+) -> str:
+    """构建 deferred 工具目录提示，注入到每个 turn 的 preflight 里。
+
+    visible: 当前 turn 已可见工具名（always_on + preloaded），从目录中排除，
+    避免把已加载的工具误报为"未加载"。
+    """
+    deferred = tools.get_deferred_names(visible=visible)
+    builtin: list[str] = deferred.get("builtin", [])
+    mcp: dict[str, list[str]] = deferred.get("mcp", {})
+
+    if not builtin and not mcp:
+        return ""
+
+    lines: list[str] = ["【未加载工具目录（知道名字但 schema 未暴露）】"]
+    if builtin:
+        lines.append(f"内置: {', '.join(builtin)}")
+    for server, names in mcp.items():
+        lines.append(f"MCP ({server}): {', '.join(names)}")
+
+    total = len(builtin) + sum(len(v) for v in mcp.values())
+    lines.append(
+        f"\n共 {total} 个。加载方式：\n"
+        "- 已知工具名 → tool_search(query=\"select:工具名\")，支持逗号分隔多个\n"
+        "- 描述功能   → tool_search(query=\"关键词\") 搜索匹配"
+    )
+    return "\n".join(lines) + "\n\n"
 
 
 @dataclass
@@ -131,7 +162,9 @@ class TurnExecutor:
         repeat_count = 0
         injected_proc_ids: set[str] = set()
 
-        # 2. tool_search 模式下，只向 LLM 暴露 always_on + LRU 预加载工具。
+        # 2. tool_search 模式下，只向 LLM 暴露 always_on + LRU 预加载工具的完整 schema。
+        #    其余工具的名字通过 preflight 的 deferred 工具目录告知模型，
+        #    模型用 tool_search 解锁后下一 iteration 才拿到完整 schema。
         visible_names: set[str] | None = None
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
@@ -147,6 +180,11 @@ class TurnExecutor:
         preflight_prompt = (
             f"【本轮时间锚点】{self._format_request_time_anchor(request_time)}\n"
             "所有时间相关判断必须与该锚点一致；无法验证时必须明确不确定。\n\n"
+            + (
+                _build_deferred_tools_hint(self._tools, visible=visible_names)
+                if self._tool_search_enabled
+                else ""
+            )
             + _PRE_FLIGHT_PROMPT
         )
         # 3. 每轮开始前都补一条 preflight 提示，约束时间判断和工具使用方式。
@@ -201,29 +239,27 @@ class TurnExecutor:
                 iter_calls: list[dict] = []
                 pending_hints: list[str] = []
                 for tc in response.tool_calls:
-                    # 6.1 当前工具若还不可见，先判断是“可自动解锁”还是“必须转 tool_search”。
+                    # 6.1 工具未在本 turn 可见集合内：必须先通过 tool_search 加载，不自动解锁。
                     if visible_names is not None and tc.name not in visible_names:
-                        if self._tools.has_tool(tc.name):
-                            visible_names.add(tc.name)
-                            logger.info("  ↑ 工具 %s 从历史记忆自动解锁", tc.name)
-                        else:
-                            logger.warning("  ✗ 工具 %s 不存在，已注入 query hint", tc.name)
-                            suggested_query = tc.name.replace("_", " ").replace("-", " ")
-                            result = (
-                                f"工具 '{tc.name}' 当前不可见或不存在。"
-                                f"请立即调用 tool_search(query=\"{suggested_query}\") 搜索等价工具，"
-                                f"然后从结果中选择正确工具继续执行。不要放弃当前任务。"
-                            )
-                            append_tool_result(messages, tool_call_id=tc.id, content=result)
-                            iter_calls.append(
-                                {
-                                    "call_id": tc.id,
-                                    "name": tc.name,
-                                    "arguments": tc.arguments,
-                                    "result": result,
-                                }
-                            )
-                            continue
+                        logger.warning(
+                            "  x 工具 %s 未加载（不在 visible_names），引导使用 select:",
+                            tc.name,
+                        )
+                        result = (
+                            f"工具 '{tc.name}' 当前未加载（schema 不可见）。"
+                            f"请先调用 tool_search(query=\"select:{tc.name}\") 加载，"
+                            f"然后再调用该工具。不要放弃当前任务。"
+                        )
+                        append_tool_result(messages, tool_call_id=tc.id, content=result)
+                        iter_calls.append(
+                            {
+                                "call_id": tc.id,
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                                "result": result,
+                            }
+                        )
+                        continue
 
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info("  → 工具 %s  参数: %s", tc.name, args_str[:120])
@@ -259,8 +295,19 @@ class TurnExecutor:
                         continue
 
                     # 6.3 未被拦截时才真正执行工具，并把结果追加为 tool message。
+                    # tool_search 需要知道当前 visible_names 以排除已可见工具；
+                    # 通过 ContextVar 注入，不污染 execute() 的 arguments dict，
+                    # 避免 set 进入 RecordingToolRegistry 的 artifact 序列化。
+                    if tc.name == "tool_search" and visible_names is not None:
+                        _ctx_token = _excluded_names_ctx.set(visible_names)
+                    else:
+                        _ctx_token = None
                     tools_used.append(tc.name)
-                    result = await self._tools.execute(tc.name, tc.arguments)
+                    try:
+                        result = await self._tools.execute(tc.name, tc.arguments)
+                    finally:
+                        if _ctx_token is not None:
+                            _excluded_names_ctx.reset(_ctx_token)
                     normalized = normalize_tool_result(result)
                     result_preview = normalized.preview()
                     if len(result_preview) > 80:

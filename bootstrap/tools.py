@@ -87,9 +87,7 @@ class CoreRuntime:
                 self.tools.register(
                     t,
                     always_on=False,
-                    tags=["peer", "delegate"],
                     risk="external-side-effect",
-                    search_keywords=["agent", "专家"],
                 )
             self.peer_poller.start()
 

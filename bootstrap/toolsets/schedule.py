@@ -28,6 +28,6 @@ def register_scheduler_tools(
     tools: ToolRegistry,
     scheduler: SchedulerService,
 ) -> None:
-    tools.register(ScheduleTool(scheduler), tags=["scheduling"], risk="write", search_keywords=["定时任务", "设置提醒", "计划任务", "cron", "延时执行", "timer"])
-    tools.register(ListSchedulesTool(scheduler), tags=["scheduling"], risk="read-only", search_keywords=["查看定时任务", "定时列表", "提醒列表", "有哪些计划"])
-    tools.register(CancelScheduleTool(scheduler), tags=["scheduling"], risk="write", search_keywords=["取消定时", "删除提醒", "取消任务", "cancel schedule"])
+    tools.register(ScheduleTool(scheduler), risk="write", search_hint="cron timer 延时执行")
+    tools.register(ListSchedulesTool(scheduler), risk="read-only", search_hint="提醒列表 已有计划")
+    tools.register(CancelScheduleTool(scheduler), risk="write", search_hint="删除提醒 取消任务")

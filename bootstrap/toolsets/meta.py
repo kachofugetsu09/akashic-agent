@@ -62,9 +62,8 @@ def register_spawn_tool(
         # tools.register(
         #     SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
         #     always_on=True,
-        #     tags=["meta", "background"],
         #     risk="write",
-        #     search_keywords=["后台", "长任务", "异步", "继续处理", "spawn", "阻塞", "后台执行"],
+        #     search_hint="后台执行 长任务 异步",
         # )
         pass
     return subagent_manager

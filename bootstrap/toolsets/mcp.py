@@ -15,7 +15,7 @@ def register_mcp_tools(
         config_path=workspace / "mcp_servers.json",
         tool_registry=tools,
     )
-    tools.register(McpAddTool(mcp_registry), tags=["mcp", "system"], risk="external-side-effect", search_keywords=["添加MCP", "连接MCP", "注册MCP服务器", "mcp add"])
-    tools.register(McpRemoveTool(mcp_registry), tags=["mcp", "system"], risk="write", search_keywords=["删除MCP", "移除MCP服务器", "mcp remove"])
-    tools.register(McpListTool(mcp_registry), tags=["mcp", "system"], risk="read-only", search_keywords=["MCP列表", "查看MCP服务器", "mcp list"])
+    tools.register(McpAddTool(mcp_registry), risk="external-side-effect")
+    tools.register(McpRemoveTool(mcp_registry), risk="write")
+    tools.register(McpListTool(mcp_registry), risk="read-only")
     return mcp_registry

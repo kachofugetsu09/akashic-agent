@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.mcp.registry import McpServerRegistry, _mcp_search_keywords
+from agent.mcp.registry import McpServerRegistry
 from agent.provider import ContextLengthError, ContentSafetyError, LLMProvider
 from infra.channels.cli import CLIClient, _print_banner
 from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
@@ -108,11 +108,6 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
 async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    info = SimpleNamespace(name="readDocsNow", description="Read docs quickly now")
-    keywords = _mcp_search_keywords(info, "DocsServer")
-    assert "docsserver" in keywords
-    assert "read" in keywords
-
     class _Client:
         def __init__(self, name: str, command: list[str], env=None, cwd=None):
             self.name = name

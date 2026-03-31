@@ -13,7 +13,6 @@ import pytest
 
 from agent.context import ContextBuilder
 from agent.tools.base import Tool
-from agent.tools.list_tools import ListToolsTool
 from agent.tools.memorize import MemorizeTool, _append_to_sop_file
 from agent.tools.message_push import MessagePushTool
 from agent.tools.notify_owner import NotifyOwnerTool
@@ -213,22 +212,7 @@ async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
 
 
 @pytest.mark.asyncio
-async def test_list_tools_and_web_search_cover_filters(monkeypatch: pytest.MonkeyPatch):
-    registry = ToolRegistry()
-    registry._tools = {
-        "dummy": _DummyTool(),
-        "list_tools": _DummyTool(),
-        "tool_search": _DummyTool(),
-    }
-    registry._metadata = {
-        "dummy": ToolMeta(tags=["filesystem"], risk="write"),
-        "list_tools": ToolMeta(tags=["meta"], risk="read-only"),
-        "tool_search": ToolMeta(tags=["meta"], risk="read-only"),
-    }
-    payload = json.loads(await ListToolsTool(registry).execute(tag="filesystem"))
-    assert payload["total"] == 1
-    assert payload["tools"][0]["name"] == "dummy"
-
+async def test_web_search_covers_filters(monkeypatch: pytest.MonkeyPatch):
     class _Response:
         def __init__(self, text: str) -> None:
             self.text = text
