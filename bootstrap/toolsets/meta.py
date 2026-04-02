@@ -58,12 +58,10 @@ def register_spawn_tool(
         memory=memory_port,
     )
     if config.spawn_enabled:
-        # 暂时注释掉 spawn 工具注册，仅保留 subagent_manager 初始化，避免影响其他依赖链路。
-        # tools.register(
-        #     SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
-        #     always_on=True,
-        #     risk="write",
-        #     search_hint="后台执行 长任务 异步",
-        # )
-        pass
+        tools.register(
+            SpawnTool(subagent_manager, tools, policy=DelegationPolicy()),
+            always_on=True,
+            risk="write",
+            search_hint="后台执行 子任务 多步调研 独立任务",
+        )
     return subagent_manager
