@@ -97,7 +97,7 @@ class PostResponseMemoryWorker:
                 len(protected_ids),
             )
 
-            # 3. 先处理“旧的有误/需要遗忘”的显式废弃信号，优先退休旧记忆。
+            # 3. 先处理"旧的有误/需要遗忘"的显式废弃信号，优先退休旧记忆。
             token_budget = await self._handle_invalidations(
                 user_msg,
                 source_ref,
@@ -273,7 +273,7 @@ class PostResponseMemoryWorker:
         token_budget: int = TOKEN_BUDGET_PER_RUN,
     ) -> int:
         """检测用户明确指出 agent 旧行为有误的情况，无需替代规则即直接 supersede 旧条目。"""
-        # 1. 先从当前用户消息里提取“要废弃什么旧行为”的主题。
+        # 1. 先从当前用户消息里提取"要废弃什么旧行为"的主题。
         topics, token_budget = await self._extract_invalidation_topics(
             user_msg,
             token_budget,
@@ -336,7 +336,7 @@ class PostResponseMemoryWorker:
         token_budget: int,
     ) -> tuple[list[str], int]:
         """从用户消息中提取被明确声明为有误/需废弃的 agent 行为主题。"""
-        # 1. 这里只负责抽取“被否定的行为主题”，不直接做 supersede 决策。
+        # 1. 这里只负责抽取"被否定的行为主题"，不直接做 supersede 决策。
         prompt = f"""判断用户消息是否在明确声明 agent 某个现有行为/流程有误，且希望废弃它。
 
 用户消息：{user_msg}
@@ -553,7 +553,7 @@ class PostResponseMemoryWorker:
         token_budget: int,
     ) -> tuple[list[dict], int]:
         """二阶段收口：判断候选是否真的值得进入长期 procedure/preference。"""
-        # 1. 第一阶段只是“提候选”；这里才决定是否真的入长期库。
+        # 1. 第一阶段只是"提候选"；这里才决定是否真的入长期库。
         if not candidates:
             return [], token_budget
 
@@ -606,93 +606,161 @@ class PostResponseMemoryWorker:
         agent_response: str,
         exclusion_block: str = "",
     ) -> str:
-        return f"""你是记忆提取专家。请先按四类记忆做判断，再决定是否输出。
+        return f"""你是记忆提取专家，负责从一轮对话中识别用户的长期偏好和 agent 应长期遵守的规则。
 
-默认答案是 []。宁可少写，也不要把局部上下文误写成长期记忆。
+默认答案是 []。提取门槛要高，宁可不提取，也不要把当前对话的局部信息误写成长期记忆。
 
-【第一步：先引用 USER 原话】
-提取任何条目前，先在脑中写出引用：USER 到底说了哪句话支撑这条记忆？
-- 无法在 USER 原话中找到直接支撑句 → 不提取，返回 []
-- ASSISTANT 的回复只是背景，不能作为证据
-- 即使 ASSISTANT 讲了正确流程或知识，只要 USER 没明确表达对应要求，就不能提取
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【核心判断标准】
+一条信息是否值得提取，只看一件事：
+把这条信息放进 6 个月后的一次全新对话，它还有用吗？
+→ 是 → 可能是长期记忆，继续检查
+→ 否 → 不是长期记忆，返回 []
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-【第二步：先分四类，不要直接输出】
-你必须先在脑中把候选内容归入以下四类之一：
+【提取前必须完成三项检查，顺序执行，任一不通过即返回 []】
 
-1. procedure
-- 定义：agent 在未来类似场景下必须遵守的长期执行规则
-- 特征：稳定、可复用、跨任务成立、明确面向 agent 行为
-- 例子："以后查 Steam 必须先走 steam MCP"
+▸ 检查 A — USER 原话锚点
+在 USER 消息里找到支撑这条记忆的直接原句（逐字存在，不是推断）。
+  - 找不到 USER 的直接原句 → 返回 []
+  - ASSISTANT 的解释、建议、工具返回的数据，不算 USER 原句
+  - USER 没有反驳 ASSISTANT ≠ USER 认同且希望长期记忆
+  - USER 消息是纯状态汇报（"复习中"/"在看书"/"工作中"等，没有任何偏好或规则表达）→ 没有可提取内容，返回 []
 
-2. preference
-- 定义：用户长期偏好的内容、风格，以及对 assistant 行为的长期倾向要求
-- 特征：偏好/厌恶/倾向，而不是硬流程
-- 例子："简单问题希望直接回答" / "不喜欢恐怖游戏"
+▸ 检查 B — 时效性
+这条信息是否只对当前这次对话成立？
+  - 涉及当前任务、当前时间段、当前情境（本次/今天/这个项目/明天的事）→ 返回 []
+  - 只有明确跨 session 稳定成立，才继续
 
-3. event
-- 定义：发生过的具体事情、决策、里程碑、当前任务过程
-- 特征：有时间性、情境性
-- 例子："今天把 readfile 工具修好了" / "决定把主动机制改成插件化"
-- 注意：event 由其他模块处理，这里绝对不要输出
+▸ 检查 C — 来源方向
+这条信息的核心内容来自谁？
+  - ASSISTANT 解释了某知识点、给出了建议、工具返回了数据 → 返回 []
+  - 即使内容是对的、有意义的，只要来源是 ASSISTANT，就不提取
+  - ASSISTANT 主动给出建议，USER 没有明确说"以后都这样"/"记住这个"/"你要这么做" → 返回 []
+  - "USER 没有反驳"不等于"USER 授权 AGENT 长期执行这条规则"
 
-4. profile
-- 定义：用户自身长期稳定的身份、背景、持有物、关系、长期状态
-- 特征：描述“用户是谁 / 长期拥有什么”
-- 例子："用户购买了某鼠标" / "用户是后端方向学生"
-- 注意：profile 由其他模块处理，这里绝对不要输出
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【示例：三项检查的应用】
 
-如果内容更像：
-- 技术知识点
-- assistant 刚讲出来的概念解释
-- 当前任务的局部策略
-- 一次性补救办法
-- 原话碎片、语义不完整的短句
-→ 直接丢弃，返回 []。
+<example id="drop_situational">
+场景: 用户临时问了今晚聚餐去哪好
+USER: 今晚几个同学来，想找个气氛好的日料店
+ASSISTANT: 推荐几家适合聚餐的日料…
 
-【第三步：只有两类允许输出】
-本模块只允许输出：
-- procedure
-- preference
+检查A: USER说的是"今晚聚餐"，没有表达长期偏好
+检查B: "今晚"明确是当前情境，不跨session
+→ []
+×不能提取: "用户喜欢日料" / "用户聚餐时喜欢气氛好的餐厅"（均为推断）
+</example>
 
-如果你判断为：
-- event
-- profile
-- 纯知识点
-- 当前任务局部上下文
-- 一次性纠错 / 一次性抱怨
-→ 都必须返回 []，不要硬转成 procedure / preference。
+<example id="drop_knowledge">
+场景: 用户问了技术知识，ASSISTANT 做了解释
+USER: TCP 和 UDP 的区别是什么
+ASSISTANT: TCP 是可靠传输协议，有拥塞控制和重传机制；UDP 是无连接的……
+
+检查A: USER在提问，没有表达任何偏好或行为要求
+检查C: 知识内容全部来自ASSISTANT
+→ []
+×不能提取: "TCP 是可靠传输协议" / "用户了解TCP原理"（知识不是用户规则）
+</example>
+
+<example id="drop_assistant_advice">
+场景: 用户说了状态，ASSISTANT 顺势给出建议
+USER: 最近玩游戏太久了，眼睛有点疲
+ASSISTANT: 建议每隔一小时休息10分钟，可以做眼保健操……
+
+检查A: USER表达了"眼睛疲"，没有要求agent做任何事
+检查C: "每隔一小时休息"是ASSISTANT的建议，不是用户规则
+→ []
+×不能提取: "用户玩游戏时需要定期休息提醒" / "用户偏好护眼习惯"（推断放大）
+</example>
+
+<example id="drop_assistant_proactive_advice_no_user_endorsement">
+场景: 用户说了一句当前状态，ASSISTANT 主动给出具体行动建议，用户没有授权或要求记住
+USER: 在看书
+ASSISTANT: 记得每隔45分钟起来活动一下，喝点水，对颈椎好……
+
+检查A: USER原话只有"在看书"，没有表达任何对agent的要求
+检查C: "每隔45分钟活动"完全来自ASSISTANT主动建议，USER没有说"以后都这样提醒我"或"记住这个"
+→ []
+×不能提取: "每隔45分钟应起身活动并补水"（来自ASSISTANT，不是用户规则）
+关键判断: ASSISTANT建议得再具体、再合理，只要USER没有明确授权，就不是长期记忆
+</example>
+
+<example id="drop_situational_advice_specific_timing">
+场景: 用户问了当前情境下的建议，ASSISTANT 给出具体操作指导
+USER: 我现在有点困，要不要小睡一下
+ASSISTANT: 可以睡，但控制在20分钟以内，设好闹钟，不然进入深睡会更难受……
+
+检查A: USER在问当前这一次要不要小睡，没有表达长期规则要求
+检查B: "我现在有点困"是当前状态，不跨session
+检查C: 时长限制和闹钟建议来自ASSISTANT，不是USER的要求
+→ []
+×不能提取: "小睡时应控制在20分钟以内并设闹钟"（把当前一次建议升格为长期procedure）
+</example>
+
+<example id="drop_workaround">
+场景: 当前任务遇到障碍，临时换了方案
+USER: 那就直接写个脚本绕过去吧
+ASSISTANT: 好，我来写一个 Python 脚本，用 requests 库来处理这个请求……
+
+检查A: USER说的是"绕过去"，是对当前任务的临时决策
+检查B: 这是当前任务的局部策略，不跨session
+→ []
+×不能提取: "遇到此类问题应优先用Python脚本绕过"（临时方案不是长期规则）
+</example>
+
+<example id="keep_explicit_rule">
+场景: 用户明确要求 agent 以后的行为方式
+USER: 以后帮我查菜谱只给 20 分钟以内能做完的，我没时间搞复杂的
+ASSISTANT: 明白，以后只推荐快手菜……
+
+检查A: USER原句="以后帮我查菜谱只给20分钟以内能做完的" ✓
+检查B: "以后"明确跨session ✓
+检查C: 来自USER主动要求 ✓
+→ [{{"summary": "查询菜谱时只推荐 20 分钟内可完成的菜式", "memory_type": "procedure"}}]
+</example>
+
+<example id="keep_preference_trimmed">
+场景: 用户表达了喜好，但 ASSISTANT 的回复有过度延伸
+USER: 我不喜欢这种悬疑风格的游戏，太压抑了
+ASSISTANT: 明白！你是偏好轻松明快风格的玩家，喜欢治愈系或休闲类游戏，追求积极愉快的游戏体验……
+
+检查A: USER原句="不喜欢悬疑风格，太压抑" ✓
+检查B: 游戏喜好跨session成立 ✓
+检查C: 来自USER ✓
+summary只能写USER说的，不得包含ASSISTANT延伸的"治愈系""休闲类""积极愉快"：
+→ [{{"summary": "不喜欢悬疑压抑风格的游戏", "memory_type": "preference"}}]
+×不能写: "偏好治愈系或休闲类游戏"（USER没说过）
+</example>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【允许输出的两类记忆】
+
+procedure — agent 在未来类似场景下应遵守的长期执行规则
+  特征：面向 agent 行为、跨任务可复用、用户明确要求
+  句式：客观规则句，"查询 X 时应先 Y"
+
+preference — 用户跨 session 稳定成立的长期偏好或倾向
+  特征：用户的偏好/厌恶/倾向，而不是硬约束
+  句式："用户偏好/不喜欢/倾向于……"
+
+【绝对不输出】
+event（有时间性的具体事件）、profile（用户身份背景）
+纯知识点、当前任务局部策略、一次性纠错、一次性建议
 
 【procedure 和 preference 的边界】
-优先把“用户对 assistant 的长期行为偏好”记为 preference，而不是 procedure。
+有明确执行步骤或工具要求 → procedure
+只是方向性的偏好倾向 → preference（优先选 preference）
 
-只有同时满足下面条件，才允许输出 procedure：
-- 明确在说 agent 以后应该怎么做
-- 这条规则跨任务复用，而不是只针对当前项目 / 当前 skill
-- 不是知识点，不是概念解释
-- 不是一句缺上下文的原话残片
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【summary 写法约束】
+- 只能包含 USER 原话中直接出现的内容，不能加入推断或延伸
+- summary 语气不得强于 USER 原话（"不太喜欢" ≠ "强烈反感且要求永久避免"）
+- summary 脱离原对话也能独立成立，不能含"这次""今天""当前"等时间锚
+- 不能只是原话碎片，必须是完整句{exclusion_block}
 
-更适合记为 preference 的情况：
-- 用户偏好的回答风格
-- 用户偏好的信息密度
-- 用户偏好的工具使用倾向
-- 用户对 assistant 行为的长期偏好，但不是硬约束
-
-【额外防错规则】
-- 不要把用户对 A 的厌恶，迁移成对 B 的厌恶
-- 不要把“别在这个话题里乱比喻”升级成“用户厌恶该对象本身”
-- 不要把技术知识点写成 procedure
-- 不要把当前项目讨论中的观点写成全局长期规则
-- 不要把单次测试里的补救办法写成长期规则
-- 若内容明显依赖当前时间窗、当前任务或这一次情境，先优先判断为 event 或丢弃，不要硬升成长期 memory
-
-【summary 要求】
-- summary 必须脱离原对话也能独立成立
-- summary 必须是完整句，不能只是原话碎片
-- summary 语气不得强于 USER 原话，不要把单次评价升级成长期禁令
-- procedure 用客观规则句式
-- preference 用稳定偏好句式
-- 已显式记录的内容不要重复提取{exclusion_block}
-
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【对话内容】
 USER: {user_msg}
 ASSISTANT: {agent_response}
@@ -723,31 +791,87 @@ ASSISTANT: {agent_response}
                 f"{idx}. type={item.get('memory_type', 'procedure')} | summary={item.get('summary', '')}"
             )
         candidate_block = "\n".join(candidate_lines) if candidate_lines else "(none)"
-        return f"""你在做“长期记忆入库决策”，不是重新抽取。
+        return f"""你在做"长期记忆入库决策"，不是重新抽取。
 
-目标：判断下面这些候选，哪些真的值得进入长期 memory。
-默认答案是 []。宁可少留，也不要把短期情境、assistant 顺势建议、当前任务局部策略写成长期 memory。
+目标：对候选列表做两件事——
+1. 丢弃不该入库的候选
+2. 把留下来的候选的 summary 修剪到与 USER 原话对齐
 
-【核心原则】
-1. 证据必须以 USER 为主；ASSISTANT 回复只能帮助理解语境，不能单独构成证据
-2. candidate 不等于最终 memory；只有跨 session 仍稳定有用的内容才保留
-3. 若候选主要描述：
-   - 当前一次事件、计划、deadline、考试、今晚/明天这类时间窗
-   - assistant 针对当前语境给出的安慰、建议、提醒
-   - 当前任务/当前项目/当前对话里的局部策略
-   则应视为 event 或 drop，这里不要输出
-4. 只有真正长期稳定的用户偏好，或用户明确要求 agent 以后长期遵守的规则，才保留
+默认答案是 []。
 
-【允许保留的类型】
-- procedure：agent 未来跨任务可复用的长期执行规则
-- preference：用户跨 session 稳定成立的偏好/长期倾向
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【对每条候选，依次做两步判断】
 
-【必须丢弃的情况】
-- 实际更像 event / profile
-- 只是当前场景的取舍、一次性决定或短期状态
-- 语气强于 USER 原话，把单次评价升级成长期禁令
-- 从 ASSISTANT 的建议反推用户长期偏好
+第一步 — 入库资格审查（不通过 → 丢弃）
+  □ 这条信息在 6 个月后的全新对话里还有用吗？
+    - 只对当前任务/事件/时间段成立 → 丢弃
+    - ASSISTANT 给的建议被当成用户偏好 → 丢弃
+    - 核心内容来自 ASSISTANT（解释/工具返回/顺势建议）而非 USER → 丢弃
 
+第二步 — Summary 忠实度核查（通过资格审查后执行）
+  □ 逐句检查 summary 里的每个断言，在 USER 消息里能找到对应的原话吗？
+    - 找不到的断言 → 从 summary 里删掉
+    - 删减后仍有实质内容 → 用删减后的内容重写 summary
+    - 删减后没有实质内容 → 丢弃整条
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【示例：入库资格审查】
+
+<example id="finalize_drop_event">
+USER: 我今天把那个 bug 修好了，总算搞定了
+候选: preference | 用户在解决长期困扰的 bug 后会感到强烈成就感，倾向于分享修复过程
+资格审查: "今天"是当前事件，候选描述的是本次情绪，不跨session → 丢弃
+→ []
+</example>
+
+<example id="finalize_drop_assistant_backfill">
+USER: 嗯
+ASSISTANT: 看来你平时比较注重效率，喜欢直接拿到结论，不需要过多解释……
+候选: preference | 用户偏好高效简洁的沟通方式，不需要冗长解释
+资格审查: USER只说了"嗯"，核心内容来自ASSISTANT的推断 → 丢弃
+→ []
+</example>
+
+<example id="finalize_drop_proactive_health_rule">
+USER: 在赶代码
+ASSISTANT: 别忘了每隔一段时间起来活动下，喝点水，久坐对颈椎不好……
+候选: procedure | 每隔45分钟应起身活动并补水
+
+资格审查: USER只说了当前状态"在赶代码"，没有要求或授权任何规则。
+"每隔45分钟活动并补水"是ASSISTANT主动给出的健康提醒，不是USER提出的要求。
+USER未反驳 ≠ USER希望永久记录这条规则 → 丢弃
+→ []
+</example>
+
+【示例：Summary 忠实度核查】
+
+<example id="finalize_trim_summary">
+USER: 我不太喜欢那种剧情太拖的动漫
+ASSISTANT: 明白！你是追求节奏感的观众，偏好情节紧凑、快节奏的作品，对冗长的铺垫和反复的情感渲染容忍度较低……
+候选: preference | 用户偏好节奏紧凑的动漫，对冗长铺垫和反复情感渲染容忍度低，追求高效叙事体验
+
+忠实度核查:
+  - "不太喜欢剧情太拖" → USER说了 ✓
+  - "对冗长铺垫和反复情感渲染容忍度低" → USER没说，来自ASSISTANT延伸 ✗ 删去
+  - "追求高效叙事体验" → USER没说 ✗ 删去
+
+重写后: preference | 不太喜欢剧情拖沓的动漫
+→ [{{"summary": "不太喜欢剧情拖沓的动漫", "memory_type": "preference"}}]
+</example>
+
+<example id="finalize_keep_intact">
+USER: 以后查快递帮我直接给结论，不用说运输过程，我只关心几号到
+候选: procedure | 查询快递时直接告知预计到达时间，不展示中间运输节点
+
+忠实度核查:
+  - "直接给结论" → ✓
+  - "不用说运输过程" → ✓
+  - "只关心几号到" → ✓
+  全部来自USER → summary 忠实，无需修改
+→ [{{"summary": "查询快递时直接告知预计到达时间，不展示中间运输节点", "memory_type": "procedure"}}]
+</example>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【原对话】
 USER: {user_msg}
 ASSISTANT: {agent_response}
@@ -755,7 +879,7 @@ ASSISTANT: {agent_response}
 【候选 memory】
 {candidate_block}
 
-请只保留真正值得入长期库的条目，并做必要的 type 修正。
+请对每条候选完成"资格审查 → 忠实度核查 → 重写或丢弃"，只输出最终保留的条目。
 只返回 JSON 数组，无内容时返回 []。
 每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null, "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}"""
 

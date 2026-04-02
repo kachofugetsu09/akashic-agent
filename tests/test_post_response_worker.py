@@ -770,10 +770,13 @@ def test_extract_implicit_prompt_is_conservative_for_preference_upgrade():
     assert items == []
     assert remain == 0
     extract_prompt = provider.prompts[0]
-    assert "宁可少写，也不要把局部上下文误写成长期记忆" in extract_prompt
-    assert "不要把用户对 A 的厌恶，迁移成对 B 的厌恶" in extract_prompt
-    assert "不要把\u201c别在这个话题里乱比喻\u201d升级成\u201c用户厌恶该对象本身\u201d" in extract_prompt
-    assert "summary 语气不得强于 USER 原话，不要把单次评价升级成长期禁令" in extract_prompt
+    assert "宁可不提取" in extract_prompt
+    assert "summary" in extract_prompt
+    assert "USER" in extract_prompt
+    # 三项检查均存在
+    assert "检查 A" in extract_prompt
+    assert "检查 B" in extract_prompt
+    assert "检查 C" in extract_prompt
 
 
 def test_build_implicit_prompt_uses_four_memory_classes():
@@ -782,15 +785,19 @@ def test_build_implicit_prompt_uses_four_memory_classes():
         agent_response="好的，我下次会注意。",
     )
 
-    assert '1. procedure' in prompt
-    assert '2. preference' in prompt
-    assert '3. event' in prompt
-    assert '4. profile' in prompt
-    assert 'event 由其他模块处理，这里绝对不要输出' in prompt
-    assert 'profile 由其他模块处理，这里绝对不要输出' in prompt
-    assert '优先把\u201c用户对 assistant 的长期行为偏好\u201d记为 preference' in prompt
-    assert '不要把技术知识点写成 procedure' in prompt
-    assert '不要把当前项目讨论中的观点写成全局长期规则' in prompt
+    # 核心类型定义仍存在
+    assert 'procedure' in prompt
+    assert 'preference' in prompt
+    assert 'event' in prompt
+    assert 'profile' in prompt
+    # 三项检查存在
+    assert '检查 A' in prompt
+    assert '检查 B' in prompt
+    assert '检查 C' in prompt
+    # 示例存在
+    assert '<example' in prompt
+    # 防止输出 event/profile 的说明存在
+    assert '绝对不输出' in prompt
 
 
 def test_build_finalize_prompt_is_user_first_and_temporal_conservative():
@@ -806,10 +813,13 @@ def test_build_finalize_prompt_is_user_first_and_temporal_conservative():
     )
 
     assert "长期记忆入库决策" in prompt
-    assert "candidate 不等于最终 memory" in prompt
-    assert "证据必须以 USER 为主" in prompt
-    assert "当前一次事件、计划、deadline、考试、今晚/明天这类时间窗" in prompt
-    assert "从 ASSISTANT 的建议反推用户长期偏好" in prompt
+    # 资格审查存在（情境性丢弃、来源方向丢弃）
+    assert "ASSISTANT" in prompt
+    assert "丢弃" in prompt
+    # 忠实度核查存在
+    assert "忠实度" in prompt
+    # 示例存在
+    assert '<example' in prompt
 
 
 def test_extract_implicit_runs_finalize_stage_before_return():
