@@ -650,11 +650,33 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             )
         blob = _emb_to_blob(query_vec)
 
-        # 多取候选以补偿 memory_type / scope 过滤的损耗
-        needs_filter = bool(memory_types) or require_scope_match
-        fetch_k = max(top_k * 4 if needs_filter else top_k * 2, 20)
+        # KNN 多取一些候选，以补偿 score_threshold 截断的损耗
+        fetch_k = max(top_k * 2, 20)
+
+        params: list = [blob, fetch_k]
 
         status_filter = "" if include_superseded else "AND m.status = 'active'"
+
+        # memory_type 推入 SQL 过滤，避免 Python 二次扫描
+        if memory_types:
+            placeholders = ",".join("?" * len(memory_types))
+            type_filter = f"AND m.memory_type IN ({placeholders})"
+            params.extend(memory_types)
+        else:
+            type_filter = ""
+
+        # scope 推入 SQL，用 json_extract 读取 extra_json 字段
+        if require_scope_match:
+            s_channel = (scope_channel or "").strip()
+            s_chat = (scope_chat_id or "").strip()
+            scope_filter = (
+                "AND COALESCE(TRIM(json_extract(m.extra_json, '$.scope_channel')), '') = ?"
+                " AND COALESCE(TRIM(json_extract(m.extra_json, '$.scope_chat_id')), '') = ?"
+            )
+            params.extend([s_channel, s_chat])
+        else:
+            scope_filter = ""
+
         sql = f"""
             SELECT m.id, m.memory_type, m.summary, m.extra_json, m.happened_at,
                    m.reinforcement, m.updated_at, m.source_ref,
@@ -666,26 +688,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                   AND k = ?
             ) v
             JOIN memory_items m ON m.rowid = v.rowid
-            WHERE 1=1 {status_filter}
+            WHERE 1=1 {status_filter} {type_filter} {scope_filter}
             ORDER BY v.distance ASC
         """
-        rows = self._db.execute(sql, [blob, fetch_k]).fetchall()
-
-        if memory_types:
-            rows = [r for r in rows if r[1] in memory_types]
-
-        if require_scope_match:
-            s_channel = (scope_channel or "").strip()
-            s_chat = (scope_chat_id or "").strip()
-            filtered = []
-            for r in rows:
-                extra_raw = json.loads(r[3]) if r[3] else {}
-                if (
-                    str(extra_raw.get("scope_channel", "")).strip() == s_channel
-                    and str(extra_raw.get("scope_chat_id", "")).strip() == s_chat
-                ):
-                    filtered.append(r)
-            rows = filtered
+        rows = self._db.execute(sql, params).fetchall()
 
         now = datetime.now(timezone.utc)
         scored = []
