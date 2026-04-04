@@ -1,17 +1,27 @@
 import base64
 import logging
 import mimetypes
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from agent.core.prompt_block import (
+    ActiveSkillsPromptBlock,
+    IdentityPromptBlock,
+    LongTermMemoryPromptBlock,
+    MemesPromptBlock,
+    MemoryBlockPromptBlock,
+    SelfModelPromptBlock,
+    SkillsCatalogPromptBlock,
+    SOPIndexPromptBlock,
+    SystemPromptBuildResult,
+    SystemPromptBuilder,
+    TurnContext,
+)
 from agent.memes.catalog import MemeCatalog
 from agent.prompting import (
     PromptAssembler,
     PromptSectionMeta,
-    PromptSectionRender,
-    SectionCache,
     build_runtime_guard_message,
     build_system_context_message,
 )
@@ -30,217 +40,6 @@ if TYPE_CHECKING:
     from core.memory.port import MemoryPort
 
 logger = logging.getLogger("agent.context")
-
-
-@dataclass
-class TurnContext:
-    workspace: Path
-    memory: "MemoryPort"
-    skills: SkillsLoader
-    skill_names: list[str]
-    message_timestamp: datetime | None
-    retrieved_memory_block: str
-
-
-class ContextSection(Protocol):
-    priority: int
-    label: str
-    is_static: bool
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None: ...
-
-    def cache_signature(self, ctx: TurnContext) -> str | None: ...
-
-
-class StaticIdentitySection:
-    priority = 10
-    label = "identity"
-    is_static = True
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        return build_agent_static_identity_prompt(workspace=ctx.workspace)
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return str(ctx.workspace.expanduser().resolve())
-
-
-class MemoryBlockSection:
-    priority = 20
-    label = "retrieved_memory"
-    is_static = False
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        block = (ctx.retrieved_memory_block or "").strip()
-        return block or None
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class LongTermMemorySection:
-    priority = 30
-    label = "long_term_memory"
-    is_static = False
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        memory = ctx.memory.get_memory_context()
-        return str(memory).strip() if memory else None
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class SelfModelSection:
-    priority = 40
-    label = "self_model"
-    is_static = False
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        self_content = ctx.memory.read_self()
-        if not self_content:
-            return None
-        return f"## Akashic 自我认知\n\n{self_content}"
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class SOPIndexSection:
-    priority = 50
-    label = "sop_index"
-    is_static = True
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        sop_index = (cached_signature or "").strip()
-        if not sop_index:
-            return None
-        return build_sop_index_prompt(sop_index)
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        sop_readme = ctx.workspace / "sop" / "README.md"
-        if not sop_readme.exists():
-            return None
-        try:
-            return sop_readme.read_text(encoding="utf-8")
-        except Exception:
-            return None
-
-
-class SkillsSection:
-    priority = 60
-    label = "active_skills"
-    is_static = False
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        always_skills = ctx.skills.get_always_skills()
-        names: list[str] = []
-        seen: set[str] = set()
-        for name in [*always_skills, *ctx.skill_names]:
-            if name in seen:
-                continue
-            seen.add(name)
-            names.append(name)
-        if not names:
-            return None
-        content = ctx.skills.load_skills_for_context(names)
-        if not content:
-            return None
-        return f"# Active Skills\n\n{content}"
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class MemesSection:
-    priority = 65
-    label = "memes"
-    is_static = False
-
-    def __init__(self, catalog: MemeCatalog) -> None:
-        self._catalog = catalog
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        block = self._catalog.build_prompt_block()
-        if not block:
-            return None
-        return f"# Memes\n\n{block}"
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
-class SkillsCatalogSection:
-    priority = 70
-    label = "skills_catalog"
-    is_static = True
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        summary = cached_signature or ""
-        if not summary:
-            return None
-        return build_skills_catalog_prompt(summary)
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        summary = ctx.skills.build_skills_summary()
-        return summary or None
-
-
-@dataclass
-class SystemPromptBuildResult:
-    system_sections: list[PromptSectionRender]
-    system_prompt: str
-    debug_breakdown: list[PromptSectionMeta]
-
-
-class SystemPromptBuilder:
-    def __init__(self, sections: list[ContextSection], cache: SectionCache | None = None):
-        self._sections = sorted(sections, key=lambda s: s.priority)
-        self._cache = cache or SectionCache()
-
-    def build(
-        self, ctx: TurnContext, *, disabled_sections: set[str] | None = None
-    ) -> SystemPromptBuildResult:
-        renders: list[PromptSectionRender] = []
-        breakdown: list[PromptSectionMeta] = []
-        disabled = disabled_sections or set()
-        cache_scope = str(ctx.workspace.expanduser().resolve())
-        for section in self._sections:
-            if section.label in disabled:
-                continue
-            cache_hit = False
-            rendered: str | None = None
-            signature = section.cache_signature(ctx) if section.is_static else None
-            # static section 先按 scope + signature 查缓存，避免重复读文件或重复算摘要。
-            if signature:
-                rendered = self._cache.get(cache_scope, section.label, signature)
-                cache_hit = rendered is not None
-            if rendered is None:
-                rendered = section.render(ctx, cached_signature=signature)
-                if rendered and signature:
-                    self._cache.set(cache_scope, section.label, signature, rendered)
-            if rendered:
-                renders.append(
-                    PromptSectionRender(
-                        name=section.label,
-                        content=rendered,
-                        is_static=section.is_static,
-                        cache_hit=cache_hit,
-                    )
-                )
-                breakdown.append(
-                    PromptSectionMeta(
-                        name=section.label,
-                        chars=len(rendered),
-                        est_tokens=max(1, len(rendered) // 3),
-                        is_static=section.is_static,
-                        cache_hit=cache_hit,
-                    )
-                )
-        return SystemPromptBuildResult(
-            system_sections=renders,
-            system_prompt="\n\n---\n\n".join(item.content for item in renders),
-            debug_breakdown=breakdown,
-        )
 
 
 class ChannelPolicy(Protocol):
@@ -332,14 +131,14 @@ class ContextBuilder:
         self.memory = memory
         self._system_prompt_builder = SystemPromptBuilder(
             [
-                StaticIdentitySection(),
-                MemoryBlockSection(),
-                LongTermMemorySection(),
-                SelfModelSection(),
-                SOPIndexSection(),
-                SkillsSection(),
-                MemesSection(MemeCatalog(workspace / "memes")),
-                SkillsCatalogSection(),
+                IdentityPromptBlock(render_fn=build_agent_static_identity_prompt),
+                MemoryBlockPromptBlock(),
+                LongTermMemoryPromptBlock(),
+                SelfModelPromptBlock(),
+                SOPIndexPromptBlock(render_fn=build_sop_index_prompt),
+                ActiveSkillsPromptBlock(),
+                MemesPromptBlock(MemeCatalog(workspace / "memes")),
+                SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),
             ]
         )
         self._envelope_builder = MessageEnvelopeBuilder(

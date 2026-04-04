@@ -127,6 +127,12 @@ def _select_recent_history_entries(history_text: str, *, limit: int = 3) -> list
     return entries[-limit:]
 
 
+def _coerce_history_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 class ConsolidationService:
     def __init__(
         self,
@@ -231,8 +237,11 @@ class ConsolidationService:
         source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
         current_memory = await asyncio.to_thread(memory.read_long_term)
+        history_text = _coerce_history_text(
+            await asyncio.to_thread(memory.read_history, 16000)
+        )
         recent_history_entries = _select_recent_history_entries(
-            await asyncio.to_thread(memory.read_history, 16000),
+            history_text,
             limit=3,
         )
         recent_history_block = "\n".join(

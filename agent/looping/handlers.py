@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import logging
-import re
 from typing import TYPE_CHECKING
 
+from agent.core.context_store import DefaultContextStore
 from agent.looping.ports import (
     AgentLoopRunner,
     ConversationTurnDeps,
@@ -11,8 +10,6 @@ from agent.looping.ports import (
     SessionServices,
 )
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from agent.looping.turn_types import HistoryMessage, to_tool_call_groups
-from agent.retrieval.protocol import RetrievalRequest
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import parse_spawn_completion
 
@@ -20,8 +17,6 @@ if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.tools.registry import ToolRegistry
     from agent.turns.orchestrator import TurnOrchestrator
-
-logger = logging.getLogger("agent.loop_handlers")
 
 
 class ConversationTurnHandler:
@@ -40,6 +35,10 @@ class ConversationTurnHandler:
         self._session = deps.session
         self._tools = deps.tools
         self._context = deps.context
+        self._context_store = DefaultContextStore(
+            retrieval=deps.retrieval,
+            context=deps.context,
+        )
 
     async def process(
         self,
@@ -50,27 +49,18 @@ class ConversationTurnHandler:
     ) -> OutboundMessage:
         """处理一次普通用户消息，把"检索 -> 执行 -> 持久化 -> 回包"串成主路径。"""
         session = self._session.session_manager.get_or_create(key)
-        retrieval_history = session.get_history()
-        history_messages = _to_history_messages(retrieval_history)
-        retrieval_result = await self._retrieval.retrieve(
-            RetrievalRequest(
-                message=msg.content,
-                session_key=key,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                history=history_messages,
-                session_metadata=(
-                    session.metadata if isinstance(session.metadata, dict) else {}
-                ),
-                timestamp=msg.timestamp,
-            )
+        context_bundle = await self._context_store.prepare(
+            msg=msg,
+            session_key=key,
+            session=session,
         )
-        skill_mentions = self._collect_skill_mentions(msg)
         final_content, tools_used, tool_chain, thinking = await self._run_conversation_turn(
             msg=msg,
             session=session,
-            skill_mentions=skill_mentions,
-            retrieved_block=retrieval_result.block,
+            skill_mentions=list(context_bundle.metadata.get("skill_mentions") or []),
+            retrieved_block=str(
+                context_bundle.metadata.get("retrieved_memory_block") or ""
+            ),
         )
         retry_trace = getattr(self._turn_runner, "last_retry_trace", {})
         result = TurnResult(
@@ -79,9 +69,7 @@ class ConversationTurnHandler:
             trace=TurnTrace(
                 source="passive",
                 retrieval={
-                    "raw": retrieval_result.trace.raw
-                    if retrieval_result.trace is not None
-                    else None
+                    "raw": context_bundle.metadata.get("retrieval_trace_raw")
                 },
                 extra={
                     "tools_used": tools_used,
@@ -96,23 +84,6 @@ class ConversationTurnHandler:
             result=result,
             dispatch_outbound=dispatch_outbound,
         )
-
-    def _collect_skill_mentions(self, msg: InboundMessage) -> list[str]:
-        raw_names = re.findall(r"\$([a-zA-Z0-9_-]+)", msg.content)
-        if not raw_names:
-            return []
-        available = {
-            s["name"] for s in self._context.skills.list_skills(filter_unavailable=False)
-        }
-        seen: set[str] = set()
-        result: list[str] = []
-        for name in raw_names:
-            if name in available and name not in seen:
-                seen.add(name)
-                result.append(name)
-        if result:
-            logger.info(f"检测到 $skill 提及，直接注入完整内容: {result}")
-        return result
 
     async def _run_conversation_turn(
         self,
@@ -138,27 +109,6 @@ class ConversationTurnHandler:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
         return final_content, tools_used, tool_chain, thinking
-
-
-def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
-    out: list[HistoryMessage] = []
-    for msg in messages:
-        role = str(msg.get("role", "") or "")
-        content = str(msg.get("content", "") or "")
-        tools_used = [
-            str(tool_name)
-            for tool_name in (msg.get("tools_used") or [])
-            if isinstance(tool_name, str)
-        ]
-        out.append(
-            HistoryMessage(
-                role=role,
-                content=content,
-                tools_used=tools_used,
-                tool_chain=to_tool_call_groups(msg.get("tool_chain") or []),
-            )
-        )
-    return out
 
 
 class InternalEventHandler:

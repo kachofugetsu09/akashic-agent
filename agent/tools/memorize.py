@@ -5,6 +5,7 @@ memorize 工具：用户主动写记忆
 from __future__ import annotations
 
 import logging
+import inspect
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -15,6 +16,16 @@ if TYPE_CHECKING:
     from core.memory.port import MemoryPort
 
 logger = logging.getLogger(__name__)
+
+
+def _pick_save_method(memory: "MemoryPort") -> str:
+    # 1. 优先走显式 supersede 写口，保证 procedure / preference 仍按新语义写入。
+    save_with_supersede = getattr(memory, "save_item_with_supersede", None)
+    if callable(save_with_supersede) and inspect.iscoroutinefunction(save_with_supersede):
+        return "save_item_with_supersede"
+
+    # 2. 测试或旧实现未提供 supersede 写口时，退回基础 save_item。
+    return "save_item"
 
 
 def _coerce_memory_type(
@@ -130,7 +141,9 @@ class MemorizeTool(Tool):
                     )
             except Exception as e:
                 logger.warning("memorize: trigger_tags generation failed: %s", e)
-        result = await self._memory.save_item_with_supersede(
+        # 4. 最后选择当前 memory port 支持的写入口。
+        save_method = getattr(self._memory, _pick_save_method(self._memory))
+        result = await save_method(
             summary=summary,
             memory_type=memory_type,
             extra=extra,
