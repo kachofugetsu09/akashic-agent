@@ -3,7 +3,15 @@ from agent.core.context_store import ContextStore, DefaultContextStore
 from agent.core.prompt_block import PromptBlock, SystemPromptBuilder, TurnContext
 from agent.core.reasoner import DefaultReasoner, Reasoner
 from agent.core.runner import CoreRunner, CoreRunnerDeps
-from agent.core.runtime_support import LLMServices, MemoryConfig, MemoryServices, ToolDiscoveryState
+from agent.core.runtime_support import (
+    AgentLoopRunner,
+    LLMServices,
+    MemoryConfig,
+    MemoryServices,
+    SessionLike,
+    ToolDiscoveryState,
+    TurnRunner,
+)
 from agent.core.types import (
     ChatMessage,
     ContextBundle,
@@ -18,6 +26,7 @@ from agent.core.types import (
 __all__ = [
     "AgentCore",
     "AgentCoreDeps",
+    "AgentLoopRunner",
     "ChatMessage",
     "CoreRunner",
     "CoreRunnerDeps",
@@ -34,9 +43,11 @@ __all__ = [
     "PromptBlock",
     "Reasoner",
     "ReasonerResult",
+    "SessionLike",
     "SystemPromptBuilder",
     "ToolCall",
     "ToolDiscoveryState",
+    "TurnRunner",
     "TurnContext",
     "TurnRecord",
 ]

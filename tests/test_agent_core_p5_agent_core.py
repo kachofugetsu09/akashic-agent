@@ -30,11 +30,9 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
         prepare=AsyncMock(
             side_effect=lambda **kwargs: order.append("prepare")
             or ContextBundle(
-                metadata={
-                    "skill_mentions": ["refactor"],
-                    "retrieved_memory_block": "remembered",
-                    "retrieval_trace_raw": {"route": "RETRIEVE"},
-                }
+                skill_mentions=["refactor"],
+                retrieved_memory_block="remembered",
+                retrieval_trace_raw={"route": "RETRIEVE"},
             )
         )
     )
@@ -94,7 +92,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
 async def test_agent_core_process_coerces_empty_reply_before_commit():
     session = _DummySession("cli:1")
     context_store = SimpleNamespace(
-        prepare=AsyncMock(return_value=ContextBundle(metadata={})),
+        prepare=AsyncMock(return_value=ContextBundle()),
         commit=AsyncMock(
             return_value=OutboundMessage(channel="cli", chat_id="1", content="fallback")
         )

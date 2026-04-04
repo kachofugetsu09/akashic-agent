@@ -16,8 +16,8 @@ from bus.events import InboundMessage, OutboundMessage
 
 if TYPE_CHECKING:
     from agent.core.context_store import ContextStore
+    from agent.core.runtime_support import SessionLike
     from agent.looping.ports import (
-        SessionLike,
         SessionServices,
         ObservabilityServices,
     )
@@ -64,7 +64,7 @@ class TurnOrchestrator:
                 thinking=_trace_thinking(result.trace),
                 retrieval_raw=_trace_retrieval_raw(result.trace),
                 context_retry=_trace_context_retry(result.trace),
-                side_effects=list(result.side_effects or []),
+                post_turn_actions=list(result.side_effects or []),
                 dispatch_outbound=dispatch_outbound,
             )
 

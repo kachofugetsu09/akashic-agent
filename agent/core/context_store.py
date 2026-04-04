@@ -17,7 +17,8 @@ from bus.events import OutboundMessage
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
-    from agent.looping.ports import ObservabilityServices, SessionLike, SessionServices
+    from agent.core.runtime_support import SessionLike
+    from agent.looping.ports import ObservabilityServices, SessionServices
     from agent.memes.decorator import MemeDecorator
     from agent.postturn.protocol import PostTurnPipeline
     from agent.retrieval.protocol import MemoryRetrievalPipeline
@@ -61,7 +62,7 @@ class ContextStore(ABC):
         thinking: str | None,
         retrieval_raw: object | None,
         context_retry: dict[str, object],
-        side_effects: list[object] | None = None,
+        post_turn_actions: list[object] | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         """提交本轮被动 turn，并返回最终出站消息。"""
@@ -113,7 +114,7 @@ class DefaultContextStore(ContextStore):
             )
         )
 
-        # 3. 最后补齐 ContextBundle，先把旧链路还需要的数据塞进 metadata。
+        # 3. 最后补齐 ContextBundle，把主链正式字段直接收进显式合同。
         skill_mentions = _collect_skill_mentions(
             msg.content,
             self._context.skills.list_skills(filter_unavailable=False),
@@ -121,18 +122,15 @@ class DefaultContextStore(ContextStore):
         return ContextBundle(
             history=_to_chat_messages(raw_history),
             memory_blocks=[retrieval_result.block] if retrieval_result.block else [],
-            metadata={
-                "skill_mentions": skill_mentions,
-                "retrieved_memory_block": retrieval_result.block,
-                "retrieval_trace": retrieval_result.trace,
-                "retrieval_trace_raw": (
-                    retrieval_result.trace.raw
-                    if retrieval_result.trace is not None
-                    else None
-                ),
-                "retrieval_metadata": retrieval_result.metadata,
-                "history_messages": history_messages,
-            },
+            skill_mentions=skill_mentions,
+            retrieved_memory_block=retrieval_result.block or "",
+            retrieval_trace_raw=(
+                retrieval_result.trace.raw
+                if retrieval_result.trace is not None
+                else None
+            ),
+            retrieval_metadata=dict(retrieval_result.metadata or {}),
+            history_messages=history_messages,
         )
 
     async def commit(
@@ -146,7 +144,7 @@ class DefaultContextStore(ContextStore):
         thinking: str | None,
         retrieval_raw: object | None,
         context_retry: dict[str, object],
-        side_effects: list[object] | None = None,
+        post_turn_actions: list[object] | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         if (
@@ -215,7 +213,7 @@ class DefaultContextStore(ContextStore):
                 ),
             )
         )
-        await _run_effects(side_effects or [])
+        await _run_effects(post_turn_actions or [])
 
         # 4. 最后构造 outbound，并按需 dispatch。
         outbound = OutboundMessage(

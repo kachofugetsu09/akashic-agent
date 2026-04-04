@@ -7,7 +7,8 @@ import pytest
 
 from bootstrap import app as bootstrap_app
 from agent.config import Config
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
+from agent.looping.core import AgentLoop
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse

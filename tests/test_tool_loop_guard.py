@@ -5,7 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig
+from agent.looping.core import AgentLoop
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.procedure_hint import extract_action_tokens

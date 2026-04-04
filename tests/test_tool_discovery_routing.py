@@ -20,7 +20,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig
+from agent.looping.core import AgentLoop
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
@@ -173,5 +174,3 @@ class TestKnownInvisibleAutoUnlock:
         assert "select:schedule" in schedule_call["result"], (
             f"错误消息未含 select: 引导，当前消息：{schedule_call['result']!r}"
         )
-
-

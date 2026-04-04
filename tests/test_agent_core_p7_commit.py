@@ -79,8 +79,8 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
         content="你好",
         metadata={"req_id": "r1"},
     )
-    side_effect = SimpleNamespace(
-        run=AsyncMock(side_effect=lambda: order.append("side_effect"))
+    post_turn_action = SimpleNamespace(
+        run=AsyncMock(side_effect=lambda: order.append("post_turn_action"))
     )
 
     out = await store.commit(
@@ -92,7 +92,7 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
         thinking="思考",
         retrieval_raw={"route": "RETRIEVE"},
         context_retry={"selected_plan": "full"},
-        side_effects=[side_effect],
+        post_turn_actions=[post_turn_action],
     )
 
     assert out.content == "整理好了"
@@ -104,6 +104,6 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     assert len(writer.events) == 2
     assert post_turn.events[0].assistant_response == "整理好了"
     outbound.dispatch.assert_awaited_once()
-    side_effect.run.assert_awaited_once()
-    assert order == ["persist", "observe", "observe", "post_turn", "side_effect", "dispatch"]
+    post_turn_action.run.assert_awaited_once()
+    assert order == ["persist", "observe", "observe", "post_turn", "post_turn_action", "dispatch"]
     assert session.messages[-1]["content"] == "整理好了"

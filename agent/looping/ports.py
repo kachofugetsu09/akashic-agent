@@ -2,63 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
+    from agent.core.runner import CoreRunner
+    from agent.core.runtime_support import ToolDiscoveryState
+    from agent.looping.consolidation import ConsolidationService
+    from agent.looping.safety_retry import SafetyRetryService
     from agent.postturn.protocol import PostTurnPipeline
     from agent.provider import LLMProvider
     from agent.retrieval.protocol import MemoryRetrievalPipeline
-    from agent.turns.orchestrator import TurnOrchestrator
     from agent.tools.registry import ToolRegistry
-    from bus.events import InboundMessage
+    from bus.processing import ProcessingState
+    from bus.queue import MessageBus
     from core.memory.port import MemoryPort
+    from core.memory.runtime import MemoryRuntime
     from memory2.hyde_enhancer import HyDEEnhancer
     from memory2.post_response_worker import PostResponseMemoryWorker
+    from memory2.profile_extractor import ProfileFactExtractor
     from memory2.query_rewriter import QueryRewriter
     from memory2.sufficiency_checker import SufficiencyChecker
     from proactive_v2.presence import PresenceStore
     from session.manager import SessionManager
 
 logger = logging.getLogger("agent.loop")
-
-
-class SessionLike(Protocol):
-    key: str
-    messages: list[dict]
-    metadata: dict[str, object]
-    last_consolidated: int
-
-    def get_history(self, max_messages: int = 500) -> list[dict]: ...
-    def add_message(self, role: str, content: str, media=None, **kwargs) -> None: ...
-
-
-ConsolidationRunner = Callable[[SessionLike], Awaitable[None]]
-
-
-class TurnRunner(Protocol):
-    async def run(
-        self,
-        msg: InboundMessage,
-        session: SessionLike,
-        skill_names: list[str] | None = None,
-        base_history: list[dict] | None = None,
-        retrieved_memory_block: str = "",
-    ) -> tuple[str, list[str], list[dict], str | None]:
-        ...
-
-
-class AgentLoopRunner(Protocol):
-    async def __call__(
-        self,
-        initial_messages: list[dict],
-        request_time: object | None = None,
-        preloaded_tools: set[str] | None = None,
-        preflight_injected: bool = False,
-    ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
-        ...
 
 
 # ── Config dataclasses（参数，不含服务对象）───────────────────────────────────
@@ -117,15 +87,41 @@ class ObservabilityServices:
 
 
 @dataclass
-class ConversationTurnDeps:
-    llm: LLMServices
-    llm_config: LLMConfig
-    turn_runner: TurnRunner
-    retrieval: MemoryRetrievalPipeline
-    orchestrator: TurnOrchestrator
-    session: SessionServices
-    tools: ToolRegistry
-    context: ContextBuilder
+class AgentLoopDeps:
+    bus: "MessageBus"
+    provider: "LLMProvider"
+    tools: "ToolRegistry"
+    session_manager: "SessionManager"
+    workspace: Path
+    presence: "PresenceStore | None" = None
+    light_provider: "LLMProvider | None" = None
+    processing_state: "ProcessingState | None" = None
+    memory_runtime: "MemoryRuntime | None" = None
+    memory_port: "MemoryPort | None" = None
+    post_mem_worker: "PostResponseMemoryWorker | None" = None
+    observe_writer: object | None = None
+    query_rewriter: "QueryRewriter | None" = None
+    sufficiency_checker: "SufficiencyChecker | None" = None
+    profile_extractor: "ProfileFactExtractor | None" = None
+    retrieval_pipeline: "MemoryRetrievalPipeline | None" = None
+    post_turn_pipeline: "PostTurnPipeline | None" = None
+    context: "ContextBuilder | None" = None
+    llm_services: LLMServices | None = None
+    memory_services: MemoryServices | None = None
+    session_services: SessionServices | None = None
+    observability_services: ObservabilityServices | None = None
+    hyde_enhancer: "HyDEEnhancer | None" = None
+    tool_discovery: "ToolDiscoveryState | None" = None
+    safety_retry: "SafetyRetryService | None" = None
+    consolidation_service: "ConsolidationService | None" = None
+    scheduler: "TurnScheduler | None" = None
+    core_runner: "CoreRunner | None" = None
+
+
+@dataclass
+class AgentLoopConfig:
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 # ── TurnScheduler：封装调度行为 ────────────────────────────────────────────────

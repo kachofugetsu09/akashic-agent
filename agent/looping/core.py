@@ -2,9 +2,7 @@ import asyncio
 import logging
 import re
 import time
-from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.context import ContextBuilder
@@ -12,13 +10,14 @@ from agent.core.agent_core import AgentCore, AgentCoreDeps
 from agent.core.context_store import DefaultContextStore
 from agent.core.reasoner import DefaultReasoner
 from agent.core.runner import CoreRunner, CoreRunnerDeps
+from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.consolidation import (
     ConsolidationService,
     _select_consolidation_window,
 )
-from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
-
 from agent.looping.ports import (
+    AgentLoopConfig,
+    AgentLoopDeps,
     LLMConfig,
     LLMServices,
     MemoryConfig,
@@ -31,19 +30,13 @@ from agent.postturn.default_pipeline import DefaultPostTurnPipeline
 from agent.postturn.protocol import PostTurnPipeline
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
-from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import BusOutboundPort
 
 # Re-export for backward-compat: existing callers import these from core.py
 __all__ = [
     "AgentLoop",
-    "AgentLoopConfig",
-    "AgentLoopDeps",
-    "LLMConfig",
-    "MemoryConfig",
 ]
 from agent.looping.safety_retry import SafetyRetryService
-from agent.looping.tool_execution import ToolDiscoveryState
 from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
 from bus.events import InboundMessage, OutboundMessage
@@ -66,48 +59,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
-
-
-@dataclass
-class AgentLoopDeps:
-    bus: MessageBus
-    provider: LLMProvider
-    tools: ToolRegistry
-    session_manager: SessionManager
-    workspace: Path
-    presence: PresenceStore | None = None
-    light_provider: LLMProvider | None = None
-    processing_state: ProcessingState | None = None
-    memory_runtime: "MemoryRuntime | None" = None
-    memory_port: "MemoryPort | None" = None
-    post_mem_worker: PostResponseMemoryWorker | None = None
-    observe_writer: object | None = None
-    query_rewriter: QueryRewriter | None = None
-    sufficiency_checker: SufficiencyChecker | None = None
-    profile_extractor: ProfileFactExtractor | None = None
-    retrieval_pipeline: MemoryRetrievalPipeline | None = None
-    post_turn_pipeline: PostTurnPipeline | None = None
-    context: ContextBuilder | None = None
-    llm_services: LLMServices | None = None
-    memory_services: MemoryServices | None = None
-    session_services: SessionServices | None = None
-    observability_services: ObservabilityServices | None = None
-    hyde_enhancer: "HyDEEnhancer | None" = None
-    tool_discovery: ToolDiscoveryState | None = None
-    safety_retry: SafetyRetryService | None = None
-    consolidation_service: ConsolidationService | None = None
-    scheduler: TurnScheduler | None = None
-    orchestrator: TurnOrchestrator | None = None
-    conversation_handler: ConversationTurnHandler | None = None
-    internal_event_handler: InternalEventHandler | None = None
-    core_runner: CoreRunner | None = None
-
-
-@dataclass
-class AgentLoopConfig:
-    llm: LLMConfig = field(default_factory=LLMConfig)
-    memory: MemoryConfig = field(default_factory=MemoryConfig)
-
 
 class AgentLoop:
     """
@@ -261,19 +212,6 @@ class AgentLoop:
             outbound=BusOutboundPort(self.bus),
             meme_decorator=passive_meme_decorator,
         )
-        turn_orchestrator = deps.orchestrator or TurnOrchestrator(
-            TurnOrchestratorDeps(
-                session=session_svc,
-                trace=trace_svc,
-                post_turn=post_turn_pipeline,
-                outbound=BusOutboundPort(self.bus),
-                meme_decorator=passive_meme_decorator,
-                passive_context_store=passive_context_store,
-            )
-        )
-
-        self._conversation_handler = deps.conversation_handler
-        self._internal_event_handler = deps.internal_event_handler
         self._agent_core = AgentCore(
             AgentCoreDeps(
                 session=session_svc,
@@ -283,19 +221,15 @@ class AgentLoop:
                 turn_runner=self._safety_retry,
             )
         )
-        if isinstance(self._conversation_handler, ConversationTurnHandler):
-            self._conversation_handler.bind_agent_core(self._agent_core)
         self._core_runner = deps.core_runner or CoreRunner(
             CoreRunnerDeps(
                 agent_core=self._agent_core,
-                conversation_handler=self._conversation_handler,
                 session=session_svc,
                 context=self.context,
                 context_store=passive_context_store,
                 tools=deps.tools,
                 memory_window=config.memory.window,
                 run_agent_loop_fn=self._run_agent_loop,
-                internal_event_handler=self._internal_event_handler,
             )
         )
 

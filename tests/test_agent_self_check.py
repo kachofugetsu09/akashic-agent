@@ -5,7 +5,8 @@ from unittest.mock import MagicMock
 from unittest.mock import AsyncMock
 
 import pytest
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
+from agent.looping.core import AgentLoop
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
 from core.memory.port import DefaultMemoryPort
 

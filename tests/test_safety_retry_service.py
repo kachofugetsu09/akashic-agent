@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ReasonerResult
 from agent.looping.safety_retry import SafetyRetryService
-from agent.looping.tool_execution import ToolDiscoveryState
 from agent.provider import ContentSafetyError, ContextLengthError
 
 

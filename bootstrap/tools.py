@@ -11,9 +11,13 @@ from agent.looping.consolidation import ConsolidationService
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
+from agent.looping.core import AgentLoop
 from agent.looping.ports import (
+    AgentLoopConfig,
+    AgentLoopDeps,
+    LLMConfig,
     LLMServices,
+    MemoryConfig,
     MemoryServices,
     ObservabilityServices,
     SessionServices,
@@ -28,7 +32,6 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
-from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import BusOutboundPort
 from bootstrap.toolsets.fitbit import register_fitbit_tools
 from bootstrap.toolsets.mcp import register_mcp_tools
@@ -281,16 +284,6 @@ def _build_loop_deps(
         outbound=BusOutboundPort(bus),
         meme_decorator=passive_meme_decorator,
     )
-    orchestrator = TurnOrchestrator(
-        TurnOrchestratorDeps(
-            session=session_services,
-            trace=trace_services,
-            post_turn=post_turn_pipeline,
-            outbound=BusOutboundPort(bus),
-            meme_decorator=passive_meme_decorator,
-            passive_context_store=passive_context_store,
-        )
-    )
     return AgentLoopDeps(
         bus=bus,
         provider=provider,
@@ -315,7 +308,6 @@ def _build_loop_deps(
         hyde_enhancer=hyde_enhancer,
         consolidation_service=consolidation,
         scheduler=turn_scheduler,
-        orchestrator=orchestrator,
     )
 
 

@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.types import ReasonerResult
+from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.safety_retry import SafetyRetryService
-from agent.looping.tool_execution import ToolDiscoveryState
 from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
 from agent.tools.shell import ShellTool, _truncate, _validate_network_command
 from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool

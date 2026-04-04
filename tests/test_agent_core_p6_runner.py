@@ -22,9 +22,6 @@ async def test_core_runner_routes_passive_message_to_agent_core():
                     )
                 )
             ),
-            internal_event_handler=SimpleNamespace(
-                process_spawn_completion=AsyncMock()
-            ),
         )
     )
     msg = InboundMessage(channel="cli", sender="hua", chat_id="1", content="hi")
@@ -37,71 +34,6 @@ async def test_core_runner_routes_passive_message_to_agent_core():
         "cli:1",
         dispatch_outbound=True,
     )
-    runner._internal_event_handler.process_spawn_completion.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_core_runner_prefers_injected_conversation_handler_for_passive_message():
-    conversation_handler = SimpleNamespace(
-        process=AsyncMock(
-            return_value=OutboundMessage(
-                channel="cli",
-                chat_id="1",
-                content="from handler",
-            )
-        )
-    )
-    runner = CoreRunner(
-        CoreRunnerDeps(
-            agent_core=SimpleNamespace(process=AsyncMock()),
-            conversation_handler=conversation_handler,
-        )
-    )
-    msg = InboundMessage(channel="cli", sender="hua", chat_id="1", content="hi")
-
-    out = await runner.process(msg, "cli:1", dispatch_outbound=False)
-
-    assert out.content == "from handler"
-    conversation_handler.process.assert_awaited_once_with(
-        msg,
-        "cli:1",
-        dispatch_outbound=False,
-    )
-    runner._agent_core.process.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_core_runner_keeps_spawn_completion_on_internal_event_handler():
-    runner = CoreRunner(
-        CoreRunnerDeps(
-            agent_core=SimpleNamespace(process=AsyncMock()),
-            internal_event_handler=SimpleNamespace(
-                process_spawn_completion=AsyncMock(
-                    return_value=OutboundMessage(
-                        channel="telegram",
-                        chat_id="123",
-                        content="spawn done",
-                    )
-                )
-            ),
-        )
-    )
-    msg = InboundMessage(
-        channel="telegram",
-        sender="spawn",
-        chat_id="123",
-        content="[internal spawn completed]",
-        metadata={"internal_event": "spawn_completed", "spawn": {"result": "ok"}},
-    )
-
-    out = await runner.process(msg, "telegram:123", dispatch_outbound=False)
-
-    assert out.content == "spawn done"
-    runner._internal_event_handler.process_spawn_completion.assert_awaited_once_with(
-        msg,
-        "telegram:123",
-    )
-    runner._agent_core.process.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -164,47 +96,4 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     context.build_messages.assert_called_once()
     run_agent_loop_fn.assert_awaited_once()
     context_store.commit.assert_awaited_once()
-    assert runner._internal_event_handler is None
     runner._agent_core.process.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_core_runner_prefers_injected_internal_event_handler_over_direct_helper():
-    internal_event_handler = SimpleNamespace(
-        process_spawn_completion=AsyncMock(
-            return_value=OutboundMessage(
-                channel="telegram",
-                chat_id="123",
-                content="from injected handler",
-            )
-        )
-    )
-    runner = CoreRunner(
-        CoreRunnerDeps(
-            agent_core=SimpleNamespace(process=AsyncMock()),
-            session=SimpleNamespace(
-                session_manager=SimpleNamespace(get_or_create=MagicMock())
-            ),
-            context=SimpleNamespace(build_messages=MagicMock()),
-            context_store=SimpleNamespace(commit=AsyncMock()),
-            tools=SimpleNamespace(set_context=MagicMock()),
-            memory_window=12,
-            run_agent_loop_fn=AsyncMock(),
-            internal_event_handler=internal_event_handler,
-        )
-    )
-    msg = InboundMessage(
-        channel="telegram",
-        sender="spawn",
-        chat_id="123",
-        content="[internal spawn completed]",
-        metadata={"internal_event": "spawn_completed", "spawn": {"result": "ok"}},
-    )
-
-    out = await runner.process(msg, "telegram:123")
-
-    assert out.content == "from injected handler"
-    internal_event_handler.process_spawn_completion.assert_awaited_once_with(
-        msg,
-        "telegram:123",
-    )

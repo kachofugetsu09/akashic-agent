@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig
+from agent.looping.core import AgentLoop
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.registry import ToolRegistry

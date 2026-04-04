@@ -2,17 +2,17 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from agent.core.reasoner import build_preflight_prompt
 from agent.looping.constants import _SAFETY_RETRY_RATIOS
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS
-from agent.looping.tool_execution import build_preflight_prompt
 from agent.provider import ContentSafetyError, ContextLengthError
 
 logger = logging.getLogger("agent.loop")
 
 if TYPE_CHECKING:
     from agent.core.reasoner import Reasoner
+    from agent.core.runtime_support import ToolDiscoveryState
     from agent.context import ContextBuilder
-    from agent.looping.tool_execution import ToolDiscoveryState
     from agent.tools.registry import ToolRegistry
     from session.manager import SessionManager
 

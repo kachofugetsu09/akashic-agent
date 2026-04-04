@@ -8,7 +8,8 @@ from bus.events import InboundMessage, OutboundMessage
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.core.context_store import ContextStore
-    from agent.looping.ports import SessionServices, TurnRunner
+    from agent.core.runtime_support import TurnRunner
+    from agent.looping.ports import SessionServices
     from agent.tools.registry import ToolRegistry
 
 
@@ -57,8 +58,8 @@ class AgentCore:
         )
 
         # 2. 再渲染 system prompt 预览，先把 prompt 主编排收进 AgentCore。
-        skill_mentions = list(context_bundle.metadata.get("skill_mentions") or [])
-        retrieved_block = str(context_bundle.metadata.get("retrieved_memory_block") or "")
+        skill_mentions = list(context_bundle.skill_mentions)
+        retrieved_block = context_bundle.retrieved_memory_block
         self._context.build_system_prompt(
             skill_names=skill_mentions,
             message_timestamp=msg.timestamp,
@@ -79,7 +80,6 @@ class AgentCore:
 
         # 4. 继续走新的 ContextStore.commit 做被动 turn 提交。
         retry_trace = getattr(self._turn_runner, "last_retry_trace", {})
-        side_effects = list(getattr(self._turn_runner, "last_side_effects", []) or [])
         return await self._context_store.commit(
             msg=msg,
             session_key=key,
@@ -87,8 +87,7 @@ class AgentCore:
             tools_used=tools_used,
             tool_chain=tool_chain,
             thinking=thinking,
-            retrieval_raw=context_bundle.metadata.get("retrieval_trace_raw"),
+            retrieval_raw=context_bundle.retrieval_trace_raw,
             context_retry=retry_trace,
-            side_effects=side_effects,
             dispatch_outbound=dispatch_outbound,
         )

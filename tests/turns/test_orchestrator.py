@@ -175,6 +175,26 @@ async def test_orchestrator_keeps_context_retry_trace_in_outbound_metadata():
 
 @pytest.mark.asyncio
 async def test_orchestrator_delegates_passive_turn_to_context_store_when_provided():
+    async def _commit(
+        *,
+        msg,
+        session_key,
+        reply,
+        tools_used,
+        tool_chain,
+        thinking,
+        retrieval_raw,
+        context_retry,
+        post_turn_actions=None,
+        dispatch_outbound=True,
+    ):
+        return SimpleNamespace(
+            channel="telegram",
+            chat_id="123",
+            content="收到",
+            metadata={"context_retry": {"selected_plan": "full"}},
+        )
+
     session_svc = SessionServices(
         session_manager=SimpleNamespace(get_or_create=lambda _key: _DummySession("telegram:123")),
         presence=None,
@@ -182,14 +202,7 @@ async def test_orchestrator_delegates_passive_turn_to_context_store_when_provide
     trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
     post_turn = SimpleNamespace(schedule=lambda event: None)
     passive_context_store = SimpleNamespace(
-        commit=AsyncMock(
-            return_value=SimpleNamespace(
-                channel="telegram",
-                chat_id="123",
-                content="收到",
-                metadata={"context_retry": {"selected_plan": "full"}},
-            )
-        )
+        commit=AsyncMock(side_effect=_commit)
     )
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
@@ -222,3 +235,4 @@ async def test_orchestrator_delegates_passive_turn_to_context_store_when_provide
     passive_context_store.commit.assert_awaited_once()
     assert passive_context_store.commit.await_args.kwargs["session_key"] == "telegram:123"
     assert passive_context_store.commit.await_args.kwargs["retrieval_raw"] == {"rag": 1}
+    assert passive_context_store.commit.await_args.kwargs["post_turn_actions"] == []

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from typing import Awaitable, Callable, Protocol
+
+from bus.events import InboundMessage
 
 
 @dataclass
@@ -54,3 +57,39 @@ class ToolDiscoveryState:
                 lru[name] = None
             while len(lru) > self.capacity:
                 lru.popitem(last=False)
+
+
+class SessionLike(Protocol):
+    key: str
+    messages: list[dict]
+    metadata: dict[str, object]
+    last_consolidated: int
+
+    def get_history(self, max_messages: int = 500) -> list[dict]: ...
+    def add_message(self, role: str, content: str, media=None, **kwargs) -> None: ...
+
+
+ConsolidationRunner = Callable[[SessionLike], Awaitable[None]]
+
+
+class TurnRunner(Protocol):
+    async def run(
+        self,
+        msg: InboundMessage,
+        session: SessionLike,
+        skill_names: list[str] | None = None,
+        base_history: list[dict] | None = None,
+        retrieved_memory_block: str = "",
+    ) -> tuple[str, list[str], list[dict], str | None]:
+        ...
+
+
+class AgentLoopRunner(Protocol):
+    async def __call__(
+        self,
+        initial_messages: list[dict],
+        request_time: object | None = None,
+        preloaded_tools: set[str] | None = None,
+        preflight_injected: bool = False,
+    ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
+        ...
