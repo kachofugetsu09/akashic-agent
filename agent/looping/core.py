@@ -36,7 +36,6 @@ from agent.turns.outbound import BusOutboundPort
 __all__ = [
     "AgentLoop",
 ]
-from agent.looping.safety_retry import SafetyRetryService
 from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
 from bus.events import InboundMessage, OutboundMessage
@@ -74,16 +73,16 @@ class AgentLoop:
         deps: AgentLoopDeps,
         config: AgentLoopConfig,
     ) -> None:
+        # 1. 先保留 llm 配置对象，后面的兼容属性直接从这里读。
+        self._llm_config = config.llm
         self.bus = deps.bus
         self.provider = deps.provider
         self.tools = deps.tools
         self.session_manager = deps.session_manager
         self.workspace = deps.workspace
-        self.model = config.llm.model
-        self.light_model = config.llm.light_model or config.llm.model
+        self.light_model = self._llm_config.light_model or self._llm_config.model
         self.light_provider = deps.light_provider or deps.provider
-        self.max_iterations = config.llm.max_iterations
-        self.max_tokens = config.llm.max_tokens
+        self.max_iterations = self._llm_config.max_iterations
         self.memory_window = config.memory.window
         self._presence = deps.presence
         self._running = False
@@ -150,20 +149,16 @@ class AgentLoop:
             discovery=self._tool_discovery,
             memory_port=self._memory_port,
             tool_search_enabled=self._tool_search_enabled,
-        )
-        self._safety_retry = deps.safety_retry or SafetyRetryService(
-            reasoner=self._reasoner,
+            memory_window=self.memory_window,
             context=self.context,
             session_manager=self.session_manager,
-            tools=self.tools,
-            discovery=self._tool_discovery,
-            tool_search_enabled=self._tool_search_enabled,
-            memory_window=self.memory_window,
         )
+        if deps.reasoner is not None:
+            self._reasoner = deps.reasoner
         self._consolidation = deps.consolidation_service or ConsolidationService(
             memory_port=self._memory_port,
             provider=self.provider,
-            model=self.model,
+            model=config.llm.model,
             memory_window=self.memory_window,
             profile_extractor=self._profile_extractor,
         )
@@ -224,7 +219,7 @@ class AgentLoop:
                 context_store=passive_context_store,
                 context=self.context,
                 tools=deps.tools,
-                turn_runner=self._safety_retry,
+                reasoner=self._reasoner,
             )
         )
         self._core_runner = deps.core_runner or CoreRunner(
@@ -239,11 +234,29 @@ class AgentLoop:
             )
         )
 
+    @property
+    def light_model(self) -> str:
+        # 1. 兼容外部读取 loop.light_model，真实值统一来自 llm 配置。
+        return self._llm_config.light_model or self._llm_config.model
+
+    @light_model.setter
+    def light_model(self, value: str) -> None:
+        # 1. 兼容初始化期和少量外部覆写，统一回写到 llm 配置。
+        self._llm_config.light_model = value
+
+    @property
+    def max_iterations(self) -> int:
+        # 1. 兼容外部读取 loop.max_iterations，真实值统一来自 llm 配置。
+        return int(self._llm_config.max_iterations)
+
+    @max_iterations.setter
+    def max_iterations(self, value: int) -> None:
+        # 1. 兼容测试或外部直接改 loop.max_iterations，真实执行也同步生效。
+        self._llm_config.max_iterations = int(value)
+
     async def run(self) -> None:
         self._running = True
-        logger.info(
-            f"AgentLoop 启动  model={self.model}  max_iter={self.max_iterations}"
-        )
+        logger.info(f"AgentLoop 启动  max_iter={self.max_iterations}")
         while self._running:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)

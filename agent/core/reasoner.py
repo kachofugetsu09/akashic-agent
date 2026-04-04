@@ -13,10 +13,13 @@ from agent.looping.constants import (
     _PRE_FLIGHT_PROMPT,
     _REFLECT_PROMPT,
     _SUMMARY_MAX_TOKENS,
+    _SAFETY_RETRY_RATIOS,
     _TOOL_LOOP_REPEAT_LIMIT,
     _tool_call_signature,
 )
+from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS
 from agent.prompting import build_runtime_guard_message
+from agent.provider import ContentSafetyError, ContextLengthError
 from agent.procedure_hint import (
     _match_procedure_items,
     build_intercept_hint,
@@ -27,9 +30,12 @@ from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import _excluded_names_ctx
 
 if TYPE_CHECKING:
+    from agent.context import ContextBuilder
     from agent.looping.ports import LLMConfig, LLMServices
+    from agent.core.runtime_support import SessionLike, TurnRunResult
     from agent.tools.registry import ToolRegistry
     from core.memory.port import MemoryPort
+    from session.manager import SessionManager
 
 logger = logging.getLogger("agent.core.reasoner")
 
@@ -163,6 +169,18 @@ class Reasoner(ABC):
     ) -> ReasonerResult:
         """执行多轮 tool loop，并返回本轮结果。"""
 
+    @abstractmethod
+    async def run_turn(
+        self,
+        *,
+        msg,
+        session: "SessionLike",
+        skill_names: list[str] | None = None,
+        base_history: list[dict] | None = None,
+        retrieved_memory_block: str = "",
+    ) -> "TurnRunResult":
+        """执行完整被动 turn，包括 retry / trim / tool loop。"""
+
 
 class DefaultReasoner(Reasoner):
     def __init__(
@@ -174,6 +192,9 @@ class DefaultReasoner(Reasoner):
         memory_port: "MemoryPort",
         *,
         tool_search_enabled: bool,
+        memory_window: int,
+        context: "ContextBuilder | None" = None,
+        session_manager: "SessionManager | None" = None,
     ) -> None:
         self._llm = llm
         self._llm_config = llm_config
@@ -181,6 +202,150 @@ class DefaultReasoner(Reasoner):
         self._discovery = discovery
         self._memory_port = memory_port
         self._tool_search_enabled = tool_search_enabled
+        self._memory_window = memory_window
+        self._context = context
+        self._session_manager = session_manager
+
+    async def run_turn(
+        self,
+        *,
+        msg,
+        session: "SessionLike",
+        skill_names: list[str] | None = None,
+        base_history: list[dict] | None = None,
+        retrieved_memory_block: str = "",
+    ) -> "TurnRunResult":
+        from agent.core.runtime_support import TurnRunResult
+
+        if self._context is None or self._session_manager is None:
+            raise RuntimeError("DefaultReasoner.run_turn requires context and session_manager")
+
+        # 1. 先准备 retry trace、history 和 preload 工具集合。
+        retry_trace: dict[str, object] = {
+            "attempts": [],
+            "selected_plan": None,
+            "trimmed_sections": [],
+        }
+        source_history = base_history or session.get_history(max_messages=self._memory_window)
+        total_history = len(source_history)
+        preloaded: set[str] | None = None
+        if self._tool_search_enabled:
+            preloaded = self._discovery.get_preloaded(session.key)
+            logger.info(
+                "[tool_search] LRU preloaded=%s",
+                sorted(preloaded) if preloaded else "[]",
+            )
+
+        # 2. 再按 trim plan + history window 顺序逐轮尝试。
+        attempts = self._build_attempt_plans(total_history)
+        for attempt, plan in enumerate(attempts):
+            retry_trace["attempts"].append(
+                {
+                    "name": plan["name"],
+                    "history_window": plan["history_window"],
+                    "disabled_sections": sorted(plan["disabled_sections"]),
+                }
+            )
+            history_for_attempt = self._slice_history(
+                source_history,
+                plan["history_window"],
+            )
+            preflight_prompt = build_preflight_prompt(
+                request_time=msg.timestamp,
+                tools=self._tools,
+                tool_search_enabled=self._tool_search_enabled,
+                visible_names=preloaded if self._tool_search_enabled else None,
+            )
+            runtime_guard_context = self._context.build_runtime_guard_context(
+                preflight_prompt=preflight_prompt
+            )
+            initial_messages = self._context.build_messages(
+                history=history_for_attempt,
+                current_message=msg.content,
+                media=msg.media if msg.media else None,
+                skill_names=skill_names,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                message_timestamp=msg.timestamp,
+                retrieved_memory_block=retrieved_memory_block,
+                disabled_sections=plan["disabled_sections"],
+                runtime_guard_context=runtime_guard_context,
+            )
+            try:
+                result = await self.run(
+                    initial_messages,
+                    request_time=msg.timestamp,
+                    preloaded_tools=preloaded,
+                    preflight_injected=True,
+                )
+                tools_used = list(result.metadata.get("tools_used") or [])
+                tool_chain = list(result.metadata.get("tool_chain") or [])
+                if attempt > 0:
+                    window = plan["history_window"]
+                    retry_trace["selected_plan"] = plan["name"]
+                    retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
+                    logger.warning(
+                        "重试成功 plan=%s window=%d disabled=%s，修剪 session 历史",
+                        plan["name"],
+                        window,
+                        sorted(plan["disabled_sections"]),
+                    )
+                    if window == 0:
+                        session.messages.clear()
+                    else:
+                        session.messages = session.messages[-window:]
+                    session.last_consolidated = 0
+                    await self._session_manager.save_async(session)
+
+                if self._tool_search_enabled and tools_used:
+                    self._discovery.update(
+                        session.key,
+                        tools_used,
+                        self._tools.get_always_on_names(),
+                    )
+                if attempt == 0:
+                    retry_trace["selected_plan"] = plan["name"]
+                    retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
+                return TurnRunResult(
+                    reply=result.reply,
+                    tools_used=tools_used,
+                    tool_chain=tool_chain,
+                    thinking=result.thinking,
+                    context_retry=retry_trace,
+                )
+            except ContentSafetyError:
+                if attempt < len(attempts) - 1:
+                    next_plan = attempts[attempt + 1]
+                    logger.warning(
+                        "安全拦截 (attempt=%d)，切到 plan=%s window=%d disabled=%s",
+                        attempt + 1,
+                        next_plan["name"],
+                        next_plan["history_window"],
+                        sorted(next_plan["disabled_sections"]),
+                    )
+                else:
+                    logger.warning("安全拦截：所有窗口均失败，当前消息本身可能违规")
+                    return TurnRunResult(
+                        reply="你的消息触发了安全审查，无法处理。",
+                        context_retry=retry_trace,
+                    )
+            except ContextLengthError:
+                if attempt < len(attempts) - 1:
+                    next_plan = attempts[attempt + 1]
+                    logger.warning(
+                        "上下文超长 (attempt=%d)，切到 plan=%s window=%d disabled=%s",
+                        attempt + 1,
+                        next_plan["name"],
+                        next_plan["history_window"],
+                        sorted(next_plan["disabled_sections"]),
+                    )
+                else:
+                    logger.warning("上下文超长：所有窗口均失败，清空历史后仍超长")
+                    return TurnRunResult(
+                        reply="上下文过长无法处理，请尝试新建对话。",
+                        context_retry=retry_trace,
+                    )
+        return TurnRunResult(reply="（安全重试异常）", context_retry=retry_trace)
 
     async def run(
         self,
@@ -530,6 +695,50 @@ class DefaultReasoner(Reasoner):
             thinking=thinking,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _slice_history(source_history: list[dict], window: int) -> list[dict]:
+        total_history = len(source_history)
+        if window <= 0:
+            return []
+        if window >= total_history:
+            return source_history
+        return source_history[-window:]
+
+    @staticmethod
+    def _build_attempt_plans(total_history: int) -> list[dict]:
+        attempts: list[dict] = []
+        seen: set[tuple[tuple[str, ...], int]] = set()
+        full_window = int(total_history * _SAFETY_RETRY_RATIOS[0])
+        for trim_plan in DEFAULT_CONTEXT_TRIM_PLANS:
+            disabled = set(trim_plan.drop_sections)
+            key = (tuple(sorted(disabled)), full_window)
+            if key in seen:
+                continue
+            seen.add(key)
+            attempts.append(
+                {
+                    "name": trim_plan.name,
+                    "disabled_sections": disabled,
+                    "history_window": full_window,
+                }
+            )
+
+        last_trim = set(DEFAULT_CONTEXT_TRIM_PLANS[-1].drop_sections)
+        for ratio in _SAFETY_RETRY_RATIOS[1:]:
+            window = int(total_history * ratio)
+            key = (tuple(sorted(last_trim)), window)
+            if key in seen:
+                continue
+            seen.add(key)
+            attempts.append(
+                {
+                    "name": f"{DEFAULT_CONTEXT_TRIM_PLANS[-1].name}_history",
+                    "disabled_sections": set(last_trim),
+                    "history_window": window,
+                }
+            )
+        return attempts
 
     @staticmethod
     def format_request_time_anchor(ts: datetime | None) -> str:

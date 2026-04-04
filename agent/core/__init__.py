@@ -10,7 +10,7 @@ from agent.core.runtime_support import (
     MemoryServices,
     SessionLike,
     ToolDiscoveryState,
-    TurnRunner,
+    TurnRunResult,
 )
 from agent.core.types import (
     ChatMessage,
@@ -47,7 +47,7 @@ __all__ = [
     "SystemPromptBuilder",
     "ToolCall",
     "ToolDiscoveryState",
-    "TurnRunner",
+    "TurnRunResult",
     "TurnContext",
     "TurnRecord",
 ]

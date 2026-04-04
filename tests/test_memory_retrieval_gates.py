@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from agent.core.runtime_support import TurnRunResult
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
 from agent.looping.turn_types import HistoryMessage
@@ -287,7 +288,7 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
     session = _DummySession("cli:1")
     loop.session_manager.get_or_create.return_value = session
     loop.session_manager.append_messages = AsyncMock(return_value=None)
-    loop._safety_retry.run = AsyncMock(return_value=("ok", [], [], None))
+    loop._reasoner.run_turn = AsyncMock(return_value=TurnRunResult(reply="ok"))
 
     async def _slow_retrieve(*args, **kwargs):
         await asyncio.sleep(0.12)
@@ -396,7 +397,7 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
     session = _DummySession("cli:1")
     session.messages = [{"role": "user", "content": "x"} for _ in range(41)]
     loop.session_manager.get_or_create.return_value = session
-    loop._safety_retry.run = AsyncMock(return_value=("ok", [], [], None))
+    loop._reasoner.run_turn = AsyncMock(return_value=TurnRunResult(reply="ok"))
 
     append_done = False
 

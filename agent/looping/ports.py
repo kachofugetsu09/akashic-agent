@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
+    from agent.core.reasoner import Reasoner
     from agent.core.runner import CoreRunner
     from agent.core.runtime_support import ToolDiscoveryState
     from agent.looping.consolidation import ConsolidationService
-    from agent.looping.safety_retry import SafetyRetryService
     from agent.postturn.protocol import PostTurnPipeline
     from agent.provider import LLMProvider
     from agent.retrieval.protocol import MemoryRetrievalPipeline
@@ -112,7 +112,7 @@ class AgentLoopDeps:
     observability_services: ObservabilityServices | None = None
     hyde_enhancer: "HyDEEnhancer | None" = None
     tool_discovery: "ToolDiscoveryState | None" = None
-    safety_retry: "SafetyRetryService | None" = None
+    reasoner: "Reasoner | None" = None
     consolidation_service: "ConsolidationService | None" = None
     scheduler: "TurnScheduler | None" = None
     core_runner: "CoreRunner | None" = None

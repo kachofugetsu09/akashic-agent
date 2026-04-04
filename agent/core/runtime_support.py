@@ -85,16 +85,13 @@ class SessionLike(Protocol):
 ConsolidationRunner = Callable[[SessionLike], Awaitable[None]]
 
 
-class TurnRunner(Protocol):
-    async def run(
-        self,
-        msg: InboundMessage,
-        session: SessionLike,
-        skill_names: list[str] | None = None,
-        base_history: list[dict] | None = None,
-        retrieved_memory_block: str = "",
-    ) -> tuple[str, list[str], list[dict], str | None]:
-        ...
+@dataclass
+class TurnRunResult:
+    reply: str | None
+    tools_used: list[str] = field(default_factory=list)
+    tool_chain: list[dict] = field(default_factory=list)
+    thinking: str | None = None
+    context_retry: dict[str, object] = field(default_factory=dict)
 
 
 class AgentLoopRunner(Protocol):
