@@ -1,3 +1,4 @@
+from agent.core.agent_core import AgentCore, AgentCoreDeps
 from agent.core.context_store import ContextStore, DefaultContextStore
 from agent.core.prompt_block import PromptBlock, SystemPromptBuilder, TurnContext
 from agent.core.reasoner import DefaultReasoner, Reasoner
@@ -14,6 +15,8 @@ from agent.core.types import (
 )
 
 __all__ = [
+    "AgentCore",
+    "AgentCoreDeps",
     "ChatMessage",
     "ContextStore",
     "ContextBundle",
