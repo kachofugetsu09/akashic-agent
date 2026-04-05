@@ -23,7 +23,7 @@ class CLIClient:
     async def run(self) -> None:
         try:
             reader, writer = await asyncio.open_unix_connection(self._socket_path)
-        except FileNotFoundError, ConnectionRefusedError:
+        except (FileNotFoundError, ConnectionRefusedError):
             print(
                 f"无法连接到 agent（{self._socket_path}），请先启动主进程：python main.py"
             )
@@ -45,7 +45,7 @@ class CLIClient:
                 payload = json.dumps({"content": stripped}, ensure_ascii=False) + "\n"
                 writer.write(payload.encode())
                 await writer.drain()
-        except KeyboardInterrupt, EOFError:
+        except (KeyboardInterrupt, EOFError):
             pass
         finally:
             receive_task.cancel()

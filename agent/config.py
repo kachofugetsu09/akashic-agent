@@ -86,6 +86,7 @@ def load_config(path: str | Path = "config.json") -> Config:
         system_prompt=data.get("system_prompt", "You are a helpful assistant."),
         max_tokens=data.get("max_tokens", 8192),
         max_iterations=data.get("max_iterations", 10),
+        memory_window=int(data.get("memory_window", 40)),
         base_url=data.get("base_url") or _PRESETS.get(provider),
         extra_body=data.get("extra_body", {}),
         channels=channels,
@@ -136,7 +137,8 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
     channels = ChannelsConfig(
         telegram=telegram,
         qq=qq,
-        socket=channels_data.get("cli", {}).get("socket", DEFAULT_SOCKET),
+        socket=channels_data.get("socket")
+        or channels_data.get("cli", {}).get("socket", DEFAULT_SOCKET),
     )
     channels.socket = channels.socket or DEFAULT_SOCKET
     return channels

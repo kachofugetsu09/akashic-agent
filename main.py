@@ -31,11 +31,14 @@ def connect_cli(config_path: str = "config.json") -> None:
     run_tui(socket_path)
 
 
-async def serve(config_path: str = "config.json") -> None:
+async def serve(
+    config_path: str = "config.json",
+    workspace: Path | None = None,
+) -> None:
     config = Config.load(config_path)
     runtime = build_app_runtime(
         config,
-        workspace=Path.home() / ".akasic" / "workspace",
+        workspace=workspace or (Path.home() / ".akasic" / "workspace"),
     )
     await runtime.run()
 
@@ -43,10 +46,14 @@ async def serve(config_path: str = "config.json") -> None:
 if __name__ == "__main__":
     args = sys.argv[1:]
     config_path = "config.json"
+    workspace: Path | None = None
 
     if "--config" in args:
         idx = args.index("--config")
         config_path = args[idx + 1]
+    if "--workspace" in args:
+        idx = args.index("--workspace")
+        workspace = Path(args[idx + 1])
 
     if not Path(config_path).exists():
         print(
@@ -57,4 +64,4 @@ if __name__ == "__main__":
     if "cli" in args:
         connect_cli(config_path)
     else:
-        asyncio.run(serve(config_path))
+        asyncio.run(serve(config_path, workspace))

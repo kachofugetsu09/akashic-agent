@@ -107,7 +107,10 @@ class Session:
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
         """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。"""
-        messages = self.messages[-max_messages:]
+        if max_messages <= 0:
+            messages = []
+        else:
+            messages = self.messages[-max_messages:]
         assistant_indices = [
             i for i, m in enumerate(messages) if m.get("role") == "assistant"
         ]

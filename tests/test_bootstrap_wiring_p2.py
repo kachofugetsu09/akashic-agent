@@ -45,6 +45,31 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
     assert cfg.wiring.toolsets == ["schedule", "mcp"]
 
 
+def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "provider": "openai",
+                "model": "m",
+                "api_key": "k",
+                "system_prompt": "s",
+                "memory_window": 0,
+                "channels": {
+                    "socket": "/tmp/dev-akasic.sock",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.memory_window == 0
+    assert cfg.channels.socket == "/tmp/dev-akasic.sock"
+
+
 def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, tmp_path: Path):
     calls: list[str] = []
 
@@ -166,6 +191,7 @@ def test_wiring_error_messages_list_available_choices():
     except ValueError as exc:
         assert "可选值" in str(exc)
         assert "default" in str(exc)
+        assert "memu" in str(exc)
     else:
         raise AssertionError("resolve_memory_engine_builder should fail for bad name")
 
@@ -176,6 +202,12 @@ def test_wiring_error_messages_list_available_choices():
         assert "meta_common" in str(exc)
     else:
         raise AssertionError("resolve_toolset_provider should fail for bad name")
+
+
+def test_resolve_memory_engine_builder_supports_memu():
+    builder = resolve_memory_engine_builder("memu")
+
+    assert callable(builder)
 
 
 def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry(

@@ -187,7 +187,7 @@ class CLITextualApp(App[None]):
     async def _connect_and_receive(self) -> None:
         try:
             reader, writer = await asyncio.open_unix_connection(self.socket_path)
-        except FileNotFoundError, ConnectionRefusedError:
+        except (FileNotFoundError, ConnectionRefusedError):
             self._write_system_message(f"无法连接到 agent: {self.socket_path}")
             self._write_system_message("请先启动主进程: python main.py")
             self.connected = False

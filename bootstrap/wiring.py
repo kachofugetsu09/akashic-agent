@@ -35,11 +35,65 @@ MemoryEngineBuilder = Callable[[MemoryEngineBuildDeps], object]
 _MEMORY_WIRING = {
     "default": MemoryToolsetProvider,
 }
-_MEMORY_ENGINE_WIRING: dict[str, MemoryEngineBuilder] = {
-    "default": lambda deps: DefaultMemoryEngine(
+
+
+def _build_default_memory_engine(deps: MemoryEngineBuildDeps):
+    return DefaultMemoryEngine(
         retriever=deps.retriever,
         post_response_worker=deps.post_response_worker,
-    ),
+    )
+
+
+def _build_memu_memory_engine(deps: MemoryEngineBuildDeps):
+    from memu.app.service import MemoryService
+
+    from core.memory.memu_engine import MemUMemoryEngine, MemUScopeModel
+
+    base_url = deps.config.light_base_url or deps.config.base_url or "https://api.openai.com/v1"
+    api_key = deps.config.light_api_key or deps.config.api_key
+    chat_model = deps.config.light_model or deps.config.model
+    service = MemoryService(
+        llm_profiles={
+            "default": {
+                "provider": "openai",
+                "base_url": base_url,
+                "api_key": api_key,
+                "chat_model": chat_model,
+                "client_backend": "sdk",
+            },
+            "embedding": {
+                "provider": "openai",
+                "base_url": base_url,
+                "api_key": api_key,
+                "embed_model": deps.config.memory_v2.embed_model,
+                "client_backend": "sdk",
+            },
+        },
+        blob_config={
+            "provider": "local",
+            "resources_dir": str(deps.workspace / "memu" / "resources"),
+        },
+        database_config={
+            "metadata_store": {
+                "provider": "inmemory",
+            },
+        },
+        retrieve_config={
+            "method": "rag",
+            "route_intention": False,
+            "sufficiency_check": False,
+        },
+        user_config={"model": MemUScopeModel},
+    )
+    return MemUMemoryEngine(
+        service=service,
+        input_dir=deps.workspace / "memu" / "input",
+    )
+
+
+_MEMORY_ENGINE_WIRING: dict[str, MemoryEngineBuilder] = {
+    "default": _build_default_memory_engine,
+    "memu": _build_memu_memory_engine,
 }
 _CONTEXT_WIRING: dict[str, ContextFactory] = {
     "default": lambda workspace, memory_port: ContextBuilder(

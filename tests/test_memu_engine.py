@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 from core.memory.engine import MemoryEngineRetrieveRequest, MemoryIngestRequest, MemoryScope
@@ -28,7 +29,7 @@ async def test_memu_engine_retrieve_maps_response_to_hits():
             }
         ],
     }
-    engine = MemUMemoryEngine(service=service)
+    engine = MemUMemoryEngine(service=service, input_dir=Path("/tmp/memu-test"))
 
     result = await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -61,16 +62,52 @@ async def test_memu_engine_retrieve_maps_response_to_hits():
     assert result.trace["rewritten_query"] == "fitbit charge 6"
 
 
-async def test_memu_engine_ingest_is_disabled_for_now():
-    engine = MemUMemoryEngine(service=AsyncMock())
+async def test_memu_engine_ingest_memorizes_text_payload(tmp_path: Path):
+    service = AsyncMock()
+    service.memorize.return_value = {
+        "items": [{"id": "m1"}, {"id": "m2"}],
+    }
+    engine = MemUMemoryEngine(service=service, input_dir=tmp_path)
+
+    result = await engine.ingest(
+        MemoryIngestRequest(
+            content={
+                "user_message": "hi",
+                "assistant_response": "ok",
+                "tool_chain": [{"name": "a"}],
+            },
+            source_kind="conversation_turn",
+            scope=MemoryScope(session_key="cli:1", channel="cli", chat_id="1"),
+        )
+    )
+
+    assert result.accepted is True
+    assert result.created_ids == ["m1", "m2"]
+    kwargs = service.memorize.await_args.kwargs
+    assert kwargs["modality"] == "text"
+    assert kwargs["user"] == {
+        "session_key": "cli:1",
+        "channel": "cli",
+        "chat_id": "1",
+    }
+    resource_path = Path(kwargs["resource_url"])
+    assert resource_path.exists()
+    text = resource_path.read_text(encoding="utf-8")
+    assert "user: hi" in text
+    assert "assistant: ok" in text
+    assert "tool_chain:" in text
+
+
+async def test_memu_engine_ingest_rejects_unsupported_source_kind(tmp_path: Path):
+    engine = MemUMemoryEngine(service=AsyncMock(), input_dir=tmp_path)
 
     result = await engine.ingest(
         MemoryIngestRequest(
             content={"user_message": "hi"},
-            source_kind="conversation_turn",
+            source_kind="resource",
             scope=MemoryScope(session_key="cli:1"),
         )
     )
 
     assert result.accepted is False
-    assert result.raw["reason"] == "not_implemented"
+    assert result.raw["reason"] == "unsupported_source_kind"

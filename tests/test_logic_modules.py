@@ -218,6 +218,14 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     )
     loop._poll_feeds_once = AsyncMock(return_value=None)
     assert loop._sample_random_memory(1)
+
+
+def test_session_get_history_returns_empty_when_window_is_zero():
+    session = Session("cli:1")
+    session.add_message("user", "hello")
+    session.add_message("assistant", "world")
+
+    assert session.get_history(max_messages=0) == []
     assert loop._has_global_memory() is True
     assert loop._read_memory_text() == "mem"
     assert loop._compute_energy() == 0.5

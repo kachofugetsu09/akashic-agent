@@ -191,7 +191,7 @@ class SkillsLoader:
                     return data[key]
             # 兼容：直接返回整个对象（旧格式）
             return data
-        except json.JSONDecodeError, TypeError:
+        except (json.JSONDecodeError, TypeError):
             return {}
 
     def get_always_skills(self) -> list[str]:
