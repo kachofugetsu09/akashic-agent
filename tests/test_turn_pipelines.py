@@ -207,6 +207,132 @@ async def test_default_post_turn_pipeline_uses_engine_only():
     assert request.scope.session_key == "cli:1"
 
 
+@pytest.mark.asyncio
+async def test_default_post_turn_pipeline_serializes_same_session_post_mem():
+    scheduler = MagicMock()
+    started: list[str] = []
+    finished: list[str] = []
+    active = 0
+    max_active = 0
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _ingest(request: MemoryIngestRequest):
+        nonlocal active, max_active
+        label = str(request.content["user_message"])
+        started.append(label)
+        active += 1
+        max_active = max(max_active, active)
+        if label == "a":
+            first_started.set()
+            await release_first.wait()
+        finished.append(label)
+        active -= 1
+        return MagicMock()
+
+    engine = MagicMock()
+    engine.ingest = AsyncMock(side_effect=_ingest)
+    pipeline = DefaultPostTurnPipeline(scheduler=scheduler, engine=engine)
+
+    session = MagicMock()
+    event_a = PostTurnEvent(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        user_message="a",
+        assistant_response="ok-a",
+        tools_used=[],
+        tool_chain=[],
+        session=session,
+        timestamp=datetime.now(),
+    )
+    event_b = PostTurnEvent(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        user_message="b",
+        assistant_response="ok-b",
+        tools_used=[],
+        tool_chain=[],
+        session=session,
+        timestamp=datetime.now(),
+    )
+
+    pipeline.schedule(event_a)
+    await first_started.wait()
+    pipeline.schedule(event_b)
+    await asyncio.sleep(0)
+
+    assert started == ["a"]
+    assert finished == []
+    assert max_active == 1
+
+    release_first.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert started == ["a", "b"]
+    assert finished == ["a", "b"]
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
+async def test_default_post_turn_pipeline_keeps_cross_session_parallelism():
+    scheduler = MagicMock()
+    active = 0
+    max_active = 0
+    ready = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _ingest(request: MemoryIngestRequest):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if max_active >= 2:
+            ready.set()
+        await release.wait()
+        active -= 1
+        return MagicMock()
+
+    engine = MagicMock()
+    engine.ingest = AsyncMock(side_effect=_ingest)
+    pipeline = DefaultPostTurnPipeline(scheduler=scheduler, engine=engine)
+
+    pipeline.schedule(
+        PostTurnEvent(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            user_message="a",
+            assistant_response="ok-a",
+            tools_used=[],
+            tool_chain=[],
+            session=MagicMock(),
+            timestamp=datetime.now(),
+        )
+    )
+    pipeline.schedule(
+        PostTurnEvent(
+            session_key="cli:2",
+            channel="cli",
+            chat_id="2",
+            user_message="b",
+            assistant_response="ok-b",
+            tools_used=[],
+            tool_chain=[],
+            session=MagicMock(),
+            timestamp=datetime.now(),
+        )
+    )
+
+    await ready.wait()
+    assert max_active >= 2
+
+    release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+
 def test_agent_loop_uses_custom_pipelines(tmp_path: Path):
     custom_retrieval = _CustomRetrieval(block="MEM_BLOCK")
     custom_post_turn = _CustomPostTurn()
