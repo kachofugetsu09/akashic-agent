@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.core.types import RetrievalTrace
 from agent.looping.ports import ObservabilityServices, SessionServices
-from agent.turns.outbound import OutboundDispatch
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
+from agent.turns.outbound import OutboundDispatch
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from bus.events import InboundMessage
 
 
 class _DummySession:
@@ -22,14 +19,10 @@ class _DummySession:
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
 
-    def get_history(self, max_messages: int = 500) -> list[dict]:
-        return self.messages[-max_messages:]
-
     def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
         msg = {
             "role": role,
             "content": content,
-            "timestamp": datetime.now().isoformat(),
         }
         if media:
             msg["media"] = list(media)
@@ -38,15 +31,64 @@ class _DummySession:
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_passive_order_and_outbound_metadata():
+async def test_orchestrator_skip_runs_side_effects_without_dispatch():
     order: list[str] = []
 
-    async def _append_messages(_session, _msgs):
-        order.append("persist")
+    class _Effect:
+        async def run(self) -> None:
+            order.append("side_effect")
 
-    presence = SimpleNamespace(record_user_message=lambda _key: None)
-    session_manager = SimpleNamespace(append_messages=AsyncMock(side_effect=_append_messages))
-    session_svc = SessionServices(session_manager=session_manager, presence=presence)
+    class _Outbound:
+        async def dispatch(self, outbound: OutboundDispatch) -> bool:
+            order.append("dispatch")
+            return True
+
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=SessionServices(
+                session_manager=SimpleNamespace(get_or_create=lambda _key: _DummySession("telegram:123")),
+                presence=None,
+            ),
+            trace=ObservabilityServices(workspace=Path("."), observe_writer=None),
+            post_turn=SimpleNamespace(schedule=lambda event: order.append("post_turn")),
+            outbound=_Outbound(),
+        )
+    )
+
+    sent = await orchestrator.handle_proactive_turn(
+        result=TurnResult(
+            decision="skip",
+            outbound=None,
+            trace=TurnTrace(source="proactive", extra={"skip_reason": "quiet_hours"}),
+            side_effects=[_Effect()],
+        ),
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+    )
+
+    assert sent is False
+    assert order == ["side_effect"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success_effects():
+    order: list[str] = []
+    session = _DummySession("telegram:123")
+    post_turn_events: list[object] = []
+
+    class _Effect:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        async def run(self) -> None:
+            order.append(self._name)
+
+    class _Outbound:
+        async def dispatch(self, outbound: OutboundDispatch) -> bool:
+            order.append("dispatch")
+            assert outbound.content == "hello"
+            return True
 
     class _Writer:
         def __init__(self) -> None:
@@ -56,183 +98,44 @@ async def test_orchestrator_passive_order_and_outbound_metadata():
             order.append("observe")
             self.events.append(event)
 
-    writer = _Writer()
-    trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=writer)
-
-    class _PostTurn:
-        def __init__(self) -> None:
-            self.events: list[object] = []
-
-        def schedule(self, event) -> None:
-            order.append("post_turn")
-            self.events.append(event)
-
-    post_turn = _PostTurn()
-    dispatched: list[OutboundDispatch] = []
-
-    class _Outbound:
-        async def dispatch(self, outbound: OutboundDispatch) -> bool:
-            order.append("dispatch")
-            dispatched.append(outbound)
-            return True
-
-    orchestrator = TurnOrchestrator(
-        TurnOrchestratorDeps(
-            session=session_svc,
-            trace=trace_svc,
-            post_turn=post_turn,
-            outbound=_Outbound(),
-        )
-    )
-
-    class _Effect:
-        async def run(self) -> None:
-            order.append("side_effect")
-
-    msg = InboundMessage(
-        channel="telegram",
-        sender="user",
-        chat_id="123",
-        content="你好",
-        metadata={"req_id": "r1"},
-    )
-    session = _DummySession("telegram:123")
-    session_manager.get_or_create = lambda _key: session
-    result = TurnResult(
-        decision="reply",
-        outbound=TurnOutbound(session_key="telegram:123", content="收到"),
-        trace=TurnTrace(
-            source="passive",
-            retrieval={"raw": RetrievalTrace(raw={"rag": 1}).raw},
-            extra={
-                "tools_used": ["noop"],
-                "tool_chain": [{"text": "", "calls": []}],
-                "thinking": "思考",
-            },
-        ),
-        side_effects=[_Effect()],
-    )
-    out = await orchestrator.handle_turn(msg=msg, result=result)
-
-    assert out.channel == "telegram"
-    assert out.chat_id == "123"
-    assert out.content == "收到"
-    assert out.thinking == "思考"
-    assert out.metadata["req_id"] == "r1"
-    assert out.metadata["tools_used"] == ["noop"]
-    assert len(writer.events) == 2
-    assert dispatched[0].content == "收到"
-    assert order == ["persist", "observe", "observe", "post_turn", "side_effect", "dispatch"]
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_keeps_context_retry_trace_in_outbound_metadata():
-    presence = SimpleNamespace(record_user_message=lambda _key: None)
+    presence = SimpleNamespace(record_proactive_sent=lambda _key: order.append("presence"))
     session_manager = SimpleNamespace(
-        append_messages=AsyncMock(),
-        get_or_create=lambda _key: _DummySession("telegram:123"),
+        get_or_create=lambda _key: session,
+        append_messages=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("persist")),
     )
-    session_svc = SessionServices(session_manager=session_manager, presence=presence)
-    trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
-    post_turn = SimpleNamespace(schedule=lambda event: None)
-    dispatched: list[OutboundDispatch] = []
-
-    class _Outbound:
-        async def dispatch(self, outbound: OutboundDispatch) -> bool:
-            dispatched.append(outbound)
-            return True
-
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
-            session=session_svc,
-            trace=trace_svc,
-            post_turn=post_turn,
+            session=SessionServices(session_manager=session_manager, presence=presence),
+            trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
+            post_turn=SimpleNamespace(schedule=lambda event: post_turn_events.append(event)),
             outbound=_Outbound(),
         )
     )
-    msg = InboundMessage(channel="telegram", sender="user", chat_id="123", content="你好")
-    result = TurnResult(
-        decision="reply",
-        outbound=TurnOutbound(session_key="telegram:123", content="收到"),
-        trace=TurnTrace(
-            source="passive",
-            extra={
-                "tools_used": [],
-                "tool_chain": [],
-                "thinking": None,
-                "context_retry": {
-                    "selected_plan": "trim_skills_catalog",
-                    "trimmed_sections": ["skills_catalog"],
+
+    sent = await orchestrator.handle_proactive_turn(
+        result=TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(session_key="telegram:123", content="hello"),
+            evidence=["feed:1"],
+            trace=TurnTrace(
+                source="proactive",
+                extra={
+                    "tools_used": ["web_search"],
+                    "tool_chain": [{"text": "", "calls": []}],
+                    "steps_taken": 2,
                 },
-            },
+            ),
+            side_effects=[_Effect("side_effect")],
+            success_side_effects=[_Effect("success_effect")],
+            failure_side_effects=[_Effect("failure_effect")],
         ),
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
     )
 
-    out = await orchestrator.handle_turn(msg=msg, result=result)
-    assert dispatched[0].metadata["context_retry"]["selected_plan"] == "trim_skills_catalog"
-    assert out.metadata["context_retry"]["trimmed_sections"] == ["skills_catalog"]
-
-
-@pytest.mark.asyncio
-async def test_orchestrator_delegates_passive_turn_to_context_store_when_provided():
-    async def _commit(
-        *,
-        msg,
-        session_key,
-        reply,
-        tools_used,
-        tool_chain,
-        thinking,
-        retrieval_raw,
-        context_retry,
-        post_turn_actions=None,
-        dispatch_outbound=True,
-    ):
-        return SimpleNamespace(
-            channel="telegram",
-            chat_id="123",
-            content="收到",
-            metadata={"context_retry": {"selected_plan": "full"}},
-        )
-
-    session_svc = SessionServices(
-        session_manager=SimpleNamespace(get_or_create=lambda _key: _DummySession("telegram:123")),
-        presence=None,
-    )
-    trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
-    post_turn = SimpleNamespace(schedule=lambda event: None)
-    passive_context_store = SimpleNamespace(
-        commit=AsyncMock(side_effect=_commit)
-    )
-    orchestrator = TurnOrchestrator(
-        TurnOrchestratorDeps(
-            session=session_svc,
-            trace=trace_svc,
-            post_turn=post_turn,
-            outbound=SimpleNamespace(dispatch=AsyncMock()),
-            passive_context_store=passive_context_store,
-        )
-    )
-    msg = InboundMessage(channel="telegram", sender="user", chat_id="123", content="你好")
-    result = TurnResult(
-        decision="reply",
-        outbound=TurnOutbound(session_key="telegram:123", content="收到"),
-        trace=TurnTrace(
-            source="passive",
-            retrieval={"raw": {"rag": 1}},
-            extra={
-                "tools_used": ["noop"],
-                "tool_chain": [{"text": "", "calls": []}],
-                "thinking": "思考",
-                "context_retry": {"selected_plan": "full"},
-            },
-        ),
-    )
-
-    out = await orchestrator.handle_turn(msg=msg, result=result, dispatch_outbound=False)
-
-    assert out.content == "收到"
-    passive_context_store.commit.assert_awaited_once()
-    assert passive_context_store.commit.await_args.kwargs["session_key"] == "telegram:123"
-    assert passive_context_store.commit.await_args.kwargs["retrieval_raw"] == {"rag": 1}
-    assert passive_context_store.commit.await_args.kwargs["post_turn_actions"] == []
+    assert sent is True
+    assert session.messages[0]["proactive"] is True
+    assert session.messages[0]["content"] == "hello"
+    assert post_turn_events
+    assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect", "observe"]
