@@ -41,7 +41,12 @@ def build_memory_runtime(
             write_file_tool=WriteFileTool(),
             edit_file_tool=EditFileTool(),
         )
-        return MemoryRuntime(port=DefaultMemoryPort(store))
+        port = DefaultMemoryPort(store)
+        return MemoryRuntime(
+            port=port,
+            profile_reader=port,
+            profile_maint=port,
+        )
 
     db_path = (
         Path(config.memory_v2.db_path)
@@ -153,6 +158,8 @@ def build_memory_runtime(
         port=port,
         engine=engine,
         passive_engine=passive_engine,
+        profile_reader=port,
+        profile_maint=port,
         post_response_worker=post_mem_worker,
         closeables=[mem2_store, embedder],
     )

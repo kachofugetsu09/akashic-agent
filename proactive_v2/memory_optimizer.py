@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
+    from core.memory.profile import MemoryOptimizerStore
 
 from agent.provider import LLMProvider
 from proactive_v2.json_utils import extract_json_object
@@ -183,7 +183,7 @@ def _remove_items_from_section(
 class MemoryOptimizer:
     def __init__(
         self,
-        memory: "MemoryPort",
+        memory: "MemoryOptimizerStore",
         provider: LLMProvider,
         model: str,
         max_tokens: int = 16384,

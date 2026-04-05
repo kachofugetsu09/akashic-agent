@@ -86,7 +86,10 @@ class AgentLoop:
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
         self._memory_port = memory_port
         self._context = deps.context or ContextBuilder(
-            deps.workspace, memory=self._memory_port
+            deps.workspace,
+            memory=(
+                getattr(deps.memory_runtime, "profile_reader", None) or self._memory_port
+            ),
         )
         self._post_mem_worker = post_mem_worker
         self._llm_services = deps.llm_services or LLMServices(
@@ -214,6 +217,9 @@ class AgentLoop:
         )
         consolidation_service = deps.consolidation_service or ConsolidationService(
             memory_port=self._memory_port,
+            profile_maint=(
+                getattr(deps.memory_runtime, "profile_maint", None) or self._memory_port
+            ),
             provider=deps.provider,
             model=config.llm.model,
             memory_window=self.memory_window,

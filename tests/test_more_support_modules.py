@@ -18,6 +18,7 @@ from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 from memory2.models import MemoryItem
 from proactive_v2.anyaction import AnyActionGate, QuotaStore
 from proactive_v2.memory_sampler import sample_memory_chunks, split_memory_chunks
+from bootstrap.app import AppRuntime
 
 
 class _Response:
@@ -190,6 +191,55 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
     sampled = sample_memory_chunks(text, 2, rng=__import__("random").Random(1))
     assert len(sampled) == 2
     assert sample_memory_chunks("", 2) == []
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    profile_maint = MagicMock(name="profile_maint")
+    port = MagicMock(name="port")
+    memory_runtime = SimpleNamespace(profile_maint=profile_maint, port=port)
+    core = SimpleNamespace(
+        loop=SimpleNamespace(run=lambda: "loop-task"),
+        bus=SimpleNamespace(dispatch_outbound=lambda: "bus-task"),
+        tools=MagicMock(),
+        push_tool=MagicMock(),
+        session_manager=MagicMock(),
+        scheduler=SimpleNamespace(run=lambda: "scheduler-task"),
+        provider=MagicMock(),
+        light_provider=MagicMock(),
+        mcp_registry=MagicMock(),
+        memory_runtime=memory_runtime,
+        presence=MagicMock(),
+        peer_process_manager=None,
+        peer_poller=None,
+        start=AsyncMock(),
+        stop=AsyncMock(),
+    )
+    monkeypatch.setattr("bootstrap.app.build_core_runtime", lambda *args, **kwargs: core)
+    monkeypatch.setattr(
+        "bootstrap.app.start_channels",
+        AsyncMock(return_value=(MagicMock(), None, None)),
+    )
+    build_proactive_runtime = MagicMock(return_value=([], None))
+    monkeypatch.setattr("bootstrap.app.build_proactive_runtime", build_proactive_runtime)
+    build_memory_optimizer_task = MagicMock(return_value=[])
+    monkeypatch.setattr("bootstrap.app.build_memory_optimizer_task", build_memory_optimizer_task)
+    monkeypatch.setattr(
+        "bootstrap.app.TraceWriter",
+        lambda path: SimpleNamespace(run=AsyncMock(return_value=None)),
+    )
+    monkeypatch.setattr("bootstrap.app.run_retention_if_needed", AsyncMock(return_value=None))
+
+    app = AppRuntime(
+        config=SimpleNamespace(),
+        workspace=tmp_path,
+    )
+    await app.start()
+
+    build_memory_optimizer_task.assert_called_once()
+    assert build_memory_optimizer_task.call_args.kwargs["memory_store"] is profile_maint
 
 
 @pytest.mark.asyncio

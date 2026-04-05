@@ -8,7 +8,7 @@ from typing import Any
 
 from agent.tools.base import Tool
 
-from core.memory.port import MemoryPort
+from core.memory.profile import ProfileMaintenanceStore
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class UpdateNowTool(Tool):
         "required": [],
     }
 
-    def __init__(self, memory: MemoryPort) -> None:
+    def __init__(self, memory: ProfileMaintenanceStore) -> None:
         self._memory = memory
 
     @staticmethod

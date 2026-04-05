@@ -36,7 +36,7 @@ from prompts.agent import (
 )
 
 if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
+    from core.memory.profile import ProfileReader
 
 logger = logging.getLogger("agent.context")
 
@@ -124,7 +124,7 @@ class MessageEnvelopeBuilder:
 
 
 class ContextBuilder:
-    def __init__(self, workspace: Path, memory: "MemoryPort"):
+    def __init__(self, workspace: Path, memory: "ProfileReader"):
         self.workspace = workspace
         self.skills = SkillsLoader(workspace)
         self.memory = memory

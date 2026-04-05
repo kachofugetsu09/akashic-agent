@@ -15,7 +15,7 @@ from prompts.agent import (
 
 if TYPE_CHECKING:
     from agent.skills import SkillsLoader
-    from core.memory.port import MemoryPort
+    from core.memory.profile import ProfileReader
 
 logger = logging.getLogger("agent.core.prompt_block")
 
@@ -23,7 +23,7 @@ logger = logging.getLogger("agent.core.prompt_block")
 @dataclass
 class TurnContext:
     workspace: Path
-    memory: "MemoryPort"
+    memory: "ProfileReader"
     skills: "SkillsLoader"
     skill_names: list[str]
     message_timestamp: datetime | None
@@ -74,7 +74,11 @@ class LongTermMemoryPromptBlock:
     is_static = False
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        memory = ctx.memory.get_memory_context()
+        reader = getattr(ctx.memory, "read_profile", None)
+        if callable(reader):
+            memory = reader()
+        else:
+            memory = ctx.memory.get_memory_context()
         return str(memory).strip() if memory else None
 
     def cache_signature(self, ctx: TurnContext) -> str | None:

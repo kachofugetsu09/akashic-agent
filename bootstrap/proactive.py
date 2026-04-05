@@ -14,7 +14,7 @@ from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
+    from core.memory.profile import MemoryOptimizerStore, ProfileMaintenanceStore
 
 
 def build_proactive_runtime(
@@ -78,7 +78,7 @@ def build_memory_optimizer_task(
     config: Config,
     *,
     provider: LLMProvider,
-    memory_store: "MemoryPort",
+    memory_store: "MemoryOptimizerStore",
 ) -> list:
     if not config.memory_optimizer_enabled:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")

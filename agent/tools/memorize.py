@@ -144,4 +144,4 @@ class MemorizeTool(Tool):
             extra=extra,
             source_ref="memorize_tool",
         )
-        return _format_remember_result_text(result, summary)
+        return f"已记住（{result}）：{summary}"

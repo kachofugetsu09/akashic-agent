@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from agent.looping.ports import TurnScheduler
     from agent.provider import LLMProvider
     from core.memory.port import MemoryPort
+    from core.memory.profile import ProfileMaintenanceStore
     from memory2.profile_extractor import ProfileFactExtractor
     from session.manager import SessionManager
 
@@ -141,12 +142,14 @@ class ConsolidationService:
         self,
         *,
         memory_port: "MemoryPort",
+        profile_maint: "ProfileMaintenanceStore | None" = None,
         provider: "LLMProvider",
         model: str,
         memory_window: int,
         profile_extractor: "ProfileFactExtractor | None" = None,
     ) -> None:
         self._memory_port = memory_port
+        self._profile_maint = profile_maint or memory_port
         self._provider = provider
         self._model = model
         self._memory_window = memory_window
@@ -197,6 +200,7 @@ class ConsolidationService:
         await_vector_store: bool = False,
     ) -> None:
         memory = self._memory_port
+        profile_maint = self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
         window = _select_consolidation_window(
             session,
@@ -239,11 +243,11 @@ class ConsolidationService:
         # 2. 把窗口消息格式化成一段对话文本，并准备好 source_ref / 现有长期记忆 / 最近 history。
         source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
-        current_memory = await asyncio.to_thread(memory.read_long_term)
+        current_memory = await asyncio.to_thread(profile_maint.read_long_term)
         history_text = ""
-        if hasattr(memory, "read_history"):
+        if hasattr(profile_maint, "read_history"):
             history_text = _coerce_history_text(
-                await asyncio.to_thread(memory.read_history, 16000)
+                await asyncio.to_thread(profile_maint.read_history, 16000)
             )
         recent_history_entries = _select_recent_history_entries(
             history_text,
@@ -370,7 +374,7 @@ class ConsolidationService:
             if history_entries:
                 combined = "\n".join(history_entries)
                 await asyncio.to_thread(
-                    memory.append_history_once,
+                    profile_maint.append_history_once,
                     combined,
                     source_ref=source_ref,
                     kind="history_entry",
@@ -379,7 +383,7 @@ class ConsolidationService:
             pending_items = _format_pending_items(result.get("pending_items", []))
             if pending_items:
                 appended = await asyncio.to_thread(
-                    memory.append_pending_once,
+                    profile_maint.append_pending_once,
                     pending_items,
                     source_ref=source_ref,
                     kind="pending_items",

@@ -269,7 +269,7 @@ def _build_loop_deps(
         )
 
     context = resolve_context_factory(wiring.context)(
-        workspace, memory_runtime.port
+        workspace, memory_runtime.profile_reader or memory_runtime.port
     )
     memory_engine = getattr(memory_runtime, "engine", None)
     llm_services = LLMServices(provider=provider, light_provider=light)
@@ -285,6 +285,7 @@ def _build_loop_deps(
     trace_services = ObservabilityServices(workspace=workspace, observe_writer=observe_writer)
     consolidation = ConsolidationService(
         memory_port=memory_runtime.port,
+        profile_maint=memory_runtime.profile_maint or memory_runtime.port,
         provider=provider,
         model=config.model,
         memory_window=memory_config.window,

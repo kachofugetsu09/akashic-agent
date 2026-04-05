@@ -32,7 +32,7 @@ class MemoryToolsetProvider(ToolsetProvider):
             observe_writer=deps.observe_writer,
         )
         registry.register(
-            UpdateNowTool(memory_runtime.port),
+            UpdateNowTool(memory_runtime.profile_maint or memory_runtime.port),
             risk="write",
         )
         return build_registration_result(

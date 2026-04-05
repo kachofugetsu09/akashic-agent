@@ -78,6 +78,50 @@ def test_consolidation_service_archive_all_and_profile_extract():
     assert session.last_consolidated == 0
 
 
+def test_consolidation_service_uses_profile_maint_for_file_side_io():
+    memory_port = SimpleNamespace(
+        save_from_consolidation=AsyncMock(),
+        save_item=AsyncMock(return_value="new:profile-1"),
+    )
+    profile_maint = SimpleNamespace(
+        read_long_term=MagicMock(return_value="MEM"),
+        read_history=MagicMock(return_value=""),
+        append_history_once=MagicMock(return_value=True),
+        append_pending_once=MagicMock(return_value=True),
+    )
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=_Resp(
+                '{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}'
+            )
+        )
+    )
+    service = ConsolidationService(
+        memory_port=memory_port,
+        profile_maint=profile_maint,
+        provider=provider,
+        model="m",
+        memory_window=40,
+        profile_extractor=None,
+    )
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[
+            {"role": "user", "content": "我买了 Zigbee 网关", "timestamp": "2026-03-15T10:00:00"},
+            {"role": "assistant", "content": "记住了", "timestamp": "2026-03-15T10:01:00"},
+        ],
+        last_consolidated=0,
+        _channel="cli",
+        _chat_id="1",
+    )
+
+    asyncio.run(service.consolidate(session, archive_all=True, await_vector_store=True))
+
+    profile_maint.read_long_term.assert_called_once()
+    profile_maint.append_history_once.assert_called_once()
+    memory_port.save_from_consolidation.assert_awaited_once()
+
+
 def test_select_recent_history_entries_returns_last_three_chunks():
     history = (
         "[2026-03-15 09:00] A\n\n"

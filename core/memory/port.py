@@ -54,6 +54,7 @@ class MemoryPort(Protocol):
 
     # ── v1: long-term profile (MEMORY.md) ─────────────────────────
     def read_long_term(self) -> str: ...
+    def read_profile(self) -> str: ...
     def write_long_term(self, content: str) -> None: ...
 
     # ── v1: self-model (SELF.md) ───────────────────────────────────
@@ -181,6 +182,9 @@ class DefaultMemoryPort:
 
     def read_long_term(self) -> str:
         return self._store.read_long_term()
+
+    def read_profile(self) -> str:
+        return self.get_memory_context()
 
     def write_long_term(self, content: str) -> None:
         self._store.write_long_term(content)

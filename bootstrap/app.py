@@ -155,7 +155,9 @@ class AppRuntime:
                 build_memory_optimizer_task(
                     self.config,
                     provider=self.provider,
-                    memory_store=self.memory_runtime.port,
+                    memory_store=(
+                        self.memory_runtime.profile_maint or self.memory_runtime.port
+                    ),
                 )
             )
 
