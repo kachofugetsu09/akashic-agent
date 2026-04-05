@@ -45,7 +45,7 @@ def test_should_check_when_no_items():
 
 
 def test_should_not_check_when_items_present():
-    """有结果时不触发——分数过滤已在 select_for_injection 完成。"""
+    """有结果时不触发——分数过滤已在注入筛选阶段完成。"""
     from memory2.sufficiency_checker import should_check_sufficiency
 
     items = [

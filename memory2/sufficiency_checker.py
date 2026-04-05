@@ -18,7 +18,7 @@ class SufficiencyResult:
 def should_check_sufficiency(items: list[dict]) -> bool:
     """触发条件：RETRIEVE 路径返回空结果，且没有 forced procedure。
 
-    有结果时不重查——分数过滤已在 select_for_injection 完成，
+    有结果时不重查——分数过滤已在注入筛选阶段完成，
     低分条目不会进入 selected_items，无需再做一次 LLM 质量判断。
     """
     if not items:
@@ -171,5 +171,4 @@ def _has_forced_procedure(items: list[dict]) -> bool:
             if str(extra.get("tool_requirement", "") or "").strip():
                 return True
     return False
-
 

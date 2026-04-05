@@ -79,16 +79,12 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     memorizer = SimpleNamespace(
         save_item=AsyncMock(return_value="id"),
         save_from_consolidation=AsyncMock(),
-        supersede_batch=MagicMock(),
     )
     retriever = SimpleNamespace(
         retrieve=AsyncMock(return_value=[{"id": "1"}]),
         embed=AsyncMock(return_value=[1.0]),
         retrieve_with_vec=AsyncMock(return_value=[{"id": "2"}]),
         build_injection_block=lambda items: ("block", ["1"]),
-        format_injection_block=lambda items: "block",
-        format_injection_with_ids=lambda items: ("block", ["1"]),
-        select_for_injection=lambda items: items[:1],
         _store=SimpleNamespace(keyword_match_procedures=lambda action_tokens: [{"id": "p1"}]),
     )
     port = DefaultMemoryPort(store, memorizer, retriever)
@@ -98,12 +94,8 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     assert await port.embed_query("q") == [1.0]
     assert await port.retrieve_related_vec([1.0]) == [{"id": "2"}]
     assert port.build_injection_block([]) == ("block", ["1"])
-    assert port.format_injection_block([]) == "block"
-    assert port.format_injection_with_ids([]) == ("block", ["1"])
-    assert port.select_for_injection([{"id": "1"}, {"id": "2"}]) == [{"id": "1"}]
     assert await port.save_item("s", "procedure", {}, "src") == "id"
     await port.save_from_consolidation("h", [], "src", "c", "id")
-    port.supersede_batch(["1"])
     assert port.keyword_match_procedures(["shell"]) == [{"id": "p1"}]
 
     broken = DefaultMemoryPort(
@@ -128,16 +120,12 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
         memorizer=SimpleNamespace(
             save_item=AsyncMock(side_effect=RuntimeError("x")),
             save_from_consolidation=AsyncMock(side_effect=RuntimeError("x")),
-            supersede_batch=MagicMock(),
         ),
         retriever=SimpleNamespace(
             retrieve=AsyncMock(side_effect=RuntimeError("x")),
             embed=AsyncMock(side_effect=RuntimeError("x")),
             retrieve_with_vec=AsyncMock(side_effect=RuntimeError("x")),
             build_injection_block=lambda items: (_ for _ in ()).throw(RuntimeError("x")),
-            format_injection_block=lambda items: "block",
-            format_injection_with_ids=lambda items: (_ for _ in ()).throw(RuntimeError("x")),
-            select_for_injection=lambda items: (_ for _ in ()).throw(RuntimeError("x")),
             _store=SimpleNamespace(keyword_match_procedures=lambda action_tokens: (_ for _ in ()).throw(RuntimeError("x"))),
         ),
     )
@@ -145,9 +133,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     assert await broken.retrieve_related("q") == []
     assert await broken.embed_query("q") == []
     assert await broken.retrieve_related_vec([1.0]) == []
-    assert broken.build_injection_block([]) == ("block", [])
-    assert broken.format_injection_with_ids([]) == ("block", [])
-    assert broken.select_for_injection([{"id": "1"}]) == [{"id": "1"}]
+    assert broken.build_injection_block([]) == ("", [])
     assert await broken.save_item("s", "procedure", {}, "src") == ""
     await broken.save_from_consolidation("h", [], "src", "c", "id")
     assert broken.keyword_match_procedures(["shell"]) == []
@@ -226,6 +212,48 @@ def test_session_get_history_returns_empty_when_window_is_zero():
     session.add_message("assistant", "world")
 
     assert session.get_history(max_messages=0) == []
+
+
+@pytest.mark.asyncio
+async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
+    loop = ProactiveLoop.__new__(ProactiveLoop)
+    loop._cfg = SimpleNamespace(
+        interval_seconds=10,
+        score_weight_energy=0.5,
+        tick_interval_s3=1,
+        tick_interval_s2=2,
+        tick_interval_s1=3,
+        tick_interval_s0=4,
+        tick_jitter=0.0,
+        threshold=0.5,
+        default_channel="telegram",
+        default_chat_id="42",
+    )
+    loop._running = False
+    loop._trace_proactive_rate_decision = MagicMock()
+    loop._presence = SimpleNamespace(
+        get_last_user_at=lambda session_key: datetime.now(timezone.utc)
+    )
+    loop._sense = SimpleNamespace(
+        target_session_key=lambda: "telegram:1",
+        has_global_memory=lambda: True,
+        read_memory_text=lambda: "mem",
+        compute_energy=lambda: 0.5,
+        compute_interruptibility=lambda **kwargs: (0.5, {"x": 1}),
+    )
+    loop._rng = None
+    loop._memory = SimpleNamespace(read_long_term=lambda: "remember", get_memory_context=lambda: "ctx")
+    loop._sessions = SimpleNamespace(workspace=tmp_path)
+    (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
+    loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
+    loop._agent_tick = SimpleNamespace(tick=AsyncMock(return_value=0.2))
+    loop._feed_poll_lock = asyncio.Lock()
+    loop._mcp_pool = SimpleNamespace(
+        connect_all=AsyncMock(return_value=None),
+        disconnect_all=AsyncMock(return_value=None),
+    )
+    loop._run_loop = AsyncMock(return_value=None)
+
     assert loop._has_global_memory() is True
     assert loop._read_memory_text() == "mem"
     assert loop._compute_energy() == 0.5
@@ -234,17 +262,12 @@ def test_session_get_history_returns_empty_when_window_is_zero():
         now_utc=datetime.now(timezone.utc),
         recent_msg_count=0,
     ) == (0.5, {"x": 1})
-    loop._agent_tick = SimpleNamespace(tick=AsyncMock(return_value=0.2))
     assert await loop._tick() == 0.2
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("proactive_v2.loop.compute_energy", lambda last_user_at: 0.8)
         mp.setattr("proactive_v2.loop.d_energy", lambda energy: 0.5)
         mp.setattr("proactive_v2.loop.next_tick_from_score", lambda *args, **kwargs: 7)
         assert loop._next_interval() == 7
-    loop._cfg.threshold = 0.5
-    loop._cfg.default_channel = "telegram"
-    loop._cfg.default_chat_id = "42"
-    loop._run_loop = AsyncMock(return_value=None)
     await loop.run()
     loop._mcp_pool.connect_all.assert_awaited_once()
     loop._run_loop.assert_awaited_once()

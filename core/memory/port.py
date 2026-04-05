@@ -1,14 +1,5 @@
 """
-core/memory/port.py — Unified MemoryPort protocol + DefaultMemoryPort adapter
-
-Design:
-- MemoryPort is a Protocol that covers all memory read/write operations
-  previously split between v1 (agent/memory.py, Markdown files) and
-  v2 (memory2/, SQLite + vector search).
-- DefaultMemoryPort wraps MemoryStore (v1) and optionally Memorizer /
-  Retriever (v2) so all callers can depend on one interface.
-- The underlying implementations (MemoryStore, MemoryStore2, Memorizer,
-  Retriever) are NOT changed — this is a pure adapter layer.
+core/memory/port.py — 文件层 memory port + 存量向量适配器
 """
 
 from __future__ import annotations
@@ -29,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class MemoryPort(Protocol):
-    """Unified read/write interface for all memory layers.
+    """文件层读写接口，外加少量仍在外围使用的向量能力。
 
     v1 (Markdown files) operations:
       read_long_term / write_long_term   — MEMORY.md stable user profile
@@ -45,9 +36,9 @@ class MemoryPort(Protocol):
       get_memory_context                 — formatted context string for prompts
       has_long_term_memory               — bool: is MEMORY.md non-empty?
 
-    v2 (SQLite + vector) operations:
+    存量向量 operations:
       retrieve_related                   — vector search → list[dict]
-      format_injection_block             — format retrieved items for prompt
+      build_injection_block              — build prompt block + ids
       save_item                          — embed + upsert a single memory item
       save_from_consolidation            — bulk write from LLM consolidation
     """
@@ -120,21 +111,9 @@ class MemoryPort(Protocol):
     ) -> list[dict]: ...
 
     def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]: ...
-    def format_injection_block(self, items: list[dict]) -> str: ...
-    def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]: ...
-    def select_for_injection(self, items: list[dict]) -> list[dict]: ...
 
     # ── v2: write ─────────────────────────────────────────────────
     async def save_item(
-        self,
-        summary: str,
-        memory_type: str,
-        extra: dict,
-        source_ref: str,
-        happened_at: str | None = None,
-    ) -> str: ...
-
-    async def save_item_with_supersede(
         self,
         summary: str,
         memory_type: str,
@@ -152,8 +131,6 @@ class MemoryPort(Protocol):
         scope_chat_id: str,
     ) -> None: ...
 
-    def supersede_batch(self, ids: list[str]) -> None: ...
-
     def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]: ...
 
 
@@ -163,8 +140,7 @@ class MemoryPort(Protocol):
 class DefaultMemoryPort:
     """Adapts MemoryStore (v1) + optional Memorizer/Retriever (v2).
 
-    Pass memorizer=None and retriever=None to run v1-only (all v2
-    methods become safe no-ops or return empty results).
+    `memorizer` / `retriever` 可选；未接入时仅提供文件层能力。
     """
 
     def __init__(
@@ -353,41 +329,14 @@ class DefaultMemoryPort:
             logger.warning("[memory_port] retrieve_related_vec failed: %s", e)
             return []
 
-    def format_injection_block(self, items: list[dict]) -> str:
-        """Format retrieved items for prompt injection; empty string if no retriever."""
-        if not self._retriever:
-            return ""
-        return self._retriever.format_injection_block(items)
-
     def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]:
         if not self._retriever:
             return "", []
-        if hasattr(self._retriever, "build_injection_block"):
-            try:
-                return self._retriever.build_injection_block(items)
-            except Exception as e:
-                logger.warning("[memory_port] build_injection_block failed: %s", e)
-        return self.format_injection_with_ids(items)
-
-    def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]:
-        if not self._retriever:
+        try:
+            return self._retriever.build_injection_block(items)
+        except Exception as e:
+            logger.warning("[memory_port] build_injection_block failed: %s", e)
             return "", []
-        if hasattr(self._retriever, "format_injection_with_ids"):
-            try:
-                return self._retriever.format_injection_with_ids(items)
-            except Exception as e:
-                logger.warning("[memory_port] format_injection_with_ids failed: %s", e)
-        return self._retriever.format_injection_block(items), []
-
-    def select_for_injection(self, items: list[dict]) -> list[dict]:
-        if not self._retriever:
-            return []
-        if hasattr(self._retriever, "select_for_injection"):
-            try:
-                return self._retriever.select_for_injection(items)
-            except Exception as e:
-                logger.warning("[memory_port] select_for_injection failed: %s", e)
-        return items
 
     # ── v2: write ──────────────────────────────────────────────────
 
@@ -414,29 +363,6 @@ class DefaultMemoryPort:
             logger.warning("[memory_port] save_item failed: %s", e)
             return ""
 
-    async def save_item_with_supersede(
-        self,
-        summary: str,
-        memory_type: str,
-        extra: dict,
-        source_ref: str,
-        happened_at: str | None = None,
-    ) -> str:
-        """显式写入：先 supersede 高相似旧条目，再写入新条目（memorize 工具专用）。"""
-        if not self._memorizer:
-            return ""
-        try:
-            return await self._memorizer.save_item_with_supersede(
-                summary=summary,
-                memory_type=memory_type,
-                extra=extra,
-                source_ref=source_ref,
-                happened_at=happened_at,
-            )
-        except Exception as e:
-            logger.warning("[memory_port] save_item_with_supersede failed: %s", e)
-            return ""
-
     async def save_from_consolidation(
         self,
         history_entry: str,
@@ -458,10 +384,6 @@ class DefaultMemoryPort:
             )
         except Exception as e:
             logger.warning("[memory_port] save_from_consolidation failed: %s", e)
-
-    def supersede_batch(self, ids: list[str]) -> None:
-        if self._memorizer:
-            self._memorizer.supersede_batch(ids)
 
     def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]:
         """对 trigger_tags 做纯关键字匹配，无需向量检索。"""

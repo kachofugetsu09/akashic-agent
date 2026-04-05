@@ -146,7 +146,7 @@ class HyDEEnhancer:
 def _union_dedup(raw: list[dict], hyde: list[dict]) -> list[dict]:
     """
     保留 raw 全部结果（含原始分数），追加 hyde 中 raw 没有的条目。
-    不修改任何条目的 score，避免影响下游 select_for_injection 的 type_best 计算。
+    不修改任何条目的 score，避免影响下游注入筛选的 type_best 计算。
     """
     seen_ids: set[str] = set()
     result = []

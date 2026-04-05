@@ -315,7 +315,7 @@ async def test_memory_runtime_aclose_continues_after_failure():
     assert calls == ["failing", "close"]
 
 
-def test_retriever_select_for_injection_applies_type_threshold_and_relative_delta():
+def test_retriever_internal_select_for_injection_applies_type_threshold_and_relative_delta():
     retriever = Retriever(
         store=MagicMock(),
         embedder=MagicMock(),
@@ -345,7 +345,7 @@ def test_retriever_select_for_injection_applies_type_threshold_and_relative_delt
         },  # 低于 proc 阈值
     ]
 
-    selected = retriever.select_for_injection(items)
+    selected = retriever._select_for_injection(items)
     ids = {i["id"] for i in selected}
     assert "a" in ids
     assert "c" in ids
@@ -353,7 +353,7 @@ def test_retriever_select_for_injection_applies_type_threshold_and_relative_delt
     assert "d" not in ids
 
 
-def test_retriever_select_for_injection_keeps_protected_procedure():
+def test_retriever_internal_select_for_injection_keeps_protected_procedure():
     retriever = Retriever(
         store=MagicMock(),
         embedder=MagicMock(),
@@ -376,12 +376,12 @@ def test_retriever_select_for_injection_keeps_protected_procedure():
         {"id": "e1", "memory_type": "event", "score": 0.75, "summary": "普通历史"},
     ]
 
-    selected = retriever.select_for_injection(items)
+    selected = retriever._select_for_injection(items)
     ids = {i["id"] for i in selected}
     assert "p1" in ids
 
 
-def test_retriever_select_for_injection_can_drop_protected_when_guard_disabled():
+def test_retriever_internal_select_for_injection_can_drop_protected_when_guard_disabled():
     retriever = Retriever(
         store=MagicMock(),
         embedder=MagicMock(),
@@ -404,7 +404,7 @@ def test_retriever_select_for_injection_can_drop_protected_when_guard_disabled()
         },
     ]
 
-    selected = retriever.select_for_injection(items)
+    selected = retriever._select_for_injection(items)
     ids = {i["id"] for i in selected}
     assert "p1" not in ids
 
@@ -432,15 +432,15 @@ def test_retriever_forced_limit_and_injected_ids_match_formatted_output():
             "extra_json": {"tool_requirement": "b"},
         },
     ]
-    block, injected_ids = retriever.format_injection_with_ids(items)
+    block, injected_ids = retriever.build_injection_block(items)
     assert "规则1" in block
     assert "规则2" not in block
     assert injected_ids == ["p1"]
 
 
-def test_retriever_format_injection_with_ids_empty_input_returns_tuple():
+def test_retriever_build_injection_block_empty_input_returns_tuple_duplicate_guard():
     retriever = Retriever(store=MagicMock(), embedder=MagicMock())
-    block, injected_ids = retriever.format_injection_with_ids([])
+    block, injected_ids = retriever.build_injection_block([])
     assert block == ""
     assert injected_ids == []
 
@@ -812,7 +812,7 @@ def test_retriever_norm_limit_uses_config_without_hardcoded_cap():
         }
         for i in range(6)
     ]
-    block, injected_ids = retriever.format_injection_with_ids(items)
+    block, injected_ids = retriever.build_injection_block(items)
     for i in range(6):
         assert f"偏好{i}" in block
     assert len(injected_ids) == 6
@@ -841,27 +841,9 @@ def test_retriever_forced_block_not_dropped_by_char_budget():
             "summary": "普通事件",
         },
     ]
-    block, injected_ids = retriever.format_injection_with_ids(items)
+    block, injected_ids = retriever.build_injection_block(items)
     assert "【强制约束】" in block
     assert "p1" in injected_ids
-
-
-def test_retriever_build_injection_block_matches_legacy_format_api():
-    retriever = Retriever(
-        store=MagicMock(),
-        embedder=MagicMock(),
-        score_threshold=0.0,
-    )
-    items = [
-        {"id": "p1", "memory_type": "procedure", "score": 0.91, "summary": "规则1"},
-        {"id": "e1", "memory_type": "event", "score": 0.88, "summary": "事件1"},
-    ]
-
-    block, injected_ids = retriever.build_injection_block(items)
-    legacy_block, legacy_ids = retriever.format_injection_with_ids(items)
-
-    assert block == legacy_block
-    assert injected_ids == legacy_ids
 
 
 def test_retriever_build_injection_block_empty_input_returns_tuple():

@@ -23,6 +23,7 @@ from agent.provider import LLMResponse
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage
+from core.memory.engine import MemoryEngineRetrieveResult
 from core.memory.port import DefaultMemoryPort
 from memory2.query_rewriter import GateDecision
 from memory2.sufficiency_checker import SufficiencyResult
@@ -312,9 +313,7 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
     retrieval._memory.query_rewriter = None
     memory_port = MagicMock()
     memory_port.retrieve_related = AsyncMock(side_effect=_slow_retrieve)
-    memory_port.select_for_injection = MagicMock(return_value=[])
     memory_port.build_injection_block = MagicMock(return_value=("", []))
-    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     retrieval._memory.port = memory_port
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
     with patch(
@@ -342,9 +341,7 @@ def test_retrieve_memory_block_prefers_query_rewriter_primary_path():
     )
     memory_port = MagicMock()
     memory_port.retrieve_related = AsyncMock(return_value=[])
-    memory_port.select_for_injection = MagicMock(return_value=[])
     memory_port.build_injection_block = MagicMock(return_value=("", []))
-    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     retrieval._memory.port = memory_port
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
 
@@ -365,9 +362,7 @@ def test_retrieve_memory_block_query_rewriter_path_uses_raw_msg_for_procedure_la
         )
     )
     memory_port = MagicMock()
-    memory_port.select_for_injection = MagicMock(return_value=[])
     memory_port.build_injection_block = MagicMock(return_value=("", []))
-    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     retrieval._memory.port = memory_port
     msg = InboundMessage(
         channel="cli",
@@ -375,21 +370,24 @@ def test_retrieve_memory_block_query_rewriter_path_uses_raw_msg_for_procedure_la
         chat_id="1",
         content="把这个B站视频下载下来",
     )
+    engine_calls: list[dict[str, object]] = []
 
     with (
         patch(
-            "agent.retrieval.default_pipeline.retrieve_procedure_items",
-            new=AsyncMock(return_value=[]),
-        ) as proc_mock,
-        patch(
-            "agent.retrieval.default_pipeline.retrieve_episodic",
-            new=AsyncMock(return_value=([], "disabled", None)),
+            "agent.retrieval.default_pipeline._retrieve_engine_items",
+            new=AsyncMock(
+                side_effect=lambda **kwargs: (
+                    engine_calls.append(kwargs)
+                    or MemoryEngineRetrieveResult(text_block="", hits=[], raw={"items": []})
+                )
+            ),
         ),
     ):
         asyncio.run(retrieval.retrieve(_req(msg, session)))
 
-    proc_mock.assert_awaited_once()
-    assert proc_mock.call_args.kwargs["query"] == "把这个B站视频下载下来"
+    procedure_calls = [call for call in engine_calls if call["mode"] == "procedure"]
+    assert len(procedure_calls) == 1
+    assert procedure_calls[0]["query"] == "把这个B站视频下载下来"
 
 
 def test_process_inner_schedules_consolidation_only_after_append_messages():
@@ -418,9 +416,7 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
     )
     memory_port = MagicMock()
     memory_port.retrieve_related = AsyncMock(return_value=[])
-    memory_port.select_for_injection = MagicMock(return_value=[])
     memory_port.build_injection_block = MagicMock(return_value=("", []))
-    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     retrieval._memory.port = memory_port
     scheduled_after_append: list[bool] = []
     real_schedule = loop._scheduler.schedule_consolidation
@@ -469,9 +465,7 @@ def test_retrieve_memory_block_triggers_sufficiency_check_on_low_score_items():
     retrieval._memory.sufficiency_checker = checker_mock
     memory_port = MagicMock()
     memory_port.retrieve_related = AsyncMock(return_value=low_score_items)
-    memory_port.select_for_injection = MagicMock(return_value=[])
     memory_port.build_injection_block = MagicMock(return_value=("", []))
-    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     retrieval._memory.port = memory_port
 
     session = _DummySession("cli:1")
@@ -510,19 +504,7 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
     )
     retrieval._memory.sufficiency_checker = checker_mock
     memory_port = MagicMock()
-    memory_port.select_for_injection = MagicMock(
-        return_value=[
-            {
-                "id": "x1",
-                "memory_type": "procedure",
-                "score": 0.48,
-                "summary": "无关规则",
-                "extra_json": {},
-            },
-        ]
-    )
     memory_port.build_injection_block = MagicMock(return_value=("", []))
-    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     memory_port.retrieve_related = AsyncMock(return_value=[])
     retrieval._memory.port = memory_port
     history_calls: list[str] = []
@@ -535,12 +517,12 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
         content="我之前和你聊过什么有关仁王的内容吗",
     )
 
-    async def _fake_history_items(memory, query, **kwargs):
-        history_calls.append(query)
-        return [], "disabled", None
+    async def _fake_history_items(**kwargs):
+        history_calls.append(str(kwargs.get("rewritten_query", "")))
+        return [], "disabled", None, None
 
     with patch(
-        "agent.retrieval.default_pipeline.retrieve_episodic",
+        "agent.retrieval.default_pipeline._retrieve_episodic_items",
         side_effect=_fake_history_items,
     ):
         asyncio.run(retrieval.retrieve(_req(msg, session)))
@@ -556,9 +538,7 @@ def test_retrieve_memory_block_skips_sufficiency_check_when_checker_is_none():
     retrieval._memory.sufficiency_checker = None
     memory_port = MagicMock()
     memory_port.retrieve_related = AsyncMock(return_value=[])
-    memory_port.select_for_injection = MagicMock(return_value=[])
     memory_port.build_injection_block = MagicMock(return_value=("", []))
-    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     retrieval._memory.port = memory_port
 
     session = _DummySession("cli:1")
@@ -606,9 +586,7 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
 
     memory_port = MagicMock()
     memory_port.retrieve_related = AsyncMock(side_effect=_count_retrieve)
-    memory_port.select_for_injection = MagicMock(return_value=[])
     memory_port.build_injection_block = MagicMock(return_value=("", []))
-    memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     retrieval._memory.port = memory_port
 
     session = _DummySession("cli:1")

@@ -62,7 +62,7 @@ from evaluate_agent import EvaluateAgent
 from lme_ingestor import LMEProductionIngestor
 from agent.policies.history_route import HistoryRoutePolicy
 from memory2.hyde_enhancer import HyDEEnhancer
-from memory2.injection_planner import retrieve_episodic, retrieve_procedure_items
+from memory2.injection_planner import retrieve_history_items, retrieve_procedure_items
 from agent.config import load_config
 from memory2.query_rewriter import QueryRewriter
 from memory2.store import MemoryStore2
@@ -158,9 +158,6 @@ class _MemoryPlannerAdapter:
             scope_chat_id=effective_scope_chat_id or None,
             require_scope_match=effective_require_scope,
         )
-
-    def select_for_injection(self, items: list[dict]) -> list[dict]:
-        return self._retriever.select_for_injection(items)
 
     def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]:
         return self._retriever.build_injection_block(items)
@@ -434,7 +431,7 @@ class LMEResponseAgent:
         h_items: list[dict] = []
         hyde_context = self._build_hyde_context(recent_history)
         if gate["route_decision"] == "RETRIEVE":
-            h_items, _scope_mode, _hypothesis = await retrieve_episodic(
+            h_items, _scope_mode = await retrieve_history_items(
                 episodic_memory,
                 gate["episodic_query"],
                 memory_types=["event", "profile"],
@@ -451,7 +448,7 @@ class LMEResponseAgent:
                 recent_history=recent_history,
             )
             if refined:
-                extra_h_items, _scope_mode, _hypothesis = await retrieve_episodic(
+                extra_h_items, _scope_mode = await retrieve_history_items(
                     episodic_memory,
                     refined,
                     memory_types=["event", "profile"],
@@ -508,8 +505,10 @@ class LMEResponseAgent:
         history_items: list[dict],
     ) -> tuple[list[dict], str]:
         merged = self._merge_memory_items(procedure_items + history_items)
-        selected = memory.select_for_injection(merged)
-        block, _ids = memory.build_injection_block(merged)
+        block, injected_ids = memory.build_injection_block(merged)
+        selected = [
+            item for item in merged if str(item.get("id", "") or "") in set(injected_ids)
+        ]
         return selected, block
 
     @staticmethod

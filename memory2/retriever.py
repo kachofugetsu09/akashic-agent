@@ -121,29 +121,20 @@ class Retriever:
             return text
         return text[: max_len - 1].rstrip() + "…"
 
-    def format_injection_block(self, items: list[dict]) -> str:
-        block, _ = self.build_injection_block(items)
-        return block
-
     def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]:
         """单次流程：筛选条目 → 分段格式化 → 应用字符预算。"""
-        selected, forced, norms, events = self._prepare_injection_sections(items)
+        selected, forced, norms, events = self._select_injection_sections(items)
         if not selected:
             return "", []
 
         parts = self._build_section_parts(forced, norms, events)
         return self._apply_char_budget(parts, has_forced=bool(forced))
 
-    def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]:
-        """兼容旧接口：内部统一走 build_injection_block。"""
-        return self.build_injection_block(items)
-
-    def select_for_injection(self, items: list[dict]) -> list[dict]:
-        """兼容旧接口：内部统一走 build_injection_block 的筛选阶段。"""
-        selected, _forced, _norms, _events = self._prepare_injection_sections(items)
+    def _select_for_injection(self, items: list[dict]) -> list[dict]:
+        selected, _forced, _norms, _events = self._select_injection_sections(items)
         return selected
 
-    def _prepare_injection_sections(
+    def _select_injection_sections(
         self,
         items: list[dict],
     ) -> tuple[list[dict], list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
