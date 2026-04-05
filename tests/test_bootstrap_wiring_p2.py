@@ -55,6 +55,7 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
                 "api_key": "k",
                 "system_prompt": "s",
                 "memory_window": 0,
+                "memory_consolidation_min_new_messages": 12,
                 "channels": {
                     "socket": "/tmp/dev-akasic.sock",
                 },
@@ -67,6 +68,7 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
     cfg = Config.load(cfg_path)
 
     assert cfg.memory_window == 0
+    assert cfg.memory_consolidation_min_new_messages == 12
     assert cfg.channels.socket == "/tmp/dev-akasic.sock"
 
 

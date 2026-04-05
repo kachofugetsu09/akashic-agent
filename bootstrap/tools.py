@@ -210,6 +210,7 @@ def _build_loop_deps(
     )
     memory_config = MemoryConfig(
         window=config.memory_window,
+        consolidation_min_new_messages=config.memory_consolidation_min_new_messages,
         top_k_procedure=config.memory_v2.top_k_procedure,
         top_k_history=config.memory_v2.top_k_history,
         route_intention_enabled=config.memory_v2.route_intention_enabled,
@@ -221,6 +222,7 @@ def _build_loop_deps(
     )
     resolved_memory_config = MemoryConfig(
         window=memory_config.window,
+        consolidation_min_new_messages=memory_config.consolidation_min_new_messages,
         top_k_procedure=min(3, max(1, int(memory_config.top_k_procedure))),
         top_k_history=max(1, int(memory_config.top_k_history)),
         route_intention_enabled=memory_config.route_intention_enabled,
@@ -387,6 +389,7 @@ def build_core_runtime(
             ),
             memory=MemoryConfig(
                 window=config.memory_window,
+                consolidation_min_new_messages=config.memory_consolidation_min_new_messages,
                 top_k_procedure=config.memory_v2.top_k_procedure,
                 top_k_history=config.memory_v2.top_k_history,
                 route_intention_enabled=config.memory_v2.route_intention_enabled,

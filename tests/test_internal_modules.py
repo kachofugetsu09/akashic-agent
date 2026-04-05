@@ -112,9 +112,36 @@ async def test_consolidation_helpers(
             },
         ],
     )
-    assert _select_consolidation_window(session, memory_window=10, archive_all=False) is None
-    window = _select_consolidation_window(session, memory_window=4, archive_all=True)
+    assert _select_consolidation_window(
+        session,
+        memory_window=10,
+        consolidation_min_new_messages=10,
+        archive_all=False,
+    ) is None
+    window = _select_consolidation_window(
+        session,
+        memory_window=4,
+        consolidation_min_new_messages=10,
+        archive_all=True,
+    )
     assert window and window.consolidate_up_to == 4
+    enough_messages_session = SimpleNamespace(
+        key="telegram:2",
+        last_consolidated=0,
+        messages=[{"role": "user", "content": "u", "timestamp": "2025-01-01T10:00:00"}] * 16,
+    )
+    assert _select_consolidation_window(
+        enough_messages_session,
+        memory_window=10,
+        consolidation_min_new_messages=10,
+        archive_all=False,
+    ) is not None
+    assert _select_consolidation_window(
+        enough_messages_session,
+        memory_window=10,
+        consolidation_min_new_messages=12,
+        archive_all=False,
+    ) is None
     window_with_ids = SimpleNamespace(
         old_messages=[
             {"id": "telegram:1:0"},
@@ -206,6 +233,29 @@ async def test_consolidation_background_and_error_accounting(monkeypatch: pytest
             raise RuntimeError("inspect failed")
 
     harness._scheduler._on_post_mem_done(_BrokenTask(), "s2")
+
+
+@pytest.mark.asyncio
+async def test_turn_scheduler_requires_min_ready_messages_before_consolidation():
+    runner = AsyncMock()
+    scheduler = TurnScheduler(
+        post_mem_worker=None,
+        consolidation_runner=runner,
+        memory_window=40,
+        consolidation_min_new_messages=10,
+    )
+    session = SimpleNamespace(
+        messages=[{"role": "user", "content": "u"}] * 29,
+        last_consolidated=0,
+    )
+
+    scheduler.schedule_consolidation(session, "telegram:1")
+    assert scheduler.is_consolidating("telegram:1") is False
+
+    session.messages.extend([{"role": "assistant", "content": "a"}] * 2)
+    scheduler.schedule_consolidation(session, "telegram:1")
+    assert scheduler.is_consolidating("telegram:1") is True
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

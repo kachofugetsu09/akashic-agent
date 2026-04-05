@@ -70,6 +70,7 @@ def _select_consolidation_window(
     session,
     *,
     memory_window: int,
+    consolidation_min_new_messages: int,
     archive_all: bool,
 ) -> ConsolidationWindow | None:
     total_messages = len(session.messages)
@@ -88,7 +89,7 @@ def _select_consolidation_window(
 
     consolidate_up_to = total_messages - keep_count
     old_messages = session.messages[session.last_consolidated : consolidate_up_to]
-    if not old_messages:
+    if len(old_messages) < max(1, int(consolidation_min_new_messages)):
         return None
     return ConsolidationWindow(
         old_messages=old_messages,
@@ -148,6 +149,7 @@ class ConsolidationService:
         provider: "LLMProvider",
         model: str,
         memory_window: int,
+        consolidation_min_new_messages: int = 10,
         profile_extractor: "ProfileFactExtractor | None" = None,
     ) -> None:
         self._memory_port = memory_port
@@ -155,6 +157,9 @@ class ConsolidationService:
         self._provider = provider
         self._model = model
         self._memory_window = memory_window
+        self._consolidation_min_new_messages = max(
+            1, int(consolidation_min_new_messages)
+        )
         self._profile_extractor = profile_extractor
 
     async def _extract_and_save_profile_facts(
@@ -422,6 +427,7 @@ USER: 那就直接写个脚本绕过去吧
         写库由调用方在 event 路径确认成功后统一执行，确保幂等。
         """
         try:
+            started_at = time.perf_counter()
             prompt = self._build_long_term_prompt(
                 conversation=conversation,
                 existing_profile=existing_profile,
@@ -433,6 +439,13 @@ USER: 那就直接写个脚本绕过去吧
                 max_tokens=600,
             )
             text = (resp.content or "").strip()
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.info(
+                "Memory consolidation implicit llm raw: elapsed_ms=%d chars=%d preview=%r",
+                elapsed_ms,
+                len(text),
+                text[:300],
+            )
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = json_repair.loads(text)
@@ -450,8 +463,13 @@ USER: 那就直接写个脚本绕过去吧
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
-    ) -> None:
+    ) -> dict[str, int]:
         """将已提取的隐式长期记忆写入向量库。仅在 event 路径确认成功后调用。"""
+        saved_counts = {
+            "profile": 0,
+            "preference": 0,
+            "procedure": 0,
+        }
         # profile
         for item in (result.get("profile") or []):
             if not isinstance(item, dict):
@@ -472,6 +490,7 @@ USER: 那就直接写个脚本绕过去吧
                 source_ref=f"{source_ref}#profile",
                 happened_at=happened_at,
             )
+            saved_counts["profile"] += 1
             logger.info("consolidation long_term saved: type=profile %r", summary[:60])
 
         # preference + procedure
@@ -498,9 +517,11 @@ USER: 那就直接写个脚本绕过去吧
                     extra=extra,
                     source_ref=f"{source_ref}#implicit",
                 )
+                saved_counts[mtype] += 1
                 logger.info(
                     "consolidation long_term saved: type=%s %r", mtype, summary[:60]
                 )
+        return saved_counts
 
     async def consolidate(
         self,
@@ -514,6 +535,7 @@ USER: 那就直接写个脚本绕过去吧
         window = _select_consolidation_window(
             session,
             memory_window=self._memory_window,
+            consolidation_min_new_messages=self._consolidation_min_new_messages,
             archive_all=archive_all,
         )
         if archive_all:
@@ -524,6 +546,9 @@ USER: 那就直接写个脚本绕过去吧
         else:
             if window is None:
                 keep_count = self._memory_window // 2
+                ready_count = (
+                    len(session.messages) - keep_count - session.last_consolidated
+                )
                 if len(session.messages) <= keep_count:
                     logger.debug(
                         "Session %s: No consolidation needed (messages=%d, keep=%d)",
@@ -533,8 +558,10 @@ USER: 那就直接写个脚本绕过去吧
                     )
                 else:
                     logger.debug(
-                        "Session %s: No new messages to consolidate (last_consolidated=%d, total=%d)",
+                        "Session %s: Not enough messages to consolidate yet (ready=%d, min=%d, last_consolidated=%d, total=%d)",
                         session.key,
+                        ready_count,
+                        self._consolidation_min_new_messages,
                         session.last_consolidated,
                         len(session.messages),
                     )
@@ -655,6 +682,7 @@ USER: 那就直接写个脚本绕过去吧
 
         try:
             # 3. 调主模型把这段旧对话提炼成结构化结果。
+            event_started_at = time.perf_counter()
             response = await self._provider.chat(
                 messages=[
                     {
@@ -668,6 +696,13 @@ USER: 那就直接写个脚本绕过去吧
                 max_tokens=1024,
             )
             text = (response.content or "").strip()
+            event_elapsed_ms = int((time.perf_counter() - event_started_at) * 1000)
+            logger.info(
+                "Memory consolidation event llm raw: elapsed_ms=%d chars=%d preview=%r",
+                event_elapsed_ms,
+                len(text),
+                text[:300],
+            )
 
             if not text:
                 logger.warning(
@@ -747,11 +782,45 @@ USER: 那就直接写个脚本绕过去吧
             # 进程在此之前崩溃，last_consolidated 不更新，下次重跑同窗口。
             implicit_result = await implicit_task
             if implicit_result:
-                await self._save_implicit_long_term(
+                extracted_profile = [
+                    (item.get("summary") or "").strip()
+                    for item in (implicit_result.get("profile") or [])
+                    if isinstance(item, dict) and (item.get("summary") or "").strip()
+                ]
+                extracted_preference = [
+                    (item.get("summary") or "").strip()
+                    for item in (implicit_result.get("preference") or [])
+                    if isinstance(item, dict) and (item.get("summary") or "").strip()
+                ]
+                extracted_procedure = [
+                    (item.get("summary") or "").strip()
+                    for item in (implicit_result.get("procedure") or [])
+                    if isinstance(item, dict) and (item.get("summary") or "").strip()
+                ]
+                logger.info(
+                    "Memory consolidation implicit extracted: profile=%d preference=%d procedure=%d profile_items=%s preference_items=%s procedure_items=%s",
+                    len(extracted_profile),
+                    len(extracted_preference),
+                    len(extracted_procedure),
+                    [s[:60] for s in extracted_profile],
+                    [s[:60] for s in extracted_preference],
+                    [s[:60] for s in extracted_procedure],
+                )
+                saved_counts = await self._save_implicit_long_term(
                     implicit_result,
                     source_ref=source_ref,
                     scope_channel=scope_channel,
                     scope_chat_id=scope_chat_id,
+                )
+                logger.info(
+                    "Memory consolidation implicit saved: profile=%d preference=%d procedure=%d",
+                    saved_counts["profile"],
+                    saved_counts["preference"],
+                    saved_counts["procedure"],
+                )
+            else:
+                logger.info(
+                    "Memory consolidation implicit extracted: no result"
                 )
 
             # 7. 更新 session.last_consolidated，表示这批旧消息已经被归档过。
@@ -786,12 +855,16 @@ class ConsolidationRuntime:
         scheduler: "TurnScheduler",
         consolidation: ConsolidationService,
         memory_window: int,
+        consolidation_min_new_messages: int = 10,
         wait_timeout_s: float,
     ) -> None:
         self._session_manager = session_manager
         self._scheduler = scheduler
         self._consolidation = consolidation
         self._memory_window = memory_window
+        self._consolidation_min_new_messages = max(
+            1, int(consolidation_min_new_messages)
+        )
         self._wait_timeout_s = wait_timeout_s
 
     async def consolidate_memory(
@@ -819,6 +892,7 @@ class ConsolidationRuntime:
         window = _select_consolidation_window(
             session,
             memory_window=self._memory_window,
+            consolidation_min_new_messages=self._consolidation_min_new_messages,
             archive_all=archive_all,
         )
         if window is None:
@@ -831,6 +905,7 @@ class ConsolidationRuntime:
             window = _select_consolidation_window(
                 session,
                 memory_window=self._memory_window,
+                consolidation_min_new_messages=self._consolidation_min_new_messages,
                 archive_all=archive_all,
             )
             if window is None:

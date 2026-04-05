@@ -87,6 +87,9 @@ def load_config(path: str | Path = "config.json") -> Config:
         max_tokens=data.get("max_tokens", 8192),
         max_iterations=data.get("max_iterations", 10),
         memory_window=int(data.get("memory_window", 40)),
+        memory_consolidation_min_new_messages=int(
+            data.get("memory_consolidation_min_new_messages", 10)
+        ),
         base_url=data.get("base_url") or _PRESETS.get(provider),
         extra_body=data.get("extra_body", {}),
         channels=channels,

@@ -47,6 +47,7 @@ class LLMConfig:
 @dataclass
 class MemoryConfig:
     window: int = 40
+    consolidation_min_new_messages: int = 10
     top_k_procedure: int = 4
     top_k_history: int = 8
     route_intention_enabled: bool = False
@@ -143,10 +144,14 @@ class TurnScheduler:
         post_mem_worker: PostResponseMemoryWorker | None,
         consolidation_runner: ConsolidationRunner,
         memory_window: int,
+        consolidation_min_new_messages: int = 10,
     ) -> None:
         self._post_mem_worker = post_mem_worker
         self._consolidation_runner = consolidation_runner
         self._memory_window = memory_window
+        self._consolidation_min_new_messages = max(
+            1, int(consolidation_min_new_messages)
+        )
         self._consolidating: set[str] = set()
 
     def is_consolidating(self, key: str) -> bool:
@@ -163,8 +168,15 @@ class TurnScheduler:
 
     def schedule_consolidation(self, session: SessionLike, key: str) -> None:
         """Fire-and-forget consolidation; deduplicates by key."""
-        # 1. 只有消息数超过 memory_window，且当前 session 没在 consolidate 中，才起后台任务。
-        if len(session.messages) > self._memory_window and key not in self._consolidating:
+        # 1. 只有累计足够多新旧消息可归档，且当前 session 没在 consolidate 中，才起后台任务。
+        keep_count = self._memory_window // 2
+        ready_count = len(session.messages) - keep_count - int(
+            getattr(session, "last_consolidated", 0)
+        )
+        if (
+            ready_count >= self._consolidation_min_new_messages
+            and key not in self._consolidating
+        ):
             self._consolidating.add(key)
             task = asyncio.create_task(
                 self._run_consolidation_bg(session, key),

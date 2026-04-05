@@ -220,18 +220,21 @@ class AgentLoop:
             provider=deps.provider,
             model=config.llm.model,
             memory_window=self.memory_window,
+            consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
             profile_extractor=deps.profile_extractor,
         )
         self._scheduler = deps.scheduler or TurnScheduler(
             post_mem_worker=post_mem_worker,
             consolidation_runner=self._consolidate_and_save,
             memory_window=config.memory.window,
+            consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
         )
         self._consolidation_runtime = ConsolidationRuntime(
             session_manager=self.session_manager,
             scheduler=self._scheduler,
             consolidation=consolidation_service,
             memory_window=self.memory_window,
+            consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
             wait_timeout_s=self._CONSOLIDATION_WAIT_S,
         )
 
