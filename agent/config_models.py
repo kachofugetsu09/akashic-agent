@@ -83,6 +83,7 @@ class PeerAgentConfig:
 class WiringConfig:
     context: str = "default"
     memory: str = "default"
+    memory_engine: str = "default"
     toolsets: list[str] = field(
         default_factory=lambda: [
             "meta_common",

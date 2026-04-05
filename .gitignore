@@ -55,3 +55,7 @@ lme_error_log_*.txt
 /AGENTS.md
 /scripts/fitbit-monitor/stat_events.json
 /scripts/fitbit-monitor/stat_events_v2.json
+.squad/
+/locks/reviewer.receive.lock
+/locks/worker.receive.lock
+/locks/

@@ -200,6 +200,138 @@ def test_default_memory_engine_descriptor_keeps_messages_capability_only():
     assert MemoryCapability.INGEST_TEXT not in descriptor.capabilities
 
 
+def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: Path):
+    import bootstrap.memory as memory_module
+
+    monkeypatch.setattr(
+        memory_module,
+        "register_memory_meta_tools",
+        lambda *args, **kwargs: None,
+    )
+
+    class _MemoryStore:
+        def __init__(self, workspace):
+            self.workspace = workspace
+
+    class _SkillsLoader:
+        def __init__(self, workspace):
+            self.workspace = workspace
+
+        def list_skills(self, filter_unavailable=False):
+            return [{"name": "demo"}]
+
+    class _WriteFileTool:
+        pass
+
+    class _EditFileTool:
+        pass
+
+    class _MemorizeTool:
+        def __init__(self, port, tagger=None):
+            self.port = port
+            self.tagger = tagger
+
+    class _DefaultMemoryPort:
+        def __init__(self, store, memorizer=None, retriever=None):
+            self.store = store
+            self.memorizer = memorizer
+            self.retriever = retriever
+
+    class _Store2:
+        def __init__(self, db_path):
+            self.db_path = db_path
+
+        def close(self):
+            return None
+
+    class _Embedder:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def close(self):
+            return None
+
+    class _Memorizer:
+        def __init__(self, store, embedder):
+            self.store = store
+            self.embedder = embedder
+
+    class _Retriever:
+        def __init__(self, store, embedder, **kwargs):
+            self.store = store
+            self.embedder = embedder
+            self.kwargs = kwargs
+
+    class _ProcedureTagger:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _ProfileFactExtractor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _PostResponseMemoryWorker:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    captured: dict[str, object] = {}
+
+    class _CustomEngine:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def describe(self):
+            return SimpleNamespace(name="custom")
+
+    monkeypatch.setattr("agent.memory.MemoryStore", _MemoryStore)
+    monkeypatch.setattr("agent.skills.SkillsLoader", _SkillsLoader)
+    monkeypatch.setattr("agent.tools.memorize.MemorizeTool", _MemorizeTool)
+    monkeypatch.setattr("agent.tools.filesystem.WriteFileTool", _WriteFileTool)
+    monkeypatch.setattr("agent.tools.filesystem.EditFileTool", _EditFileTool)
+    monkeypatch.setattr("core.memory.port.DefaultMemoryPort", _DefaultMemoryPort)
+    monkeypatch.setattr("memory2.store.MemoryStore2", _Store2)
+    monkeypatch.setattr("memory2.embedder.Embedder", _Embedder)
+    monkeypatch.setattr("memory2.memorizer.Memorizer", _Memorizer)
+    monkeypatch.setattr("memory2.retriever.Retriever", _Retriever)
+    monkeypatch.setattr("memory2.procedure_tagger.ProcedureTagger", _ProcedureTagger)
+    monkeypatch.setattr(
+        "memory2.profile_extractor.ProfileFactExtractor",
+        _ProfileFactExtractor,
+    )
+    monkeypatch.setattr(
+        memory_module,
+        "PostResponseMemoryWorker",
+        _PostResponseMemoryWorker,
+    )
+    monkeypatch.setattr(
+        "bootstrap.wiring.resolve_memory_engine_builder",
+        lambda name: (lambda deps: _CustomEngine(
+            retriever=deps.retriever,
+            post_response_worker=deps.post_response_worker,
+        )),
+    )
+
+    runtime = build_memory_runtime(
+        config=Config(
+            provider="test",
+            model="gpt-test",
+            api_key="k",
+            system_prompt="hi",
+            memory_v2=MemoryV2Config(enabled=True),
+        ),
+        workspace=tmp_path,
+        tools=ToolRegistry(),
+        provider=SimpleNamespace(),
+        light_provider=None,
+        http_resources=SimpleNamespace(external_default=SimpleNamespace()),
+    )
+
+    assert runtime.engine is not None
+    assert runtime.engine.describe().name == "custom"
+    assert "retriever" in captured
+    assert "post_response_worker" in captured
+
+
 def test_build_memory_runtime_exposes_default_memory_engine(
     monkeypatch,
     tmp_path: Path,

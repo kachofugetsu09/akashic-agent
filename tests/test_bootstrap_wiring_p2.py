@@ -10,6 +10,7 @@ from agent.tools.registry import ToolRegistry
 from bootstrap.tools import _build_loop_deps, build_registered_tools
 from bootstrap.wiring import (
     resolve_context_factory,
+    resolve_memory_engine_builder,
     resolve_memory_toolset_provider,
     resolve_toolset_provider,
 )
@@ -27,6 +28,7 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
                 "wiring": {
                     "context": "default",
                     "memory": "default",
+                    "memory_engine": "default",
                     "toolsets": ["schedule", "mcp"],
                 },
             },
@@ -39,6 +41,7 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
 
     assert cfg.wiring.context == "default"
     assert cfg.wiring.memory == "default"
+    assert cfg.wiring.memory_engine == "default"
     assert cfg.wiring.toolsets == ["schedule", "mcp"]
 
 
@@ -157,6 +160,14 @@ def test_wiring_error_messages_list_available_choices():
         assert "default" in str(exc)
     else:
         raise AssertionError("resolve_memory_toolset_provider should fail for bad name")
+
+    try:
+        resolve_memory_engine_builder("bad")
+    except ValueError as exc:
+        assert "可选值" in str(exc)
+        assert "default" in str(exc)
+    else:
+        raise AssertionError("resolve_memory_engine_builder should fail for bad name")
 
     try:
         resolve_toolset_provider("bad")

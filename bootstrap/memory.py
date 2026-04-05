@@ -6,7 +6,6 @@ from agent.config_models import Config
 from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
-from core.memory.default_engine import DefaultMemoryEngine
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -124,9 +123,21 @@ def build_memory_runtime(
         write_file_tool=WriteFileTool(),
         edit_file_tool=EditFileTool(),
     )
-    engine = DefaultMemoryEngine(
-        retriever=retriever,
-        post_response_worker=post_mem_worker,
+    from bootstrap.wiring import MemoryEngineBuildDeps, resolve_memory_engine_builder
+
+    engine_builder = resolve_memory_engine_builder(
+        getattr(getattr(config, "wiring", None), "memory_engine", "default")
+    )
+    engine = engine_builder(
+        MemoryEngineBuildDeps(
+            config=config,
+            workspace=workspace,
+            provider=provider,
+            light_provider=light_provider,
+            http_resources=http_resources,
+            retriever=retriever,
+            post_response_worker=post_mem_worker,
+        )
     )
 
     return MemoryRuntime(

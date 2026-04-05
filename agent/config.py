@@ -222,6 +222,7 @@ def _load_wiring_config(data: dict) -> WiringConfig:
     return WiringConfig(
         context=str(raw.get("context", "default") or "default"),
         memory=str(raw.get("memory", "default") or "default"),
+        memory_engine=str(raw.get("memory_engine", "default") or "default"),
         toolsets=[str(name) for name in toolsets if str(name).strip()],
     )
 
