@@ -67,6 +67,7 @@ class MemoryHit:
     source_ref: str
     engine_kind: str
     metadata: dict[str, object] = field(default_factory=dict)
+    injected: bool = False
 
 
 @dataclass
@@ -96,3 +97,79 @@ class MemoryEngine(Protocol):
     ) -> MemoryEngineRetrieveResult: ...
 
     def describe(self) -> MemoryEngineDescriptor: ...
+
+
+@dataclass(frozen=True)
+class TurnContext:
+    recent_messages: list[dict[str, object]] = field(default_factory=list)
+    session_id: str = ""
+
+
+@dataclass(frozen=True)
+class RetrieveBudget:
+    max_chars: int = 1200
+    max_hits: int = 10
+
+
+@dataclass(frozen=True)
+class PassiveRetrieveRequest:
+    query: str
+    turn_context: TurnContext = field(default_factory=TurnContext)
+    scope: MemoryScope = field(default_factory=MemoryScope)
+    budget: RetrieveBudget = field(default_factory=RetrieveBudget)
+
+
+@dataclass
+class PassiveRetrieveResult:
+    text_block: str = ""
+    hits: list[MemoryHit] = field(default_factory=list)
+    trace: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def injected_ids(self) -> list[str]:
+        return [item.id for item in self.hits if item.injected]
+
+
+@dataclass(frozen=True)
+class RememberRequest:
+    summary: str
+    memory_type: str
+    scope: MemoryScope = field(default_factory=MemoryScope)
+    source_ref: str = "memorize_tool"
+    raw_extra: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RememberResult:
+    item_id: str
+    actual_type: str
+    superseded_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class IngestRequest:
+    user_message: str
+    agent_response: str
+    tool_chain: list[dict[str, object]] = field(default_factory=list)
+    turn_context: TurnContext = field(default_factory=TurnContext)
+    scope: MemoryScope = field(default_factory=MemoryScope)
+    source_ref: str = ""
+    explicit_ids: set[str] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class PassiveEngineDescriptor:
+    name: str
+    capabilities: frozenset[MemoryCapability]
+    notes: dict[str, object] = field(default_factory=dict)
+
+
+@runtime_checkable
+class PassiveMemoryEngine(Protocol):
+    async def retrieve(self, req: PassiveRetrieveRequest) -> PassiveRetrieveResult: ...
+
+    async def remember(self, req: RememberRequest) -> RememberResult: ...
+
+    async def ingest(self, req: IngestRequest) -> None: ...
+
+    def describe(self) -> PassiveEngineDescriptor: ...

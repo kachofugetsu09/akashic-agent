@@ -437,6 +437,29 @@ def test_collect_explicit_memorized_accepts_long_mixed_id():
     assert "AbCDef12_34567890" in protected
 
 
+def test_collect_explicit_memorized_accepts_item_id_format():
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+    tool_chain = [
+        {
+            "calls": [
+                {
+                    "name": "memorize",
+                    "arguments": {"summary": "规则B"},
+                    "result": "已记住（item_id=memu_12345）：规则B",
+                }
+            ]
+        }
+    ]
+    summaries, protected = worker._collect_explicit_memorized(tool_chain)
+    assert summaries == ["规则B"]
+    assert "memu_12345" in protected
+
+
 def test_extract_invalidation_topics_skips_when_token_budget_exhausted():
     provider = _DummyProvider()
     worker = PostResponseMemoryWorker(

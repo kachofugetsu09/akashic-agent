@@ -13,7 +13,10 @@ from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
-from agent.retrieval.default_pipeline import _retrieve_episodic_items
+from agent.retrieval.default_pipeline import (
+    _build_injection_payload,
+    _retrieve_episodic_items,
+)
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.update_now import UpdateNowTool
@@ -21,7 +24,7 @@ from agent.tools.registry import ToolRegistry
 from core.memory.port import DefaultMemoryPort
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
-from core.memory.engine import MemoryEngineRetrieveResult, MemoryHit
+from core.memory.engine import MemoryEngineRetrieveResult, MemoryHit, PassiveRetrieveResult
 from memory2.retriever import Retriever
 from session.manager import Session
 
@@ -182,6 +185,35 @@ async def test_memorize_tool_uses_memory_port():
         source_ref="memorize_tool",
     )
     assert "已记住" in result
+
+
+@pytest.mark.asyncio
+async def test_memorize_tool_prefers_passive_engine_when_bound():
+    memory = MagicMock()
+    memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
+    passive_engine = MagicMock()
+    passive_engine.remember = AsyncMock(
+        return_value=MagicMock(item_id="passive-1", actual_type="procedure")
+    )
+    tool = MemorizeTool(cast(Any, memory))
+    tool.bind_passive_engine(cast(Any, passive_engine))
+
+    result = await tool.execute(
+        summary="以后先查工具状态",
+        memory_type="procedure",
+        tool_requirement="task_note",
+        steps=["先查", "再执行"],
+        channel="cli",
+        chat_id="1",
+    )
+
+    passive_engine.remember.assert_awaited_once()
+    request = passive_engine.remember.await_args.args[0]
+    assert request.scope.session_key == "cli:1"
+    assert request.scope.channel == "cli"
+    assert request.scope.chat_id == "1"
+    memory.save_item_with_supersede.assert_not_awaited()
+    assert "passive-1" in result
 
 
 def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
@@ -447,7 +479,7 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
         hyde_enhancer=None,
     )
 
-    items, scope_mode, hyde = await _retrieve_episodic_items(
+    items, scope_mode, hyde, passive_result = await _retrieve_episodic_items(
         session_key="telegram:7674283004",
         channel="telegram",
         chat_id="7674283004",
@@ -465,6 +497,7 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
     assert items[0]["memory_type"] == "event"
     assert items[0]["extra_json"] == {"origin": "engine"}
     assert items[0]["_retrieval_path"] == "history_raw"
+    assert passive_result is None
     request = engine.retrieve.await_args.args[0]
     assert request.scope.session_key == "telegram:7674283004"
     assert request.hints["require_scope_match"] is True
@@ -484,7 +517,7 @@ async def test_retrieve_episodic_items_falls_back_to_legacy_port_path(monkeypatc
         hyde_enhancer=None,
     )
 
-    items, scope_mode, hyde = await _retrieve_episodic_items(
+    items, scope_mode, hyde, passive_result = await _retrieve_episodic_items(
         session_key="cli:1",
         channel="cli",
         chat_id="1",
@@ -499,6 +532,7 @@ async def test_retrieve_episodic_items_falls_back_to_legacy_port_path(monkeypatc
     assert items == [{"id": "h1"}]
     assert scope_mode == "local"
     assert hyde == "hyde"
+    assert passive_result is None
     mocked.assert_awaited_once()
 
 
@@ -518,7 +552,7 @@ async def test_retrieve_episodic_items_keeps_legacy_hyde_path_when_enabled(monke
         hyde_enhancer=object(),
     )
 
-    items, scope_mode, hyde = await _retrieve_episodic_items(
+    items, scope_mode, hyde, passive_result = await _retrieve_episodic_items(
         session_key="cli:1",
         channel="cli",
         chat_id="1",
@@ -533,8 +567,114 @@ async def test_retrieve_episodic_items_keeps_legacy_hyde_path_when_enabled(monke
     assert items == [{"id": "h1", "_retrieval_path": "history_hyde"}]
     assert scope_mode == "global+hyde"
     assert hyde == "hypo"
+    assert passive_result is None
     mocked.assert_awaited_once()
     engine.retrieve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retrieve_episodic_items_returns_passive_result_for_engine_managed_injection():
+    passive_engine = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=PassiveRetrieveResult(
+                text_block="engine block",
+                hits=[
+                    MemoryHit(
+                        id="e1",
+                        summary="用户昨天提过 FitBit",
+                        content="用户昨天提过 FitBit",
+                        score=0.81,
+                        source_ref="telegram:7674283004@seed",
+                        engine_kind="compat",
+                        metadata={"memory_type": "event", "origin": "engine"},
+                        injected=True,
+                    ),
+                    MemoryHit(
+                        id="e2",
+                        summary="未注入候选",
+                        content="未注入候选",
+                        score=0.75,
+                        source_ref="telegram:7674283004@seed",
+                        engine_kind="compat",
+                        metadata={"memory_type": "event"},
+                        injected=False,
+                    ),
+                ],
+            )
+        )
+    )
+    memory = SimpleNamespace(
+        port=MagicMock(),
+        engine=None,
+        passive_engine=passive_engine,
+        hyde_enhancer=None,
+    )
+
+    items, scope_mode, hyde, passive_result = await _retrieve_episodic_items(
+        session_key="telegram:7674283004",
+        channel="telegram",
+        chat_id="7674283004",
+        route_decision="RETRIEVE",
+        rewritten_query="Fitbit 型号",
+        history_memory_types=["event", "profile"],
+        hyde_context="recent turns",
+        memory=memory,
+        config=AgentLoopConfig().memory,
+    )
+
+    assert scope_mode == "global"
+    assert hyde is None
+    assert len(items) == 2
+    assert passive_result is not None
+    assert passive_result.text_block == "engine block"
+    assert passive_result.injected_ids == ["e1"]
+
+
+def test_build_injection_payload_prefers_passive_result_text_block_and_injected_ids():
+    memory_port = MagicMock()
+    memory_port.select_for_injection.return_value = [
+        {"id": "p1", "memory_type": "procedure", "summary": "先查状态"}
+    ]
+    memory_port.build_injection_block.return_value = ("procedure block", ["p1"])
+    passive_result = PassiveRetrieveResult(
+        text_block="engine block",
+        hits=[
+            MemoryHit(
+                id="e1",
+                summary="用户昨天提过 FitBit",
+                content="用户昨天提过 FitBit",
+                score=0.81,
+                source_ref="seed",
+                engine_kind="compat",
+                metadata={"memory_type": "event"},
+                injected=True,
+            ),
+            MemoryHit(
+                id="e2",
+                summary="未注入候选",
+                content="未注入候选",
+                score=0.75,
+                source_ref="seed",
+                engine_kind="compat",
+                metadata={"memory_type": "event"},
+                injected=False,
+            ),
+        ],
+    )
+
+    selected_items, block, injected_ids = _build_injection_payload(
+        procedure_items=[{"id": "p1", "memory_type": "procedure", "summary": "先查状态"}],
+        history_items=[
+            {"id": "e1", "memory_type": "event", "summary": "用户昨天提过 FitBit"},
+            {"id": "e2", "memory_type": "event", "summary": "未注入候选"},
+        ],
+        memory=SimpleNamespace(port=memory_port),
+        passive_result=passive_result,
+    )
+
+    assert block == "procedure block\n\nengine block"
+    assert injected_ids == ["p1", "e1"]
+    assert [item["id"] for item in selected_items] == ["p1", "e1"]
 
 
 def test_retriever_norm_limit_uses_config_without_hardcoded_cap():

@@ -276,6 +276,7 @@ def _build_loop_deps(
     memory_services = MemoryServices(
         port=memory_runtime.port,
         engine=memory_engine,
+        passive_engine=getattr(memory_runtime, "passive_engine", None),
         query_rewriter=query_rewriter,
         hyde_enhancer=hyde_enhancer,
         sufficiency_checker=sufficiency_checker,
@@ -311,6 +312,7 @@ def _build_loop_deps(
         scheduler=turn_scheduler,
         post_mem_worker=memory_runtime.post_response_worker,
         engine=memory_engine,
+        passive_engine=getattr(memory_runtime, "passive_engine", None),
     )
     passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
     passive_context_store = DefaultContextStore(

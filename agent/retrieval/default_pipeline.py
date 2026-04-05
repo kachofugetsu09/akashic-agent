@@ -20,7 +20,14 @@ from agent.retrieval.protocol import (
     RetrievalRequest,
     RetrievalResult,
 )
-from core.memory.engine import MemoryEngineRetrieveRequest, MemoryEngineRetrieveResult, MemoryScope
+from core.memory.engine import (
+    MemoryEngineRetrieveRequest,
+    MemoryEngineRetrieveResult,
+    MemoryScope,
+    PassiveRetrieveRequest,
+    RetrieveBudget,
+    TurnContext,
+)
 from memory2.injection_planner import retrieve_episodic, retrieve_procedure_items
 from memory2.query_rewriter import GateDecision
 
@@ -145,7 +152,7 @@ class _EpisodicRetriever:
         hyde_context: str,
         sufficiency_trace: dict[str, object],
     ) -> tuple[list[dict], str, str | None, list[dict], str, list[str]]:
-        history_items, history_scope_mode, hyde_hypothesis = await _retrieve_episodic_items(
+        history_items, history_scope_mode, hyde_hypothesis, passive_result = await _retrieve_episodic_items(
             session_key=session_key,
             channel=channel,
             chat_id=chat_id,
@@ -160,6 +167,7 @@ class _EpisodicRetriever:
             procedure_items=procedure_items,
             history_items=history_items,
             memory=self._memory,
+            passive_result=passive_result,
         )
         history_items, history_scope_mode, selected_items, retrieved_block, injected_item_ids = (
             await _retry_empty_episodic_block(
@@ -180,6 +188,7 @@ class _EpisodicRetriever:
                 sufficiency_trace=sufficiency_trace,
                 memory=self._memory,
                 config=self._config,
+                passive_result=passive_result,
             )
         )
         return (
@@ -526,10 +535,36 @@ async def _retrieve_episodic_items(
     hyde_context: str,
     memory: MemoryServices,
     config: MemoryConfig,
-) -> tuple[list[dict], str, str | None]:
+) -> tuple[list[dict], str, str | None, object | None]:
     # 1. gate 没放行时，event/profile 一律不查，直接返回空结果。
     if route_decision != "RETRIEVE" or not history_memory_types:
-        return [], "disabled", None
+        return [], "disabled", None, None
+
+    passive_engine = getattr(memory, "passive_engine", None)
+    if passive_engine is not None and memory.hyde_enhancer is None:
+        passive_result = await passive_engine.retrieve(
+            PassiveRetrieveRequest(
+                query=rewritten_query,
+                turn_context=TurnContext(
+                    recent_messages=[
+                        {"role": "system", "content": hyde_context},
+                    ],
+                    session_id=session_key,
+                ),
+                scope=MemoryScope(
+                    session_key=session_key,
+                    channel=channel,
+                    chat_id=chat_id,
+                ),
+                budget=RetrieveBudget(max_hits=config.top_k_history),
+            )
+        )
+        return (
+            _map_passive_result_to_history_items(passive_result),
+            "global",
+            None,
+            passive_result,
+        )
 
     if memory.engine is not None and memory.hyde_enhancer is None:
         # 2. 新引擎路径只接管“无 HyDE 的全局 episodic 命中”，对外仍保持旧 scope/path 语义。
@@ -554,10 +589,11 @@ async def _retrieve_episodic_items(
             _map_engine_result_to_history_items(engine_result),
             "global",
             None,
+            None,
         )
 
     # 3. HyDE 开启时仍走旧 episodic 路径，避免在主链切换阶段丢失旧增强能力。
-    return await retrieve_episodic(
+    history_items, scope_mode, hyde_hypothesis = await retrieve_episodic(
         memory.port,
         rewritten_query,
         memory_types=history_memory_types,
@@ -565,6 +601,7 @@ async def _retrieve_episodic_items(
         context=hyde_context,
         hyde_enhancer=memory.hyde_enhancer,
     )
+    return history_items, scope_mode, hyde_hypothesis, None
 
 
 def _map_engine_result_to_history_items(
@@ -594,12 +631,47 @@ def _map_engine_result_to_history_items(
     ]
 
 
+def _map_passive_result_to_history_items(passive_result) -> list[dict]:
+    history_items: list[dict] = []
+    for hit in passive_result.hits:
+        metadata = dict(hit.metadata) if isinstance(hit.metadata, dict) else {}
+        memory_type = str(metadata.pop("memory_type", "") or "")
+        history_items.append(
+            {
+                "id": hit.id,
+                "memory_type": memory_type,
+                "summary": hit.summary,
+                "score": hit.score,
+                "source_ref": hit.source_ref,
+                "extra_json": metadata,
+                "_retrieval_path": "history_raw",
+            }
+        )
+    return history_items
+
+
 def _build_injection_payload(
     *,
     procedure_items: list[dict],
     history_items: list[dict],
     memory: MemoryServices,
+    passive_result=None,
 ) -> tuple[list[dict], str, list[str]]:
+    if passive_result is not None:
+        selected_procedure = memory.port.select_for_injection(procedure_items)
+        procedure_block, procedure_ids = memory.port.build_injection_block(procedure_items)
+        injected_history_ids = list(passive_result.injected_ids)
+        injected_history_id_set = set(injected_history_ids)
+        selected_history = [
+            item
+            for item in history_items
+            if str(item.get("id", "")) in injected_history_id_set
+        ]
+        selected_items = _merge_memory_items(selected_procedure + selected_history)
+        blocks = [block for block in [procedure_block, passive_result.text_block] if block]
+        injected_item_ids = _dedupe_ids(procedure_ids + injected_history_ids)
+        return selected_items, "\n\n".join(blocks), injected_item_ids
+
     # 1. procedure + episodic 先合并去重。
     merged = _merge_memory_items(procedure_items + history_items)
 
@@ -629,6 +701,7 @@ async def _retry_empty_episodic_block(
     sufficiency_trace: dict[str, object],
     memory: MemoryServices,
     config: MemoryConfig,
+    passive_result=None,
 ) -> tuple[list[dict], str, list[dict], str, list[str]]:
     checker = memory.sufficiency_checker
     # 1. 只有“本来决定查 history，但第一次没注入出有效块”时，才做 sufficiency retry。
@@ -660,7 +733,7 @@ async def _retry_empty_episodic_block(
         )
 
     # 2. sufficiency checker 给出 refined query 后，补做一次 episodic 检索。
-    extra_h_items, extra_scope_mode, _retry_hypothesis = await _retrieve_episodic_items(
+    extra_h_items, extra_scope_mode, _retry_hypothesis, extra_passive_result = await _retrieve_episodic_items(
         session_key=session_key,
         channel=channel,
         chat_id=chat_id,
@@ -674,10 +747,12 @@ async def _retry_empty_episodic_block(
     sufficiency_trace["retry_count"] = 1
     history_items = history_items + extra_h_items
     history_scope_mode = extra_scope_mode or history_scope_mode
+    passive_result = extra_passive_result if extra_passive_result is not None else passive_result
     selected_items, retrieved_block, injected_item_ids = _build_injection_payload(
         procedure_items=procedure_items,
         history_items=history_items,
         memory=memory,
+        passive_result=passive_result,
     )
     return history_items, history_scope_mode, selected_items, retrieved_block, injected_item_ids
 
@@ -693,6 +768,18 @@ def _merge_memory_items(items: list[dict]) -> list[dict]:
             seen.add(item_id)
         merged.append(item)
     return merged
+
+
+def _dedupe_ids(ids: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item_id in ids:
+        value = str(item_id or "")
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
 
 def _finalize_memory_retrieval(

@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from core.memory.engine import MemoryEngineRetrieveRequest, MemoryIngestRequest, MemoryScope
+from core.memory.engine import (
+    MemoryEngineRetrieveRequest,
+    MemoryIngestRequest,
+    MemoryScope,
+    RememberRequest,
+)
 from core.memory.memu_engine import MemUMemoryEngine
 
 
@@ -111,3 +116,25 @@ async def test_memu_engine_ingest_rejects_unsupported_source_kind(tmp_path: Path
 
     assert result.accepted is False
     assert result.raw["reason"] == "unsupported_source_kind"
+
+
+async def test_memu_engine_remember_uses_engine_scope(tmp_path: Path):
+    service = AsyncMock()
+    service.memorize.return_value = {"items": [{"id": "memu-1"}]}
+    engine = MemUMemoryEngine(service=service, input_dir=tmp_path)
+
+    result = await engine.remember(
+        RememberRequest(
+            summary="以后用中文回复",
+            memory_type="preference",
+            scope=MemoryScope(session_key="cli:1", channel="cli", chat_id="1"),
+        )
+    )
+
+    assert result.item_id == "memu-1"
+    kwargs = service.memorize.await_args.kwargs
+    assert kwargs["user"] == {
+        "session_key": "cli:1",
+        "channel": "cli",
+        "chat_id": "1",
+    }

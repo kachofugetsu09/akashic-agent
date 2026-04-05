@@ -14,7 +14,10 @@ from core.memory.engine import (
     MemoryEngineRetrieveRequest,
     MemoryIngestRequest,
     MemoryScope,
+    RememberRequest,
+    RememberResult,
 )
+from core.memory.passive_compat import PassiveMemoryCompatShell
 
 
 async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
@@ -31,7 +34,7 @@ async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
                 }
             ]
         ),
-        format_injection_block=lambda items: "注入块",
+        build_injection_block=lambda items: ("注入块", ["m1"]),
     )
     engine = DefaultMemoryEngine(retriever=retriever)
 
@@ -47,6 +50,7 @@ async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
     assert result.text_block == "注入块"
     assert len(result.hits) == 1
     assert result.hits[0].id == "m1"
+    assert result.hits[0].injected is True
     assert result.hits[0].engine_kind == "default"
     assert result.hits[0].metadata["memory_type"] == "preference"
     assert result.trace["profile"] == EngineProfile.RICH_MEMORY_ENGINE.value
@@ -55,7 +59,7 @@ async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
 async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
     retriever = SimpleNamespace(
         retrieve=AsyncMock(return_value=[]),
-        format_injection_block=lambda items: "",
+        build_injection_block=lambda items: ("", []),
     )
     engine = DefaultMemoryEngine(retriever=retriever)
 
@@ -71,6 +75,66 @@ async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
     assert kwargs["scope_channel"] == "telegram"
     assert kwargs["scope_chat_id"] == "7674283004"
     assert kwargs["require_scope_match"] is True
+
+
+async def test_default_engine_passive_shell_keeps_history_injected_ids():
+    from agent.retrieval.default_pipeline import _build_injection_payload
+    from core.memory.engine import PassiveRetrieveRequest, RetrieveBudget, TurnContext
+    from core.memory.passive_compat import PassiveMemoryCompatShell
+
+    retriever = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "id": "e1",
+                    "summary": "用户昨天提过 FitBit",
+                    "score": 0.81,
+                    "source_ref": "telegram:1@seed",
+                    "memory_type": "event",
+                    "extra_json": {"origin": "engine"},
+                }
+            ]
+        ),
+        build_injection_block=lambda items: ("## 【相关历史】\n- 用户昨天提过 FitBit", ["e1"]),
+    )
+    default_engine = DefaultMemoryEngine(retriever=retriever)
+    passive_engine = PassiveMemoryCompatShell(
+        engine=default_engine,
+        memory_port=SimpleNamespace(),
+    )
+
+    passive_result = await passive_engine.retrieve(
+        PassiveRetrieveRequest(
+            query="Fitbit 型号",
+            turn_context=TurnContext(session_id="telegram:1"),
+            scope=MemoryScope(session_key="telegram:1", channel="telegram", chat_id="1"),
+            budget=RetrieveBudget(max_hits=8),
+        )
+    )
+
+    memory_port = SimpleNamespace(
+        select_for_injection=lambda items: [],
+        build_injection_block=lambda items: ("", []),
+    )
+    selected_items, block, injected_ids = _build_injection_payload(
+        procedure_items=[],
+        history_items=[
+            {
+                "id": "e1",
+                "memory_type": "event",
+                "summary": "用户昨天提过 FitBit",
+                "score": 0.81,
+                "source_ref": "telegram:1@seed",
+                "extra_json": {"origin": "engine"},
+            }
+        ],
+        memory=SimpleNamespace(port=memory_port),
+        passive_result=passive_result,
+    )
+
+    assert "用户昨天提过 FitBit" in block
+    assert [item["id"] for item in selected_items] == ["e1"]
+    assert injected_ids == ["e1"]
 
 
 async def test_default_memory_engine_ingest_delegates_to_post_worker():
@@ -95,6 +159,32 @@ async def test_default_memory_engine_ingest_delegates_to_post_worker():
     assert result.accepted is True
     assert result.raw["engine"] == "default"
     worker.run.assert_awaited_once()
+
+
+async def test_passive_compat_shell_prefers_engine_owned_remember():
+    engine = SimpleNamespace(
+        remember=AsyncMock(
+            return_value=RememberResult(
+                item_id="memu-1",
+                actual_type="preference",
+                superseded_ids=[],
+            )
+        )
+    )
+    port = SimpleNamespace(save_item_with_supersede=AsyncMock())
+    shell = PassiveMemoryCompatShell(engine=engine, memory_port=port)
+
+    result = await shell.remember(
+        RememberRequest(
+            summary="以后用中文回复",
+            memory_type="preference",
+            scope=MemoryScope(session_key="cli:1", channel="cli", chat_id="1"),
+        )
+    )
+
+    assert result.item_id == "memu-1"
+    engine.remember.assert_awaited_once()
+    port.save_item_with_supersede.assert_not_awaited()
 
 
 async def test_default_memory_engine_ingest_accepts_conversation_batch_messages():
@@ -327,6 +417,7 @@ def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: 
     )
 
     assert runtime.engine is not None
+    assert runtime.passive_engine is not None
     assert runtime.engine.describe().name == "custom"
     assert "retriever" in captured
     assert "post_response_worker" in captured
@@ -446,5 +537,6 @@ def test_build_memory_runtime_exposes_default_memory_engine(
     )
 
     assert runtime.engine is not None
+    assert runtime.passive_engine is not None
     assert runtime.engine.describe().name == "default"
     assert MemoryCapability.SEMANTICS_RICH_MEMORY in runtime.engine.describe().capabilities

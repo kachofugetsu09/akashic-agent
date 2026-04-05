@@ -172,6 +172,8 @@ class AgentLoop:
         llm_svc = self._llm_services
         memory_svc = deps.memory_services or MemoryServices(
             port=memory_port,
+            engine=getattr(deps.memory_runtime, "engine", None),
+            passive_engine=getattr(deps.memory_runtime, "passive_engine", None),
             query_rewriter=deps.query_rewriter,
             hyde_enhancer=hyde_enhancer,
             sufficiency_checker=deps.sufficiency_checker,
@@ -243,6 +245,7 @@ class AgentLoop:
             scheduler=self._scheduler,
             post_mem_worker=post_mem_worker,
             engine=memory_svc.engine,
+            passive_engine=memory_svc.passive_engine,
         )
         passive_meme_decorator = MemeDecorator(MemeCatalog(deps.workspace / "memes"))
         passive_context_store = DefaultContextStore(

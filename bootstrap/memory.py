@@ -6,6 +6,7 @@ from agent.config_models import Config
 from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
+from core.memory.passive_compat import PassiveMemoryCompatShell
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -117,12 +118,6 @@ def build_memory_runtime(
         observe_writer=observe_writer,
         dedup_decider=dedup_decider,
     )
-    register_memory_meta_tools(
-        tools,
-        memorize_tool=MemorizeTool(port, tagger=tagger),
-        write_file_tool=WriteFileTool(),
-        edit_file_tool=EditFileTool(),
-    )
     from bootstrap.wiring import MemoryEngineBuildDeps, resolve_memory_engine_builder
 
     engine_builder = resolve_memory_engine_builder(
@@ -139,10 +134,25 @@ def build_memory_runtime(
             post_response_worker=post_mem_worker,
         )
     )
+    passive_engine = PassiveMemoryCompatShell(
+        engine=engine,
+        memory_port=port,
+        tagger=tagger,
+    )
+    memorize_tool = MemorizeTool(port, tagger=tagger)
+    if hasattr(memorize_tool, "bind_passive_engine"):
+        memorize_tool.bind_passive_engine(passive_engine)
+    register_memory_meta_tools(
+        tools,
+        memorize_tool=memorize_tool,
+        write_file_tool=WriteFileTool(),
+        edit_file_tool=EditFileTool(),
+    )
 
     return MemoryRuntime(
         port=port,
         engine=engine,
+        passive_engine=passive_engine,
         post_response_worker=post_mem_worker,
         closeables=[mem2_store, embedder],
     )

@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING
 from agent.core.types import ToolCallGroup
 from agent.looping.ports import TurnScheduler
 from agent.postturn.protocol import PostTurnEvent, PostTurnPipeline
-from core.memory.engine import MemoryIngestRequest, MemoryScope
+from core.memory.engine import IngestRequest, MemoryIngestRequest, MemoryScope, TurnContext
 from memory2.post_response_worker import PostResponseMemoryWorker
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryEngine
+    from core.memory.engine import MemoryEngine, PassiveMemoryEngine
 
 logger = logging.getLogger("agent.postturn")
 
@@ -21,10 +21,12 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
         scheduler: TurnScheduler,
         post_mem_worker: PostResponseMemoryWorker | None,
         engine: "MemoryEngine | None" = None,
+        passive_engine: "PassiveMemoryEngine | None" = None,
     ) -> None:
         self._scheduler = scheduler
         self._post_mem_worker = post_mem_worker
         self._engine = engine
+        self._passive_engine = passive_engine
         self._failures: int = 0
 
     def schedule(self, event: PostTurnEvent) -> None:
@@ -40,6 +42,24 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
     def _build_post_memory_task(self, event: PostTurnEvent) -> asyncio.Task | None:
         tool_chain_raw = [_tool_group_to_dict(g) for g in event.tool_chain]
         source_ref = f"{event.session_key}@post_response"
+        if self._passive_engine is not None:
+            return asyncio.create_task(
+                self._passive_engine.ingest(
+                    IngestRequest(
+                        user_message=event.user_message,
+                        agent_response=event.assistant_response,
+                        tool_chain=tool_chain_raw,
+                        turn_context=TurnContext(session_id=event.session_key),
+                        scope=MemoryScope(
+                            session_key=event.session_key,
+                            channel=event.channel,
+                            chat_id=event.chat_id,
+                        ),
+                        source_ref=source_ref,
+                    )
+                ),
+                name=f"post_mem:{event.session_key}",
+            )
         if self._engine is not None:
             return asyncio.create_task(
                 self._engine.ingest(

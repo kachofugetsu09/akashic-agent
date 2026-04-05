@@ -439,7 +439,10 @@ class PostResponseMemoryWorker:
         """
         import re as _re
 
-        _id_pattern = _re.compile(r"(?:new|reinforced):([A-Za-z0-9_-]{8,64})")
+        _legacy_pattern = _re.compile(
+            r"(?:new|reinforced|merged):([A-Za-z0-9_-]{1,128})"
+        )
+        _explicit_pattern = _re.compile(r"item_id=([A-Za-z0-9:_-]{1,128})")
 
         summaries: list[str] = []
         protected_ids: set[str] = set()
@@ -458,7 +461,11 @@ class PostResponseMemoryWorker:
                         summaries.append(summary)
                 # 3. 再从工具结果文本里解析真实写入的 DB id，避免后续误删本轮新记忆。
                 result = call.get("result") or ""
-                m = _id_pattern.search(result)
+                m = _legacy_pattern.search(result)
+                if m:
+                    protected_ids.add(m.group(1))
+                    continue
+                m = _explicit_pattern.search(result)
                 if m:
                     protected_ids.add(m.group(1))
         return summaries, protected_ids

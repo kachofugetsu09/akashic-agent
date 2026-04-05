@@ -65,8 +65,12 @@ class DefaultMemoryEngine:
         )
 
         # 2. 调用默认 rich retrieval 组装 block，并把命中项收敛成统一结构。
-        text_block = self._retriever.format_injection_block(items)
-        hits = [self._build_hit(item) for item in items if isinstance(item, dict)]
+        text_block, injected_ids = self._retriever.build_injection_block(items)
+        hits = [
+            self._build_hit(item, injected_ids=injected_ids)
+            for item in items
+            if isinstance(item, dict)
+        ]
 
         # 3. 汇总 trace/raw，返回给上层内部引擎调用方。
         return MemoryEngineRetrieveResult(
@@ -134,18 +138,20 @@ class DefaultMemoryEngine:
         return self.DESCRIPTOR
 
     @classmethod
-    def _build_hit(cls, item: dict) -> MemoryHit:
+    def _build_hit(cls, item: dict, *, injected_ids: list[str] | None = None) -> MemoryHit:
         extra = item.get("extra_json")
         metadata = dict(extra) if isinstance(extra, dict) else {}
         metadata["memory_type"] = item.get("memory_type", "")
+        item_id = str(item.get("id", "") or "")
         return MemoryHit(
-            id=str(item.get("id", "") or ""),
+            id=item_id,
             summary=str(item.get("summary", "") or ""),
             content=str(item.get("summary", "") or ""),
             score=float(item.get("score", 0.0) or 0.0),
             source_ref=str(item.get("source_ref", "") or ""),
             engine_kind=cls.DESCRIPTOR.name,
             metadata=metadata,
+            injected=item_id in set(injected_ids or []),
         )
 
     @staticmethod

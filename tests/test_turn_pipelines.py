@@ -22,7 +22,7 @@ from agent.retrieval.protocol import (
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage
-from core.memory.engine import MemoryIngestRequest
+from core.memory.engine import IngestRequest, MemoryIngestRequest
 from core.memory.port import DefaultMemoryPort
 
 
@@ -180,6 +180,46 @@ async def test_default_post_turn_pipeline_prefers_engine_ingest_over_worker():
     assert request.source_kind == "conversation_turn"
     assert request.scope.session_key == "cli:1"
     assert request.metadata["source_ref"] == "cli:1@post_response"
+    worker.run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_default_post_turn_pipeline_prefers_passive_engine_over_legacy_engine():
+    scheduler = MagicMock()
+    worker = MagicMock()
+    worker.run = AsyncMock(return_value=None)
+    engine = MagicMock()
+    engine.ingest = AsyncMock(return_value=MagicMock())
+    passive_engine = MagicMock()
+    passive_engine.ingest = AsyncMock(return_value=None)
+    pipeline = DefaultPostTurnPipeline(
+        scheduler=scheduler,
+        post_mem_worker=worker,
+        engine=engine,
+        passive_engine=passive_engine,
+    )
+
+    event = PostTurnEvent(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        user_message="hello",
+        assistant_response="ok",
+        tools_used=[],
+        tool_chain=[],
+        session=MagicMock(),
+        timestamp=datetime.now(),
+    )
+    pipeline.schedule(event)
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    passive_engine.ingest.assert_awaited_once()
+    request = passive_engine.ingest.await_args.args[0]
+    assert isinstance(request, IngestRequest)
+    assert request.scope.session_key == "cli:1"
+    engine.ingest.assert_not_awaited()
     worker.run.assert_not_awaited()
 
 

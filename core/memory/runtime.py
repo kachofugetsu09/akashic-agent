@@ -9,7 +9,9 @@ from memory2.post_response_worker import PostResponseMemoryWorker
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
+    from core.memory.engine import PassiveMemoryEngine
     from core.memory.port import MemoryPort
+    from core.memory.profile import ProfileMaintenanceStore, ProfileReader
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,9 @@ class MemoryRuntime:
 
     port: "MemoryPort"
     engine: "MemoryEngine | None" = None
+    passive_engine: "PassiveMemoryEngine | None" = None
+    profile_reader: "ProfileReader | None" = None
+    profile_maint: "ProfileMaintenanceStore | None" = None
     post_response_worker: PostResponseMemoryWorker | None = None
     closeables: list[Any] = field(default_factory=list)
 

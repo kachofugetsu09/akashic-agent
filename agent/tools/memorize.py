@@ -8,12 +8,21 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from agent.tools.base import Tool
+from core.memory.engine import MemoryScope, RememberRequest
 from memory2.rule_schema import build_procedure_rule_schema
 
 if TYPE_CHECKING:
+    from core.memory.engine import PassiveMemoryEngine
     from core.memory.port import MemoryPort
 
 logger = logging.getLogger(__name__)
+
+
+def _format_remember_result_text(item_id: str, summary: str) -> str:
+    value = (item_id or "").strip()
+    if value.startswith(("new:", "reinforced:", "merged:")):
+        return f"已记住（{value}）：{summary}"
+    return f"已记住（item_id={value}）：{summary}"
 
 
 def _coerce_memory_type(
@@ -70,6 +79,10 @@ class MemorizeTool(Tool):
     def __init__(self, memory: "MemoryPort", tagger=None) -> None:
         self._memory = memory
         self._tagger = tagger  # ProcedureTagger | None
+        self._passive_engine: "PassiveMemoryEngine | None" = None
+
+    def bind_passive_engine(self, engine: "PassiveMemoryEngine | None") -> None:
+        self._passive_engine = engine
 
     async def execute(
         self,
@@ -77,8 +90,28 @@ class MemorizeTool(Tool):
         memory_type: str,
         tool_requirement: str | None = None,
         steps: list[str] | None = None,
+        channel: str | None = None,
+        chat_id: str | None = None,
         **_: Any,
     ) -> str:
+        if self._passive_engine is not None:
+            result = await self._passive_engine.remember(
+                RememberRequest(
+                    summary=summary,
+                    memory_type=memory_type,
+                    scope=MemoryScope(
+                        session_key=f"{channel}:{chat_id}" if channel and chat_id else "",
+                        channel=channel or "",
+                        chat_id=chat_id or "",
+                    ),
+                    raw_extra={
+                        "tool_requirement": tool_requirement,
+                        "steps": steps or [],
+                    },
+                )
+            )
+            return _format_remember_result_text(result.item_id, summary)
+
         # 0. 类型纠正：无 tool_requirement 且无 steps 的 procedure → preference。
         memory_type = _coerce_memory_type(memory_type, tool_requirement, steps)
         # 1. 构造 extra，保留 tool_requirement / steps 字段。
@@ -111,4 +144,4 @@ class MemorizeTool(Tool):
             extra=extra,
             source_ref="memorize_tool",
         )
-        return f"已记住（{result}）：{summary}"
+        return _format_remember_result_text(result, summary)

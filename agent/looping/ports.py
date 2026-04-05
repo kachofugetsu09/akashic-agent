@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from agent.tools.registry import ToolRegistry
     from bus.processing import ProcessingState
     from bus.queue import MessageBus
-    from core.memory.engine import MemoryEngine
+    from core.memory.engine import MemoryEngine, PassiveMemoryEngine
     from core.memory.port import MemoryPort
     from core.memory.runtime import MemoryRuntime
     from memory2.hyde_enhancer import HyDEEnhancer
@@ -71,6 +71,7 @@ class LLMServices:
 class MemoryServices:
     port: MemoryPort
     engine: MemoryEngine | None = None
+    passive_engine: PassiveMemoryEngine | None = None
     query_rewriter: QueryRewriter | None = None
     hyde_enhancer: HyDEEnhancer | None = None
     sufficiency_checker: SufficiencyChecker | None = None
