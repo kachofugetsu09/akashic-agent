@@ -117,6 +117,10 @@ class ToolRegistry:
     def get_tool(self, name: str) -> "Tool | None":
         return self._tools.get(name)
 
+    def get_registered_names(self) -> set[str]:
+        """返回当前已注册工具名集合。"""
+        return set(self._tools.keys())
+
     def get_schemas(self, names: set[str] | None = None) -> list[dict]:
         """返回 OpenAI function calling 格式的工具定义列表。
 

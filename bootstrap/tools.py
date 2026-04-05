@@ -33,16 +33,20 @@ from agent.tools.registry import ToolRegistry
 from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
 from agent.turns.outbound import BusOutboundPort
-from bootstrap.toolsets.fitbit import register_fitbit_tools
-from bootstrap.toolsets.mcp import register_mcp_tools
-from bootstrap.toolsets.memory import build_memory_toolset
+from bootstrap.toolsets.fitbit import FitbitToolsetProvider
+from bootstrap.toolsets.mcp import McpToolsetProvider
+from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import (
+    CommonMetaToolsetProvider,
+    SpawnToolsetProvider,
     build_readonly_tools,
-    register_meta_and_common_tools,
-    register_spawn_tool,
 )
 from bootstrap.toolsets.peer import build_peer_agent_resources
-from bootstrap.toolsets.schedule import build_scheduler, register_scheduler_tools
+from bootstrap.toolsets.protocol import ToolsetDeps
+from bootstrap.toolsets.schedule import (
+    SchedulerToolsetProvider,
+    build_scheduler,
+)
 from bootstrap.providers import build_providers
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -118,15 +122,18 @@ def build_registered_tools(
     readonly_tools = build_readonly_tools(http_resources)
     store = session_store or SessionStore(workspace / "sessions.db")
     push_tool = MessagePushTool()
-    memory_runtime = build_memory_toolset(
-        config,
-        workspace,
+    memory_result = MemoryToolsetProvider().register(
         tools,
-        provider,
-        light_provider,
-        http_resources,
-        observe_writer=observe_writer,
+        ToolsetDeps(
+            config=config,
+            workspace=workspace,
+            provider=provider,
+            light_provider=light_provider,
+            http_resources=http_resources,
+            observe_writer=observe_writer,
+        ),
     )
+    memory_runtime = memory_result.extras["memory_runtime"]
     scheduler = build_scheduler(
         workspace,
         push_tool,
@@ -137,19 +144,50 @@ def build_registered_tools(
     )
 
     # ── 第二阶段：注册工具（所有服务已就绪）──────────────────────────────────
-    register_meta_and_common_tools(tools, readonly_tools, store, push_tool=push_tool)
-    register_fitbit_tools(tools, config, http_resources)
-    register_spawn_tool(
+    CommonMetaToolsetProvider(readonly_tools).register(
         tools,
-        config,
-        workspace,
-        bus,
-        provider,
-        http_resources,
-        memory_port=memory_runtime.port,
+        ToolsetDeps(
+            config=config,
+            workspace=workspace,
+            session_store=store,
+            push_tool=push_tool,
+        ),
     )
-    register_scheduler_tools(tools, scheduler)
-    mcp_registry = register_mcp_tools(tools, workspace)
+    FitbitToolsetProvider().register(
+        tools,
+        ToolsetDeps(
+            config=config,
+            workspace=workspace,
+            http_resources=http_resources,
+        ),
+    )
+    SpawnToolsetProvider().register(
+        tools,
+        ToolsetDeps(
+            config=config,
+            workspace=workspace,
+            provider=provider,
+            http_resources=http_resources,
+            bus=bus,
+            memory_port=memory_runtime.port,
+        ),
+    )
+    SchedulerToolsetProvider().register(
+        tools,
+        ToolsetDeps(
+            config=config,
+            workspace=workspace,
+            scheduler=scheduler,
+        ),
+    )
+    mcp_result = McpToolsetProvider().register(
+        tools,
+        ToolsetDeps(
+            config=config,
+            workspace=workspace,
+        ),
+    )
+    mcp_registry = mcp_result.extras["mcp_registry"]
 
     return tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_process_manager, peer_poller
 
