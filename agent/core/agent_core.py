@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from agent.core.types import ContextRequest
 from bus.events import InboundMessage, OutboundMessage
 
 if TYPE_CHECKING:
@@ -57,13 +58,19 @@ class AgentCore:
             session=session,
         )
 
-        # 2. 再渲染 system prompt 预览，先把 prompt 主编排收进 AgentCore。
+        # 2. 再通过 Context 主接口渲染 prompt 预览，提前热身 prompt cache。
         skill_mentions = list(context_bundle.skill_mentions)
         retrieved_block = context_bundle.retrieved_memory_block
-        self._context.build_system_prompt(
-            skill_names=skill_mentions,
-            message_timestamp=msg.timestamp,
-            retrieved_memory_block=retrieved_block,
+        self._context.render(
+            ContextRequest(
+                history=[],
+                current_message="",
+                skill_names=skill_mentions,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                message_timestamp=msg.timestamp,
+                retrieved_memory_block=retrieved_block,
+            )
         )
 
         # 3. 先同步 tool context，再执行被动链 reasoner。

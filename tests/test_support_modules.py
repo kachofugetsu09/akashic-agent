@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.context import ContextBuilder
+from agent.context import ContextBuilder, ContextRequest
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
@@ -417,6 +417,40 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     msgs = builder.add_assistant_message(msgs, None, [{"id": "1"}], "thinking")
     assert msgs[-1]["tool_calls"] == [{"id": "1"}]
     assert msgs[-1]["reasoning_content"] == "thinking"
+
+    render_result = builder.render(
+        ContextRequest(
+            history=[{"role": "assistant", "content": "hi"}],
+            current_message="hello",
+            media=["https://img", str(image), str(tmp_path / "bad.txt")],
+            skill_names=["extra"],
+            channel="telegram",
+            chat_id="42",
+            preflight_prompt="pref",
+        )
+    )
+    legacy_runtime = builder.build_runtime_guard_context(preflight_prompt="pref")
+    legacy_messages = builder.build_messages(
+        history=[{"role": "assistant", "content": "hi"}],
+        current_message="hello",
+        media=["https://img", str(image), str(tmp_path / "bad.txt")],
+        skill_names=["extra"],
+        channel="telegram",
+        chat_id="42",
+        runtime_guard_context=legacy_runtime,
+    )
+    legacy_prompt = builder.build_system_prompt(
+        skill_names=["extra"],
+        retrieved_memory_block="",
+    )
+    assert render_result.system_prompt == legacy_prompt
+    assert render_result.runtime_guard_context == legacy_runtime
+    assert render_result.messages == legacy_messages
+    assert render_result.system_context == {
+        "request_time": "request time",
+        "environment": "environment",
+        "current_session": "session prompt",
+    }
 
 
 @pytest.mark.asyncio

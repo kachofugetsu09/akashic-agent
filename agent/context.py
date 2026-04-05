@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from agent.core.types import ContextRenderResult, ContextRequest
 from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     IdentityPromptBlock,
@@ -193,6 +194,35 @@ class ContextBuilder:
             return {}
         return {"preflight": preflight_prompt}
 
+    def render(self, request: ContextRequest) -> ContextRenderResult:
+        runtime_guard_context = self.build_runtime_guard_context(
+            preflight_prompt=request.preflight_prompt
+        )
+        assembled = self._assembler.assemble(
+            history=request.history,
+            current_message=request.current_message,
+            media=request.media,
+            skill_names=request.skill_names,
+            channel=request.channel,
+            chat_id=request.chat_id,
+            message_timestamp=request.message_timestamp,
+            retrieved_memory_block=request.retrieved_memory_block,
+            disabled_sections=request.disabled_sections,
+            runtime_guard_context=runtime_guard_context,
+        )
+        self._last_debug_breakdown = assembled.debug_breakdown
+        self._last_assembled_contexts = {
+            "system_context": dict(assembled.system_context),
+            "runtime_guard_context": dict(assembled.runtime_guard_context),
+        }
+        return ContextRenderResult(
+            system_prompt=assembled.system_prompt,
+            system_context=dict(assembled.system_context),
+            runtime_guard_context=dict(assembled.runtime_guard_context),
+            messages=list(assembled.messages),
+            debug_breakdown=list(assembled.debug_breakdown),
+        )
+
     def _build_system_prompt_result(
         self,
         skill_names: list[str] | None = None,
@@ -230,11 +260,15 @@ class ContextBuilder:
         retrieved_memory_block: str = "",
         disabled_sections: set[str] | None = None,
     ) -> str:
-        return self._build_system_prompt_result(
-            skill_names=skill_names,
-            message_timestamp=message_timestamp,
-            retrieved_memory_block=retrieved_memory_block,
-            disabled_sections=disabled_sections,
+        return self.render(
+            ContextRequest(
+                history=[],
+                current_message="",
+                skill_names=skill_names,
+                message_timestamp=message_timestamp,
+                retrieved_memory_block=retrieved_memory_block,
+                disabled_sections=disabled_sections,
+            )
         ).system_prompt
 
     def build_messages(
@@ -250,24 +284,23 @@ class ContextBuilder:
         disabled_sections: set[str] | None = None,
         runtime_guard_context: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
-        assembled = self._assembler.assemble(
-            history=history,
-            current_message=current_message,
-            media=media,
-            skill_names=skill_names,
-            channel=channel,
-            chat_id=chat_id,
-            message_timestamp=message_timestamp,
-            retrieved_memory_block=retrieved_memory_block,
-            disabled_sections=disabled_sections,
-            runtime_guard_context=runtime_guard_context,
-        )
-        self._last_debug_breakdown = assembled.debug_breakdown
-        self._last_assembled_contexts = {
-            "system_context": dict(assembled.system_context),
-            "runtime_guard_context": dict(assembled.runtime_guard_context),
-        }
-        return assembled.messages
+        preflight_prompt = None
+        if runtime_guard_context:
+            preflight_prompt = runtime_guard_context.get("preflight")
+        return self.render(
+            ContextRequest(
+                history=history,
+                current_message=current_message,
+                media=media,
+                skill_names=skill_names,
+                channel=channel,
+                chat_id=chat_id,
+                message_timestamp=message_timestamp,
+                retrieved_memory_block=retrieved_memory_block,
+                disabled_sections=disabled_sections,
+                preflight_prompt=preflight_prompt,
+            )
+        ).messages
 
     def _build_user_content(
         self, text: str, media: list[str] | None

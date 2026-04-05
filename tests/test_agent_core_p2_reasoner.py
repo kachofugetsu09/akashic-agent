@@ -1,4 +1,6 @@
 import asyncio
+from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, cast
 
 from agent.core.reasoner import DefaultReasoner
@@ -208,3 +210,44 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
         if "本轮时间锚点" in str(m.get("content", ""))
     )
     assert "schedule" not in preflight
+
+
+def test_default_reasoner_run_turn_uses_context_render():
+    provider = _Provider([LLMResponse(content="done", tool_calls=[])])
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
+        tool_search_enabled=False,
+        memory_window=40,
+        context=cast(Any, SimpleNamespace(
+            render=lambda request: SimpleNamespace(
+                messages=[{"role": "user", "content": request.current_message}],
+            ),
+            build_messages=lambda **_: (_ for _ in ()).throw(AssertionError("legacy build_messages should not be used")),
+            build_runtime_guard_context=lambda **_: (_ for _ in ()).throw(AssertionError("legacy runtime_guard should not be used")),
+        )),
+        session_manager=cast(Any, SimpleNamespace(save_async=lambda *_args, **_kwargs: None)),
+    )
+
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "assistant", "content": "old"}],
+        get_history=lambda max_messages=40: [{"role": "assistant", "content": "old"}],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="hi",
+        media=[],
+        channel="cli",
+        chat_id="1",
+        timestamp=datetime(2026, 4, 5, 12, 0, 0),
+    )
+
+    result = asyncio.run(reasoner.run_turn(msg=msg, session=session))
+
+    assert result.reply == "done"

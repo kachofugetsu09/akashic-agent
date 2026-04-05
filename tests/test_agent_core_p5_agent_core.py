@@ -38,8 +38,11 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
         )
     )
     context = SimpleNamespace(
-        build_system_prompt=MagicMock(
-            side_effect=lambda **kwargs: order.append("build_prompt") or "system prompt"
+        render=MagicMock(
+            side_effect=lambda request: order.append("render") or SimpleNamespace(
+                system_prompt="system prompt",
+                messages=[],
+            )
         )
     )
     tools = SimpleNamespace(
@@ -85,8 +88,12 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     out = await agent_core.process(msg, "telegram:123")
 
     assert out.content == "final"
-    assert order == ["prepare", "build_prompt", "tool_context", "run", "commit"]
+    assert order == ["prepare", "render", "tool_context", "run", "commit"]
     assert context_store.prepare.await_args.kwargs["session_key"] == "telegram:123"
+    render_request = context.render.call_args.args[0]
+    assert render_request.current_message == ""
+    assert render_request.skill_names == ["refactor"]
+    assert render_request.retrieved_memory_block == "remembered"
     tools.set_context.assert_called_once_with(channel="telegram", chat_id="123")
     assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["refactor"]
     assert reasoner.run_turn.await_args.kwargs["retrieved_memory_block"] == "remembered"
@@ -112,7 +119,14 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
                 )
             ),
             context_store=context_store,
-            context=SimpleNamespace(build_system_prompt=MagicMock(return_value="prompt")),
+            context=SimpleNamespace(
+                render=MagicMock(
+                    return_value=SimpleNamespace(system_prompt="prompt", messages=[])
+                ),
+                build_system_prompt=MagicMock(
+                    side_effect=AssertionError("legacy build_system_prompt should not be used")
+                ),
+            ),
             tools=SimpleNamespace(set_context=MagicMock()),
             reasoner=SimpleNamespace(
                 run_turn=AsyncMock(return_value=TurnRunResult(reply=None)),

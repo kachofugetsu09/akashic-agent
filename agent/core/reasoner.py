@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.core.types import LLMToolCall, ReasonerResult
+from agent.core.types import ContextRequest, LLMToolCall, ReasonerResult
 from agent.looping.constants import (
     _INCOMPLETE_SUMMARY_PROMPT,
     _PRE_FLIGHT_PROMPT,
@@ -260,21 +260,20 @@ class DefaultReasoner(Reasoner):
                 tool_search_enabled=self._tool_search_enabled,
                 visible_names=preloaded if self._tool_search_enabled else None,
             )
-            runtime_guard_context = self._context.build_runtime_guard_context(
-                preflight_prompt=preflight_prompt
-            )
-            initial_messages = self._context.build_messages(
-                history=history_for_attempt,
-                current_message=msg.content,
-                media=msg.media if msg.media else None,
-                skill_names=skill_names,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                message_timestamp=msg.timestamp,
-                retrieved_memory_block=retrieved_memory_block,
-                disabled_sections=plan["disabled_sections"],
-                runtime_guard_context=runtime_guard_context,
-            )
+            initial_messages = self._context.render(
+                ContextRequest(
+                    history=history_for_attempt,
+                    current_message=msg.content,
+                    media=msg.media if msg.media else None,
+                    skill_names=skill_names,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    message_timestamp=msg.timestamp,
+                    retrieved_memory_block=retrieved_memory_block,
+                    disabled_sections=plan["disabled_sections"],
+                    preflight_prompt=preflight_prompt,
+                )
+            ).messages
             try:
                 result = await self.run(
                     initial_messages,
