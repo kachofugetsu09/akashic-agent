@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from agent.config_models import Config, MemoryV2Config
+from agent.tools.registry import ToolRegistry
+from bootstrap.memory import build_memory_runtime
+from core.memory.default_engine import DefaultMemoryEngine
+from core.memory.engine import (
+    EngineProfile,
+    MemoryCapability,
+    MemoryEngineRetrieveRequest,
+    MemoryIngestRequest,
+    MemoryScope,
+)
+
+
+async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
+    retriever = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "id": "m1",
+                    "summary": "记住用户偏好中文回复",
+                    "score": 0.88,
+                    "source_ref": "cli:1@seed",
+                    "memory_type": "preference",
+                    "extra_json": {"origin": "test"},
+                }
+            ]
+        ),
+        format_injection_block=lambda items: "注入块",
+    )
+    engine = DefaultMemoryEngine(retriever=retriever)
+
+    result = await engine.retrieve(
+        MemoryEngineRetrieveRequest(
+            query="中文回复",
+            scope=MemoryScope(channel="cli", chat_id="1"),
+            hints={"memory_types": ["preference"], "require_scope_match": True},
+            top_k=3,
+        )
+    )
+
+    assert result.text_block == "注入块"
+    assert len(result.hits) == 1
+    assert result.hits[0].id == "m1"
+    assert result.hits[0].engine_kind == "default"
+    assert result.hits[0].metadata["memory_type"] == "preference"
+    assert result.trace["profile"] == EngineProfile.RICH_MEMORY_ENGINE.value
+
+
+async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
+    retriever = SimpleNamespace(
+        retrieve=AsyncMock(return_value=[]),
+        format_injection_block=lambda items: "",
+    )
+    engine = DefaultMemoryEngine(retriever=retriever)
+
+    await engine.retrieve(
+        MemoryEngineRetrieveRequest(
+            query="作用域测试",
+            scope=MemoryScope(session_key="telegram:7674283004"),
+            hints={"require_scope_match": True},
+        )
+    )
+
+    kwargs = retriever.retrieve.await_args.kwargs
+    assert kwargs["scope_channel"] == "telegram"
+    assert kwargs["scope_chat_id"] == "7674283004"
+    assert kwargs["require_scope_match"] is True
+
+
+async def test_default_memory_engine_ingest_delegates_to_post_worker():
+    worker = SimpleNamespace(run=AsyncMock())
+    engine = DefaultMemoryEngine(
+        retriever=SimpleNamespace(),
+        post_response_worker=worker,
+    )
+
+    result = await engine.ingest(
+        MemoryIngestRequest(
+            content={
+                "user_message": "以后用中文",
+                "assistant_response": "好的",
+                "tool_chain": [{"text": "memo", "calls": []}],
+            },
+            source_kind="conversation_turn",
+            scope=MemoryScope(session_key="cli:1"),
+        )
+    )
+
+    assert result.accepted is True
+    assert result.raw["engine"] == "default"
+    worker.run.assert_awaited_once()
+
+
+async def test_default_memory_engine_ingest_accepts_conversation_batch_messages():
+    worker = SimpleNamespace(run=AsyncMock())
+    engine = DefaultMemoryEngine(
+        retriever=SimpleNamespace(),
+        post_response_worker=worker,
+    )
+
+    result = await engine.ingest(
+        MemoryIngestRequest(
+            content=[
+                {"role": "user", "content": "以后用中文"},
+                {
+                    "role": "assistant",
+                    "content": "好的",
+                    "tool_chain": [{"text": "memo", "calls": []}],
+                },
+            ],
+            source_kind="conversation_batch",
+            scope=MemoryScope(session_key="cli:1"),
+        )
+    )
+
+    assert result.accepted is True
+    kwargs = worker.run.await_args.kwargs
+    assert kwargs["user_msg"] == "以后用中文"
+    assert kwargs["agent_response"] == "好的"
+    assert kwargs["tool_chain"] == [{"text": "memo", "calls": []}]
+    assert kwargs["session_key"] == "cli:1"
+
+
+def test_default_memory_engine_descriptor_keeps_messages_capability_only():
+    descriptor = DefaultMemoryEngine.DESCRIPTOR
+
+    assert descriptor.profile == EngineProfile.RICH_MEMORY_ENGINE
+    assert MemoryCapability.INGEST_MESSAGES in descriptor.capabilities
+    assert MemoryCapability.INGEST_TEXT not in descriptor.capabilities
+
+
+def test_build_memory_runtime_exposes_default_memory_engine(
+    monkeypatch,
+    tmp_path: Path,
+):
+    import bootstrap.memory as memory_module
+
+    monkeypatch.setattr(
+        memory_module,
+        "register_memory_meta_tools",
+        lambda *args, **kwargs: None,
+    )
+
+    class _MemoryStore:
+        def __init__(self, workspace):
+            self.workspace = workspace
+
+    class _SkillsLoader:
+        def __init__(self, workspace):
+            self.workspace = workspace
+
+        def list_skills(self, filter_unavailable=False):
+            return [{"name": "demo"}]
+
+    class _WriteFileTool:
+        pass
+
+    class _EditFileTool:
+        pass
+
+    class _MemorizeTool:
+        def __init__(self, port, tagger=None):
+            self.port = port
+            self.tagger = tagger
+
+    class _DefaultMemoryPort:
+        def __init__(self, store, memorizer=None, retriever=None):
+            self.store = store
+            self.memorizer = memorizer
+            self.retriever = retriever
+
+    class _Store2:
+        def __init__(self, db_path):
+            self.db_path = db_path
+
+        def close(self):
+            return None
+
+    class _Embedder:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def close(self):
+            return None
+
+    class _Memorizer:
+        def __init__(self, store, embedder):
+            self.store = store
+            self.embedder = embedder
+
+    class _Retriever:
+        def __init__(self, store, embedder, **kwargs):
+            self.store = store
+            self.embedder = embedder
+            self.kwargs = kwargs
+
+    class _ProcedureTagger:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _ProfileFactExtractor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _PostResponseMemoryWorker:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("agent.memory.MemoryStore", _MemoryStore)
+    monkeypatch.setattr("agent.skills.SkillsLoader", _SkillsLoader)
+    monkeypatch.setattr("agent.tools.memorize.MemorizeTool", _MemorizeTool)
+    monkeypatch.setattr("agent.tools.filesystem.WriteFileTool", _WriteFileTool)
+    monkeypatch.setattr("agent.tools.filesystem.EditFileTool", _EditFileTool)
+    monkeypatch.setattr("core.memory.port.DefaultMemoryPort", _DefaultMemoryPort)
+    monkeypatch.setattr("memory2.store.MemoryStore2", _Store2)
+    monkeypatch.setattr("memory2.embedder.Embedder", _Embedder)
+    monkeypatch.setattr("memory2.memorizer.Memorizer", _Memorizer)
+    monkeypatch.setattr("memory2.retriever.Retriever", _Retriever)
+    monkeypatch.setattr("memory2.procedure_tagger.ProcedureTagger", _ProcedureTagger)
+    monkeypatch.setattr(
+        "memory2.profile_extractor.ProfileFactExtractor",
+        _ProfileFactExtractor,
+    )
+    monkeypatch.setattr(
+        memory_module,
+        "PostResponseMemoryWorker",
+        _PostResponseMemoryWorker,
+    )
+
+    runtime = build_memory_runtime(
+        config=Config(
+            provider="test",
+            model="gpt-test",
+            api_key="k",
+            system_prompt="hi",
+            memory_v2=MemoryV2Config(enabled=True),
+        ),
+        workspace=tmp_path,
+        tools=ToolRegistry(),
+        provider=SimpleNamespace(),
+        light_provider=None,
+        http_resources=SimpleNamespace(external_default=SimpleNamespace()),
+    )
+
+    assert runtime.engine is not None
+    assert runtime.engine.describe().name == "default"
+    assert MemoryCapability.SEMANTICS_RICH_MEMORY in runtime.engine.describe().capabilities

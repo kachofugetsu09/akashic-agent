@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from memory2.post_response_worker import PostResponseMemoryWorker
 
 if TYPE_CHECKING:
+    from core.memory.engine import MemoryEngine
     from core.memory.port import MemoryPort
 
 
@@ -19,6 +20,7 @@ class MemoryRuntime:
     """Runtime holder for all memory-related dependencies."""
 
     port: "MemoryPort"
+    engine: "MemoryEngine | None" = None
     post_response_worker: PostResponseMemoryWorker | None = None
     closeables: list[Any] = field(default_factory=list)
 
