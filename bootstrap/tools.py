@@ -271,9 +271,11 @@ def _build_loop_deps(
     context = resolve_context_factory(wiring.context)(
         workspace, memory_runtime.port
     )
+    memory_engine = getattr(memory_runtime, "engine", None)
     llm_services = LLMServices(provider=provider, light_provider=light)
     memory_services = MemoryServices(
         port=memory_runtime.port,
+        engine=memory_engine,
         query_rewriter=query_rewriter,
         hyde_enhancer=hyde_enhancer,
         sufficiency_checker=sufficiency_checker,
