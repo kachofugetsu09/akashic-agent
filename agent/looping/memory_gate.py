@@ -89,12 +89,14 @@ def _trace_memory_retrieve(
         logger.warning("memory2 retrieve trace write failed: %s", e)
 
 
+# Canonical implementations moved to agent/core/context_store.py.
+# Lazy-import wrappers here so existing callers continue to work without
+# creating a circular import at module load time.
+
+
 def _extract_task_tools(tools_used: list[str]) -> list[str]:
-    task_tools = []
-    for name in tools_used:
-        if name in {"task_note", "update_now"}:
-            task_tools.append(name)
-    return task_tools
+    from agent.core.context_store import _extract_task_tools as _impl
+    return _impl(tools_used)
 
 
 def _update_session_runtime_metadata(
@@ -103,38 +105,8 @@ def _update_session_runtime_metadata(
     tools_used: list[str],
     tool_chain: list[dict],
 ) -> None:
-    md = session.metadata if isinstance(session.metadata, dict) else {}  # type: ignore[union-attr]
-    call_count = 0
-    for group in tool_chain:
-        if not isinstance(group, dict):
-            continue
-        calls = group.get("calls") or []
-        if isinstance(calls, list):
-            call_count += len(calls)
-
-    turn_task_tools = _extract_task_tools(tools_used)
-    turns = md.get("_task_tools_turns")
-    if not isinstance(turns, list):
-        turns = []
-    turns.append(turn_task_tools)
-    turns = turns[-2:]
-
-    flat_recent = []
-    seen: set[str] = set()
-    for turn in turns:
-        if not isinstance(turn, list):
-            continue
-        for name in turn:
-            if isinstance(name, str) and name not in seen:
-                seen.add(name)
-                flat_recent.append(name)
-
-    md["last_turn_tool_calls_count"] = call_count
-    md["recent_task_tools"] = flat_recent
-    md["last_turn_had_task_tool"] = bool(turn_task_tools)
-    md["last_turn_ts"] = datetime.now().astimezone().isoformat()
-    md["_task_tools_turns"] = turns
-    session.metadata = md  # type: ignore[union-attr]
+    from agent.core.context_store import _update_session_runtime_metadata as _impl
+    return _impl(session, tools_used=tools_used, tool_chain=tool_chain)
 
 
 def _is_flow_execution_state(user_msg: str, metadata: dict) -> bool:

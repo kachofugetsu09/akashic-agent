@@ -23,7 +23,7 @@ from agent.mcp.tool import McpToolWrapper
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.search_backend import _default_normalize
-from agent.tools.tool_search import ToolSearchTool, _excluded_names_ctx
+from agent.tools.tool_search import ToolSearchTool
 
 # ── 辅助工具桩 ────────────────────────────────────────────────────────────────
 
@@ -529,11 +529,8 @@ class TestToolSearchTool:
         tool = ToolSearchTool(reg)
 
         async def _run():
-            token = _excluded_names_ctx.set({"schedule"})
-            try:
-                return await tool.execute(query="select:schedule")
-            finally:
-                _excluded_names_ctx.reset(token)
+            tool.set_excluded_names({"schedule"})
+            return await tool.execute(query="select:schedule")
 
         data = json.loads(asyncio.run(_run()))
         assert all(r["name"] != "schedule" for r in data.get("matched", []))

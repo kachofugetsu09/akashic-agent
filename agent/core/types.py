@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 
+
 @dataclass
 class InboundMessage:
     channel: str

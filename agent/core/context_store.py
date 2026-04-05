@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from agent.core.types import ChatMessage, ContextBundle
-from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.looping.turn_types import HistoryMessage, to_tool_call_groups
 from agent.postturn.protocol import PostTurnEvent
 from agent.retrieval.protocol import RetrievalRequest
@@ -361,3 +360,51 @@ async def _run_effects(effects: list[object]) -> None:
                 await maybe
         except Exception as e:
             logger.warning("turn side effect failed: %s", e)
+
+
+# ── Session metadata helpers (moved from agent/looping/memory_gate.py) ────────
+# agent/looping/memory_gate.py re-exports these for backward compat.
+
+
+def _extract_task_tools(tools_used: list[str]) -> list[str]:
+    return [name for name in tools_used if name in {"task_note", "update_now"}]
+
+
+def _update_session_runtime_metadata(
+    session: object,
+    *,
+    tools_used: list[str],
+    tool_chain: list[dict],
+) -> None:
+    from datetime import datetime
+
+    md = session.metadata if isinstance(session.metadata, dict) else {}  # type: ignore[union-attr]
+    call_count = sum(
+        len(group.get("calls") or [])
+        for group in tool_chain
+        if isinstance(group, dict)
+    )
+
+    turn_task_tools = _extract_task_tools(tools_used)
+    turns = md.get("_task_tools_turns")
+    if not isinstance(turns, list):
+        turns = []
+    turns.append(turn_task_tools)
+    turns = turns[-2:]
+
+    flat_recent: list[str] = []
+    seen: set[str] = set()
+    for turn in turns:
+        if not isinstance(turn, list):
+            continue
+        for name in turn:
+            if isinstance(name, str) and name not in seen:
+                seen.add(name)
+                flat_recent.append(name)
+
+    md["last_turn_tool_calls_count"] = call_count
+    md["recent_task_tools"] = flat_recent
+    md["last_turn_had_task_tool"] = bool(turn_task_tools)
+    md["last_turn_ts"] = datetime.now().astimezone().isoformat()
+    md["_task_tools_turns"] = turns
+    session.metadata = md  # type: ignore[union-attr]

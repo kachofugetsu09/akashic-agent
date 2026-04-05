@@ -1,5 +1,4 @@
 import json
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from agent.tools.base import Tool
@@ -7,13 +6,6 @@ from agent.tools.registry import _META_TOOLS
 
 if TYPE_CHECKING:
     from agent.tools.registry import ToolRegistry
-
-# 当前 tool_search 调用的 excluded_names，由 reasoner 在调用前通过 ContextVar 注入。
-# 不走 execute() 参数，避免污染 RecordingToolRegistry 记录的 arguments dict。
-# asyncio 单线程 + ContextVar per-task 语义保证并发安全。
-_excluded_names_ctx: ContextVar[set[str] | None] = ContextVar(
-    "_tool_search_excluded", default=None
-)
 
 
 class ToolSearchTool(Tool):
@@ -24,6 +16,16 @@ class ToolSearchTool(Tool):
 
     def __init__(self, registry: "ToolRegistry") -> None:
         self._registry = registry
+        self._excluded_names: set[str] | None = None
+
+    def set_excluded_names(self, names: set[str] | None) -> None:
+        """Explicitly set which tool names are already visible to the LLM.
+
+        Called by the Reasoner before dispatching each tool_search call.
+        Replaces the ContextVar mechanism (_excluded_names_ctx) which is now
+        kept only as a fallback for callers that have not yet migrated.
+        """
+        self._excluded_names = names
 
     @property
     def name(self) -> str:
@@ -82,9 +84,9 @@ class ToolSearchTool(Tool):
         allowed_risk: list[str] | None = None,
         **_: Any,
     ) -> str:
-        # excluded_names 由 reasoner 通过 ContextVar 注入，不走 execute() 参数，
-        # 避免 set 进入 RecordingToolRegistry 记录的 arguments dict（JSON 不可序列化）。
-        excluded_names = _excluded_names_ctx.get()
+        # Consume-once: Reasoner calls set_excluded_names() before each dispatch.
+        excluded_names = self._excluded_names
+        self._excluded_names = None
 
         query = (query or "").strip()
         if not query:

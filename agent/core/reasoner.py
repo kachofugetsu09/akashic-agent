@@ -27,7 +27,7 @@ from agent.procedure_hint import (
 )
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
 from agent.tools.base import normalize_tool_result
-from agent.tools.tool_search import _excluded_names_ctx
+from agent.tools.tool_search import ToolSearchTool
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -213,6 +213,13 @@ class DefaultReasoner(Reasoner):
         self._memory_window = memory_window
         self._context = context
         self._session_manager = session_manager
+        # Direct reference to ToolSearchTool so we can pass excluded_names
+        # explicitly instead of routing through the ContextVar side-channel.
+        _get = getattr(tools, "get_tool", None)
+        _ts = _get("tool_search") if callable(_get) else None
+        self._tool_search_tool: ToolSearchTool | None = (
+            _ts if isinstance(_ts, ToolSearchTool) else None
+        )
 
     async def run_turn(
         self,
@@ -522,21 +529,21 @@ class DefaultReasoner(Reasoner):
                         continue
 
                     # 6.3 工具未被拦截时，真正执行工具并回填结果。
-                    if tool_call.name == "tool_search" and visible_names is not None:
-                        token = _excluded_names_ctx.set(visible_names)
-                    else:
-                        token = None
+                    # For tool_search: pass visible_names explicitly via
+                    # set_excluded_names() instead of the old ContextVar channel.
+                    if (
+                        tool_call.name == "tool_search"
+                        and visible_names is not None
+                        and self._tool_search_tool is not None
+                    ):
+                        self._tool_search_tool.set_excluded_names(visible_names)
                     tools_used.append(tool_call.name)
                     _args_preview = _log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
-                    try:
-                        result = await self._tools.execute(
-                            tool_call.name,
-                            tool_call.arguments,
-                        )
-                    finally:
-                        if token is not None:
-                            _excluded_names_ctx.reset(token)
+                    result = await self._tools.execute(
+                        tool_call.name,
+                        tool_call.arguments,
+                    )
                     normalized = normalize_tool_result(result)
                     _result_preview = _log_preview(normalized.preview())
                     _result_len = len(normalized.preview() or "")
