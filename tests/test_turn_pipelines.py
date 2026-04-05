@@ -22,6 +22,7 @@ from agent.retrieval.protocol import (
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage
+from core.memory.engine import MemoryIngestRequest
 from core.memory.port import DefaultMemoryPort
 
 
@@ -94,7 +95,11 @@ async def test_default_post_turn_pipeline_uses_scheduler_post_mem_callback():
     scheduler = MagicMock()
     worker = MagicMock()
     worker.run = AsyncMock(return_value=None)
-    pipeline = DefaultPostTurnPipeline(scheduler=scheduler, post_mem_worker=worker)
+    pipeline = DefaultPostTurnPipeline(
+        scheduler=scheduler,
+        post_mem_worker=worker,
+        engine=None,
+    )
 
     event = PostTurnEvent(
         session_key="cli:1",
@@ -125,6 +130,57 @@ async def test_default_post_turn_pipeline_uses_scheduler_post_mem_callback():
     await asyncio.sleep(0)
     worker.run.assert_awaited_once()
     assert pipeline._failures == 0
+
+
+@pytest.mark.asyncio
+async def test_default_post_turn_pipeline_prefers_engine_ingest_over_worker():
+    scheduler = MagicMock()
+    worker = MagicMock()
+    worker.run = AsyncMock(return_value=None)
+    engine = MagicMock()
+    engine.ingest = AsyncMock(return_value=MagicMock())
+    pipeline = DefaultPostTurnPipeline(
+        scheduler=scheduler,
+        post_mem_worker=worker,
+        engine=engine,
+    )
+
+    event = PostTurnEvent(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        user_message="hello",
+        assistant_response="ok",
+        tools_used=["tool_a"],
+        tool_chain=[
+            ToolCallGroup(
+                text="t",
+                calls=[
+                    ToolCall(
+                        call_id="c1",
+                        name="tool_a",
+                        arguments={"x": 1},
+                        result="done",
+                    )
+                ],
+            )
+        ],
+        session=MagicMock(),
+        timestamp=datetime.now(),
+    )
+    pipeline.schedule(event)
+
+    scheduler.schedule_consolidation.assert_called_once()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    engine.ingest.assert_awaited_once()
+    request = engine.ingest.await_args.args[0]
+    assert isinstance(request, MemoryIngestRequest)
+    assert request.source_kind == "conversation_turn"
+    assert request.scope.session_key == "cli:1"
+    assert request.metadata["source_ref"] == "cli:1@post_response"
+    worker.run.assert_not_awaited()
 
 
 def test_agent_loop_uses_custom_pipelines(tmp_path: Path):

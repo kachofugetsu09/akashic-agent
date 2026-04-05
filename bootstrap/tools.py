@@ -310,6 +310,7 @@ def _build_loop_deps(
     post_turn_pipeline = DefaultPostTurnPipeline(
         scheduler=turn_scheduler,
         post_mem_worker=memory_runtime.post_response_worker,
+        engine=memory_engine,
     )
     passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
     passive_context_store = DefaultContextStore(

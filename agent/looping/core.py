@@ -242,6 +242,7 @@ class AgentLoop:
         post_turn_pipeline = deps.post_turn_pipeline or DefaultPostTurnPipeline(
             scheduler=self._scheduler,
             post_mem_worker=post_mem_worker,
+            engine=memory_svc.engine,
         )
         passive_meme_decorator = MemeDecorator(MemeCatalog(deps.workspace / "memes"))
         passive_context_store = DefaultContextStore(

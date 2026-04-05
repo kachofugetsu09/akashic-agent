@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from agent.core.types import ToolCallGroup
 from agent.looping.ports import TurnScheduler
 from agent.postturn.protocol import PostTurnEvent, PostTurnPipeline
+from core.memory.engine import MemoryIngestRequest, MemoryScope
 from memory2.post_response_worker import PostResponseMemoryWorker
+
+if TYPE_CHECKING:
+    from core.memory.engine import MemoryEngine
 
 logger = logging.getLogger("agent.postturn")
 
@@ -15,31 +20,59 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
         self,
         scheduler: TurnScheduler,
         post_mem_worker: PostResponseMemoryWorker | None,
+        engine: "MemoryEngine | None" = None,
     ) -> None:
         self._scheduler = scheduler
         self._post_mem_worker = post_mem_worker
+        self._engine = engine
         self._failures: int = 0
 
     def schedule(self, event: PostTurnEvent) -> None:
         # 1. 回复一落库就先尝试挂起 consolidation；是否真的执行由 scheduler 决定。
         self._scheduler.schedule_consolidation(event.session, event.session_key)
-        if not self._post_mem_worker:
-            return
         if bool((event.extra or {}).get("skip_post_memory")):
             return
-        # 2. post-response memory 是另一条并行后台链，和 consolidation 分开跑。
+        task = self._build_post_memory_task(event)
+        if task is None:
+            return
+        task.add_done_callback(lambda t: self._on_done(t, event.session_key))
+
+    def _build_post_memory_task(self, event: PostTurnEvent) -> asyncio.Task | None:
         tool_chain_raw = [_tool_group_to_dict(g) for g in event.tool_chain]
-        task = asyncio.create_task(
+        source_ref = f"{event.session_key}@post_response"
+        if self._engine is not None:
+            return asyncio.create_task(
+                self._engine.ingest(
+                    MemoryIngestRequest(
+                        content={
+                            "user_message": event.user_message,
+                            "assistant_response": event.assistant_response,
+                            "tool_chain": tool_chain_raw,
+                            "source_ref": source_ref,
+                        },
+                        source_kind="conversation_turn",
+                        scope=MemoryScope(
+                            session_key=event.session_key,
+                            channel=event.channel,
+                            chat_id=event.chat_id,
+                        ),
+                        metadata={"source_ref": source_ref},
+                    )
+                ),
+                name=f"post_mem:{event.session_key}",
+            )
+        if self._post_mem_worker is None:
+            return None
+        return asyncio.create_task(
             self._post_mem_worker.run(
                 user_msg=event.user_message,
                 agent_response=event.assistant_response,
                 tool_chain=tool_chain_raw,
-                source_ref=f"{event.session_key}@post_response",
+                source_ref=source_ref,
                 session_key=event.session_key,
             ),
             name=f"post_mem:{event.session_key}",
         )
-        task.add_done_callback(lambda t: self._on_done(t, event.session_key))
 
     def _on_done(self, task: asyncio.Task, key: str) -> None:
         try:
