@@ -127,6 +127,71 @@ async def test_default_memory_engine_ingest_accepts_conversation_batch_messages(
     assert kwargs["session_key"] == "cli:1"
 
 
+async def test_default_memory_engine_ingest_falls_back_to_post_response_source_ref():
+    worker = SimpleNamespace(run=AsyncMock())
+    engine = DefaultMemoryEngine(
+        retriever=SimpleNamespace(),
+        post_response_worker=worker,
+    )
+
+    result = await engine.ingest(
+        MemoryIngestRequest(
+            content={
+                "user_message": "以后用中文",
+                "assistant_response": "好的",
+            },
+            source_kind="conversation_turn",
+            scope=MemoryScope(session_key="cli:1"),
+        )
+    )
+
+    assert result.accepted is True
+    kwargs = worker.run.await_args.kwargs
+    assert kwargs["source_ref"] == "cli:1@post_response"
+    assert kwargs["session_key"] == "cli:1"
+
+
+async def test_default_memory_engine_ingest_rejects_unsupported_source_kind():
+    worker = SimpleNamespace(run=AsyncMock())
+    engine = DefaultMemoryEngine(
+        retriever=SimpleNamespace(),
+        post_response_worker=worker,
+    )
+
+    result = await engine.ingest(
+        MemoryIngestRequest(
+            content="以后用中文",
+            source_kind="text",
+            scope=MemoryScope(session_key="cli:1"),
+        )
+    )
+
+    assert result.accepted is False
+    assert result.raw["reason"] == "unsupported_source_kind"
+    worker.run.assert_not_awaited()
+
+
+async def test_default_memory_engine_ingest_rejects_when_worker_missing():
+    engine = DefaultMemoryEngine(
+        retriever=SimpleNamespace(),
+        post_response_worker=None,
+    )
+
+    result = await engine.ingest(
+        MemoryIngestRequest(
+            content={
+                "user_message": "以后用中文",
+                "assistant_response": "好的",
+            },
+            source_kind="conversation_turn",
+            scope=MemoryScope(session_key="cli:1"),
+        )
+    )
+
+    assert result.accepted is False
+    assert result.raw["reason"] == "worker_unavailable"
+
+
 def test_default_memory_engine_descriptor_keeps_messages_capability_only():
     descriptor = DefaultMemoryEngine.DESCRIPTOR
 

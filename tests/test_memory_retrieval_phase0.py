@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +13,7 @@ from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
+from agent.retrieval.default_pipeline import _retrieve_episodic_items
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.update_now import UpdateNowTool
@@ -19,6 +21,7 @@ from agent.tools.registry import ToolRegistry
 from core.memory.port import DefaultMemoryPort
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
+from core.memory.engine import MemoryEngineRetrieveResult, MemoryHit
 from memory2.retriever import Retriever
 from session.manager import Session
 
@@ -416,6 +419,122 @@ def test_retriever_format_injection_with_ids_empty_input_returns_tuple():
     block, injected_ids = retriever.format_injection_with_ids([])
     assert block == ""
     assert injected_ids == []
+
+
+@pytest.mark.asyncio
+async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
+    engine = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=MemoryEngineRetrieveResult(
+                text_block="",
+                hits=[
+                    MemoryHit(
+                        id="e1",
+                        summary="用户昨天提过 FitBit",
+                        content="用户昨天提过 FitBit",
+                        score=0.81,
+                        source_ref="telegram:7674283004@seed",
+                        engine_kind="default",
+                        metadata={"memory_type": "event", "origin": "engine"},
+                    )
+                ],
+            )
+        )
+    )
+    memory = SimpleNamespace(
+        port=MagicMock(),
+        engine=engine,
+        hyde_enhancer=None,
+    )
+
+    items, scope_mode, hyde = await _retrieve_episodic_items(
+        session_key="telegram:7674283004",
+        channel="telegram",
+        chat_id="7674283004",
+        route_decision="RETRIEVE",
+        rewritten_query="Fitbit 型号",
+        history_memory_types=["event", "profile"],
+        hyde_context="recent turns",
+        memory=memory,
+        config=AgentLoopConfig().memory,
+    )
+
+    assert scope_mode == "global"
+    assert hyde is None
+    assert items[0]["id"] == "e1"
+    assert items[0]["memory_type"] == "event"
+    assert items[0]["extra_json"] == {"origin": "engine"}
+    assert items[0]["_retrieval_path"] == "history_raw"
+    request = engine.retrieve.await_args.args[0]
+    assert request.scope.session_key == "telegram:7674283004"
+    assert request.hints["require_scope_match"] is True
+    assert request.hints["memory_types"] == ["event", "profile"]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_episodic_items_falls_back_to_legacy_port_path(monkeypatch):
+    mocked = AsyncMock(return_value=([{"id": "h1"}], "local", "hyde"))
+    monkeypatch.setattr(
+        "agent.retrieval.default_pipeline.retrieve_episodic",
+        mocked,
+    )
+    memory = SimpleNamespace(
+        port=MagicMock(),
+        engine=None,
+        hyde_enhancer=None,
+    )
+
+    items, scope_mode, hyde = await _retrieve_episodic_items(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        route_decision="RETRIEVE",
+        rewritten_query="历史查询",
+        history_memory_types=["event"],
+        hyde_context="recent turns",
+        memory=memory,
+        config=AgentLoopConfig().memory,
+    )
+
+    assert items == [{"id": "h1"}]
+    assert scope_mode == "local"
+    assert hyde == "hyde"
+    mocked.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_retrieve_episodic_items_keeps_legacy_hyde_path_when_enabled(monkeypatch):
+    mocked = AsyncMock(
+        return_value=([{"id": "h1", "_retrieval_path": "history_hyde"}], "global+hyde", "hypo")
+    )
+    monkeypatch.setattr(
+        "agent.retrieval.default_pipeline.retrieve_episodic",
+        mocked,
+    )
+    engine = SimpleNamespace(retrieve=AsyncMock())
+    memory = SimpleNamespace(
+        port=MagicMock(),
+        engine=engine,
+        hyde_enhancer=object(),
+    )
+
+    items, scope_mode, hyde = await _retrieve_episodic_items(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        route_decision="RETRIEVE",
+        rewritten_query="历史查询",
+        history_memory_types=["event"],
+        hyde_context="recent turns",
+        memory=memory,
+        config=AgentLoopConfig().memory,
+    )
+
+    assert items == [{"id": "h1", "_retrieval_path": "history_hyde"}]
+    assert scope_mode == "global+hyde"
+    assert hyde == "hypo"
+    mocked.assert_awaited_once()
+    engine.retrieve.assert_not_called()
 
 
 def test_retriever_norm_limit_uses_config_without_hardcoded_cap():

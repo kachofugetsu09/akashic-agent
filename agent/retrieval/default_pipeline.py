@@ -20,6 +20,7 @@ from agent.retrieval.protocol import (
     RetrievalRequest,
     RetrievalResult,
 )
+from core.memory.engine import MemoryEngineRetrieveRequest, MemoryEngineRetrieveResult, MemoryScope
 from memory2.injection_planner import retrieve_episodic, retrieve_procedure_items
 from memory2.query_rewriter import GateDecision
 
@@ -133,6 +134,9 @@ class _EpisodicRetriever:
         self,
         *,
         message: str,
+        session_key: str,
+        channel: str,
+        chat_id: str,
         recent_turns: str,
         route_decision: str,
         rewritten_query: str,
@@ -142,6 +146,9 @@ class _EpisodicRetriever:
         sufficiency_trace: dict[str, object],
     ) -> tuple[list[dict], str, str | None, list[dict], str, list[str]]:
         history_items, history_scope_mode, hyde_hypothesis = await _retrieve_episodic_items(
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
             route_decision=route_decision,
             rewritten_query=rewritten_query,
             history_memory_types=history_memory_types,
@@ -158,6 +165,9 @@ class _EpisodicRetriever:
             await _retry_empty_episodic_block(
                 message=message,
                 recent_turns=recent_turns,
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
                 route_decision=route_decision,
                 rewritten_query=rewritten_query,
                 history_memory_types=history_memory_types,
@@ -324,6 +334,9 @@ async def _retrieve_memory_block_impl(
         h_items, h_scope_mode, hyde_hypothesis, selected_items, retrieved_block, injected_item_ids = (
             await episodic_retriever.retrieve(
                 message=message,
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
                 recent_turns=recent_turns,
                 route_decision=route_decision,
                 rewritten_query=rewritten_query,
@@ -504,6 +517,9 @@ async def _resolve_fallback_memory_gate(
 
 async def _retrieve_episodic_items(
     *,
+    session_key: str,
+    channel: str,
+    chat_id: str,
     route_decision: str,
     rewritten_query: str,
     history_memory_types: list[str],
@@ -515,7 +531,32 @@ async def _retrieve_episodic_items(
     if route_decision != "RETRIEVE" or not history_memory_types:
         return [], "disabled", None
 
-    # 2. gate 放行后，再走 episodic 检索；HyDE 是否介入由下层决定。
+    if memory.engine is not None and memory.hyde_enhancer is None:
+        # 2. 新引擎路径只接管“无 HyDE 的全局 episodic 命中”，对外仍保持旧 scope/path 语义。
+        engine_result = await memory.engine.retrieve(
+            MemoryEngineRetrieveRequest(
+                query=rewritten_query,
+                context={"recent_turns": hyde_context},
+                scope=MemoryScope(
+                    session_key=session_key,
+                    channel=channel,
+                    chat_id=chat_id,
+                ),
+                mode="episodic",
+                hints={
+                    "memory_types": history_memory_types,
+                    "require_scope_match": True,
+                },
+                top_k=config.top_k_history,
+            )
+        )
+        return (
+            _map_engine_result_to_history_items(engine_result),
+            "global",
+            None,
+        )
+
+    # 3. HyDE 开启时仍走旧 episodic 路径，避免在主链切换阶段丢失旧增强能力。
     return await retrieve_episodic(
         memory.port,
         rewritten_query,
@@ -524,6 +565,33 @@ async def _retrieve_episodic_items(
         context=hyde_context,
         hyde_enhancer=memory.hyde_enhancer,
     )
+
+
+def _map_engine_result_to_history_items(
+    engine_result: MemoryEngineRetrieveResult,
+) -> list[dict]:
+    if engine_result.hits:
+        history_items: list[dict] = []
+        for hit in engine_result.hits:
+            metadata = dict(hit.metadata) if isinstance(hit.metadata, dict) else {}
+            memory_type = str(metadata.pop("memory_type", "") or "")
+            history_items.append(
+                {
+                    "id": hit.id,
+                    "memory_type": memory_type,
+                    "summary": hit.summary,
+                    "score": hit.score,
+                    "source_ref": hit.source_ref,
+                    "extra_json": metadata,
+                    "_retrieval_path": "history_raw",
+                }
+            )
+        return history_items
+    return [
+        dict(item, _retrieval_path="history_raw")
+        for item in engine_result.raw.get("items", [])
+        if isinstance(item, dict)
+    ]
 
 
 def _build_injection_payload(
@@ -546,6 +614,9 @@ async def _retry_empty_episodic_block(
     *,
     message: str,
     recent_turns: str,
+    session_key: str,
+    channel: str,
+    chat_id: str,
     route_decision: str,
     rewritten_query: str,
     history_memory_types: list[str],
@@ -589,13 +660,16 @@ async def _retry_empty_episodic_block(
         )
 
     # 2. sufficiency checker 给出 refined query 后，补做一次 episodic 检索。
-    extra_h_items, extra_scope_mode, _retry_hypothesis = await retrieve_episodic(
-        memory.port,
-        result.refined_query,
-        memory_types=history_memory_types,
-        top_k=config.top_k_history,
-        context=recent_turns,
-        hyde_enhancer=memory.hyde_enhancer,
+    extra_h_items, extra_scope_mode, _retry_hypothesis = await _retrieve_episodic_items(
+        session_key=session_key,
+        channel=channel,
+        chat_id=chat_id,
+        route_decision="RETRIEVE",
+        rewritten_query=result.refined_query,
+        history_memory_types=history_memory_types,
+        hyde_context=recent_turns,
+        memory=memory,
+        config=config,
     )
     sufficiency_trace["retry_count"] = 1
     history_items = history_items + extra_h_items
