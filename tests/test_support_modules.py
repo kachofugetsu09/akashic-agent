@@ -364,13 +364,10 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     monkeypatch.setattr(
         "agent.context.build_telegram_rendering_prompt", lambda: "\ntelegram prompt"
     )
-    monkeypatch.setattr("agent.context.build_sop_index_prompt", lambda text: f"sop:{text}")
     monkeypatch.setattr(
         "agent.context.build_skills_catalog_prompt", lambda text: f"catalog:{text}"
     )
 
-    (tmp_path / "sop").mkdir()
-    (tmp_path / "sop" / "README.md").write_text("index", encoding="utf-8")
     (tmp_path / "memes").mkdir()
     (tmp_path / "memes" / "manifest.json").write_text(
         '{"version":1,"categories":{"shy":{"desc":"害羞","enabled":true}}}',

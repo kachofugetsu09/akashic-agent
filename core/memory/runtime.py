@@ -20,7 +20,6 @@ class MemoryRuntime:
 
     port: "MemoryPort"
     post_response_worker: PostResponseMemoryWorker | None = None
-    sop_indexer: Any | None = None
     closeables: list[Any] = field(default_factory=list)
 
     async def aclose(self) -> None:

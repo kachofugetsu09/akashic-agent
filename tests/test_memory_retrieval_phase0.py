@@ -233,7 +233,6 @@ async def test_build_memory_runtime_v2_enabled_returns_worker_and_port(tmp_path:
 
         assert runtime.port is not None
         assert runtime.post_response_worker is not None
-        assert runtime.sop_indexer is not None
         schema_names = {schema["function"]["name"] for schema in tools.get_schemas()}
         assert "memorize" in schema_names
 

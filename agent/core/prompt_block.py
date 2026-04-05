@@ -11,7 +11,6 @@ from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
 from prompts.agent import (
     build_agent_static_identity_prompt,
     build_skills_catalog_prompt,
-    build_sop_index_prompt,
 )
 
 if TYPE_CHECKING:
@@ -95,30 +94,6 @@ class SelfModelPromptBlock:
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None
-
-
-class SOPIndexPromptBlock:
-    priority = 50
-    label = "sop_index"
-    is_static = True
-
-    def __init__(self, render_fn=build_sop_index_prompt) -> None:
-        self._render_fn = render_fn
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        sop_index = (cached_signature or "").strip()
-        if not sop_index:
-            return None
-        return self._render_fn(sop_index)
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        sop_readme = ctx.workspace / "sop" / "README.md"
-        if not sop_readme.exists():
-            return None
-        try:
-            return sop_readme.read_text(encoding="utf-8")
-        except Exception:
-            return None
 
 
 class ActiveSkillsPromptBlock:

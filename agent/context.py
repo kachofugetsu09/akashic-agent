@@ -13,7 +13,6 @@ from agent.core.prompt_block import (
     MemoryBlockPromptBlock,
     SelfModelPromptBlock,
     SkillsCatalogPromptBlock,
-    SOPIndexPromptBlock,
     SystemPromptBuildResult,
     SystemPromptBuilder,
     TurnContext,
@@ -32,7 +31,6 @@ from prompts.agent import (
     build_agent_static_identity_prompt,
     build_current_session_prompt,
     build_skills_catalog_prompt,
-    build_sop_index_prompt,
     build_telegram_rendering_prompt,
 )
 
@@ -135,7 +133,6 @@ class ContextBuilder:
                 MemoryBlockPromptBlock(),
                 LongTermMemoryPromptBlock(),
                 SelfModelPromptBlock(),
-                SOPIndexPromptBlock(render_fn=build_sop_index_prompt),
                 ActiveSkillsPromptBlock(),
                 MemesPromptBlock(MemeCatalog(workspace / "memes")),
                 SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),

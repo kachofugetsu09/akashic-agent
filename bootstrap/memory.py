@@ -31,7 +31,6 @@ def build_memory_runtime(
     from memory2.procedure_tagger import ProcedureTagger
     from memory2.profile_extractor import ProfileFactExtractor
     from memory2.retriever import Retriever
-    from memory2.sop_indexer import SopIndexer
     from memory2.store import MemoryStore2
 
     store = MemoryStore(workspace)
@@ -121,17 +120,12 @@ def build_memory_runtime(
     register_memory_meta_tools(
         tools,
         memorize_tool=MemorizeTool(port, tagger=tagger),
-    )
-    sop_indexer = SopIndexer(mem2_store, embedder, workspace / "sop")
-    register_memory_meta_tools(
-        tools,
-        write_file_tool=WriteFileTool(sop_indexer=sop_indexer),
-        edit_file_tool=EditFileTool(sop_indexer=sop_indexer),
+        write_file_tool=WriteFileTool(),
+        edit_file_tool=EditFileTool(),
     )
 
     return MemoryRuntime(
         port=port,
         post_response_worker=post_mem_worker,
-        sop_indexer=sop_indexer,
         closeables=[mem2_store, embedder],
     )

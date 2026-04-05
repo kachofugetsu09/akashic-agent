@@ -10,7 +10,6 @@ import pytest
 
 from agent.provider import LLMResponse
 from core.memory.port import DefaultMemoryPort
-from memory2.sop_indexer import SopIndexer, _parse_sop_chunks
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
@@ -19,28 +18,6 @@ from proactive_v2.memory_optimizer import (
     _remove_items_from_section,
 )
 from session.manager import Session, SessionManager, _safe_filename
-
-
-@pytest.mark.asyncio
-async def test_sop_indexer_cover_paths(
-    tmp_path: Path
-):
-    sop_dir = tmp_path / "sop"
-    sop_dir.mkdir()
-    sop_file = sop_dir / "core-rules.md"
-    sop_file.write_text("## Rule\nUse `shell_tool` here", encoding="utf-8")
-    chunks = _parse_sop_chunks(sop_file, "procedure")
-    assert chunks and "trigger_keywords" in chunks[0]["extra"]
-    store = MagicMock()
-    store.delete_by_source_ref.return_value = 1
-    store.upsert_item.return_value = "new:1"
-    embedder = MagicMock()
-    embedder.embed_batch = AsyncMock(return_value=[[1.0]])
-    indexer = SopIndexer(store, embedder, sop_dir)
-    assert indexer.is_sop_file(sop_file) is True
-    summary = await indexer.reindex(sop_file)
-    assert "重索引" in summary
-    assert "README" in await indexer.reindex(sop_dir / "README.md")
 
 
 @pytest.mark.asyncio

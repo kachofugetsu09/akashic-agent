@@ -38,6 +38,14 @@ if TYPE_CHECKING:
     from session.manager import SessionManager
 
 logger = logging.getLogger("agent.core.reasoner")
+_LOG_PREVIEW_LIMIT = 160
+
+
+def _log_preview(value: object, limit: int = _LOG_PREVIEW_LIMIT) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
 
 
 def _unlock_from_tool_search(result: str, visible_names: set[str]) -> None:
@@ -519,7 +527,7 @@ class DefaultReasoner(Reasoner):
                     else:
                         token = None
                     tools_used.append(tool_call.name)
-                    _args_preview = str(tool_call.arguments)[:150]
+                    _args_preview = _log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
                     try:
                         result = await self._tools.execute(
@@ -530,7 +538,14 @@ class DefaultReasoner(Reasoner):
                         if token is not None:
                             _excluded_names_ctx.reset(token)
                     normalized = normalize_tool_result(result)
-                    logger.info("[工具结果←] %s  结果=%s", tool_call.name, normalized.preview())
+                    _result_preview = _log_preview(normalized.preview())
+                    _result_len = len(normalized.preview() or "")
+                    logger.info(
+                        "[工具结果←] %s  结果预览=%s  result_len=%d",
+                        tool_call.name,
+                        _result_preview,
+                        _result_len,
+                    )
                     append_tool_result(
                         messages,
                         tool_call_id=tool_call.id,

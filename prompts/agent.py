@@ -110,15 +110,6 @@ def build_agent_identity_prompt(
     return "\n\n".join(parts)
 
 
-def build_sop_index_prompt(sop_index: str) -> str:
-    return (
-        "# SOP 文件索引\n\n"
-        "**执行任务**：SOP 相关内容已由系统检索注入到本 prompt，直接参照执行，无需 read_file。\n"
-        "**新增/修改 SOP**：必须先 read_file 读取对应文件全文，按要求修改后 write_file 写回，并更新本 README 索引。\n\n"
-        f"{sop_index}"
-    )
-
-
 def build_skills_catalog_prompt(skills_summary: str) -> str:
     return f"""# Skills
 
