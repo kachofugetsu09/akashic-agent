@@ -17,13 +17,13 @@ from agent.core import (
 def test_agent_core_foundation_types_construct_cleanly():
     inbound = InboundMessage(
         channel="cli",
-        session_key="cli:1",
         sender="u",
+        chat_id="1",
         content="hello",
     )
     outbound = OutboundMessage(
         channel="cli",
-        session_key="cli:1",
+        chat_id="1",
         content="ok",
     )
     bundle = ContextBundle(history=[ChatMessage(role="user", content="hi")])

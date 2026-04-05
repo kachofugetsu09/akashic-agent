@@ -312,15 +312,6 @@ def _build_loop_deps(
         engine=memory_engine,
     )
     passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
-    passive_context_store = DefaultContextStore(
-        retrieval=retrieval_pipeline,
-        context=context,
-        session=session_services,
-        trace=trace_services,
-        post_turn=post_turn_pipeline,
-        outbound=BusOutboundPort(bus),
-        meme_decorator=passive_meme_decorator,
-    )
     return AgentLoopDeps(
         bus=bus,
         provider=provider,

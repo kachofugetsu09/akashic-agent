@@ -4,25 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-@dataclass
-class InboundMessage:
-    channel: str
-    session_key: str
-    sender: str
-    content: str
-    media: list[str] = field(default_factory=list)
-    timestamp: datetime = field(default_factory=datetime.now)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class OutboundMessage:
-    channel: str
-    session_key: str
-    content: str
-    media: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-
+from bus.events import InboundMessage
 
 @dataclass
 class ChatMessage:

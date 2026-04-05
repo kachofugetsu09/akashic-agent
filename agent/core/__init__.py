@@ -15,13 +15,12 @@ from agent.core.runtime_support import (
 from agent.core.types import (
     ChatMessage,
     ContextBundle,
-    InboundMessage,
     LLMToolCall as ToolCall,
     LLMResponse,
-    OutboundMessage,
     ReasonerResult,
     TurnRecord,
 )
+from bus.events import InboundMessage, OutboundMessage
 
 __all__ = [
     "AgentCore",

@@ -193,29 +193,6 @@ class TurnScheduler:
         if exc is not None:
             logger.warning("consolidation task failed: session=%s err=%s", key, exc)
 
-    def schedule_post_response_memory(
-        self,
-        *,
-        msg: InboundMessage,
-        key: str,
-        final_content: str,
-        tool_chain: list[dict],
-    ) -> None:
-        """Fire-and-forget post-response memory extraction."""
-        if not self._post_mem_worker:
-            return
-        task = asyncio.create_task(
-            self._post_mem_worker.run(
-                user_msg=msg.content,
-                agent_response=final_content,
-                tool_chain=tool_chain,
-                source_ref=f"{key}@post_response",
-                session_key=key,
-            ),
-            name=f"post_mem:{key}",
-        )
-        task.add_done_callback(lambda t: self._on_post_mem_done(t, key))
-
     def _on_post_mem_done(self, task: asyncio.Task, key: str) -> None:
         try:
             exc = task.exception()
