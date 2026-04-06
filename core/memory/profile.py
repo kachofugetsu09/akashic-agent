@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class ProfileReader(Protocol):
+    def read_profile(self) -> str: ...
+
+    def read_self(self) -> str: ...
+
+    def read_now(self) -> str: ...
+
+
+@runtime_checkable
+class ProfileMaintenanceStore(Protocol):
+    def read_long_term(self) -> str: ...
+
+    def write_long_term(self, content: str) -> None: ...
+
+    def read_self(self) -> str: ...
+
+    def write_self(self, content: str) -> None: ...
+
+    def read_now(self) -> str: ...
+
+    def write_now(self, content: str) -> None: ...
+
+    def read_pending(self) -> str: ...
+
+    def append_pending(self, facts: str) -> None: ...
+
+    def append_pending_once(
+        self,
+        facts: str,
+        source_ref: str,
+        kind: str = "pending",
+    ) -> bool: ...
+
+    def snapshot_pending(self) -> str: ...
+
+    def commit_pending_snapshot(self) -> None: ...
+
+    def rollback_pending_snapshot(self) -> None: ...
+
+    def append_history(self, entry: str) -> None: ...
+
+    def append_history_once(
+        self,
+        entry: str,
+        source_ref: str,
+        kind: str = "history_entry",
+    ) -> bool: ...
+
+    def read_history(self, max_chars: int = 0) -> str: ...
+
+    def update_now_ongoing(
+        self,
+        add: list[str],
+        remove_keywords: list[str],
+    ) -> None: ...
+
+
+@runtime_checkable
+class MemoryOptimizerStore(ProfileMaintenanceStore, Protocol):
+    pass
