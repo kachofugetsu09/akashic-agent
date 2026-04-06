@@ -8,14 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from agent.core.types import HistoryMessage
 from agent.looping.memory_gate import (
     _decide_history_route,
     _format_gate_history,
     _trace_memory_retrieve,
     _trace_route_reason,
 )
-from agent.postturn.protocol import PostTurnEvent
 from core.memory.engine import (
     MemoryEngineRetrieveResult,
     MemoryEngineRetrieveRequest,
@@ -36,6 +34,8 @@ from core.memory.runtime_facade import (
 )
 
 if TYPE_CHECKING:
+    from agent.postturn.protocol import PostTurnEvent
+    from agent.core.types import HistoryMessage
     from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
     from core.observe.events import RagTrace
     from agent.core.types import ToolCallGroup

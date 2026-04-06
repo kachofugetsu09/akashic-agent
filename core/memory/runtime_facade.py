@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Awaitable, Callable, Protocol, runtime_checkable
 
-from agent.core.types import HistoryMessage
-from agent.postturn.protocol import PostTurnEvent
 from core.memory.engine import (
     MemoryIngestResult,
     MemoryScope,
     RememberRequest,
     RememberResult,
 )
+
+if TYPE_CHECKING:
+    from agent.core.types import HistoryMessage
+    from agent.postturn.protocol import PostTurnEvent
 
 
 @dataclass(frozen=True)

@@ -3,6 +3,7 @@ import json
 import pytest
 
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
+from agent.looping.constants import _PRE_FLIGHT_PROMPT, _REFLECT_PROMPT
 from session.manager import SessionManager
 from session.store import SessionStore
 
@@ -81,31 +82,47 @@ async def test_fetch_messages_context_clamps_at_seq_zero(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_search_messages_with_context(tmp_path):
+async def test_search_messages_returns_preview_with_source_ref(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
-    _setup_session(store, "tg:1", 5)  # seq 0..4; msg-2 is "msg-2"
-    # override seq=2 to have a distinctive keyword
-    store._conn.execute(
-        "UPDATE messages SET content=? WHERE id=?", ("benchmark recall 0.62", "tg:1:2")
+    store.upsert_session(
+        "tg:1",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        last_consolidated=0,
+        metadata={},
     )
-    store._conn.execute(
-        "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+    preview_lines = "\n".join(f"line-{i}" for i in range(55))
+    store.insert_message(
+        "tg:1",
+        role="user",
+        content=f"benchmark recall 0.62\n{preview_lines}",
+        ts="2026-01-01T00:00:01+00:00",
+        seq=0,
     )
-    store._conn.commit()
 
     tool = SearchMessagesTool(store)
-    payload = json.loads(await tool.execute(query="benchmark", session_key="tg:1", context=1))
+    payload = json.loads(await tool.execute(query="benchmark", session_key="tg:1"))
 
-    ids = [m["id"] for m in payload["messages"]]
-    # hit = seq 2; context = seq 1 and seq 3
-    assert "tg:1:2" in ids
-    assert "tg:1:1" in ids
-    assert "tg:1:3" in ids
-    assert "tg:1:0" not in ids
+    assert payload["count"] == 1
     assert payload["matched_count"] == 1
+    assert payload["offset"] == 0
+    assert payload["limit"] == 10
+    assert payload["has_more"] is False
+    assert payload["next_offset"] is None
 
-    hit = next(m for m in payload["messages"] if m["id"] == "tg:1:2")
-    assert hit["in_source_ref"] is True
+    item = payload["messages"][0]
+    assert item["id"] == "tg:1:0"
+    assert item["source_ref"] == "tg:1:0"
+    assert item["session_key"] == "tg:1"
+    assert item["role"] == "user"
+    assert item["preview_line_count"] == 50
+    assert item["total_line_count"] == 56
+    assert item["truncated"] is True
+    assert "benchmark recall 0.62" in item["preview"]
+    assert "line-48" in item["preview"]
+    assert "line-49" not in item["preview"]
+    assert "line-50" not in item["preview"]
+    assert "已截断" in item["preview"]
 
 
 @pytest.mark.asyncio
@@ -144,7 +161,53 @@ async def test_search_messages_supports_filters(tmp_path):
     assert payload["matched_count"] == 1
     assert payload["messages"][0]["session_key"] == "tg:1"
     assert payload["messages"][0]["role"] == "user"
-    assert "0.62" in payload["messages"][0]["content"]
+    assert payload["messages"][0]["source_ref"] == "tg:1:0"
+    assert "0.62" in payload["messages"][0]["preview"]
+
+
+@pytest.mark.asyncio
+async def test_search_messages_supports_offset_pagination(tmp_path):
+    store = SessionStore(tmp_path / "sessions.db")
+    store.upsert_session(
+        "tg:1",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        last_consolidated=0,
+        metadata={},
+    )
+    for seq in range(5):
+        store.insert_message(
+            "tg:1",
+            role="user" if seq % 2 == 0 else "assistant",
+            content=f"benchmark result {seq}",
+            ts=f"2026-01-01T00:00:0{seq}+00:00",
+            seq=seq,
+        )
+
+    tool = SearchMessagesTool(store)
+
+    first_page = json.loads(await tool.execute(query="benchmark", session_key="tg:1", limit=2))
+    second_page = json.loads(
+        await tool.execute(
+            query="benchmark",
+            session_key="tg:1",
+            limit=2,
+            offset=first_page["next_offset"],
+        )
+    )
+
+    assert first_page["count"] == 2
+    assert first_page["matched_count"] == 5
+    assert first_page["has_more"] is True
+    assert first_page["next_offset"] == 2
+    assert [item["id"] for item in first_page["messages"]] == ["tg:1:4", "tg:1:3"]
+
+    assert second_page["count"] == 2
+    assert second_page["matched_count"] == 5
+    assert second_page["offset"] == 2
+    assert second_page["has_more"] is True
+    assert second_page["next_offset"] == 4
+    assert [item["id"] for item in second_page["messages"]] == ["tg:1:2", "tg:1:1"]
 
 
 @pytest.mark.asyncio
@@ -152,7 +215,15 @@ async def test_search_messages_empty_query_returns_empty(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     tool = SearchMessagesTool(store)
     payload = json.loads(await tool.execute(query="   "))
-    assert payload == {"count": 0, "matched_count": 0, "messages": []}
+    assert payload == {
+        "count": 0,
+        "matched_count": 0,
+        "limit": 10,
+        "offset": 0,
+        "has_more": False,
+        "next_offset": None,
+        "messages": [],
+    }
 
 
 def test_next_seq_after_seq_zero_should_return_one(tmp_path):
@@ -168,3 +239,19 @@ def test_next_seq_after_seq_zero_should_return_one(tmp_path):
     manager.save(session)
 
     assert manager._store.next_seq("cli:test") == 1
+
+
+def test_message_lookup_tools_require_fetch_for_evidence():
+    assert "source_ref" in SearchMessagesTool.description
+    assert "fetch_messages" in SearchMessagesTool.description
+    assert "必须" in SearchMessagesTool.description
+    assert "fetch_messages" in FetchMessagesTool.description
+
+
+def test_history_fact_guard_requires_fetch_after_search_preview():
+    assert "search_messages" in _PRE_FLIGHT_PROMPT
+    assert "fetch_messages" in _PRE_FLIGHT_PROMPT
+    assert "source_ref" in _PRE_FLIGHT_PROMPT
+    assert "search_messages" in _REFLECT_PROMPT
+    assert "fetch_messages" in _REFLECT_PROMPT
+    assert "preview" in _REFLECT_PROMPT

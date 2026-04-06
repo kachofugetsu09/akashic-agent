@@ -353,8 +353,10 @@ class SessionStore:
         session_key: str | None = None,
         role: str | None = None,
         limit: int = 10,
-    ) -> list[dict[str, Any]]:
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
         limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
         params: list[Any] = []
         where_parts: list[str] = []
         if session_key:
@@ -366,21 +368,32 @@ class SessionStore:
         where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
         if self._has_fts:
+            count_params = [query] + params[:]
+            count_sql = (
+                "SELECT COUNT(1) AS c "
+                "FROM messages_fts f JOIN messages m ON m.rowid = f.rowid "
+                "WHERE f.content MATCH ? "
+            )
+            if where_sql:
+                count_sql += "AND " + where_sql[6:] + " "
             fts_params = [query] + params[:]
             fts_sql = (
-                "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts "
+                "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts, "
+                "bm25(messages_fts) AS rank_score "
                 "FROM messages_fts f JOIN messages m ON m.rowid = f.rowid "
                 "WHERE f.content MATCH ? "
             )
             if where_sql:
                 fts_sql += "AND " + where_sql[6:] + " "
-            fts_sql += "ORDER BY f.rank, m.seq DESC LIMIT ?"
-            fts_params.append(limit)
+            fts_sql += "ORDER BY rank_score ASC, m.seq DESC LIMIT ? OFFSET ?"
+            fts_params.extend([limit, offset])
             try:
                 with self._lock:
+                    count_row = self._conn.execute(count_sql, tuple(count_params)).fetchone()
                     rows = self._conn.execute(fts_sql, tuple(fts_params)).fetchall()
                 if rows:
-                    return [self._row_to_message(row) for row in rows]
+                    total = int((count_row["c"] if count_row else 0) or 0)
+                    return [self._row_to_message(row) for row in rows], total
             except sqlite3.OperationalError:
                 pass
             # FTS5 returned empty or had a syntax error (e.g. special chars like %)
@@ -395,15 +408,21 @@ class SessionStore:
             "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts "
             "FROM messages m "
         )
+        count_sql = "SELECT COUNT(1) AS c FROM messages m "
         like_params = params[:]
+        count_params = params[:]
         connector = "AND" if where_sql else "WHERE"
         like_sql += f"{where_sql} {connector} {term_conditions} "
+        count_sql += f"{where_sql} {connector} {term_conditions} "
         like_params.extend(f"%{t}%" for t in terms)
-        like_sql += "ORDER BY m.seq DESC LIMIT ?"
-        like_params.append(limit)
+        count_params.extend(f"%{t}%" for t in terms)
+        like_sql += "ORDER BY m.seq DESC LIMIT ? OFFSET ?"
+        like_params.extend([limit, offset])
         with self._lock:
+            count_row = self._conn.execute(count_sql, tuple(count_params)).fetchone()
             rows = self._conn.execute(like_sql, tuple(like_params)).fetchall()
-        return [self._row_to_message(row) for row in rows]
+        total = int((count_row["c"] if count_row else 0) or 0)
+        return [self._row_to_message(row) for row in rows], total
 
     def _row_to_message(self, row: sqlite3.Row) -> dict[str, Any]:
         message: dict[str, Any] = {
