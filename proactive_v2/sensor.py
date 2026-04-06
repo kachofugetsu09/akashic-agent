@@ -71,6 +71,9 @@ class Sensor:
         if not self._memory:
             return ""
         try:
+            read_long_term_context = getattr(self._memory, "read_long_term_context", None)
+            if callable(read_long_term_context):
+                return str(read_long_term_context() or "").strip()
             return self._memory.read_long_term().strip()
         except Exception:
             return ""

@@ -411,7 +411,11 @@ class ProactiveLoop:
         if not self._memory:
             return []
         try:
-            raw = self._memory.read_long_term().strip()
+            read_long_term_context = getattr(self._memory, "read_long_term_context", None)
+            if callable(read_long_term_context):
+                raw = str(read_long_term_context() or "").strip()
+            else:
+                raw = self._memory.read_long_term().strip()
             return sample_memory_chunks(raw, n=n)
         except Exception as e:
             logger.warning("[proactive] 随机记忆抽取失败: %s", e)

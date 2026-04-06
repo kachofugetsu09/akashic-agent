@@ -248,6 +248,7 @@ async def test_default_runtime_facade_run_consolidation_delegates_to_runner():
 def test_default_runtime_facade_reads_file_side_context_from_profile_maint():
     profile_maint = SimpleNamespace(
         read_long_term=MagicMock(return_value="MEMORY"),
+        read_self=MagicMock(return_value="SELF"),
         read_history=MagicMock(return_value="HISTORY"),
     )
     facade = DefaultMemoryRuntimeFacade(
@@ -257,5 +258,6 @@ def test_default_runtime_facade_reads_file_side_context_from_profile_maint():
     )
 
     assert facade.read_long_term_context() == "MEMORY"
+    assert facade.read_self() == "SELF"
     assert facade.read_recent_history(max_chars=123) == "HISTORY"
     profile_maint.read_history.assert_called_once_with(max_chars=123)

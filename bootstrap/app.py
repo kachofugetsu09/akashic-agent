@@ -142,7 +142,7 @@ class AppRuntime:
                 provider=self.provider,
                 light_provider=self.light_provider,
                 push_tool=self.push_tool,
-                memory_store=self.memory_runtime.port,
+                memory_store=self.memory_runtime.facade or self.memory_runtime.port,
                 presence=self.presence,
                 agent_loop=self.agent_loop,
                 observe_writer=self.observe_writer,

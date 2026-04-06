@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from proactive_v2.context import AgentTickContext
@@ -173,6 +174,30 @@ TOOL_SCHEMAS: list[dict] = [
 
 async def _recall_memory(ctx: AgentTickContext, args: dict, *, memory) -> str:
     query = args["query"]
+    hits = await _retrieve_interest_hits(memory=memory, query=query)
+    if not hits:
+        return json.dumps({"result": "", "hits": 0}, ensure_ascii=False)
+    texts = [h.get("text", "") for h in hits if h.get("text")]
+    return json.dumps({"result": "\n---\n".join(texts), "hits": len(hits)}, ensure_ascii=False)
+
+
+async def _retrieve_interest_hits(*, memory, query: str) -> list[dict]:
+    if memory is None:
+        return []
+
+    retrieve_interest_block = getattr(memory, "retrieve_interest_block", None)
+    if callable(retrieve_interest_block):
+        result = retrieve_interest_block(
+            SimpleNamespace(
+                query=query,
+                top_k=2,
+                scope=SimpleNamespace(session_key="", channel="", chat_id=""),
+            )
+        )
+        if asyncio.iscoroutine(result):
+            result = await result
+            return list(getattr(result, "hits", None) or [])
+
     retrieved = memory.retrieve_related(
         query,
         memory_types=["preference", "profile"],
@@ -180,11 +205,7 @@ async def _recall_memory(ctx: AgentTickContext, args: dict, *, memory) -> str:
     )
     if asyncio.iscoroutine(retrieved):
         retrieved = await retrieved
-    hits: list[dict] = retrieved or []
-    if not hits:
-        return json.dumps({"result": "", "hits": 0}, ensure_ascii=False)
-    texts = [h.get("text", "") for h in hits if h.get("text")]
-    return json.dumps({"result": "\n---\n".join(texts), "hits": len(hits)}, ensure_ascii=False)
+    return list(retrieved or [])
 
 
 def _valid_content_ids(ctx: AgentTickContext) -> set[str]:

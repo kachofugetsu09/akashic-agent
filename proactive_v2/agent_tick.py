@@ -41,6 +41,26 @@ _POST_GUARD_ACK_TTL = 24   # delivery/message dedupe hit → 24h
 _DISCARDED_ACK_TTL = 720   # mark_not_interesting → 720h
 
 
+def _read_long_term_text(memory: Any) -> str:
+    read_long_term_context = getattr(memory, "read_long_term_context", None)
+    if callable(read_long_term_context):
+        return str(read_long_term_context() or "")
+    read_long_term = getattr(memory, "read_long_term", None)
+    if callable(read_long_term):
+        return str(read_long_term() or "")
+    return ""
+
+
+def _read_self_text(memory: Any) -> str:
+    read_self_context = getattr(memory, "read_self_context", None)
+    if callable(read_self_context):
+        return str(read_self_context() or "")
+    read_self = getattr(memory, "read_self", None)
+    if callable(read_self):
+        return str(read_self() or "")
+    return ""
+
+
 # ── 模块级 delivery key + ACK 函数 ───────────────────────────────────────
 
 def _log_content_candidates(gw: GatewayResult) -> None:
@@ -296,13 +316,13 @@ class AgentTick:
         self_block = ""
         if self._tool_deps.memory is not None:
             try:
-                raw = self._tool_deps.memory.read_long_term().strip()
+                raw = _read_long_term_text(self._tool_deps.memory).strip()
                 if raw:
                     memory_block = "\n【用户长期记忆】\n" + raw + "\n"
             except Exception:
                 pass
             try:
-                self_content = self._tool_deps.memory.read_self().strip()
+                self_content = _read_self_text(self._tool_deps.memory).strip()
                 if self_content:
                     self_block = f"## Akashic 自我认知\n\n{self_content}\n\n"
             except Exception:

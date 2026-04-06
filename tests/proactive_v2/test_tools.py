@@ -15,6 +15,7 @@ TDD — Phase 3: proactive_v2/tools.py
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -300,6 +301,29 @@ async def test_recall_memory_uses_preference_and_profile_types():
     memory_types = call_kwargs[1].get("memory_types") or call_kwargs[0][1]
     assert "preference" in memory_types
     assert "profile" in memory_types
+
+
+@pytest.mark.asyncio
+async def test_recall_memory_prefers_facade_interest_block():
+    fake_memory = MagicMock()
+    fake_memory.retrieve_interest_block = AsyncMock(
+        return_value=SimpleNamespace(
+            hits=[
+                {"id": "p1", "text": "用户偏好中文回复"},
+                {"id": "u1", "text": "用户常用 Telegram"},
+            ]
+        )
+    )
+
+    result = json.loads(await _recall_memory(
+        ctx=AgentTickContext(),
+        args={"query": "q"},
+        memory=fake_memory,
+    ))
+
+    assert result["hits"] == 2
+    assert "用户偏好中文回复" in result["result"]
+    fake_memory.retrieve_interest_block.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -177,6 +177,10 @@ class DefaultMemoryRuntimeFacade:
         # 1. 文件侧长期上下文读取先继续走 profile_maint/port。
         return str(self._profile_maint.read_long_term() or "")
 
+    def read_self(self) -> str:
+        # 1. proactive prompt 仍需要自我认知块，这里保持 file-side 读取入口。
+        return str(self._profile_maint.read_self() or "")
+
     def read_recent_history(self, *, max_chars: int = 0) -> str:
         # 1. consolidation 侧仍依赖 history 文件，这里只是收一个稳定入口。
         return str(self._profile_maint.read_history(max_chars=max_chars) or "")

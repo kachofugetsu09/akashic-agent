@@ -316,7 +316,7 @@ def test_phase0_proactive_runtime_keeps_memory_port_entrypoint(tmp_path: Path):
         system_prompt="test system prompt",
     )
     config.proactive.enabled = True
-    memory_store = MagicMock()
+    facade = MagicMock()
     session_manager = SimpleNamespace(workspace=tmp_path)
     agent_loop = SimpleNamespace(
         workspace=tmp_path,
@@ -330,7 +330,7 @@ def test_phase0_proactive_runtime_keeps_memory_port_entrypoint(tmp_path: Path):
         provider=cast(Any, _FakeProvider()),
         light_provider=None,
         push_tool=MagicMock(),
-        memory_store=memory_store,
+        memory_store=facade,
         presence=MagicMock(),
         agent_loop=agent_loop,
         observe_writer=None,
@@ -338,7 +338,7 @@ def test_phase0_proactive_runtime_keeps_memory_port_entrypoint(tmp_path: Path):
 
     assert len(tasks) == 1
     assert proactive_loop is not None
-    assert proactive_loop._memory is memory_store
+    assert proactive_loop._memory is facade
     for task in tasks:
         close = getattr(task, "close", None)
         if callable(close):
