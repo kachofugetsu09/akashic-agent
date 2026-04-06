@@ -317,7 +317,7 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
     retrieval._memory.port = memory_port
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
     with patch(
-        "agent.retrieval.default_pipeline._decide_history_route",
+        "core.memory.default_runtime_facade._decide_history_route",
         new=AsyncMock(side_effect=_slow_route_decision),
     ):
         start = time.perf_counter()
@@ -374,7 +374,7 @@ def test_retrieve_memory_block_query_rewriter_path_uses_raw_msg_for_procedure_la
 
     with (
         patch(
-            "agent.retrieval.default_pipeline._retrieve_engine_items",
+            "core.memory.default_runtime_facade._retrieve_engine_items",
             new=AsyncMock(
                 side_effect=lambda **kwargs: (
                     engine_calls.append(kwargs)
@@ -522,7 +522,7 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
         return [], "disabled", None, None
 
     with patch(
-        "agent.retrieval.default_pipeline._retrieve_episodic_items",
+        "core.memory.default_runtime_facade._retrieve_episodic_items",
         side_effect=_fake_history_items,
     ):
         asyncio.run(retrieval.retrieve(_req(msg, session)))
