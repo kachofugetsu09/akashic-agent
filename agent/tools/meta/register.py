@@ -3,6 +3,7 @@ from __future__ import annotations
 from agent.tools.filesystem import EditFileTool, WriteFileTool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
+from agent.tools.recall_memory import RecallMemoryTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool
@@ -69,6 +70,7 @@ def register_common_meta_tools(
 def register_memory_meta_tools(
     tools: ToolRegistry,
     memorize_tool: MemorizeTool | None = None,
+    recall_tool: RecallMemoryTool | None = None,
     write_file_tool: WriteFileTool | None = None,
     edit_file_tool: EditFileTool | None = None,
 ) -> None:
@@ -77,6 +79,13 @@ def register_memory_meta_tools(
             memorize_tool,
             always_on=True,
             risk="write",
+        )
+    if recall_tool is not None:
+        tools.register(
+            recall_tool,
+            always_on=True,
+            risk="read-only",
+            search_hint="记得 以前 历史 做过什么 有没有 重构 记忆查询",
         )
     if write_file_tool is not None:
         tools.register(

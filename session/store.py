@@ -367,56 +367,75 @@ class SessionStore:
             params.append(role)
         where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
-        if self._has_fts:
-            count_params = [query] + params[:]
-            count_sql = (
-                "SELECT COUNT(1) AS c "
-                "FROM messages_fts f JOIN messages m ON m.rowid = f.rowid "
-                "WHERE f.content MATCH ? "
-            )
-            if where_sql:
-                count_sql += "AND " + where_sql[6:] + " "
-            fts_params = [query] + params[:]
-            fts_sql = (
-                "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts, "
-                "bm25(messages_fts) AS rank_score "
-                "FROM messages_fts f JOIN messages m ON m.rowid = f.rowid "
-                "WHERE f.content MATCH ? "
-            )
-            if where_sql:
-                fts_sql += "AND " + where_sql[6:] + " "
-            fts_sql += "ORDER BY rank_score ASC, m.seq DESC LIMIT ? OFFSET ?"
-            fts_params.extend([limit, offset])
-            try:
-                with self._lock:
-                    count_row = self._conn.execute(count_sql, tuple(count_params)).fetchone()
-                    rows = self._conn.execute(fts_sql, tuple(fts_params)).fetchall()
-                if rows:
-                    total = int((count_row["c"] if count_row else 0) or 0)
-                    return [self._row_to_message(row) for row in rows], total
-            except sqlite3.OperationalError:
-                pass
-            # FTS5 returned empty or had a syntax error (e.g. special chars like %)
-            # fall through to LIKE
-
-        # Split into individual terms so multi-keyword queries work (e.g. "抖音 支付 AI").
+        # Split into individual terms for both FTS and LIKE paths.
         terms = [t for t in query.split() if t]
         if not terms:
             terms = [query]
-        term_conditions = " AND ".join("m.content LIKE ?" for _ in terms)
-        like_sql = (
-            "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts "
-            "FROM messages m "
+
+        term_conditions_or = " OR ".join("m.content LIKE ?" for _ in terms)
+        score_expr = " + ".join(
+            f"(CASE WHEN m.content LIKE ? THEN 1 ELSE 0 END)" for _ in terms
         )
-        count_sql = "SELECT COUNT(1) AS c FROM messages m "
+        if self._has_fts:
+            # 长词走 FTS，短词继续走 LIKE，再把两路结果合并去重。
+            fts_terms = [t for t in terms if len(t) >= 3]
+            if fts_terms:
+                fts_query = " OR ".join(fts_terms)
+                connector = "AND" if where_sql else "WHERE"
+                count_params = [fts_query] + params[:]
+                count_sql = (
+                    "SELECT COUNT(1) AS c "
+                    "FROM messages m "
+                    "LEFT JOIN ("
+                    "    SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?"
+                    ") fts ON m.rowid = fts.rowid "
+                    f"{where_sql} {connector} (fts.rowid IS NOT NULL OR ({term_conditions_or})) "
+                )
+                count_params.extend(f"%{t}%" for t in terms)
+                fts_params: list[Any] = []
+                fts_sql = (
+                    "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts, "
+                    f"({score_expr}) AS match_score, "
+                    "fts.rank_score AS rank_score "
+                    "FROM messages m "
+                    "LEFT JOIN ("
+                    "    SELECT rowid, bm25(messages_fts) AS rank_score "
+                    "    FROM messages_fts WHERE messages_fts MATCH ?"
+                    ") fts ON m.rowid = fts.rowid "
+                    f"{where_sql} {connector} (fts.rowid IS NOT NULL OR ({term_conditions_or})) "
+                    "ORDER BY match_score DESC, "
+                    "CASE WHEN rank_score IS NULL THEN 1 ELSE 0 END ASC, "
+                    "rank_score ASC, m.seq DESC LIMIT ? OFFSET ?"
+                )
+                fts_params.extend(f"%{t}%" for t in terms)
+                fts_params.append(fts_query)
+                fts_params.extend(params[:])
+                fts_params.extend(f"%{t}%" for t in terms)
+                fts_params.extend([limit, offset])
+                try:
+                    with self._lock:
+                        count_row = self._conn.execute(count_sql, tuple(count_params)).fetchone()
+                        rows = self._conn.execute(fts_sql, tuple(fts_params)).fetchall()
+                    total = int((count_row["c"] if count_row else 0) or 0)
+                    return [self._row_to_message(row) for row in rows], total
+                except sqlite3.OperationalError:
+                    pass
+
+        # LIKE fallback: OR across all terms so any hit surfaces; rank by match count descending.
         like_params = params[:]
         count_params = params[:]
         connector = "AND" if where_sql else "WHERE"
-        like_sql += f"{where_sql} {connector} {term_conditions} "
-        count_sql += f"{where_sql} {connector} {term_conditions} "
-        like_params.extend(f"%{t}%" for t in terms)
+        count_sql = f"SELECT COUNT(1) AS c FROM messages m {where_sql} {connector} ({term_conditions_or}) "
         count_params.extend(f"%{t}%" for t in terms)
-        like_sql += "ORDER BY m.seq DESC LIMIT ? OFFSET ?"
+        like_sql = (
+            f"SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts, "
+            f"({score_expr}) AS match_score "
+            f"FROM messages m {where_sql} {connector} ({term_conditions_or}) "
+            f"ORDER BY match_score DESC, m.seq DESC LIMIT ? OFFSET ?"
+        )
+        # score_expr binds: one %t% per term; term_conditions_or binds: one %t% per term
+        like_params.extend(f"%{t}%" for t in terms)  # for score_expr
+        like_params.extend(f"%{t}%" for t in terms)  # for WHERE OR
         like_params.extend([limit, offset])
         with self._lock:
             count_row = self._conn.execute(count_sql, tuple(count_params)).fetchone()

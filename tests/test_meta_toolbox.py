@@ -1,3 +1,4 @@
+from agent.tools.base import Tool
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.meta import (
     META_TOOLBOX_NAMES,
@@ -11,11 +12,21 @@ from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
 
 
+class _RecallMemoryToolStub(Tool):
+    name = "recall_memory"
+    description = "test"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs):
+        return ""
+
+
 def test_meta_toolbox_prompt_contains_grouped_overview():
     prompt = build_meta_toolbox_prompt()
 
     assert "MetaToolBox" in prompt
     assert "[Read]" in prompt
+    assert "recall_memory" in prompt
     assert "message_push" in prompt
     assert "write_file" in prompt
 
@@ -36,6 +47,7 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     )
     register_memory_meta_tools(
         tools,
+        recall_tool=_RecallMemoryToolStub(),
         write_file_tool=WriteFileTool(),
         edit_file_tool=EditFileTool(),
     )

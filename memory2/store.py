@@ -1024,5 +1024,55 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
         return matched
 
+    def keyword_search_summary(
+        self,
+        terms: list[str],
+        memory_types: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """对 summary 字段做 OR-LIKE 关键字检索，按命中词数降序排列。
+
+        每条结果携带 keyword_score（命中词数 / 总词数），供 RRF 融合使用。
+        """
+        terms = [t for t in terms if t and len(t) >= 2]
+        if not terms:
+            return []
+
+        type_filter = ""
+        type_params: list[str] = []
+        if memory_types:
+            placeholders = ",".join("?" for _ in memory_types)
+            type_filter = f" AND memory_type IN ({placeholders})"
+            type_params = list(memory_types)
+
+        or_conditions = " OR ".join("summary LIKE ?" for _ in terms)
+        score_expr = " + ".join(
+            f"(CASE WHEN summary LIKE ? THEN 1 ELSE 0 END)" for _ in terms
+        )
+        like_vals = [f"%{t}%" for t in terms]
+
+        sql = (
+            f"SELECT id, memory_type, summary, source_ref, happened_at, created_at, "
+            f"reinforcement, ({score_expr}) AS kw_score "
+            f"FROM memory_items "
+            f"WHERE status='active' AND ({or_conditions}){type_filter} "
+            f"ORDER BY kw_score DESC, reinforcement DESC "
+            f"LIMIT ?"
+        )
+        params = tuple(like_vals + like_vals + type_params + [limit])
+        rows = self._db.execute(sql, params).fetchall()
+        results = []
+        for row in rows:
+            row_id, mtype, summary, source_ref, happened_at, created_at, reinforcement, kw_score = row
+            results.append({
+                "id": row_id,
+                "memory_type": mtype,
+                "summary": summary,
+                "source_ref": source_ref or "",
+                "happened_at": happened_at or created_at or "",
+                "keyword_score": float(kw_score) / len(terms),
+            })
+        return results
+
     def close(self) -> None:
         self._db.close()

@@ -122,10 +122,19 @@ def build_memory_runtime(
             post_response_worker=post_mem_worker,
         )
     )
+    from agent.tools.recall_memory import RecallMemoryTool
+
     memorize_tool = MemorizeTool(engine)
+    recall_tool = RecallMemoryTool(
+        store=mem2_store,
+        embedder=embedder,
+        provider=light_provider or provider,
+        model=config.light_model or config.model,
+    )
     register_memory_meta_tools(
         tools,
         memorize_tool=memorize_tool,
+        recall_tool=recall_tool,
         write_file_tool=WriteFileTool(),
         edit_file_tool=EditFileTool(),
     )

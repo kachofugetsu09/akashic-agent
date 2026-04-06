@@ -23,6 +23,7 @@ META_TOOLBOX_GROUPS: tuple[MetaToolGroup, ...] = (
             ("list_dir", "查看目录"),
             ("web_search", "搜索网络"),
             ("web_fetch", "抓取网页"),
+            ("recall_memory", "检索结构化记忆，优先回答历史事实/偏好/做过什么"),
             ("fetch_messages", "按消息 ID 回溯原始对话"),
             ("search_messages", "搜索历史对话"),
         ),
