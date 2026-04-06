@@ -155,10 +155,10 @@ def _bind_facade_context_retriever(
     memory: MemoryServices,
     pipeline: DefaultMemoryRetrievalPipeline,
 ) -> None:
-    facade = getattr(memory, "facade", None)
-    binder = getattr(facade, "bind_context_retriever", None)
-    if callable(binder):
-        binder(pipeline._retrieve_context_via_legacy_pipeline)
+    facade = memory.facade
+    if facade is None:
+        return
+    facade.bind_context_retriever(pipeline._retrieve_context_via_legacy_pipeline)
 
 
 async def _retrieve_context_with_facade(

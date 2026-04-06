@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Awaitable, Callable, Protocol, runtime_checkable
 
 from agent.core.types import HistoryMessage
 from agent.postturn.protocol import PostTurnEvent
@@ -54,8 +54,16 @@ class InterestRetrievalResult:
     raw: dict[str, object] = field(default_factory=dict)
 
 
+ContextRetriever = Callable[[ContextRetrievalRequest], Awaitable[ContextRetrievalResult]]
+ConsolidationRunner = Callable[[object, bool, bool], Awaitable[None]]
+
+
 @runtime_checkable
 class MemoryRuntimeFacade(Protocol):
+    def bind_context_retriever(self, retriever: ContextRetriever) -> None: ...
+
+    def bind_consolidation_runner(self, runner: ConsolidationRunner) -> None: ...
+
     async def ingest_post_turn(self, event: PostTurnEvent) -> MemoryIngestResult: ...
 
     async def retrieve_context(

@@ -224,7 +224,7 @@ class AgentLoop:
             consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
             profile_extractor=deps.profile_extractor,
         )
-        if callable(getattr(memory_svc.facade, "bind_consolidation_runner", None)):
+        if memory_svc.facade is not None:
             memory_svc.facade.bind_consolidation_runner(
                 lambda session, archive_all, await_vector_store: consolidation_service.consolidate(
                     session,

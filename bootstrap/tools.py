@@ -293,7 +293,7 @@ def _build_loop_deps(
         memory_window=memory_config.window,
         profile_extractor=profile_extractor,
     )
-    if callable(getattr(memory_facade, "bind_consolidation_runner", None)):
+    if memory_facade is not None:
         memory_facade.bind_consolidation_runner(
             lambda session, archive_all, await_vector_store: consolidation.consolidate(
                 session,

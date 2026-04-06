@@ -20,6 +20,7 @@ from core.memory.runtime_facade import (
     ContextRetrievalRequest,
     ContextRetrievalResult,
     InterestRetrievalRequest,
+    MemoryRuntimeFacade,
 )
 
 
@@ -121,6 +122,16 @@ async def test_default_runtime_facade_retrieve_context_uses_callback_result():
     assert result.hyde_hypothesis == "hyde"
     assert result.scope_mode == "global"
     assert result.sufficiency_trace["retry"] is True
+
+
+def test_default_runtime_facade_satisfies_runtime_protocol():
+    facade = DefaultMemoryRuntimeFacade(
+        port=MagicMock(),
+        engine=None,
+        profile_maint=MagicMock(),
+    )
+
+    assert isinstance(facade, MemoryRuntimeFacade)
 
 
 @pytest.mark.asyncio
@@ -243,6 +254,19 @@ async def test_default_runtime_facade_run_consolidation_delegates_to_runner():
     )
 
     runner.assert_awaited_once_with(session, True, True)
+
+
+def test_default_runtime_facade_binds_context_retriever():
+    facade = DefaultMemoryRuntimeFacade(
+        port=MagicMock(),
+        engine=None,
+        profile_maint=MagicMock(),
+    )
+    retriever = AsyncMock()
+
+    facade.bind_context_retriever(retriever)
+
+    assert facade._context_retriever is retriever
 
 
 def test_default_runtime_facade_reads_file_side_context_from_profile_maint():

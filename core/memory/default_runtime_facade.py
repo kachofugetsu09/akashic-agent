@@ -13,8 +13,10 @@ from core.memory.engine import (
     RememberResult,
 )
 from core.memory.runtime_facade import (
+    ConsolidationRunner,
     ContextRetrievalRequest,
     ContextRetrievalResult,
+    ContextRetriever,
     InterestRetrievalRequest,
     InterestRetrievalResult,
 )
@@ -26,8 +28,6 @@ if TYPE_CHECKING:
     from core.memory.profile import ProfileMaintenanceStore
 
 
-ContextRetriever = Callable[[ContextRetrievalRequest], Awaitable[ContextRetrievalResult]]
-ConsolidationRunner = Callable[[object, bool, bool], Awaitable[None]]
 InterestRetriever = Callable[[InterestRetrievalRequest], Awaitable[InterestRetrievalResult]]
 
 
