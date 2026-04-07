@@ -45,7 +45,10 @@ class RecallMemoryTool(Tool):
         "禁止跳过此工具直接用 search_messages；禁止只凭摘要作答，不去 fetch 原文。\n"
         "query 写成陈述句效果更好：\n"
         "  ✓ '用户在三月完成了 akashic 运行时架构重构'\n"
-        "  ✗ '我们有做过重构吗'"
+        "  ✗ '我们有做过重构吗'\n"
+        "【引用协议（必须执行）】本工具调用后，最终回复正文末尾必须另起一行输出：\n"
+        "  §cited:[id1,id2,...]§\n"
+        "  列出本次实际引用的所有条目 id，逗号分隔无空格。未引用任何条目则不输出。"
     )
     parameters = {
         "type": "object",

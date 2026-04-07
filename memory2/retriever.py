@@ -192,7 +192,7 @@ class Retriever:
                 selected.append(item)
                 if summary:
                     tool_req = extra.get("tool_requirement")
-                    forced.append((item_id, f"- {summary}（必须调用工具：{tool_req}）"))
+                    forced.append((item_id, f"- [{item_id}] {summary}（必须调用工具：{tool_req}）"))
                 continue
             type_th = self._score_thresholds.get(mtype, self._score_threshold)
             floor = type_best.get(mtype, score) - self._relative_delta
@@ -220,16 +220,16 @@ class Retriever:
                     norms.append(
                         (
                             item_id,
-                            f"- {summary}{_format_memory_meta(item, mtype)}（步骤：{step_text}）",
+                            f"- [{item_id}] {summary}{_format_memory_meta(item, mtype)}（步骤：{step_text}）",
                         )
                     )
                 else:
-                    norms.append((item_id, f"- {summary}{_format_memory_meta(item, mtype)}"))
+                    norms.append((item_id, f"- [{item_id}] {summary}{_format_memory_meta(item, mtype)}"))
             elif mtype == "preference":
-                norms.append((item_id, f"- {summary}{_format_memory_meta(item, mtype)}"))
+                norms.append((item_id, f"- [{item_id}] {summary}{_format_memory_meta(item, mtype)}"))
             elif mtype in ("event", "profile"):
                 ts = f"[{happened_at}] " if happened_at else ""
-                events.append((item_id, f"- {ts}{summary}{_format_memory_meta(item, mtype)}"))
+                events.append((item_id, f"- [{item_id}] {ts}{summary}{_format_memory_meta(item, mtype)}"))
 
         return selected, forced, norms, events
 

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.context_store import DefaultContextStore
+from agent.core.context_store import DefaultContextStore, _extract_cited_ids
 from agent.retrieval.protocol import RetrievalResult
 from bus.events import InboundMessage
 
@@ -107,3 +107,19 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     post_turn_action.run.assert_awaited_once()
     assert order == ["persist", "observe", "observe", "post_turn", "post_turn_action", "dispatch"]
     assert session.messages[-1]["content"] == "整理好了"
+
+
+def test_extract_cited_ids_strips_ascii_marker_only_at_end():
+    clean, ids = _extract_cited_ids("答复正文\n§cited:[mem_1,mem-2]§")
+
+    assert clean == "答复正文"
+    assert ids == ["mem_1", "mem-2"]
+
+
+def test_extract_cited_ids_keeps_body_text_when_marker_not_at_end():
+    text = "正文里提到 §cited:[mem_1]§ 这串文本，但不是协议行。\n后面还有内容"
+
+    clean, ids = _extract_cited_ids(text)
+
+    assert clean == text
+    assert ids == []

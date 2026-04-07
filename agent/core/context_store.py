@@ -158,6 +158,9 @@ class DefaultContextStore(ContextStore):
         ):
             raise RuntimeError("ContextStore.commit requires session/trace/post_turn/outbound")
 
+        # 0. 从 reply 里剥离隐式引用行 §cited:[id1,id2]§，存入 cited_memory_ids。
+        reply, cited_memory_ids = _extract_cited_ids(reply)
+
         # 1. 先做 meme decorate，并准备最终回复文本。
         final_content = reply
         meme_media: list[str] = []
@@ -173,12 +176,13 @@ class DefaultContextStore(ContextStore):
         if self._session.presence:
             self._session.presence.record_user_message(session.key)
         session.add_message("user", msg.content, media=msg.media if msg.media else None)
-        session.add_message(
-            "assistant",
-            final_content,
-            tools_used=tools_used if tools_used else None,
-            tool_chain=tool_chain if tool_chain else None,
-        )
+        _assistant_kwargs: dict = {
+            "tools_used": tools_used if tools_used else None,
+            "tool_chain": tool_chain if tool_chain else None,
+        }
+        if cited_memory_ids:
+            _assistant_kwargs["cited_memory_ids"] = cited_memory_ids
+        session.add_message("assistant", final_content, **_assistant_kwargs)
         _update_session_runtime_metadata(
             session,
             tools_used=tools_used,
@@ -364,6 +368,25 @@ async def _run_effects(effects: list[object]) -> None:
                 await maybe
         except Exception as e:
             logger.warning("turn side effect failed: %s", e)
+
+
+# ── Citation extraction ────────────────────────────────────────────────────────
+
+_CITED_RE = re.compile(r"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-]+)\]§\s*$")
+
+
+def _extract_cited_ids(response: str) -> tuple[str, list[str]]:
+    """从回复正文中剥离隐式引用行 §cited:[id1,id2]§。
+
+    返回 (干净回复, cited_id列表)。若无引用行则返回原文和空列表。
+    """
+    match = _CITED_RE.search(response)
+    if not match:
+        return response, []
+    raw = match.group(1)
+    ids = [i.strip() for i in raw.split(",") if i.strip()]
+    clean = response[: match.start()].rstrip()
+    return clean, ids
 
 
 # ── Session metadata helpers (moved from agent/looping/memory_gate.py) ────────
