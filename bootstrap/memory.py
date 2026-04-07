@@ -24,6 +24,7 @@ def build_memory_runtime(
     from agent.memory import MemoryStore
     from agent.skills import SkillsLoader
     from agent.tools.memorize import MemorizeTool
+    from agent.tools.forget_memory import ForgetMemoryTool
     from agent.tools.filesystem import EditFileTool, WriteFileTool
     from core.memory.port import DefaultMemoryPort
     from memory2.embedder import Embedder
@@ -125,6 +126,7 @@ def build_memory_runtime(
     from agent.tools.recall_memory import RecallMemoryTool
 
     memorize_tool = MemorizeTool(engine)
+    forget_tool = ForgetMemoryTool(mem2_store)
     recall_tool = RecallMemoryTool(
         store=mem2_store,
         embedder=embedder,
@@ -134,6 +136,7 @@ def build_memory_runtime(
     register_memory_meta_tools(
         tools,
         memorize_tool=memorize_tool,
+        forget_tool=forget_tool,
         recall_tool=recall_tool,
         write_file_tool=WriteFileTool(),
         edit_file_tool=EditFileTool(),

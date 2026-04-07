@@ -35,6 +35,7 @@ META_TOOLBOX_GROUPS: tuple[MetaToolGroup, ...] = (
             ("edit_file", "改文件"),
             ("message_push", "主动推送消息/文件/图片"),
             ("memorize", "立即写入记忆"),
+            ("forget_memory", "将已确认错误的记忆标记为失效"),
         ),
     ),
     MetaToolGroup(

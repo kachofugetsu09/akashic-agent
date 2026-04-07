@@ -210,6 +210,25 @@ async def test_memorize_tool_uses_engine_remember():
     assert "engine-1" in result
 
 
+@pytest.mark.asyncio
+async def test_memorize_tool_passes_source_refs_to_engine():
+    engine = MagicMock()
+    engine.remember = AsyncMock(
+        return_value=RememberResult(item_id="engine-2", actual_type="profile")
+    )
+    tool = MemorizeTool(cast(Any, engine))
+
+    await tool.execute(
+        summary="用户澄清汪远哲是本人姓名",
+        memory_type="profile",
+        source_ref='["tg:1:2","tg:1:3"]#profile',
+        source_refs=["tg:1:9"],
+    )
+
+    request = engine.remember.await_args.args[0]
+    assert request.source_ref == '["tg:1:2", "tg:1:3", "tg:1:9"]'
+
+
 def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
     tools = ToolRegistry()
     tools.register(_NoopTool())

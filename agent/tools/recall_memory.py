@@ -147,7 +147,6 @@ class RecallMemoryTool(Tool):
         return json.dumps(
             {
                 "count": len(items),
-                "hypotheses_used": [h for h in (hyp1, hyp2) if h],
                 "items": items,
             },
             ensure_ascii=False,

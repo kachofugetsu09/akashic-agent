@@ -32,6 +32,15 @@ class FetchMessagesTool(Tool):
                 "items": {"type": "string"},
                 "description": "消息 ID 列表，格式如 'telegram:7674283004:495'",
             },
+            "source_ref": {
+                "type": "string",
+                "description": "单个 source_ref，可传 message id 或记忆条目的 source_ref",
+            },
+            "source_refs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "多个 source_ref，可混合传 message id 与记忆条目的 source_ref",
+            },
             "context": {
                 "type": "integer",
                 "description": "每条消息前后各扩展的上下文条数（0=仅精确匹配，最大 5，默认 0）",
@@ -40,14 +49,24 @@ class FetchMessagesTool(Tool):
                 "default": 0,
             },
         },
-        "required": ["ids"],
     }
 
     def __init__(self, store: SessionStore) -> None:
         self._store = store
 
-    async def execute(self, ids: list[str], context: int = 0, **_: Any) -> str:
-        clean_ids = [str(i).strip() for i in (ids or []) if str(i).strip()]
+    async def execute(
+        self,
+        ids: list[str] | None = None,
+        source_ref: str | None = None,
+        source_refs: list[str] | None = None,
+        context: int = 0,
+        **_: Any,
+    ) -> str:
+        clean_ids = _resolve_fetch_ids(
+            ids=ids or [],
+            source_ref=source_ref,
+            source_refs=source_refs or [],
+        )
         if not clean_ids:
             return json.dumps({"count": 0, "matched_count": 0, "messages": []}, ensure_ascii=False)
 
@@ -65,6 +84,40 @@ class FetchMessagesTool(Tool):
             {"count": len(messages), "matched_count": matched, "messages": messages},
             ensure_ascii=False,
         )
+
+
+def _resolve_fetch_ids(
+    *,
+    ids: list[str],
+    source_ref: str | None,
+    source_refs: list[str],
+) -> list[str]:
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for value in list(ids) + ([source_ref] if source_ref else []) + list(source_refs):
+        for item_id in _expand_source_ref(value):
+            if item_id not in seen:
+                seen.add(item_id)
+                resolved.append(item_id)
+    return resolved
+
+
+def _expand_source_ref(value: str | None) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    prefix = raw.split("#", 1)[0].strip()
+    if not prefix:
+        return []
+    try:
+        parsed = json.loads(prefix)
+    except (json.JSONDecodeError, ValueError):
+        return [prefix]
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    if isinstance(parsed, str) and parsed.strip():
+        return [parsed.strip()]
+    return []
 
 
 class SearchMessagesTool(Tool):

@@ -55,4 +55,3 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails():
     assert payload["items"][0]["id"] == "mem:1"
     assert payload["items"][0]["source_ref"] == "tg:1:2"
     assert store.vector_search_called is False
-    assert payload["hypotheses_used"] == ["用户处理过支付相关问题", "用户处理过支付相关问题"]

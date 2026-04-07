@@ -21,6 +21,15 @@ class _RecallMemoryToolStub(Tool):
         return ""
 
 
+class _ForgetMemoryToolStub(Tool):
+    name = "forget_memory"
+    description = "test"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs):
+        return ""
+
+
 def test_meta_toolbox_prompt_contains_grouped_overview():
     prompt = build_meta_toolbox_prompt()
 
@@ -47,6 +56,7 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     )
     register_memory_meta_tools(
         tools,
+        forget_tool=_ForgetMemoryToolStub(),
         recall_tool=_RecallMemoryToolStub(),
         write_file_tool=WriteFileTool(),
         edit_file_tool=EditFileTool(),

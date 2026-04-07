@@ -83,6 +83,43 @@ async def test_fetch_messages_context_clamps_at_seq_zero(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fetch_messages_supports_window_source_ref(tmp_path):
+    store = SessionStore(tmp_path / "sessions.db")
+    _setup_session(store, "tg:1", 6)
+
+    tool = FetchMessagesTool(store)
+    payload = json.loads(
+        await tool.execute(source_ref='["tg:1:2","tg:1:3"]#profile', context=1)
+    )
+
+    assert [m["id"] for m in payload["messages"]] == [
+        "tg:1:1",
+        "tg:1:2",
+        "tg:1:3",
+        "tg:1:4",
+    ]
+    assert payload["matched_count"] == 2
+    assert [m["in_source_ref"] for m in payload["messages"]] == [False, True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_fetch_messages_supports_mixed_ids_and_source_refs(tmp_path):
+    store = SessionStore(tmp_path / "sessions.db")
+    _setup_session(store, "tg:1", 5)
+
+    tool = FetchMessagesTool(store)
+    payload = json.loads(
+        await tool.execute(
+            ids=["tg:1:4"],
+            source_refs=['["tg:1:1","tg:1:2"]#h:abc', "tg:1:4"],
+        )
+    )
+
+    assert [m["id"] for m in payload["messages"]] == ["tg:1:4", "tg:1:1", "tg:1:2"]
+    assert payload["matched_count"] == 3
+
+
+@pytest.mark.asyncio
 async def test_search_messages_returns_preview_with_source_ref(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     store.upsert_session(

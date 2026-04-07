@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent.tools.filesystem import EditFileTool, WriteFileTool
+from agent.tools.forget_memory import ForgetMemoryTool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.recall_memory import RecallMemoryTool
@@ -70,6 +71,7 @@ def register_common_meta_tools(
 def register_memory_meta_tools(
     tools: ToolRegistry,
     memorize_tool: MemorizeTool | None = None,
+    forget_tool: ForgetMemoryTool | None = None,
     recall_tool: RecallMemoryTool | None = None,
     write_file_tool: WriteFileTool | None = None,
     edit_file_tool: EditFileTool | None = None,
@@ -79,6 +81,13 @@ def register_memory_meta_tools(
             memorize_tool,
             always_on=True,
             risk="write",
+        )
+    if forget_tool is not None:
+        tools.register(
+            forget_tool,
+            always_on=True,
+            risk="write",
+            search_hint="记错了 删除记忆 撤销错误记忆 失效记忆",
         )
     if recall_tool is not None:
         tools.register(
