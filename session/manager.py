@@ -209,6 +209,10 @@ class SessionManager:
         self._cache[key] = session
         return session
 
+    def peek_next_message_id(self, session_key: str) -> str:
+        next_seq = self._store.next_seq(session_key)
+        return f"{session_key}:{next_seq}"
+
     def _load(self, key: str) -> Session | None:
         meta = self._store.get_session_meta(key)
         messages = self._store.fetch_session_messages(key)

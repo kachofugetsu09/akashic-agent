@@ -74,7 +74,14 @@ class AgentCore:
         )
 
         # 3. 先同步 tool context，再执行被动链 reasoner。
-        self._tools.set_context(channel=msg.channel, chat_id=msg.chat_id)
+        self._tools.set_context(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            current_user_source_ref=_predict_current_user_source_ref(
+                session_manager=self._session.session_manager,
+                session=session,
+            ),
+        )
         turn_result = await self._reasoner.run_turn(
             msg=msg,
             skill_names=skill_mentions or None,
@@ -98,3 +105,14 @@ class AgentCore:
             context_retry=turn_result.context_retry,
             dispatch_outbound=dispatch_outbound,
         )
+
+
+def _predict_current_user_source_ref(*, session_manager, session) -> str:
+    peek = getattr(session_manager, "peek_next_message_id", None)
+    if callable(peek):
+        return str(peek(session.key))
+    if session.messages:
+        last_id = str(session.messages[-1].get("id", "") or "").strip()
+        if last_id:
+            return last_id
+    return ""

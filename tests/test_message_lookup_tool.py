@@ -316,3 +316,13 @@ def test_history_fact_guard_requires_fetch_after_search_preview():
     assert "source_ref" in prompt
     assert "预览" in prompt
     assert "§cited:[" in prompt
+
+
+def test_memory_correction_protocol_covers_soft_corrections_and_forget_memory():
+    prompt = build_agent_behavior_rules_prompt(workspace=Path("."))
+    assert "其实还好" in prompt
+    assert "并不反感" in prompt
+    assert "forget_memory" in prompt
+    assert "若用户这轮是在纠正你，而你本轮没有调用 `forget_memory`" in prompt
+    assert "在拿到 fetch_messages 结果前，禁止直接调用 `forget_memory`" in prompt
+    assert "调用了 `forget_memory` 却没有先调用 `fetch_messages`" in prompt

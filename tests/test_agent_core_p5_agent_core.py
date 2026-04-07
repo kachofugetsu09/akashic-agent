@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.runtime_support import TurnRunResult
-from agent.core.agent_core import AgentCore, AgentCoreDeps
+from agent.core.agent_core import AgentCore, AgentCoreDeps, _predict_current_user_source_ref
 from agent.core.types import ContextBundle
 from bus.events import InboundMessage, OutboundMessage
 
@@ -68,7 +68,8 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
         AgentCoreDeps(
             session=SimpleNamespace(
                 session_manager=SimpleNamespace(
-                    get_or_create=MagicMock(return_value=session)
+                    get_or_create=MagicMock(return_value=session),
+                    peek_next_message_id=MagicMock(return_value="telegram:123:0"),
                 )
             ),
             context_store=context_store,
@@ -94,7 +95,11 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     assert render_request.current_message == ""
     assert render_request.skill_names == ["refactor"]
     assert render_request.retrieved_memory_block == "remembered"
-    tools.set_context.assert_called_once_with(channel="telegram", chat_id="123")
+    tools.set_context.assert_called_once_with(
+        channel="telegram",
+        chat_id="123",
+        current_user_source_ref="telegram:123:0",
+    )
     assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["refactor"]
     assert reasoner.run_turn.await_args.kwargs["retrieved_memory_block"] == "remembered"
     assert context_store.commit.await_args.kwargs["retrieval_raw"] == {"route": "RETRIEVE"}
@@ -115,7 +120,8 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
         AgentCoreDeps(
             session=SimpleNamespace(
                 session_manager=SimpleNamespace(
-                    get_or_create=MagicMock(return_value=session)
+                    get_or_create=MagicMock(return_value=session),
+                    peek_next_message_id=MagicMock(return_value="cli:1:0"),
                 )
             ),
             context_store=context_store,
@@ -138,3 +144,15 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
     await agent_core.process(msg, "cli:1")
 
     assert "no response to give" in context_store.commit.await_args.kwargs["reply"]
+
+
+def test_predict_current_user_source_ref_falls_back_to_last_session_message():
+    session = _DummySession("telegram:123")
+    session.messages.append({"id": "telegram:123:41"})
+
+    value = _predict_current_user_source_ref(
+        session_manager=SimpleNamespace(),
+        session=session,
+    )
+
+    assert value == "telegram:123:41"

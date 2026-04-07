@@ -211,22 +211,38 @@ async def test_memorize_tool_uses_engine_remember():
 
 
 @pytest.mark.asyncio
-async def test_memorize_tool_passes_source_refs_to_engine():
+async def test_memorize_tool_uses_current_user_source_ref_by_default():
     engine = MagicMock()
     engine.remember = AsyncMock(
-        return_value=RememberResult(item_id="engine-2", actual_type="profile")
+        return_value=RememberResult(item_id="engine-3", actual_type="preference")
     )
     tool = MemorizeTool(cast(Any, engine))
 
     await tool.execute(
-        summary="用户澄清汪远哲是本人姓名",
-        memory_type="profile",
-        source_ref='["tg:1:2","tg:1:3"]#profile',
-        source_refs=["tg:1:9"],
+        summary="用户并不反感星露谷物语",
+        memory_type="preference",
+        current_user_source_ref="telegram:7674283004:9999",
     )
 
     request = engine.remember.await_args.args[0]
-    assert request.source_ref == '["tg:1:2", "tg:1:3", "tg:1:9"]'
+    assert request.source_ref == "telegram:7674283004:9999"
+
+
+@pytest.mark.asyncio
+async def test_memorize_tool_without_any_source_ref_does_not_fall_back_to_memorize_tool():
+    engine = MagicMock()
+    engine.remember = AsyncMock(
+        return_value=RememberResult(item_id="engine-4", actual_type="preference")
+    )
+    tool = MemorizeTool(cast(Any, engine))
+
+    await tool.execute(
+        summary="用户喜欢机制透明的游戏",
+        memory_type="preference",
+    )
+
+    request = engine.remember.await_args.args[0]
+    assert request.source_ref == ""
 
 
 def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
