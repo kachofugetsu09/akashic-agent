@@ -514,6 +514,15 @@ class AgentTick:
         ctx.mark_contents_prefetched(fetched_contents, gw_result.content_store)
         ctx.mark_context_prefetched(gw_result.context)
 
+        # 2.5 快速 skip：无 alert、无 content、且 context_fallback 未开启时，
+        #     直接跳过 LLM，避免空转。
+        if not gw_result.alerts and not gw_result.content_meta and not ctx.context_as_fallback_open:
+            logger.info("[proactive_v2] _run_loop: no alerts/content and context_fallback=False → skip LLM")
+            ctx.terminal_action = "skip"
+            ctx.skip_reason = "no_content"
+            self.last_ctx = ctx
+            return
+
         # 3. 构造本轮 proactive 专用 system prompt，把预取数据一次性注入给模型。
         system_msg = {"role": "system", "content": self._build_system_prompt(ctx, gw_result)}
         messages: list[dict] = [system_msg]
