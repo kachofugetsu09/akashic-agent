@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.context_store import DefaultContextStore, _extract_cited_ids
+from agent.core.context_store import (
+    DefaultContextStore,
+    _extract_cited_ids,
+    _extract_cited_ids_from_tool_chain,
+)
 from agent.retrieval.protocol import RetrievalResult
 from bus.events import InboundMessage
 
@@ -125,3 +129,44 @@ def test_extract_cited_ids_keeps_body_text_when_marker_not_at_end():
 
     assert clean == text
     assert ids == []
+
+
+def test_extract_cited_ids_from_tool_chain_uses_recall_memory_cited_item_ids():
+    tool_chain = [
+        {
+            "text": "thinking",
+            "calls": [
+                {
+                    "name": "recall_memory",
+                    "result": "{\"count\":2,\"cited_item_ids\":[\"mem_1\",\"mem_2\"]}",
+                }
+            ],
+        }
+    ]
+
+    ids = _extract_cited_ids_from_tool_chain(tool_chain)
+
+    assert ids == ["mem_1", "mem_2"]
+
+
+def test_extract_cited_ids_from_tool_chain_falls_back_to_item_ids():
+    tool_chain = [
+        {
+            "text": "thinking",
+            "calls": [
+                {
+                    "name": "recall_memory",
+                    "result": (
+                        "{\"count\":2,\"items\":["
+                        "{\"id\":\"mem_1\"},"
+                        "{\"id\":\"mem_2\"}"
+                        "]}"
+                    ),
+                }
+            ],
+        }
+    ]
+
+    ids = _extract_cited_ids_from_tool_chain(tool_chain)
+
+    assert ids == ["mem_1", "mem_2"]

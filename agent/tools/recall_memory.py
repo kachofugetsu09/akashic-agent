@@ -46,9 +46,11 @@ class RecallMemoryTool(Tool):
         "query 写成陈述句效果更好：\n"
         "  ✓ '用户在三月完成了 akashic 运行时架构重构'\n"
         "  ✗ '我们有做过重构吗'\n"
-        "【引用协议（必须执行）】本工具调用后，最终回复正文末尾必须另起一行输出：\n"
+        "【引用协议（必须执行）】只要最终回复使用了本工具返回的任何记忆条目，无论是否继续 fetch 原文，"
+        "都必须在正文末尾另起一行输出：\n"
         "  §cited:[id1,id2,...]§\n"
-        "  列出本次实际引用的所有条目 id，逗号分隔无空格。未引用任何条目则不输出。"
+        "  列出本次实际引用的所有条目 id，逗号分隔无空格。未引用任何条目则不输出。\n"
+        "工具结果里的 cited_item_ids / citation_required / citation_format 是给你执行这条协议用的，不要忽略。"
     )
     parameters = {
         "type": "object",
@@ -134,6 +136,7 @@ class RecallMemoryTool(Tool):
             if item.get("source_ref"):
                 entry["source_ref"] = item["source_ref"]
             items.append(entry)
+        cited_item_ids = [str(item["id"]) for item in items if str(item.get("id", "")).strip()]
 
         logger.info(
             "recall_memory: query=%r vector=%d kw=%d merged=%d hyp=[%r, %r]",
@@ -148,6 +151,13 @@ class RecallMemoryTool(Tool):
             {
                 "count": len(items),
                 "items": items,
+                "citation_required": True,
+                "citation_format": "§cited:[id1,id2,...]§",
+                "cited_item_ids": cited_item_ids,
+                "citation_rule": (
+                    "若最终回复使用了本工具返回的任何记忆条目，"
+                    "必须在正文末尾输出 §cited:[实际使用的id列表]§"
+                ),
             },
             ensure_ascii=False,
         )

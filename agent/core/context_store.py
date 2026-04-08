@@ -162,6 +162,8 @@ class DefaultContextStore(ContextStore):
 
         # 0. 从 reply 里剥离隐式引用行 §cited:[id1,id2]§，存入 cited_memory_ids。
         reply, cited_memory_ids = _extract_cited_ids(reply)
+        if not cited_memory_ids:
+            cited_memory_ids = _extract_cited_ids_from_tool_chain(tool_chain)
 
         # 1. 先做 meme decorate，并准备最终回复文本。
         final_content = reply
@@ -390,6 +392,44 @@ def _extract_cited_ids(response: str) -> tuple[str, list[str]]:
     ids = [i.strip() for i in raw.split(",") if i.strip()]
     clean = response[: match.start()].rstrip()
     return clean, ids
+
+
+def _extract_cited_ids_from_tool_chain(tool_chain: list[dict]) -> list[str]:
+    """从工具结果里兜底提取 cited ids。
+
+    目标场景：模型调用了 recall_memory，但忘了在最终回复里输出 §cited:[...]§。
+    这时至少把工具结果里明确返回的 cited_item_ids 落库，避免本轮引用信息彻底丢失。
+    """
+    cited: list[str] = []
+    seen: set[str] = set()
+    for group in tool_chain:
+        if not isinstance(group, dict):
+            continue
+        for call in group.get("calls") or []:
+            if not isinstance(call, dict):
+                continue
+            if str(call.get("name", "") or "") != "recall_memory":
+                continue
+            raw_result = str(call.get("result", "") or "").strip()
+            if not raw_result:
+                continue
+            try:
+                data = json.loads(raw_result)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            raw_ids = data.get("cited_item_ids")
+            if not isinstance(raw_ids, list):
+                items = data.get("items")
+                if isinstance(items, list):
+                    raw_ids = [item.get("id") for item in items if isinstance(item, dict)]
+                else:
+                    raw_ids = []
+            for raw_id in raw_ids:
+                item_id = str(raw_id or "").strip()
+                if item_id and item_id not in seen:
+                    seen.add(item_id)
+                    cited.append(item_id)
+    return cited
 
 
 # ── Session metadata helpers (moved from agent/looping/memory_gate.py) ────────

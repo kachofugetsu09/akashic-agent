@@ -54,4 +54,13 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails():
     assert payload["count"] == 1
     assert payload["items"][0]["id"] == "mem:1"
     assert payload["items"][0]["source_ref"] == "tg:1:2"
+    assert payload["citation_required"] is True
+    assert payload["citation_format"] == "§cited:[id1,id2,...]§"
+    assert payload["cited_item_ids"] == ["mem:1"]
+    assert "§cited:[" in payload["citation_rule"]
     assert store.vector_search_called is False
+
+
+def test_recall_memory_description_emphasizes_mandatory_citation():
+    assert "只要最终回复使用了本工具返回的任何记忆条目" in RecallMemoryTool.description
+    assert "cited_item_ids / citation_required / citation_format" in RecallMemoryTool.description
