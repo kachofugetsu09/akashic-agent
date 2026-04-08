@@ -336,3 +336,15 @@ def test_behavior_rules_force_fact_questions_to_answer_directly():
     assert "当前这一问如果是事实整理或时间确认，也不要顺着前文继续输出情绪安慰" in prompt
     assert "事实型问题答完事实就停" in prompt
     assert "稳住就行" in prompt
+
+
+def test_behavior_rules_use_evidence_threshold_not_keyword_filtering():
+    prompt = build_agent_behavior_rules_prompt(workspace=Path("."))
+    assert "知识截止时间" in prompt
+    assert "外部世界此刻是什么样" in prompt
+    assert "本轮外部证据" in prompt
+    assert "这里的判断看“证据门槛”，不是看字面关键词" in prompt
+    assert "如果答案取决于稳定知识" in prompt
+    assert "如果答案取决于本轮外部证据" in prompt
+    assert "我现在不能确认 / 我需要先查一下" in prompt
+    assert "没有本轮证据就只能说记忆里的旧信息" in prompt
