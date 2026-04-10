@@ -170,12 +170,24 @@ class DefaultReasoner(Reasoner):
         )
         self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
         self._stream_sink_factory: Callable[[object], Callable[[str], Awaitable[None]] | None] | None = None
+        self._progress_sink_factory: Callable[
+            [object], Callable[[dict[str, object]], Awaitable[None]] | None
+        ] | None = None
 
     def set_stream_sink_factory(
         self,
         factory: Callable[[object], Callable[[str], Awaitable[None]] | None] | None,
     ) -> None:
         self._stream_sink_factory = factory
+
+    def set_progress_sink_factory(
+        self,
+        factory: Callable[
+            [object], Callable[[dict[str, object]], Awaitable[None]] | None
+        ]
+        | None,
+    ) -> None:
+        self._progress_sink_factory = factory
 
     async def run_turn(
         self,
@@ -208,6 +220,11 @@ class DefaultReasoner(Reasoner):
             )
         stream_sink = (
             self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
+        )
+        progress_sink = (
+            self._progress_sink_factory(msg)
+            if self._progress_sink_factory is not None
+            else None
         )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
@@ -250,6 +267,7 @@ class DefaultReasoner(Reasoner):
                     preloaded_tools=preloaded,
                     preflight_injected=True,
                     on_content_delta=stream_sink,
+                    on_progress=progress_sink,
                 )
                 tools_used = list(result.metadata.get("tools_used") or [])
                 tool_chain = list(result.metadata.get("tool_chain") or [])
@@ -329,6 +347,7 @@ class DefaultReasoner(Reasoner):
         preloaded_tools: set[str] | None = None,
         preflight_injected: bool = True,
         on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_progress: Callable[[dict[str, object]], Awaitable[None]] | None = None,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹、循环检测状态。
         messages = initial_messages
@@ -532,6 +551,14 @@ class DefaultReasoner(Reasoner):
 
                 # 7. 本轮工具执行完后，注入 Loop State（3行，每轮工具后更新已解锁工具列表）。
                 tool_chain.append({"text": response.content, "calls": iter_calls})
+                if on_progress is not None:
+                    await on_progress(
+                        {
+                            "partial_reply": response.content or "",
+                            "tools_used": list(tools_used),
+                            "tool_chain_partial": list(tool_chain),
+                        }
+                    )
                 messages.append(
                     build_turn_injection_message(
                         _build_loop_state_hint(
@@ -552,6 +579,15 @@ class DefaultReasoner(Reasoner):
                 tools_used if tools_used else "无",
             )
             messages.append({"role": "assistant", "content": response.content})
+            if on_progress is not None:
+                await on_progress(
+                    {
+                        "partial_reply": response.content or "",
+                        "tools_used": list(tools_used),
+                        "tool_chain_partial": list(tool_chain),
+                        "partial_thinking": response.thinking,
+                    }
+                )
             return self._build_result(
                 reply=response.content or "（无响应）",
                 tools_used=tools_used,

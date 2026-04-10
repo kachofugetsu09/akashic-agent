@@ -11,6 +11,8 @@ Shell 工具（Bash 命令执行）
 import asyncio
 import json
 import logging
+import os
+import signal
 import shlex
 import ipaddress
 from pathlib import Path
@@ -221,7 +223,16 @@ async def _run(
         cwd=str(cwd) if cwd is not None else None,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,  # 独立 process group，便于 killpg 杀整棵进程树
     )
+
+    def _kill_tree() -> None:
+        """杀掉整棵进程树（按 pgid）。"""
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass  # 进程已退出或无权限
+
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return (
@@ -231,7 +242,7 @@ async def _run(
             False,
         )
     except asyncio.TimeoutError:
-        proc.kill()
+        _kill_tree()
         stdout_b, stderr_b = await proc.communicate()
         return (
             stdout_b.decode(errors="replace"),
@@ -239,6 +250,10 @@ async def _run(
             -1,
             True,
         )
+    except asyncio.CancelledError:
+        _kill_tree()
+        await proc.communicate()
+        raise
 
 
 def _truncate(content: str) -> str:

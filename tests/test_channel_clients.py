@@ -171,6 +171,9 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
     class Conflict(TelegramError):
         pass
 
+    class BadRequest(TelegramError):
+        pass
+
     class RetryAfter(TelegramError):
         def __init__(self, retry_after=1.0):
             super().__init__(retry_after)
@@ -195,6 +198,11 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
     class MessageHandler:
         def __init__(self, flt, callback):
             self.filter = flt
+            self.callback = callback
+
+    class CommandHandler:
+        def __init__(self, command, callback):
+            self.command = command
             self.callback = callback
 
     class _Updater:
@@ -258,12 +266,14 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
     telegram.Update = Update
     telegram_constants.ChatAction = SimpleNamespace(TYPING="typing")
     telegram_error.Conflict = Conflict
+    telegram_error.BadRequest = BadRequest
     telegram_error.NetworkError = NetworkError
     telegram_error.RetryAfter = RetryAfter
     telegram_error.TelegramError = TelegramError
     telegram_error.TimedOut = TimedOut
     telegram_ext.Application = _Application
     telegram_ext.ContextTypes = SimpleNamespace(DEFAULT_TYPE=object)
+    telegram_ext.CommandHandler = CommandHandler
     telegram_ext.MessageHandler = MessageHandler
     telegram_ext.filters = SimpleNamespace(
         TEXT=_Filter(),
@@ -470,11 +480,23 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     mod = _import_telegram_channel(monkeypatch)
     bus = _Bus()
     session_manager = _SessionManager()
-    channel = mod.TelegramChannel("token", bus, session_manager, allow_from=["1", "Alice"])
+    interrupt_controller = MagicMock()
+    interrupt_controller.request_interrupt.return_value = SimpleNamespace(
+        status="interrupted",
+        session_key="telegram:123",
+        message="已中断",
+    )
+    channel = mod.TelegramChannel(
+        "token",
+        bus,
+        session_manager,
+        allow_from=["1", "Alice"],
+        interrupt_controller=interrupt_controller,
+    )
     monkeypatch.setattr(mod, "send_markdown", AsyncMock())
     monkeypatch.setattr(mod, "send_stream_markdown", AsyncMock())
     await channel.start()
-    assert len(channel._app.handlers) == 3
+    assert len(channel._app.handlers) == 4
     assert bus.outbound[0][0] == "telegram"
 
     class _File:
@@ -514,6 +536,19 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert len(bus.inbound) == 1
     assert bus.inbound[0].metadata["reply_to_sender"] == "@other"
     assert len(bus.inbound[0].media) == 2
+
+    stop_update = SimpleNamespace(
+        effective_message=SimpleNamespace(text="/stop", message_id=99),
+        effective_chat=SimpleNamespace(id=123),
+        effective_user=SimpleNamespace(id=1, username="Alice"),
+    )
+    await channel._on_stop_command(stop_update, context)
+    interrupt_controller.request_interrupt.assert_called_once_with(
+        session_key="telegram:123",
+        sender="1",
+        command="/stop",
+    )
+    assert len(bus.inbound) == 1
 
     photo_update = SimpleNamespace(
         effective_message=SimpleNamespace(
@@ -560,7 +595,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     await channel.send_image("123", "https://example.com/img.jpg")
     await channel.send_image("123", str(sample))
     await channel._on_response(OutboundMessage(channel="telegram", chat_id="123", content="pong"))
-    assert mod.send_markdown.await_count == 1
+    assert mod.send_markdown.await_count == 2
     assert mod.send_stream_markdown.await_count == 2
     sender = channel.create_stream_sender("123")
     assert sender is not None
@@ -578,7 +613,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         )
     )
     assert channel._app.bot.edit_message_text.await_count >= 1
-    assert mod.send_markdown.await_count == 1
+    assert mod.send_markdown.await_count == 2
     assert mod.send_stream_markdown.await_count == 2
 
     channel._app.bot.send_chat_action = AsyncMock(side_effect=[mod.TimedOut("x"), mod.NetworkError("x"), None])
@@ -636,6 +671,15 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
         groups=[group_cfg],
         group_filter=group_filter,
         http_requester=requester,
+        interrupt_controller=SimpleNamespace(
+            request_interrupt=MagicMock(
+                return_value=SimpleNamespace(
+                    status="interrupted",
+                    session_key="qq:1",
+                    message="已中断",
+                )
+            )
+        ),
     )
     assert channel._is_allowed("1") is True
     assert channel._is_allowed("2") is False
@@ -652,17 +696,22 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     await channel.start()
     assert bus.outbound[0][0] == "qq"
 
+    async def _drain(coro):
+        return await coro
+
+    channel._run_on_bot_loop = AsyncMock(side_effect=_drain)
+
     await channel._bot.startup_handler(SimpleNamespace())
     await channel._bot.private_handler(SimpleNamespace(user_id="1", raw_message="hi [CQ:image,url=http://x/a.jpg]"))
     await channel._bot.group_handler(SimpleNamespace(group_id="100", user_id="1", raw_message="hello"))
+    await channel._bot.private_handler(SimpleNamespace(user_id="1", raw_message="/stop"))
+    await channel._bot.group_handler(SimpleNamespace(group_id="100", user_id="1", raw_message="/stop"))
     if scheduled:
         await asyncio.gather(*scheduled)
     assert len(bus.inbound) == 2
     assert bus.inbound[0].metadata["chat_type"] == "private"
     assert bus.inbound[1].metadata["chat_type"] == "group"
-
-    async def _drain(coro):
-        return await coro
+    assert channel._interrupt_controller.request_interrupt.call_count == 2
 
     channel._run_on_bot_loop = AsyncMock(side_effect=_drain)
     sample = tmp_path / "image.bin"

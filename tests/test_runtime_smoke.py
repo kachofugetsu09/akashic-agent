@@ -158,6 +158,9 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
         async def send(self, *args, **kwargs):
             return None
 
+        async def send_stream(self, *args, **kwargs):
+            return None
+
         async def send_file(self, *args, **kwargs):
             return None
 
@@ -211,12 +214,14 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     )
     resources = SharedHttpResources()
     try:
+        controller = object()
         ipc, tg, qq = await start_channels(
             config,
             bus=object(),
             session_manager=object(),
             push_tool=_PushTool(),
             http_resources=resources,
+            interrupt_controller=controller,
         )
     finally:
         await resources.aclose()
@@ -226,3 +231,5 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     assert qq is not None
     assert starts == ["ipc", "telegram", "qq"]
     assert registrations == ["telegram", "qq"]
+    assert tg.kwargs["interrupt_controller"] is controller
+    assert qq.kwargs["interrupt_controller"] is controller

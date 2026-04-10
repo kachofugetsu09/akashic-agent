@@ -10,10 +10,17 @@ import asyncio
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict, NetworkError, TelegramError, TimedOut
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
+from agent.looping.interrupt import InterruptController
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
 from infra.channels.telegram_utils import (
     TelegramStreamMessage,
@@ -37,9 +44,11 @@ class TelegramChannel:
         bus: MessageBus,
         session_manager: SessionManager,
         allow_from: list[str] | None = None,
+        interrupt_controller: InterruptController | None = None,
     ) -> None:
         self._bus = bus
         self._session_manager = session_manager
+        self._interrupt_controller = interrupt_controller
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._message_deduper = MessageDeduper(_SEEN_MSG_MAXSIZE)
         self._attachments = AttachmentStore()
@@ -50,6 +59,7 @@ class TelegramChannel:
             normalizer=lambda value: value.lower(),
         )
         self._app = Application.builder().token(token).build()
+        self._app.add_handler(CommandHandler("stop", self._on_stop_command))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
@@ -190,6 +200,32 @@ class TelegramChannel:
                 },
             )
         )
+
+    async def _on_stop_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        msg = update.effective_message
+        chat = update.effective_chat
+        user = update.effective_user
+
+        if not msg or not chat or not user:
+            return
+        if not self._is_allowed(user):
+            logger.warning(
+                f"[telegram] 拒绝未授权 /stop  id={user.id}  username=@{user.username}"
+            )
+            return
+        if self._interrupt_controller is None:
+            await send_markdown(self._app.bot, str(chat.id), "当前未启用中断功能。")
+            return
+
+        session_key = f"{_CHANNEL}:{chat.id}"
+        result = self._interrupt_controller.request_interrupt(
+            session_key=session_key,
+            sender=str(user.id),
+            command="/stop",
+        )
+        await send_markdown(self._app.bot, str(chat.id), result.message)
 
     async def _on_photo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

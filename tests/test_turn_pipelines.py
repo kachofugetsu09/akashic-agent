@@ -9,6 +9,7 @@ import pytest
 from agent.core.types import ToolCall, ToolCallGroup
 from agent.core.runtime_support import TurnRunResult
 from agent.looping.core import AgentLoop
+from agent.looping.interrupt import TurnInterruptState
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
 from agent.postturn.default_pipeline import DefaultPostTurnPipeline
@@ -46,6 +47,17 @@ class _NoopTool(Tool):
 class _Provider:
     async def chat(self, **kwargs):
         return LLMResponse(content="ok", tool_calls=[])
+
+
+class _PendingTask:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def done(self) -> bool:
+        return False
+
+    def cancel(self) -> None:
+        self.cancelled = True
 
 
 class _CustomRetrieval(MemoryRetrievalPipeline):
@@ -363,3 +375,93 @@ def test_agent_loop_uses_custom_pipelines(tmp_path: Path):
     run_kwargs = loop._reasoner.run_turn.await_args.kwargs
     assert "base_history" in run_kwargs
     assert run_kwargs["base_history"] is None
+
+
+def test_request_interrupt_uses_active_turn_state_snapshot(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    session_key = "telegram:123"
+    pending = _PendingTask()
+    loop._active_tasks[session_key] = pending  # type: ignore[attr-defined]
+    loop._active_turn_states[session_key] = TurnInterruptState(  # type: ignore[attr-defined]
+        session_key=session_key,
+        original_user_message="原始消息 A",
+    )
+
+    result = loop.request_interrupt(session_key, sender="1", command="/stop")
+
+    assert result.status == "interrupted"
+    assert pending.cancelled is True
+    assert loop._interrupt_states[session_key].original_user_message == "原始消息 A"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_resumed_interrupt_state_survives_timeout(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    session_key = "telegram:123"
+    loop._interrupt_states[session_key] = TurnInterruptState(  # type: ignore[attr-defined]
+        session_key=session_key,
+        original_user_message="原始消息 A",
+        partial_reply="半截回答",
+    )
+    loop._MESSAGE_TIMEOUT_S = 0.01  # type: ignore[attr-defined]
+
+    async def _slow_process(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        return MagicMock(content="ok")
+
+    loop._core_runner.process = _slow_process  # type: ignore[attr-defined]
+
+    msg = InboundMessage(
+        channel="telegram",
+        sender="1",
+        chat_id="123",
+        content="补充 B",
+    )
+    outbound = await loop._process(msg)
+
+    assert "超时" in outbound.content
+    assert session_key in loop._interrupt_states  # type: ignore[attr-defined]
+    assert loop._interrupt_states[session_key].original_user_message == "原始消息 A"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_state_carries_partial_progress(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    session_key = "telegram:123"
+    msg = InboundMessage(
+        channel="telegram",
+        sender="1",
+        chat_id="123",
+        content="原始消息 A",
+    )
+    loop._active_turn_states[session_key] = TurnInterruptState(  # type: ignore[attr-defined]
+        session_key=session_key,
+        original_user_message=msg.content,
+    )
+    progress_sink = loop._build_progress_sink(msg)  # type: ignore[attr-defined]
+    await progress_sink(
+        {
+            "partial_reply": "工具阶段说明",
+            "partial_thinking": "思考片段",
+            "tools_used": ["shell"],
+            "tool_chain_partial": [{"text": "tool", "calls": []}],
+        }
+    )
+    loop._append_partial_reply(session_key, " + 流式增量")  # type: ignore[attr-defined]
+    pending = _PendingTask()
+    loop._active_tasks[session_key] = pending  # type: ignore[attr-defined]
+
+    loop.request_interrupt(session_key)
+    state = loop._interrupt_states[session_key]  # type: ignore[attr-defined]
+
+    assert state.partial_reply == "工具阶段说明 + 流式增量"
+    assert state.partial_thinking == "思考片段"
+    assert state.tools_used == ["shell"]
+    assert state.tool_chain_partial == [{"text": "tool", "calls": []}]
+
+
+def test_agent_loop_configures_progress_sink_without_stream_factory(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    progress_factory = getattr(loop._reasoner, "_progress_sink_factory", None)
+
+    assert callable(progress_factory)

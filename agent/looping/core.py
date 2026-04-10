@@ -1,11 +1,13 @@
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from agent.context import ContextBuilder
 from agent.core.agent_core import AgentCore, AgentCoreDeps
+from agent.looping.interrupt import InterruptResult, TurnInterruptState
 from agent.core.context_store import DefaultContextStore
 from agent.core.reasoner import DefaultReasoner
 from agent.core.runner import CoreRunner, CoreRunnerDeps
@@ -81,6 +83,11 @@ class AgentLoop:
         self._running = False
         self._processing_state = deps.processing_state
 
+        # ── 中断控制面（纯内存态） ──
+        self._active_tasks: dict[str, asyncio.Task] = {}
+        self._active_turn_states: dict[str, TurnInterruptState] = {}
+        self._interrupt_states: dict[str, TurnInterruptState] = {}
+
         # 2. 再解析 memory runtime 入口。
         memory_port, post_mem_worker = self._resolve_memory_runtime(deps)
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
@@ -113,11 +120,63 @@ class AgentLoop:
             post_mem_worker=post_mem_worker,
             hyde_enhancer=hyde_enhancer,
         )
+        self._configure_interrupt_progress_tracking()
 
     def set_stream_sink_factory(self, factory) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
         if callable(setter):
-            setter(factory)
+            setter(self._wrap_stream_sink_factory(factory))
+
+    def _configure_interrupt_progress_tracking(self) -> None:
+        progress_setter = getattr(self._reasoner, "set_progress_sink_factory", None)
+        if callable(progress_setter):
+            progress_setter(self._build_progress_sink)
+
+    def _wrap_stream_sink_factory(self, factory):
+        if factory is None:
+            return None
+
+        def _build(msg):
+            downstream = factory(msg)
+            session_key = getattr(msg, "session_key", f"{msg.channel}:{msg.chat_id}")
+            if downstream is None:
+                return None
+
+            async def _push(delta: str) -> None:
+                self._append_partial_reply(session_key, delta)
+                await downstream(delta)
+
+            return _push
+
+        return _build
+
+    def _build_progress_sink(self, msg):
+        session_key = getattr(msg, "session_key", f"{msg.channel}:{msg.chat_id}")
+
+        async def _progress(payload: dict[str, object]) -> None:
+            state = self._active_turn_states.get(session_key)
+            if state is None:
+                return
+            partial_reply = payload.get("partial_reply")
+            if isinstance(partial_reply, str) and partial_reply:
+                state.partial_reply = partial_reply
+            partial_thinking = payload.get("partial_thinking")
+            if isinstance(partial_thinking, str) and partial_thinking:
+                state.partial_thinking = partial_thinking
+            tools_used = payload.get("tools_used")
+            if isinstance(tools_used, list):
+                state.tools_used = list(tools_used)
+            tool_chain_partial = payload.get("tool_chain_partial")
+            if isinstance(tool_chain_partial, list):
+                state.tool_chain_partial = list(tool_chain_partial)
+
+        return _progress
+
+    def _append_partial_reply(self, session_key: str, delta: str) -> None:
+        state = self._active_turn_states.get(session_key)
+        if state is None or not delta:
+            return
+        state.partial_reply += delta
 
     def _resolve_memory_runtime(
         self,
@@ -334,19 +393,33 @@ class AgentLoop:
         while self._running:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
-                try:
-                    await self._process(msg)
-                except Exception as e:
-                    logger.error(f"处理消息出错: {e}", exc_info=True)
-                    await self.bus.publish_outbound(
-                        OutboundMessage(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            content=f"出错：{e}",
-                        )
-                    )
             except asyncio.TimeoutError:
                 continue
+
+            key = msg.session_key
+            self._active_turn_states[key] = TurnInterruptState(
+                session_key=key,
+                original_user_message=msg.content,
+                original_metadata=dict(msg.metadata or {}),
+            )
+            task = asyncio.create_task(self._process(msg))
+            self._active_tasks[key] = task
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.info(f"Turn cancelled for {key}")
+            except Exception as e:
+                logger.error(f"处理消息出错: {e}", exc_info=True)
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=f"出错：{e}",
+                    )
+                )
+            finally:
+                self._active_tasks.pop(key, None)
+                self._active_turn_states.pop(key, None)
 
     @property
     def processing_state(self) -> ProcessingState | None:
@@ -356,6 +429,59 @@ class AgentLoop:
         self._running = False
         logger.info("AgentLoop 停止")
 
+    # ── 中断控制面 ────────────────────────────────────────────────
+
+    def request_interrupt(
+        self,
+        session_key: str,
+        sender: str = "",
+        command: str = "/stop",
+    ) -> InterruptResult:
+        """Channel 层调用的中断入口，不走 MessageBus。"""
+        task = self._active_tasks.get(session_key)
+        if task is None or task.done():
+            return InterruptResult(
+                status="idle",
+                session_key=session_key,
+                message="当前没有正在执行的任务。",
+            )
+
+        # 保存中断态（纯内存，不落库）
+        active_state = self._active_turn_states.get(session_key)
+        if active_state is None:
+            active_state = TurnInterruptState(
+                session_key=session_key,
+                original_user_message="",
+            )
+        self._interrupt_states[session_key] = replace(
+            active_state,
+            interrupted_by=command,
+            interrupted_at=time.monotonic(),
+        )
+        task.cancel()
+        logger.info(
+            f"Turn interrupted  session_key={session_key}  "
+            f"sender={sender}  command={command}"
+        )
+        return InterruptResult(
+            status="interrupted",
+            session_key=session_key,
+            message="本轮已中断。你可以继续补充要求，我会接着这件事处理。",
+        )
+
+    def _get_interrupt_state(self, session_key: str) -> TurnInterruptState | None:
+        """读取中断态（含 TTL 过期检查），不提前消费。"""
+        state = self._interrupt_states.get(session_key)
+        if state is None:
+            return None
+        if state.expired:
+            logger.info(f"Interrupt state expired for {session_key}, discarding")
+            self._interrupt_states.pop(session_key, None)
+            return None
+        return state
+
+    # ── 被动 turn 处理 ────────────────────────────────────────────
+
     async def _process(
         self,
         msg: InboundMessage,
@@ -363,14 +489,35 @@ class AgentLoop:
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         started = time.time()
+        key = session_key or msg.session_key
+
+        # ── 续跑拼装：消费上一轮中断态 ──
+        interrupted = self._get_interrupt_state(key)
+        resumed_from_interrupt = interrupted is not None
+        if interrupted is not None:
+            msg = InboundMessage(
+                channel=msg.channel,
+                sender=msg.sender,
+                chat_id=msg.chat_id,
+                content=_build_resume_content(interrupted, msg.content),
+                timestamp=msg.timestamp,
+                media=msg.media,
+                metadata={**(msg.metadata or {}), "resumed_from_interrupt": True},
+            )
+            logger.info(f"Resuming interrupted turn for {key}")
+            self._active_turn_states[key] = TurnInterruptState(
+                session_key=key,
+                original_user_message=msg.content,
+                original_metadata=dict(msg.metadata or {}),
+            )
+
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender}: {preview}")
 
-        key = session_key or msg.session_key
         if self._processing_state:
             self._processing_state.enter(key)
         try:
-            return await asyncio.wait_for(
+            outbound = await asyncio.wait_for(
                 self._core_runner.process(
                     msg,
                     key,
@@ -378,6 +525,9 @@ class AgentLoop:
                 ),
                 timeout=self._MESSAGE_TIMEOUT_S,
             )
+            if resumed_from_interrupt:
+                self._interrupt_states.pop(key, None)
+            return outbound
         except asyncio.TimeoutError:
             logger.error(
                 f"消息处理超时 ({self._MESSAGE_TIMEOUT_S}s)  "
@@ -471,3 +621,25 @@ class AgentLoop:
 
     async def _consolidate_and_save(self, session: object) -> None:
         await self._consolidation_runtime.consolidate_and_save(session)
+
+
+# ── 模块级辅助 ────────────────────────────────────────────────────
+
+
+def _build_resume_content(state: TurnInterruptState, new_message: str) -> str:
+    """将中断态 + 用户补充消息拼装为续跑输入。"""
+    parts = [
+        "【上一轮任务（被用户中断）】",
+        state.original_user_message,
+        "",
+        "【上一轮已生成但未完成的中间结果】",
+        state.partial_reply or "（无）",
+    ]
+    if state.tools_used:
+        parts.append(f"已使用工具：{', '.join(state.tools_used)}")
+    parts += [
+        "",
+        "【用户补充要求】",
+        new_message,
+    ]
+    return "\n".join(parts)

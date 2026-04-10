@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.config_models import Config
+from agent.looping.interrupt import InterruptController
 from agent.tools.message_push import MessagePushTool
 from bus.queue import MessageBus
 from core.net.http import SharedHttpResources
@@ -16,6 +17,7 @@ async def start_channels(
     session_manager: SessionManager,
     push_tool: MessagePushTool,
     http_resources: SharedHttpResources,
+    interrupt_controller: InterruptController | None = None,
 ) -> tuple[Any, Any, Any]:
     from infra.channels.ipc_server import IPCServerChannel
 
@@ -33,6 +35,7 @@ async def start_channels(
             bus=bus,
             session_manager=session_manager,
             allow_from=tg.allow_from,
+            interrupt_controller=interrupt_controller,
         )
         await tg_channel.start()
         push_tool.register_channel(
@@ -56,6 +59,7 @@ async def start_channels(
             allow_from=qq.allow_from,
             groups=qq.groups,
             http_requester=http_resources.external_default,
+            interrupt_controller=interrupt_controller,
         )
         await qq_channel.start()
         push_tool.register_channel(

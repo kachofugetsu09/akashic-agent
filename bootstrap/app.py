@@ -124,6 +124,7 @@ class AppRuntime:
                 session_manager=self.session_manager,
                 push_tool=self.push_tool,
                 http_resources=self.http_resources,
+                interrupt_controller=self.agent_loop,
             )
             if self.tg_channel is not None:
                 self.agent_loop.set_stream_sink_factory(
