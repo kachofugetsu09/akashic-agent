@@ -156,6 +156,8 @@ def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_pat
     prompt = runner._build_system_prompt(store.scan_skills())
     assert "不要因为某个 skill 最近刚运行过" in prompt
     assert "如果这个 skill 当前明显处于“等待用户回复/等待外部条件”的状态，就不要选它" in prompt
+    assert "对用户的表达要像此刻自然想到的一句聊天" in prompt
+    assert "先把内部依据转写成自然联想，再说出口" in prompt
     assert "fetch_messages" in prompt
     assert "search_messages" in prompt
     assert "shell" in prompt
