@@ -250,6 +250,62 @@ async def test_context_gate_interval_satisfied_opens():
     assert tick.last_ctx.context_as_fallback_open is True
 
 
+@pytest.mark.asyncio
+async def test_drift_interval_blocks_recent_drift():
+    state = FakeStateStore()
+    state.set_last_drift_at(datetime.now(timezone.utc) - timedelta(hours=1))
+    drift_runner = MagicMock()
+    tick = make_agent_tick(
+        cfg=cfg_with(drift_enabled=True, drift_min_interval_hours=3, agent_tick_context_prob=0.0),
+        state_store=state,
+        rng=FakeRng(value=1.0),
+        llm_fn=AsyncMock(return_value=None),
+        drift_runner=drift_runner,
+    )
+    await tick.tick()
+    assert tick.last_ctx.drift_entered is False
+    assert tick.last_ctx.skip_reason == "no_content"
+    drift_runner.run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drift_interval_allows_after_window():
+    from proactive_v2.drift_runner import DriftRunner
+    from proactive_v2.drift_state import DriftStateStore
+    from proactive_v2.drift_tools import DriftToolDeps
+    from tests.proactive_v2.conftest import FakeLLM
+    from pathlib import Path
+
+    state = FakeStateStore()
+    state.set_last_drift_at(datetime.now(timezone.utc) - timedelta(hours=4))
+    llm = FakeLLM([
+        ("finish_drift", {"skill_used": "explore-curiosity", "one_line": "x", "next": "y"}),
+    ])
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        skill_dir = tmp_path / "skills" / "explore-curiosity"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: explore-curiosity\ndescription: x\n---\n",
+            encoding="utf-8",
+        )
+        tick = make_agent_tick(
+            cfg=cfg_with(drift_enabled=True, drift_min_interval_hours=3, drift_dir=str(tmp_path), agent_tick_context_prob=0.0),
+            state_store=state,
+            llm_fn=llm,
+            rng=FakeRng(value=1.0),
+            drift_runner=DriftRunner(
+                store=DriftStateStore(tmp_path),
+                tool_deps=DriftToolDeps(drift_dir=tmp_path, store=DriftStateStore(tmp_path)),
+                max_steps=5,
+            ),
+        )
+        await tick.tick()
+        assert tick.last_ctx.drift_entered is True
+        assert state.drift_run_marked is True
+
+
 # ── Gate 顺序：passive_busy 最先 ──────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -34,6 +34,9 @@ class AgentTickContext:
     final_message: str = ""
     cited_item_ids: list[str] = field(default_factory=list)     # 复合键列表
     steps_taken: int = 0
+    drift_entered: bool = False
+    drift_finished: bool = False
+    drift_message_sent: bool = False
 
     def mark_alerts_prefetched(self, alerts: list[dict]) -> None:
         self.fetched_alerts = alerts

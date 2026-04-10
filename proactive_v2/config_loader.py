@@ -162,6 +162,10 @@ def _validate_agent_tick_keys(agent_tick: dict[str, Any]) -> None:
         "web_fetch_max_chars",
         "context_prob",
         "delivery_cooldown_hours",
+        "drift_enabled",
+        "drift_max_steps",
+        "drift_dir",
+        "drift_min_interval_hours",
     }
     forbidden = set(agent_tick.keys()) - allowed
     if forbidden:
@@ -304,5 +308,13 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         config.agent_tick_context_prob = max(0.0, min(1.0, float(at["context_prob"])))
     if "delivery_cooldown_hours" in at:
         config.agent_tick_delivery_cooldown_hours = max(0, int(at["delivery_cooldown_hours"]))
+    if "drift_enabled" in at:
+        config.drift_enabled = bool(at["drift_enabled"])
+    if "drift_max_steps" in at:
+        config.drift_max_steps = max(3, int(at["drift_max_steps"]))
+    if "drift_dir" in at:
+        config.drift_dir = str(at["drift_dir"] or "")
+    if "drift_min_interval_hours" in at:
+        config.drift_min_interval_hours = max(0, int(at["drift_min_interval_hours"]))
 
     return config

@@ -3,15 +3,21 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from hashlib import sha1
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 from agent.tools.web_fetch import WebFetchTool
+from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
 from proactive_v2 import mcp_sources
 from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.agent_tick import AgentTick
+from proactive_v2.drift_runner import DriftRunner
+from proactive_v2.drift_state import DriftStateStore
+from proactive_v2.drift_tools import DriftToolDeps
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 
@@ -62,6 +68,7 @@ class AgentTickFactory:
         tool_deps = self._build_tool_deps()
         gateway_deps = self._build_gateway_deps(tool_deps)
         recent_proactive_fn = self._build_recent_proactive_fn()
+        drift_runner = self._build_drift_runner(tool_deps)
 
         # 3. 最后产出 AgentTick。后续每次 proactive loop 触发时都调用它的 tick()。
         return AgentTick(
@@ -79,6 +86,7 @@ class AgentTickFactory:
             llm_fn=self._build_llm_fn(),
             rng=self._deps.rng,
             recent_proactive_fn=recent_proactive_fn,
+            drift_runner=drift_runner,
         )
 
     def _get_session_key(self) -> str:
@@ -245,3 +253,66 @@ class AgentTickFactory:
         if not hasattr(self._deps.sense, "collect_recent_proactive"):
             return None
         return lambda: self._deps.sense.collect_recent_proactive(recent_n)
+
+    def _build_drift_runner(self, tool_deps: ToolDeps) -> DriftRunner | None:
+        if not getattr(self._deps.cfg, "drift_enabled", False):
+            return None
+        state_path = getattr(self._deps.state_store, "path", None)
+        default_dir = (
+            Path(state_path).parent / "drift"
+            if state_path is not None
+            else Path.home() / ".akasic" / "workspace" / "drift"
+        )
+        drift_dir = Path(getattr(self._deps.cfg, "drift_dir", "") or default_dir).expanduser()
+        store = DriftStateStore(drift_dir)
+        return DriftRunner(
+            store=store,
+            tool_deps=DriftToolDeps(
+                drift_dir=drift_dir,
+                store=store,
+                memory=self._deps.memory,
+                recent_chat_fn=self._build_recent_chat_fn(),
+                web_fetch_tool=tool_deps.web_fetch_tool,
+                max_chars=tool_deps.max_chars,
+                send_message_fn=self._build_drift_send_message_fn(),
+            ),
+            max_steps=getattr(self._deps.cfg, "drift_max_steps", 20),
+        )
+
+    def _build_drift_send_message_fn(self) -> Callable[[str], Awaitable[bool]] | None:
+        orchestrator = self._deps.turn_orchestrator
+        session_key = self._get_session_key()
+        state_store = self._deps.state_store
+        if orchestrator is None:
+            return None
+
+        @dataclass
+        class _SideEffect:
+            callback: Callable[[], None]
+
+            async def run(self) -> None:
+                self.callback()
+
+        async def send_message(content: str) -> bool:
+            delivery_key = sha1(content[:500].encode()).hexdigest()[:16]
+            result = TurnResult(
+                decision="reply",
+                outbound=TurnOutbound(session_key=session_key, content=content),
+                trace=TurnTrace(source="proactive", extra={"source_mode": "drift"}),
+                success_side_effects=[
+                    _SideEffect(
+                        callback=lambda: state_store.mark_delivery(
+                            session_key,
+                            delivery_key,
+                        )
+                    )
+                ],
+            )
+            return await orchestrator.handle_proactive_turn(
+                result=result,
+                session_key=session_key,
+                channel=str(self._deps.cfg.default_channel or "").strip(),
+                chat_id=str(self._deps.cfg.default_chat_id or "").strip(),
+            )
+
+        return send_message

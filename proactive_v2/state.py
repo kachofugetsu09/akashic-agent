@@ -7,6 +7,7 @@ ProactiveStateStore — 主动消息流的最小持久化状态。
 3) semantic_items: 发送前后用于语义去重的历史文本
 4) rejection_cooldown: LLM 拒绝后的短期冷却
 5) bg_context_last_main_at: 纯背景感知触达的主 topic 冷却时间
+6) drift_last_at: 每个 session 最近一次进入 Drift 的时间
 """
 
 from __future__ import annotations
@@ -330,6 +331,17 @@ class ProactiveStateStore:
             now.isoformat(),
         )
 
+    def get_last_drift_at(self, session_key: str) -> datetime | None:
+        raw = self._state.get("drift_last_at", {}).get(session_key)
+        return _parse_iso(raw) if raw else None
+
+    def mark_drift_run(self, session_key: str, now: datetime | None = None) -> None:
+        now = now or _utcnow()
+        ts = now.isoformat()
+        self._state.setdefault("drift_last_at", {})[session_key] = ts
+        self._save()
+        logger.info("[proactive.state] drift 已记录 session=%s ts=%s", session_key, ts)
+
     # ── context-only 配额管理 ──────────────────────────────────────────
 
     def get_last_context_only_at(self, session_key: str) -> datetime | None:
@@ -416,6 +428,11 @@ class ProactiveStateStore:
         state["context_only_sent_timestamps"] = self._normalize_context_only_timestamps(
             raw.get("context_only_sent_timestamps", {})
         )
+        raw_drift_last_at = raw.get("drift_last_at", {})
+        if isinstance(raw_drift_last_at, dict):
+            state["drift_last_at"] = {str(k): str(v) for k, v in raw_drift_last_at.items() if v}
+        else:
+            state["drift_last_at"] = {}
         logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)
         return state
 
@@ -434,6 +451,7 @@ class ProactiveStateStore:
             "bg_context_last_main_at": None,
             "context_only_last_at": {},
             "context_only_sent_timestamps": {},
+            "drift_last_at": {},
         }
 
     @staticmethod

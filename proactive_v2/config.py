@@ -150,3 +150,7 @@ class ProactiveConfig:
     agent_tick_web_fetch_max_chars: int = 8_000
     agent_tick_context_prob: float = 0.03
     agent_tick_delivery_cooldown_hours: int = 1
+    drift_enabled: bool = False
+    drift_max_steps: int = 20
+    drift_dir: str = ""
+    drift_min_interval_hours: int = 3

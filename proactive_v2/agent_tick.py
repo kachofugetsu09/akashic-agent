@@ -29,6 +29,7 @@ from proactive_v2.contracts import (
     normalize_context,
 )
 from proactive_v2.context import AgentTickContext
+from proactive_v2.drift_runner import DriftRunner
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, dispatch, execute
 
@@ -224,6 +225,7 @@ class AgentTick:
         llm_fn: Any | None = None,
         rng: Any | None = None,
         recent_proactive_fn: Callable[[], list] | None = None,
+        drift_runner: DriftRunner | None = None,
     ) -> None:
         self._cfg = cfg
         self._session_key = session_key
@@ -239,6 +241,7 @@ class AgentTick:
         self._llm_fn = llm_fn
         self._rng = rng if rng is not None else _random_module.Random()
         self._recent_proactive_fn = recent_proactive_fn
+        self._drift_runner = drift_runner
         self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
         self.last_ctx: AgentTickContext | None = None  # 供测试检查
 
@@ -297,7 +300,17 @@ class AgentTick:
 
         # 2. 通过 pre-gate 后，才真正进入“预取数据 -> agent loop -> post_loop”主流程。
         logger.info("[proactive_v2] tick: pre-gate passed, starting loop (context_fallback=%s)", ctx.context_as_fallback_open)
-        await self._run_loop(ctx)
+        entered_execution = await self._run_loop(ctx)
+        if entered_execution and self._any_action_gate is not None:
+            self._any_action_gate.record_action(now_utc=ctx.now_utc)
+        if ctx.drift_entered:
+            logger.info(
+                "[proactive_v2] tick: drift entered, skipping normal post_loop message_sent=%s finished=%s",
+                ctx.drift_message_sent,
+                ctx.drift_finished,
+            )
+            ctx.content_store.clear()
+            return 0.0
         result = await self._post_loop(ctx)
         ctx.content_store.clear()  # 清理 hashmap，防止内存泄漏
         return result
@@ -468,11 +481,11 @@ class AgentTick:
             + "\n\n"
         )
 
-    async def _run_loop(self, ctx: AgentTickContext) -> float | None:
+    async def _run_loop(self, ctx: AgentTickContext) -> bool:
         """Agent loop（P5）。先调 DataGateway 预取数据，再启动 agent loop。"""
         if self._llm_fn is None:
             self.last_ctx = ctx
-            return 0.0
+            return False
 
         # ── Gateway 预取 ──────────────────────────────────────────────────
         # 1. 先把 alerts / content / context 在 loop 外一次性预取完，
@@ -517,11 +530,39 @@ class AgentTick:
         # 2.5 快速 skip：无 alert、无 content、且 context_fallback 未开启时，
         #     直接跳过 LLM，避免空转。
         if not gw_result.alerts and not gw_result.content_meta and not ctx.context_as_fallback_open:
+            if self._drift_runner is not None and self._cfg.drift_enabled:
+                last_drift_at = None
+                if hasattr(self._state_store, "get_last_drift_at"):
+                    last_drift_at = self._state_store.get_last_drift_at(self._session_key)
+                min_interval_hours = max(0, int(getattr(self._cfg, "drift_min_interval_hours", 0) or 0))
+                if (
+                    last_drift_at is not None
+                    and min_interval_hours > 0
+                    and (ctx.now_utc - last_drift_at).total_seconds() < min_interval_hours * 3600
+                ):
+                    logger.info(
+                        "[proactive_v2] _run_loop: drift blocked by interval last_drift_at=%s min_interval_hours=%d",
+                        last_drift_at.isoformat(),
+                        min_interval_hours,
+                    )
+                    ctx.terminal_action = "skip"
+                    ctx.skip_reason = "no_content"
+                    self.last_ctx = ctx
+                    return False
+                logger.info("[proactive_v2] _run_loop: empty gateway result, attempting drift")
+                entered_drift = await self._drift_runner.run(ctx, self._llm_fn)
+                if entered_drift:
+                    if hasattr(self._state_store, "mark_drift_run"):
+                        self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
+                    logger.info("[proactive_v2] _run_loop: drift entered")
+                    self.last_ctx = ctx
+                    return True
+                logger.info("[proactive_v2] _run_loop: drift not entered")
             logger.info("[proactive_v2] _run_loop: no alerts/content and context_fallback=False → skip LLM")
             ctx.terminal_action = "skip"
             ctx.skip_reason = "no_content"
             self.last_ctx = ctx
-            return
+            return False
 
         # 3. 构造本轮 proactive 专用 system prompt，把预取数据一次性注入给模型。
         system_msg = {"role": "system", "content": self._build_system_prompt(ctx, gw_result)}
@@ -606,6 +647,7 @@ class AgentTick:
                     break
 
         self.last_ctx = ctx
+        return True
 
     async def _run_tool_step(
         self,

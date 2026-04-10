@@ -81,6 +81,22 @@ def test_agent_tick_delivery_cooldown_hours_is_int():
     assert isinstance(ProactiveConfig().agent_tick_delivery_cooldown_hours, int)
 
 
+def test_drift_enabled_default_false():
+    assert ProactiveConfig().drift_enabled is False
+
+
+def test_drift_max_steps_default():
+    assert ProactiveConfig().drift_max_steps == 20
+
+
+def test_drift_dir_default_empty():
+    assert ProactiveConfig().drift_dir == ""
+
+
+def test_drift_min_interval_hours_default():
+    assert ProactiveConfig().drift_min_interval_hours == 3
+
+
 # ── 复用 v1 已有字段（不重复定义） ────────────────────────────────────────
 
 def test_delivery_dedupe_hours_exists():

@@ -30,6 +30,8 @@ class FakeStateStore:
         self._last_context_only_at: datetime | None = None
         self._ctx_only_count: int = 0
         self.context_only_send_marked: bool = False
+        self._last_drift_at: datetime | None = None
+        self.drift_run_marked: bool = False
         self._deliveries: list[str] = []
 
     # pre-gate
@@ -53,6 +55,13 @@ class FakeStateStore:
     def mark_context_only_send(self, session_key: str) -> None:
         self.context_only_send_marked = True
 
+    def get_last_drift_at(self, session_key: str) -> datetime | None:
+        return self._last_drift_at
+
+    def mark_drift_run(self, session_key: str, now: datetime | None = None) -> None:
+        self._last_drift_at = now
+        self.drift_run_marked = True
+
     # helpers
     def set_delivery_count(self, n: int) -> None:
         self._delivery_count = n
@@ -65,6 +74,9 @@ class FakeStateStore:
 
     def set_context_only_count(self, n: int) -> None:
         self._ctx_only_count = n
+
+    def set_last_drift_at(self, dt: datetime | None) -> None:
+        self._last_drift_at = dt
 
 
 # ── FakeRng ───────────────────────────────────────────────────────────────
@@ -188,6 +200,7 @@ def make_agent_tick(
     rng: Any = None,
     recent_proactive_fn: Any = None,
     workspace_context_fn: Any = None,
+    drift_runner: Any = None,
 ):
     from proactive_v2.agent_tick import AgentTick
 
@@ -224,7 +237,7 @@ def make_agent_tick(
         )
 
     if rng is None:
-        rng = FakeRng(value=1.0)  # random() > context_prob → gate 关
+        rng = FakeRng(value=0.0)  # 默认打开 context_fallback，避免空候选直接早退
 
     session = _FakeSession(session_key)
     session_manager = SimpleNamespace(
@@ -269,4 +282,5 @@ def make_agent_tick(
         rng=rng,
         recent_proactive_fn=recent_proactive_fn,
         workspace_context_fn=workspace_context_fn,
+        drift_runner=drift_runner,
     )
