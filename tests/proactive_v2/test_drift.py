@@ -529,6 +529,262 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
     assert payload["skip_reason"] == ""
 
 
+def _write_skill_with_mcp(
+    root: Path, name: str, requires_mcp: str,
+) -> Path:
+    skill_dir = root / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            f"name: {name}\n"
+            f"description: test skill needing {requires_mcp}\n"
+            f"requires_mcp: {requires_mcp}\n"
+            "---\n\n"
+            "test skill\n"
+        ),
+        encoding="utf-8",
+    )
+    return skill_dir
+
+
+def _build_shared_tools_with_mcp(*server_names: str) -> ToolRegistry:
+    """Build shared tools with fake MCP tools registered."""
+    reg = _build_shared_tools()
+    for srv in server_names:
+        for suffix in ("tool_a", "tool_b"):
+            tool = _DummyTool(f"mcp_{srv}__{suffix}")
+            reg.register(tool, risk="external-side-effect", source_type="mcp", source_name=srv)
+    return reg
+
+
+def test_skill_meta_requires_mcp_parsed_inline(tmp_path: Path):
+    skill_dir = tmp_path / "skills" / "cal-skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: cal-skill\ndescription: test\nrequires_mcp: calendar, gmail\n---\n",
+        encoding="utf-8",
+    )
+    store = DriftStateStore(tmp_path)
+    skills = store.scan_skills()
+    assert len(skills) == 1
+    assert skills[0].requires_mcp == ["calendar", "gmail"]
+
+
+def test_skill_meta_requires_mcp_parsed_yaml_list(tmp_path: Path):
+    skill_dir = tmp_path / "skills" / "multi-mcp"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: multi-mcp\n"
+        "description: test yaml list\n"
+        "requires_mcp:\n"
+        "  - calendar\n"
+        "  - gmail\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    store = DriftStateStore(tmp_path)
+    skills = store.scan_skills()
+    assert len(skills) == 1
+    assert skills[0].requires_mcp == ["calendar", "gmail"]
+
+
+def test_skill_meta_requires_mcp_empty_when_missing(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    skills = store.scan_skills()
+    assert skills[0].requires_mcp == []
+
+
+@pytest.mark.asyncio
+async def test_drift_runner_filters_skills_by_mcp(tmp_path: Path):
+    """Skill requiring unavailable MCP server should be filtered out."""
+    _write_skill_with_mcp(tmp_path, "needs-cal", "calendar")
+    store = DriftStateStore(tmp_path)
+    shared = _build_shared_tools()  # no MCP tools registered
+    runner = DriftRunner(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=shared,
+        ),
+        max_steps=5,
+    )
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
+    entered = await runner.run(ctx, FakeLLM([]))
+    assert entered is False  # all skills filtered, drift should skip
+
+
+@pytest.mark.asyncio
+async def test_drift_runner_keeps_skills_when_mcp_available(tmp_path: Path):
+    """Skill requiring available MCP server should pass filter."""
+    _write_skill_with_mcp(tmp_path, "needs-cal", "calendar")
+    store = DriftStateStore(tmp_path)
+    shared = _build_shared_tools_with_mcp("calendar")
+    llm = FakeLLM([
+        ("read_file", {"path": "skills/needs-cal/SKILL.md"}),
+        ("finish_drift", {"skill_used": "needs-cal", "one_line": "done", "next": "next"}),
+    ])
+    runner = DriftRunner(
+        store=store,
+        tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
+        max_steps=5,
+    )
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
+    entered = await runner.run(ctx, llm)
+    assert entered is True
+    assert ctx.drift_finished is True
+
+
+@pytest.mark.asyncio
+async def test_mount_server_adds_tools_and_schemas(tmp_path: Path):
+    """mount_server should add MCP tool names to mounted set and return them."""
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    shared = _build_shared_tools_with_mcp("calendar")
+    mounted: set[str] = set()
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
+        mounted_tool_names=mounted,
+    )
+    assert reg.has_tool("mount_server")
+    raw = await reg.execute("mount_server", {"server": "calendar"})
+    result = json.loads(raw)
+    assert result["ok"] is True
+    assert "mcp_calendar__tool_a" in result["tools"]
+    assert "mcp_calendar__tool_b" in result["tools"]
+    # mounted set should be updated
+    assert "mcp_calendar__tool_a" in mounted
+    assert "mcp_calendar__tool_b" in mounted
+
+
+@pytest.mark.asyncio
+async def test_mount_server_idempotent(tmp_path: Path):
+    """Mounting same server twice should report no new tools."""
+    shared = _build_shared_tools_with_mcp("calendar")
+    mounted: set[str] = set()
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(drift_dir=tmp_path, store=DriftStateStore(tmp_path), shared_tools=shared),
+        mounted_tool_names=mounted,
+    )
+    await reg.execute("mount_server", {"server": "calendar"})
+    raw = await reg.execute("mount_server", {"server": "calendar"})
+    result = json.loads(raw)
+    assert result["ok"] is True
+    assert "已挂载" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_mount_server_rejects_unknown_server(tmp_path: Path):
+    shared = _build_shared_tools()  # no MCP
+    mounted: set[str] = set()
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(drift_dir=tmp_path, store=DriftStateStore(tmp_path), shared_tools=shared),
+        mounted_tool_names=mounted,
+    )
+    # mount_server not registered when no MCP servers exist
+    assert not reg.has_tool("mount_server")
+
+
+@pytest.mark.asyncio
+async def test_mount_server_not_registered_without_mcp(tmp_path: Path):
+    """When no MCP servers connected, mount_server tool should not appear."""
+    shared = _build_shared_tools()
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(drift_dir=tmp_path, store=DriftStateStore(tmp_path), shared_tools=shared),
+    )
+    assert not reg.has_tool("mount_server")
+
+
+@pytest.mark.asyncio
+async def test_drift_runner_executes_mounted_mcp_tool(tmp_path: Path):
+    """After mount_server, runner should dispatch MCP tool calls to shared registry."""
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    shared = _build_shared_tools_with_mcp("calendar")
+    captured_schemas: list[list[str]] = []
+
+    async def llm(messages, schemas, tool_choice="auto"):
+        captured_schemas.append([s["function"]["name"] for s in schemas])
+        step = len(captured_schemas)
+        if step == 1:
+            return {"name": "mount_server", "input": {"server": "calendar"}}
+        if step == 2:
+            return {"name": "mcp_calendar__tool_a", "input": {}}
+        if step == 3:
+            return {
+                "name": "finish_drift",
+                "input": {"skill_used": "explore-curiosity", "one_line": "used cal", "next": "next"},
+            }
+        return None
+
+    runner = DriftRunner(
+        store=store,
+        tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
+        max_steps=10,
+    )
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
+    await runner.run(ctx, llm)
+    assert ctx.drift_finished is True
+    # After mount (step 1), step 2 should see MCP tools in schemas
+    assert "mcp_calendar__tool_a" in captured_schemas[1]
+    assert "mcp_calendar__tool_b" in captured_schemas[1]
+    # Step 1 should NOT have MCP tools yet
+    assert "mcp_calendar__tool_a" not in captured_schemas[0]
+
+
+def test_system_prompt_includes_mcp_directory(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    shared = _build_shared_tools_with_mcp("calendar")
+    runner = DriftRunner(
+        store=store,
+        tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
+    )
+    prompt = runner._build_system_prompt(store.scan_skills(), shared.get_mcp_server_names())
+    assert "可挂载的外部能力" in prompt
+    assert "calendar" in prompt
+    assert "mount_server" in prompt
+    # 不应展开具体工具名，只列 server 名和工具数
+    assert "mcp_calendar__tool_a" not in prompt
+    assert "mcp_calendar__tool_b" not in prompt
+    assert "2 个工具" in prompt
+
+
+def test_system_prompt_no_mcp_block_without_servers(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    runner = DriftRunner(
+        store=store,
+        tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=_build_shared_tools()),
+    )
+    prompt = runner._build_system_prompt(store.scan_skills(), set())
+    assert "可挂载的外部能力" not in prompt
+    assert "mount_server" not in prompt
+
+
+def test_system_prompt_skill_requires_mcp_annotation(tmp_path: Path):
+    _write_skill_with_mcp(tmp_path, "cal-skill", "calendar")
+    store = DriftStateStore(tmp_path)
+    shared = _build_shared_tools_with_mcp("calendar")
+    runner = DriftRunner(
+        store=store,
+        tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
+    )
+    prompt = runner._build_system_prompt(store.scan_skills(), shared.get_mcp_server_names())
+    assert "[需要: calendar]" in prompt
+
+
 class _FakeProvider:
     async def chat(self, **kwargs):
         return SimpleNamespace(tool_calls=[])

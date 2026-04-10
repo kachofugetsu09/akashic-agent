@@ -39,6 +39,18 @@ class DriftRunner:
         if not skills:
             logger.info("[drift] skip: no available skills under %s", self.store.skills_dir)
             return False
+
+        # 过滤掉 requires_mcp 未满足的 skill
+        shared = self.tool_deps.shared_tools
+        connected_servers = shared.get_mcp_server_names() if shared else set()
+        skills = [
+            s for s in skills
+            if not s.requires_mcp or set(s.requires_mcp) <= connected_servers
+        ]
+        if not skills:
+            logger.info("[drift] skip: all skills require unavailable MCP servers")
+            return False
+
         logger.info(
             "[drift] enter: skills=%d max_steps=%d drift_dir=%s",
             len(skills),
@@ -50,18 +62,24 @@ class DriftRunner:
         ctx.drift_finished = False
         ctx.drift_message_sent = False
 
-        tools = build_drift_tool_registry(ctx=ctx, deps=self.tool_deps)
-        all_schemas = tools.get_schemas()
+        mounted_tool_names: set[str] = set()
+        tools = build_drift_tool_registry(
+            ctx=ctx, deps=self.tool_deps, mounted_tool_names=mounted_tool_names,
+        )
+        base_schemas = tools.get_schemas()
 
         messages: list[dict] = [
-            {"role": "system", "content": self._build_system_prompt(skills)}
+            {"role": "system", "content": self._build_system_prompt(skills, connected_servers)}
         ]
         steps = 0
         warned = False
 
         while steps < self.max_steps and not ctx.drift_finished:
             tool_choice: str | dict = "required"
-            schemas = list(all_schemas)
+            schemas = list(base_schemas)
+            # 拼接已挂载 MCP 工具的 schema
+            if mounted_tool_names and shared:
+                schemas += shared.get_schemas(names=mounted_tool_names)
 
             if steps == self.max_steps - 3 and not warned:
                 warned = True
@@ -115,6 +133,16 @@ class DriftRunner:
             )
             steps += 1
             ctx.steps_taken += 1
+
+            # 双路分发：本地 drift registry → shared registry (mounted MCP tools)
+            if tools.has_tool(tool_name):
+                exec_fn = tools.execute
+            elif tool_name in mounted_tool_names and shared:
+                exec_fn = shared.execute
+            else:
+                # 未知工具，走本地 registry 让它返回错误
+                exec_fn = tools.execute
+
             result = await self._tool_executor.execute(
                 ToolExecutionRequest(
                     call_id=str(tool_call.get("id") or f"drift_{steps}"),
@@ -123,7 +151,7 @@ class DriftRunner:
                     source="proactive",
                     session_key=ctx.session_key,
                 ),
-                tools.execute,
+                exec_fn,
             )
             if result.status == "error":
                 logger.warning("[drift] tool executor error at step=%d: %s", steps, result.output)
@@ -149,7 +177,9 @@ class DriftRunner:
         )
         return True
 
-    def _build_system_prompt(self, skills: list[SkillMeta]) -> str:
+    def _build_system_prompt(
+        self, skills: list[SkillMeta], connected_servers: set[str] | None = None,
+    ) -> str:
         memory_text = ""
         if self.tool_deps.memory is not None:
             try:
@@ -165,6 +195,8 @@ class DriftRunner:
             line = f"- {skill.name}/   {skill.run_count}次运行"
             if next_text:
                 line += f'   next: "{next_text}"'
+            if skill.requires_mcp:
+                line += f"   [需要: {', '.join(skill.requires_mcp)}]"
             lines.append(line)
         skill_block = "\n".join(lines) if lines else "- (none)"
 
@@ -182,6 +214,20 @@ class DriftRunner:
         recent_block = "\n".join(recent_rows) if recent_rows else "- (none)"
 
         drift_note = str(self.store.load_drift().get("note") or "")[:150]
+
+        # 动态生成可挂载 MCP server 目录（只列 server 名和工具数，不展开工具名）
+        mcp_block = ""
+        shared = self.tool_deps.shared_tools
+        if connected_servers and shared:
+            mcp_lines = []
+            for srv in sorted(connected_servers):
+                tool_count = len(shared.get_tool_names_by_source("mcp", srv))
+                mcp_lines.append(f"- {srv}（{tool_count} 个工具）")
+            mcp_block = (
+                "【可挂载的外部能力】\n"
+                + "\n".join(mcp_lines) + "\n"
+                "使用 mount_server(server=\"名称\") 挂载后即可调用其中的工具。\n\n"
+            )
 
         return (
             f"{AKASHIC_IDENTITY}\n\n"
@@ -218,8 +264,11 @@ class DriftRunner:
             "9. send_message 成功后不要再调用 recall_memory / web_fetch / web_search / fetch_messages / search_messages / shell，"
             "后续只允许 write_file、edit_file 和 finish_drift 收尾。\n"
             "10. 执行结束前必须调用 finish_drift 保存状态。\n\n"
+            f"{mcp_block}"
             "【可用工具】\n"
-            "read_file, write_file, edit_file, recall_memory, web_fetch, web_search, fetch_messages, search_messages, shell, send_message, finish_drift"
+            "read_file, write_file, edit_file, recall_memory, web_fetch, web_search, "
+            "fetch_messages, search_messages, shell, send_message, finish_drift"
+            + (", mount_server" if mcp_block else "")
         )
 
     @staticmethod

@@ -196,6 +196,22 @@ class ToolRegistry:
                 )
         return results
 
+    def get_mcp_server_names(self) -> set[str]:
+        """返回当前已注册的所有 MCP server 名称。"""
+        return {
+            doc.source_name
+            for doc in self._documents.values()
+            if doc.source_type == "mcp"
+        }
+
+    def get_tool_names_by_source(self, source_type: str, source_name: str) -> set[str]:
+        """返回指定来源的所有工具名。"""
+        return {
+            name
+            for name, doc in self._documents.items()
+            if doc.source_type == source_type and doc.source_name == source_name
+        }
+
     def search(
         self,
         query: str,

@@ -154,6 +154,61 @@ class FinishDriftTool(Tool):
         return json.dumps({"ok": True}, ensure_ascii=False)
 
 
+class MountServerTool(Tool):
+    """挂载一个已连接的 MCP server，使其工具在本次 drift 中可用。"""
+
+    def __init__(self, shared_tools: ToolRegistry, mounted: set[str]) -> None:
+        self._shared = shared_tools
+        self._mounted = mounted
+
+    @property
+    def name(self) -> str:
+        return "mount_server"
+
+    @property
+    def description(self) -> str:
+        return (
+            "挂载一个已连接的 MCP server，使其工具在本次 drift 中可用。"
+            "挂载后即可直接调用该 server 的工具。"
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "要挂载的 MCP server 名称",
+                },
+            },
+            "required": ["server"],
+        }
+
+    async def execute(self, server: str, **_: Any) -> str:
+        server = str(server or "").strip()
+        if not server:
+            return json.dumps({"error": "server is required"}, ensure_ascii=False)
+        names = self._shared.get_tool_names_by_source("mcp", server)
+        if not names:
+            return json.dumps(
+                {"error": f"MCP server '{server}' 不存在或未连接"},
+                ensure_ascii=False,
+            )
+        new = names - self._mounted
+        if not new:
+            return json.dumps(
+                {"ok": True, "message": f"'{server}' 已挂载，无新增工具", "tools": sorted(names)},
+                ensure_ascii=False,
+            )
+        self._mounted |= new
+        logger.info("[drift_tools] mount_server ok: server=%s new=%s", server, sorted(new))
+        return json.dumps(
+            {"ok": True, "tools": sorted(names), "new": sorted(new)},
+            ensure_ascii=False,
+        )
+
+
 class DriftWebFetchTool(Tool):
     def __init__(self, wrapped: Tool, max_chars: int) -> None:
         self._wrapped = wrapped
@@ -222,6 +277,7 @@ def build_drift_tool_registry(
     *,
     ctx: AgentTickContext,
     deps: DriftToolDeps,
+    mounted_tool_names: set[str] | None = None,
 ) -> ToolRegistry:
     tools = ToolRegistry()
     drift_dir = deps.drift_dir
@@ -246,6 +302,11 @@ def build_drift_tool_registry(
                 tool = DriftWebFetchTool(tool, deps.max_web_fetch_chars)
             risk = "external-side-effect" if name == "shell" else "read-only"
             tools.register(tool, risk=risk)
+
+    # mount_server: 只有 shared registry 里有 MCP 工具时才注册
+    if shared is not None and shared.get_mcp_server_names():
+        mounted = mounted_tool_names if mounted_tool_names is not None else set()
+        tools.register(MountServerTool(shared, mounted), risk="read-only")
 
     tools.register(
         SendMessageTool(ctx, deps.send_message_fn),

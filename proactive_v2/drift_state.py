@@ -17,18 +17,42 @@ def _clip(text: str, limit: int) -> str:
     return str(text or "").strip()[:limit]
 
 
-def _parse_skill_frontmatter(content: str) -> dict[str, str]:
+def _parse_skill_frontmatter(content: str) -> dict[str, str | list[str]]:
     if not content.startswith("---"):
         return {}
     match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
     if match is None:
         return {}
-    metadata: dict[str, str] = {}
-    for line in match.group(1).split("\n"):
+    metadata: dict[str, str | list[str]] = {}
+    lines = match.group(1).split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         if ":" not in line:
+            i += 1
             continue
         key, value = line.split(":", 1)
-        metadata[key.strip()] = value.strip().strip("\"'")
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if value:
+            metadata[key] = value
+            i += 1
+            continue
+        # value 为空 → 检查后续行是否为 YAML 列表项 (  - item)
+        list_items: list[str] = []
+        j = i + 1
+        while j < len(lines):
+            item_match = re.match(r"^\s+-\s+(.+)", lines[j])
+            if item_match is None:
+                break
+            list_items.append(item_match.group(1).strip().strip("\"'"))
+            j += 1
+        if list_items:
+            metadata[key] = list_items
+            i = j
+        else:
+            metadata[key] = value
+            i += 1
     return metadata
 
 
@@ -40,6 +64,7 @@ class SkillMeta:
     run_count: int
     status: str
     next: str
+    requires_mcp: list[str]
 
 
 class DriftStateStore:
@@ -66,6 +91,16 @@ class DriftStateStore:
             if not name or not description or name != skill_dir.name:
                 logger.info("[drift_state] skip invalid skill dir=%s name=%r", skill_dir, name)
                 continue
+            requires_mcp_val = metadata.get("requires_mcp")
+            if isinstance(requires_mcp_val, list):
+                requires_mcp = [s.strip() for s in requires_mcp_val if s.strip()]
+            else:
+                raw = str(requires_mcp_val or "").strip()
+                requires_mcp = (
+                    [s.strip() for s in raw.split(",") if s.strip()]
+                    if raw
+                    else []
+                )
             raw_state = self._load_skill_state(skill_dir)
             skills.append(
                 SkillMeta(
@@ -75,6 +110,7 @@ class DriftStateStore:
                     run_count=max(0, int(raw_state.get("run_count", 0) or 0)),
                     status=self._normalize_status(raw_state.get("status")),
                     next=_clip(raw_state.get("next", ""), 100),
+                    requires_mcp=requires_mcp,
                 )
             )
         skills.sort(
