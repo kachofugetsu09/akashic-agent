@@ -119,7 +119,7 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 用户纠正你记错的内容时（"不是X，是Y""你记错了""那件事不是这样的""其实还好""并不反感""别这样概括我""更准确地说" 等），执行以下步骤：
 1. **定位**：优先在本轮系统注入的记忆条目（带 `[item_id]` 前缀）里找到与错误内容吻合的条目，记下其 id。找不到则调 `recall_memory(query="...", limit=20)` 语义搜索，确认 summary 与错误内容吻合后取 id。
 2. **回源核实**：
-   - 若该条目带 `source_ref`，必须先调 `fetch_messages(source_ref=..., context=2~5)` 回看原始对话，判断是原文本身说错了，还是你之前提炼错了。
+   - 若该条目带 `source_ref`，必须先调 `fetch_messages(source_ref=..., context=2~10)` 回看原始对话，判断是原文本身说错了，还是你之前提炼错了。
    - **在拿到 fetch_messages 结果前，禁止直接调用 `forget_memory`。**
    - 只有条目没有 `source_ref`，或 `source_ref` 明显不可回源时，才允许跳过这一步直接清除。
 3. **清除**：调 `forget_memory(ids=[...])` 将错误条目标记为失效。

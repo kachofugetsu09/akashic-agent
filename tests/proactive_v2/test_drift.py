@@ -67,6 +67,9 @@ def _build_shared_tools() -> ToolRegistry:
     reg.register(_DummyTool("recall_memory"))
     reg.register(_DummyTool("web_fetch"))
     reg.register(_DummyTool("web_search"))
+    reg.register(_DummyTool("fetch_messages"))
+    reg.register(_DummyTool("search_messages"))
+    reg.register(_DummyTool("shell"))
     return reg
 
 
@@ -131,9 +134,31 @@ def test_drift_tool_schemas_include_reused_tools():
     }
     assert "recall_memory" in names
     assert "web_fetch" in names
+    assert "fetch_messages" in names
+    assert "search_messages" in names
+    assert "shell" in names
     assert "read_file" in names
     assert "edit_file" in names
     assert "get_recent_chat" not in names
+
+
+def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    runner = DriftRunner(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=_build_shared_tools(),
+        ),
+    )
+    prompt = runner._build_system_prompt(store.scan_skills())
+    assert "不要因为某个 skill 最近刚运行过" in prompt
+    assert "如果这个 skill 当前明显处于“等待用户回复/等待外部条件”的状态，就不要选它" in prompt
+    assert "fetch_messages" in prompt
+    assert "search_messages" in prompt
+    assert "shell" in prompt
 
 
 @pytest.mark.asyncio
@@ -160,10 +185,12 @@ async def test_drift_web_fetch_keeps_drift_level_truncation(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_drift_readfile_rejects_outside_path(tmp_path: Path):
+async def test_drift_readfile_accepts_outside_path(tmp_path: Path):
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    raw = await _exec_drift_tool(tmp_path, ctx, "read_file", {"path": "../x.txt"})
-    assert "超出允许目录" in str(raw)
+    outside = tmp_path.parent / "outside-read.txt"
+    outside.write_text("outside ok\n", encoding="utf-8")
+    raw = await _exec_drift_tool(tmp_path, ctx, "read_file", {"path": str(outside)})
+    assert "outside ok" in str(raw)
 
 
 @pytest.mark.asyncio

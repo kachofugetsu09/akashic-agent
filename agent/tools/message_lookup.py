@@ -8,7 +8,7 @@ from typing import Any
 from agent.tools.base import Tool
 from session.store import SessionStore
 
-_MAX_CONTEXT = 5
+_MAX_CONTEXT = 10
 _MAX_PREVIEW_LINES = 50
 
 
@@ -43,7 +43,7 @@ class FetchMessagesTool(Tool):
             },
             "context": {
                 "type": "integer",
-                "description": "每条消息前后各扩展的上下文条数（0=仅精确匹配，最大 5，默认 0）",
+                "description": "每条消息前后各扩展的上下文条数（0=仅精确匹配，最大 10，默认 0）",
                 "minimum": 0,
                 "maximum": _MAX_CONTEXT,
                 "default": 0,

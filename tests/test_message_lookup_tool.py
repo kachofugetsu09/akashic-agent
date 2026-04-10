@@ -83,6 +83,23 @@ async def test_fetch_messages_context_clamps_at_seq_zero(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fetch_messages_context_clamps_at_max_window(tmp_path):
+    store = SessionStore(tmp_path / "sessions.db")
+    _setup_session(store, "tg:1", 30)  # seq 0..29
+
+    tool = FetchMessagesTool(store)
+    payload = json.loads(await tool.execute(ids=["tg:1:11"], context=999))
+
+    ids = [m["id"] for m in payload["messages"]]
+    assert ids[0] == "tg:1:1"
+    assert ids[-1] == "tg:1:21"
+    assert "tg:1:0" not in ids
+    assert "tg:1:22" not in ids
+    assert payload["matched_count"] == 1
+    assert payload["count"] == 21
+
+
+@pytest.mark.asyncio
 async def test_fetch_messages_supports_window_source_ref(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _setup_session(store, "tg:1", 6)

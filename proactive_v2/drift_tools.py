@@ -192,6 +192,32 @@ class DriftWebFetchTool(Tool):
         return json.dumps(payload, ensure_ascii=False)
 
 
+class DriftReadFileTool(Tool):
+    def __init__(self, drift_dir: Path) -> None:
+        self._drift_dir = drift_dir
+        self._relative_reader = ReadFileTool(allowed_dir=drift_dir)
+        self._absolute_reader = ReadFileTool()
+
+    @property
+    def name(self) -> str:
+        return "read_file"
+
+    @property
+    def description(self) -> str:
+        return self._absolute_reader.description
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self._absolute_reader.parameters
+
+    async def execute(self, path: str, **kwargs: Any) -> Any:
+        raw = str(path or "").strip()
+        if not raw:
+            return await self._absolute_reader.execute(path=path, **kwargs)
+        reader = self._absolute_reader if Path(raw).expanduser().is_absolute() else self._relative_reader
+        return await reader.execute(path=path, **kwargs)
+
+
 def build_drift_tool_registry(
     *,
     ctx: AgentTickContext,
@@ -199,19 +225,27 @@ def build_drift_tool_registry(
 ) -> ToolRegistry:
     tools = ToolRegistry()
     drift_dir = deps.drift_dir
-    tools.register(ReadFileTool(allowed_dir=drift_dir), risk="read-only")
+    tools.register(DriftReadFileTool(drift_dir), risk="read-only")
     tools.register(WriteFileTool(allowed_dir=drift_dir), risk="write")
     tools.register(EditFileTool(allowed_dir=drift_dir), risk="write")
 
     shared = deps.shared_tools
-    for name in ("recall_memory", "web_fetch", "web_search"):
+    for name in (
+        "recall_memory",
+        "web_fetch",
+        "web_search",
+        "fetch_messages",
+        "search_messages",
+        "shell",
+    ):
         if shared is None:
             continue
         tool = shared.get_tool(name)
         if tool is not None:
             if name == "web_fetch":
                 tool = DriftWebFetchTool(tool, deps.max_web_fetch_chars)
-            tools.register(tool, risk="read-only")
+            risk = "external-side-effect" if name == "shell" else "read-only"
+            tools.register(tool, risk=risk)
 
     tools.register(
         SendMessageTool(ctx, deps.send_message_fn),
