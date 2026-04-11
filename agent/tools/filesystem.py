@@ -1,15 +1,19 @@
 """文件系统工具：读取、写入、编辑文件，以及列举目录。"""
 
 import base64
+import asyncio
+import difflib
 import io
 import logging
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any
 
 from agent.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
+_FILE_MUTATION_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def _read_xlsx(file_path: Path) -> str:
@@ -67,6 +71,66 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
         raise PermissionError(f"路径 {path} 超出允许目录 {allowed_dir}")
     return resolved
+
+
+def _strip_utf8_bom(text: str) -> tuple[str, bool]:
+    if text.startswith("\ufeff"):
+        return text[1:], True
+    return text, False
+
+
+def _normalize_to_lf(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _restore_utf8_bom(text: str, has_bom: bool) -> str:
+    if has_bom:
+        return "\ufeff" + text
+    return text
+
+
+def _supports_crlf_compat(text: str) -> bool:
+    if "\r\n" not in text:
+        return False
+    bare_lf = "\n" in text.replace("\r\n", "")
+    return not bare_lf and "\r" not in text.replace("\r\n", "")
+
+
+def _build_edit_diff(old_text: str, new_text: str, path: str) -> str:
+    lines = list(
+        difflib.unified_diff(
+            old_text.splitlines(),
+            new_text.splitlines(),
+            fromfile=f"{path} (before)",
+            tofile=f"{path} (after)",
+            lineterm="",
+            n=2,
+        )
+    )
+    return "\n".join(lines)
+
+
+def _get_file_mutation_key(file_path: Path) -> str:
+    try:
+        return str(file_path.resolve(strict=True))
+    except FileNotFoundError:
+        return os.path.realpath(str(file_path))
+
+
+async def _run_with_file_mutation_lock(file_path: Path, fn: Any) -> Any:
+    key = _get_file_mutation_key(file_path)
+    lock = _FILE_MUTATION_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _FILE_MUTATION_LOCKS[key] = lock
+
+    async with lock:
+        result = await fn()
+
+    current = _FILE_MUTATION_LOCKS.get(key)
+    if current is lock and not lock.locked():
+        _FILE_MUTATION_LOCKS.pop(key, None)
+    return result
 
 
 _READ_MAX_CHARS = 10_000  # 默认单次最多返回 10K 字符，大文件须分页读取
@@ -277,9 +341,13 @@ class WriteFileTool(Tool):
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content, encoding="utf-8")
-            return f"已写入 {len(content)} 字节到 {path}"
+
+            async def _write() -> str:
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(content, encoding="utf-8")
+                return f"已写入 {len(content)} 字节到 {path}"
+
+            return await _run_with_file_mutation_lock(file_path, _write)
         except PermissionError as e:
             return f"错误：{e}"
         except Exception as e:
@@ -334,22 +402,46 @@ class EditFileTool(Tool):
         replace_all: bool = bool(kwargs.get("replace_all", False))
         try:
             file_path = _resolve_path(path, self._allowed_dir)
-            if not file_path.exists():
-                return f"错误：文件不存在：{path}"
 
-            content = file_path.read_text(encoding="utf-8")
+            async def _edit() -> str:
+                if not file_path.exists():
+                    return f"错误：文件不存在：{path}"
 
-            if old_text not in content:
-                return "错误：未找到 old_text，请确保与文件内容完全一致。"
+                raw_content = file_path.read_bytes().decode("utf-8")
+                content, has_bom = _strip_utf8_bom(raw_content)
+                matched_old_text = old_text
+                replacement_text = new_text
 
-            count = content.count(old_text)
-            if count > 1 and not replace_all:
-                return f"警告：old_text 在文件中出现了 {count} 次。如需全部替换，设 replace_all=true；如需精确定位，请在 old_text 中包含更多上下文。"
+                if matched_old_text not in content and _supports_crlf_compat(content):
+                    compat_old_text = old_text.replace("\n", "\r\n")
+                    if compat_old_text in content:
+                        matched_old_text = compat_old_text
+                        replacement_text = new_text.replace("\n", "\r\n")
 
-            new_content = content.replace(old_text, new_text) if replace_all else content.replace(old_text, new_text, 1)
-            replaced_count = count if replace_all else 1
-            file_path.write_text(new_content, encoding="utf-8")
-            return f"已成功编辑 {path}（替换 {replaced_count} 处）"
+                if matched_old_text not in content:
+                    return "错误：未找到 old_text，请确保与文件内容完全一致。"
+
+                count = content.count(matched_old_text)
+                if count > 1 and not replace_all:
+                    return f"警告：old_text 在文件中出现了 {count} 次。如需全部替换，设 replace_all=true；如需精确定位，请在 old_text 中包含更多上下文。"
+
+                new_content = (
+                    content.replace(matched_old_text, replacement_text)
+                    if replace_all
+                    else content.replace(matched_old_text, replacement_text, 1)
+                )
+                replaced_count = count if replace_all else 1
+                diff_text = _build_edit_diff(content, new_content, path)
+                restored_content = _restore_utf8_bom(new_content, has_bom)
+                file_path.write_text(restored_content, encoding="utf-8")
+                if diff_text:
+                    return (
+                        f"已成功编辑 {path}（替换 {replaced_count} 处）\n\n"
+                        f"```diff\n{diff_text}\n```"
+                    )
+                return f"已成功编辑 {path}（替换 {replaced_count} 处）"
+
+            return await _run_with_file_mutation_lock(file_path, _edit)
         except PermissionError as e:
             return f"错误：{e}"
         except Exception as e:

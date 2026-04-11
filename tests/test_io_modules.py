@@ -16,9 +16,11 @@ from agent.tools.filesystem import (
     ReadFileTool,
     WriteFileTool,
     _IMAGE_TARGET_B64_LEN,
+    _FILE_MUTATION_LOCKS,
     _read_xls,
     _read_xlsx,
     _resolve_path,
+    _run_with_file_mutation_lock,
 )
 from bus.events import OutboundMessage
 from bus.queue import MessageBus
@@ -148,6 +150,12 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     result = await editor.execute("b.txt", "hello", "world")
     assert "已成功编辑" in result
     assert "替换 1 处" in result, "edit_file 应在结果中报告替换数量"
+    assert "```diff" in result
+    assert "--- b.txt (before)" in result
+    assert "+++ b.txt (after)" in result
+    assert "-hello" in result
+    assert "+world" in result
+    assert text_file.read_text(encoding="utf-8") == "line1\nline2\nline3\n"
 
     dup = base / "dup.txt"
     dup.write_text("x\nx\n", encoding="utf-8")
@@ -158,6 +166,27 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     result_all = await editor.execute("dup.txt", "x", "z", replace_all=True)
     assert "替换 2 处" in result_all, "replace_all=true 应替换所有匹配并报告数量"
     assert dup.read_text(encoding="utf-8") == "z\nz\n"
+
+    crlf = base / "crlf.txt"
+    crlf.write_bytes(b"hello\r\nworld\r\n")
+    result_crlf = await editor.execute("crlf.txt", "hello\nworld\n", "hi\nworld\n")
+    assert "已成功编辑" in result_crlf
+    assert "-hello" in result_crlf
+    assert "+hi" in result_crlf
+    assert crlf.read_bytes() == b"hi\r\nworld\r\n"
+
+    bom = base / "bom.txt"
+    bom.write_bytes("\ufeffhello\r\n".encode("utf-8"))
+    result_bom = await editor.execute("bom.txt", "hello\n", "world\n")
+    assert "已成功编辑" in result_bom
+    assert bom.read_bytes() == "\ufeffworld\r\n".encode("utf-8")
+
+    mixed = base / "mixed.txt"
+    mixed.write_bytes(b"left\r\nright\nleft\nright\n")
+    result_mixed = await editor.execute("mixed.txt", "left\nright\n", "x\ny\n")
+    assert "已成功编辑" in result_mixed
+    assert "替换 1 处" in result_mixed
+    assert mixed.read_bytes() == b"left\r\nright\nx\ny\n"
 
     lister = ListDirTool(base)
     assert "📄 a.txt" in await lister.execute(".")
@@ -188,6 +217,33 @@ def test_append_tool_result_supports_multimodal_blocks() -> None:
     assert messages[1]["role"] == "user"
     assert messages[1]["content"][0]["type"] == "text"
     assert messages[1]["content"][1]["type"] == "image_url"
+
+
+@pytest.mark.asyncio
+async def test_file_mutation_lock_serializes_same_file_and_allows_different_files(
+    tmp_path: Path,
+):
+    _FILE_MUTATION_LOCKS.clear()
+    shared = tmp_path / "shared.txt"
+    other = tmp_path / "other.txt"
+    order: list[str] = []
+
+    async def _job(name: str, path: Path, delay: float) -> None:
+        async def _run() -> None:
+            order.append(f"{name}:start")
+            await asyncio.sleep(delay)
+            order.append(f"{name}:end")
+
+        await _run_with_file_mutation_lock(path, _run)
+
+    shared_a = asyncio.create_task(_job("shared_a", shared, 0.05))
+    shared_b = asyncio.create_task(_job("shared_b", shared, 0.0))
+    other_task = asyncio.create_task(_job("other", other, 0.0))
+    await asyncio.gather(shared_a, shared_b, other_task)
+
+    assert order.index("shared_a:end") < order.index("shared_b:start")
+    assert order.index("other:start") < order.index("shared_a:end")
+    assert not _FILE_MUTATION_LOCKS
 
 
 @pytest.mark.asyncio
