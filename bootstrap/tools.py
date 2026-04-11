@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -372,7 +371,7 @@ def build_core_runtime(
         observe_writer=observe_writer,
         agent_loop_provider=lambda: loop_ref.get("loop"),
     )
-    presence = PresenceStore(workspace / "presence.json")
+    presence = PresenceStore(session_manager._store)
     processing_state = ProcessingState()
     loop_deps = _build_loop_deps(
         config=config,

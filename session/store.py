@@ -32,6 +32,7 @@ class SessionStore:
                 )
                 """
             )
+            self._ensure_session_columns()
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
@@ -49,6 +50,18 @@ class SessionStore:
             )
             self._ensure_fts()
             self._conn.commit()
+
+    def _ensure_session_columns(self) -> None:
+        rows = self._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        existing = {str(row["name"]) for row in rows}
+        if "last_user_at" not in existing:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN last_user_at TEXT"
+            )
+        if "last_proactive_at" not in existing:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN last_proactive_at TEXT"
+            )
 
     def _ensure_fts(self) -> None:
         try:
@@ -162,7 +175,7 @@ class SessionStore:
     def get_session_meta(self, key: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT key, created_at, updated_at, last_consolidated, metadata FROM sessions WHERE key = ?",
+                "SELECT key, created_at, updated_at, last_consolidated, metadata, last_user_at, last_proactive_at FROM sessions WHERE key = ?",
                 (key,),
             ).fetchone()
         if row is None:
@@ -173,13 +186,15 @@ class SessionStore:
             "updated_at": row["updated_at"],
             "last_consolidated": int(row["last_consolidated"] or 0),
             "metadata": json.loads(row["metadata"] or "{}"),
+            "last_user_at": row["last_user_at"],
+            "last_proactive_at": row["last_proactive_at"],
         }
 
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT key, created_at, updated_at
+                SELECT key, created_at, updated_at, last_user_at, last_proactive_at
                 FROM sessions
                 ORDER BY updated_at DESC
                 """
@@ -189,9 +204,88 @@ class SessionStore:
                 "key": str(row["key"]),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
+                "last_user_at": row["last_user_at"],
+                "last_proactive_at": row["last_proactive_at"],
             }
             for row in rows
         ]
+
+    def update_presence(
+        self,
+        key: str,
+        *,
+        last_user_at: str | None = None,
+        last_proactive_at: str | None = None,
+    ) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO sessions (
+                    key,
+                    created_at,
+                    updated_at,
+                    last_consolidated,
+                    metadata,
+                    last_user_at,
+                    last_proactive_at
+                )
+                VALUES (?, ?, ?, 0, '{}', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    last_user_at = COALESCE(excluded.last_user_at, sessions.last_user_at),
+                    last_proactive_at = COALESCE(excluded.last_proactive_at, sessions.last_proactive_at)
+                """,
+                (key, now, now, last_user_at, last_proactive_at),
+            )
+            self._conn.commit()
+
+    def get_presence(self, key: str) -> dict[str, str | None] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT last_user_at, last_proactive_at
+                FROM sessions
+                WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "last_user_at": row["last_user_at"],
+            "last_proactive_at": row["last_proactive_at"],
+        }
+
+    def list_presence(self) -> dict[str, dict[str, str | None]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT key, last_user_at, last_proactive_at
+                FROM sessions
+                WHERE last_user_at IS NOT NULL OR last_proactive_at IS NOT NULL
+                """
+            ).fetchall()
+        return {
+            str(row["key"]): {
+                "last_user_at": row["last_user_at"],
+                "last_proactive_at": row["last_proactive_at"],
+            }
+            for row in rows
+        }
+
+    def most_recent_user_at(self) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT MAX(last_user_at) AS last_user_at
+                FROM sessions
+                WHERE last_user_at IS NOT NULL
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return row["last_user_at"]
 
     def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
         like_key = f"{channel}:%"
