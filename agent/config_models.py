@@ -37,6 +37,8 @@ class MemoryV2Config:
     enabled: bool = False
     db_path: str = ""
     embed_model: str = "text-embedding-v3"
+    api_key: str = ""
+    base_url: str = ""
     retrieve_top_k: int = 4
     top_k_history: int = 4
     top_k_procedure: int = 4

@@ -7,7 +7,7 @@ from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.recall_memory import RecallMemoryTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
-from agent.tools.shell import ShellTool
+from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
 
 
@@ -23,6 +23,18 @@ def register_common_meta_tools(
         always_on=True,
         risk="external-side-effect",
         search_hint="终端 脚本 bash 命令",
+    )
+    tools.register(
+        ShellTaskOutputTool(),
+        always_on=True,
+        risk="read-only",
+        search_hint="后台任务输出 task_output 进程日志",
+    )
+    tools.register(
+        ShellTaskStopTool(),
+        always_on=True,
+        risk="external-side-effect",
+        search_hint="停止后台任务 task_stop 杀进程",
     )
     tools.register(
         readonly_tools["web_search"],

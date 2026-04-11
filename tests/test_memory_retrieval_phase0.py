@@ -106,6 +106,29 @@ def test_memory_v2_top_k_history_prefers_new_field(tmp_path: Path):
     assert cfg.memory_v2.retrieve_top_k == 12
 
 
+def test_memory_v2_reads_embed_endpoint_fields(tmp_path: Path):
+    cfg_path = tmp_path / "config.json"
+    _write_config(
+        cfg_path,
+        {
+            "provider": "openai",
+            "model": "x",
+            "api_key": "main-key",
+            "system_prompt": "s",
+            "memory_v2": {
+                "enabled": True,
+                "embed_model": "embed-x",
+                "api_key": "embed-key",
+                "base_url": "https://embed.example.com/v1",
+            },
+        },
+    )
+    cfg = Config.load(cfg_path)
+    assert cfg.memory_v2.embed_model == "embed-x"
+    assert cfg.memory_v2.api_key == "embed-key"
+    assert cfg.memory_v2.base_url == "https://embed.example.com/v1"
+
+
 def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     tools = ToolRegistry()
     tools.register(_NoopTool())

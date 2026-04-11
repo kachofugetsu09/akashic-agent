@@ -17,6 +17,7 @@ def test_build_default_config_minimal_openai() -> None:
         model="gpt-4o-mini",
         api_key="${OPENAI_API_KEY}",
         enable_memory_v2=True,
+        embed_model="text-embedding-v3",
         enable_proactive=False,
     )
     assert config["provider"] == "openai"
@@ -26,6 +27,24 @@ def test_build_default_config_minimal_openai() -> None:
         "enabled": True,
         "embed_model": "text-embedding-v3",
     }
+
+
+def test_build_default_config_supports_separate_light_and_embed_urls() -> None:
+    config = build_default_config_dict(
+        provider="qwen",
+        model="qwen3.5-plus",
+        api_key="${QWEN_API_KEY}",
+        base_url="https://coding.dashscope.aliyuncs.com/v1",
+        light_model="qwen-flash",
+        light_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        enable_memory_v2=True,
+        embed_model="text-embedding-v3",
+        embed_base_url="https://embedding.example.com/v1",
+    )
+    assert config["light_model"] == "qwen-flash"
+    assert config["light_base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config["memory_v2"]["embed_model"] == "text-embedding-v3"
+    assert config["memory_v2"]["base_url"] == "https://embedding.example.com/v1"
 
 
 def test_build_default_config_custom_provider_requires_base_url() -> None:
@@ -38,6 +57,21 @@ def test_build_default_config_custom_provider_requires_base_url() -> None:
         )
     except ValueError as exc:
         assert "base_url" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_build_default_config_requires_embed_model_when_memory_v2_enabled() -> None:
+    try:
+        build_default_config_dict(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="k",
+            enable_memory_v2=True,
+            embed_model="",
+        )
+    except ValueError as exc:
+        assert "embed_model" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 
@@ -70,7 +104,11 @@ def test_run_init_generates_loadable_config_and_workspace(tmp_path: Path) -> Non
             "gpt-4o-mini",
             "${OPENAI_API_KEY}",
             "",
+            "",
             "y",
+            "text-embedding-v3",
+            "",
+            "",
             "y",
             "telegram",
             "123456",
@@ -89,6 +127,7 @@ def test_run_init_generates_loadable_config_and_workspace(tmp_path: Path) -> Non
     assert cfg.provider == "openai"
     assert cfg.model == "gpt-4o-mini"
     assert cfg.memory_v2.enabled is True
+    assert cfg.memory_v2.embed_model == "text-embedding-v3"
     assert cfg.proactive.enabled is True
     assert cfg.proactive.default_chat_id == "123456"
     assert (workspace / "sessions.db").exists()

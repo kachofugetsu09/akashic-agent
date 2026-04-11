@@ -172,6 +172,8 @@ def _load_memory_v2_config(data: dict) -> MemoryV2Config:
         enabled=bool(mv2.get("enabled", False)),
         db_path=mv2.get("db_path", ""),
         embed_model=mv2.get("embed_model", "text-embedding-v3"),
+        api_key=_resolve(mv2.get("api_key", "")),
+        base_url=mv2.get("base_url", ""),
         retrieve_top_k=history_top_k,
         top_k_history=history_top_k,
         top_k_procedure=int(mv2.get("top_k_procedure", 4)),

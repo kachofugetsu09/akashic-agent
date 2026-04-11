@@ -6,6 +6,11 @@ Shell 工具（Bash 命令执行）
 - 输出截断：超过 30000 字符时首尾各取一半，中间注明省略行数
 - 记录执行时长
 - 结构化 JSON 输出（command / exit_code / duration_ms / output）
+
+后台任务（run_in_background=True）：
+- 立即返回 background_task_id，不阻塞前台
+- 输出持续写入临时日志文件
+- 配合 ShellTaskOutputTool / ShellTaskStopTool 管理
 """
 
 import asyncio
@@ -16,8 +21,10 @@ import signal
 import shlex
 import ipaddress
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 import time
 from typing import Any, Callable
 
@@ -29,6 +36,9 @@ _DEFAULT_TIMEOUT = 60  # 秒（OpenCode 默认 1 分钟）
 _MAX_TIMEOUT = 600  # 秒（OpenCode 最大 10 分钟）
 _MAX_OUTPUT = 30_000  # 字符（与 OpenCode MaxOutputLength 一致）
 _STREAM_CHUNK_SIZE = 4096
+_STREAM_DRAIN_GRACE_S = 0.2
+_BG_TTL_S = 4 * 3600  # 后台任务最长存活时间：4 小时
+_BG_EVICT_DELAY_S = 300  # 任务完成后延迟 5 分钟清理注册表和日志
 
 # 禁止命令（对应 OpenCode bannedCommands）
 _BANNED = frozenset(
@@ -90,6 +100,90 @@ _RESTRICTED_SHELL_RUNNERS = frozenset(
     }
 )
 
+# ── 后台任务注册表 ────────────────────────────────────────────────────
+
+@dataclass
+class _BackgroundTask:
+    proc: Any  # asyncio.subprocess.Process
+    log_path: str
+    pump_task: asyncio.Task
+    started_at: float
+
+
+# 模块级单例：跨 ShellTool 实例共享
+_BG_REGISTRY: dict[str, _BackgroundTask] = {}
+
+
+async def _bg_pump(proc: Any, log_path: str) -> None:
+    """持续从 stdout/stderr 读取并写入日志文件，直到进程退出（+ 短暂排水）。
+
+    顺序：先等主进程退出，再尝试排水 grace 秒；超时则强制取消 drain task。
+    这样即使子孙进程继承了 pipe fd，pump_task 也不会永久阻塞。
+    """
+    with open(log_path, "wb") as f:
+        async def _drain_stream(stream) -> None:
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.read(_STREAM_CHUNK_SIZE)
+                if not chunk:
+                    break
+                f.write(chunk)
+                f.flush()
+
+        stdout_task = asyncio.create_task(_drain_stream(proc.stdout))
+        stderr_task = asyncio.create_task(_drain_stream(proc.stderr))
+
+        # 等主进程本体退出（不等子孙进程关 fd）
+        await proc.wait()
+
+        # 短暂排水：捕获最后几帧输出；超时后强制取消
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task),
+                timeout=_STREAM_DRAIN_GRACE_S,
+            )
+        except asyncio.TimeoutError:
+            stdout_task.cancel()
+            stderr_task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+
+
+def _schedule_eviction(task_id: str, log_path: str) -> None:
+    """在当前事件循环上注册延迟清理（由 pump_task done callback 调用）。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    def _evict() -> None:
+        _BG_REGISTRY.pop(task_id, None)
+        try:
+            os.unlink(log_path)
+        except OSError:
+            pass
+
+    loop.call_later(_BG_EVICT_DELAY_S, _evict)
+
+
+def _bg_kill(task_id: str) -> None:
+    """杀掉后台任务、从注册表移除并立即删除日志文件。"""
+    task = _BG_REGISTRY.pop(task_id, None)
+    if task is None:
+        return
+    try:
+        os.killpg(task.proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    task.pump_task.cancel()
+    try:
+        os.unlink(task.log_path)
+    except OSError:
+        pass
+
+
+# ── ShellTool ────────────────────────────────────────────────────────
+
 
 class ShellTool(Tool):
     """在 bash 中执行命令，返回结构化结果"""
@@ -120,7 +214,8 @@ class ShellTool(Tool):
             "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
             "- 输出超过 30000 字符时自动截断\n"
             "- 超时默认 60 秒，最大 600 秒\n"
-            "- 若命令是服务进程（如 python server.py、uvicorn、node app.js 等），必须用 `timeout 5 <命令> 2>&1` 包裹以快速获取启动日志，禁止直接运行导致阻塞\n"
+            "- 若命令是服务进程（如 python server.py、uvicorn、node app.js 等），"
+            "请使用 run_in_background=true 后台启动，再用 task_output 获取日志\n"
             "禁止用途：不得用 shell 替代专用工具（read_file 读文件、web_fetch 抓网页、list_dir 列目录）。"
         )
 
@@ -146,6 +241,14 @@ class ShellTool(Tool):
                     "minimum": 1,
                     "maximum": _MAX_TIMEOUT,
                 },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": (
+                        "是否后台运行。设为 true 时立即返回 background_task_id，"
+                        "输出写入日志文件，通过 task_output 获取、task_stop 停止。"
+                        "适用于服务进程、长时间编译等不需要等待结果的场景。"
+                    ),
+                },
             },
             "required": ["command", "description"],
         }
@@ -154,10 +257,12 @@ class ShellTool(Tool):
         command: str = kwargs.get("command", "").strip()
         description: str = kwargs.get("description", "")
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
+        run_in_background: bool = bool(kwargs.get("run_in_background", False))
         on_data = kwargs.get("_on_data")
 
         if not command:
             return _err("命令不能为空")
+
         cwd = self._working_dir
         env = os.environ.copy()
         if self._spawn_hook is not None:
@@ -180,7 +285,6 @@ class ShellTool(Tool):
 
         logger.info("shell [%s]: %s", description, command[:120])
 
-        # 禁止命令检查（对应 OpenCode bannedCommands 逻辑）
         base_cmd = command.split()[0].lower()
         if base_cmd in _BANNED:
             return _err(f"命令 '{base_cmd}' 不被允许（安全限制）")
@@ -193,6 +297,10 @@ class ShellTool(Tool):
         if cmd_err:
             return _err(cmd_err)
 
+        if run_in_background:
+            return await self._execute_background(command, cwd, env)
+
+        # ── 前台执行路径（原有逻辑）────────────────────────────────────
         start_ms = int(time.monotonic() * 1000)
         stdout, stderr, exit_code, interrupted = await _run(
             command,
@@ -203,13 +311,12 @@ class ShellTool(Tool):
         )
         duration_ms = int(time.monotonic() * 1000) - start_ms
 
-        # 合并输出（对应 OpenCode hasBothOutputs 逻辑）
         full_parts = []
         if stdout:
             full_parts.append(stdout)
         if stderr:
             if stdout:
-                full_parts.append("")  # 两段之间空一行
+                full_parts.append("")
             full_parts.append(stderr)
         if interrupted:
             full_parts.append("命令在完成前被中止")
@@ -242,6 +349,177 @@ class ShellTool(Tool):
             },
             ensure_ascii=False,
         )
+
+    async def _execute_background(
+        self,
+        command: str,
+        cwd: Path | None,
+        env: dict[str, str],
+    ) -> str:
+        task_id = f"shell_{uuid4().hex[:12]}"
+        log_fd, log_path = tempfile.mkstemp(
+            prefix=f"akasic-bg-{task_id}-", suffix=".log"
+        )
+        os.close(log_fd)
+
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        pump = asyncio.create_task(_bg_pump(proc, log_path))
+        pump.add_done_callback(lambda _: _schedule_eviction(task_id, log_path))
+        wall_start_ms = int(time.time() * 1000)
+        _BG_REGISTRY[task_id] = _BackgroundTask(
+            proc=proc,
+            log_path=log_path,
+            pump_task=pump,
+            started_at=time.monotonic(),
+        )
+        logger.info("shell bg started [%s] pid=%s log=%s", task_id, proc.pid, log_path)
+
+        return json.dumps(
+            {
+                "command": command,
+                "background_task_id": task_id,
+                "status": "running",
+                "output_path": log_path,
+                "started_at_ms": wall_start_ms,
+                "exit_code": None,
+                "interrupted": False,
+            },
+            ensure_ascii=False,
+        )
+
+
+# ── ShellTaskOutputTool ──────────────────────────────────────────────
+
+
+class ShellTaskOutputTool(Tool):
+    """读取后台 shell 任务的当前输出，可选择阻塞等待完成。"""
+
+    name = "task_output"
+
+    @property
+    def description(self) -> str:
+        return (
+            "读取后台 shell 任务的输出。\n"
+            "- block=false（默认）：立即返回当前已写入的输出，不等待任务完成\n"
+            "- block=true：等待任务完成或超时后再返回完整输出\n"
+            "输出超过 30000 字符时自动截断，完整内容见 output_path。"
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "shell 工具返回的 background_task_id",
+                },
+                "block": {
+                    "type": "boolean",
+                    "description": "是否等待任务完成后再返回，默认 false",
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "block=true 时的最长等待时间（毫秒），默认 30000",
+                    "minimum": 0,
+                },
+            },
+            "required": ["task_id"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        task_id: str = kwargs.get("task_id", "")
+        block: bool = bool(kwargs.get("block", False))
+        timeout_ms: int = int(kwargs.get("timeout_ms", 30000))
+
+        task = _BG_REGISTRY.get(task_id)
+        if task is None:
+            return _err(f"任务 {task_id!r} 不存在或已清理")
+
+        if time.monotonic() - task.started_at > _BG_TTL_S:
+            _bg_kill(task_id)
+            return _err(f"任务 {task_id!r} 已超出 TTL（{_BG_TTL_S}s），已自动终止")
+
+        if block and not task.pump_task.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task.pump_task), timeout=timeout_ms / 1000
+                )
+            except asyncio.TimeoutError:
+                pass
+
+        done = task.pump_task.done()
+        exit_code = task.proc.returncode if done else None
+        status = "done" if done else "running"
+
+        try:
+            content = Path(task.log_path).read_bytes().decode(errors="replace")
+        except OSError:
+            content = ""
+
+        output_meta = _truncate(content)
+        truncation = None
+        if output_meta["truncated"]:
+            truncation = {
+                "strategy": output_meta["strategy"],
+                "full_length": output_meta["full_length"],
+                "returned_length": output_meta["returned_length"],
+                "omitted_lines": output_meta["omitted_lines"],
+            }
+
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "status": status,
+                "exit_code": exit_code,
+                "output": output_meta["text"],
+                "truncation": truncation,
+                "output_path": task.log_path,
+            },
+            ensure_ascii=False,
+        )
+
+
+# ── ShellTaskStopTool ────────────────────────────────────────────────
+
+
+class ShellTaskStopTool(Tool):
+    """停止并清理一个后台 shell 任务。"""
+
+    name = "task_stop"
+
+    @property
+    def description(self) -> str:
+        return "停止后台 shell 任务（SIGKILL 整棵进程树）并从注册表移除。"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "要停止的后台任务 ID（background_task_id）",
+                },
+            },
+            "required": ["task_id"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        task_id: str = kwargs.get("task_id", "")
+        if task_id not in _BG_REGISTRY:
+            return json.dumps(
+                {"task_id": task_id, "status": "not_found"}, ensure_ascii=False
+            )
+        _bg_kill(task_id)
+        return json.dumps({"task_id": task_id, "status": "stopped"}, ensure_ascii=False)
 
 
 # ── 模块级工具函数 ────────────────────────────────────────────────
@@ -292,6 +570,17 @@ async def _run(
     stdout_task = asyncio.create_task(_pump(proc.stdout, stdout_chunks))
     stderr_task = asyncio.create_task(_pump(proc.stderr, stderr_chunks))
 
+    async def _finish_pumps() -> None:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task),
+                timeout=_STREAM_DRAIN_GRACE_S,
+            )
+        except asyncio.TimeoutError:
+            stdout_task.cancel()
+            stderr_task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+
     async def _wait_proc() -> int:
         if hasattr(proc, "wait"):
             return await proc.wait()
@@ -300,7 +589,7 @@ async def _run(
 
     try:
         await asyncio.wait_for(_wait_proc(), timeout=timeout)
-        await asyncio.gather(stdout_task, stderr_task)
+        await _finish_pumps()
         return (
             "".join(stdout_chunks),
             "".join(stderr_chunks),
@@ -309,7 +598,7 @@ async def _run(
         )
     except asyncio.TimeoutError:
         _kill_tree()
-        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        await _finish_pumps()
         return (
             "".join(stdout_chunks),
             "".join(stderr_chunks),

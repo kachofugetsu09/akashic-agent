@@ -13,6 +13,8 @@ from session.store import SessionStore
 
 _DEFAULT_PROVIDER = "openai"
 _DEFAULT_MODEL = "gpt-4o-mini"
+_DEFAULT_LIGHT_MODEL = ""
+_DEFAULT_EMBED_MODEL = "text-embedding-v3"
 _DEFAULT_WORKSPACE = Path.home() / ".akashic" / "workspace"
 _DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _NOW_TEMPLATE = "## 近期进行中\n\n## 待确认事项\n"
@@ -60,7 +62,13 @@ def build_default_config_dict(
     model: str,
     api_key: str,
     base_url: str = "",
+    light_model: str = "",
+    light_api_key: str = "",
+    light_base_url: str = "",
     enable_memory_v2: bool = True,
+    embed_model: str = _DEFAULT_EMBED_MODEL,
+    embed_api_key: str = "",
+    embed_base_url: str = "",
     enable_proactive: bool = False,
     proactive_channel: str = "telegram",
     proactive_chat_id: str = "",
@@ -72,6 +80,8 @@ def build_default_config_dict(
         raise ValueError("provider 不能为空")
     if not model:
         raise ValueError("model 不能为空")
+    if enable_memory_v2 and not str(embed_model or "").strip():
+        raise ValueError("启用 memory_v2 时 embed_model 不能为空")
 
     preset_url = _PRESETS.get(provider)
     resolved_base_url = str(base_url or "").strip()
@@ -88,8 +98,21 @@ def build_default_config_dict(
     }
     if resolved_base_url and resolved_base_url != preset_url:
         raw["base_url"] = resolved_base_url
+    if str(light_model or "").strip():
+        raw["light_model"] = str(light_model).strip()
+        if str(light_api_key or "").strip():
+            raw["light_api_key"] = str(light_api_key).strip()
+        if str(light_base_url or "").strip():
+            raw["light_base_url"] = str(light_base_url).strip()
     if enable_memory_v2:
-        raw["memory_v2"] = {"enabled": True}
+        raw["memory_v2"] = {
+            "enabled": True,
+            "embed_model": str(embed_model).strip(),
+        }
+        if str(embed_api_key or "").strip():
+            raw["memory_v2"]["api_key"] = str(embed_api_key).strip()
+        if str(embed_base_url or "").strip():
+            raw["memory_v2"]["base_url"] = str(embed_base_url).strip()
     if enable_proactive:
         raw["proactive"] = {
             "enabled": True,
@@ -108,6 +131,12 @@ def build_default_config_dict(
     }
     if resolved_base_url and resolved_base_url != preset_url:
         config["base_url"] = resolved_base_url
+    if str(loaded.light_model or "").strip():
+        config["light_model"] = loaded.light_model
+        if str(light_api_key or "").strip():
+            config["light_api_key"] = light_api_key
+        if str(light_base_url or "").strip():
+            config["light_base_url"] = light_base_url
     if loaded.channels.socket != DEFAULT_SOCKET:
         config["channels"] = {"socket": loaded.channels.socket}
     if enable_memory_v2:
@@ -115,6 +144,10 @@ def build_default_config_dict(
             "enabled": True,
             "embed_model": loaded.memory_v2.embed_model,
         }
+        if str(embed_api_key or "").strip():
+            config["memory_v2"]["api_key"] = embed_api_key
+        if str(embed_base_url or "").strip():
+            config["memory_v2"]["base_url"] = embed_base_url
     if enable_proactive:
         config["proactive"] = {
             "enabled": True,
@@ -268,8 +301,40 @@ def run_init(
     if provider not in _PRESETS and not base_url.strip():
         raise ValueError("自定义 provider 必须填写 base_url")
 
+    light_model = _ask(input_fn, "light_model（可留空）", _DEFAULT_LIGHT_MODEL)
+    light_api_key = ""
+    light_base_url = ""
+    if light_model.strip():
+        light_api_key = _ask(
+            input_fn,
+            "light_api_key（可留空，留空则回退主 api_key）",
+            "",
+        )
+        light_base_url = _ask(
+            input_fn,
+            "light_base_url（可留空，留空则回退主 base_url）",
+            "",
+        )
+
     memory_v2_answer = _ask(input_fn, "启用 memory_v2? [Y/n]", "y")
     enable_memory_v2 = _is_yes(memory_v2_answer, default=True)
+    embed_model = _DEFAULT_EMBED_MODEL
+    embed_api_key = ""
+    embed_base_url = ""
+    if enable_memory_v2:
+        embed_model = _ask(input_fn, "embedding_model", _DEFAULT_EMBED_MODEL)
+        if not embed_model.strip():
+            raise ValueError("embedding_model 不能为空")
+        embed_api_key = _ask(
+            input_fn,
+            "embedding_api_key（可留空，留空则回退主 api_key）",
+            "",
+        )
+        embed_base_url = _ask(
+            input_fn,
+            "embedding_base_url（可留空，留空则回退主 base_url）",
+            "",
+        )
 
     proactive_answer = _ask(input_fn, "启用 proactive? [y/N]", "n")
     enable_proactive = _is_yes(proactive_answer, default=False)
@@ -284,7 +349,13 @@ def run_init(
         model=model,
         api_key=api_key,
         base_url=base_url,
+        light_model=light_model,
+        light_api_key=light_api_key,
+        light_base_url=light_base_url,
         enable_memory_v2=enable_memory_v2,
+        embed_model=embed_model,
+        embed_api_key=embed_api_key,
+        embed_base_url=embed_base_url,
         enable_proactive=enable_proactive,
         proactive_channel=proactive_channel,
         proactive_chat_id=proactive_chat_id,

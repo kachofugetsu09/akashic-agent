@@ -55,6 +55,8 @@ def _build_memu_memory_engine(deps: MemoryEngineBuildDeps):
 
     base_url = deps.config.light_base_url or deps.config.base_url or "https://api.openai.com/v1"
     api_key = deps.config.light_api_key or deps.config.api_key
+    embed_base_url = deps.config.memory_v2.base_url or base_url
+    embed_api_key = deps.config.memory_v2.api_key or api_key
     chat_model = deps.config.light_model or deps.config.model
     service = MemoryService(
         llm_profiles={
@@ -67,8 +69,8 @@ def _build_memu_memory_engine(deps: MemoryEngineBuildDeps):
             },
             "embedding": {
                 "provider": "openai",
-                "base_url": base_url,
-                "api_key": api_key,
+                "base_url": embed_base_url,
+                "api_key": embed_api_key,
                 "embed_model": deps.config.memory_v2.embed_model,
                 "client_backend": "sdk",
             },

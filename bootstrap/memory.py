@@ -59,8 +59,17 @@ def build_memory_runtime(
     )
     mem2_store = MemoryStore2(db_path)
     embedder = Embedder(
-        base_url=config.light_base_url or config.base_url or "",
-        api_key=config.light_api_key or config.api_key,
+        base_url=(
+            config.memory_v2.base_url
+            or config.light_base_url
+            or config.base_url
+            or ""
+        ),
+        api_key=(
+            config.memory_v2.api_key
+            or config.light_api_key
+            or config.api_key
+        ),
         model=config.memory_v2.embed_model,
         requester=http_resources.external_default,
     )
