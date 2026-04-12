@@ -57,6 +57,16 @@ class TurnTrace:
     # 每个 tool call: {name, args, result}（args/result 会截断）
     error: str | None = None
     tool_chain_json: str | None = None  # JSON: [{text, calls:[{name,args,result}]}] 每轮迭代完整记录
+    history_window: int | None = None
+    history_messages: int | None = None
+    history_chars: int | None = None
+    history_tokens: int | None = None
+    prompt_tokens: int | None = None
+    next_turn_baseline_tokens: int | None = None
+    react_iteration_count: int | None = None
+    react_input_sum_tokens: int | None = None
+    react_input_peak_tokens: int | None = None
+    react_final_input_tokens: int | None = None
 
 
 @dataclass

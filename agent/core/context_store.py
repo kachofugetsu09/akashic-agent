@@ -78,6 +78,7 @@ class DefaultContextStore(ContextStore):
         *,
         retrieval: "MemoryRetrievalPipeline",
         context: "ContextBuilder",
+        history_window: int = 500,
         session: "SessionServices | None" = None,
         trace: "ObservabilityServices | None" = None,
         post_turn: "PostTurnPipeline | None" = None,
@@ -86,6 +87,7 @@ class DefaultContextStore(ContextStore):
     ) -> None:
         self._retrieval = retrieval
         self._context = context
+        self._history_window = max(1, int(history_window))
         self._session = session
         self._trace = trace
         self._post_turn = post_turn
@@ -193,6 +195,14 @@ class DefaultContextStore(ContextStore):
             tool_chain=tool_chain,
         )
         await self._session.session_manager.append_messages(session, session.messages[-2:])
+        post_reply_budget = _build_post_reply_context_budget(
+            context=self._context,
+            history=session.get_history(max_messages=self._history_window),
+            history_window=self._history_window,
+        )
+        _log_post_reply_context_budget(session_key=session_key, budget=post_reply_budget)
+        react_stats = _extract_react_stats(context_retry)
+        _log_react_context_budget(session_key=session_key, react_stats=react_stats)
 
         # 3. 发 observe trace，并安排 post_turn。
         _emit_observe_traces(
@@ -205,6 +215,8 @@ class DefaultContextStore(ContextStore):
             meme_media_count=len(meme_media),
             tool_chain=tool_chain,
             retrieval_raw=retrieval_raw,
+            post_reply_budget=post_reply_budget,
+            react_stats=react_stats,
         )
         self._post_turn.schedule(
             PostTurnEvent(
@@ -313,6 +325,8 @@ def _emit_observe_traces(
     meme_media_count: int,
     tool_chain: list[dict],
     retrieval_raw: object | None,
+    post_reply_budget: dict[str, int],
+    react_stats: dict[str, int],
 ) -> None:
     writer = trace.observe_writer
     if writer is None:
@@ -359,10 +373,109 @@ def _emit_observe_traces(
             meme_media_count=meme_media_count,
             tool_calls=tool_calls,
             tool_chain_json=tool_chain_json,
+            history_window=post_reply_budget["history_window"],
+            history_messages=post_reply_budget["history_messages"],
+            history_chars=post_reply_budget["history_chars"],
+            history_tokens=post_reply_budget["history_tokens"],
+            prompt_tokens=post_reply_budget["prompt_tokens"],
+            next_turn_baseline_tokens=post_reply_budget["next_turn_baseline_tokens"],
+            react_iteration_count=react_stats.get("iteration_count"),
+            react_input_sum_tokens=react_stats.get("turn_input_sum_tokens"),
+            react_input_peak_tokens=react_stats.get("turn_input_peak_tokens"),
+            react_final_input_tokens=react_stats.get("final_call_input_tokens"),
         )
     )
     if retrieval_raw is not None:
         writer.emit(retrieval_raw)
+
+
+def _build_post_reply_context_budget(
+    *,
+    context: "ContextBuilder",
+    history: list[dict],
+    history_window: int,
+) -> dict[str, int]:
+    history_stats = _estimate_history_budget(history)
+    debug_breakdown = getattr(context, "last_debug_breakdown", []) or []
+    prompt_tokens = sum(
+        int(getattr(item, "est_tokens", 0) or 0)
+        for item in debug_breakdown
+    )
+    return {
+        "history_window": history_window,
+        "history_messages": history_stats["messages"],
+        "history_chars": history_stats["chars"],
+        "history_tokens": history_stats["tokens"],
+        "prompt_tokens": prompt_tokens,
+        "next_turn_baseline_tokens": history_stats["tokens"] + prompt_tokens,
+    }
+
+
+def _log_post_reply_context_budget(
+    *,
+    session_key: str,
+    budget: dict[str, int],
+) -> None:
+    logger.info(
+        "post_reply_context: session_key=%s history_window=%d history_messages=%d history_chars=%d history_tokens~=%d prompt_tokens~=%d next_turn_baseline_tokens~=%d",
+        session_key,
+        budget["history_window"],
+        budget["history_messages"],
+        budget["history_chars"],
+        budget["history_tokens"],
+        budget["prompt_tokens"],
+        budget["next_turn_baseline_tokens"],
+    )
+
+
+def _extract_react_stats(context_retry: dict[str, object]) -> dict[str, int]:
+    raw = context_retry.get("react_stats")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key in (
+        "iteration_count",
+        "turn_input_sum_tokens",
+        "turn_input_peak_tokens",
+        "final_call_input_tokens",
+    ):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            out[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _log_react_context_budget(
+    *,
+    session_key: str,
+    react_stats: dict[str, int],
+) -> None:
+    if not react_stats:
+        return
+    logger.info(
+        "react_context: session_key=%s iteration_count=%d turn_input_sum_tokens~=%d turn_input_peak_tokens~=%d final_call_input_tokens~=%d",
+        session_key,
+        react_stats.get("iteration_count", 0),
+        react_stats.get("turn_input_sum_tokens", 0),
+        react_stats.get("turn_input_peak_tokens", 0),
+        react_stats.get("final_call_input_tokens", 0),
+    )
+
+
+def _estimate_history_budget(history: list[dict]) -> dict[str, int]:
+    if not history:
+        return {"messages": 0, "chars": 0, "tokens": 0}
+    payload = json.dumps(history, ensure_ascii=False)
+    chars = len(payload)
+    return {
+        "messages": len(history),
+        "chars": chars,
+        "tokens": max(1, chars // 3),
+    }
 
 
 async def _run_effects(effects: list[object]) -> None:

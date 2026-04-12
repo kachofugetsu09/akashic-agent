@@ -325,6 +325,7 @@ class AgentLoop:
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
             context=self._context,
+            history_window=config.memory.keep_count,
             session=session_svc,
             trace=trace_svc,
             post_turn=post_turn_pipeline,

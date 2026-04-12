@@ -96,7 +96,15 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
         thinking="思考",
         streamed_reply=True,
         retrieval_raw={"route": "RETRIEVE"},
-        context_retry={"selected_plan": "full"},
+        context_retry={
+            "selected_plan": "full",
+            "react_stats": {
+                "iteration_count": 3,
+                "turn_input_sum_tokens": 42100,
+                "turn_input_peak_tokens": 18800,
+                "final_call_input_tokens": 17500,
+            },
+        },
         post_turn_actions=[post_turn_action],
     )
 
@@ -108,6 +116,17 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     presence.record_user_message.assert_called_once_with("telegram:123")
     session_manager.append_messages.assert_awaited_once()
     assert len(writer.events) == 2
+    turn_event = writer.events[0]
+    assert turn_event.history_window == 500
+    assert turn_event.history_messages == 2
+    assert turn_event.history_chars > 0
+    assert turn_event.history_tokens == max(1, turn_event.history_chars // 3)
+    assert turn_event.prompt_tokens == 0
+    assert turn_event.next_turn_baseline_tokens == turn_event.history_tokens
+    assert turn_event.react_iteration_count == 3
+    assert turn_event.react_input_sum_tokens == 42100
+    assert turn_event.react_input_peak_tokens == 18800
+    assert turn_event.react_final_input_tokens == 17500
     assert post_turn.events[0].assistant_response == "整理好了"
     outbound.dispatch.assert_awaited_once()
     post_turn_action.run.assert_awaited_once()

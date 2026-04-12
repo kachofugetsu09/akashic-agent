@@ -70,6 +70,10 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert result.metadata["tools_used"] == ["dummy"]
     assert result.invocations[0].name == "dummy"
     assert result.metadata["visible_names"] is None
+    react_stats = result.metadata["react_stats"]
+    assert react_stats["iteration_count"] == 2
+    assert react_stats["turn_input_sum_tokens"] >= react_stats["turn_input_peak_tokens"]
+    assert react_stats["final_call_input_tokens"] == react_stats["turn_input_peak_tokens"]
     first_messages = provider.calls[0]["messages"]
     assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
 

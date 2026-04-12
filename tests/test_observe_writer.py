@@ -125,3 +125,94 @@ def test_write_turn_persists_raw_output_and_meme_fields(tmp_path):
     assert row[1] == "我也喜欢你。 <meme:shy>"
     assert row[2] == "shy"
     assert row[3] == 1
+
+
+def test_write_turn_persists_context_budget_fields(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        _write_turn(
+            conn,
+            TurnTrace(
+                source="agent",
+                session_key="telegram:1",
+                user_msg="你好",
+                llm_output="收到",
+                history_window=40,
+                history_messages=27,
+                history_chars=18234,
+                history_tokens=6078,
+                prompt_tokens=6607,
+                next_turn_baseline_tokens=12685,
+            ),
+            "2026-04-12T00:00:00+00:00",
+        )
+        row = conn.execute(
+            """
+            select history_window, history_messages, history_chars,
+                   history_tokens, prompt_tokens, next_turn_baseline_tokens
+            from turns
+            where session_key = ?
+            """,
+            ("telegram:1",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row[0] == 40
+    assert row[1] == 27
+    assert row[2] == 18234
+    assert row[3] == 6078
+    assert row[4] == 6607
+    assert row[5] == 12685
+
+
+def test_write_turn_persists_react_budget_fields(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        _write_turn(
+            conn,
+            TurnTrace(
+                source="agent",
+                session_key="telegram:1",
+                user_msg="你好",
+                llm_output="收到",
+                react_iteration_count=3,
+                react_input_sum_tokens=42100,
+                react_input_peak_tokens=18800,
+                react_final_input_tokens=17500,
+            ),
+            "2026-04-12T00:00:00+00:00",
+        )
+        row = conn.execute(
+            """
+            select react_iteration_count, react_input_sum_tokens,
+                   react_input_peak_tokens, react_final_input_tokens
+            from turns
+            where session_key = ?
+            """,
+            ("telegram:1",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row[0] == 3
+    assert row[1] == 42100
+    assert row[2] == 18800
+    assert row[3] == 17500
+
+
+def test_open_db_creates_react_budget_columns(tmp_path):
+    conn = open_db(tmp_path / "observe.db")
+    try:
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(turns)").fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert "react_iteration_count" in cols
+    assert "react_input_sum_tokens" in cols
+    assert "react_input_peak_tokens" in cols
+    assert "react_final_input_tokens" in cols

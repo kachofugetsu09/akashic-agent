@@ -100,11 +100,32 @@ async def test_reasoner_wrapper_and_shell_cover_branches(tmp_path: Path):
     assert "TAIL" in truncated["text"]
     assert len(truncated["text"]) <= _MAX_OUTPUT
 
-    async def _run(command: str, timeout: int, cwd=None, env=None, on_data=None):
-        return "out", "err", 2, False
+    from types import SimpleNamespace as _SN
+
+    async def _fake_subprocess(command, **kwargs):
+        class _P:
+            returncode = 2
+            pid = 0
+
+            async def wait(self_):
+                return 2
+
+        p = _P()
+        buf_out = [b"out"]
+        buf_err = [b"err"]
+
+        async def _read_out(_size=-1):
+            return buf_out.pop(0) if buf_out else b""
+
+        async def _read_err(_size=-1):
+            return buf_err.pop(0) if buf_err else b""
+
+        p.stdout = _SN(read=_read_out)
+        p.stderr = _SN(read=_read_err)
+        return p
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("agent.tools.shell._run", _run)
+        mp.setattr("agent.tools.shell.asyncio.create_subprocess_shell", _fake_subprocess)
         result = json.loads(await tool.execute(command="echo 1", timeout=999))
     assert result["exit_code"] == 2
     assert "Exit code 2" in result["output"]

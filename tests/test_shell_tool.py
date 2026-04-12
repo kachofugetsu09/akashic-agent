@@ -132,7 +132,8 @@ async def test_shell_tool_supports_spawn_hook_and_streaming(monkeypatch, tmp_pat
     assert observed["kwargs"]["cwd"] == str(tmp_path)
     assert observed["kwargs"]["env"]["TEST_FLAG"] == "1"
     assert streamed == ["part1", "part2"]
-    assert result["output"] == "part1\n\npart2"
+    # 新实现 stdout/stderr 直接合流写文件，无分隔行
+    assert result["output"] == "part1part2"
     assert "stdout" not in result
     assert "stderr" not in result
 
@@ -187,11 +188,13 @@ async def test_restricted_shell_spawn_hook_empty_cwd_falls_back_to_restricted_di
 async def test_shell_tool_truncates_to_tail_and_persists_full_output(monkeypatch, tmp_path: Path):
     long_stdout = "HEAD\n" + ("x" * 31_000) + "\nTAIL\n"
 
-    async def _fake_run(command: str, timeout: int, cwd=None, env=None, on_data=None):
-        return long_stdout, "", 0, False
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        return _FakeProc(stdout=long_stdout, stderr="", returncode=0)
 
-    monkeypatch.setattr("agent.tools.shell._run", _fake_run)
-    monkeypatch.setattr("agent.tools.shell.tempfile.gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
 
     tool = ShellTool()
     result = json.loads(await tool.execute(command="echo long", description="长输出"))
@@ -199,10 +202,10 @@ async def test_shell_tool_truncates_to_tail_and_persists_full_output(monkeypatch
     assert result["truncation"] is not None
     assert result["full_output_path"] is not None
     assert Path(result["full_output_path"]).read_text(encoding="utf-8") == long_stdout
+    assert result["truncation"]["full_length"] == len(long_stdout)
     assert "HEAD" not in result["output"]
     assert "TAIL" in result["output"]
     assert result["truncation"]["strategy"] == "tail"
-    assert result["truncation"]["full_length"] == len(long_stdout)
     assert len(result["output"]) <= _MAX_OUTPUT
 
 
@@ -356,11 +359,13 @@ async def test_task_output_returns_log_content(monkeypatch, tmp_path):
     fake_proc = _FakeProc(stdout="", stderr="", returncode=0)
 
     task_id = "shell_testoutput"
+    wall_ms = int(shell_mod.time.time() * 1000)
     shell_mod._BG_REGISTRY[task_id] = shell_mod._BackgroundTask(
         proc=fake_proc,
         log_path=log_path,
         pump_task=asyncio.ensure_future(asyncio.sleep(0)),
         started_at=shell_mod.time.monotonic(),
+        wall_started_at_ms=wall_ms,
     )
     # 等 pump_task 完成
     await asyncio.sleep(0)
@@ -371,8 +376,69 @@ async def test_task_output_returns_log_content(monkeypatch, tmp_path):
     assert result["task_id"] == task_id
     assert "hello from bg" in result["output"]
     assert result["truncation"] is None
+    assert result["elapsed_ms"] >= 0
+    assert result["since_last_output_ms"] is None  # pump 没写，last_output_at_ms 为 None
 
     shell_mod._BG_REGISTRY.pop(task_id, None)
+
+
+@pytest.mark.asyncio
+async def test_task_output_returns_timing_fields(tmp_path):
+    """task_output 应返回 elapsed_ms 和 since_last_output_ms。"""
+    import agent.tools.shell as shell_mod
+
+    log_path = str(tmp_path / "timing.log")
+    Path(log_path).write_bytes(b"")
+
+    wall_ms = int(shell_mod.time.time() * 1000)
+    last_ms = wall_ms - 500  # 模拟 500ms 前有过输出
+
+    fake_proc = _FakeProc(stdout="", stderr="", returncode=0)
+    task_id = "shell_timing"
+    shell_mod._BG_REGISTRY[task_id] = shell_mod._BackgroundTask(
+        proc=fake_proc,
+        log_path=log_path,
+        pump_task=asyncio.ensure_future(asyncio.sleep(100)),
+        started_at=shell_mod.time.monotonic(),
+        wall_started_at_ms=wall_ms,
+        last_output_at_ms=last_ms,
+    )
+
+    tool = ShellTaskOutputTool()
+    result = json.loads(await tool.execute(task_id=task_id))
+
+    assert result["elapsed_ms"] >= 0
+    assert result["since_last_output_ms"] >= 500  # 至少 500ms 前
+    assert result["status"] == "running"
+
+    shell_mod._BG_REGISTRY.pop(task_id, None)
+
+
+@pytest.mark.asyncio
+async def test_bg_pump_updates_last_output_at_ms(tmp_path):
+    """_bg_pump 每次写入时应更新 bg_task.last_output_at_ms。"""
+    import time as time_mod
+    import agent.tools.shell as shell_mod
+
+    log_path = str(tmp_path / "pump_timing.log")
+
+    fake_proc = _FakeProc(stdout="hello", stderr="world", returncode=0)
+    bg = shell_mod._BackgroundTask(
+        proc=fake_proc,
+        log_path=log_path,
+        pump_task=None,
+        started_at=shell_mod.time.monotonic(),
+        wall_started_at_ms=int(time_mod.time() * 1000),
+    )
+
+    assert bg.last_output_at_ms is None
+
+    before_ms = int(time_mod.time() * 1000)
+    await shell_mod._bg_pump(fake_proc, log_path, bg)
+    after_ms = int(time_mod.time() * 1000)
+
+    assert bg.last_output_at_ms is not None
+    assert before_ms <= bg.last_output_at_ms <= after_ms
 
 
 @pytest.mark.asyncio
@@ -405,6 +471,7 @@ async def test_task_stop_kills_and_removes(monkeypatch):
         log_path="/tmp/fake.log",
         pump_task=pump,
         started_at=shell_mod.time.monotonic(),
+        wall_started_at_ms=0,
     )
 
     tool = ShellTaskStopTool()
@@ -437,6 +504,7 @@ async def test_task_stop_deletes_log_file(monkeypatch, tmp_path):
         log_path=str(log_path),
         pump_task=asyncio.ensure_future(asyncio.sleep(100)),
         started_at=shell_mod.time.monotonic(),
+        wall_started_at_ms=0,
     )
 
     tool = ShellTaskStopTool()
@@ -464,6 +532,7 @@ async def test_task_output_ttl_deletes_log_file(monkeypatch, tmp_path):
         log_path=str(log_path),
         pump_task=asyncio.ensure_future(asyncio.sleep(100)),
         started_at=shell_mod.time.monotonic() - shell_mod._BG_TTL_S - 1,
+        wall_started_at_ms=0,
     )
 
     tool = ShellTaskOutputTool()
@@ -497,6 +566,7 @@ async def test_task_output_ttl_expired(monkeypatch):
         log_path="/tmp/fake_expired.log",
         pump_task=asyncio.ensure_future(asyncio.sleep(100)),
         started_at=shell_mod.time.monotonic() - shell_mod._BG_TTL_S - 1,
+        wall_started_at_ms=0,
     )
 
     tool = ShellTaskOutputTool()
@@ -523,10 +593,18 @@ async def test_bg_pump_completes_when_pipe_inherited_by_child(tmp_path):
             return 0
 
     log_path = str(tmp_path / "inherited.log")
+    proc = _ProcExitsImmediately()
+    bg = shell_mod._BackgroundTask(
+        proc=proc,
+        log_path=log_path,
+        pump_task=None,
+        started_at=shell_mod.time.monotonic(),
+        wall_started_at_ms=0,
+    )
 
     # 如果 _bg_pump 先 drain 再 wait，这里会永久阻塞；修复后应在 grace timeout 内完成
     await asyncio.wait_for(
-        shell_mod._bg_pump(_ProcExitsImmediately(), log_path),
+        shell_mod._bg_pump(proc, log_path, bg),
         timeout=2.0,
     )
 
@@ -558,6 +636,68 @@ async def test_shell_run_in_background_started_at_ms_is_wall_clock(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_shell_auto_promotes_to_background_after_fg_threshold(monkeypatch):
+    """命令超过 _FG_THRESHOLD 秒未完成时，应自动转后台返回 background_task_id。"""
+    import agent.tools.shell as shell_mod
+
+    # 把 FG_THRESHOLD 设为 0，让任何命令都立即触发自动转后台
+    monkeypatch.setattr(shell_mod, "_FG_THRESHOLD", 0)
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        # 这个进程永远不会退出（wait 永远 pending）
+        proc = _FakeProc(stdout="", stderr="", returncode=None)
+
+        async def _wait_forever():
+            await asyncio.Future()  # 永远阻塞
+
+        proc.wait = _wait_forever
+        return proc
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+    monkeypatch.setattr("agent.tools.shell.os.killpg", lambda *_: None)
+
+    tool = ShellTool()
+    result = json.loads(
+        await tool.execute(command="sleep infinity", description="永远阻塞")
+    )
+
+    task_id = result.get("background_task_id")
+    assert task_id is not None, "应返回 background_task_id"
+    assert result["status"] == "running"
+    assert result.get("auto_promoted") is True
+    assert task_id in shell_mod._BG_REGISTRY
+
+    # 清理
+    shell_mod._BG_REGISTRY.pop(task_id, None)
+
+
+@pytest.mark.asyncio
+async def test_shell_foreground_completes_normally_within_threshold(monkeypatch):
+    """命令在 FG_THRESHOLD 内完成时，应正常返回前台格式（无 background_task_id）。"""
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        return _FakeProc(stdout="hello", stderr="", returncode=0)
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+
+    tool = ShellTool()
+    result = json.loads(
+        await tool.execute(command="echo hello", description="快速完成")
+    )
+
+    assert "background_task_id" not in result
+    assert result["exit_code"] == 0
+    assert "hello" in result["output"]
+    assert result.get("auto_promoted") is None
+
+
+@pytest.mark.asyncio
 async def test_bg_pump_done_evicts_registry_and_log(monkeypatch, tmp_path):
     """pump_task 完成后的 done callback 应清理注册表并删除日志文件。
 
@@ -585,6 +725,7 @@ async def test_bg_pump_done_evicts_registry_and_log(monkeypatch, tmp_path):
         log_path=log_path,
         pump_task=pump,
         started_at=shell_mod.time.monotonic(),
+        wall_started_at_ms=0,
     )
     pump.add_done_callback(lambda _: shell_mod._schedule_eviction(task_id, log_path))
 

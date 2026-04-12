@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -39,6 +40,13 @@ def _log_preview(value: object, limit: int = _LOG_PREVIEW_LIMIT) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
+
+
+def _estimate_messages_tokens(messages: list[dict]) -> int:
+    if not messages:
+        return 0
+    payload = json.dumps(messages, ensure_ascii=False)
+    return max(1, len(payload) // 3)
 
 
 
@@ -297,6 +305,7 @@ class DefaultReasoner(Reasoner):
                 if attempt == 0:
                     retry_trace["selected_plan"] = plan["name"]
                     retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
+                retry_trace["react_stats"] = dict(result.metadata.get("react_stats") or {})
                 return TurnRunResult(
                     reply=result.reply,
                     tools_used=tools_used,
@@ -358,6 +367,7 @@ class DefaultReasoner(Reasoner):
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
         streamed = False
+        react_input_samples: list[int] = []
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
             visible_names = always_on | (preloaded_tools or set())
@@ -371,10 +381,13 @@ class DefaultReasoner(Reasoner):
 
         for iteration in range(self._llm_config.max_iterations):
             # 4. 调用 LLM，带上当前可见工具 schema。
+            current_input_tokens = _estimate_messages_tokens(messages)
+            react_input_samples.append(current_input_tokens)
             logger.info(
-                "[LLM调用] 第%d轮，可见工具=%s",
+                "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d",
                 iteration + 1,
                 f"{len(visible_names)}个" if visible_names is not None else "全部（tool_search未开启）",
+                current_input_tokens,
             )
             response = await self._llm.provider.chat(
                 messages=messages,
@@ -421,6 +434,7 @@ class DefaultReasoner(Reasoner):
                         visible_names=visible_names,
                         thinking=None,
                         streamed=False,
+                        react_input_samples=react_input_samples,
                     )
 
                 append_assistant_tool_calls(
@@ -595,6 +609,7 @@ class DefaultReasoner(Reasoner):
                 visible_names=visible_names,
                 thinking=response.thinking,
                 streamed=streamed,
+                react_input_samples=react_input_samples,
             )
 
         # 9. 达到最大迭代次数后，生成不完整进展总结。
@@ -616,6 +631,7 @@ class DefaultReasoner(Reasoner):
             visible_names=visible_names,
             thinking=None,
             streamed=False,
+            react_input_samples=react_input_samples,
         )
 
     async def _summarize_incomplete_progress(
@@ -664,6 +680,7 @@ class DefaultReasoner(Reasoner):
         visible_names: set[str] | None,
         thinking: str | None,
         streamed: bool,
+        react_input_samples: list[int],
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
         invocations: list[LLMToolCall] = []
@@ -683,6 +700,12 @@ class DefaultReasoner(Reasoner):
             "tools_used": list(tools_used),
             "tool_chain": list(tool_chain),
             "visible_names": set(visible_names) if visible_names is not None else None,
+            "react_stats": {
+                "iteration_count": len(react_input_samples),
+                "turn_input_sum_tokens": sum(react_input_samples),
+                "turn_input_peak_tokens": max(react_input_samples, default=0),
+                "final_call_input_tokens": react_input_samples[-1] if react_input_samples else 0,
+            },
         }
 
         # 3. 最后返回标准 ReasonerResult。

@@ -109,9 +109,14 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
             INSERT INTO turns (
                 ts, source, session_key, user_msg, llm_output,
                 raw_llm_output, meme_tag, meme_media_count,
-                tool_calls, tool_chain_json, error
+                tool_calls, tool_chain_json,
+                history_window, history_messages, history_chars,
+                history_tokens, prompt_tokens, next_turn_baseline_tokens,
+                react_iteration_count, react_input_sum_tokens,
+                react_input_peak_tokens, react_final_input_tokens,
+                error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -124,6 +129,16 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 e.meme_media_count,
                 _serialize_tool_calls(e.tool_calls),
                 e.tool_chain_json,
+                e.history_window,
+                e.history_messages,
+                e.history_chars,
+                e.history_tokens,
+                e.prompt_tokens,
+                e.next_turn_baseline_tokens,
+                e.react_iteration_count,
+                e.react_input_sum_tokens,
+                e.react_input_peak_tokens,
+                e.react_final_input_tokens,
                 e.error,
             ),
         )

@@ -33,6 +33,7 @@ from agent.tools.base import Tool
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 60  # 秒（OpenCode 默认 1 分钟）
+_FG_THRESHOLD = 15    # 前台最长等待秒数；超时自动转后台
 _MAX_TIMEOUT = 600  # 秒（OpenCode 最大 10 分钟）
 _MAX_OUTPUT = 30_000  # 字符（与 OpenCode MaxOutputLength 一致）
 _STREAM_CHUNK_SIZE = 4096
@@ -106,19 +107,28 @@ _RESTRICTED_SHELL_RUNNERS = frozenset(
 class _BackgroundTask:
     proc: Any  # asyncio.subprocess.Process
     log_path: str
-    pump_task: asyncio.Task
-    started_at: float
+    pump_task: asyncio.Task | None   # None 仅在创建瞬间，pump 注册后立即填入
+    started_at: float                # monotonic，用于 TTL 检查
+    wall_started_at_ms: int          # epoch ms，返回给 LLM
+    last_output_at_ms: int | None = None  # epoch ms，每次写文件时更新
 
 
 # 模块级单例：跨 ShellTool 实例共享
 _BG_REGISTRY: dict[str, _BackgroundTask] = {}
 
 
-async def _bg_pump(proc: Any, log_path: str) -> None:
+async def _bg_pump(
+    proc: Any,
+    log_path: str,
+    bg_task: _BackgroundTask,
+    on_data: Callable[[str], None] | None = None,
+) -> None:
     """持续从 stdout/stderr 读取并写入日志文件，直到进程退出（+ 短暂排水）。
 
     顺序：先等主进程退出，再尝试排水 grace 秒；超时则强制取消 drain task。
     这样即使子孙进程继承了 pipe fd，pump_task 也不会永久阻塞。
+    每次写入时更新 bg_task.last_output_at_ms，供 LLM 判断是否卡死。
+    on_data 用于前台阶段的实时流式回调（转后台后不再触发）。
     """
     with open(log_path, "wb") as f:
         async def _drain_stream(stream) -> None:
@@ -130,6 +140,9 @@ async def _bg_pump(proc: Any, log_path: str) -> None:
                     break
                 f.write(chunk)
                 f.flush()
+                bg_task.last_output_at_ms = int(time.time() * 1000)
+                if on_data is not None:
+                    on_data(chunk.decode(errors="replace"))
 
         stdout_task = asyncio.create_task(_drain_stream(proc.stdout))
         stderr_task = asyncio.create_task(_drain_stream(proc.stderr))
@@ -175,7 +188,8 @@ def _bg_kill(task_id: str) -> None:
         os.killpg(task.proc.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
-    task.pump_task.cancel()
+    if task.pump_task is not None:
+        task.pump_task.cancel()
     try:
         os.unlink(task.log_path)
     except OSError:
@@ -214,8 +228,10 @@ class ShellTool(Tool):
             "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
             "- 输出超过 30000 字符时自动截断\n"
             "- 超时默认 60 秒，最大 600 秒\n"
-            "- 若命令是服务进程（如 python server.py、uvicorn、node app.js 等），"
-            "请使用 run_in_background=true 后台启动，再用 task_output 获取日志\n"
+            "- 命令超过 15 秒未完成时自动转为后台任务，返回 background_task_id（与 run_in_background=true 格式相同）\n"
+            "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待\n"
+            "- 收到 background_task_id 后，调用 task_output 查看输出和耗时，"
+            "根据命令的性质自行判断是否卡死；若判断卡死则 task_stop 终止\n"
             "禁止用途：不得用 shell 替代专用工具（read_file 读文件、web_fetch 抓网页、list_dir 列目录）。"
         )
 
@@ -300,54 +316,9 @@ class ShellTool(Tool):
         if run_in_background:
             return await self._execute_background(command, cwd, env)
 
-        # ── 前台执行路径（原有逻辑）────────────────────────────────────
-        start_ms = int(time.monotonic() * 1000)
-        stdout, stderr, exit_code, interrupted = await _run(
-            command,
-            timeout,
-            cwd=cwd,
-            env=env,
-            on_data=on_data if callable(on_data) else None,
-        )
-        duration_ms = int(time.monotonic() * 1000) - start_ms
-
-        full_parts = []
-        if stdout:
-            full_parts.append(stdout)
-        if stderr:
-            if stdout:
-                full_parts.append("")
-            full_parts.append(stderr)
-        if interrupted:
-            full_parts.append("命令在完成前被中止")
-        elif exit_code != 0:
-            full_parts.append(f"Exit code {exit_code}")
-
-        full_output = "\n".join(full_parts) if full_parts else "（无输出）"
-        output_meta = _truncate(full_output)
-        full_output_path = (
-            _write_full_output(full_output) if output_meta["truncated"] else None
-        )
-        truncation = None
-        if output_meta["truncated"]:
-            truncation = {
-                "strategy": output_meta["strategy"],
-                "full_length": output_meta["full_length"],
-                "returned_length": output_meta["returned_length"],
-                "omitted_lines": output_meta["omitted_lines"],
-            }
-
-        return json.dumps(
-            {
-                "command": command,
-                "exit_code": exit_code,
-                "interrupted": interrupted,
-                "duration_ms": duration_ms,
-                "output": output_meta["text"],
-                "truncation": truncation,
-                "full_output_path": full_output_path,
-            },
-            ensure_ascii=False,
+        # ── 前台路径（15s 未完成自动转后台）────────────────────────────
+        return await self._execute_with_auto_promote(
+            command, cwd, env, on_data if callable(on_data) else None
         )
 
     async def _execute_background(
@@ -362,6 +333,7 @@ class ShellTool(Tool):
         )
         os.close(log_fd)
 
+        wall_start_ms = int(time.time() * 1000)
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(cwd) if cwd is not None else None,
@@ -370,15 +342,18 @@ class ShellTool(Tool):
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
-        pump = asyncio.create_task(_bg_pump(proc, log_path))
-        pump.add_done_callback(lambda _: _schedule_eviction(task_id, log_path))
-        wall_start_ms = int(time.time() * 1000)
-        _BG_REGISTRY[task_id] = _BackgroundTask(
+        # 先建 bg_task 对象，pump 需要引用它来更新 last_output_at_ms
+        bg = _BackgroundTask(
             proc=proc,
             log_path=log_path,
-            pump_task=pump,
+            pump_task=None,
             started_at=time.monotonic(),
+            wall_started_at_ms=wall_start_ms,
         )
+        pump = asyncio.create_task(_bg_pump(proc, log_path, bg))
+        pump.add_done_callback(lambda _: _schedule_eviction(task_id, log_path))
+        bg.pump_task = pump
+        _BG_REGISTRY[task_id] = bg
         logger.info("shell bg started [%s] pid=%s log=%s", task_id, proc.pid, log_path)
 
         return json.dumps(
@@ -390,6 +365,119 @@ class ShellTool(Tool):
                 "started_at_ms": wall_start_ms,
                 "exit_code": None,
                 "interrupted": False,
+            },
+            ensure_ascii=False,
+        )
+
+    async def _execute_with_auto_promote(
+        self,
+        command: str,
+        cwd: Path | None,
+        env: dict[str, str],
+        on_data: Callable[[str], None] | None,
+    ) -> str:
+        """前台执行；若 _FG_THRESHOLD 秒内未完成则不 kill，自动转后台并返回 task_id。"""
+        task_id = f"shell_{uuid4().hex[:12]}"
+        log_fd, log_path = tempfile.mkstemp(
+            prefix=f"akasic-fg-{task_id}-", suffix=".log"
+        )
+        os.close(log_fd)
+
+        wall_start_ms = int(time.time() * 1000)
+        start_mono = time.monotonic()
+
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        bg = _BackgroundTask(
+            proc=proc,
+            log_path=log_path,
+            pump_task=None,
+            started_at=start_mono,
+            wall_started_at_ms=wall_start_ms,
+        )
+        pump = asyncio.create_task(_bg_pump(proc, log_path, bg, on_data))
+        bg.pump_task = pump
+
+        try:
+            await asyncio.wait_for(asyncio.shield(pump), timeout=_FG_THRESHOLD)
+        except asyncio.TimeoutError:
+            # ── 自动转后台 ──────────────────────────────────────────────
+            pump.add_done_callback(lambda _: _schedule_eviction(task_id, log_path))
+            _BG_REGISTRY[task_id] = bg
+            logger.info(
+                "shell auto-promoted [%s] pid=%s log=%s", task_id, proc.pid, log_path
+            )
+            return json.dumps(
+                {
+                    "command": command,
+                    "background_task_id": task_id,
+                    "status": "running",
+                    "output_path": log_path,
+                    "started_at_ms": wall_start_ms,
+                    "exit_code": None,
+                    "interrupted": False,
+                    "auto_promoted": True,
+                },
+                ensure_ascii=False,
+            )
+        except asyncio.CancelledError:
+            # 外层被取消 → 杀掉进程并清理
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            pump.cancel()
+            try:
+                os.unlink(log_path)
+            except OSError:
+                pass
+            raise
+
+        # ── 前台正常完成 ────────────────────────────────────────────────
+        duration_ms = int((time.monotonic() - start_mono) * 1000)
+        exit_code = proc.returncode or 0
+
+        try:
+            content = Path(log_path).read_bytes().decode(errors="replace")
+        except OSError:
+            content = ""
+        finally:
+            try:
+                os.unlink(log_path)
+            except OSError:
+                pass
+
+        if not content:
+            content = "（无输出）"
+        elif exit_code != 0:
+            content = content + f"\nExit code {exit_code}"
+
+        output_meta = _truncate(content)
+        full_output_path = _write_full_output(content) if output_meta["truncated"] else None
+        truncation = None
+        if output_meta["truncated"]:
+            truncation = {
+                "strategy": output_meta["strategy"],
+                "full_length": output_meta["full_length"],
+                "returned_length": output_meta["returned_length"],
+                "omitted_lines": output_meta["omitted_lines"],
+            }
+
+        return json.dumps(
+            {
+                "command": command,
+                "exit_code": exit_code,
+                "interrupted": False,
+                "duration_ms": duration_ms,
+                "output": output_meta["text"],
+                "truncation": truncation,
+                "full_output_path": full_output_path,
             },
             ensure_ascii=False,
         )
@@ -406,10 +494,20 @@ class ShellTaskOutputTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "读取后台 shell 任务的输出。\n"
-            "- block=false（默认）：立即返回当前已写入的输出，不等待任务完成\n"
-            "- block=true：等待任务完成或超时后再返回完整输出\n"
-            "输出超过 30000 字符时自动截断，完整内容见 output_path。"
+            "读取后台 shell 任务的当前输出和状态。\n"
+            "返回字段：\n"
+            "- status: 'running' | 'done'\n"
+            "- exit_code: 进程退出码（运行中为 null）\n"
+            "- elapsed_ms: 任务已运行毫秒数\n"
+            "- since_last_output_ms: 距上次有输出经过的毫秒数（null 表示从未有过输出）\n"
+            "- output: 最近输出内容（尾部截断到 30000 字符）\n"
+            "收到 task_output 结果后，结合你对命令的了解，判断这个任务是否应该继续运行：\n"
+            "需要 task_stop 终止的情况（有输出不代表不该 stop）：\n"
+            "  - 任务是死循环或明确没有退出条件（无论是否产生输出）\n"
+            "  - 任务挂起：有过输出但 since_last_output_ms 异常大，不符合该命令的预期节奏\n"
+            "  - 任务卡死：从未有过输出（since_last_output_ms=null）且 elapsed_ms 超过合理预期\n"
+            "不需要 stop 的情况：编译、下载、训练等明确会结束的长时间任务，或用户主动要求的服务进程。\n"
+            "- block=true 时会等待任务完成或 timeout_ms 超时后再返回"
         )
 
     @property
@@ -459,6 +557,14 @@ class ShellTaskOutputTool(Tool):
         exit_code = task.proc.returncode if done else None
         status = "done" if done else "running"
 
+        now_ms = int(time.time() * 1000)
+        elapsed_ms = now_ms - task.wall_started_at_ms
+        since_last_output_ms = (
+            now_ms - task.last_output_at_ms
+            if task.last_output_at_ms is not None
+            else None
+        )
+
         try:
             content = Path(task.log_path).read_bytes().decode(errors="replace")
         except OSError:
@@ -479,6 +585,8 @@ class ShellTaskOutputTool(Tool):
                 "task_id": task_id,
                 "status": status,
                 "exit_code": exit_code,
+                "elapsed_ms": elapsed_ms,
+                "since_last_output_ms": since_last_output_ms,
                 "output": output_meta["text"],
                 "truncation": truncation,
                 "output_path": task.log_path,

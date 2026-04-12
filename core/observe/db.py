@@ -22,6 +22,16 @@ CREATE TABLE IF NOT EXISTS turns (
     meme_media_count INTEGER,
     tool_calls  TEXT,                       -- JSON: [{name, args, result}]（每次 tool 调用）
     tool_chain_json TEXT,                   -- JSON: [{text, calls:[{name,args,result}]}] 完整迭代链路
+    history_window INTEGER,
+    history_messages INTEGER,
+    history_chars INTEGER,
+    history_tokens INTEGER,
+    prompt_tokens INTEGER,
+    next_turn_baseline_tokens INTEGER,
+    react_iteration_count INTEGER,
+    react_input_sum_tokens INTEGER,
+    react_input_peak_tokens INTEGER,
+    react_final_input_tokens INTEGER,
     error       TEXT                        -- NULL = 正常
 );
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts  ON turns (session_key, ts);
@@ -177,6 +187,16 @@ _TURNS_COLUMNS: dict[str, str] = {
     "raw_llm_output": "TEXT",
     "meme_tag": "TEXT",
     "meme_media_count": "INTEGER",
+    "history_window": "INTEGER",
+    "history_messages": "INTEGER",
+    "history_chars": "INTEGER",
+    "history_tokens": "INTEGER",
+    "prompt_tokens": "INTEGER",
+    "next_turn_baseline_tokens": "INTEGER",
+    "react_iteration_count": "INTEGER",
+    "react_input_sum_tokens": "INTEGER",
+    "react_input_peak_tokens": "INTEGER",
+    "react_final_input_tokens": "INTEGER",
 }
 
 

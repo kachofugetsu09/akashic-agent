@@ -20,6 +20,16 @@ CREATE TABLE IF NOT EXISTS turns (
     meme_media_count INTEGER,               -- 命中的媒体数量
     tool_calls  TEXT,                       -- JSON: [{name, args, result}]（每次 tool 调用）
     tool_chain_json TEXT,                   -- JSON: [{text, calls:[{name,args,result}]}] 完整迭代链路
+    history_window INTEGER,                 -- 下一轮实际保留的 history 窗口
+    history_messages INTEGER,               -- 保留 history 的消息条数（展开后）
+    history_chars INTEGER,                  -- 保留 history 序列化后的字符数
+    history_tokens INTEGER,                 -- 保留 history 的估算 token
+    prompt_tokens INTEGER,                  -- 当前 prompt 底座估算 token
+    next_turn_baseline_tokens INTEGER,      -- 下一轮基线占用估算 token
+    react_iteration_count INTEGER,          -- 本轮 ReAct 调用 LLM 的次数
+    react_input_sum_tokens INTEGER,         -- 本轮所有 LLM 输入估算 token 累计
+    react_input_peak_tokens INTEGER,        -- 本轮最大一次 LLM 输入估算 token
+    react_final_input_tokens INTEGER,       -- 最后一次 LLM 输入估算 token
     error       TEXT                        -- NULL = 正常
 );
 
