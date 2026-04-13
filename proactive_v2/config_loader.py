@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from types import SimpleNamespace
 from typing import Any
 
 from proactive_v2.config import ProactiveConfig
@@ -52,7 +51,6 @@ def _validate_ranges(config: dict[str, Any]) -> None:
     # 阈值类必须 0~1
     threshold_keys = [
         "score_llm_threshold",
-        "score_pre_threshold",
         "judge_send_threshold",
         "context_only_judge_threshold",
         "context_only_judge_threshold_with_evidence",
@@ -117,11 +115,7 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
         "preset",
         "features",
         "overrides",
-        # Feed poller（独立子系统）
-        "feed_poller_enabled",
         "feed_poller_interval_seconds",
-        # Interest filter（独立子系统）
-        "interest_filter",
         # Fitbit（独立子系统）
         "fitbit_url",
         "fitbit_poll_seconds",
@@ -140,12 +134,7 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
 
 
 def _validate_feature_keys(features: dict[str, Any]) -> None:
-    allowed = {
-        "memory_retrieval_enabled",
-        "preference_retrieval_enabled",
-        "research_enabled",
-        "fitbit_enabled",
-    }
+    allowed = {"fitbit_enabled"}
     forbidden = set(features.keys()) - allowed
     if forbidden:
         raise ProactiveConfigError(
@@ -210,9 +199,6 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     # 功能开关
     features = p.get("features", {})
     _validate_feature_keys(features)
-    memory_retrieval_enabled = features.get("memory_retrieval_enabled", True)
-    preference_retrieval_enabled = features.get("preference_retrieval_enabled", True)
-    research_enabled = features.get("research_enabled", True)
     fitbit_enabled = features.get("fitbit_enabled", False)
     # Fitbit 配置
     fitbit_url = p.get("fitbit_url", "http://127.0.0.1:18765")
@@ -220,7 +206,6 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     fitbit_monitor_path = p.get("fitbit_monitor_path", "")
 
     # Feed Poller 配置
-    feed_poller_enabled = p.get("feed_poller_enabled", True)
     feed_poller_interval_seconds = p.get("feed_poller_interval_seconds", 150)
 
     # 合并预设和覆盖
@@ -250,14 +235,10 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         "default_channel",
         "default_chat_id",
         "model",
-        "memory_retrieval_enabled",
-        "preference_retrieval_enabled",
-        "research_enabled",
         "fitbit_enabled",
         "fitbit_url",
         "fitbit_poll_seconds",
         "fitbit_monitor_path",
-        "feed_poller_enabled",
         "feed_poller_interval_seconds",
     }
     for key in explicit_keys:
@@ -269,28 +250,12 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         default_channel=default_channel,
         default_chat_id=default_chat_id,
         model=model,
-        memory_retrieval_enabled=memory_retrieval_enabled,
-        preference_retrieval_enabled=preference_retrieval_enabled,
-        research_enabled=research_enabled,
         fitbit_enabled=fitbit_enabled,
         fitbit_url=fitbit_url,
         fitbit_poll_seconds=fitbit_poll_seconds,
         fitbit_monitor_path=fitbit_monitor_path,
-        feed_poller_enabled=feed_poller_enabled,
         feed_poller_interval_seconds=feed_poller_interval_seconds,
         **final_config,
-    )
-
-    # Interest Filter 配置（独立子系统）
-    interest_filter = p.get("interest_filter") or {}
-    config.interest_filter = SimpleNamespace(
-        enabled=bool(interest_filter.get("enabled", False)),
-        memory_max_chars=max(1, int(interest_filter.get("memory_max_chars", 4000))),
-        keyword_max_count=max(1, int(interest_filter.get("keyword_max_count", 80))),
-        min_token_len=max(1, int(interest_filter.get("min_token_len", 2))),
-        min_score=float(interest_filter.get("min_score", 0.14)),
-        top_k=max(1, int(interest_filter.get("top_k", 10))),
-        exploration_ratio=float(interest_filter.get("exploration_ratio", 0.2)),
     )
 
     # v2 Agent Tick 配置（独立子系统）

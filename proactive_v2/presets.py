@@ -15,7 +15,6 @@ class TriggerPreset(TypedDict):
 
 class GatePreset(TypedDict):
     score_llm_threshold: float
-    score_pre_threshold: float
     judge_send_threshold: float
     judge_balance_daily_max: int
     judge_balance_daily_max: int
@@ -34,12 +33,10 @@ class AnyActionPreset(TypedDict):
 
 class SafetyPreset(TypedDict):
     delivery_dedupe_hours: int
-    llm_reject_cooldown_hours: int
     message_dedupe_recent_n: int
 
 
 class ContextPreset(TypedDict):
-    context_only_enabled: bool
     context_only_daily_max: int
     context_only_min_interval_hours: int
     context_only_judge_threshold: float
@@ -67,7 +64,6 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "gate": {
             "score_llm_threshold": 0.14,
-            "score_pre_threshold": 0.03,
             "judge_send_threshold": 0.60,
             "judge_balance_daily_max": 48,
         },
@@ -83,11 +79,9 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "safety": {
             "delivery_dedupe_hours": 10,
-            "llm_reject_cooldown_hours": 12,
             "message_dedupe_recent_n": 5,
         },
         "context": {
-            "context_only_enabled": True,
             "context_only_daily_max": 1,
             "context_only_min_interval_hours": 12,
             "context_only_judge_threshold": 0.72,
@@ -105,7 +99,6 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "gate": {
             "score_llm_threshold": 0.08,  # 极低门槛
-            "score_pre_threshold": 0.01,
             "judge_send_threshold": 0.28,
             "judge_balance_daily_max": 48,
         },
@@ -121,11 +114,9 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "safety": {
             "delivery_dedupe_hours": 1,
-            "llm_reject_cooldown_hours": 0,  # 不冷却
             "message_dedupe_recent_n": 5,
         },
         "context": {
-            "context_only_enabled": True,
             "context_only_daily_max": 20,
             "context_only_min_interval_hours": 1,
             "context_only_judge_threshold": 0.30,
@@ -143,7 +134,6 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "gate": {
             "score_llm_threshold": 0.35,
-            "score_pre_threshold": 0.08,
             "judge_send_threshold": 0.75,
             "judge_balance_daily_max": 12,
         },
@@ -159,11 +149,9 @@ PRESETS: dict[str, PresetConfig] = {
         },
         "safety": {
             "delivery_dedupe_hours": 24,
-            "llm_reject_cooldown_hours": 24,
             "message_dedupe_recent_n": 8,
         },
         "context": {
-            "context_only_enabled": True,
             "context_only_daily_max": 1,
             "context_only_min_interval_hours": 24,
             "context_only_judge_threshold": 0.80,
@@ -177,11 +165,7 @@ PRESETS: dict[str, PresetConfig] = {
 STRATEGY_PARAMS = {
     # 评分权重（使用旧配置的实际值）
     "score_weight_energy": 0.35,
-    "score_weight_content": 0.30,
-    "score_weight_recent": 0.35,
-    "score_content_halfsat": 2.5,
     "score_recent_scale": 8.0,
-    "decision_score_random_strength": 0.06,
     # 打断权重（使用旧配置的实际值）
     "interrupt_weight_reply": 0.35,
     "interrupt_weight_activity": 0.25,
@@ -205,40 +189,13 @@ STRATEGY_PARAMS = {
     "judge_veto_balance_min": 0.1,
     "judge_veto_llm_dim_min": 2,
     # Memory retrieval 细节
-    "memory_top_k_procedure": 4,
-    "memory_top_k_history": 6,
-    "memory_query_max_recent_messages": 3,
-    "memory_query_max_items": 3,
     "memory_history_gate_enabled": True,
-    "memory_scope_fallback_to_global": False,
-    "memory_trace_enabled": True,
-    "preference_per_source_top_k": 2,
-    "preference_max_sources": 5,
-    "preference_hyde_enabled": False,
-    "preference_hyde_timeout_ms": 2000,
-    # Research 细节
-    "research_max_iterations": 10,
-    "research_tools": ["web_search", "web_fetch", "read_file"],
-    "research_min_body_chars": 500,
-    "research_timeout_seconds": 30,
-    "research_apply_on_context_only": True,
-    "research_include_all_mcp_tools": True,
-    "research_fail_policy": "drop",
-    "research_transparent_message": "",
-    "research_skip_alert": True,
     # 去重细节
-    "dedupe_seen_ttl_hours": 24 * 14,
-    "semantic_dedupe_window_hours": 72,
-    "semantic_dedupe_text_max_chars": 240,
     "message_dedupe_enabled": True,
     # 其他
     "threshold": 0.70,
     "recent_chat_messages": 20,
     "interval_seconds": 1800,
-    "use_global_memory": True,
-    "compose_no_content_token": "<no_content/>",
-    "bg_context_main_topic_min_interval_hours": 6,
-    "context_as_assist_enabled": True,
     "sleep_modifier_sleeping": 0.15,
 }
 
@@ -254,7 +211,6 @@ ALLOWED_OVERRIDE_KEYS = {
     },
     "gate": {
         "score_llm_threshold",
-        "score_pre_threshold",
         "judge_send_threshold",
         "judge_balance_daily_max",
     },
@@ -270,11 +226,9 @@ ALLOWED_OVERRIDE_KEYS = {
     },
     "safety": {
         "delivery_dedupe_hours",
-        "llm_reject_cooldown_hours",
         "message_dedupe_recent_n",
     },
     "context": {
-        "context_only_enabled",
         "context_only_daily_max",
         "context_only_min_interval_hours",
         "context_only_judge_threshold",

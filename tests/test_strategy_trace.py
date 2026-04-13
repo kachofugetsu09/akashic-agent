@@ -49,7 +49,6 @@ class _ProactiveTraceLoop(ProactiveLoop):
             enabled=True,
             threshold=0.7,
             score_llm_threshold=0.6,
-            score_pre_threshold=0.4,
             tick_interval_s0=30,
             tick_interval_s1=60,
             tick_interval_s2=120,
@@ -59,9 +58,6 @@ class _ProactiveTraceLoop(ProactiveLoop):
             anyaction_min_interval_seconds=60,
             anyaction_probability_min=0.1,
             anyaction_probability_max=0.5,
-            memory_retrieval_enabled=True,
-            memory_top_k_procedure=3,
-            memory_top_k_history=5,
             memory_history_gate_enabled=True,
         )
 

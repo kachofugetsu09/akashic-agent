@@ -176,7 +176,6 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
         tick_interval_s1=3,
         tick_interval_s0=4,
         tick_jitter=0.0,
-        use_global_memory=True,
     )
     loop._presence = None
     loop._trace_proactive_rate_decision = MagicMock()

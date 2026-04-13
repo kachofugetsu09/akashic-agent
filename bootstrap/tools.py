@@ -246,16 +246,12 @@ def _build_loop_deps(
             llm_client=light,
             model=config.light_model or config.model,
         )
-        if config.memory_v2.sufficiency_check_enabled
-        else None
     )
     profile_extractor = (
         ProfileFactExtractor(
             llm_client=light,
             model=config.light_model or config.model,
         )
-        if config.memory_v2.profile_extraction_enabled
-        else None
     )
     hyde_enhancer = None
     if memory_config.hyde_enabled and llm_config.light_model:

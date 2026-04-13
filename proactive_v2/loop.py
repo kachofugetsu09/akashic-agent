@@ -251,7 +251,6 @@ class ProactiveLoop:
             "enabled": self._cfg.enabled,
             "threshold": self._cfg.threshold,
             "score_llm_threshold": self._cfg.score_llm_threshold,
-            "score_pre_threshold": self._cfg.score_pre_threshold,
             "tick_interval_s0": self._cfg.tick_interval_s0,
             "tick_interval_s1": self._cfg.tick_interval_s1,
             "tick_interval_s2": self._cfg.tick_interval_s2,
@@ -261,9 +260,6 @@ class ProactiveLoop:
             "anyaction_min_interval_seconds": self._cfg.anyaction_min_interval_seconds,
             "anyaction_probability_min": self._cfg.anyaction_probability_min,
             "anyaction_probability_max": self._cfg.anyaction_probability_max,
-            "memory_retrieval_enabled": self._cfg.memory_retrieval_enabled,
-            "memory_top_k_procedure": self._cfg.memory_top_k_procedure,
-            "memory_top_k_history": self._cfg.memory_top_k_history,
             "memory_history_gate_enabled": self._cfg.memory_history_gate_enabled,
             "sleep_modifier_sleeping": self._cfg.sleep_modifier_sleeping,
         }

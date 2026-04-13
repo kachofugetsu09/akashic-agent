@@ -92,8 +92,6 @@ def build_memory_runtime(
         inject_max_event_profile=config.memory_v2.inject_max_event_profile,
         inject_line_max=config.memory_v2.inject_line_max,
         procedure_guard_enabled=config.memory_v2.procedure_guard_enabled,
-        hotness_alpha=config.memory_v2.hotness_alpha,
-        hotness_half_life_days=config.memory_v2.hotness_half_life_days,
     )
 
     port = DefaultMemoryPort(store, memorizer=memorizer, retriever=retriever)

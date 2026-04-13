@@ -40,7 +40,6 @@ _DEPRECATED_MEMORY_V2_KEYS: dict[str, str] = {
     "retrieve_top_k": "请改用 memory_v2.top_k_history。",
     "recall_top_k": "请改用 memory_v2.top_k_history。",
     "disable_full_memory": "该开关已移除；长期记忆默认全量注入。",
-    "sufficiency_check_enabled": "该开关已移除；history sufficiency gate 已删除。",
     "auto_downgrade_enabled": "该开关已移除；history sufficiency gate 已删除。",
     "gate_baseline_p95_ms": "该开关已移除；history sufficiency gate 已删除。",
 }
