@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 
 import pytest
+from unittest.mock import AsyncMock
 
 from infra.channels.telegram_utils import (
     TelegramStreamMessage,
     render_telegram_preview_html,
     send_markdown,
+    send_thinking_block,
 )
 
 
@@ -141,3 +143,69 @@ async def test_stream_message_skips_duplicate_truncated_preview():
 
     assert len(bot.messages) == 1
     assert bot.edits == []
+
+
+@pytest.mark.asyncio
+async def test_stream_message_retry_after_enters_cooldown_without_blocking(monkeypatch):
+    bot = BotStub()
+    from infra.channels import telegram_utils as mod
+
+    values = [10.0, 20.0, 30.0, 70.0, 80.0]
+
+    class _Loop:
+        def __init__(self):
+            self._index = 0
+
+        def time(self):
+            value = values[min(self._index, len(values) - 1)]
+            self._index += 1
+            return value
+
+    async def limited_edit_message_text(**kwargs):
+        raise mod.RetryAfter(48.0)
+
+    bot.edit_message_text = limited_edit_message_text
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("infra.channels.telegram_utils.asyncio.sleep", sleep_mock)
+    monkeypatch.setattr(
+        "infra.channels.telegram_utils.asyncio.get_running_loop",
+        lambda: _Loop(),
+    )
+
+    stream = TelegramStreamMessage(bot, 123)
+    await stream.push_delta("hello", force=True)
+    await stream.push_delta(" world", force=True)
+    assert stream._edit_cooldown_until > 30.0
+    await stream.push_delta(" again")
+    await stream.push_delta(" after cooldown")
+
+    assert sleep_mock.await_count == 0
+    assert len(bot.messages) == 1
+    assert len(bot.edits) == 0
+
+
+@pytest.mark.asyncio
+async def test_send_thinking_block_splits_long_content():
+    bot = BotStub()
+    # 每个中文字符占 1 个 UTF-16 code unit，构造超长 thinking
+    thinking = "思" * 5000
+    await send_thinking_block(bot, 123, thinking)
+    assert len(bot.messages) >= 2
+    # 每条消息都应该有 expandable_blockquote entity
+    for msg in bot.messages:
+        entities = msg.get("entities", [])
+        assert len(entities) == 1
+        assert entities[0].type == "expandable_blockquote"
+    # 第一条包含 header
+    assert bot.messages[0]["text"].startswith("💭 思考过程")
+    # 拼合所有 text 应还原完整内容
+    combined = "".join(m["text"] for m in bot.messages)
+    assert "思" * 5000 in combined
+
+
+@pytest.mark.asyncio
+async def test_send_thinking_block_short_content_single_message():
+    bot = BotStub()
+    await send_thinking_block(bot, 123, "短思考")
+    assert len(bot.messages) == 1
+    assert "短思考" in bot.messages[0]["text"]

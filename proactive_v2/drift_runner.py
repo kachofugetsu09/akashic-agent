@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -18,7 +19,7 @@ from proactive_v2.drift_tools import (
 )
 
 
-LlmFn = Callable[[list[dict], list[dict], str | dict], Awaitable[dict | None]]
+LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 logger = logging.getLogger(__name__)
 
 
@@ -119,7 +120,15 @@ class DriftRunner:
                     "[drift] send_message already used, restricting schema to write_file/edit_file/finish_drift"
                 )
 
-            tool_call = await llm_fn(messages, schemas, tool_choice)
+            if "disable_thinking" in inspect.signature(llm_fn).parameters:
+                tool_call = await llm_fn(
+                    messages,
+                    schemas,
+                    tool_choice,
+                    disable_thinking=True,
+                )
+            else:
+                tool_call = await llm_fn(messages, schemas, tool_choice)
             if tool_call is None:
                 logger.warning("[drift] llm returned no tool call at step=%d", steps)
                 break

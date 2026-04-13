@@ -495,6 +495,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
     monkeypatch.setattr(mod, "send_markdown", AsyncMock())
     monkeypatch.setattr(mod, "send_stream_markdown", AsyncMock())
+    monkeypatch.setattr(mod, "send_thinking_block", AsyncMock())
     await channel.start()
     assert len(channel._app.handlers) == 4
     assert bus.outbound[0][0] == "telegram"
@@ -599,6 +600,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert mod.send_stream_markdown.await_count == 2
     sender = channel.create_stream_sender("123")
     assert sender is not None
+    await sender({"thinking_delta": "先想一点"})
     await sender("流式片段")
     await sender("继续补充一大段内容继续补充一大段内容继续补充一大段内容继续补充一大段内容")
     assert channel._app.bot.send_message.await_count >= 1
@@ -615,6 +617,23 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert channel._app.bot.edit_message_text.await_count >= 1
     assert mod.send_markdown.await_count == 2
     assert mod.send_stream_markdown.await_count == 2
+
+    mod.send_thinking_block.reset_mock()
+    sender = channel.create_stream_sender("123")
+    assert sender is not None
+    await sender({"thinking_delta": "分析中"})
+    await channel._on_response(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="final",
+            thinking="分析中",
+            metadata={"streamed_reply": True},
+        )
+    )
+    mod.send_thinking_block.assert_awaited_once()
+    last_edit = channel._app.bot.edit_message_text.await_args_list[-1].kwargs["text"]
+    assert last_edit == "final"
 
     channel._app.bot.send_chat_action = AsyncMock(side_effect=[mod.TimedOut("x"), mod.NetworkError("x"), None])
     monkeypatch.setattr(mod.asyncio, "sleep", AsyncMock(return_value=None))

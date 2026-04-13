@@ -19,8 +19,12 @@ from telegramify_markdown.entity import MessageEntity, split_entities
 
 logger = logging.getLogger(__name__)
 _STREAM_CHUNK_STEP = 120
-_STREAM_PUSH_MIN_INTERVAL_S = 1.2
-_STREAM_PUSH_MIN_CHARS = 80
+_STREAM_PUSH_MIN_INTERVAL_S = 2.5
+_STREAM_PUSH_MIN_CHARS = 200
+_TELEGRAM_MSG_LIMIT = 4096
+_THINKING_CAP = 800
+_THINKING_MIN = 100
+_PREVIEW_OVERHEAD = 80
 _PARSE_ERR_RE = re.compile(r"can't parse entities|parse entities|find end of the entity", re.I)
 _SPOILER_RE = re.compile(r"\|\|(.+?)\|\|", re.S)
 _STRIKE_RE = re.compile(r"~~(.+?)~~", re.S)
@@ -167,23 +171,71 @@ def _split_text(text: str, limit: int) -> list[str]:
 
 
 async def send_thinking_block(bot: Bot, chat_id: int | str, thinking: str) -> None:
-    """Send thinking content as an expandable blockquote message."""
+    """Send thinking content as expandable blockquote message(s).
+
+    Telegram 单条消息限制 4096 UTF-16 code units。超长 thinking 按行分段，
+    每段独立包裹为 expandable_blockquote。
+    """
+    cid = int(chat_id)
     header = "💭 思考过程\n\n"
-    content = header + thinking
-    utf16_len = len(content.encode("utf-16-le")) // 2
-    entity = TgEntity(type="expandable_blockquote", offset=0, length=utf16_len)
-    try:
-        await _send_with_retry(
-            lambda: bot.send_message(
-                chat_id=int(chat_id),
-                text=content,
-                entities=[entity],
-            ),
-            label="send_message(thinking_block)",
-        )
-        logger.info("[telegram] thinking block sent, length=%d", len(thinking))
-    except Exception as e:
-        logger.warning("[telegram] failed to send thinking block, skipping: %s", e)
+    # 4096 UTF-16 code units, 留一点余量
+    max_utf16 = 4080
+    header_utf16 = len(header.encode("utf-16-le")) // 2
+
+    chunks = _split_thinking(thinking, max_utf16 - header_utf16)
+    for i, chunk in enumerate(chunks):
+        text = (header if i == 0 else "") + chunk
+        utf16_len = len(text.encode("utf-16-le")) // 2
+        entity = TgEntity(type="expandable_blockquote", offset=0, length=utf16_len)
+        try:
+            await _send_with_retry(
+                lambda text=text, entity=entity: bot.send_message(
+                    chat_id=cid,
+                    text=text,
+                    entities=[entity],
+                ),
+                label="send_message(thinking_block)",
+            )
+        except Exception as e:
+            logger.warning("[telegram] failed to send thinking block chunk %d, skipping: %s", i, e)
+            return
+    logger.info("[telegram] thinking block sent, chunks=%d, length=%d", len(chunks), len(thinking))
+
+
+def _split_thinking(text: str, max_utf16: int) -> list[str]:
+    """按行切分 thinking 文本，每段不超过 max_utf16 个 UTF-16 code units。"""
+    if len(text.encode("utf-16-le")) // 2 <= max_utf16:
+        return [text]
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_utf16 = 0
+    for line in text.splitlines(keepends=True):
+        line_utf16 = len(line.encode("utf-16-le")) // 2
+        if current_utf16 + line_utf16 > max_utf16 and current_lines:
+            chunks.append("".join(current_lines))
+            current_lines, current_utf16 = [], 0
+        # 单行本身超限时强制切断
+        while line_utf16 > max_utf16:
+            # 按字符逼近切点
+            cut = _utf16_cut(line, max_utf16)
+            chunks.append(line[:cut])
+            line = line[cut:]
+            line_utf16 = len(line.encode("utf-16-le")) // 2
+        current_lines.append(line)
+        current_utf16 += line_utf16
+    if current_lines:
+        chunks.append("".join(current_lines))
+    return chunks
+
+
+def _utf16_cut(text: str, max_utf16: int) -> int:
+    """返回 text 中前 max_utf16 个 UTF-16 code units 对应的 Python str 切点。"""
+    utf16_count = 0
+    for i, ch in enumerate(text):
+        utf16_count += 2 if ord(ch) > 0xFFFF else 1
+        if utf16_count > max_utf16:
+            return i
+    return len(text)
 
 
 async def send_stream_markdown(bot: Bot, chat_id: int | str, text: str) -> None:
@@ -206,70 +258,167 @@ async def send_stream_markdown(bot: Bot, chat_id: int | str, text: str) -> None:
         await send_markdown(bot, cid, text)
 
 
+def _ring_tail(text: str, cap: int) -> str:
+    """保留文本最后 cap 个字符，超出部分用省略号标记。"""
+    if cap <= 0:
+        return ""
+    if len(text) <= cap:
+        return text
+    return "…" + text[-(cap - 1):]
+
+
 class TelegramStreamMessage:
     def __init__(self, bot: Bot, chat_id: int) -> None:
         self._bot = bot
         self._chat_id = int(chat_id)
         self._message_id: int | None = None
-        self._buffer = ""
-        self._last_sent_text = ""
-        self._last_preview_text = ""
+        self._reply_buffer = ""
+        self._thinking_buffer = ""
+        self._last_sent_plain = ""
         self._last_sent_at = 0.0
+        self._edit_cooldown_until = 0.0
 
-    async def push_delta(self, delta: str, *, force: bool = False) -> None:
+    # ------------------------------------------------------------------
+    # public API
+    # ------------------------------------------------------------------
+
+    async def push_delta(
+        self,
+        delta: str | dict[str, str],
+        *,
+        force: bool = False,
+    ) -> None:
         if self._chat_id <= 0:
             return
-        self._buffer += delta
-        current = self._buffer.strip()
-        if not current:
+        if isinstance(delta, str):
+            self._reply_buffer += delta
+        else:
+            self._reply_buffer += delta.get("content_delta", "")
+            self._thinking_buffer += delta.get("thinking_delta", "")
+        result = self._build_stream_preview()
+        if result is None:
             return
+        html_text, plain_text = result
         now = asyncio.get_running_loop().time()
+        if not force and now < self._edit_cooldown_until:
+            return
         if not force:
-            grown = len(current) - len(self._last_sent_text)
+            grown = len(plain_text) - len(self._last_sent_plain)
             if (
-                self._last_sent_text
+                self._last_sent_plain
                 and grown < _STREAM_PUSH_MIN_CHARS
                 and now - self._last_sent_at < _STREAM_PUSH_MIN_INTERVAL_S
             ):
                 return
-        await self._push_text(current)
+        await self._send_or_edit(html_text, plain_text)
         self._last_sent_at = now
 
     async def finalize(self, text: str) -> None:
-        current = text.strip()
+        self._reply_buffer = text or ""
+        current = (text or "").strip()
         if not current:
             return
-        await self._push_text(current)
+        await self._push_reply_text(current)
 
-    async def _push_text(self, text: str) -> None:
-        if text == self._last_sent_text:
+    # ------------------------------------------------------------------
+    # preview 构建
+    # ------------------------------------------------------------------
+
+    def _build_stream_preview(self) -> tuple[str, str] | None:
+        """构建流式预览 (html, plain)。thinking 用环形缓冲，reply 优先占预算。"""
+        reply = self._reply_buffer.strip()
+        thinking = self._thinking_buffer.strip()
+        if not reply and not thinking:
+            return None
+        limit = _TELEGRAM_MSG_LIMIT
+
+        # ---- 仅回复 ----
+        if not thinking:
+            trimmed = reply[:limit]
+            return render_telegram_preview_html(trimmed), trimmed
+
+        # ---- 仅思考 ----
+        if not reply:
+            cap = limit - _PREVIEW_OVERHEAD
+            tail = _ring_tail(thinking, cap)
+            plain = f"💭 {tail}"
+            h = f"<blockquote>💭 <i>{html.escape(tail)}</i></blockquote>"
+            return h, plain
+
+        # ---- 双区域：reply 优先，thinking 取剩余 ----
+        reply_need = min(len(reply), limit - _PREVIEW_OVERHEAD - _THINKING_MIN)
+        t_budget = max(
+            min(limit - reply_need - _PREVIEW_OVERHEAD, _THINKING_CAP),
+            _THINKING_MIN,
+        )
+        r_budget = limit - t_budget - _PREVIEW_OVERHEAD
+
+        tail = _ring_tail(thinking, t_budget)
+        reply_trimmed = reply[:r_budget]
+
+        plain = f"💭 {tail}\n\n{reply_trimmed}"
+        h = (
+            f"<blockquote>💭 <i>{html.escape(tail)}</i></blockquote>"
+            f"\n{render_telegram_preview_html(reply_trimmed)}"
+        )
+        return h, plain
+
+    # ------------------------------------------------------------------
+    # 底层发送 / 编辑
+    # ------------------------------------------------------------------
+
+    async def _push_reply_text(self, text: str) -> None:
+        """finalize 专用：发送纯回复文本（无思考前缀）。"""
+        preview = text if len(text) <= _TELEGRAM_MSG_LIMIT else text[:_TELEGRAM_MSG_LIMIT]
+        if preview == self._last_sent_plain:
             return
-        preview_text = text if len(text) <= 4096 else text[:4096]
-        if preview_text == self._last_preview_text:
-            self._last_sent_text = text
+        html_text = render_telegram_preview_html(preview)
+        await self._send_or_edit(html_text, preview)
+
+    async def _send_or_edit(self, html_text: str, plain_text: str) -> None:
+        """首次调用 send，后续 edit。成功后更新 _last_sent_plain。"""
+        if plain_text == self._last_sent_plain and self._message_id is not None:
             return
-        html_text = render_telegram_preview_html(preview_text)
         if self._message_id is None:
             sent = await _send_with_retry_result(
                 lambda: _send_preview_message(
-                    self._bot, self._chat_id, html_text, preview_text
+                    self._bot, self._chat_id, html_text, plain_text
                 ),
                 label="send_message(stream_start)",
             )
             self._message_id = int(getattr(sent, "message_id", 0) or 0) or None
+            self._last_sent_plain = plain_text
         else:
-            await _send_with_retry(
-                lambda: _edit_preview_message(
-                    self._bot,
-                    self._chat_id,
-                    self._message_id,
-                    html_text,
-                    preview_text,
-                ),
-                label="edit_message_text(stream)",
+            if await self._try_edit_preview_message(html_text, plain_text):
+                self._last_sent_plain = plain_text
+
+    async def _try_edit_preview_message(
+        self,
+        html_text: str,
+        plain_text: str,
+    ) -> bool:
+        try:
+            await _edit_preview_message(
+                self._bot,
+                self._chat_id,
+                self._message_id,
+                html_text,
+                plain_text,
             )
-        self._last_sent_text = text
-        self._last_preview_text = preview_text
+            return True
+        except RetryAfter as e:
+            delay = max(float(getattr(e, "retry_after", 1.0) or 1.0), 1.0)
+            now = asyncio.get_running_loop().time()
+            self._edit_cooldown_until = now + delay
+            logger.warning(
+                "[telegram] edit_message_text(stream) 命中限流，进入冷却 %.1fs err=%s",
+                delay,
+                e,
+            )
+            return False
+        except (TimedOut, NetworkError) as e:
+            logger.warning("[telegram] edit_message_text(stream) 失败 err=%s", e)
+            return False
 
 
 async def _send_with_retry_result(

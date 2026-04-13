@@ -136,7 +136,7 @@ class Reasoner(ABC):
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
         preflight_injected: bool = True,
-        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
     ) -> ReasonerResult:
         """执行多轮 tool loop，并返回本轮结果。调用方负责提前注入 turn injection。"""
 
@@ -181,14 +181,19 @@ class DefaultReasoner(Reasoner):
             _ts if isinstance(_ts, ToolSearchTool) else None
         )
         self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
-        self._stream_sink_factory: Callable[[object], Callable[[str], Awaitable[None]] | None] | None = None
+        self._stream_sink_factory: Callable[
+            [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
+        ] | None = None
         self._progress_sink_factory: Callable[
             [object], Callable[[dict[str, object]], Awaitable[None]] | None
         ] | None = None
 
     def set_stream_sink_factory(
         self,
-        factory: Callable[[object], Callable[[str], Awaitable[None]] | None] | None,
+        factory: Callable[
+            [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
+        ]
+        | None,
     ) -> None:
         self._stream_sink_factory = factory
 
@@ -359,7 +364,7 @@ class DefaultReasoner(Reasoner):
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
         preflight_injected: bool = True,
-        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
         on_progress: Callable[[dict[str, object]], Awaitable[None]] | None = None,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹、循环检测状态。

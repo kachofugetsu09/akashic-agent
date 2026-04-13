@@ -24,7 +24,7 @@ from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 
 
-LlmFn = Callable[[list[dict], list[dict], str | dict], Awaitable[dict | None]]
+LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 AlertFn = Callable[[], Awaitable[list[dict]]]
 FeedFn = Callable[[int], Awaitable[list[dict]]]
 ContextFn = Callable[[], Awaitable[list[dict]]]
@@ -111,6 +111,7 @@ class AgentTickFactory:
             messages: list[dict],
             schemas: list[dict],
             tool_choice: str | dict = "auto",
+            disable_thinking: bool = False,
         ) -> dict | None:
             # AgentTick 自己维护 messages 和工具 schema；
             # factory 这里只负责把 provider.chat 包成“返回首个 tool_call”的薄适配层。
@@ -120,6 +121,7 @@ class AgentTickFactory:
                 model=agent_model,
                 max_tokens=self._deps.max_tokens,
                 tool_choice=tool_choice,
+                extra_body={"enable_thinking": False} if schemas else None,
             )
             if not resp.tool_calls:
                 text = (resp.content or "").strip()

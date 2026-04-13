@@ -142,7 +142,7 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     )
     fake = _FakeClient([stream])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
-    deltas: list[str] = []
+    deltas: list[dict[str, str]] = []
     provider = LLMProvider(api_key="k")
     result = await provider.chat(
         messages=[{"role": "user", "content": "hi"}],
@@ -153,11 +153,14 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     )
     assert result.content == "你好"
     assert result.thinking == "想法"
-    assert deltas == ["你", "好"]
+    content_deltas = [d["content_delta"] for d in deltas if "content_delta" in d]
+    thinking_deltas = [d["thinking_delta"] for d in deltas if "thinking_delta" in d]
+    assert content_deltas == ["你", "好"]
+    assert thinking_deltas == ["想", "法"]
     assert fake.calls[0]["stream"] is True
 
 
-async def _collect_delta(bucket: list[str], chunk: str) -> None:
+async def _collect_delta(bucket: list, chunk) -> None:
     bucket.append(chunk)
 
 

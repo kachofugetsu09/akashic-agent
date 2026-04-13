@@ -142,9 +142,18 @@ class AgentLoop:
             if downstream is None:
                 return None
 
-            async def _push(delta: str) -> None:
-                self._append_partial_reply(session_key, delta)
-                await downstream(delta)
+            async def _push(delta: dict[str, str] | str) -> None:
+                if isinstance(delta, str):
+                    payload = {"content_delta": delta}
+                else:
+                    payload = delta
+                content_delta = payload.get("content_delta")
+                if isinstance(content_delta, str) and content_delta:
+                    self._append_partial_reply(session_key, content_delta)
+                thinking_delta = payload.get("thinking_delta")
+                if isinstance(thinking_delta, str) and thinking_delta:
+                    self._append_partial_thinking(session_key, thinking_delta)
+                await downstream(payload)
 
             return _push
 
@@ -177,6 +186,12 @@ class AgentLoop:
         if state is None or not delta:
             return
         state.partial_reply += delta
+
+    def _append_partial_thinking(self, session_key: str, delta: str) -> None:
+        state = self._active_turn_states.get(session_key)
+        if state is None or not delta:
+            return
+        state.partial_thinking = (state.partial_thinking or "") + delta
 
     def _resolve_memory_runtime(
         self,

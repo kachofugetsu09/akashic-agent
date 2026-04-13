@@ -383,7 +383,7 @@ class TelegramChannel:
         stream = TelegramStreamMessage(self._app.bot, cid)
         self._active_streams[key] = stream
 
-        async def _push(delta: str) -> None:
+        async def _push(delta: dict[str, str] | str) -> None:
             await stream.push_delta(delta)
 
         return _push
@@ -414,10 +414,9 @@ class TelegramChannel:
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
-        if msg.thinking:
-            await send_thinking_block(self._app.bot, msg.chat_id, msg.thinking)
+        streamed_reply = bool((msg.metadata or {}).get("streamed_reply"))
         if msg.content.strip():
-            if (msg.metadata or {}).get("streamed_reply"):
+            if streamed_reply:
                 stream = self._active_streams.pop(str(msg.chat_id), None)
                 if stream is not None:
                     await stream.finalize(msg.content)
@@ -425,6 +424,8 @@ class TelegramChannel:
                     await send_markdown(self._app.bot, msg.chat_id, msg.content)
             else:
                 await send_stream_markdown(self._app.bot, msg.chat_id, msg.content)
+        if msg.thinking:
+            await send_thinking_block(self._app.bot, msg.chat_id, msg.thinking)
         for image in (msg.media or []):
             try:
                 await self.send_image(str(msg.chat_id), image)

@@ -19,6 +19,7 @@ _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 logger = logging.getLogger(__name__)
 _LAST_PAYLOAD_PATH = Path(tempfile.gettempdir()) / "akashic-last-llm-payload.json"
+StreamDelta = dict[str, str]
 
 # 安全审查错误码（各厂商）
 _SAFETY_ERROR_CODES = {
@@ -85,7 +86,8 @@ class LLMProvider:
         model: str,
         max_tokens: int,
         tool_choice: str | dict = "auto",
-        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        extra_body: dict | None = None,
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
     ) -> LLMResponse:
         # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
         already_has_system = messages and messages[0].get("role") == "system"
@@ -100,8 +102,11 @@ class LLMProvider:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
-        if self._extra_body:
-            kwargs["extra_body"] = self._extra_body
+        merged_extra_body = dict(self._extra_body)
+        if extra_body:
+            merged_extra_body.update(extra_body)
+        if merged_extra_body:
+            kwargs["extra_body"] = merged_extra_body
 
         _LAST_PAYLOAD_PATH.write_text(
             json.dumps(kwargs, ensure_ascii=False, indent=2, default=str),
@@ -137,7 +142,7 @@ class LLMProvider:
     async def _chat_streaming(
         self,
         kwargs: dict[str, Any],
-        on_content_delta: Callable[[str], Awaitable[None]],
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]],
     ) -> LLMResponse:
         stream = await self._create_with_retry({**kwargs, "stream": True})
         content_parts: list[str] = []
@@ -157,6 +162,8 @@ class LLMProvider:
             reasoning_piece = _get_field(delta, "reasoning_content")
             if isinstance(reasoning_piece, str) and reasoning_piece:
                 reasoning_parts.append(reasoning_piece)
+                if not tool_call_seen:
+                    await on_content_delta({"thinking_delta": reasoning_piece})
 
             for tc in _iter_tool_call_deltas(delta):
                 tool_call_seen = True
@@ -172,7 +179,7 @@ class LLMProvider:
             if isinstance(content_piece, str) and content_piece:
                 content_parts.append(content_piece)
                 if not tool_call_seen:
-                    await on_content_delta(content_piece)
+                    await on_content_delta({"content_delta": content_piece})
 
         tool_calls: list[ToolCall] = []
         for idx in sorted(tool_call_chunks):
