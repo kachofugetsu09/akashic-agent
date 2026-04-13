@@ -71,7 +71,14 @@ def load_config(path: str | Path = "config.json") -> Config:
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
 
-    provider = data["provider"]
+    llm = _as_dict(data.get("llm"))
+    llm_main = _as_dict(llm.get("main"))
+    llm_fast = _as_dict(llm.get("fast"))
+    agent_cfg = _as_dict(data.get("agent"))
+    agent_context = _as_dict(agent_cfg.get("context"))
+    agent_tools = _as_dict(agent_cfg.get("tools"))
+    agent_maintenance = _as_dict(agent_cfg.get("maintenance"))
+    provider = str(llm.get("provider") or data["provider"])
     channels = _load_channels_config(data)
     proactive = _load_proactive_config(data)
     memory_v2 = _load_memory_v2_config(data)
@@ -80,26 +87,49 @@ def load_config(path: str | Path = "config.json") -> Config:
 
     return Config(
         provider=provider,
-        model=data["model"],
-        api_key=_resolve(data.get("api_key", "")),
-        system_prompt=data.get("system_prompt", "You are a helpful assistant."),
-        max_tokens=data.get("max_tokens", 8192),
-        max_iterations=data.get("max_iterations", 10),
-        memory_window=int(data.get("memory_window", 40)),
-        base_url=data.get("base_url") or _PRESETS.get(provider),
-        extra_body=data.get("extra_body", {}),
+        model=str(llm_main.get("model") or data["model"]),
+        api_key=_resolve(str(llm_main.get("api_key") or data.get("api_key", ""))),
+        system_prompt=str(
+            agent_cfg.get("system_prompt")
+            or data.get("system_prompt", "You are a helpful assistant.")
+        ),
+        max_tokens=int(agent_cfg.get("max_tokens", data.get("max_tokens", 8192))),
+        max_iterations=int(
+            agent_cfg.get("max_iterations", data.get("max_iterations", 10))
+        ),
+        memory_window=int(
+            agent_context.get("memory_window", data.get("memory_window", 40))
+        ),
+        base_url=str(llm_main.get("base_url") or data.get("base_url") or _PRESETS.get(provider) or ""),
+        extra_body=_load_extra_body(data),
         channels=channels,
         proactive=proactive,
-        memory_optimizer_enabled=bool(data.get("memory_optimizer_enabled", True)),
-        memory_optimizer_interval_seconds=int(
-            data.get("memory_optimizer_interval_seconds", 3600)
+        memory_optimizer_enabled=bool(
+            agent_maintenance.get(
+                "memory_optimizer_enabled",
+                data.get("memory_optimizer_enabled", True),
+            )
         ),
-        light_model=data.get("light_model", ""),
-        light_api_key=_resolve(data.get("light_api_key", "")),
-        light_base_url=data.get("light_base_url", ""),
+        memory_optimizer_interval_seconds=int(
+            agent_maintenance.get(
+                "memory_optimizer_interval_seconds",
+                data.get("memory_optimizer_interval_seconds", 3600),
+            )
+        ),
+        light_model=str(llm_fast.get("model") or data.get("light_model", "")),
+        light_api_key=_resolve(
+            str(llm_fast.get("api_key") or data.get("light_api_key", ""))
+        ),
+        light_base_url=str(
+            llm_fast.get("base_url") or data.get("light_base_url", "")
+        ),
         memory_v2=memory_v2,
-        tool_search_enabled=bool(data.get("tool_search_enabled", False)),
-        spawn_enabled=bool(data.get("spawn_enabled", True)),
+        tool_search_enabled=bool(
+            agent_tools.get("search_enabled", data.get("tool_search_enabled", False))
+        ),
+        spawn_enabled=bool(
+            agent_tools.get("spawn_enabled", data.get("spawn_enabled", True))
+        ),
         peer_agents=peer_agents,
         wiring=wiring,
     )
@@ -113,7 +143,9 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
         if bool(tg.get("enabled", True)):
             telegram = TelegramChannelConfig(
                 token=_resolve(tg["token"]),
-                allow_from=[str(u) for u in tg.get("allowFrom", [])],
+                allow_from=[
+                    str(u) for u in tg.get("allow_from", tg.get("allowFrom", []))
+                ],
             )
 
     qq = None
@@ -121,15 +153,23 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
         if bool(qq_data.get("enabled", True)):
             groups = [
                 QQGroupConfig(
-                    group_id=str(g["groupId"]),
-                    allow_from=[str(u) for u in g.get("allowFrom", [])],
-                    require_at=g.get("requireAt", True),
+                    group_id=str(
+                        g["group_id"] if "group_id" in g else g["groupId"]
+                    ),
+                    allow_from=[
+                        str(u)
+                        for u in g.get("allow_from", g.get("allowFrom", []))
+                    ],
+                    require_at=g.get("require_at", g.get("requireAt", True)),
                 )
                 for g in qq_data.get("groups", [])
             ]
             qq = QQChannelConfig(
                 bot_uin=str(qq_data["bot_uin"]),
-                allow_from=[str(u) for u in qq_data.get("allowFrom", [])],
+                allow_from=[
+                    str(u)
+                    for u in qq_data.get("allow_from", qq_data.get("allowFrom", []))
+                ],
                 groups=groups,
             )
 
@@ -155,6 +195,47 @@ def _load_proactive_config(data: dict) -> ProactiveConfig:
 
 
 def _load_memory_v2_config(data: dict) -> MemoryV2Config:
+    memory = _as_dict(data.get("memory"))
+    if memory:
+        embedding = _as_dict(memory.get("embedding"))
+        retrieval = _as_dict(memory.get("retrieval"))
+        score_thresholds = _as_dict(retrieval.get("thresholds"))
+        inject_limits = _as_dict(retrieval.get("inject"))
+        gate = _as_dict(memory.get("gate"))
+        hyde = _as_dict(memory.get("hyde"))
+        history_top_k = int(retrieval.get("top_k_history", retrieval.get("top_k", 8)))
+        return MemoryV2Config(
+            enabled=bool(memory.get("enabled", False)),
+            db_path=str(memory.get("db_path", "")),
+            embed_model=str(embedding.get("model", "text-embedding-v3")),
+            api_key=_resolve(str(embedding.get("api_key", ""))),
+            base_url=str(embedding.get("base_url", "")),
+            retrieve_top_k=history_top_k,
+            top_k_history=history_top_k,
+            top_k_procedure=int(retrieval.get("top_k_procedure", 4)),
+            score_threshold=float(retrieval.get("score_threshold", 0.45)),
+            score_threshold_procedure=float(score_thresholds.get("procedure", 0.60)),
+            score_threshold_preference=float(score_thresholds.get("preference", 0.60)),
+            score_threshold_event=float(score_thresholds.get("event", 0.68)),
+            score_threshold_profile=float(score_thresholds.get("profile", 0.68)),
+            relative_delta=float(retrieval.get("relative_delta", 0.06)),
+            inject_max_chars=int(inject_limits.get("max_chars", 1200)),
+            inject_max_forced=int(inject_limits.get("forced", 3)),
+            inject_max_procedure_preference=int(
+                inject_limits.get("procedure_preference", 4)
+            ),
+            inject_max_event_profile=int(inject_limits.get("event_profile", 2)),
+            inject_line_max=int(inject_limits.get("line_max", 180)),
+            route_intention_enabled=bool(retrieval.get("route_intention", False)),
+            procedure_guard_enabled=bool(
+                retrieval.get("procedure_guard_enabled", True)
+            ),
+            gate_llm_timeout_ms=int(gate.get("llm_timeout_ms", 800)),
+            gate_max_tokens=int(gate.get("max_tokens", 96)),
+            hyde_enabled=bool(hyde.get("enabled", False)),
+            hyde_timeout_ms=int(hyde.get("timeout_ms", 2000)),
+        )
+
     mv2 = data.get("memory_v2", {})
     for key, message in _DEPRECATED_MEMORY_V2_KEYS.items():
         if key in mv2:
@@ -199,6 +280,8 @@ def _load_memory_v2_config(data: dict) -> MemoryV2Config:
 
 
 def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
+    integrations = _as_dict(data.get("integrations"))
+    peer_agents = integrations.get("peer_agents", data.get("peer_agents", []))
     return [
         PeerAgentConfig(
             name=pa["name"],
@@ -210,12 +293,13 @@ def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
             startup_timeout_s=int(pa.get("startup_timeout_s", 30)),
             shutdown_timeout_s=int(pa.get("shutdown_timeout_s", 10)),
         )
-        for pa in data.get("peer_agents", [])
+        for pa in peer_agents
     ]
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:
-    raw = data.get("wiring", {}) or {}
+    agent_cfg = _as_dict(data.get("agent"))
+    raw = _as_dict(agent_cfg.get("wiring")) or data.get("wiring", {}) or {}
     toolsets = raw.get(
         "toolsets",
         ["meta_common", "fitbit", "spawn", "schedule", "mcp"],
@@ -228,6 +312,18 @@ def _load_wiring_config(data: dict) -> WiringConfig:
         memory_engine=str(raw.get("memory_engine", "default") or "default"),
         toolsets=[str(name) for name in toolsets if str(name).strip()],
     )
+
+
+def _load_extra_body(data: dict) -> dict:
+    llm = _as_dict(data.get("llm"))
+    llm_main = _as_dict(llm.get("main"))
+    if "enable_thinking" in llm_main:
+        return {"enable_thinking": bool(llm_main.get("enable_thinking"))}
+    return dict(data.get("extra_body", {}))
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
 
 
 def _resolve(value: str) -> str:

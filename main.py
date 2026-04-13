@@ -14,7 +14,6 @@ from pathlib import Path
 
 from agent.config import Config
 from bootstrap.app import build_app_runtime
-from bootstrap.init_setup import run_init, setup_telegram_channel
 
 
 def connect_cli(config_path: str = "config.json") -> None:
@@ -55,26 +54,6 @@ if __name__ == "__main__":
     if "--workspace" in args:
         idx = args.index("--workspace")
         workspace = Path(args[idx + 1])
-
-    if "init" in args:
-        target_workspace = workspace or (Path.home() / ".akashic" / "workspace")
-        try:
-            run_init(
-                config_path=Path(config_path),
-                workspace=target_workspace,
-            )
-        except Exception as exc:
-            print(f"初始化失败: {exc}")
-            sys.exit(1)
-        sys.exit(0)
-
-    if args[:3] == ["channel", "setup", "telegram"]:
-        try:
-            setup_telegram_channel(config_path=Path(config_path))
-        except Exception as exc:
-            print(f"Telegram 渠道配置失败: {exc}")
-            sys.exit(1)
-        sys.exit(0)
 
     if args and args[0] == "gateway":
         asyncio.run(serve(config_path, workspace))

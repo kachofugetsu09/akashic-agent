@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import sys
 from typing import Any
 
@@ -109,6 +110,13 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
     # 允许的根级键
     allowed_root_keys = {
         "enabled",
+        "profile",
+        "profiles",
+        "target",
+        "feed",
+        "fitbit",
+        "agent",
+        "drift",
         "default_channel",
         "default_chat_id",
         "model",
@@ -128,7 +136,7 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
     if forbidden:
         raise ProactiveConfigError(
             f"proactive 配置中出现非法的根级键: {', '.join(sorted(forbidden))}。\n"
-            f"请使用 preset + overrides 方式配置。\n"
+            "请使用 profile / profiles / target 等分块方式配置。\n"
             f"允许的根级键: {', '.join(sorted(allowed_root_keys))}"
         )
 
@@ -164,6 +172,73 @@ def _validate_agent_tick_keys(agent_tick: dict[str, Any]) -> None:
         )
 
 
+def _validate_profiles(profiles: dict[str, Any]) -> None:
+    for name, values in profiles.items():
+        if not isinstance(values, dict):
+            raise ProactiveConfigError(
+                f"proactive.profiles.{name} 必须是字典，当前类型: {type(values).__name__}"
+            )
+        _validate_overrides(values)
+
+
+def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+    for key, value in src.items():
+        if isinstance(value, dict) and isinstance(dst.get(key), dict):
+            _deep_merge(dst[key], value)
+        else:
+            dst[key] = copy.deepcopy(value)
+    return dst
+
+
+def _merge_profiles(user_profiles: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(PRESETS)
+    for name, values in user_profiles.items():
+        current = merged.get(name)
+        if isinstance(values, dict) and isinstance(current, dict):
+            _deep_merge(current, values)
+        else:
+            merged[name] = copy.deepcopy(values)
+    return merged
+
+
+def _validate_agent_keys(agent: dict[str, Any]) -> None:
+    allowed = {
+        "model",
+        "max_steps",
+        "content_limit",
+        "web_fetch_max_chars",
+        "context_prob",
+        "delivery_cooldown_hours",
+    }
+    forbidden = set(agent.keys()) - allowed
+    if forbidden:
+        raise ProactiveConfigError(
+            f"proactive.agent 出现非法键: {', '.join(sorted(forbidden))}。"
+            f"允许键: {', '.join(sorted(allowed))}"
+        )
+
+
+def _validate_drift_keys(drift: dict[str, Any]) -> None:
+    allowed = {
+        "enabled",
+        "max_steps",
+        "dir",
+        "min_interval_hours",
+    }
+    forbidden = set(drift.keys()) - allowed
+    if forbidden:
+        raise ProactiveConfigError(
+            f"proactive.drift 出现非法键: {', '.join(sorted(forbidden))}。"
+            f"允许键: {', '.join(sorted(allowed))}"
+        )
+
+
+def _pick(primary: dict[str, Any], primary_key: str, legacy: dict[str, Any], legacy_key: str):
+    if primary_key in primary:
+        return primary[primary_key]
+    return legacy.get(legacy_key)
+
+
 def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     """从配置字典加载 ProactiveConfig
 
@@ -181,32 +256,53 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
 
     # 必填字段
     enabled = p.get("enabled", False)
-    default_channel = p.get("default_channel", "telegram")
-    default_chat_id = str(p.get("default_chat_id", ""))
+    target = p.get("target", {}) or {}
+    if not isinstance(target, dict):
+        raise ProactiveConfigError("proactive.target 必须是字典")
+    default_channel = str(target.get("channel", p.get("default_channel", "telegram")))
+    default_chat_id = str(target.get("chat_id", p.get("default_chat_id", "")))
     model = p.get("model", "")
 
     # 预设名称（必填）
-    preset_name = p.get("preset")
+    preset_name = p.get("profile", p.get("preset"))
     if not preset_name:
         raise ProactiveConfigError(
-            "proactive.preset 是必填字段。"
+            "proactive.profile 是必填字段。"
             f"可选值: {', '.join(PRESETS.keys())}"
         )
-
-    _validate_preset_name(preset_name)
-    preset = PRESETS[preset_name]
+    user_profiles = p.get("profiles", {}) or {}
+    if not isinstance(user_profiles, dict):
+        raise ProactiveConfigError("proactive.profiles 必须是字典")
+    _validate_profiles(user_profiles)
+    profiles = _merge_profiles(user_profiles)
+    _validate_preset_name(preset_name) if preset_name in PRESETS else None
+    if preset_name not in profiles:
+        raise ProactiveConfigError(
+            f"无效的 profile: '{preset_name}'。"
+            f"只允许: {', '.join(sorted(profiles.keys()))}"
+        )
+    preset = profiles[preset_name]
 
     # 功能开关
     features = p.get("features", {})
     _validate_feature_keys(features)
-    fitbit_enabled = features.get("fitbit_enabled", False)
+    fitbit = p.get("fitbit", {}) or {}
+    if not isinstance(fitbit, dict):
+        raise ProactiveConfigError("proactive.fitbit 必须是字典")
+    fitbit_enabled = fitbit.get("enabled", features.get("fitbit_enabled", False))
     # Fitbit 配置
-    fitbit_url = p.get("fitbit_url", "http://127.0.0.1:18765")
-    fitbit_poll_seconds = p.get("fitbit_poll_seconds", 300)
-    fitbit_monitor_path = p.get("fitbit_monitor_path", "")
+    fitbit_url = fitbit.get("url", p.get("fitbit_url", "http://127.0.0.1:18765"))
+    fitbit_poll_seconds = fitbit.get("poll_seconds", p.get("fitbit_poll_seconds", 300))
+    fitbit_monitor_path = fitbit.get("monitor_path", p.get("fitbit_monitor_path", ""))
 
     # Feed Poller 配置
-    feed_poller_interval_seconds = p.get("feed_poller_interval_seconds", 150)
+    feed = p.get("feed", {}) or {}
+    if not isinstance(feed, dict):
+        raise ProactiveConfigError("proactive.feed 必须是字典")
+    feed_poller_interval_seconds = feed.get(
+        "poll_interval_seconds",
+        p.get("feed_poller_interval_seconds", 150),
+    )
 
     # 合并预设和覆盖
     overrides = p.get("overrides", {})
@@ -234,6 +330,13 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         "enabled",
         "default_channel",
         "default_chat_id",
+        "profile",
+        "profiles",
+        "target",
+        "feed",
+        "fitbit",
+        "agent",
+        "drift",
         "model",
         "fitbit_enabled",
         "fitbit_url",
@@ -261,25 +364,63 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     # v2 Agent Tick 配置（独立子系统）
     at = p.get("agent_tick") or {}
     _validate_agent_tick_keys(at)
-    if at.get("model"):
-        config.agent_tick_model = str(at["model"])
-    if "max_steps" in at:
-        config.agent_tick_max_steps = max(1, int(at["max_steps"]))
-    if "content_limit" in at:
-        config.agent_tick_content_limit = max(1, int(at["content_limit"]))
-    if "web_fetch_max_chars" in at:
-        config.agent_tick_web_fetch_max_chars = max(1000, int(at["web_fetch_max_chars"]))
-    if "context_prob" in at:
-        config.agent_tick_context_prob = max(0.0, min(1.0, float(at["context_prob"])))
-    if "delivery_cooldown_hours" in at:
-        config.agent_tick_delivery_cooldown_hours = max(0, int(at["delivery_cooldown_hours"]))
-    if "drift_enabled" in at:
-        config.drift_enabled = bool(at["drift_enabled"])
-    if "drift_max_steps" in at:
-        config.drift_max_steps = max(3, int(at["drift_max_steps"]))
-    if "drift_dir" in at:
-        config.drift_dir = str(at["drift_dir"] or "")
-    if "drift_min_interval_hours" in at:
-        config.drift_min_interval_hours = max(0, int(at["drift_min_interval_hours"]))
+    agent = p.get("agent") or {}
+    if not isinstance(agent, dict):
+        raise ProactiveConfigError("proactive.agent 必须是字典")
+    _validate_agent_keys(agent)
+    drift = p.get("drift") or {}
+    if not isinstance(drift, dict):
+        raise ProactiveConfigError("proactive.drift 必须是字典")
+    _validate_drift_keys(drift)
+
+    agent_model = agent.get("model", at.get("model"))
+    if agent_model:
+        config.agent_tick_model = str(agent_model)
+    if "max_steps" in agent or "max_steps" in at:
+        config.agent_tick_max_steps = max(
+            1,
+            int(_pick(agent, "max_steps", at, "max_steps")),
+        )
+    if "content_limit" in agent or "content_limit" in at:
+        config.agent_tick_content_limit = max(
+            1,
+            int(_pick(agent, "content_limit", at, "content_limit")),
+        )
+    if "web_fetch_max_chars" in agent or "web_fetch_max_chars" in at:
+        config.agent_tick_web_fetch_max_chars = max(
+            1000,
+            int(_pick(agent, "web_fetch_max_chars", at, "web_fetch_max_chars")),
+        )
+    if "context_prob" in agent or "context_prob" in at:
+        config.agent_tick_context_prob = max(
+            0.0,
+            min(1.0, float(_pick(agent, "context_prob", at, "context_prob"))),
+        )
+    if "delivery_cooldown_hours" in agent or "delivery_cooldown_hours" in at:
+        config.agent_tick_delivery_cooldown_hours = max(
+            0,
+            int(
+                _pick(
+                    agent,
+                    "delivery_cooldown_hours",
+                    at,
+                    "delivery_cooldown_hours",
+                )
+            ),
+        )
+    if "enabled" in drift or "drift_enabled" in at:
+        config.drift_enabled = bool(drift.get("enabled", at.get("drift_enabled")))
+    if "max_steps" in drift or "drift_max_steps" in at:
+        config.drift_max_steps = max(
+            3,
+            int(_pick(drift, "max_steps", at, "drift_max_steps")),
+        )
+    if "dir" in drift or "drift_dir" in at:
+        config.drift_dir = str(_pick(drift, "dir", at, "drift_dir") or "")
+    if "min_interval_hours" in drift or "drift_min_interval_hours" in at:
+        config.drift_min_interval_hours = max(
+            0,
+            int(_pick(drift, "min_interval_hours", at, "drift_min_interval_hours")),
+        )
 
     return config

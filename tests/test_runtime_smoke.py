@@ -21,16 +21,24 @@ from core.net.http import SharedHttpResources
 
 def _write_config(path: Path, socket_path: Path) -> None:
     payload = {
-        "provider": "openai",
-        "model": "test-model",
-        "api_key": "test-key",
-        "system_prompt": "test system prompt",
-        "max_tokens": 256,
-        "max_iterations": 2,
-        "memory_optimizer_enabled": False,
+        "llm": {
+            "provider": "openai",
+            "main": {
+                "model": "test-model",
+                "api_key": "test-key",
+            },
+        },
+        "agent": {
+            "system_prompt": "test system prompt",
+            "max_tokens": 256,
+            "max_iterations": 2,
+            "maintenance": {
+                "memory_optimizer_enabled": False,
+            },
+        },
         "proactive": {
             "enabled": False,
-            "preset": "quiet",
+            "profile": "quiet",
         },
         "channels": {
             "cli": {

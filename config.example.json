@@ -1,86 +1,227 @@
 {
-  "provider": "qwen",
-  "model": "qwen3.5-plus",
-  "light_model": "qwen-flash",
-  "light_api_key": "${QWEN_API_KEY}",
-  "light_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "api_key": "${QWEN_API_KEY}",
-  "base_url": "https://coding.dashscope.aliyuncs.com/v1",
-  "system_prompt": "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses.",
-  "max_tokens": 8192,
-  "max_iterations": 40,
-  "extra_body": {
-    "enable_thinking": false
+  "llm": {
+    "provider": "qwen",
+    "main": {
+      "model": "qwen3.5-plus",
+      "api_key": "${QWEN_API_KEY}",
+      "base_url": "https://coding.dashscope.aliyuncs.com/v1",
+      "enable_thinking": false
+    },
+    "fast": {
+      "model": "qwen-flash",
+      "api_key": "${QWEN_API_KEY}",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    }
+  },
+  "agent": {
+    "system_prompt": "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses.",
+    "max_tokens": 8192,
+    "max_iterations": 40,
+    "context": {
+      "memory_window": 40
+    },
+    "tools": {
+      "search_enabled": true
+    },
+    "maintenance": {
+      "memory_optimizer_enabled": true,
+      "memory_optimizer_interval_seconds": 3600
+    },
+    "wiring": {
+      "context": "default",
+      "memory": "default",
+      "toolsets": ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
+    }
   },
   "channels": {
     "telegram": {
       "token": "${TELEGRAM_BOT_TOKEN}",
-      "allowFrom": ["your_username"]
+      "allow_from": ["your_username"]
     },
     "qq": {
       "bot_uin": "123456789",
-      "allowFrom": ["987654321"],
+      "allow_from": ["987654321"],
       "groups": [
         {
-          "groupId": "111111111",
-          "allowFrom": ["987654321"],
-          "requireAt": true
+          "group_id": "111111111",
+          "allow_from": ["987654321"],
+          "require_at": true
         }
       ]
     }
   },
+  "memory": {
+    "enabled": true,
+    "embedding": {
+      "model": "text-embedding-v3"
+    },
+    "retrieval": {
+      "top_k_history": 8,
+      "score_threshold": 0.45,
+      "thresholds": {
+        "procedure": 0.66,
+        "preference": 0.5,
+        "event": 0.5,
+        "profile": 0.5
+      },
+      "relative_delta": 0.2,
+      "inject": {
+        "max_chars": 6000,
+        "line_max": 600,
+        "event_profile": 4
+      },
+      "route_intention": true
+    },
+    "gate": {
+      "llm_timeout_ms": 1600,
+      "max_tokens": 200
+    },
+    "hyde": {
+      "enabled": true,
+      "timeout_ms": 2000
+    }
+  },
   "proactive": {
     "enabled": true,
-    "default_channel": "telegram",
-    "default_chat_id": "your_chat_id",
-    "preset": "daily",
-    "features": {
-      "fitbit_enabled": false
+    "profile": "daily",
+    "profiles": {
+      "daily": {
+        "trigger": {
+          "tick_interval_s0": 480,
+          "tick_interval_s1": 240,
+          "tick_interval_s2": 120,
+          "tick_interval_s3": 60,
+          "tick_jitter": 0.2
+        },
+        "gate": {
+          "score_llm_threshold": 0.14,
+          "judge_send_threshold": 0.6,
+          "judge_balance_daily_max": 48
+        },
+        "anyaction": {
+          "anyaction_enabled": true,
+          "anyaction_daily_max_actions": 48,
+          "anyaction_min_interval_seconds": 180,
+          "anyaction_probability_min": 0.2,
+          "anyaction_probability_max": 0.82,
+          "anyaction_idle_scale_minutes": 30.0,
+          "anyaction_reset_hour_local": 12,
+          "anyaction_timezone": "Asia/Shanghai"
+        },
+        "safety": {
+          "delivery_dedupe_hours": 10,
+          "message_dedupe_recent_n": 5
+        },
+        "context": {
+          "context_only_daily_max": 1,
+          "context_only_min_interval_hours": 12,
+          "context_only_judge_threshold": 0.72,
+          "context_only_judge_threshold_with_evidence": 0.68
+        }
+      },
+      "dev_verify": {
+        "trigger": {
+          "tick_interval_s0": 60,
+          "tick_interval_s1": 30,
+          "tick_interval_s2": 15,
+          "tick_interval_s3": 10,
+          "tick_jitter": 0.0
+        },
+        "gate": {
+          "score_llm_threshold": 0.08,
+          "judge_send_threshold": 0.28,
+          "judge_balance_daily_max": 48
+        },
+        "anyaction": {
+          "anyaction_enabled": true,
+          "anyaction_daily_max_actions": 999,
+          "anyaction_min_interval_seconds": 20,
+          "anyaction_probability_min": 0.75,
+          "anyaction_probability_max": 0.98,
+          "anyaction_idle_scale_minutes": 15.0,
+          "anyaction_reset_hour_local": 12,
+          "anyaction_timezone": "Asia/Shanghai"
+        },
+        "safety": {
+          "delivery_dedupe_hours": 1,
+          "message_dedupe_recent_n": 5
+        },
+        "context": {
+          "context_only_daily_max": 20,
+          "context_only_min_interval_hours": 1,
+          "context_only_judge_threshold": 0.3,
+          "context_only_judge_threshold_with_evidence": 0.25
+        }
+      },
+      "quiet": {
+        "trigger": {
+          "tick_interval_s0": 1800,
+          "tick_interval_s1": 900,
+          "tick_interval_s2": 480,
+          "tick_interval_s3": 240,
+          "tick_jitter": 0.3
+        },
+        "gate": {
+          "score_llm_threshold": 0.35,
+          "judge_send_threshold": 0.75,
+          "judge_balance_daily_max": 12
+        },
+        "anyaction": {
+          "anyaction_enabled": true,
+          "anyaction_daily_max_actions": 12,
+          "anyaction_min_interval_seconds": 600,
+          "anyaction_probability_min": 0.05,
+          "anyaction_probability_max": 0.3,
+          "anyaction_idle_scale_minutes": 120.0,
+          "anyaction_reset_hour_local": 12,
+          "anyaction_timezone": "Asia/Shanghai"
+        },
+        "safety": {
+          "delivery_dedupe_hours": 24,
+          "message_dedupe_recent_n": 8
+        },
+        "context": {
+          "context_only_daily_max": 1,
+          "context_only_min_interval_hours": 24,
+          "context_only_judge_threshold": 0.8,
+          "context_only_judge_threshold_with_evidence": 0.75
+        }
+      }
     },
-    "feed_poller_interval_seconds": 150,
-    "fitbit_url": "http://127.0.0.1:18765",
-    "fitbit_poll_seconds": 300,
-    "fitbit_monitor_path": "",
-    "overrides": {},
-    "agent_tick": {
+    "target": {
+      "channel": "telegram",
+      "chat_id": "your_chat_id"
+    },
+    "feed": {
+      "poll_interval_seconds": 150
+    },
+    "fitbit": {
+      "enabled": false,
+      "url": "http://127.0.0.1:18765",
+      "poll_seconds": 300,
+      "monitor_path": ""
+    },
+    "agent": {
       "model": "",
       "max_steps": 20,
       "content_limit": 5,
       "web_fetch_max_chars": 8000,
       "context_prob": 0.03,
       "delivery_cooldown_hours": 1
+    },
+    "drift": {
+      "enabled": false,
+      "max_steps": 20,
+      "dir": "",
+      "min_interval_hours": 3
     }
   },
-  "tool_search_enabled": true,
-  "wiring": {
-    "context": "default",
-    "memory": "default",
-    "toolsets": ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
-  },
-  "memory_optimizer_enabled": true,
-  "memory_optimizer_interval_seconds": 3600,
-  "memory_v2": {
-    "enabled": true,
-    "embed_model": "text-embedding-v3",
-    "top_k_history": 8,
-    "score_threshold": 0.45,
-    "score_thresholds": {
-      "procedure": 0.66,
-      "preference": 0.5,
-      "event": 0.5,
-      "profile": 0.5
-    },
-    "relative_delta": 0.2,
-    "inject_limits": {
-      "max_chars": 6000,
-      "line_max": 600,
-      "event_profile": 4
-    },
-    "route_intention_enabled": true,
-    "gate_llm_timeout_ms": 1600,
-    "gate_max_tokens": 200,
-    "hyde_enabled": true,
-    "hyde_timeout_ms": 2000
-  },
-  "memory_window": 40
+  "integrations": {
+    "fitbit_monitor": {
+      "fitbit": {
+        "client_id": "23V3JZ",
+        "client_secret": "REPLACE_WITH_YOUR_FITBIT_CLIENT_SECRET"
+      }
+    }
+  }
 }

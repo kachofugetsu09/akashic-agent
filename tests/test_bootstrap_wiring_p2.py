@@ -21,15 +21,21 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
     cfg_path.write_text(
         json.dumps(
             {
-                "provider": "openai",
-                "model": "m",
-                "api_key": "k",
-                "system_prompt": "s",
-                "wiring": {
-                    "context": "default",
-                    "memory": "default",
-                    "memory_engine": "default",
-                    "toolsets": ["schedule", "mcp"],
+                "llm": {
+                    "provider": "openai",
+                    "main": {
+                        "model": "m",
+                        "api_key": "k",
+                    },
+                },
+                "agent": {
+                    "system_prompt": "s",
+                    "wiring": {
+                        "context": "default",
+                        "memory": "default",
+                        "memory_engine": "default",
+                        "toolsets": ["schedule", "mcp"],
+                    },
                 },
             },
             ensure_ascii=False,
@@ -50,11 +56,19 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
     cfg_path.write_text(
         json.dumps(
             {
-                "provider": "openai",
-                "model": "m",
-                "api_key": "k",
-                "system_prompt": "s",
-                "memory_window": 20,
+                "llm": {
+                    "provider": "openai",
+                    "main": {
+                        "model": "m",
+                        "api_key": "k",
+                    },
+                },
+                "agent": {
+                    "system_prompt": "s",
+                    "context": {
+                        "memory_window": 20,
+                    },
+                },
                 "channels": {
                     "socket": "/tmp/dev-akasic.sock",
                 },

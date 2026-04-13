@@ -129,6 +129,68 @@ def test_memory_v2_reads_embed_endpoint_fields(tmp_path: Path):
     assert cfg.memory_v2.base_url == "https://embed.example.com/v1"
 
 
+def test_memory_reads_grouped_layout_fields(tmp_path: Path):
+    cfg_path = tmp_path / "config.json"
+    _write_config(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "x",
+                    "api_key": "main-key",
+                },
+            },
+            "agent": {
+                "system_prompt": "s",
+            },
+            "memory": {
+                "enabled": True,
+                "embedding": {
+                    "model": "embed-x",
+                    "api_key": "embed-key",
+                    "base_url": "https://embed.example.com/v1",
+                },
+                "retrieval": {
+                    "top_k_history": 10,
+                    "score_threshold": 0.5,
+                    "thresholds": {
+                        "procedure": 0.61,
+                        "event": 0.71,
+                    },
+                    "inject": {
+                        "max_chars": 2222,
+                    },
+                    "route_intention": True,
+                },
+                "gate": {
+                    "llm_timeout_ms": 1234,
+                    "max_tokens": 88,
+                },
+                "hyde": {
+                    "enabled": True,
+                    "timeout_ms": 3456,
+                },
+            },
+        },
+    )
+    cfg = Config.load(cfg_path)
+    assert cfg.memory_v2.enabled is True
+    assert cfg.memory_v2.embed_model == "embed-x"
+    assert cfg.memory_v2.api_key == "embed-key"
+    assert cfg.memory_v2.base_url == "https://embed.example.com/v1"
+    assert cfg.memory_v2.top_k_history == 10
+    assert cfg.memory_v2.score_threshold == 0.5
+    assert cfg.memory_v2.score_threshold_procedure == 0.61
+    assert cfg.memory_v2.score_threshold_event == 0.71
+    assert cfg.memory_v2.inject_max_chars == 2222
+    assert cfg.memory_v2.route_intention_enabled is True
+    assert cfg.memory_v2.gate_llm_timeout_ms == 1234
+    assert cfg.memory_v2.gate_max_tokens == 88
+    assert cfg.memory_v2.hyde_enabled is True
+    assert cfg.memory_v2.hyde_timeout_ms == 3456
+
+
 def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     tools = ToolRegistry()
     tools.register(_NoopTool())
