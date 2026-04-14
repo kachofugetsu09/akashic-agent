@@ -142,9 +142,10 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
 
     telegram = None
     if tg := channels_data.get("telegram"):
-        if bool(tg.get("enabled", True)):
+        token = _normalize_optional_config_text(_resolve(str(tg.get("token", ""))))
+        if bool(tg.get("enabled", True)) and token:
             telegram = TelegramChannelConfig(
-                token=_resolve(tg["token"]),
+                token=token,
                 allow_from=[
                     str(u) for u in tg.get("allow_from", tg.get("allowFrom", []))
                 ],
@@ -152,7 +153,8 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
 
     qq = None
     if qq_data := channels_data.get("qq"):
-        if bool(qq_data.get("enabled", True)):
+        bot_uin = _normalize_optional_config_text(str(qq_data.get("bot_uin", "")))
+        if bool(qq_data.get("enabled", True)) and bot_uin:
             groups = [
                 QQGroupConfig(
                     group_id=str(
@@ -167,7 +169,7 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 for g in qq_data.get("groups", [])
             ]
             qq = QQChannelConfig(
-                bot_uin=str(qq_data["bot_uin"]),
+                bot_uin=bot_uin,
                 allow_from=[
                     str(u)
                     for u in qq_data.get("allow_from", qq_data.get("allowFrom", []))
@@ -347,6 +349,15 @@ def _resolve(value: str) -> str:
         if key_file.exists():
             resolved = key_file.read_text(encoding="utf-8").strip()
     return resolved
+
+
+def _normalize_optional_config_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\$\{(\w+)\}", text):
+        return ""
+    return text
 
 
 def _load_config_data(path: str | Path) -> dict:

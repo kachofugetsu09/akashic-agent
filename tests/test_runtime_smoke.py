@@ -8,6 +8,7 @@ import pytest
 
 import main
 from bootstrap import app as bootstrap_app
+from bootstrap import init_workspace as workspace_init
 from bootstrap.channels import start_channels
 from agent.config import (
     ChannelsConfig,
@@ -161,6 +162,65 @@ def test_connect_cli_uses_socket_from_config(monkeypatch, tmp_path):
     assert observed["socket"] == str(socket_path)
 
 
+def test_init_workspace_creates_expected_assets(tmp_path):
+    config_path = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+
+    summary = workspace_init.init_workspace(
+        config_path=config_path,
+        workspace=workspace,
+    )
+
+    assert config_path.exists()
+    assert (workspace / "sessions.db").exists()
+    assert (workspace / "observe" / "observe.db").exists()
+    assert (workspace / "memory" / "consolidation_writes.db").exists()
+    assert (workspace / "memory" / "memory2.db").exists()
+    assert (workspace / "memory" / "NOW.md").read_text(encoding="utf-8").startswith(
+        "# Now"
+    )
+    assert "Proactive Context" in (
+        workspace / "PROACTIVE_CONTEXT.md"
+    ).read_text(encoding="utf-8")
+    assert json.loads(
+        (workspace / "mcp_servers.json").read_text(encoding="utf-8")
+    ) == {"servers": {}}
+    assert json.loads(
+        (workspace / "proactive_sources.json").read_text(encoding="utf-8")
+    ) == {"sources": []}
+    assert json.loads(
+        (workspace / "proactive_state.json").read_text(encoding="utf-8")
+    )["version"] == 5
+    assert any(path == config_path for path in summary.created)
+
+
+def test_init_workspace_respects_force_for_text_assets(tmp_path):
+    config_path = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+
+    workspace_init.init_workspace(
+        config_path=config_path,
+        workspace=workspace,
+    )
+    now_path = workspace / "memory" / "NOW.md"
+    now_path.write_text("custom\n", encoding="utf-8")
+
+    summary_skip = workspace_init.init_workspace(
+        config_path=config_path,
+        workspace=workspace,
+    )
+    assert now_path.read_text(encoding="utf-8") == "custom\n"
+    assert any(path == now_path for path in summary_skip.skipped)
+
+    summary_force = workspace_init.init_workspace(
+        config_path=config_path,
+        workspace=workspace,
+        force=True,
+    )
+    assert now_path.read_text(encoding="utf-8").startswith("# Now")
+    assert any(path == now_path for path in summary_force.overwritten)
+
+
 @pytest.mark.asyncio
 async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     starts: list[str] = []
@@ -269,3 +329,70 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     assert registrations == ["telegram", "qq"]
     assert tg.kwargs["interrupt_controller"] is controller
     assert qq.kwargs["interrupt_controller"] is controller
+
+
+@pytest.mark.asyncio
+async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_path):
+    starts: list[str] = []
+
+    fake_ipc_server = types.ModuleType("infra.channels.ipc_server")
+    fake_telegram_channel = types.ModuleType("infra.channels.telegram_channel")
+    fake_qq_channel = types.ModuleType("infra.channels.qq_channel")
+
+    class _IPCServerChannel:
+        def __init__(self, bus, socket):
+            self.bus = bus
+            self.socket = socket
+
+        async def start(self) -> None:
+            starts.append("ipc")
+
+        async def stop(self) -> None:
+            starts.append("ipc.stop")
+
+    class _TelegramChannel:
+        async def start(self) -> None:
+            starts.append("telegram")
+
+    class _QQChannel:
+        async def start(self) -> None:
+            starts.append("qq")
+
+    fake_ipc_server.IPCServerChannel = _IPCServerChannel  # type: ignore[attr-defined]
+    fake_telegram_channel.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
+    fake_qq_channel.QQChannel = _QQChannel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "infra.channels.ipc_server", fake_ipc_server)
+    monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram_channel)
+    monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq_channel)
+
+    class _PushTool:
+        def register_channel(self, name: str, **kwargs) -> None:
+            raise AssertionError(f"unexpected channel registration: {name}")
+
+    config = Config(
+        provider="openai",
+        model="m",
+        api_key="k",
+        system_prompt="s",
+        channels=ChannelsConfig(
+            telegram=None,
+            qq=None,
+            socket=str(tmp_path / "sock"),
+        ),
+    )
+    resources = SharedHttpResources()
+    try:
+        ipc, tg, qq = await start_channels(
+            config,
+            bus=object(),
+            session_manager=object(),
+            push_tool=_PushTool(),
+            http_resources=resources,
+        )
+    finally:
+        await resources.aclose()
+
+    assert ipc is not None
+    assert tg is None
+    assert qq is None
+    assert starts == ["ipc"]

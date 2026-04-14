@@ -29,11 +29,11 @@ memory = "default"
 toolsets = ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
 
 [channels.telegram]
-token = "${TELEGRAM_BOT_TOKEN}"
+token = ""
 allow_from = ["your_username"]
 
 [channels.qq]
-bot_uin = "123456789"
+bot_uin = ""
 allow_from = ["987654321"]
 
 [[channels.qq.groups]]

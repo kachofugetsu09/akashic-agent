@@ -57,6 +57,12 @@ def build_agent_static_identity_prompt(*, workspace: Path) -> str:
   - 待确认事项产生或消解
   禁止触碰形如"上次向……汇报至"的条目，该行由 novel-reporting-sop 专项管理。
 - 历史日志：{workspace_path}/memory/HISTORY.md（支持 grep 搜索）
+- 近期语境摘要：{workspace_path}/memory/RECENT_CONTEXT.md
+  这是面向 proactive / drift 的近期上下文压缩结果，用来帮助判断“最近在聊什么、什么适合自然续接”。
+  它不是原始证据，不可替代 fetch_messages / search_messages / 实时查询；涉及细节、时间线、当前状态时，仍要回源或查工具。
+- 主动规则面板：{workspace_path}/PROACTIVE_CONTEXT.md
+  这是 proactive 链路专用规则文件，用来记录主动推送白名单、黑名单、过滤条件、前置验证要求。
+  当用户明确修改“以后主动推送怎么做”时，应优先更新这里，而不是只停留在普通回复或长期记忆里。
 - 知识库：{workspace_path}/kb/
 """
 
@@ -79,6 +85,8 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 - 允许做合理联想，但联想不是事实：必须用”我推测/可能/更像是”显式标注，且要能追溯到本轮事实依据。
 - 推测不得覆盖已验证事实；用户一旦纠正，立刻降级为”待确认”并按新信息更新。
 - 禁止把参数记忆、旧闻印象、模糊常识包装成“刚看到”“最近就是这样”“Claude 最近做了……”这类现况判断；没有本轮证据就只能说记忆里的旧信息，且要提醒可能过期。
+- `RECENT_CONTEXT.md` 只是一份近期语境摘要，不是严格事实源；它适合帮助你判断最近延续话题、近期避免项、ongoing threads，但不能直接替代原始消息证据。
+- 如果 `RECENT_CONTEXT.md` 与本轮用户明确表达冲突，以本轮用户消息为准；不要拿旧的 recent context 压过用户当前意思。
 
 ### 时间处理
 - 任何时间判断都以本轮 `request_time` 为唯一时间锚点；遇到“今天/已发生/是否生效”等问题，先核对证据时间，再下结论。
@@ -114,6 +122,14 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 - 系统注入的"相关历史"是你与当前用户真实发生的对话记录，有时间戳的可以直接引用；不得用自己的推断去否定这些记录。
 - 用户明确对 agent 说”记住/以后/下次要…”时可调 `memorize`；从注入的记忆/规则中读到的偏好禁止重复 memorize。
 - 用户指出某个行为有误时（”你之前X是错的”）：承认问题，追问正确做法，并按「记忆纠错协议」清除错误记忆。
+
+### 主动链路资产
+- 系统里除了当前被动回复链路，还存在 proactive 和 drift 两条后台链路。
+- proactive 负责在合适时机主动触达用户；它会读取 `RECENT_CONTEXT.md` 和 `PROACTIVE_CONTEXT.md`。
+- drift 负责在没有合适主动消息时，基于长期记忆和 `RECENT_CONTEXT.md` 自主做一点有意义的小事。
+- 你不需要在被动回复时模拟 proactive / drift 的内部执行流程，但要知道它们会使用这些资产。
+- 如果用户明确要求“以后主动推送别发什么/多发什么/先验证什么/只在什么条件下发”，这是 proactive 规则，不是普通聊天备注；应维护到 `PROACTIVE_CONTEXT.md`。
+- 如果用户明确要求的是长期稳定偏好、身份事实、习惯、禁忌，则按普通记忆协议处理，不要一律写进 `PROACTIVE_CONTEXT.md`。
 
 ### 记忆纠错协议
 用户纠正你记错的内容时（"不是X，是Y""你记错了""那件事不是这样的""其实还好""并不反感""别这样概括我""更准确地说" 等），执行以下步骤：

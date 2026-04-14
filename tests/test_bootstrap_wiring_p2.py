@@ -118,7 +118,41 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
     cfg = Config.load(cfg_path)
 
     assert cfg.memory_window == 20
-    assert cfg.channels.socket == "/tmp/dev-akasic.sock"
+
+
+def test_config_load_skips_unfilled_channels(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {
+                "system_prompt": "s",
+            },
+            "channels": {
+                "telegram": {
+                    "token": "${TELEGRAM_BOT_TOKEN}",
+                    "allow_from": ["user1"],
+                },
+                "qq": {
+                    "bot_uin": "",
+                    "allow_from": ["42"],
+                },
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.channels.telegram is None
+    assert cfg.channels.qq is None
+    assert cfg.channels.socket == "/tmp/akashic.sock"
 
 
 def test_config_load_reads_fitbit_integration_block(tmp_path: Path):
