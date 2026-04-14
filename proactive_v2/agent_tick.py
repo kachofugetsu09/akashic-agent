@@ -484,7 +484,8 @@ class AgentTick:
         annotated_context = [normalize_context(item).to_prompt_item() for item in context]
         return (
             "【背景上下文】\n"
-            "注：sleep_prob=睡眠概率，awake_prob=清醒概率（= 1 - sleep_prob）。\n"
+            "注：sleep_prob=睡眠概率，awake_prob=清醒概率（= 1 - sleep_prob）；"
+            "若同时存在 `*_local` 与原始时间字段，判断早晚和相对时间时优先看 `*_local`，原始字段可能是 UTC。\n"
             + json.dumps(annotated_context, ensure_ascii=False)[:900]
             + "\n\n"
         )

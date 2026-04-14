@@ -65,3 +65,26 @@ def test_normalize_context_keeps_raw_and_adds_awake_prob():
     assert contract.available is True
     assert payload["foo"] == "bar"
     assert payload["awake_prob"] == 0.8
+
+
+def test_normalize_context_adds_local_time_fields_for_aware_timestamps():
+    item = {
+        "_source": "zigbee",
+        "updated_at": "2026-04-14T17:58:54+00:00",
+        "device": {
+            "last_seen": "2026-04-14T17:58:54+00:00",
+        },
+    }
+
+    payload = normalize_context(item).to_prompt_item()
+
+    assert payload["updated_at_local"] == "2026-04-15 01:58:54 +0800"
+    assert payload["device"]["last_seen_local"] == "2026-04-15 01:58:54 +0800"
+
+
+def test_normalize_context_skips_local_time_for_naive_timestamp():
+    item = {"_source": "zigbee", "updated_at": "2026-04-14T17:58:54"}
+
+    payload = normalize_context(item).to_prompt_item()
+
+    assert "updated_at_local" not in payload
