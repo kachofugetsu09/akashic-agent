@@ -2,7 +2,7 @@
 provider = "qwen"
 
 [llm.main]
-model = "qwen3.5-plus"
+model = "qwen3.6-plus"
 api_key = "${QWEN_API_KEY}"
 base_url = "https://coding.dashscope.aliyuncs.com/v1"
 enable_thinking = false
@@ -18,7 +18,7 @@ max_tokens = 8192
 max_iterations = 40
 
 [agent.context]
-memory_window = 40
+memory_window = 24
 
 [agent.tools]
 search_enabled = true
@@ -46,6 +46,8 @@ enabled = true
 
 [memory.embedding]
 model = "text-embedding-v3"
+api_key = "${QWEN_API_KEY}"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [memory.retrieval]
 top_k_history = 8

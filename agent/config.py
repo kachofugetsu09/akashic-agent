@@ -99,7 +99,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
         memory_window=int(
-            agent_context.get("memory_window", data.get("memory_window", 40))
+            agent_context.get("memory_window", data.get("memory_window", 24))
         ),
         base_url=str(llm_main.get("base_url") or data.get("base_url") or _PRESETS.get(provider) or ""),
         extra_body=_load_extra_body(data),
