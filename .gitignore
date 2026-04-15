@@ -56,6 +56,7 @@ lme_error_log_*.txt
 /AGENTS.md
 /scripts/fitbit-monitor/stat_events.json
 /scripts/fitbit-monitor/stat_events_v2.json
+/memory_annotation_from_*.json
 .squad/
 /locks/reviewer.receive.lock
 /locks/worker.receive.lock

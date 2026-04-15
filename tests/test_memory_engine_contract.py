@@ -102,14 +102,14 @@ async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
     await engine.retrieve(
         MemoryEngineRetrieveRequest(
             query="作用域测试",
-            scope=MemoryScope(session_key="telegram:7674283004"),
+            scope=MemoryScope(session_key="telegram:test_user"),
             hints={"require_scope_match": True},
         )
     )
 
     kwargs = retriever.retrieve.await_args.kwargs
     assert kwargs["scope_channel"] == "telegram"
-    assert kwargs["scope_chat_id"] == "7674283004"
+    assert kwargs["scope_chat_id"] == "test_user"
     assert kwargs["require_scope_match"] is True
 
 

@@ -336,11 +336,11 @@ async def test_memorize_tool_uses_current_user_source_ref_by_default():
     await tool.execute(
         summary="用户并不反感星露谷物语",
         memory_type="preference",
-        current_user_source_ref="telegram:7674283004:9999",
+        current_user_source_ref="telegram:test_user:9999",
     )
 
     request = engine.remember.await_args.args[0]
-    assert request.source_ref == "telegram:7674283004:9999"
+    assert request.source_ref == "telegram:test_user:9999"
 
 
 @pytest.mark.asyncio
@@ -685,7 +685,7 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
                         summary="用户昨天提过 FitBit",
                         content="用户昨天提过 FitBit",
                         score=0.81,
-                        source_ref="telegram:7674283004@seed",
+                        source_ref="telegram:test_user@seed",
                         engine_kind="default",
                         metadata={"memory_type": "event", "origin": "engine"},
                     )
@@ -700,9 +700,9 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
     )
 
     items, scope_mode, hyde, engine_result = await _retrieve_episodic_items(
-        session_key="telegram:7674283004",
+        session_key="telegram:test_user",
         channel="telegram",
-        chat_id="7674283004",
+        chat_id="test_user",
         route_decision="RETRIEVE",
         rewritten_query="Fitbit 型号",
         history_memory_types=["event", "profile"],
@@ -719,7 +719,7 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
     assert items[0]["_retrieval_path"] == "history_raw"
     assert engine_result is not None
     request = engine.retrieve.await_args.args[0]
-    assert request.scope.session_key == "telegram:7674283004"
+    assert request.scope.session_key == "telegram:test_user"
     assert request.hints["require_scope_match"] is True
     assert request.hints["memory_types"] == ["event", "profile"]
 
@@ -916,7 +916,7 @@ async def test_retrieve_episodic_items_returns_engine_managed_injection():
                         summary="用户昨天提过 FitBit",
                         content="用户昨天提过 FitBit",
                         score=0.81,
-                        source_ref="telegram:7674283004@seed",
+                        source_ref="telegram:test_user@seed",
                         engine_kind="default",
                         metadata={"memory_type": "event", "origin": "engine"},
                         injected=True,
@@ -926,7 +926,7 @@ async def test_retrieve_episodic_items_returns_engine_managed_injection():
                         summary="未注入候选",
                         content="未注入候选",
                         score=0.75,
-                        source_ref="telegram:7674283004@seed",
+                        source_ref="telegram:test_user@seed",
                         engine_kind="default",
                         metadata={"memory_type": "event"},
                         injected=False,
@@ -948,9 +948,9 @@ async def test_retrieve_episodic_items_returns_engine_managed_injection():
     )
 
     items, scope_mode, hyde, engine_result = await _retrieve_episodic_items(
-        session_key="telegram:7674283004",
+        session_key="telegram:test_user",
         channel="telegram",
-        chat_id="7674283004",
+        chat_id="test_user",
         route_decision="RETRIEVE",
         rewritten_query="Fitbit 型号",
         history_memory_types=["event", "profile"],

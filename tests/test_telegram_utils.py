@@ -82,7 +82,7 @@ def test_render_telegram_preview_html_supports_links_strike_and_spoiler():
 
 def test_render_telegram_preview_html_keeps_spacing_compact():
     html = render_telegram_preview_html(
-        "花月哥哥，我在。\n\n### 呼吸\n\n1. 吸气\n\n1. 呼气\n\n> 慢一点"
+        "我在。\n\n### 呼吸\n\n1. 吸气\n\n1. 呼气\n\n> 慢一点"
     )
     assert "<b>呼吸</b>" in html
     assert "• 吸气" in html
