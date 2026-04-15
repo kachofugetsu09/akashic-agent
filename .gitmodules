@@ -1,3 +1,6 @@
 [submodule "private_tests"]
 	path = private_tests
 	url = git@github.com:kachofugetsu09/akashic-test.git
+[submodule "private_runtime"]
+	path = private_runtime
+	url = git@github.com:kachofugetsu09/mcp_server.git
