@@ -21,6 +21,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _retrieve_hits(
+    retrieve_fn: Callable[..., Awaitable[list[dict]]],
+    query: str,
+    top_k: int,
+    retrieve_kwargs: dict[str, object],
+) -> list[dict]:
+    return await retrieve_fn(query, top_k=top_k, **retrieve_kwargs)
+
+
 @dataclass
 class HyDEAugmentResult:
     """augment() 的返回值，包含 raw/hyde 两路的原始数据，供 trace 使用。"""
@@ -108,7 +117,7 @@ class HyDEEnhancer:
         """
         # 并行：raw 检索 + hypothesis 生成
         raw_task = asyncio.create_task(
-            retrieve_fn(raw_query, top_k=top_k, **retrieve_kwargs)
+            _retrieve_hits(retrieve_fn, raw_query, top_k, retrieve_kwargs)
         )
         hyp_task = asyncio.create_task(self.generate_hypothesis(raw_query, context))
         raw_hits, hypothesis = await asyncio.gather(raw_task, hyp_task)

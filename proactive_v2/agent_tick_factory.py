@@ -103,9 +103,10 @@ class AgentTickFactory:
             return self._deps.cfg.default_chat_id or ""
 
     def _build_last_user_at_fn(self, session_key: str) -> Callable[[], Any | None]:
-        if not self._deps.presence:
+        presence = self._deps.presence
+        if presence is None:
             return lambda: None
-        return lambda: self._deps.presence.get_last_user_at(session_key)
+        return lambda: presence.get_last_user_at(session_key)
 
     def _build_llm_fn(self) -> LlmFn:
         agent_model = self._deps.cfg.agent_tick_model or self._deps.model

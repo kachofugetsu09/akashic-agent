@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from agent.config_models import Config
 from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
+from core.memory.engine import MemoryEngine
 from core.memory.default_runtime_facade import DefaultMemoryRuntimeFacade
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
@@ -130,9 +132,10 @@ def build_memory_runtime(
             post_response_worker=post_mem_worker,
         )
     )
+    memory_engine = cast(MemoryEngine, engine)
     from agent.tools.recall_memory import RecallMemoryTool
 
-    memorize_tool = MemorizeTool(engine)
+    memorize_tool = MemorizeTool(memory_engine)
     forget_tool = ForgetMemoryTool(mem2_store)
     recall_tool = RecallMemoryTool(
         store=mem2_store,
@@ -150,13 +153,13 @@ def build_memory_runtime(
     )
     facade = DefaultMemoryRuntimeFacade(
         port=port,
-        engine=engine,
+        engine=memory_engine,
         profile_maint=port,
     )
 
     return MemoryRuntime(
         port=port,
-        engine=engine,
+        engine=memory_engine,
         facade=facade,
         profile_reader=port,
         profile_maint=port,

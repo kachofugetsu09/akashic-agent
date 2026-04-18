@@ -127,9 +127,10 @@ class AppRuntime:
                 interrupt_controller=self.agent_loop,
             )
             if self.tg_channel is not None:
+                tg_channel = self.tg_channel
                 self.agent_loop.set_stream_sink_factory(
                     lambda msg: (
-                        self.tg_channel.create_stream_sender(msg.chat_id)
+                        tg_channel.create_stream_sender(msg.chat_id)
                         if getattr(msg, "channel", "") == "telegram"
                         else None
                     )

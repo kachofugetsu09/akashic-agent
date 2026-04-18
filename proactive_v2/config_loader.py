@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import sys
-from typing import Any
+from typing import Any, cast
 
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.presets import ALLOWED_OVERRIDE_KEYS, PRESETS, STRATEGY_PARAMS
@@ -84,14 +84,15 @@ def _validate_ranges(config: dict[str, Any]) -> None:
         config.get("tick_interval_s3"),
     ]
     if all(x is not None for x in intervals):
-        for i in range(len(intervals) - 1):
-            if intervals[i] < intervals[i + 1]:
+        interval_values = [int(cast(int, x)) for x in intervals]
+        for i in range(len(interval_values) - 1):
+            if interval_values[i] < interval_values[i + 1]:
                 raise ProactiveConfigError(
-                    f"tick_interval 必须递减: s{i} ({intervals[i]}) < s{i+1} ({intervals[i+1]})"
+                    f"tick_interval 必须递减: s{i} ({interval_values[i]}) < s{i+1} ({interval_values[i+1]})"
                 )
-        if intervals[-1] < 1:
+        if interval_values[-1] < 1:
             raise ProactiveConfigError(
-                f"tick_interval_s3 必须 >= 1，当前值: {intervals[-1]}"
+                f"tick_interval_s3 必须 >= 1，当前值: {interval_values[-1]}"
             )
 
     # context_only_judge_threshold_with_evidence <= context_only_judge_threshold
@@ -177,14 +178,14 @@ def _validate_profiles(profiles: dict[str, Any]) -> None:
 def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     for key, value in src.items():
         if isinstance(value, dict) and isinstance(dst.get(key), dict):
-            _deep_merge(dst[key], value)
+            _deep_merge(cast(dict[str, Any], dst[key]), value)
         else:
             dst[key] = copy.deepcopy(value)
     return dst
 
 
 def _merge_profiles(user_profiles: dict[str, Any]) -> dict[str, Any]:
-    merged = copy.deepcopy(PRESETS)
+    merged: dict[str, Any] = copy.deepcopy(PRESETS)
     for name, values in user_profiles.items():
         current = merged.get(name)
         if isinstance(values, dict) and isinstance(current, dict):
@@ -229,6 +230,18 @@ def _pick(primary: dict[str, Any], primary_key: str, legacy: dict[str, Any], leg
     if primary_key in primary:
         return primary[primary_key]
     return legacy.get(legacy_key)
+
+
+def _as_int(value: Any, field_name: str) -> int:
+    if value is None:
+        raise ProactiveConfigError(f"{field_name} 不能为空")
+    return int(value)
+
+
+def _as_float(value: Any, field_name: str) -> float:
+    if value is None:
+        raise ProactiveConfigError(f"{field_name} 不能为空")
+    return float(value)
 
 
 def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
@@ -352,32 +365,47 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     if "max_steps" in agent or "max_steps" in at:
         config.agent_tick_max_steps = max(
             1,
-            int(_pick(agent, "max_steps", at, "max_steps")),
+            _as_int(_pick(agent, "max_steps", at, "max_steps"), "agent.max_steps"),
         )
     if "content_limit" in agent or "content_limit" in at:
         config.agent_tick_content_limit = max(
             1,
-            int(_pick(agent, "content_limit", at, "content_limit")),
+            _as_int(
+                _pick(agent, "content_limit", at, "content_limit"),
+                "agent.content_limit",
+            ),
         )
     if "web_fetch_max_chars" in agent or "web_fetch_max_chars" in at:
         config.agent_tick_web_fetch_max_chars = max(
             1000,
-            int(_pick(agent, "web_fetch_max_chars", at, "web_fetch_max_chars")),
+            _as_int(
+                _pick(agent, "web_fetch_max_chars", at, "web_fetch_max_chars"),
+                "agent.web_fetch_max_chars",
+            ),
         )
     if "context_prob" in agent or "context_prob" in at:
         config.agent_tick_context_prob = max(
             0.0,
-            min(1.0, float(_pick(agent, "context_prob", at, "context_prob"))),
+            min(
+                1.0,
+                _as_float(
+                    _pick(agent, "context_prob", at, "context_prob"),
+                    "agent.context_prob",
+                ),
+            ),
         )
     if "delivery_cooldown_hours" in agent or "delivery_cooldown_hours" in at:
         config.agent_tick_delivery_cooldown_hours = max(
             0,
             int(
-                _pick(
-                    agent,
-                    "delivery_cooldown_hours",
-                    at,
-                    "delivery_cooldown_hours",
+                _as_int(
+                    _pick(
+                        agent,
+                        "delivery_cooldown_hours",
+                        at,
+                        "delivery_cooldown_hours",
+                    ),
+                    "agent.delivery_cooldown_hours",
                 )
             ),
         )
@@ -386,12 +414,15 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     if "max_steps" in drift or "drift_max_steps" in at:
         config.drift_max_steps = max(
             3,
-            int(_pick(drift, "max_steps", at, "drift_max_steps")),
+            _as_int(_pick(drift, "max_steps", at, "drift_max_steps"), "drift.max_steps"),
         )
     if "min_interval_hours" in drift or "drift_min_interval_hours" in at:
         config.drift_min_interval_hours = max(
             0,
-            int(_pick(drift, "min_interval_hours", at, "drift_min_interval_hours")),
+            _as_int(
+                _pick(drift, "min_interval_hours", at, "drift_min_interval_hours"),
+                "drift.min_interval_hours",
+            ),
         )
 
     return config

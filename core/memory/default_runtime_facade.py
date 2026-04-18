@@ -6,7 +6,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, TypedDict, cast
 
 from agent.looping.memory_gate import (
     _decide_history_route,
@@ -15,6 +15,7 @@ from agent.looping.memory_gate import (
     _trace_route_reason,
 )
 from core.memory.engine import (
+    MemoryHit,
     MemoryEngineRetrieveResult,
     MemoryEngineRetrieveRequest,
     MemoryIngestRequest,
@@ -46,6 +47,26 @@ if TYPE_CHECKING:
 
 InterestRetriever = Callable[[InterestRetrievalRequest], Awaitable[InterestRetrievalResult]]
 logger = logging.getLogger("memory.runtime_facade")
+
+
+class _GateResult(TypedDict):
+    gate_type: str | None
+    episodic_query: str
+    route_decision: str
+    route_latency_ms: int
+    fallback_reason: str
+    history_memory_types: list[str]
+
+
+class _RawItemsPayload(TypedDict, total=False):
+    items: list[dict]
+
+
+class _HitLike(Protocol):
+    id: str
+    score: float
+    injected: bool
+    metadata: dict[str, object]
 
 
 class DefaultMemoryRuntimeFacade:
@@ -269,12 +290,13 @@ class DefaultRetrievalSemantics:
                 session_metadata=request.session_metadata,
                 recent_turns=recent_turns,
             )
-            gate_type = str(gate_result["gate_type"])
-            rewritten_query = str(gate_result["episodic_query"])
-            route_decision = str(gate_result["route_decision"])
-            route_ms = int(gate_result["route_latency_ms"])
-            fallback_reason = str(gate_result["fallback_reason"])
-            history_memory_types = list(gate_result["history_memory_types"])
+            resolved_gate = cast(_GateResult, gate_result)
+            gate_type = str(resolved_gate["gate_type"])
+            rewritten_query = str(resolved_gate["episodic_query"])
+            route_decision = str(resolved_gate["route_decision"])
+            route_ms = resolved_gate["route_latency_ms"]
+            fallback_reason = str(resolved_gate["fallback_reason"])
+            history_memory_types = resolved_gate["history_memory_types"]
             gate_latency_ms = {"route": route_ms}
 
             # 3. gate 放行后，再补 event/profile + HyDE + sufficiency。
@@ -369,7 +391,7 @@ class _GateResolver:
         message: str,
         session_metadata: dict[str, object],
         recent_turns: str,
-    ) -> tuple[dict[str, object], list[dict], MemoryEngineRetrieveResult | None]:
+    ) -> tuple[_GateResult, list[dict], MemoryEngineRetrieveResult | None]:
         return await _resolve_memory_gate(
             message=message,
             session_metadata=session_metadata,
@@ -615,7 +637,7 @@ async def _resolve_memory_gate(
     config: "MemoryConfig",
     llm: "LLMServices",
     light_model: str,
-) -> tuple[dict[str, object], list[dict], MemoryEngineRetrieveResult | None]:
+) -> tuple[_GateResult, list[dict], MemoryEngineRetrieveResult | None]:
     if memory.query_rewriter is not None:
         decision_task = asyncio.create_task(
             memory.query_rewriter.decide(
@@ -662,7 +684,7 @@ async def _resolve_fallback_memory_gate(
     config: "MemoryConfig",
     llm: "LLMServices",
     light_model: str,
-) -> tuple[dict[str, object], list[dict], MemoryEngineRetrieveResult | None]:
+) -> tuple[_GateResult, list[dict], MemoryEngineRetrieveResult | None]:
     p_task = asyncio.create_task(
         _retrieve_engine_items(
             memory=memory,
@@ -708,7 +730,7 @@ async def _retrieve_episodic_items(
     hyde_context: str,
     memory: "MemoryServices",
     config: "MemoryConfig",
-) -> tuple[list[dict], str, str | None, object | None]:
+) -> tuple[list[dict], str, str | None, MemoryEngineRetrieveResult | None]:
     if route_decision != "RETRIEVE" or not history_memory_types:
         return [], "disabled", None, None
     if memory.engine is None:
@@ -772,12 +794,13 @@ def _map_engine_result_to_history_items(
                 }
             )
         return history_items
+    raw = cast(_RawItemsPayload, engine_result.raw)
     return [
         dict(
             item,
             _retrieval_path=str(item.get("_retrieval_path", "history_raw") or "history_raw"),
         )
-        for item in engine_result.raw.get("items", [])
+        for item in raw.get("items", [])
         if isinstance(item, dict)
     ]
 
@@ -867,7 +890,10 @@ async def _retry_empty_episodic_block(
     sufficiency_trace["retry_count"] = 1
     history_items = history_items + extra_h_items
     history_scope_mode = extra_scope_mode or history_scope_mode
-    history_result = extra_history_result if extra_history_result is not None else history_result
+    history_result = cast(
+        MemoryEngineRetrieveResult | None,
+        extra_history_result if extra_history_result is not None else history_result,
+    )
     selected_items, retrieved_block, injected_item_ids = _build_injection_payload(
         procedure_items=procedure_items,
         procedure_result=procedure_result,
@@ -980,9 +1006,10 @@ async def _retrieve_episodic_with_hyde(
 def _engine_raw_items(result: MemoryEngineRetrieveResult | None) -> list[dict]:
     if result is None:
         return []
+    raw = cast(_RawItemsPayload, result.raw)
     return [
         dict(item)
-        for item in result.raw.get("items", [])
+        for item in raw.get("items", [])
         if isinstance(item, dict)
     ]
 
@@ -995,7 +1022,8 @@ def _annotate_engine_result_path(
         metadata = dict(hit.metadata) if isinstance(hit.metadata, dict) else {}
         metadata["_retrieval_path"] = path
         hit.metadata = metadata
-    for item in result.raw.get("items", []):
+    raw = cast(_RawItemsPayload, result.raw)
+    for item in raw.get("items", []):
         if isinstance(item, dict):
             item["_retrieval_path"] = path
     return result
@@ -1016,9 +1044,9 @@ def _filter_injected_items(items: list[dict], injected_ids: list[str]) -> list[d
     ]
 
 
-def _merge_engine_hits(hits) -> list:
-    by_id: dict[str, object] = {}
-    extras: list[object] = []
+def _merge_engine_hits(hits: list[MemoryHit]) -> list[MemoryHit]:
+    by_id: dict[str, MemoryHit] = {}
+    extras: list[MemoryHit] = []
     for hit in hits:
         item_id = str(getattr(hit, "id", "") or "")
         if not item_id:

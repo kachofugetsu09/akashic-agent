@@ -4,7 +4,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ContextRequest, LLMToolCall, ReasonerResult
@@ -74,9 +74,17 @@ def _build_deferred_tools_hint(
     get_deferred_names = getattr(tools, "get_deferred_names", None)
     if not callable(get_deferred_names):
         return ""
-    deferred = get_deferred_names(visible=visible)
-    builtin: list[str] = deferred.get("builtin", [])
-    mcp: dict[str, list[str]] = deferred.get("mcp", {})
+    deferred_raw = get_deferred_names(visible=visible)
+    if not isinstance(deferred_raw, dict):
+        return ""
+    builtin_raw = deferred_raw.get("builtin", [])
+    mcp_raw = deferred_raw.get("mcp", {})
+    builtin = [name for name in builtin_raw if isinstance(name, str)]
+    mcp = {
+        str(server): [name for name in names if isinstance(name, str)]
+        for server, names in mcp_raw.items()
+        if isinstance(server, str) and isinstance(names, list)
+    }
 
     # 2. 没有 deferred 工具时，不补任何目录提示。
     if not builtin and not mcp:
@@ -99,7 +107,7 @@ def _build_deferred_tools_hint(
 
 
 def _build_runtime_hint_message(content: str) -> dict[str, str]:
-    return {"role": "user", "content": content}
+    return {"role": "system", "content": content}
 
 
 # ─── Turn Injection（首轮前注入，非空才追加）─────────────────────────────────
@@ -221,8 +229,9 @@ class DefaultReasoner(Reasoner):
             raise RuntimeError("DefaultReasoner.run_turn requires context and session_manager")
 
         # 1. 先准备 retry trace、history 和 preload 工具集合。
+        retry_attempts: list[dict[str, object]] = []
         retry_trace: dict[str, object] = {
-            "attempts": [],
+            "attempts": retry_attempts,
             "selected_plan": None,
             "trimmed_sections": [],
         }
@@ -247,7 +256,7 @@ class DefaultReasoner(Reasoner):
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
         attempts = self._build_attempt_plans(total_history)
         for attempt, plan in enumerate(attempts):
-            retry_trace["attempts"].append(
+            retry_attempts.append(
                 {
                     "name": plan["name"],
                     "history_window": plan["history_window"],
@@ -303,7 +312,7 @@ class DefaultReasoner(Reasoner):
                     else:
                         session.messages = session.messages[-window:]
                     session.last_consolidated = 0
-                    await self._session_manager.save_async(session)
+                    await self._session_manager.save_async(cast(Any, session))
 
                 if self._tool_search_enabled and tools_used:
                     self._discovery.update(

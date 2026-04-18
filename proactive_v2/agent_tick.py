@@ -678,7 +678,10 @@ class AgentTick:
     ) -> bool:
         # 1. 用当前 messages + TOOL_SCHEMAS 调一次模型，拿到本轮唯一的 tool call。
         active_schemas = schemas or TOOL_SCHEMAS
-        tool_call = await self._llm_fn(messages, active_schemas, tool_choice)
+        llm_fn = self._llm_fn
+        if llm_fn is None:
+            return False
+        tool_call = await llm_fn(messages, active_schemas, tool_choice)
         if tool_call is None:
             logger.warning(
                 "[proactive_v2] %s: llm_fn returned None at step %d, stopping",

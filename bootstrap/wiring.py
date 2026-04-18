@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from importlib import import_module
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from agent.context import ContextBuilder
 from agent.config_models import Config
 from agent.provider import LLMProvider
+from agent.tools.base import Tool
 from bootstrap.toolsets.fitbit import FitbitToolsetProvider
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
@@ -14,6 +16,12 @@ from bootstrap.toolsets.meta import CommonMetaToolsetProvider, SpawnToolsetProvi
 from bootstrap.toolsets.schedule import SchedulerToolsetProvider
 from core.memory.default_engine import DefaultMemoryEngine
 from core.net.http import SharedHttpResources
+
+if TYPE_CHECKING:
+    from memory2.memorizer import Memorizer
+    from memory2.post_response_worker import PostResponseMemoryWorker
+    from memory2.procedure_tagger import ProcedureTagger
+    from memory2.retriever import Retriever
 
 
 ContextFactory = Callable[[Path, Any], Any]
@@ -26,10 +34,10 @@ class MemoryEngineBuildDeps:
     provider: LLMProvider
     light_provider: LLMProvider | None
     http_resources: SharedHttpResources
-    retriever: object
-    memorizer: object | None
-    tagger: object | None
-    post_response_worker: object | None
+    retriever: "Retriever"
+    memorizer: "Memorizer | None"
+    tagger: "ProcedureTagger | None"
+    post_response_worker: "PostResponseMemoryWorker | None"
 
 
 MemoryEngineBuilder = Callable[[MemoryEngineBuildDeps], object]
@@ -49,11 +57,12 @@ def _build_default_memory_engine(deps: MemoryEngineBuildDeps):
 
 
 def _build_memu_memory_engine(deps: MemoryEngineBuildDeps):
-    from memu.app.service import MemoryService
-
     from core.memory.memu_engine import MemUMemoryEngine, MemUScopeModel
+    MemoryService = cast(Any, import_module("memu.app.service").MemoryService)
 
-    base_url = deps.config.light_base_url or deps.config.base_url or "https://api.openai.com/v1"
+    base_url = (
+        deps.config.light_base_url or deps.config.base_url or "https://api.openai.com/v1"
+    )
     api_key = deps.config.light_api_key or deps.config.api_key
     embed_base_url = deps.config.memory_v2.base_url or base_url
     embed_api_key = deps.config.memory_v2.api_key or api_key
@@ -135,7 +144,9 @@ def resolve_context_factory(name: str) -> ContextFactory:
     return _CONTEXT_WIRING[name]
 
 
-def resolve_toolset_provider(name: str, *, readonly_tools: dict[str, object] | None = None):
+def resolve_toolset_provider(
+    name: str, *, readonly_tools: dict[str, Tool] | None = None
+):
     if name == "meta_common":
         return CommonMetaToolsetProvider(readonly_tools or {})
     if name not in _TOOLSET_WIRING:

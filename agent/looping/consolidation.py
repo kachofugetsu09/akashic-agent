@@ -844,8 +844,9 @@ ongoing_threads 严格限制：
             compression_until=(
                 compression_until
                 or (
-                    re.search(r"^until:\s*(.+)$", old_recent_context, flags=re.M).group(1).strip()
-                    if old_recent_context.strip() and re.search(r"^until:\s*(.+)$", old_recent_context, flags=re.M)
+                    match.group(1).strip()
+                    if old_recent_context.strip()
+                    and (match := re.search(r"^until:\s*(.+)$", old_recent_context, flags=re.M))
                     else ""
                 )
             ),

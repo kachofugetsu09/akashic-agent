@@ -18,7 +18,11 @@ _FITBIT_DEFAULT_URL = "http://127.0.0.1:18765"
 class FitbitToolsetProvider(ToolsetProvider):
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
         before = set(registry._tools.keys())
-        if not getattr(deps.config.fitbit, "enabled", False):
+        config = deps.config
+        http_resources = deps.http_resources
+        if config is None or http_resources is None:
+            raise ValueError("fitbit toolset 缺少必要依赖")
+        if not getattr(config.fitbit, "enabled", False):
             return build_registration_result(
                 registry=registry,
                 source_name="fitbit",
@@ -28,7 +32,7 @@ class FitbitToolsetProvider(ToolsetProvider):
             tool.name: tool
             for tool in build_fitbit_tools(
                 fitbit_url=_FITBIT_DEFAULT_URL,
-                requester=deps.http_resources.local_service,
+                requester=http_resources.local_service,
             )
         }
         registry.register(

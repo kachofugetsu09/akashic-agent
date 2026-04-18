@@ -1,3 +1,4 @@
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +26,10 @@ def normalize_tool_result(result: str | ToolResult) -> ToolResult:
 class Tool(ABC):
     """工具抽象基类"""
 
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
     # JSON Schema 类型 → Python 类型映射
     _TYPE_MAP = {
         "string": str,
@@ -35,20 +40,33 @@ class Tool(ABC):
         "object": dict,
     }
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """工具名称"""
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if cls is Tool or inspect.isabstract(cls):
+            return
 
-    @property
-    @abstractmethod
-    def description(self) -> str:
-        """工具描述"""
+        missing_fields = [
+            field
+            for field in ("name", "description", "parameters")
+            if getattr(cls, field, None) is None
+        ]
+        if missing_fields:
+            fields_text = ", ".join(missing_fields)
+            raise TypeError(f"{cls.__name__} 必须定义字段：{fields_text}")
 
-    @property
-    @abstractmethod
-    def parameters(self) -> dict[str, Any]:
-        """工具参数的 JSON Schema"""
+        empty_fields: list[str] = []
+        name = getattr(cls, "name")
+        if not isinstance(name, property) and not str(name).strip():
+            empty_fields.append("name")
+        description = getattr(cls, "description")
+        if not isinstance(description, property) and not str(description).strip():
+            empty_fields.append("description")
+        parameters = getattr(cls, "parameters")
+        if not isinstance(parameters, property) and not parameters:
+            empty_fields.append("parameters")
+        if empty_fields:
+            fields_text = ", ".join(empty_fields)
+            raise TypeError(f"{cls.__name__} 字段不能为空：{fields_text}")
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> str | ToolResult:

@@ -19,7 +19,9 @@ import base64
 import html
 import logging
 import re
+from collections.abc import Coroutine
 from pathlib import Path
+from typing import Any, cast
 
 from agent.config_models import QQGroupConfig
 from agent.looping.interrupt import InterruptController
@@ -159,7 +161,7 @@ class QQChannel:
         self._main_loop = asyncio.get_running_loop()
         self._identity_index.rebuild()
 
-        @self._bot.on_private_message()
+        @cast(Any, self._bot.on_private_message())
         async def _(event) -> None:
             if self._bot_loop is None:
                 self._bot_loop = asyncio.get_running_loop()
@@ -172,10 +174,7 @@ class QQChannel:
             raw: str = event.raw_message
             text, img_urls = _extract_cq_images(raw)
             if text.strip() == "/stop":
-                asyncio.run_coroutine_threadsafe(
-                    self._handle_stop_private(user_id),
-                    self._main_loop,
-                )
+                self._submit_to_main_loop(self._handle_stop_private(user_id))
                 return
             preview = text[:60] + "..." if len(text) > 60 else text
             logger.info(
@@ -184,12 +183,9 @@ class QQChannel:
 
             self.user_map[user_id] = user_id
 
-            asyncio.run_coroutine_threadsafe(
-                self._handle_private(user_id, text, img_urls),
-                self._main_loop,
-            )
+            self._submit_to_main_loop(self._handle_private(user_id, text, img_urls))
 
-        @self._bot.on_group_message()
+        @cast(Any, self._bot.on_group_message())
         async def _(event) -> None:
             if self._bot_loop is None:
                 self._bot_loop = asyncio.get_running_loop()
@@ -205,7 +201,7 @@ class QQChannel:
             # 过滤判断（同步包装异步 filter，在 bot loop 里执行）
             future = asyncio.run_coroutine_threadsafe(
                 self._group_filter.should_process(event, group_cfg),
-                self._main_loop,
+                self._require_main_loop(),
             )
             if not future.result(timeout=5):
                 return
@@ -213,22 +209,18 @@ class QQChannel:
             raw = strip_at_segments(event.raw_message)
             text, img_urls = _extract_cq_images(raw)
             if text.strip() == "/stop":
-                asyncio.run_coroutine_threadsafe(
-                    self._handle_stop_group(group_id, user_id),
-                    self._main_loop,
-                )
+                self._submit_to_main_loop(self._handle_stop_group(group_id, user_id))
                 return
             preview = text[:60] + "..." if len(text) > 60 else text
             logger.info(
                 f"[qq] 群聊消息  group_id={group_id}  user_id={user_id}  内容: {preview!r}  图片: {len(img_urls)}"
             )
 
-            asyncio.run_coroutine_threadsafe(
-                self._handle_group(group_id, user_id, text, img_urls),
-                self._main_loop,
+            self._submit_to_main_loop(
+                self._handle_group(group_id, user_id, text, img_urls)
             )
 
-        @self._bot.on_startup()
+        @cast(Any, self._bot.on_startup())
         async def _(_event) -> None:
             self._bot_loop = asyncio.get_running_loop()
 
@@ -241,7 +233,9 @@ class QQChannel:
     async def stop(self) -> None:
         if self._api:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._bot.exit)
+            bot_exit = getattr(self._bot, "exit", None)
+            if callable(bot_exit):
+                await loop.run_in_executor(None, bot_exit)
             logger.info("[qq] QQChannel 已停止")
 
     # ── 入站处理 ──────────────────────────────────────────────────────
@@ -327,18 +321,21 @@ class QQChannel:
 
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
+        api = self._api
+        if api is None:
+            raise RuntimeError("QQChannel 尚未启动")
         if msg.content.strip():
             try:
                 if msg.chat_id.startswith(_GROUP_PREFIX):
                     group_id = msg.chat_id[len(_GROUP_PREFIX) :]
                     logger.info(f"[qq] 群聊回复  group_id={group_id}  内容: {preview!r}")
                     await self._run_on_bot_loop(
-                        self._api.send_group_text(int(group_id), msg.content)
+                        api.send_group_text(int(group_id), msg.content)
                     )
                 else:
                     logger.info(f"[qq] 私聊回复  user_id={msg.chat_id}  内容: {preview!r}")
                     await self._run_on_bot_loop(
-                        self._api.send_private_text(int(msg.chat_id), msg.content)
+                        api.send_private_text(int(msg.chat_id), msg.content)
                     )
             except Exception as e:
                 logger.error(f"[qq] 发送失败  chat_id={msg.chat_id}  错误: {e}")
@@ -352,47 +349,52 @@ class QQChannel:
 
     async def send(self, chat_id: str, message: str) -> None:
         """发送文本消息，自动区分私聊/群聊"""
-        if not self._api:
+        api = self._api
+        if api is None:
             raise RuntimeError("QQChannel 尚未启动")
         if chat_id.startswith(_GROUP_PREFIX):
             group_id = chat_id[len(_GROUP_PREFIX) :]
-            await self._run_on_bot_loop(
-                self._api.send_group_text(int(group_id), message)
-            )
+            await self._run_on_bot_loop(api.send_group_text(int(group_id), message))
         else:
-            await self._run_on_bot_loop(
-                self._api.send_private_text(int(chat_id), message)
-            )
+            await self._run_on_bot_loop(api.send_private_text(int(chat_id), message))
 
     async def send_file(
         self, chat_id: str, file_path: str, name: str | None = None
     ) -> None:
         """发送文件，自动区分私聊/群聊"""
-        if not self._api:
+        api = self._api
+        if api is None:
             raise RuntimeError("QQChannel 尚未启动")
         uri = _local_to_base64(file_path) if _is_local(file_path) else file_path
         if chat_id.startswith(_GROUP_PREFIX):
             group_id = chat_id[len(_GROUP_PREFIX) :]
-            await self._run_on_bot_loop(
-                self._api.send_group_file(int(group_id), uri, name)
-            )
+            await self._run_on_bot_loop(api.send_group_file(int(group_id), uri, name))
         else:
-            await self._run_on_bot_loop(
-                self._api.send_private_file(int(chat_id), uri, name)
-            )
+            await self._run_on_bot_loop(api.send_private_file(int(chat_id), uri, name))
 
     async def send_image(self, chat_id: str, image: str) -> None:
         """发送图片，自动区分私聊/群聊"""
-        if not self._api:
+        api = self._api
+        if api is None:
             raise RuntimeError("QQChannel 尚未启动")
         uri = _local_to_base64(image) if _is_local(image) else image
         if chat_id.startswith(_GROUP_PREFIX):
             group_id = chat_id[len(_GROUP_PREFIX) :]
-            await self._run_on_bot_loop(self._api.send_group_image(int(group_id), uri))
+            await self._run_on_bot_loop(api.send_group_image(int(group_id), uri))
         else:
-            await self._run_on_bot_loop(self._api.send_private_image(int(chat_id), uri))
+            await self._run_on_bot_loop(api.send_private_image(int(chat_id), uri))
 
-    async def _run_on_bot_loop(self, coro):
+    def _require_main_loop(self) -> asyncio.AbstractEventLoop:
+        if self._main_loop is None:
+            raise RuntimeError("QQ main loop 未就绪")
+        return self._main_loop
+
+    def _submit_to_main_loop(self, coro: Coroutine[object, object, None]) -> None:
+        asyncio.run_coroutine_threadsafe(coro, self._require_main_loop())
+
+    async def _run_on_bot_loop(
+        self, coro: Coroutine[object, object, object]
+    ) -> None:
         if self._bot_loop is None:
             raise RuntimeError("QQ bot loop 未就绪")
         future = asyncio.run_coroutine_threadsafe(coro, self._bot_loop)

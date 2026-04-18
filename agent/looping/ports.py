@@ -10,7 +10,11 @@ if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.core.reasoner import Reasoner
     from agent.core.runner import CoreRunner
-    from agent.core.runtime_support import ToolDiscoveryState
+    from agent.core.runtime_support import (
+        ConsolidationRunner,
+        SessionLike,
+        ToolDiscoveryState,
+    )
     from agent.looping.consolidation import ConsolidationService
     from agent.postturn.protocol import PostTurnPipeline
     from agent.provider import LLMProvider

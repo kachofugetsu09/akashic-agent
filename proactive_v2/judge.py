@@ -218,7 +218,7 @@ class Judge:
     @staticmethod
     def _clamp_dim(raw: object) -> int:
         try:
-            value = int(raw)
+            value = int(raw) if isinstance(raw, int | float | str) else 2
         except Exception:
             value = 2
         return max(1, min(5, value))

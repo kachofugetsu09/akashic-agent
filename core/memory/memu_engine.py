@@ -254,15 +254,15 @@ def _build_memu_text_payload(content: object) -> str:
         user_message = str(content.get("user_message", "") or "").strip()
         assistant_response = str(content.get("assistant_response", "") or "").strip()
         tool_chain = content.get("tool_chain")
-        lines: list[str] = []
+        parts: list[str] = []
         if user_message:
-            lines.append(f"user: {user_message}")
+            parts.append(f"user: {user_message}")
         if assistant_response:
-            lines.append(f"assistant: {assistant_response}")
+            parts.append(f"assistant: {assistant_response}")
         if isinstance(tool_chain, list) and tool_chain:
-            lines.append("tool_chain:")
-            lines.append(json.dumps(tool_chain, ensure_ascii=False))
-        return "\n".join(lines).strip()
+            parts.append("tool_chain:")
+            parts.append(json.dumps(tool_chain, ensure_ascii=False))
+        return "\n".join(parts).strip()
     if not isinstance(content, list):
         return ""
 

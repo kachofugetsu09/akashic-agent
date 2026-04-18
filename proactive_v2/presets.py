@@ -17,7 +17,6 @@ class GatePreset(TypedDict):
     score_llm_threshold: float
     judge_send_threshold: float
     judge_balance_daily_max: int
-    judge_balance_daily_max: int
 
 
 class AnyActionPreset(TypedDict):

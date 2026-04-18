@@ -12,6 +12,7 @@ import re
 import sqlite3
 import struct
 import time
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import numpy as np
 
 try:
     import sqlite_vec
+
     _SQLITE_VEC_AVAILABLE = True
 except ImportError:
     _SQLITE_VEC_AVAILABLE = False
@@ -139,6 +141,7 @@ class MemoryStore2:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._closed = False
         self._db.executescript(SCHEMA)
         self._db.commit()
 
@@ -238,13 +241,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        db = getattr(self, "_db", None)
-        if db is None:
+        if self._closed:
             return
         try:
-            db.close()
+            self._db.close()
         finally:
-            self._db = None
+            self._closed = True
 
     def __del__(self) -> None:
         self.close()
@@ -259,7 +261,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         summary: str,
         embedding: list[float] | None,
         source_ref: str | None = None,
-        extra: dict | None = None,
+        extra: dict[str, object] | None = None,
         happened_at: str | None = None,
     ) -> str:
         """写入或强化一条记忆。返回 'new:id' 或 'reinforced:id'"""
@@ -305,7 +307,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         item_rowid = cur.lastrowid
         self._db.commit()
 
-        if embedding is not None:
+        if embedding is not None and item_rowid is not None:
             self._vec_insert(item_rowid, embedding)
             self._db.commit()
 
@@ -317,7 +319,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         source_ref: str,
         summary: str,
         embedding: list[float] | None,
-        extra: dict | None = None,
+        extra: dict[str, object] | None = None,
         happened_at: str | None = None,
     ) -> str:
         """原子写入 consolidation event：同一 source_ref 最多写一次。"""
@@ -426,7 +428,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         )
         self._db.commit()
 
-    def get_items_by_ids(self, ids: list[str]) -> list[dict]:
+    def get_items_by_ids(self, ids: list[str]) -> list[dict[str, object]]:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
@@ -436,7 +438,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             f"FROM memory_items WHERE id IN ({placeholders})",
             ids,
         ).fetchall()
-        by_id: dict[str, dict] = {}
+        by_id: dict[str, dict[str, object]] = {}
         for (
             row_id,
             memory_type,
@@ -464,8 +466,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
     def record_replacements(
         self,
         *,
-        old_items: list[dict],
-        new_item: dict,
+        old_items: list[dict[str, object]],
+        new_item: dict[str, object],
         source_ref: str | None = None,
         relation_type: str = "supersede",
     ) -> int:
@@ -584,7 +586,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         require_scope_match: bool = False,
         hotness_alpha: float = 0.0,
         hotness_half_life_days: float = 14.0,
-    ) -> list[dict]:
+    ) -> list[dict[str, object]]:
         """cosine similarity 检索，返回 top-k 结果。
         hotness_alpha > 0 时启用热度融合：final = (1-alpha)*semantic + alpha*hotness。
         """
@@ -822,7 +824,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         new_summary: str,
         new_hash: str,
         new_embedding: list[float],
-        new_extra: dict | None = None,
+        new_extra: dict[str, object] | None = None,
     ) -> None:
         """原子更新 merge 目标：summary + content_hash + embedding + reinforcement。
         new_extra 若提供则同步更新 extra_json。
@@ -882,7 +884,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                     embedding=new_embedding,
                 )
 
-    def list_by_type(self, memory_type: str) -> list[dict]:
+    def list_by_type(self, memory_type: str) -> list[dict[str, object]]:
         rows = self._db.execute(
             "SELECT id, memory_type, summary, extra_json, happened_at, reinforcement "
             "FROM memory_items WHERE memory_type=?",
@@ -962,7 +964,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             ).fetchone()
         return row is not None
 
-    def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]:
+    def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict[str, object]]:
         """对 trigger_tags 做纯关键字匹配，无需向量检索。
 
         action_tokens 是从工具调用中提取的 token 列表，例如：
@@ -1029,7 +1031,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         terms: list[str],
         memory_types: list[str] | None = None,
         limit: int = 20,
-    ) -> list[dict]:
+    ) -> list[dict[str, object]]:
         """对 summary 字段做 OR-LIKE 关键字检索，按命中词数降序排列。
 
         每条结果携带 keyword_score（命中词数 / 总词数），供 RRF 融合使用。
@@ -1059,7 +1061,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             f"ORDER BY kw_score DESC, reinforcement DESC "
             f"LIMIT ?"
         )
-        params = tuple(like_vals + like_vals + type_params + [limit])
+        params: Sequence[object] = tuple(like_vals + like_vals + type_params + [limit])
         rows = self._db.execute(sql, params).fetchall()
         results = []
         for row in rows:
@@ -1073,6 +1075,3 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 "keyword_score": float(kw_score) / len(terms),
             })
         return results
-
-    def close(self) -> None:
-        self._db.close()

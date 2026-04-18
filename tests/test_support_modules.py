@@ -294,6 +294,22 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
     with pytest.raises(ValueError):
         _BadSchemaTool().validate_params({})
 
+    with pytest.raises(TypeError, match="必须定义字段：description, parameters"):
+        class _MissingTool(Tool):
+            name = "bad"
+
+            async def execute(self, **kwargs) -> str:
+                return "ok"
+
+    with pytest.raises(TypeError, match="字段不能为空：name, description, parameters"):
+        class _EmptyTool(Tool):
+            name = ""
+            description = ""
+            parameters = {}
+
+            async def execute(self, **kwargs) -> str:
+                return "ok"
+
     path = tmp_path / "data.json"
     assert load_json(path, default={"a": 1}) == {"a": 1}
     save_json(path, {"x": "中"})

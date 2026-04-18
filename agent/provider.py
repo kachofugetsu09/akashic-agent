@@ -13,7 +13,7 @@ import tempfile
 from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 from openai import AsyncOpenAI
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -117,7 +117,7 @@ class LLMProvider:
         if on_content_delta is not None:
             return await self._chat_streaming(kwargs, on_content_delta)
 
-        resp = await self._create_with_retry(kwargs)
+        resp = cast(Any, await self._create_with_retry(kwargs))
         msg = resp.choices[0].message
 
         tool_calls = []
@@ -145,7 +145,7 @@ class LLMProvider:
         kwargs: dict[str, Any],
         on_content_delta: Callable[[StreamDelta], Awaitable[None]],
     ) -> LLMResponse:
-        stream = await self._create_with_retry({**kwargs, "stream": True})
+        stream = cast(Any, await self._create_with_retry({**kwargs, "stream": True}))
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_call_chunks: dict[int, dict[str, str]] = {}
@@ -168,13 +168,17 @@ class LLMProvider:
 
             for tc in _iter_tool_call_deltas(delta):
                 tool_call_seen = True
-                slot = tool_call_chunks.setdefault(tc["index"], {})
-                if tc["id"]:
-                    slot["id"] = slot.get("id", "") + tc["id"]
-                if tc["name"]:
-                    slot["name"] = slot.get("name", "") + tc["name"]
-                if tc["arguments"]:
-                    slot["arguments"] = slot.get("arguments", "") + tc["arguments"]
+                chunk_index = int(tc["index"])
+                slot = tool_call_chunks.setdefault(chunk_index, {})
+                tc_id = str(tc["id"])
+                tc_name = str(tc["name"])
+                tc_arguments = str(tc["arguments"])
+                if tc_id:
+                    slot["id"] = slot.get("id", "") + tc_id
+                if tc_name:
+                    slot["name"] = slot.get("name", "") + tc_name
+                if tc_arguments:
+                    slot["arguments"] = slot.get("arguments", "") + tc_arguments
 
             content_piece = _get_field(delta, "content")
             if isinstance(content_piece, str) and content_piece:

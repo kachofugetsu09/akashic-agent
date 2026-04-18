@@ -391,6 +391,12 @@ def test_finish_reply_invalid_evidence_raises():
         _finish_reply(ctx, {"content": "hello", "evidence": ["fitbit:v2_x"]})
 
 
+def test_finish_reply_rejects_prefixed_evidence_when_no_valid_ids():
+    ctx = AgentTickContext()
+    with pytest.raises(ValueError, match="invalid evidence ids"):
+        _finish_reply(ctx, {"content": "hello", "evidence": ["feed-mcp:made-up"]})
+
+
 def test_finish_skip_sets_reason_and_note():
     ctx = AgentTickContext()
     result = json.loads(_finish_skip(ctx, {"reason": "other", "note": "debug info"}))

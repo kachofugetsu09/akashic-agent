@@ -26,7 +26,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 import time
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from agent.tools.base import Tool
 
@@ -325,8 +325,11 @@ class ShellTool(Tool):
             return await self._execute_background(command, cwd, env, bg_timeout)
 
         # ── 前台路径（15s 未完成自动转后台）────────────────────────────
+        data_callback = (
+            cast(Callable[[str], None], on_data) if callable(on_data) else None
+        )
         return await self._execute_with_auto_promote(
-            command, cwd, env, timeout, on_data if callable(on_data) else None
+            command, cwd, env, timeout, data_callback
         )
 
     async def _execute_background(
@@ -625,15 +628,18 @@ class ShellTaskOutputTool(Tool):
             _bg_kill(task_id)
             return _err(f"任务 {task_id!r} 已超出 TTL（{_BG_TTL_S}s），已自动终止")
 
-        if block and not task.pump_task.done():
+        pump_task = task.pump_task
+        if pump_task is None:
+            return _err(f"任务 {task_id!r} 状态异常：缺少输出泵")
+        if block and not pump_task.done():
             try:
                 await asyncio.wait_for(
-                    asyncio.shield(task.pump_task), timeout=timeout_ms / 1000
+                    asyncio.shield(pump_task), timeout=timeout_ms / 1000
                 )
             except asyncio.TimeoutError:
                 pass
 
-        done = task.pump_task.done()
+        done = pump_task.done()
         exit_code = task.proc.returncode if done else None
         status = "done" if done else "running"
 

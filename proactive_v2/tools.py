@@ -344,7 +344,12 @@ def _parse_evidence(ctx: AgentTickContext, evidence_raw: object) -> list[str]:
         if isinstance(evidence_raw, list)
         else []
     )
-    unknown = [item_id for item_id in evidence if item_id not in _valid_evidence_ids(ctx)]
+    valid_ids = _valid_evidence_ids(ctx)
+    if not valid_ids:
+        if evidence:
+            raise ValueError(f"invalid evidence ids: {evidence}")
+        return evidence
+    unknown = [item_id for item_id in evidence if item_id not in valid_ids]
     if unknown:
         raise ValueError(f"invalid evidence ids: {unknown}")
     return evidence

@@ -4,6 +4,7 @@ import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Awaitable, Callable, Protocol
 
 logger = logging.getLogger("agent.tool_discovery")
@@ -117,7 +118,7 @@ class AgentLoopRunner(Protocol):
     async def __call__(
         self,
         initial_messages: list[dict],
-        request_time: object | None = None,
+        request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
         ...

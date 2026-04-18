@@ -130,7 +130,7 @@ class DataGateway:
                 content_store[compound_key] = ""
             else:
                 # 2. 正文统一收敛到 hashmap，供 get_content 按 item_id 读取。
-                content_store[compound_key] = result
+                content_store[compound_key] = str(result)
 
         return content_meta, content_store
 

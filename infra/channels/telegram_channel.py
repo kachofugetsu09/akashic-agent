@@ -82,7 +82,10 @@ class TelegramChannel:
         self._rebuild_user_map()
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling(
+        updater = self._app.updater
+        if updater is None:
+            raise RuntimeError("Telegram updater 未初始化")
+        await updater.start_polling(
             allowed_updates=Update.ALL_TYPES,
             error_callback=self._on_polling_error,
         )
@@ -91,8 +94,9 @@ class TelegramChannel:
     async def stop(self) -> None:
         if self._polling_conflict_task and not self._polling_conflict_task.done():
             await self._polling_conflict_task
-        if self._app.updater.running:
-            await self._app.updater.stop()
+        updater = self._app.updater
+        if updater and updater.running:
+            await updater.stop()
         await self._app.stop()
         await self._app.shutdown()
         logger.info("TelegramChannel 已停止")
@@ -124,7 +128,7 @@ class TelegramChannel:
         chat = update.effective_chat
         user = update.effective_user
 
-        if not msg or not msg.text or not user:
+        if not msg or not msg.text or not chat or not user:
             return
 
         if not self._is_allowed(user):
@@ -173,6 +177,8 @@ class TelegramChannel:
         if msg.reply_to_message and getattr(msg.reply_to_message, "document", None):
             try:
                 rdoc = msg.reply_to_message.document
+                if rdoc is None:
+                    raise ValueError("reply document 缺失")
                 suffix = ""
                 if rdoc.file_name and "." in rdoc.file_name:
                     suffix = "." + rdoc.file_name.rsplit(".", 1)[-1]
@@ -234,7 +240,7 @@ class TelegramChannel:
         chat = update.effective_chat
         user = update.effective_user
 
-        if not msg or not msg.photo or not user:
+        if not msg or not msg.photo or not chat or not user:
             return
 
         if not self._is_allowed(user):
@@ -304,7 +310,7 @@ class TelegramChannel:
         chat = update.effective_chat
         user = update.effective_user
 
-        if not msg or not msg.document or not user:
+        if not msg or not msg.document or not chat or not user:
             return
 
         if not self._is_allowed(user):
@@ -487,10 +493,11 @@ class TelegramChannel:
 
     async def _disable_polling_on_conflict(self) -> None:
         """Conflict 时关闭 updater 轮询，保留 bot 发送能力。"""
-        if not self._app.updater.running:
+        updater = self._app.updater
+        if updater is None or not updater.running:
             return
         try:
-            await self._app.updater.stop()
+            await updater.stop()
             logger.warning(
                 "[telegram] polling 已停止；当前进程不再接收 Telegram 消息。"
             )

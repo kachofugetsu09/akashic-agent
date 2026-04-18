@@ -170,6 +170,8 @@ class DedupDecider:
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             data = json_repair.loads(text) or {}
+            if not isinstance(data, dict):
+                return DedupDecision.CREATE, "invalid_llm_payload", []
             return self._parse_payload(data, similar)
         except Exception as e:
             logger.warning("dedup_decider llm failed: %s", e)

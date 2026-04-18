@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
 from agent.tools.base import Tool, ToolResult
@@ -138,7 +139,9 @@ class ToolRegistry:
         """返回所有已注册工具的索引文档列表。"""
         return list(self._documents.values())
 
-    def get_deferred_names(self, visible: set[str] | None = None) -> dict[str, list[str]]:
+    def get_deferred_names(
+        self, visible: set[str] | None = None
+    ) -> dict[str, object]:
         """返回所有 deferred 工具名，按来源分组。
 
         visible: 当前 turn 已可见工具名（always_on + preloaded），从结果中排除。
@@ -217,7 +220,7 @@ class ToolRegistry:
         query: str,
         top_k: int = 5,
         allowed_risk: list[str] | None = None,
-        excluded_names: set[str] | None = None,
+        excluded_names: AbstractSet[str] | None = None,
     ) -> list[dict]:
         """关键词搜索工具目录，返回匹配的工具信息列表。
 

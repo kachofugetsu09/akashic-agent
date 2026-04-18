@@ -14,6 +14,7 @@ Scheduler: 定时任务核心模块
 """
 
 import asyncio
+from importlib import import_module
 import logging
 import re
 import statistics
@@ -180,8 +181,7 @@ def next_cron_fire(cron_expr: str, tz: str, after: datetime) -> datetime:
 
     # APScheduler 3.x 兼容：优先用 pytz，回退到 ZoneInfo
     try:
-        import pytz
-
+        pytz = import_module("pytz")
         tzinfo = pytz.timezone(tz)
     except Exception:
         tzinfo = ZoneInfo(tz)

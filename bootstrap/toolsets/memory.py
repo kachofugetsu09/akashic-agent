@@ -22,13 +22,17 @@ class MemoryToolsetProvider(ToolsetProvider):
         deps: ToolsetDeps,
     ):
         before = set(registry._tools.keys())
+        config = deps.config
+        http_resources = deps.http_resources
+        if config is None or http_resources is None:
+            raise ValueError("memory toolset 缺少必要依赖")
         memory_runtime = build_memory_runtime(
-            deps.config,
+            config,
             deps.workspace,
             registry,
             deps.provider,
             deps.light_provider,
-            deps.http_resources,
+            http_resources,
             observe_writer=deps.observe_writer,
         )
         registry.register(

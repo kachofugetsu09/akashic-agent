@@ -13,10 +13,11 @@ def build_compose_prompt_messages(
     research_result: Any | None = None,
 ) -> tuple[str, str]:
     # 检查是否有 evidence
+    evidence = getattr(research_result, "evidence", []) if research_result is not None else []
     has_evidence = (
         research_result is not None
         and getattr(research_result, "status", "") == "success"
-        and getattr(research_result, "evidence", [])
+        and evidence
     )
 
     if has_evidence:
@@ -43,7 +44,7 @@ def build_compose_prompt_messages(
 
         # 构造 evidence 展示
         evidence_lines = ["## 正文证据（Evidence）"]
-        for ev in research_result.evidence[:5]:
+        for ev in evidence[:5]:
             evidence_lines.append(f"\n[{ev.id}]")
             evidence_lines.append(f"来源: {ev.source_url_or_path}")
             evidence_lines.append(f"标题: {ev.title}")

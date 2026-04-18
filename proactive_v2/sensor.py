@@ -84,11 +84,12 @@ class Sensor:
         return self._presence.get_last_user_at(self.target_session_key())
 
     def compute_energy(self) -> float:
-        if not self._presence:
+        presence = self._presence
+        if presence is None:
             return 0.0
         session_key = self.target_session_key()
-        last_target = self._presence.get_last_user_at(session_key)
-        last_global = self._presence.most_recent_user_at()
+        last_target = presence.get_last_user_at(session_key)
+        last_global = presence.most_recent_user_at()
         energy_target = compute_energy(last_target)
         energy_global = compute_energy(last_global) * 0.6
         return max(energy_target, energy_global)
@@ -125,7 +126,8 @@ class Sensor:
         recent_msg_count: int,
     ) -> tuple[float, dict[str, float]]:
         session_key = self.target_session_key()
-        if not self._presence or not session_key:
+        presence = self._presence
+        if presence is None or not session_key:
             return 1.0, self._default_interrupt_detail()
         # 1. 先计算 reply/activity/fatigue 三个确定性分量。
         f_reply = self._reply_factor(session_key, now_utc)
@@ -183,8 +185,11 @@ class Sensor:
         }
 
     def _reply_factor(self, session_key: str, now_utc: datetime) -> float:
-        last_user = self._presence.get_last_user_at(session_key)
-        last_proactive = self._presence.get_last_proactive_at(session_key)
+        presence = self._presence
+        if presence is None:
+            return 0.6
+        last_user = presence.get_last_user_at(session_key)
+        last_proactive = presence.get_last_proactive_at(session_key)
         if last_proactive is None:
             return 0.6
         if last_user is not None and last_user > last_proactive:
@@ -201,7 +206,10 @@ class Sensor:
         now_utc: datetime,
         recent_msg_count: int,
     ) -> float:
-        last_global_user = self._presence.most_recent_user_at()
+        presence = self._presence
+        if presence is None:
+            return 0.2
+        last_global_user = presence.most_recent_user_at()
         if last_global_user is None:
             f_live = 0.2
         else:

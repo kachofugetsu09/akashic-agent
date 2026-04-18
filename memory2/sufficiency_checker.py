@@ -4,7 +4,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict, cast
 
 
 @dataclass
@@ -13,6 +13,12 @@ class SufficiencyResult:
     reason: str
     refined_query: str | None
     latency_ms: int
+
+
+class _ParsedSufficiency(TypedDict):
+    is_sufficient: bool
+    reason: str
+    refined_query: str | None
 
 
 def should_check_sufficiency(items: list[dict]) -> bool:
@@ -115,27 +121,36 @@ class SufficiencyChecker:
             )
         return "\n".join(lines)
 
-    def _parse_output(self, raw_output: str) -> dict[str, object] | None:
+    def _parse_output(self, raw_output: str) -> _ParsedSufficiency | None:
         decision = self._extract_tag(raw_output, "sufficient").lower()
         refined = self._extract_tag(raw_output, "refined_query") or None
         if decision == "yes":
-            return {
-                "is_sufficient": True,
-                "reason": "sufficient",
-                "refined_query": None,
-            }
+            return cast(
+                _ParsedSufficiency,
+                {
+                    "is_sufficient": True,
+                    "reason": "sufficient",
+                    "refined_query": None,
+                },
+            )
         if decision == "partial":
-            return {
-                "is_sufficient": True,
-                "reason": "partial",
-                "refined_query": None,
-            }
+            return cast(
+                _ParsedSufficiency,
+                {
+                    "is_sufficient": True,
+                    "reason": "partial",
+                    "refined_query": None,
+                },
+            )
         if decision == "no":
-            return {
-                "is_sufficient": False,
-                "reason": "irrelevant",
-                "refined_query": refined,
-            }
+            return cast(
+                _ParsedSufficiency,
+                {
+                    "is_sufficient": False,
+                    "reason": "irrelevant",
+                    "refined_query": refined,
+                },
+            )
         return None
 
     def _result(
@@ -171,4 +186,3 @@ def _has_forced_procedure(items: list[dict]) -> bool:
             if str(extra.get("tool_requirement", "") or "").strip():
                 return True
     return False
-

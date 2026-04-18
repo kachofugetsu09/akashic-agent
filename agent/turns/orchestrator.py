@@ -4,7 +4,7 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from agent.core.types import to_tool_call_groups
 from agent.postturn.protocol import PostTurnEvent
@@ -20,6 +20,11 @@ if TYPE_CHECKING:
     from agent.postturn.protocol import PostTurnPipeline
 
 logger = logging.getLogger("agent.turn_orchestrator")
+
+
+@runtime_checkable
+class _ObserveWriter(Protocol):
+    def emit(self, event: object) -> None: ...
 
 
 @dataclass
@@ -180,7 +185,7 @@ class TurnOrchestrator:
         sent: bool,
     ) -> None:
         writer = self._trace.observe_writer
-        if writer is None:
+        if not isinstance(writer, _ObserveWriter):
             return
         from core.observe.events import TurnTrace as TurnTraceEvent
 

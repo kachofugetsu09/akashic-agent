@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from proactive_v2.config import ProactiveConfig
 
@@ -121,6 +122,12 @@ class Config:
     spawn_enabled: bool = True
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
+
+    @classmethod
+    def load(cls, path: str | Path = "config.toml") -> Config:
+        from importlib import import_module
+
+        return import_module("agent.config").load_config(path)
 
 
 __all__ = [

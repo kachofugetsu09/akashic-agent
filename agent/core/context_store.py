@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agent.core.types import (
     ChatMessage,
@@ -29,6 +29,16 @@ if TYPE_CHECKING:
     from bus.events import InboundMessage
 
 logger = logging.getLogger("agent.core.context_store")
+
+
+@runtime_checkable
+class _ObserveWriter(Protocol):
+    def emit(self, event: object) -> None: ...
+
+
+@runtime_checkable
+class _SideEffect(Protocol):
+    def run(self) -> object: ...
 
 
 class ContextStore(ABC):
@@ -331,6 +341,9 @@ def _emit_observe_traces(
     writer = trace.observe_writer
     if writer is None:
         return
+    observe_writer = writer if isinstance(writer, _ObserveWriter) else None
+    if observe_writer is None:
+        return
     from core.observe.events import TurnTrace as TurnTraceEvent
 
     tool_calls = [
@@ -362,7 +375,7 @@ def _emit_observe_traces(
         json.dumps(_slim_chain(tool_chain), ensure_ascii=False) if tool_chain else None
     )
 
-    writer.emit(
+    observe_writer.emit(
         TurnTraceEvent(
             source="agent",
             session_key=session_key,
@@ -386,7 +399,7 @@ def _emit_observe_traces(
         )
     )
     if retrieval_raw is not None:
-        writer.emit(retrieval_raw)
+        observe_writer.emit(retrieval_raw)
 
 
 def _build_post_reply_context_budget(
@@ -480,6 +493,8 @@ def _estimate_history_budget(history: list[dict]) -> dict[str, int]:
 
 async def _run_effects(effects: list[object]) -> None:
     for effect in effects:
+        if not isinstance(effect, _SideEffect):
+            continue
         try:
             maybe = effect.run()
             if inspect.isawaitable(maybe):

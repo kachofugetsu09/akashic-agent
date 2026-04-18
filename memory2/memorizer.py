@@ -80,10 +80,13 @@ class Memorizer:
                     )
                     return f"merged:{merge_target['id']}"
             similar = [
-                item for item in similar if float(item.get("score", 0.0)) >= supersede_threshold
+                item
+                for item in similar
+                if isinstance(score := item.get("score"), int | float)
+                and float(score) >= supersede_threshold
             ]
             if similar:
-                supersede_ids = [item["id"] for item in similar]
+                supersede_ids = [str(item["id"]) for item in similar]
                 self._store.mark_superseded_batch(supersede_ids)
                 logger.info(
                     "memorizer save_with_supersede: superseded %d %s items: %s",
@@ -101,10 +104,11 @@ class Memorizer:
                 )
                 same_cat = [
                     item for item in similar
-                    if (item.get("extra_json") or {}).get("category") == category
+                    if isinstance(extra_json := item.get("extra_json"), dict)
+                    and extra_json.get("category") == category
                 ]
                 if same_cat:
-                    supersede_ids = [item["id"] for item in same_cat]
+                    supersede_ids = [str(item["id"]) for item in same_cat]
                     self._store.mark_superseded_batch(supersede_ids)
                     logger.info(
                         "memorizer save_with_supersede: superseded %d profile/%s items: %s",

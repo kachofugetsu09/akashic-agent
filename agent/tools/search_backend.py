@@ -12,6 +12,7 @@ why_matched 由 _explain() 独立生成，与 _score() 算法解耦。
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -39,7 +40,7 @@ class SearchBackend(ABC):
         query: str,
         top_k: int = 5,
         allowed_risk: list[str] | None = None,
-        excluded_names: set[str] | None = None,
+        excluded_names: AbstractSet[str] | None = None,
     ) -> list[dict]:
         """搜索工具目录，返回匹配的工具信息列表。
 
@@ -72,7 +73,7 @@ class KeywordSearchBackend(SearchBackend):
         query: str,
         top_k: int = 5,
         allowed_risk: list[str] | None = None,
-        excluded_names: set[str] | None = None,
+        excluded_names: AbstractSet[str] | None = None,
     ) -> list[dict]:
         risk_filter = set(allowed_risk) if allowed_risk else None
         skip = excluded_names or set()

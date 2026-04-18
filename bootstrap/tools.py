@@ -85,7 +85,11 @@ class CoreRuntime:
     async def start(self) -> None:
         await self.mcp_registry.load_and_connect_all()
 
-        if self.peer_poller is not None and self.config.peer_agents:
+        if (
+            self.peer_poller is not None
+            and self.peer_process_manager is not None
+            and self.config.peer_agents
+        ):
             peer_registry = PeerAgentRegistry(
                 process_manager=self.peer_process_manager,
                 poller=self.peer_poller,

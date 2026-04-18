@@ -5,7 +5,7 @@ import logging
 import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
 from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
@@ -121,14 +121,14 @@ class DriftRunner:
                 )
 
             if "disable_thinking" in inspect.signature(llm_fn).parameters:
-                tool_call = await llm_fn(
+                tool_call = await cast(Any, llm_fn)(
                     messages,
                     schemas,
                     tool_choice,
                     disable_thinking=True,
                 )
             else:
-                tool_call = await llm_fn(messages, schemas, tool_choice)
+                tool_call = await cast(Any, llm_fn)(messages, schemas, tool_choice)
             if tool_call is None:
                 logger.warning("[drift] llm returned no tool call at step=%d", steps)
                 break

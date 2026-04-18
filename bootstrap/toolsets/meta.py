@@ -6,6 +6,7 @@ from agent.background.subagent_manager import SubagentManager
 from agent.config_models import Config
 from agent.policies.delegation import DelegationPolicy
 from agent.tool_bundles import build_readonly_research_tools
+from agent.tools.base import Tool
 from agent.tools.meta import register_common_meta_tools
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
@@ -21,7 +22,7 @@ from core.net.http import SharedHttpResources
 
 
 class CommonMetaToolsetProvider(ToolsetProvider):
-    def __init__(self, readonly_tools: dict[str, object]) -> None:
+    def __init__(self, readonly_tools: dict[str, Tool]) -> None:
         self._readonly_tools = readonly_tools
 
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
@@ -43,15 +44,20 @@ class CommonMetaToolsetProvider(ToolsetProvider):
 class SpawnToolsetProvider(ToolsetProvider):
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
         before = set(registry._tools.keys())
+        config = deps.config
+        bus = deps.bus
+        http_resources = deps.http_resources
+        if config is None or bus is None or http_resources is None:
+            raise ValueError("spawn toolset 缺少必要依赖")
         subagent_manager = SubagentManager(
             provider=deps.provider,
             workspace=deps.workspace,
-            bus=deps.bus,
-            model=deps.config.model,
-            max_tokens=deps.config.max_tokens,
-            fetch_requester=deps.http_resources.external_default,
+            bus=bus,
+            model=config.model,
+            max_tokens=config.max_tokens,
+            fetch_requester=http_resources.external_default,
         )
-        if deps.config.spawn_enabled:
+        if config.spawn_enabled:
             registry.register(
                 SpawnTool(subagent_manager, registry, policy=DelegationPolicy()),
                 always_on=True,
@@ -66,7 +72,7 @@ class SpawnToolsetProvider(ToolsetProvider):
         )
 
 
-def build_readonly_tools(http_resources: SharedHttpResources) -> dict[str, object]:
+def build_readonly_tools(http_resources: SharedHttpResources) -> dict[str, Tool]:
     return {
         tool.name: tool
         for tool in build_readonly_research_tools(
@@ -78,7 +84,7 @@ def build_readonly_tools(http_resources: SharedHttpResources) -> dict[str, objec
 
 def register_meta_and_common_tools(
     tools: ToolRegistry,
-    readonly_tools: dict[str, object],
+    readonly_tools: dict[str, Tool],
     session_store,
     push_tool: MessagePushTool | None = None,
 ) -> MessagePushTool:

@@ -179,7 +179,7 @@ class RecallMemoryTool(Tool):
                 logger.debug("recall_memory: hypothesis embed failed: %s", e)
 
         all_vecs = [query_vec] + list(hyp_vecs)
-        seen: dict[str, dict] = {}
+        seen: dict[str, dict[str, object]] = {}
         for vec in all_vecs:
             try:
                 hits = self._store.vector_search(
@@ -192,8 +192,20 @@ class RecallMemoryTool(Tool):
                 logger.debug("recall_memory: vector_search failed: %s", e)
                 continue
             for hit in hits:
-                hit_id = hit.get("id", "")
-                if hit_id not in seen or hit.get("score", 0) > seen[hit_id].get("score", 0):
+                hit_id = str(hit.get("id", "") or "")
+                hit_score_raw = hit.get("score", 0)
+                seen_score_raw = seen.get(hit_id, {}).get("score", 0)
+                hit_score = (
+                    float(hit_score_raw)
+                    if isinstance(hit_score_raw, int | float)
+                    else 0.0
+                )
+                seen_score = (
+                    float(seen_score_raw)
+                    if isinstance(seen_score_raw, int | float)
+                    else 0.0
+                )
+                if hit_id not in seen or hit_score > seen_score:
                     seen[hit_id] = hit
         return list(seen.values())
 

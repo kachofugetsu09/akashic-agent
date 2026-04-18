@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from core.memory.engine import (
     EngineProfile,
@@ -133,22 +133,22 @@ class DefaultMemoryEngine:
         if self._memorizer is None:
             raise RuntimeError("memorizer unavailable")
 
+        raw_steps = request.raw_extra.get("steps")
+        steps = [str(step) for step in raw_steps] if isinstance(raw_steps, list) else None
         memory_type = _coerce_memory_type(
             request.memory_type,
             str(request.raw_extra.get("tool_requirement") or ""),
-            request.raw_extra.get("steps")
-            if isinstance(request.raw_extra.get("steps"), list)
-            else None,
+            steps,
         )
         extra = {
             "tool_requirement": request.raw_extra.get("tool_requirement"),
-            "steps": list(request.raw_extra.get("steps") or []),
+            "steps": list(steps or []),
         }
         if memory_type == "procedure":
             extra["rule_schema"] = build_procedure_rule_schema(
                 summary=request.summary,
                 tool_requirement=str(request.raw_extra.get("tool_requirement") or "") or None,
-                steps=list(request.raw_extra.get("steps") or []),
+                steps=list(steps or []),
             )
             await self._attach_trigger_tags(extra=extra, summary=request.summary)
 
@@ -200,16 +200,25 @@ class DefaultMemoryEngine:
         )
 
     @staticmethod
-    def _normalize_ingest_content(content: object) -> dict[str, object] | None:
+    def _normalize_ingest_content(
+        content: object,
+    ) -> "_NormalizedIngestContent | None":
         if isinstance(content, dict):
-            return {
-                "user_message": str(content.get("user_message", "") or ""),
-                "assistant_response": str(content.get("assistant_response", "") or ""),
-                "tool_chain": (
-                    content.get("tool_chain") if isinstance(content.get("tool_chain"), list) else []
-                ),
-                "source_ref": str(content.get("source_ref", "") or ""),
-            }
+            raw_tool_chain = content.get("tool_chain")
+            normalized_tool_chain = [
+                item for item in raw_tool_chain if isinstance(item, dict)
+            ] if isinstance(raw_tool_chain, list) else []
+            return cast(
+                _NormalizedIngestContent,
+                {
+                    "user_message": str(content.get("user_message", "") or ""),
+                    "assistant_response": str(
+                        content.get("assistant_response", "") or ""
+                    ),
+                    "tool_chain": normalized_tool_chain,
+                    "source_ref": str(content.get("source_ref", "") or ""),
+                },
+            )
         if not isinstance(content, list):
             return None
 
@@ -230,12 +239,15 @@ class DefaultMemoryEngine:
                     tool_chain = maybe_tool_chain
         if not user_message and not assistant_response:
             return None
-        return {
-            "user_message": user_message,
-            "assistant_response": assistant_response,
-            "tool_chain": tool_chain,
-            "source_ref": "",
-        }
+        return cast(
+            _NormalizedIngestContent,
+            {
+                "user_message": user_message,
+                "assistant_response": assistant_response,
+                "tool_chain": tool_chain,
+                "source_ref": "",
+            },
+        )
 
     async def _retrieve_items(self, *, request, scope) -> list[dict]:
         memory_types = request.hints.get("memory_types")
@@ -287,6 +299,13 @@ class DefaultMemoryEngine:
             return
         if trigger_tags is not None:
             extra["trigger_tags"] = trigger_tags
+
+
+class _NormalizedIngestContent(TypedDict):
+    user_message: str
+    assistant_response: str
+    tool_chain: list[dict]
+    source_ref: str
 
 
 def _coerce_memory_type(

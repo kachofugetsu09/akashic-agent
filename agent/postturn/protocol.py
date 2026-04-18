@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agent.core.types import ToolCallGroup
+
+if TYPE_CHECKING:
+    from agent.core.runtime_support import SessionLike
 
 
 @dataclass
@@ -16,7 +19,7 @@ class PostTurnEvent:
     assistant_response: str
     tools_used: list[str]
     tool_chain: list[ToolCallGroup]
-    session: object
+    session: "SessionLike"
     timestamp: datetime | None = None
     extra: dict = field(default_factory=dict)
 

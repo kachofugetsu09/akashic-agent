@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import cast
+
 from agent.tools.filesystem import EditFileTool, WriteFileTool
 from agent.tools.forget_memory import ForgetMemoryTool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.recall_memory import RecallMemoryTool
 from agent.tools.message_push import MessagePushTool
+from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
@@ -13,7 +16,7 @@ from agent.tools.tool_search import ToolSearchTool
 
 def register_common_meta_tools(
     tools: ToolRegistry,
-    readonly_tools: dict[str, object],
+    readonly_tools: dict[str, Tool],
     session_store,
     push_tool: MessagePushTool | None = None,
 ) -> MessagePushTool:
@@ -37,24 +40,24 @@ def register_common_meta_tools(
         search_hint="停止后台任务 task_stop 杀进程",
     )
     tools.register(
-        readonly_tools["web_search"],
+        cast(Tool, readonly_tools["web_search"]),
         always_on=True,
         risk="read-only",
         search_hint="谷歌 Bing 查资料",
     )
     tools.register(
-        readonly_tools["web_fetch"],
+        cast(Tool, readonly_tools["web_fetch"]),
         always_on=True,
         risk="read-only",
         search_hint="读取网址 浏览网页",
     )
     tools.register(
-        readonly_tools["read_file"],
+        cast(Tool, readonly_tools["read_file"]),
         always_on=True,
         risk="read-only",
     )
     tools.register(
-        readonly_tools["list_dir"],
+        cast(Tool, readonly_tools["list_dir"]),
         always_on=True,
         risk="read-only",
         search_hint="ls 查看目录",

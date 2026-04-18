@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent.tools.base import Tool
+from agent.tools.base import Tool, ToolResult
 from agent.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
 from agent.tools.registry import ToolRegistry
 from proactive_v2.context import AgentTickContext
@@ -227,7 +227,7 @@ class DriftWebFetchTool(Tool):
     def parameters(self) -> dict[str, Any]:
         return self._wrapped.parameters
 
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
         result = await self._wrapped.execute(**kwargs)
         if not isinstance(result, str):
             return result

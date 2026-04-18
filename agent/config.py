@@ -11,7 +11,6 @@ import sys
 import tomllib
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from agent.config_models import (
@@ -373,13 +372,6 @@ def _load_config_data(path: str | Path) -> dict:
     if path.suffix.lower() != ".toml":
         raise ValueError(f"主配置仅支持 TOML: {path.suffix}")
     return tomllib.loads(path.read_text(encoding="utf-8"))
-
-
-def _config_load(cls, path: str | Path = "config.toml") -> Config:
-    return load_config(path)
-
-
-Config.load = classmethod(_config_load)
 
 
 __all__ = [

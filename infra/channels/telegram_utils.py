@@ -11,6 +11,7 @@ import asyncio
 import html
 import logging
 import re
+from typing import Any, cast
 
 from telegram import Bot, MessageEntity as TgEntity
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
@@ -138,7 +139,7 @@ async def send_markdown(bot: Bot, chat_id: int | str, text: str) -> None:
                 lambda: bot.send_message(
                     chat_id=cid,
                     text=chunk_text,
-                    entities=_serialize_entities(chunk_entities),
+                    entities=cast(Any, _serialize_entities(chunk_entities)),
                 ),
                 label="send_message(markdown)",
             )
