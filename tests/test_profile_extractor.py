@@ -242,6 +242,15 @@ async def test_build_prompt_forbids_engineering_process():
 
 
 @pytest.mark.asyncio
+async def test_build_prompt_forbids_hypothetical_first_person_examples():
+    extractor, captured = _capture_prompt()
+    await extractor.extract("测试对话内容")
+    assert captured
+    assert "举例 / 假设 / 如果 / 比如" in captured[0]
+    assert "如果我有一家咖啡店，最近在亏损" in captured[0]
+
+
+@pytest.mark.asyncio
 async def test_build_prompt_distinguishes_profile_from_preference():
     extractor, captured = _capture_prompt()
     await extractor.extract("测试对话内容")
