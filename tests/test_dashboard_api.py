@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi.testclient import TestClient
 
 from bootstrap.dashboard_api import create_dashboard_app
@@ -229,3 +231,30 @@ def test_memory_similar_and_batch_delete(tmp_path) -> None:
     )
     assert batch_resp.status_code == 200
     assert batch_resp.json()["deleted_count"] == 2
+
+
+def test_memory_dashboard_filters_survive_parallel_requests(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    def _fetch(memory_type: str) -> tuple[int, dict]:
+        resp = client.get(
+            "/api/dashboard/memories",
+            params={
+                "status": "active",
+                "memory_type": memory_type,
+                "page_size": 1,
+                "sort_by": "updated_at",
+                "sort_order": "desc",
+            },
+        )
+        return resp.status_code, resp.json()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(
+            executor.map(_fetch, ["procedure", "preference", "profile", "event"])
+        )
+
+    for status_code, payload in results:
+        assert status_code == 200
+        assert "total" in payload
