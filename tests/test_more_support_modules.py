@@ -107,6 +107,19 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     assert fake.calls[-1]["extra_body"] == {"x": 1}
     assert slept == [1.0]
 
+    fake = _FakeClient(
+        [
+            RuntimeError("Error code: 429"),
+            _Response(content="retry-ok"),
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    slept = []
+    monkeypatch.setattr("agent.provider.asyncio.sleep", _sleep)
+    result = await LLMProvider(api_key="k", max_retries=1).chat([], [], "m", 1)
+    assert result.content == "retry-ok"
+    assert slept == [1.0]
+
     fake = _FakeClient([RuntimeError("content_policy_violation")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(ContentSafetyError):

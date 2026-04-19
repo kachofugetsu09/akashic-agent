@@ -284,6 +284,28 @@ class AgentTickFactory:
                 max_web_fetch_chars=tool_deps.max_chars,
             ),
             max_steps=getattr(self._deps.cfg, "drift_max_steps", 20),
+            step_recorder=self._record_drift_step,
+        )
+
+    def _record_drift_step(
+        self,
+        ctx,
+        phase: str,
+        tool_name: str,
+        tool_call_id: str,
+        tool_args: dict[str, Any],
+        tool_result_text: str,
+    ) -> None:
+        tick = getattr(self, "_tick", None)
+        if tick is None:
+            return
+        tick._record_tick_step(
+            ctx,
+            phase=phase,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_args=tool_args,
+            tool_result_text=tool_result_text,
         )
 
     def _build_drift_send_message_fn(self) -> Callable[[str], Awaitable[bool]] | None:

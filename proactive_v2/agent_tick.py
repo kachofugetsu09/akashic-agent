@@ -242,6 +242,19 @@ class AgentTick:
         self._rng = rng if rng is not None else _random_module.Random()
         self._recent_proactive_fn = recent_proactive_fn
         self._drift_runner = drift_runner
+        if self._drift_runner is not None and getattr(self._drift_runner, "step_recorder", None) is None:
+            self._drift_runner.step_recorder = (
+                lambda ctx, phase, tool_name, tool_call_id, tool_args, tool_result_text: (
+                    self._record_tick_step(
+                        ctx,
+                        phase=phase,
+                        tool_name=tool_name,
+                        tool_call_id=tool_call_id,
+                        tool_args=tool_args,
+                        tool_result_text=tool_result_text,
+                    )
+                )
+            )
         self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
         self.last_ctx: AgentTickContext | None = None  # 供测试检查
 

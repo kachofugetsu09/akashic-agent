@@ -262,8 +262,12 @@ class LLMProvider:
     def _is_retryable(err: Exception) -> bool:
         if isinstance(err, TimeoutError):
             return True
+        status_code = getattr(err, "status_code", None)
+        if status_code in {429, 500, 502, 503, 504}:
+            return True
         text = str(err).lower()
         keywords = (
+            "429",
             "timeout",
             "timed out",
             "connect",

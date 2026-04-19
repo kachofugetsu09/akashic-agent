@@ -20,6 +20,7 @@ from proactive_v2.drift_tools import (
 
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
+StepRecorder = Callable[[AgentTickContext, str, str, str, dict[str, Any], str], None]
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +29,7 @@ class DriftRunner:
     store: DriftStateStore
     tool_deps: DriftToolDeps
     max_steps: int = 20
+    step_recorder: StepRecorder | None = None
 
     def __post_init__(self) -> None:
         self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
@@ -164,7 +166,25 @@ class DriftRunner:
             )
             if result.status == "error":
                 logger.warning("[drift] tool executor error at step=%d: %s", steps, result.output)
+                if self.step_recorder is not None:
+                    self.step_recorder(
+                        ctx,
+                        "drift:error",
+                        tool_name,
+                        str(tool_call.get("id") or f"drift_{steps}"),
+                        tool_args,
+                        str(result.output),
+                    )
                 break
+            if self.step_recorder is not None:
+                self.step_recorder(
+                    ctx,
+                    "drift",
+                    tool_name,
+                    str(tool_call.get("id") or f"drift_{steps}"),
+                    tool_args,
+                    str(result.output),
+                )
             logger.info(
                 "[drift] step=%d tool=%s result=%s",
                 steps,

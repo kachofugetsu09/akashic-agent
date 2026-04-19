@@ -112,10 +112,20 @@ class ProactiveDashboardReader:
                 GROUP BY COALESCE(terminal_action, gate_exit, 'unknown')
                 """
             ).fetchall()
+            flow_counts_rows = self._db.execute(
+                """
+                SELECT CASE WHEN drift_entered = 1 THEN 'drift' ELSE 'proactive' END AS bucket,
+                       COUNT(*) AS total
+                FROM tick_log
+                GROUP BY CASE WHEN drift_entered = 1 THEN 'drift' ELSE 'proactive' END
+                """
+            ).fetchall()
         result_counts = {str(row["bucket"]): int(row["total"]) for row in result_counts_rows}
+        flow_counts = {str(row["bucket"]): int(row["total"]) for row in flow_counts_rows}
         return {
             "counts": counts,
             "result_counts": result_counts,
+            "flow_counts": flow_counts,
             "last_tick_at": recent_tick["started_at"] if recent_tick is not None else None,
             "last_send_at": last_send_at["sent_at"] if last_send_at is not None else None,
             "last_skip_reason": (
@@ -211,15 +221,37 @@ class ProactiveDashboardReader:
         session_key: str = "",
         terminal_action: str = "",
         gate_exit: str = "",
+        flow: str = "",
         started_from: str = "",
         started_to: str = "",
         page: int = 1,
         page_size: int = 50,
+        sort_by: str = "started_at",
+        sort_order: str = "desc",
     ) -> tuple[list[dict[str, Any]], int]:
+        drift_only = ""
+        if flow == "drift":
+            drift_only = "1"
+        elif flow == "proactive":
+            drift_only = "0"
+        safe_sort_by = sort_by if sort_by in {
+            "session_key",
+            "started_at",
+            "finished_at",
+            "terminal_action",
+            "gate_exit",
+            "steps_taken",
+            "alert_count",
+            "content_count",
+            "context_count",
+            "drift_entered",
+        } else "started_at"
+        safe_sort_order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
         where, params = self._build_filters(
             ("session_key = ?", session_key),
             ("terminal_action = ?", terminal_action),
             ("gate_exit = ?", gate_exit),
+            ("drift_entered = ?", drift_only),
             ("started_at >= ?", started_from),
             ("started_at <= ?", started_to),
         )
@@ -227,7 +259,7 @@ class ProactiveDashboardReader:
             table="tick_log",
             where=where,
             params=params,
-            order_by="started_at DESC, id DESC",
+            order_by=f"{safe_sort_by} {safe_sort_order}, id DESC",
             page=page,
             page_size=page_size,
             columns=(
@@ -475,6 +507,7 @@ def create_dashboard_app(workspace: Path) -> FastAPI:
         role: str = "",
         page: int = 1,
         page_size: int = 25,
+        sort_by: str = "ts",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
         if not store.session_exists(session_key):
@@ -485,6 +518,7 @@ def create_dashboard_app(workspace: Path) -> FastAPI:
             role=role,
             page=page,
             page_size=page_size,
+            sort_by=sort_by,
             sort_order=sort_order,
         )
         return {
@@ -550,6 +584,7 @@ def create_dashboard_app(workspace: Path) -> FastAPI:
         role: str = "",
         page: int = 1,
         page_size: int = 25,
+        sort_by: str = "ts",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
         items, total = store.list_messages_for_dashboard(
@@ -558,6 +593,7 @@ def create_dashboard_app(workspace: Path) -> FastAPI:
             role=role,
             page=page,
             page_size=page_size,
+            sort_by=sort_by,
             sort_order=sort_order,
         )
         return {
@@ -796,19 +832,25 @@ def create_dashboard_app(workspace: Path) -> FastAPI:
         session_key: str = "",
         terminal_action: str = "",
         gate_exit: str = "",
+        flow: str = Query(default="", pattern="^(|drift|proactive)$"),
         started_from: str = "",
         started_to: str = "",
         page: int = 1,
         page_size: int = 50,
+        sort_by: str = "started_at",
+        sort_order: str = "desc",
     ) -> dict[str, Any]:
         items, total = proactive_reader.list_tick_logs(
             session_key=session_key,
             terminal_action=terminal_action,
             gate_exit=gate_exit,
+            flow=flow,
             started_from=started_from,
             started_to=started_to,
             page=page,
             page_size=page_size,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         return {
             "items": items,

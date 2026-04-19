@@ -101,6 +101,8 @@ const state = {
   messageRole: "",
   page: 1,
   pageSize: 25,
+  messageSortBy: "ts",
+  messageSortOrder: "desc",
   totalMessages: 0,
   messages: [],
   activeMessage: null,
@@ -117,6 +119,8 @@ const state = {
   memoryScopeFilter: null,
   memoryPage: 1,
   memoryPageSize: 25,
+  memorySortBy: "updated_at",
+  memorySortOrder: "desc",
   totalMemories: 0,
   proactiveOverview: null,
   proactiveCounts: {},
@@ -124,6 +128,8 @@ const state = {
   proactiveItems: [],
   proactivePage: 1,
   proactivePageSize: 25,
+  proactiveSortBy: "started_at",
+  proactiveSortOrder: "desc",
   proactiveTotal: 0,
   proactiveSessionFilter: "",
   activeProactiveItemKey: null,
@@ -295,7 +301,7 @@ function bindEvents() {
   el.allMemoriesButton.addEventListener("click", async () => {
     state.viewMode = "memory";
     state.memoryType = "";
-    state.memoryTypeFilter.value = "";
+    el.memoryTypeFilter.value = "";
     el.memoryTypeCustomSelect.refresh();
     state.activeMemoryId = null;
     state.activeMemoryDetail = null;
@@ -558,7 +564,8 @@ async function loadMessages() {
   }
   params.set("page", String(state.page));
   params.set("page_size", String(state.pageSize));
-  params.set("sort_order", "desc");
+  params.set("sort_by", state.messageSortBy);
+  params.set("sort_order", state.messageSortOrder);
 
   const payload = await api(`/api/dashboard/messages?${params.toString()}`);
   state.messages = payload.items;
@@ -602,9 +609,7 @@ async function loadMemorySidebar() {
     });
   }
   state.memoryTypeCounts = requests.filter((item) => item.total > 0);
-  if (state.viewMode !== "memory") {
-    state.totalMemories = requests.reduce((sum, item) => sum + item.total, 0);
-  }
+  state.totalMemories = requests.reduce((sum, item) => sum + item.total, 0);
 }
 
 async function loadMemoriesAndSidebar() {
@@ -631,8 +636,8 @@ async function loadMemories() {
   }
   params.set("page", String(state.memoryPage));
   params.set("page_size", String(state.memoryPageSize));
-  params.set("sort_by", "updated_at");
-  params.set("sort_order", "desc");
+  params.set("sort_by", state.memorySortBy);
+  params.set("sort_order", state.memorySortOrder);
 
   const payload = await api(`/api/dashboard/memories?${params.toString()}`);
   state.memories = payload.items;
@@ -655,11 +660,17 @@ async function loadProactivePanel() {
   const params = new URLSearchParams();
   params.set("page", String(state.proactivePage));
   params.set("page_size", String(state.proactivePageSize));
+  params.set("sort_by", state.proactiveSortBy);
+  params.set("sort_order", state.proactiveSortOrder);
   if (state.proactiveSessionFilter) {
     params.set("session_key", state.proactiveSessionFilter);
   }
   if (state.proactiveSection === "reply" || state.proactiveSection === "skip") {
     params.set("terminal_action", state.proactiveSection);
+  } else if (state.proactiveSection === "drift") {
+    params.set("flow", "drift");
+  } else if (state.proactiveSection === "proactive") {
+    params.set("flow", "proactive");
   } else if (
     state.proactiveSection === "busy" ||
     state.proactiveSection === "cooldown" ||
@@ -811,14 +822,12 @@ function renderSessions() {
       item.classList.add("active");
     }
     item.innerHTML = `
-      <div class="session-item-head">
-        <div class="session-ident">
-          <span class="channel-pill" style="${channelStyle(session.key)}">${escapeHtml(channelOf(session.key))}</span>
-          <div class="session-key">${escapeHtml(session.key)}</div>
-        </div>
-        <div class="session-count">${session.message_count || 0}</div>
+      <div class="nav-item-row">
+        <span class="nav-item-name mono">${escapeHtml(session.key)}</span>
+        <span class="nav-item-count">${session.message_count || 0}</span>
       </div>
-      <div class="session-meta">
+      <div class="nav-item-desc">
+        <span class="channel-pill" style="${channelStyle(session.key)}">${escapeHtml(channelOf(session.key))}</span>
         <span>${escapeHtml(relativeTime(session.updated_at))}</span>
         <div class="session-actions">
           <button class="icon-btn" data-session-edit="${escapeHtml(session.key)}" type="button">✎</button>
@@ -880,25 +889,16 @@ function renderMemoryTypeList() {
     button.type = "button";
     button.className = "memory-quick-item";
     button.dataset.memoryType = item.memory_type;
-    button.setAttribute(
-      "onclick",
-      "window.dashboardSelectMemoryType(this.dataset.memoryType)"
-    );
     if (state.viewMode === "memory" && state.memoryType === item.memory_type) {
       button.classList.add("active");
     }
     button.innerHTML = `
-      <div class="memory-quick-head">
-        <div class="memory-quick-main">
-          <span class="type-pill" style="${memoryTypeStyle(item.memory_type)}">${escapeHtml(item.memory_type)}</span>
-          <div class="memory-quick-title">${escapeHtml(memoryTypeHint(item.memory_type))}</div>
-        </div>
-        <span class="status-pill">${escapeHtml(String(item.total))}</span>
+      <div class="nav-item-row">
+        <span class="nav-type-dot" style="background:${memoryTypeDotColor(item.memory_type)}"></span>
+        <span class="nav-item-name">${escapeHtml(item.memory_type)}</span>
+        <span class="nav-item-count">${escapeHtml(String(item.total))}</span>
       </div>
-      <div class="memory-quick-meta">
-        <span>按 type 过滤</span>
-        <span>${escapeHtml(String(item.total))} 条</span>
-      </div>
+      <div class="nav-item-desc">${escapeHtml(memoryTypeHint(item.memory_type))}</div>
     `;
     el.memoryTypeList.appendChild(button);
   });
@@ -913,13 +913,17 @@ function renderMemoryTypeList() {
 
 function renderProactiveSections() {
   const resultCounts = state.proactiveOverview?.result_counts || {};
+  const flowCounts = state.proactiveOverview?.flow_counts || {};
   const total = state.proactiveOverview?.counts?.tick_logs || 0;
+  const proactiveChildren = new Set(["reply", "skip", "busy", "cooldown", "presence"]);
   const sections = [
-    ["reply", "Reply", resultCounts.reply || 0, "真正发出消息的 tick"],
-    ["skip", "Skip", resultCounts.skip || 0, "进了 loop 但最终跳过"],
-    ["busy", "Busy", resultCounts.busy || 0, "被 pre-gate busy 拦下"],
-    ["cooldown", "Cooldown", resultCounts.cooldown || 0, "被发送冷却拦下"],
-    ["presence", "Presence", resultCounts.presence || 0, "被 presence / quota 拦下"],
+    ["drift", "Drift", flowCounts.drift || 0, "走了 drift 链路的 tick", 0],
+    ["proactive", "Proactive", flowCounts.proactive || 0, "普通 proactive 链路的 tick", 0],
+    ["reply", "Reply", resultCounts.reply || 0, "真正发出消息的 tick", 1],
+    ["skip", "Skip", resultCounts.skip || 0, "进了 loop 但最终跳过", 1],
+    ["busy", "Busy", resultCounts.busy || 0, "被 pre-gate busy 拦下", 1],
+    ["cooldown", "Cooldown", resultCounts.cooldown || 0, "被发送冷却拦下", 1],
+    ["presence", "Presence", resultCounts.presence || 0, "被 presence / quota 拦下", 1],
   ];
   el.proactiveCountBadge.textContent = String(total);
   el.proactiveOverviewCount.textContent = String(total);
@@ -928,26 +932,29 @@ function renderProactiveSections() {
     state.viewMode === "proactive" && state.proactiveSection === "all"
   );
   el.proactiveSectionList.innerHTML = "";
-  sections.forEach(([section, label, count, hint]) => {
+  sections.forEach(([section, label, count, hint, level]) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "proactive-quick-item";
     button.dataset.proactiveSection = section;
-    if (state.viewMode === "proactive" && state.proactiveSection === section) {
+    if (level > 0) {
+      button.classList.add("proactive-quick-item-child");
+    }
+    if (
+      state.viewMode === "proactive" &&
+      (
+        state.proactiveSection === section ||
+        (section === "proactive" && proactiveChildren.has(state.proactiveSection))
+      )
+    ) {
       button.classList.add("active");
     }
     button.innerHTML = `
-      <div class="memory-quick-head">
-        <div class="memory-quick-main">
-          <span class="status-pill">${escapeHtml(label)}</span>
-          <div class="memory-quick-title">${escapeHtml(hint)}</div>
-        </div>
-        <span class="status-pill">${escapeHtml(String(count))}</span>
+      <div class="nav-item-row">
+        <span class="nav-item-name">${escapeHtml(label)}</span>
+        <span class="nav-item-count">${escapeHtml(String(count))}</span>
       </div>
-      <div class="memory-quick-meta">
-        <span>${escapeHtml(proactiveSectionHint(section))}</span>
-        <span>${escapeHtml(String(count))} 条</span>
-      </div>
+      <div class="nav-item-desc">${escapeHtml(hint)}</div>
     `;
     el.proactiveSectionList.appendChild(button);
   });
@@ -963,17 +970,86 @@ function memoryTypeHint(memoryType) {
   return hints[memoryType] || memoryType;
 }
 
+function renderSortHeader(view, key, label) {
+  const current = currentSortState(view);
+  const active = current.sortBy === key;
+  const arrow = active ? (current.sortOrder === "asc" ? "▲" : "▼") : "·";
+  const activeClass = active ? " active" : "";
+  return `<button class="table-sort-btn${activeClass}" type="button" data-sort-view="${escapeHtml(view)}" data-sort-key="${escapeHtml(key)}"><span>${escapeHtml(label)}</span><span class="table-sort-arrow">${arrow}</span></button>`;
+}
+
+function currentSortState(view) {
+  if (view === "memory") {
+    return { sortBy: state.memorySortBy, sortOrder: state.memorySortOrder };
+  }
+  if (view === "proactive") {
+    return { sortBy: state.proactiveSortBy, sortOrder: state.proactiveSortOrder };
+  }
+  return { sortBy: state.messageSortBy, sortOrder: state.messageSortOrder };
+}
+
+function bindTableSortButtons() {
+  el.tableHead.querySelectorAll("[data-sort-key]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const view = button.getAttribute("data-sort-view") || "";
+      const key = button.getAttribute("data-sort-key") || "";
+      await applyTableSort(view, key);
+    });
+  });
+}
+
+async function applyTableSort(view, key) {
+  if (!key) {
+    return;
+  }
+  if (view === "memory") {
+    if (state.memorySortBy === key) {
+      state.memorySortOrder = state.memorySortOrder === "desc" ? "asc" : "desc";
+    } else {
+      state.memorySortBy = key;
+      state.memorySortOrder = "desc";
+    }
+    state.memoryPage = 1;
+    await loadMemories();
+    render();
+    return;
+  }
+  if (view === "proactive") {
+    if (state.proactiveSortBy === key) {
+      state.proactiveSortOrder = state.proactiveSortOrder === "desc" ? "asc" : "desc";
+    } else {
+      state.proactiveSortBy = key;
+      state.proactiveSortOrder = "desc";
+    }
+    state.proactivePage = 1;
+    await loadProactivePanel();
+    render();
+    return;
+  }
+  if (state.messageSortBy === key) {
+    state.messageSortOrder = state.messageSortOrder === "desc" ? "asc" : "desc";
+  } else {
+    state.messageSortBy = key;
+    state.messageSortOrder = "desc";
+  }
+  state.page = 1;
+  await loadMessages();
+  render();
+}
+
 function renderTableHead() {
   if (state.viewMode === "proactive") {
     el.tableHead.className = "table-head mode-proactive-ticks";
     el.tableHead.innerHTML = `
-      <div>Session</div>
-      <div>Started</div>
-      <div>Result</div>
+      <div>${renderSortHeader("proactive", "session_key", "Session")}</div>
+      <div>${renderSortHeader("proactive", "started_at", "Started")}</div>
+      <div>${renderSortHeader("proactive", "terminal_action", "Result")}</div>
       <div>Summary</div>
       <div></div>
     `;
     el.selectAllCheckbox = null;
+    bindTableSortButtons();
     return;
   }
 
@@ -981,10 +1057,12 @@ function renderTableHead() {
     el.tableHead.className = "table-head mode-memory";
     el.tableHead.innerHTML = `
       <label class="checkbox-cell"><input id="selectAllCheckbox" type="checkbox"></label>
-      <div>Type</div>
+      <div>${renderSortHeader("memory", "memory_type", "Type")}</div>
       <div>Summary</div>
+      <div>${renderSortHeader("memory", "reinforcement", "Uses")}</div>
+      <div>${renderSortHeader("memory", "emotional_weight", "Weight")}</div>
       <div>Source</div>
-      <div>Updated</div>
+      <div>${renderSortHeader("memory", "updated_at", "Updated")}</div>
       <div>Status</div>
       <div></div>
     `;
@@ -992,15 +1070,16 @@ function renderTableHead() {
     el.tableHead.className = "table-head mode-messages";
     el.tableHead.innerHTML = `
       <label class="checkbox-cell"><input id="selectAllCheckbox" type="checkbox"></label>
-      <div>Session Key</div>
-      <div>Seq</div>
+      <div>${renderSortHeader("messages", "session_key", "Session Key")}</div>
+      <div>${renderSortHeader("messages", "seq", "Seq")}</div>
       <div>Content</div>
-      <div>Timestamp</div>
-      <div>Role</div>
+      <div>${renderSortHeader("messages", "ts", "Timestamp")}</div>
+      <div>${renderSortHeader("messages", "role", "Role")}</div>
       <div></div>
     `;
   }
 
+  bindTableSortButtons();
   el.selectAllCheckbox = document.getElementById("selectAllCheckbox");
   el.selectAllCheckbox.addEventListener("change", (event) => {
     if (state.viewMode === "memory") {
@@ -1043,7 +1122,10 @@ function renderProactiveRows() {
     row.innerHTML = `
       <div class="mono cell-session">${escapeHtml(formatSessionKeyForTable(item.session_key))}</div>
       <div class="mono cell-time">${escapeHtml(shortTs(item.started_at))}</div>
-      <div><span class="status-pill" style="${proactiveResultStyle(item)}">${escapeHtml(item.terminal_action || item.gate_exit || "-")}</span></div>
+      <div class="proactive-status-cell">
+        <span class="type-pill" style="${proactiveFlowStyle(item)}">${escapeHtml(proactiveFlowLabel(item))}</span>
+        <span class="status-pill" style="${proactiveResultStyle(item)}">${escapeHtml(item.terminal_action || item.gate_exit || "-")}</span>
+      </div>
       <div class="content-preview">${escapeHtml(proactiveTickPreview(item))}</div>
       <div class="table-actions"></div>
     `;
@@ -1176,6 +1258,8 @@ function renderMemoryRows() {
       <label class="checkbox-cell"><input data-memory-select-id="${escapeHtml(item.id)}" type="checkbox" ${state.selectedMemoryIds.has(item.id) ? "checked" : ""}></label>
       <div class="cell-type"><span class="type-pill" style="${memoryTypeStyle(item.memory_type)}">${escapeHtml(item.memory_type)}</span></div>
       <div class="content-preview">${escapeHtml(item.summary || "")}</div>
+      <div class="mono cell-metric" title="reinforcement">${escapeHtml(String(item.reinforcement ?? 0))}</div>
+      <div class="mono cell-metric" title="emotional_weight">${escapeHtml(String(item.emotional_weight ?? 0))}</div>
       <div class="mono cell-source" title="${escapeHtml(item.source_ref || "")}">${escapeHtml(shortSource(item.source_ref || "-"))}</div>
       <div class="mono cell-time" title="${escapeHtml(item.updated_at)}">${escapeHtml(shortTs(item.updated_at))}</div>
       <div class="cell-status"><span class="status-pill" style="${memoryStatusStyle(item.status)}">${escapeHtml(item.status)}</span></div>
@@ -1520,11 +1604,12 @@ function renderProactiveDetail() {
   }
 
   const item = state.activeProactiveDetail;
+  const flowLabel = proactiveFlowLabel(item);
   el.detailPane.innerHTML = `
     <div class="detail-wrap">
       <div class="detail-toolbar">
         <div>
-          <div class="detail-title">Tick Log</div>
+          <div class="detail-title">${escapeHtml(flowLabel)} Tick Log</div>
           <div class="detail-subtext">${escapeHtml(item.tick_id || "")}</div>
         </div>
       </div>
@@ -1538,6 +1623,7 @@ function renderProactiveDetail() {
           ${detailRow("session_key", `<code>${escapeHtml(item.session_key || "")}</code>`)}
           ${detailRow("started_at", `<code>${escapeHtml(item.started_at || "")}</code>`)}
           ${detailRow("finished_at", `<code>${escapeHtml(item.finished_at || "")}</code>`)}
+          ${detailRow("flow", `<span class="type-pill" style="${proactiveFlowStyle(item)}">${escapeHtml(flowLabel)}</span>`)}
           ${detailRow("gate_exit", `<code>${escapeHtml(item.gate_exit || "-")}</code>`)}
           ${detailRow("terminal_action", `<code>${escapeHtml(item.terminal_action || "-")}</code>`)}
           ${detailRow("skip_reason", `<code>${escapeHtml(item.skip_reason || "-")}</code>`)}
@@ -1869,6 +1955,16 @@ function channelStyle(key) {
   return styles[channelOf(key)] || "background:#ece6db;color:var(--text-soft);";
 }
 
+function memoryTypeDotColor(memoryType) {
+  const colors = {
+    procedure: "#276489",
+    preference: "#bc5c38",
+    event: "#2f7d62",
+    profile: "#9b8a7a",
+  };
+  return colors[memoryType] || "#9b8a7a";
+}
+
 function memoryTypeStyle(memoryType) {
   const styles = {
     procedure: "background:var(--blue-soft);color:#276489;",
@@ -1897,6 +1993,28 @@ function proactiveResultStyle(item) {
     return "background:var(--red-soft);color:#b03a3a;";
   }
   return "background:#ece6db;color:var(--text-soft);";
+}
+
+function proactiveFlowLabel(item) {
+  return item?.drift_entered ? "Drift" : "Proactive";
+}
+
+function proactiveFlowStyle(item) {
+  if (item?.drift_entered) {
+    return "background:#dff3ea;color:#166534;";
+  }
+  return "background:#efe3d4;color:#8a5a2b;";
+}
+
+function proactivePhaseLabel(phase) {
+  return String(phase || "").startsWith("drift") ? "drift" : "proactive";
+}
+
+function proactivePhaseStyle(phase) {
+  if (String(phase || "").startsWith("drift")) {
+    return "background:#dff3ea;color:#166534;";
+  }
+  return "background:#efe3d4;color:#8a5a2b;";
 }
 
 function channelOf(key) {
@@ -1969,6 +2087,8 @@ function formatScopeChip() {
 function proactiveSectionLabel(section) {
   const labels = {
     all: "Tick Logs",
+    drift: "Drift",
+    proactive: "Proactive",
     reply: "Reply",
     skip: "Skip",
     busy: "Busy",
@@ -1980,6 +2100,8 @@ function proactiveSectionLabel(section) {
 
 function proactiveSectionHint(section) {
   const hints = {
+    drift: "只看 drift 链路",
+    proactive: "普通 proactive 链路",
     reply: "真正发出消息的 tick",
     skip: "进了 loop 但最终跳过",
     busy: "被 busy pre-gate 拦下",
@@ -2037,6 +2159,7 @@ function renderToolChain(steps) {
           <div class="tool-step-head">
             <div class="tool-step-title">
               <span class="status-pill">step ${escapeHtml(String(step.step_index))}</span>
+              <span class="type-pill" style="${proactivePhaseStyle(step.phase)}">${escapeHtml(proactivePhaseLabel(step.phase))}</span>
               <span class="type-pill">${escapeHtml(step.tool_name || "")}</span>
             </div>
             <div class="tool-step-meta">

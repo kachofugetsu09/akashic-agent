@@ -396,6 +396,11 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
     await tick.tick()
     assert tick.last_ctx.drift_entered is True
     gate.record_action.assert_called_once()
+    assert len(tick._state_store.tick_step_logs) == 2
+    assert tick._state_store.tick_step_logs[0]["phase"] == "drift"
+    assert tick._state_store.tick_step_logs[0]["tool_name"] == "read_file"
+    assert tick._state_store.tick_step_logs[1]["phase"] == "drift"
+    assert tick._state_store.tick_step_logs[1]["tool_name"] == "finish_drift"
 
 
 @pytest.mark.asyncio

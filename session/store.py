@@ -603,12 +603,14 @@ class SessionStore:
         role: str = "",
         page: int = 1,
         page_size: int = 25,
+        sort_by: str = "ts",
         sort_order: str = "desc",
     ) -> tuple[list[dict[str, Any]], int]:
         safe_page = max(1, int(page))
         safe_page_size = max(1, min(int(page_size), 200))
         offset = (safe_page - 1) * safe_page_size
         safe_sort = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+        safe_sort_by = sort_by if sort_by in {"ts", "seq", "role", "session_key"} else "ts"
 
         params: list[Any] = []
         where_parts: list[str] = []
@@ -629,7 +631,7 @@ class SessionStore:
             SELECT id, session_key, seq, role, content, tool_chain, extra, ts
             FROM messages
             {where_sql}
-            ORDER BY ts {safe_sort}, seq {safe_sort}
+            ORDER BY {safe_sort_by} {safe_sort}, seq {safe_sort}, id ASC
             LIMIT ? OFFSET ?
         """
         with self._lock:

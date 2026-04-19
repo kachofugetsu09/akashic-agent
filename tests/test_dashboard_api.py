@@ -255,6 +255,13 @@ def test_list_sessions_with_filters(tmp_path) -> None:
     assert payload["items"][0]["key"] == "telegram:100"
     assert payload["items"][0]["message_count"] == 2
 
+    messages_resp = client.get(
+        "/api/dashboard/messages",
+        params={"sort_by": "seq", "sort_order": "asc"},
+    )
+    assert messages_resp.status_code == 200
+    assert messages_resp.json()["items"][0]["seq"] == 0
+
 
 def test_update_and_delete_session(tmp_path) -> None:
     _seed_workspace(tmp_path)
@@ -435,6 +442,8 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
     assert overview["counts"]["seen_items"] == 3
     assert overview["counts"]["deliveries"] == 2
     assert overview["counts"]["tick_logs"] == 2
+    assert overview["flow_counts"]["drift"] == 1
+    assert overview["flow_counts"]["proactive"] == 1
     assert overview["last_tick_at"] == "2026-04-19T03:00:00+00:00"
     assert overview["last_send_at"] == "2026-04-19T02:06:00+00:00"
     assert overview["last_skip_reason"] == "busy"
@@ -465,6 +474,21 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
     assert tick_logs_resp.status_code == 200
     assert tick_logs_resp.json()["total"] == 1
     assert tick_logs_resp.json()["items"][0]["tick_id"] == "tick-2"
+
+    drift_logs_resp = client.get(
+        "/api/dashboard/proactive/tick_logs",
+        params={"flow": "drift"},
+    )
+    assert drift_logs_resp.status_code == 200
+    assert drift_logs_resp.json()["total"] == 1
+    assert drift_logs_resp.json()["items"][0]["tick_id"] == "tick-2"
+
+    proactive_sorted_resp = client.get(
+        "/api/dashboard/proactive/tick_logs",
+        params={"sort_by": "started_at", "sort_order": "asc"},
+    )
+    assert proactive_sorted_resp.status_code == 200
+    assert proactive_sorted_resp.json()["items"][0]["tick_id"] == "tick-1"
 
     tick_detail_resp = client.get("/api/dashboard/proactive/tick_logs/tick-1")
     assert tick_detail_resp.status_code == 200
