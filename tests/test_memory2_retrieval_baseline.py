@@ -263,6 +263,43 @@ def test_boundary_score_does_not_include_hotness_fields(tmp_path):
     assert abs(debug["final"] - debug["semantic"]) < 1e-6
 
 
+def test_emotional_weight_extends_hotness_half_life_in_ranking(tmp_path):
+    store = MemoryStore2(tmp_path / "m.db")
+    age = _days_ago(20)
+
+    low = store.upsert_item(
+        "event",
+        "普通事件",
+        embedding=[0.88, 0.475, 0.0],
+        extra={},
+        emotional_weight=0,
+    )
+    high = store.upsert_item(
+        "event",
+        "情绪事件",
+        embedding=[0.88, 0.475, 0.0],
+        extra={},
+        emotional_weight=8,
+    )
+    low_id = low.split(":", 1)[1]
+    high_id = high.split(":", 1)[1]
+    store._db.execute(
+        "UPDATE memory_items SET reinforcement=3, updated_at=? WHERE id IN (?, ?)",
+        (age, low_id, high_id),
+    )
+    store._db.commit()
+
+    results = store.vector_search(
+        query_vec=[1.0, 0.0, 0.0],
+        top_k=2,
+        score_threshold=0.0,
+        hotness_alpha=0.20,
+    )
+
+    assert results[0]["summary"] == "情绪事件"
+    assert results[0]["_score_debug"]["hotness"] > results[1]["_score_debug"]["hotness"]
+
+
 # ─── C. 热度公式规格预验证（与实现无关的数学验证）──────────────────────────────
 
 

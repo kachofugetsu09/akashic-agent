@@ -565,9 +565,9 @@ class AgentTick:
                 if entered_drift:
                     if hasattr(self._state_store, "mark_drift_run"):
                         self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
-                    logger.info("[proactive_v2] _run_loop: drift entered")
+                    logger.info("[proactive_v2] _run_loop: drift entered, message_sent=%s", ctx.drift_message_sent)
                     self.last_ctx = ctx
-                    return True
+                    return bool(ctx.drift_message_sent)
                 logger.info("[proactive_v2] _run_loop: drift not entered")
             logger.info("[proactive_v2] _run_loop: no alerts/content and context_fallback=False → skip LLM")
             ctx.terminal_action = "skip"
@@ -666,7 +666,7 @@ class AgentTick:
                     break
 
         self.last_ctx = ctx
-        return True
+        return ctx.terminal_action == "reply"
 
     async def _run_tool_step(
         self,

@@ -43,7 +43,8 @@ class Retriever:
         inject_max_event_profile: int = 2,
         inject_line_max: int = 180,
         procedure_guard_enabled: bool = True,
-        hotness_alpha: float = 0.0,
+        high_inject_delta: float = 0.15,
+        hotness_alpha: float = 0.20,
         hotness_half_life_days: float = 14.0,
     ) -> None:
         self._store = store
@@ -66,6 +67,7 @@ class Retriever:
         self._inject_max_event_profile = max(0, int(inject_max_event_profile))
         self._inject_line_max = max(60, int(inject_line_max))
         self._procedure_guard_enabled = bool(procedure_guard_enabled)
+        self._high_inject_delta = max(0.0, float(high_inject_delta))
         self._hotness_alpha = max(0.0, min(1.0, float(hotness_alpha)))
         self._hotness_half_life_days = max(1.0, float(hotness_half_life_days))
 
@@ -124,13 +126,6 @@ class Retriever:
         logger.debug(f"memory2 retrieve_with_vec: hits={len(items)}")
         return items
 
-    @staticmethod
-    def _shorten(text: str, max_len: int) -> str:
-        text = (text or "").strip()
-        if len(text) <= max_len:
-            return text
-        return text[: max_len - 1].rstrip() + "…"
-
     def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]:
         """单次流程：筛选条目 → 分段格式化 → 应用字符预算。"""
         selected, forced, norms, events = self._select_injection_sections(items)
@@ -160,13 +155,6 @@ class Retriever:
         if not sorted_items:
             return [], [], [], []
 
-        type_best: dict[str, float] = {}
-        for item in sorted_items:
-            mtype = str(item.get("memory_type", "") or "")
-            score = float(item.get("score", 0.0) or 0.0)
-            if mtype not in type_best or score > type_best[mtype]:
-                type_best[mtype] = score
-
         selected: list[dict] = []
         forced: list[tuple[str, str]] = []
         norms: list[tuple[str, str]] = []
@@ -179,7 +167,7 @@ class Retriever:
             score = float(item.get("score", 0.0) or 0.0)
             extra = item.get("extra_json") or {}
             item_id = str(item.get("id", "") or "")
-            summary = self._shorten(item.get("summary", ""), self._inject_line_max)
+            summary = str(item.get("summary", "") or "").strip()
             happened_at = item.get("happened_at") or ""
             if (
                 self._procedure_guard_enabled
@@ -195,10 +183,7 @@ class Retriever:
                     forced.append((item_id, f"- [{item_id}] {summary}（必须调用工具：{tool_req}）"))
                 continue
             type_th = self._score_thresholds.get(mtype, self._score_threshold)
-            floor = type_best.get(mtype, score) - self._relative_delta
             if score < type_th:
-                continue
-            if score < floor:
                 continue
             if mtype in ("procedure", "preference"):
                 if norm_count >= self._inject_max_procedure_preference:
@@ -213,6 +198,9 @@ class Retriever:
             selected.append(item)
             if not summary:
                 continue
+            confidence_label = ""
+            if score < type_th + self._high_inject_delta:
+                confidence_label = "有印象，不确定"
             if mtype == "procedure":
                 steps = extra.get("steps") or []
                 if steps:
@@ -220,16 +208,31 @@ class Retriever:
                     norms.append(
                         (
                             item_id,
-                            f"- [{item_id}] {summary}{_format_memory_meta(item, mtype)}（步骤：{step_text}）",
+                            f"- [{item_id}] {summary}{_format_memory_meta(item, mtype, confidence_label=confidence_label)}（步骤：{step_text}）",
                         )
                     )
                 else:
-                    norms.append((item_id, f"- [{item_id}] {summary}{_format_memory_meta(item, mtype)}"))
+                    norms.append(
+                        (
+                            item_id,
+                            f"- [{item_id}] {summary}{_format_memory_meta(item, mtype, confidence_label=confidence_label)}",
+                        )
+                    )
             elif mtype == "preference":
-                norms.append((item_id, f"- [{item_id}] {summary}{_format_memory_meta(item, mtype)}"))
+                norms.append(
+                    (
+                        item_id,
+                        f"- [{item_id}] {summary}{_format_memory_meta(item, mtype, confidence_label=confidence_label)}",
+                    )
+                )
             elif mtype in ("event", "profile"):
                 ts = f"[{happened_at}] " if happened_at else ""
-                events.append((item_id, f"- [{item_id}] {ts}{summary}{_format_memory_meta(item, mtype)}"))
+                events.append(
+                    (
+                        item_id,
+                        f"- [{item_id}] {ts}{summary}{_format_memory_meta(item, mtype, confidence_label=confidence_label)}",
+                    )
+                )
 
         return selected, forced, norms, events
 
@@ -316,8 +319,15 @@ def _format_source_tag(source_ref: str | None) -> str:
     return f" (src: {tag})"
 
 
-def _format_memory_meta(item: dict, memory_type: str) -> str:
+def _format_memory_meta(
+    item: dict,
+    memory_type: str,
+    *,
+    confidence_label: str = "",
+) -> str:
     parts: list[str] = []
+    if confidence_label:
+        parts.append(confidence_label)
     happened_at_raw = item.get("happened_at")
     happened_at = _normalize_happened_at(happened_at_raw)
     if happened_at:

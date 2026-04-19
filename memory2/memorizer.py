@@ -12,6 +12,13 @@ from memory2.embedder import Embedder
 logger = logging.getLogger(__name__)
 
 
+def _coerce_emotional_weight(value: object) -> int:
+    try:
+        return max(0, min(10, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
 class Memorizer:
     def __init__(self, store: MemoryStore2, embedder: Embedder) -> None:
         self._store = store
@@ -24,6 +31,7 @@ class Memorizer:
         extra: dict,
         source_ref: str,
         happened_at: str | None = None,
+        emotional_weight: int = 0,
     ) -> str:
         """embed → content_hash → upsert，返回 'new:id' 或 'reinforced:id'"""
         embedding = await self._embedder.embed(summary)
@@ -34,6 +42,7 @@ class Memorizer:
             source_ref=source_ref,
             extra=extra,
             happened_at=happened_at,
+            emotional_weight=emotional_weight,
         )
 
     async def save_item_with_supersede(
@@ -43,6 +52,7 @@ class Memorizer:
         extra: dict,
         source_ref: str,
         happened_at: str | None = None,
+        emotional_weight: int = 0,
         merge_threshold: float = 0.70,
         supersede_threshold: float = 0.90,
     ) -> str:
@@ -106,6 +116,16 @@ class Memorizer:
                     item for item in similar
                     if isinstance(extra_json := item.get("extra_json"), dict)
                     and extra_json.get("category") == category
+                    and isinstance(score := item.get("score"), int | float)
+                    and float(score)
+                    >= (
+                        0.92
+                        if _coerce_emotional_weight(
+                            extra_json.get("_emotional_weight", 0)
+                        )
+                        >= 7
+                        else supersede_threshold
+                    )
                 ]
                 if same_cat:
                     supersede_ids = [str(item["id"]) for item in same_cat]
@@ -122,6 +142,7 @@ class Memorizer:
             source_ref=source_ref,
             extra=extra,
             happened_at=happened_at,
+            emotional_weight=emotional_weight,
         )
 
     async def save_from_consolidation(
@@ -131,6 +152,7 @@ class Memorizer:
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
+        emotional_weight: int = 0,
     ) -> None:
         """将 consolidation 的产出写入 SQLite"""
         # 1. history_entry → event
@@ -145,7 +167,10 @@ class Memorizer:
                     text = ""
                 if text:
                     embedding = await self._embedder.embed(text)
-                    if self._should_semantic_dedup_event(embedding):
+                    if self._should_semantic_dedup_event(
+                        embedding,
+                        emotional_weight=emotional_weight,
+                    ):
                         text = ""
                 if text:
                     result = self._store.upsert_consolidation_event(
@@ -156,6 +181,7 @@ class Memorizer:
                             "scope_channel": scope_channel,
                             "scope_chat_id": scope_chat_id,
                         },
+                        emotional_weight=emotional_weight,
                     )
                     if result.startswith("skipped:"):
                         logger.info(
@@ -174,7 +200,12 @@ class Memorizer:
                 len(behavior_updates),
             )
 
-    def _should_semantic_dedup_event(self, embedding: list[float] | None) -> bool:
+    def _should_semantic_dedup_event(
+        self,
+        embedding: list[float] | None,
+        *,
+        emotional_weight: int = 0,
+    ) -> bool:
         if embedding is None:
             return False
         similar_ids = self._store.find_similar_recent_events(
@@ -184,7 +215,10 @@ class Memorizer:
         )
         if not similar_ids:
             return False
-        self._store.reinforce_items_batch(similar_ids[:1])
+        self._store.reinforce_items_batch(
+            similar_ids[:1],
+            emotional_weight=emotional_weight,
+        )
         logger.info(
             "memory2 event semantic-dedup: similar=%s",
             similar_ids[:1],
@@ -194,6 +228,9 @@ class Memorizer:
     def supersede_batch(self, ids: list[str]) -> None:
         self._store.mark_superseded_batch(ids)
         logger.info(f"memory2 superseded {len(ids)} items: {ids}")
+
+    def reinforce_items_batch(self, ids: list[str]) -> None:
+        self._store.reinforce_items_batch(ids)
 
     @staticmethod
     def _merge_summary_text(old_summary: str, new_summary: str) -> str:

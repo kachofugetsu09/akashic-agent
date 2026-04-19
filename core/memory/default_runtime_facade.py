@@ -98,6 +98,23 @@ class DefaultMemoryRuntimeFacade:
     def bind_consolidation_runner(self, runner: ConsolidationRunner) -> None:
         self._consolidation_runner = runner
 
+    async def _reinforce_context_result(
+        self,
+        result: ContextRetrievalResult,
+    ) -> ContextRetrievalResult:
+        item_ids = [
+            str(item_id)
+            for item_id in result.injected_item_ids
+            if str(item_id or "").strip()
+        ]
+        if not item_ids:
+            return result
+        try:
+            await asyncio.to_thread(self._port.reinforce_items_batch, item_ids)
+        except Exception as e:
+            logger.warning("[memory_runtime_facade] reinforce_items_batch failed: %s", e)
+        return result
+
     async def ingest_post_turn(self, event: PostTurnEvent) -> MemoryIngestResult:
         # 1. 先保证 post-turn 入口和旧 pipeline 一样只依赖 engine。
         if self._engine is None:
@@ -134,18 +151,21 @@ class DefaultMemoryRuntimeFacade:
     ) -> ContextRetrievalResult:
         # 1. 先允许外部用 callback 强行覆盖 retrieval 行为。
         if self._context_retriever is not None:
-            return await self._context_retriever(request)
+            result = await self._context_retriever(request)
+            return await self._reinforce_context_result(result)
 
         # 2. 默认 retrieval semantics owner 已挂到 facade 后，优先走它。
         if self._retrieval_semantics is not None:
-            return await self._retrieval_semantics(request)
+            result = await self._retrieval_semantics(request)
+            return await self._reinforce_context_result(result)
 
         # 3. 没切主链前，提供一个极薄 fallback，保证 facade 可单独 contract test。
         if self._engine is None:
-            return ContextRetrievalResult(
+            result = ContextRetrievalResult(
                 trace={"source": "default_runtime_facade", "mode": "disabled"},
                 scope_mode="disabled",
             )
+            return await self._reinforce_context_result(result)
 
         # 4. fallback 只做单次 engine.retrieve，不假装拥有旧 pipeline 全部语义。
         engine_result = await self._engine.retrieve(
@@ -164,7 +184,7 @@ class DefaultMemoryRuntimeFacade:
             )
         )
         injected_ids = [hit.id for hit in engine_result.hits if hit.injected]
-        return ContextRetrievalResult(
+        result = ContextRetrievalResult(
             episodic_hits=[_memory_hit_to_item(hit) for hit in engine_result.hits],
             injected_item_ids=injected_ids,
             text_block=engine_result.text_block,
@@ -176,6 +196,7 @@ class DefaultMemoryRuntimeFacade:
             scope_mode="engine_fallback",
             raw=dict(engine_result.raw),
         )
+        return await self._reinforce_context_result(result)
 
     async def run_consolidation(
         self,

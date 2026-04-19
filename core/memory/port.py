@@ -122,6 +122,7 @@ class MemoryPort(Protocol):
         extra: dict,
         source_ref: str,
         happened_at: str | None = None,
+        emotional_weight: int = 0,
     ) -> str: ...
 
     async def save_item_with_supersede(
@@ -131,6 +132,7 @@ class MemoryPort(Protocol):
         extra: dict,
         source_ref: str,
         happened_at: str | None = None,
+        emotional_weight: int = 0,
     ) -> str: ...
 
     async def save_from_consolidation(
@@ -140,7 +142,10 @@ class MemoryPort(Protocol):
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
+        emotional_weight: int = 0,
     ) -> None: ...
+
+    def reinforce_items_batch(self, ids: list[str]) -> None: ...
 
     def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]: ...
 
@@ -370,6 +375,7 @@ class DefaultMemoryPort:
         extra: dict,
         source_ref: str,
         happened_at: str | None = None,
+        emotional_weight: int = 0,
     ) -> str:
         """Embed and upsert a single memory item; returns '' if no memorizer."""
         if not self._memorizer:
@@ -381,6 +387,7 @@ class DefaultMemoryPort:
                 extra=extra,
                 source_ref=source_ref,
                 happened_at=happened_at,
+                emotional_weight=emotional_weight,
             )
         except Exception as e:
             logger.warning("[memory_port] save_item failed: %s", e)
@@ -393,6 +400,7 @@ class DefaultMemoryPort:
         extra: dict,
         source_ref: str,
         happened_at: str | None = None,
+        emotional_weight: int = 0,
     ) -> str:
         """Embed, supersede conflicting old items, then upsert; returns '' if no memorizer."""
         if not self._memorizer:
@@ -404,6 +412,7 @@ class DefaultMemoryPort:
                 extra=extra,
                 source_ref=source_ref,
                 happened_at=happened_at,
+                emotional_weight=emotional_weight,
             )
         except Exception as e:
             logger.warning("[memory_port] save_item_with_supersede failed: %s", e)
@@ -416,6 +425,7 @@ class DefaultMemoryPort:
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
+        emotional_weight: int = 0,
     ) -> None:
         """Write consolidation output to SQLite; no-op if no memorizer."""
         if not self._memorizer:
@@ -427,9 +437,18 @@ class DefaultMemoryPort:
                 source_ref=source_ref,
                 scope_channel=scope_channel,
                 scope_chat_id=scope_chat_id,
+                emotional_weight=emotional_weight,
             )
         except Exception as e:
             logger.warning("[memory_port] save_from_consolidation failed: %s", e)
+
+    def reinforce_items_batch(self, ids: list[str]) -> None:
+        if not self._memorizer:
+            return
+        try:
+            self._memorizer.reinforce_items_batch(ids)
+        except Exception as e:
+            logger.warning("[memory_port] reinforce_items_batch failed: %s", e)
 
     def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]:
         """对 trigger_tags 做纯关键字匹配，无需向量检索。"""

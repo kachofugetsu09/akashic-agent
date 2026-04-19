@@ -79,6 +79,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     memorizer = SimpleNamespace(
         save_item=AsyncMock(return_value="id"),
         save_from_consolidation=AsyncMock(),
+        reinforce_items_batch=MagicMock(),
     )
     retriever = SimpleNamespace(
         retrieve=AsyncMock(return_value=[{"id": "1"}]),
@@ -96,6 +97,8 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     assert port.build_injection_block([]) == ("block", ["1"])
     assert await port.save_item("s", "procedure", {}, "src") == "id"
     await port.save_from_consolidation("h", [], "src", "c", "id")
+    port.reinforce_items_batch(["1"])
+    memorizer.reinforce_items_batch.assert_called_once_with(["1"])
     assert port.keyword_match_procedures(["shell"]) == [{"id": "p1"}]
 
     broken = DefaultMemoryPort(
@@ -120,6 +123,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
         memorizer=SimpleNamespace(
             save_item=AsyncMock(side_effect=RuntimeError("x")),
             save_from_consolidation=AsyncMock(side_effect=RuntimeError("x")),
+            reinforce_items_batch=MagicMock(side_effect=RuntimeError("x")),
         ),
         retriever=SimpleNamespace(
             retrieve=AsyncMock(side_effect=RuntimeError("x")),
@@ -136,6 +140,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     assert broken.build_injection_block([]) == ("", [])
     assert await broken.save_item("s", "procedure", {}, "src") == ""
     await broken.save_from_consolidation("h", [], "src", "c", "id")
+    broken.reinforce_items_batch(["1"])
     assert broken.keyword_match_procedures(["shell"]) == []
 
 

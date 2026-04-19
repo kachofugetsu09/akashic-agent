@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS memory_items (
     content_hash  TEXT NOT NULL,
     embedding     TEXT,
     reinforcement INTEGER NOT NULL DEFAULT 1,
+    emotional_weight INTEGER NOT NULL DEFAULT 0,
     extra_json    TEXT,
     source_ref    TEXT,
     happened_at   TEXT,
@@ -87,6 +88,13 @@ def _content_hash(summary: str, memory_type: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def _coerce_emotional_weight(value: object) -> int:
+    try:
+        return max(0, min(10, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     va = np.array(a, dtype=np.float32)
     vb = np.array(b, dtype=np.float32)
@@ -100,6 +108,7 @@ def _hotness_score(
     updated_at: datetime,
     now: datetime | None = None,
     half_life_days: float = 14.0,
+    emotional_weight: int = 0,
 ) -> float:
     """计算热度分：频度 * 时间衰减，结果在 (0, 1) 区间。"""
     if now is None:
@@ -108,9 +117,13 @@ def _hotness_score(
         updated_at = updated_at.replace(tzinfo=timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
+    effective_half_life = max(
+        half_life_days * (1.0 + 0.5 * _coerce_emotional_weight(emotional_weight) / 10.0),
+        0.1,
+    )
     freq    = 1.0 / (1.0 + math.exp(-math.log1p(max(0, reinforcement))))
     age_d   = max((now - updated_at).total_seconds() / 86400.0, 0.0)
-    recency = math.exp(-math.log(2) / max(half_life_days, 0.1) * age_d)
+    recency = math.exp(-math.log(2) / effective_half_life * age_d)
     return freq * recency
 
 
@@ -149,6 +162,11 @@ class MemoryStore2:
         if "status" not in cols:
             self._db.execute(
                 "ALTER TABLE memory_items ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+            )
+            self._db.commit()
+        if "emotional_weight" not in cols:
+            self._db.execute(
+                "ALTER TABLE memory_items ADD COLUMN emotional_weight INTEGER NOT NULL DEFAULT 0"
             )
             self._db.commit()
         self._db.execute(
@@ -263,9 +281,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         source_ref: str | None = None,
         extra: dict[str, object] | None = None,
         happened_at: str | None = None,
+        emotional_weight: int = 0,
     ) -> str:
         """写入或强化一条记忆。返回 'new:id' 或 'reinforced:id'"""
         chash = _content_hash(summary, memory_type)
+        emotional_weight = _coerce_emotional_weight(emotional_weight)
         existing = self._db.execute(
             "SELECT id, status FROM memory_items WHERE content_hash=? AND memory_type=?",
             (chash, memory_type),
@@ -274,13 +294,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             row_id, status = existing
             if status == "superseded":
                 self._db.execute(
-                    "UPDATE memory_items SET status='active', reinforcement=reinforcement+1, updated_at=? WHERE id=?",
-                    (_now_iso(), row_id),
+                    "UPDATE memory_items SET status='active', reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?) WHERE id=?",
+                    (_now_iso(), emotional_weight, row_id),
                 )
             else:
                 self._db.execute(
-                    "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=? WHERE id=?",
-                    (_now_iso(), row_id),
+                    "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?) WHERE id=?",
+                    (_now_iso(), emotional_weight, row_id),
                 )
             self._db.commit()
             return f"reinforced:{row_id}"
@@ -288,15 +308,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         item_id = hashlib.md5(f"{chash}{time.time()}".encode()).hexdigest()[:12]
         cur = self._db.execute(
             """INSERT INTO memory_items
-               (id, memory_type, summary, content_hash, embedding, extra_json,
-                source_ref, happened_at, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               (id, memory_type, summary, content_hash, embedding, emotional_weight,
+                extra_json, source_ref, happened_at, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 item_id,
                 memory_type,
                 summary,
                 chash,
                 json.dumps(embedding) if embedding is not None else None,
+                emotional_weight,
                 json.dumps(extra) if extra else None,
                 source_ref,
                 happened_at,
@@ -321,12 +342,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         embedding: list[float] | None,
         extra: dict[str, object] | None = None,
         happened_at: str | None = None,
+        emotional_weight: int = 0,
     ) -> str:
         """原子写入 consolidation event：同一 source_ref 最多写一次。"""
         src = (source_ref or "").strip()
         text = (summary or "").strip()
         if not src or not text:
             return "skipped:empty"
+        emotional_weight = _coerce_emotional_weight(emotional_weight)
 
         self._db.execute("BEGIN IMMEDIATE")
         new_item_rowid: int | None = None
@@ -351,13 +374,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 row_id, status = existing
                 if status == "superseded":
                     self._db.execute(
-                        "UPDATE memory_items SET status='active', reinforcement=reinforcement+1, updated_at=? WHERE id=?",
-                        (_now_iso(), row_id),
+                        "UPDATE memory_items SET status='active', reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?) WHERE id=?",
+                        (_now_iso(), emotional_weight, row_id),
                     )
                 else:
                     self._db.execute(
-                        "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=? WHERE id=?",
-                        (_now_iso(), row_id),
+                        "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?) WHERE id=?",
+                        (_now_iso(), emotional_weight, row_id),
                     )
                 item_id = row_id
                 result = f"reinforced:{row_id}"
@@ -365,15 +388,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 item_id = hashlib.md5(f"{chash}{time.time()}".encode()).hexdigest()[:12]
                 cur = self._db.execute(
                     """INSERT INTO memory_items
-                       (id, memory_type, summary, content_hash, embedding, extra_json,
-                        source_ref, happened_at, created_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                       (id, memory_type, summary, content_hash, embedding, emotional_weight,
+                        extra_json, source_ref, happened_at, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         item_id,
                         "event",
                         text,
                         chash,
                         json.dumps(embedding) if embedding is not None else None,
+                        emotional_weight,
                         json.dumps(extra) if extra else None,
                         src,
                         happened_at,
@@ -434,7 +458,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         placeholders = ",".join("?" for _ in ids)
         rows = self._db.execute(
             "SELECT id, memory_type, summary, extra_json, source_ref, happened_at, "
-            "status, created_at, updated_at "
+            "status, created_at, updated_at, emotional_weight "
             f"FROM memory_items WHERE id IN ({placeholders})",
             ids,
         ).fetchall()
@@ -449,6 +473,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             status,
             created_at,
             updated_at,
+            emotional_weight,
         ) in rows:
             by_id[str(row_id)] = {
                 "id": row_id,
@@ -460,6 +485,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 "status": status,
                 "created_at": created_at,
                 "updated_at": updated_at,
+                "emotional_weight": emotional_weight,
             }
         return [by_id[item_id] for item_id in ids if item_id in by_id]
 
@@ -541,13 +567,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             )
         return result
 
-    def reinforce_items_batch(self, ids: list[str]) -> None:
+    def reinforce_items_batch(self, ids: list[str], emotional_weight: int = 0) -> None:
         if not ids:
             return
         now = _now_iso()
+        emotional_weight = _coerce_emotional_weight(emotional_weight)
         self._db.executemany(
-            "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=? WHERE id=?",
-            [(now, item_id) for item_id in ids],
+            "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?) WHERE id=?",
+            [(now, emotional_weight, item_id) for item_id in ids],
         )
         self._db.commit()
 
@@ -557,20 +584,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
     def get_all_with_embedding(self, include_superseded: bool = False) -> list[tuple]:
         """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at, source_ref)]
-        extra_json_dict 中注入 _reinforcement 和 _updated_at（_ 前缀，不污染用户字段）。
+        extra_json_dict 中注入 _reinforcement / _updated_at / _emotional_weight
+        （_ 前缀，不污染用户字段）。
         """
         where = "" if include_superseded else "AND status='active'"
         rows = self._db.execute(
             "SELECT id, memory_type, summary, embedding, extra_json, happened_at, "
-            "reinforcement, updated_at, source_ref "
+            "reinforcement, updated_at, source_ref, emotional_weight "
             f"FROM memory_items WHERE embedding IS NOT NULL {where}"
         ).fetchall()
         result = []
-        for row_id, mtype, summary, emb_json, extra_json, happened_at, reinforcement, updated_at, source_ref in rows:
+        for row_id, mtype, summary, emb_json, extra_json, happened_at, reinforcement, updated_at, source_ref, emotional_weight in rows:
             emb = json.loads(emb_json) if emb_json else None
             extra = json.loads(extra_json) if extra_json else {}
             extra["_reinforcement"] = reinforcement
             extra["_updated_at"] = updated_at
+            extra["_emotional_weight"] = emotional_weight
             result.append((row_id, mtype, summary, emb, extra, happened_at, source_ref))
         return result
 
@@ -681,7 +710,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
         sql = f"""
             SELECT m.id, m.memory_type, m.summary, m.extra_json, m.happened_at,
-                   m.reinforcement, m.updated_at, m.source_ref,
+                   m.reinforcement, m.updated_at, m.source_ref, m.emotional_weight,
                    v.distance
             FROM (
                 SELECT rowid, distance
@@ -697,7 +726,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
         now = datetime.now(timezone.utc)
         scored = []
-        for row_id, mtype, summary, extra_json, happened_at, reinforcement, updated_at_str, source_ref, distance in rows:
+        for row_id, mtype, summary, extra_json, happened_at, reinforcement, updated_at_str, source_ref, emotional_weight, distance in rows:
             # L2 distance on unit sphere → cosine similarity
             similarity = _l2dist_to_cosine(distance)
             if similarity < score_threshold:
@@ -706,12 +735,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             extra = json.loads(extra_json) if extra_json else {}
             extra["_reinforcement"] = reinforcement
             extra["_updated_at"] = updated_at_str
+            extra["_emotional_weight"] = emotional_weight
 
             hotness = 0.0
             if hotness_alpha > 0 and updated_at_str:
                 try:
                     updated_at = datetime.fromisoformat(updated_at_str)
-                    hotness = _hotness_score(reinforcement, updated_at, now, hotness_half_life_days)
+                    hotness = _hotness_score(
+                        reinforcement,
+                        updated_at,
+                        now,
+                        hotness_half_life_days,
+                        emotional_weight=emotional_weight,
+                    )
                 except (ValueError, TypeError):
                     pass
 
@@ -787,11 +823,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             if hotness_alpha > 0:
                 reinforcement = extra.get("_reinforcement", 1)
                 updated_at_str = extra.get("_updated_at")
+                emotional_weight = extra.get("_emotional_weight", 0)
                 if updated_at_str:
                     try:
                         updated_at = datetime.fromisoformat(updated_at_str)
                         hotness = _hotness_score(
-                            reinforcement, updated_at, now, hotness_half_life_days
+                            reinforcement,
+                            updated_at,
+                            now,
+                            hotness_half_life_days,
+                            emotional_weight=emotional_weight,
                         )
                     except (ValueError, TypeError):
                         pass
@@ -886,12 +927,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
     def list_by_type(self, memory_type: str) -> list[dict[str, object]]:
         rows = self._db.execute(
-            "SELECT id, memory_type, summary, extra_json, happened_at, reinforcement "
+            "SELECT id, memory_type, summary, extra_json, happened_at, reinforcement, emotional_weight "
             "FROM memory_items WHERE memory_type=?",
             (memory_type,),
         ).fetchall()
         result = []
-        for row_id, mtype, summary, extra_json, happened_at, reinforcement in rows:
+        for row_id, mtype, summary, extra_json, happened_at, reinforcement, emotional_weight in rows:
             result.append(
                 {
                     "id": row_id,
@@ -900,6 +941,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                     "extra_json": json.loads(extra_json) if extra_json else {},
                     "happened_at": happened_at,
                     "reinforcement": reinforcement,
+                    "emotional_weight": emotional_weight,
                 }
             )
         return result

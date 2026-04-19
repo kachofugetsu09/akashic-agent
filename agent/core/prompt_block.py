@@ -126,6 +126,25 @@ class SelfModelPromptBlock:
         return None
 
 
+class RecentContextPromptBlock:
+    priority = 45
+    label = "recent_context"
+    is_static = False
+
+    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+        content = ctx.memory.read_recent_context()
+        if not content:
+            return None
+        # Strip ## Recent Turns section — it mirrors the sliding window and causes overlap.
+        marker = "\n## Recent Turns"
+        cut = content.find(marker)
+        trimmed = content[:cut].strip() if cut != -1 else content.strip()
+        return trimmed if trimmed else None
+
+    def cache_signature(self, ctx: TurnContext) -> str | None:
+        return None
+
+
 class SessionContextPromptBlock:
     priority = 50
     label = "session_context"

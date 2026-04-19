@@ -199,6 +199,72 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
 
 
 @pytest.mark.asyncio
+async def test_memorizer_profile_supersede_keeps_high_emotional_weight_item_under_092():
+    class _Embedder:
+        async def embed(self, text: str) -> list[float]:
+            mapping = {
+                "用户仍在等待 offer": [1.0, 0.0],
+                "用户开始等待新的 offer": [0.91, 0.4146],
+            }
+            return mapping[text]
+
+    store = MemoryStore2(":memory:")
+    memorizer = Memorizer(store, _Embedder())
+
+    await memorizer.save_item(
+        summary="用户仍在等待 offer",
+        memory_type="profile",
+        extra={"category": "status"},
+        source_ref="old",
+        emotional_weight=8,
+    )
+    await memorizer.save_item_with_supersede(
+        summary="用户开始等待新的 offer",
+        memory_type="profile",
+        extra={"category": "status"},
+        source_ref="new",
+    )
+
+    rows = store._db.execute(
+        "SELECT source_ref, status FROM memory_items WHERE memory_type='profile' ORDER BY source_ref"
+    ).fetchall()
+    assert rows == [("new", "active"), ("old", "active")]
+
+
+@pytest.mark.asyncio
+async def test_memorizer_profile_supersede_retires_low_emotional_weight_item_at_091():
+    class _Embedder:
+        async def embed(self, text: str) -> list[float]:
+            mapping = {
+                "用户仍在等待 offer": [1.0, 0.0],
+                "用户开始等待新的 offer": [0.91, 0.4146],
+            }
+            return mapping[text]
+
+    store = MemoryStore2(":memory:")
+    memorizer = Memorizer(store, _Embedder())
+
+    await memorizer.save_item(
+        summary="用户仍在等待 offer",
+        memory_type="profile",
+        extra={"category": "status"},
+        source_ref="old",
+        emotional_weight=0,
+    )
+    await memorizer.save_item_with_supersede(
+        summary="用户开始等待新的 offer",
+        memory_type="profile",
+        extra={"category": "status"},
+        source_ref="new",
+    )
+
+    rows = store._db.execute(
+        "SELECT source_ref, status FROM memory_items WHERE memory_type='profile' ORDER BY source_ref"
+    ).fetchall()
+    assert rows == [("new", "active"), ("old", "superseded")]
+
+
+@pytest.mark.asyncio
 async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
     memorizer = MagicMock()
     memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
@@ -370,6 +436,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         def read_self(self) -> str:
             return "self note"
 
+        def read_recent_context(self) -> str:
+            return ""
+
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(
         "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
@@ -490,6 +559,9 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
             return ""
 
         def read_self(self) -> str:
+            return ""
+
+        def read_recent_context(self) -> str:
             return ""
 
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)

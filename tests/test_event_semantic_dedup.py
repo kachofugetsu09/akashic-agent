@@ -109,6 +109,40 @@ def test_reinforcement_incremented_on_dedup(tmp_path):
     assert items[0]["reinforcement"] == 2
 
 
+def test_emotional_weight_merged_on_event_dedup(tmp_path):
+    store = MemoryStore2(tmp_path / "memory2.db")
+    embedder = _FakeEmbedder(
+        {
+            "用户把仓库脱敏后公开发布": [1.0, 0.0],
+            "用户公开了脱敏后的仓库": [0.99, 0.01],
+        }
+    )
+    memorizer = Memorizer(store, embedder)
+
+    async def _run() -> None:
+        await memorizer.save_from_consolidation(
+            history_entry="用户把仓库脱敏后公开发布",
+            behavior_updates=[],
+            source_ref="session@1-10#0",
+            scope_channel="telegram",
+            scope_chat_id="1",
+            emotional_weight=0,
+        )
+        await memorizer.save_from_consolidation(
+            history_entry="用户公开了脱敏后的仓库",
+            behavior_updates=[],
+            source_ref="session@1-10#1",
+            scope_channel="telegram",
+            scope_chat_id="1",
+            emotional_weight=8,
+        )
+
+    asyncio.run(_run())
+
+    items = store.list_by_type("event")
+    assert items[0]["emotional_weight"] == 8
+
+
 def test_dedup_window_is_7_days(tmp_path):
     store = MemoryStore2(tmp_path / "memory2.db")
     embedder = _FakeEmbedder(

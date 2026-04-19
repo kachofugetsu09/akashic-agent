@@ -83,6 +83,7 @@ async def test_default_runtime_facade_ingest_post_turn_delegates_to_engine():
 
 @pytest.mark.asyncio
 async def test_default_runtime_facade_retrieve_context_uses_callback_result():
+    port = MagicMock()
     callback = AsyncMock(
         return_value=ContextRetrievalResult(
             normative_hits=[{"id": "p1"}],
@@ -97,7 +98,7 @@ async def test_default_runtime_facade_retrieve_context_uses_callback_result():
         )
     )
     facade = DefaultMemoryRuntimeFacade(
-        port=MagicMock(),
+        port=port,
         engine=None,
         profile_maint=MagicMock(),
         context_retriever=callback,
@@ -122,6 +123,7 @@ async def test_default_runtime_facade_retrieve_context_uses_callback_result():
     assert result.hyde_hypothesis == "hyde"
     assert result.scope_mode == "global"
     assert result.sufficiency_trace["retry"] is True
+    port.reinforce_items_batch.assert_called_once_with(["p1", "e1"])
 
 
 def test_default_runtime_facade_satisfies_runtime_protocol():
@@ -136,6 +138,7 @@ def test_default_runtime_facade_satisfies_runtime_protocol():
 
 @pytest.mark.asyncio
 async def test_default_runtime_facade_retrieve_context_fallback_keeps_hits_and_injected():
+    port = MagicMock()
     engine = SimpleNamespace(
         retrieve=AsyncMock(
             return_value=MemoryEngineRetrieveResult(
@@ -158,7 +161,7 @@ async def test_default_runtime_facade_retrieve_context_fallback_keeps_hits_and_i
         )
     )
     facade = DefaultMemoryRuntimeFacade(
-        port=MagicMock(),
+        port=port,
         engine=engine,
         profile_maint=MagicMock(),
     )
@@ -179,6 +182,7 @@ async def test_default_runtime_facade_retrieve_context_fallback_keeps_hits_and_i
     assert result.episodic_hits[0]["id"] == "e1"
     assert result.scope_mode == "engine_fallback"
     assert result.trace["engine"] == "default"
+    port.reinforce_items_batch.assert_called_once_with(["e1"])
 
 
 @pytest.mark.asyncio

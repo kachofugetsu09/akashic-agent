@@ -189,9 +189,11 @@ class DefaultContextStore(ContextStore):
 
         # 2. 再把 user/assistant 两条消息持久化到 session。
         session = self._session.session_manager.get_or_create(session_key)
-        if self._session.presence:
-            self._session.presence.record_user_message(session.key)
-        session.add_message("user", msg.content, media=msg.media if msg.media else None)
+        omit_user_turn = bool((msg.metadata or {}).get("omit_user_turn"))
+        if not omit_user_turn:
+            if self._session.presence:
+                self._session.presence.record_user_message(session.key)
+            session.add_message("user", msg.content, media=msg.media if msg.media else None)
         _assistant_kwargs: dict = {
             "tools_used": tools_used if tools_used else None,
             "tool_chain": tool_chain if tool_chain else None,
@@ -204,7 +206,8 @@ class DefaultContextStore(ContextStore):
             tools_used=tools_used,
             tool_chain=tool_chain,
         )
-        await self._session.session_manager.append_messages(session, session.messages[-2:])
+        persist_count = 1 if omit_user_turn else 2
+        await self._session.session_manager.append_messages(session, session.messages[-persist_count:])
         post_reply_budget = _build_post_reply_context_budget(
             context=self._context,
             history=session.get_history(max_messages=self._history_window),

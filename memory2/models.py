@@ -14,3 +14,4 @@ class MemoryItem:
     happened_at: str | None
     created_at: str
     updated_at: str
+    emotional_weight: int = 0

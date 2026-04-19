@@ -140,6 +140,42 @@ def _coerce_history_text(value: object) -> str:
     return ""
 
 
+def _coerce_emotional_weight(value: object) -> int:
+    try:
+        return max(0, min(10, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_history_entries(
+    raw_entries: object,
+    fallback_entry: object = None,
+) -> list[tuple[str, int]]:
+    entries: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    candidates: list[object] = []
+    if isinstance(raw_entries, list):
+        candidates.extend(raw_entries)
+    elif raw_entries is not None:
+        candidates.append(raw_entries)
+    if fallback_entry is not None and not isinstance(raw_entries, list):
+        candidates.append(fallback_entry)
+    for item in candidates:
+        if isinstance(item, str):
+            summary = item.strip()
+            emotional_weight = 0
+        elif isinstance(item, dict):
+            summary = str(item.get("summary") or "").strip()
+            emotional_weight = _coerce_emotional_weight(item.get("emotional_weight"))
+        else:
+            continue
+        if not summary or summary in seen:
+            continue
+        seen.add(summary)
+        entries.append((summary, emotional_weight))
+    return entries
+
+
 def _recent_turn_count(keep_count: int) -> int:
     return max(1, keep_count // 2)
 
@@ -340,6 +376,11 @@ procedure — agent 在未来类似场景下应遵守的长期执行规则
 
 绝对不输出：event（有时间性的具体事件）
 
+每条记忆都必须额外输出 emotional_weight（0-10）：
+- 纯技术讨论、普通事实陈述、工具步骤、没有明显情绪色彩 → 0
+- 有明确喜欢/厌恶、明显情绪波动、关系张力、受挫或强烈在意 → 3-9
+- 不确定时保守输出 0
+
 区分三类：
 - "用户是什么/拥有什么/处在什么客观背景里" → profile
 - "用户希望 agent 怎么服务他、怎么讲解、怎么推荐" → preference
@@ -512,13 +553,13 @@ USER: 那就直接写个脚本绕过去吧
 只返回合法 JSON，不要 markdown 代码块：
 {{
   "profile": [
-    {{"summary": "...", "category": "personal_fact|purchase|decision|status", "happened_at": null}}
+    {{"summary": "...", "category": "personal_fact|purchase|decision|status", "happened_at": null, "emotional_weight": 0}}
   ],
   "preference": [
-    {{"summary": "..."}}
+    {{"summary": "...", "emotional_weight": 0}}
   ],
   "procedure": [
-    {{"summary": "...", "tool_requirement": null, "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
+    {{"summary": "...", "emotional_weight": 0, "tool_requirement": null, "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
   ]
 }}"""
 
@@ -585,6 +626,7 @@ USER: 那就直接写个脚本绕过去吧
                 continue
             category = (item.get("category") or "personal_fact").strip()
             happened_at = item.get("happened_at") or None
+            emotional_weight = _coerce_emotional_weight(item.get("emotional_weight"))
             await self._memory_port.save_item_with_supersede(
                 summary=summary,
                 memory_type="profile",
@@ -595,6 +637,7 @@ USER: 那就直接写个脚本绕过去吧
                 },
                 source_ref=f"{source_ref}#profile",
                 happened_at=happened_at,
+                emotional_weight=emotional_weight,
             )
             saved_counts["profile"] += 1
             logger.info("consolidation long_term saved: type=profile %r", summary[:60])
@@ -607,6 +650,9 @@ USER: 那就直接写个脚本绕过去吧
                 summary = (item.get("summary") or "").strip()
                 if not summary:
                     continue
+                emotional_weight = _coerce_emotional_weight(
+                    item.get("emotional_weight")
+                )
                 extra: dict = {
                     "tool_requirement": item.get("tool_requirement"),
                     "steps": item.get("steps") or [],
@@ -622,6 +668,7 @@ USER: 那就直接写个脚本绕过去吧
                     memory_type=mtype,
                     extra=extra,
                     source_ref=f"{source_ref}#implicit",
+                    emotional_weight=emotional_weight,
                 )
                 saved_counts[mtype] += 1
                 logger.info(
@@ -952,8 +999,15 @@ ongoing_threads 严格限制：
 ## 字段说明
 
 ### 1. "history_entries" → HISTORY.md（数组，每条对应一个独立主题）
-按主题拆分，每个独立话题写一条，1-2 句，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
+按主题拆分，每个独立话题写一条对象，格式为 {{"summary":"...", "emotional_weight":0}}。
+summary 仍然要求 1-2 句，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
 不同主题必须拆成独立条目，不得合并。若整段对话只有一个主题，返回只含一条的数组。
+
+history_entries.emotional_weight 规则：
+- 范围 0-10
+- 普通技术讨论、普通事务记录、无明显情绪色彩 → 0
+- 用户明确表达强烈喜欢/厌恶、明显受挫、关系冲突、情绪波动时按强度给 3-9
+- 不确定时保守输出 0
 
 **history_entries 提取规则（严格遵守）**：
 1. 只提取 USER 明确表达的行动、经历、计划和状态；ASSISTANT 的建议、推荐、解释一律不写入，即使其中提到了地名、店名或活动。
@@ -1063,15 +1117,11 @@ ongoing_threads 严格限制：
                 return
 
             # 4. 先处理 history_entries / pending_items 这两类文本产物。
-            raw_entries = result.get("history_entries")
-            if isinstance(raw_entries, list):
-                history_entries = [
-                    e for e in raw_entries if isinstance(e, str) and e.strip()
-                ]
-            elif result.get("history_entry"):
-                history_entries = [result["history_entry"]]
-            else:
-                history_entries = []
+            history_entry_payloads = _normalize_history_entries(
+                result.get("history_entries"),
+                result.get("history_entry"),
+            )
+            history_entries = [entry for entry, _ in history_entry_payloads]
 
             if history_entries:
                 combined = "\n".join(history_entries)
@@ -1105,8 +1155,9 @@ ongoing_threads 严格限制：
                     source_ref=_build_entry_source_ref(source_ref, entry),
                     scope_channel=scope_channel,
                     scope_chat_id=scope_chat_id,
+                    emotional_weight=emotional_weight,
                 )
-                for entry in history_entries
+                for entry, emotional_weight in history_entry_payloads
             ]
             if save_coros:
                 await asyncio.gather(*save_coros)

@@ -543,7 +543,7 @@ async def test_memory_runtime_aclose_continues_after_failure():
     assert calls == ["failing", "close"]
 
 
-def test_retriever_internal_select_for_injection_applies_type_threshold_and_relative_delta():
+def test_retriever_internal_select_for_injection_applies_type_threshold():
     retriever = Retriever(
         store=MagicMock(),
         embedder=MagicMock(),
@@ -663,7 +663,64 @@ def test_retriever_forced_limit_and_injected_ids_match_formatted_output():
     block, injected_ids = retriever.build_injection_block(items)
     assert "规则1" in block
     assert "规则2" not in block
+    assert "有印象，不确定" not in block
     assert injected_ids == ["p1"]
+
+
+def test_retriever_marks_borderline_items_as_uncertain():
+    retriever = Retriever(
+        store=MagicMock(),
+        embedder=MagicMock(),
+        score_threshold=0.45,
+        score_thresholds={
+            "procedure": 0.60,
+            "preference": 0.60,
+            "event": 0.68,
+            "profile": 0.68,
+        },
+        high_inject_delta=0.15,
+    )
+    items = [
+        {
+            "id": "e1",
+            "memory_type": "event",
+            "score": 0.74,
+            "summary": "用户提过一次 Fitbit 相关情况",
+        },
+    ]
+
+    block, injected_ids = retriever.build_injection_block(items)
+    assert "有印象，不确定" in block
+    assert injected_ids == ["e1"]
+
+
+def test_retriever_keeps_full_summary_without_single_item_truncation():
+    retriever = Retriever(
+        store=MagicMock(),
+        embedder=MagicMock(),
+        score_threshold=0.45,
+        score_thresholds={
+            "procedure": 0.60,
+            "preference": 0.60,
+            "event": 0.68,
+            "profile": 0.68,
+        },
+        inject_max_chars=2000,
+    )
+    summary = "这是一段很长的历史摘要" + "A" * 220 + "结尾保留"
+    items = [
+        {
+            "id": "e1",
+            "memory_type": "event",
+            "score": 0.9,
+            "summary": summary,
+        },
+    ]
+
+    block, injected_ids = retriever.build_injection_block(items)
+    assert summary in block
+    assert "…" not in block
+    assert injected_ids == ["e1"]
 
 
 def test_retriever_build_injection_block_empty_input_returns_tuple_duplicate_guard():

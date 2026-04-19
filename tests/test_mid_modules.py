@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -237,4 +238,36 @@ async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: P
     assert replacements[0]["new_summary"] == "新流程：查 Steam 时必须先用 steam_mcp"
     assert replacements[0]["old_extra_json"]["tool_requirement"] == "web_search"
     assert replacements[0]["new_extra_json"]["tool_requirement"] == "steam_mcp"
+    store.close()
+
+
+def test_memory_store_runtime_migrates_emotional_weight_column(tmp_path: Path):
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE memory_items (
+            id            TEXT PRIMARY KEY,
+            memory_type   TEXT NOT NULL,
+            summary       TEXT NOT NULL,
+            content_hash  TEXT NOT NULL,
+            embedding     TEXT,
+            reinforcement INTEGER NOT NULL DEFAULT 1,
+            extra_json    TEXT,
+            source_ref    TEXT,
+            happened_at   TEXT,
+            status        TEXT NOT NULL DEFAULT 'active',
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = MemoryStore2(db_path)
+    cols = {
+        row[1] for row in store._db.execute("PRAGMA table_info(memory_items)").fetchall()
+    }
+    assert "emotional_weight" in cols
     store.close()

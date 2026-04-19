@@ -46,10 +46,10 @@ def test_consolidation_service_archive_all_and_profile_extract():
             )
         if "长期记忆提取专家" in text:
             return _Resp(
-                '{"profile":[{"summary":"用户买了 Zigbee 网关","category":"purchase","happened_at":"2026-03-15"}],"preference":[],"procedure":[]}'
+                '{"profile":[{"summary":"用户买了 Zigbee 网关","category":"purchase","happened_at":"2026-03-15","emotional_weight":4}],"preference":[],"procedure":[]}'
             )
         return _Resp(
-            '{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}'
+            '{"history_entries":[{"summary":"[2026-03-15 10:00] 用户聊了 Zigbee 方案","emotional_weight":6}],"pending_items":[]}'
         )
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
@@ -82,11 +82,20 @@ def test_consolidation_service_archive_all_and_profile_extract():
         for call in provider.chat.await_args_list
         if "记忆提取代理" in call.kwargs["messages"][0]["content"]
     )
+    implicit_prompt = next(
+        call.kwargs["messages"][0]["content"]
+        for call in provider.chat.await_args_list
+        if "长期记忆提取专家" in call.kwargs["messages"][0]["content"]
+    )
     assert "## 最近三次 consolidation event" in event_prompt
     assert "用户准备下单 Zigbee 网关" in event_prompt
     assert "不能作为人物身份、说话人归属、关系判断或具体事实归属的直接证据" in event_prompt
+    assert "emotional_weight" in event_prompt
+    assert "emotional_weight" in implicit_prompt
     # 长期记忆 call 保存了 profile（走 save_item_with_supersede）
     memory.save_item_with_supersede.assert_awaited_once()
+    assert memory.save_from_consolidation.await_args.kwargs["emotional_weight"] == 6
+    assert memory.save_item_with_supersede.await_args.kwargs["emotional_weight"] == 4
     memory.write_recent_context.assert_called_once()
     assert session.last_consolidated == 0
 

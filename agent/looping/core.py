@@ -570,12 +570,14 @@ class AgentLoop:
         session_key: str = "cli:direct",
         channel: str = "cli",
         chat_id: str = "direct",
+        omit_user_turn: bool = False,
     ) -> str:
         msg = InboundMessage(
             channel=channel,
             sender="user",
             chat_id=chat_id,
             content=content,
+            metadata={"omit_user_turn": True} if omit_user_turn else None,
         )
         response = await self._process(
             msg,
