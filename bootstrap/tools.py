@@ -124,7 +124,15 @@ def build_registered_tools(
     tools: ToolRegistry | None = None,
     observe_writer=None,
     agent_loop_provider: Callable[[], Any] | None = None,
-) -> tuple[ToolRegistry, MessagePushTool, SchedulerService, McpServerRegistry, MemoryRuntime, PeerProcessManager | None, PeerAgentPoller | None]:
+) -> tuple[
+    ToolRegistry,
+    MessagePushTool,
+    SchedulerService,
+    McpServerRegistry,
+    MemoryRuntime,
+    PeerProcessManager | None,
+    PeerAgentPoller | None,
+]:
     from session.store import SessionStore
 
     # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
@@ -194,7 +202,15 @@ def build_registered_tools(
             tool_registry=tools,
         )
 
-    return tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_process_manager, peer_poller
+    return (
+        tools,
+        push_tool,
+        scheduler,
+        mcp_registry,
+        memory_runtime,
+        peer_process_manager,
+        peer_poller,
+    )
 
 
 def _build_loop_deps(
@@ -218,6 +234,8 @@ def _build_loop_deps(
         max_iterations=config.max_iterations,
         max_tokens=config.max_tokens,
         tool_search_enabled=config.tool_search_enabled,
+        multimodal=bool(getattr(config, "multimodal", True)),
+        vl_available=bool(getattr(config, "vl_model", "")),
     )
     memory_config = MemoryConfig(
         window=config.memory_window,
@@ -253,17 +271,13 @@ def _build_loop_deps(
         if config.memory_v2.route_intention_enabled
         else None
     )
-    sufficiency_checker = (
-        SufficiencyChecker(
-            llm_client=light,
-            model=config.light_model or config.model,
-        )
+    sufficiency_checker = SufficiencyChecker(
+        llm_client=light,
+        model=config.light_model or config.model,
     )
-    profile_extractor = (
-        ProfileFactExtractor(
-            llm_client=light,
-            model=config.light_model or config.model,
-        )
+    profile_extractor = ProfileFactExtractor(
+        llm_client=light,
+        model=config.light_model or config.model,
     )
     hyde_enhancer = None
     if memory_config.hyde_enabled and llm_config.light_model:
@@ -276,8 +290,14 @@ def _build_loop_deps(
         )
 
     context = resolve_context_factory(wiring.context)(
-        workspace, getattr(memory_runtime, "profile_reader", None) or memory_runtime.port
+        workspace,
+        getattr(memory_runtime, "profile_reader", None) or memory_runtime.port,
     )
+    if isinstance(context, ContextBuilder):
+        context.set_media_capabilities(
+            multimodal=bool(getattr(config, "multimodal", True)),
+            vl_available=bool(getattr(config, "vl_model", "")),
+        )
     memory_engine = getattr(memory_runtime, "engine", None)
     memory_facade = getattr(memory_runtime, "facade", None)
     llm_services = LLMServices(provider=provider, light_provider=light)
@@ -288,11 +308,16 @@ def _build_loop_deps(
         hyde_enhancer=hyde_enhancer,
         sufficiency_checker=sufficiency_checker,
     )
-    session_services = SessionServices(session_manager=session_manager, presence=presence)
-    trace_services = ObservabilityServices(workspace=workspace, observe_writer=observe_writer)
+    session_services = SessionServices(
+        session_manager=session_manager, presence=presence
+    )
+    trace_services = ObservabilityServices(
+        workspace=workspace, observe_writer=observe_writer
+    )
     consolidation = ConsolidationService(
         memory_port=memory_runtime.port,
-        profile_maint=getattr(memory_runtime, "profile_maint", None) or memory_runtime.port,
+        profile_maint=getattr(memory_runtime, "profile_maint", None)
+        or memory_runtime.port,
         provider=provider,
         model=config.model,
         keep_count=memory_config.keep_count,
@@ -378,17 +403,19 @@ def build_core_runtime(
     loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
     loop_ref: dict[str, AgentLoop] = {}
-    tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = build_registered_tools(
-        config,
-        workspace,
-        http_resources,
-        bus=bus,
-        provider=provider,
-        light_provider=light_provider,
-        vl_provider=vl_provider,
-        session_store=session_manager._store,
-        observe_writer=observe_writer,
-        agent_loop_provider=lambda: loop_ref.get("loop"),
+    tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
+        build_registered_tools(
+            config,
+            workspace,
+            http_resources,
+            bus=bus,
+            provider=provider,
+            light_provider=light_provider,
+            vl_provider=vl_provider,
+            session_store=session_manager._store,
+            observe_writer=observe_writer,
+            agent_loop_provider=lambda: loop_ref.get("loop"),
+        )
     )
     presence = PresenceStore(session_manager._store)
     processing_state = ProcessingState()
@@ -414,6 +441,8 @@ def build_core_runtime(
                 max_iterations=config.max_iterations,
                 max_tokens=config.max_tokens,
                 tool_search_enabled=config.tool_search_enabled,
+                multimodal=bool(getattr(config, "multimodal", True)),
+                vl_available=bool(getattr(config, "vl_model", "")),
             ),
             memory=MemoryConfig(
                 window=config.memory_window,

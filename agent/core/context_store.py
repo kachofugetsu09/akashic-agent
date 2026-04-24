@@ -14,6 +14,7 @@ from agent.core.types import (
     to_tool_call_groups,
 )
 from agent.postturn.protocol import PostTurnEvent
+from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
 from agent.retrieval.protocol import RetrievalRequest
 from agent.turns.outbound import OutboundDispatch
 from bus.events import OutboundMessage
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from bus.events import InboundMessage
 
 logger = logging.getLogger("agent.core.context_store")
+_LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
 
 
 @runtime_checkable
@@ -112,7 +114,11 @@ class DefaultContextStore(ContextStore):
         session: "SessionLike",
     ) -> ContextBundle:
         # 1. 先读取 session history，并转换成 retrieval pipeline 需要的结构。
-        raw_history = session.get_history()
+        raw_history = [
+            item
+            for item in session.get_history()
+            if not _is_llm_context_frame(item)
+        ]
         history_messages = _to_history_messages(raw_history)
 
         # 2. 再执行 retrieval，保持当前 pipeline 行为不变。
@@ -193,7 +199,19 @@ class DefaultContextStore(ContextStore):
         if not omit_user_turn:
             if self._session.presence:
                 self._session.presence.record_user_message(session.key)
-            session.add_message("user", msg.content, media=msg.media if msg.media else None)
+            user_kwargs: dict[str, object] = {}
+            llm_user_content = context_retry.get("llm_user_content")
+            if isinstance(llm_user_content, (str, list)):
+                user_kwargs["llm_user_content"] = llm_user_content
+            llm_context_frame = context_retry.get("llm_context_frame")
+            if isinstance(llm_context_frame, str) and llm_context_frame.strip():
+                user_kwargs["llm_context_frame"] = llm_context_frame
+            session.add_message(
+                "user",
+                msg.content,
+                media=msg.media if msg.media else None,
+                **user_kwargs,
+            )
         _assistant_kwargs: dict = {
             "tools_used": tools_used if tools_used else None,
             "tool_chain": tool_chain if tool_chain else None,
@@ -327,6 +345,14 @@ def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
             )
         )
     return out
+
+
+def _is_llm_context_frame(message: dict) -> bool:
+    content = message.get("content")
+    return isinstance(content, str) and (
+        content.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
+        or content.startswith(_LEGACY_CONTEXT_FRAME_MARKER)
+    )
 
 
 def _emit_observe_traces(

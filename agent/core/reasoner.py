@@ -15,8 +15,13 @@ from agent.looping.constants import (
     _TOOL_LOOP_REPEAT_LIMIT,
     _tool_call_signature,
 )
-from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS
-from agent.prompting import build_turn_injection_message
+from agent.prompting import (
+    DEFAULT_CONTEXT_TRIM_PLANS,
+    SYSTEM_CONTEXT_FRAME_MARKER,
+    PromptSectionRender,
+    build_context_frame_content,
+    build_context_frame_message,
+)
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
 from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
@@ -33,6 +38,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent.core.reasoner")
 _LOG_PREVIEW_LIMIT = 160
+_LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
 
 
 def _log_preview(value: object, limit: int = _LOG_PREVIEW_LIMIT) -> str:
@@ -106,8 +112,53 @@ def _build_deferred_tools_hint(
     return "\n".join(lines) + "\n\n"
 
 
-def _build_runtime_hint_message(content: str) -> dict[str, str]:
-    return {"role": "system", "content": content}
+def _build_context_hint_message(section_name: str, content: str) -> dict[str, str]:
+    return build_context_frame_message(
+        build_context_frame_content(
+            [
+                PromptSectionRender(
+                    name=section_name,
+                    content=content,
+                    is_static=False,
+                )
+            ]
+        )
+    )
+
+
+def _extract_model_facing_turn(
+    messages: list[dict],
+) -> tuple[object | None, str | None]:
+    if not messages:
+        return None, None
+    user_content = (
+        messages[-1].get("content")
+        if messages[-1].get("role") == "user"
+        else None
+    )
+    if len(messages) < 2:
+        return user_content, None
+    frame = messages[-2]
+    frame_content = frame.get("content")
+    if isinstance(frame_content, str) and (
+        frame_content.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
+        or frame_content.startswith(_LEGACY_CONTEXT_FRAME_MARKER)
+    ):
+        return user_content, frame_content
+    return user_content, None
+
+
+def _get_history_since_consolidated(
+    session: "SessionLike",
+    memory_window: int,
+) -> list[dict]:
+    try:
+        return session.get_history(
+            max_messages=memory_window,
+            start_index=session.last_consolidated,
+        )
+    except TypeError:
+        return session.get_history(max_messages=memory_window)
 
 
 # ─── Turn Injection（首轮前注入，非空才追加）─────────────────────────────────
@@ -235,7 +286,11 @@ class DefaultReasoner(Reasoner):
             "selected_plan": None,
             "trimmed_sections": [],
         }
-        source_history = base_history or session.get_history(max_messages=self._memory_window)
+        source_history = (
+            base_history
+            if base_history is not None
+            else _get_history_since_consolidated(session, self._memory_window)
+        )
         total_history = len(source_history)
         preloaded: set[str] | None = None
         if self._tool_search_enabled:
@@ -286,6 +341,9 @@ class DefaultReasoner(Reasoner):
                     turn_injection_prompt=turn_injection_prompt,
                 )
             ).messages
+            llm_user_content, llm_context_frame = _extract_model_facing_turn(
+                initial_messages
+            )
             try:
                 result = await self.run(
                     initial_messages,
@@ -323,6 +381,10 @@ class DefaultReasoner(Reasoner):
                 if attempt == 0:
                     retry_trace["selected_plan"] = plan["name"]
                     retry_trace["trimmed_sections"] = sorted(plan["disabled_sections"])
+                if isinstance(llm_user_content, (str, list)):
+                    retry_trace["llm_user_content"] = llm_user_content
+                if isinstance(llm_context_frame, str) and llm_context_frame.strip():
+                    retry_trace["llm_context_frame"] = llm_context_frame
                 retry_trace["react_stats"] = dict(result.metadata.get("react_stats") or {})
                 return TurnRunResult(
                     reply=result.reply,
@@ -606,13 +668,16 @@ class DefaultReasoner(Reasoner):
                         }
                     )
                 messages.append(
-                    _build_runtime_hint_message(
+                    _build_context_hint_message(
+                        "loop_state",
                         _build_loop_state_hint(
                             visible_names=visible_names,
-                            always_on_names=self._tools.get_always_on_names()
-                            if self._tool_search_enabled
-                            else None,
-                        )
+                            always_on_names=(
+                                self._tools.get_always_on_names()
+                                if self._tool_search_enabled
+                                else None
+                            ),
+                        ),
                     )
                 )
                 continue
@@ -721,7 +786,8 @@ class DefaultReasoner(Reasoner):
         # 2. 先尝试让模型给一段中文收尾总结。
         try:
             response = await self._llm.provider.chat(
-                messages=messages + [_build_runtime_hint_message(summary_prompt)],
+                messages=messages
+                + [_build_context_hint_message("summary_request", summary_prompt)],
                 tools=[],
                 model=self._llm_config.model,
                 max_tokens=min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens),

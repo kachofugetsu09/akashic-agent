@@ -47,6 +47,8 @@ class LLMConfig:
     max_iterations: int = 10
     max_tokens: int = 8192
     tool_search_enabled: bool = False
+    multimodal: bool = True
+    vl_available: bool = False
 
 
 @dataclass
@@ -78,6 +80,7 @@ class MemoryConfig:
 @dataclass
 class LLMServices:
     """LLM provider services."""
+
     provider: LLMProvider
     light_provider: LLMProvider
 
@@ -181,8 +184,10 @@ class TurnScheduler:
     def schedule_consolidation(self, session: SessionLike, key: str) -> None:
         """Fire-and-forget consolidation; deduplicates by key."""
         # 1. 只有累计足够多新旧消息可归档，且当前 session 没在 consolidate 中，才起后台任务。
-        ready_count = len(session.messages) - self._keep_count - int(
-            getattr(session, "last_consolidated", 0)
+        ready_count = (
+            len(session.messages)
+            - self._keep_count
+            - int(getattr(session, "last_consolidated", 0))
         )
         if (
             ready_count >= self._consolidation_min_new_messages
@@ -224,11 +229,15 @@ class TurnScheduler:
             return
         except Exception as e:
             logger.warning(
-                "post_response_memorize task inspection failed session=%s err=%s", key, e,
+                "post_response_memorize task inspection failed session=%s err=%s",
+                key,
+                e,
             )
             return
 
         if exc is not None:
             logger.warning(
-                "post_response_memorize task failed session=%s err=%s", key, exc,
+                "post_response_memorize task failed session=%s err=%s",
+                key,
+                exc,
             )

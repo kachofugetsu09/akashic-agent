@@ -6,10 +6,13 @@ LLM Provider — OpenAI 兼容格式
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
+import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +22,10 @@ from openai import AsyncOpenAI
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 logger = logging.getLogger(__name__)
+_LLM_PAYLOAD_SNAPSHOT_ENABLED = False
 _LAST_PAYLOAD_PATH = Path(tempfile.gettempdir()) / "akashic-last-llm-payload.json"
+_PAYLOAD_SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "akashic-llm-payloads"
+_PAYLOAD_SNAPSHOT_SEQ = itertools.count(1)
 StreamDelta = dict[str, str]
 
 # 安全审查错误码（各厂商）
@@ -107,7 +113,9 @@ class ProviderStrategy:
 
 class DeepSeekStrategy(ProviderStrategy):
     def normalize_messages(self, messages: list[dict]) -> list[dict]:
-        return _normalize_chat_messages(messages, fill_tool_call_content=False)
+        return _strip_image_url_blocks(
+            _normalize_chat_messages(messages, fill_tool_call_content=False)
+        )
 
     def prepare_request(
         self,
@@ -246,11 +254,6 @@ class LLMProvider:
             disable_thinking=self._force_disable_thinking or disable_thinking,
         )
 
-        _LAST_PAYLOAD_PATH.write_text(
-            json.dumps(kwargs, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
-
         if on_content_delta is not None:
             return await self._chat_streaming(kwargs, on_content_delta, strategy)
 
@@ -378,6 +381,7 @@ class LLMProvider:
         )
 
     async def _create_with_retry(self, kwargs: dict) -> object:
+        _save_llm_payload_snapshot(kwargs)
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -468,6 +472,24 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
+def _save_llm_payload_snapshot(kwargs: dict) -> Path | None:
+    if not _LLM_PAYLOAD_SNAPSHOT_ENABLED:
+        return None
+    try:
+        payload = json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)
+        _PAYLOAD_SNAPSHOT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        seq = next(_PAYLOAD_SNAPSHOT_SEQ)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        path = _PAYLOAD_SNAPSHOT_DIR / f"{ts}-{os.getpid()}-{seq:06d}.json"
+        path.write_text(payload, encoding="utf-8")
+        _LAST_PAYLOAD_PATH.write_text(payload, encoding="utf-8")
+        logger.info("[LLM请求快照] saved=%s", path)
+        return path
+    except Exception as exc:
+        logger.warning("[LLM请求快照] 保存失败: %s", exc)
+        return None
+
+
 def _extract_cache_usage(usage: Any) -> tuple[int | None, int | None]:
     hit_tokens = _coerce_int(_get_field(usage, "prompt_cache_hit_tokens"))
     miss_tokens = _coerce_int(_get_field(usage, "prompt_cache_miss_tokens"))
@@ -536,10 +558,7 @@ def _summarize_message_shapes(messages: list[dict]) -> str:
 
 
 def _summarize_tool_names(tools: list[dict]) -> str:
-    names = [
-        str((tool.get("function") or {}).get("name", "?"))
-        for tool in tools[:8]
-    ]
+    names = [str((tool.get("function") or {}).get("name", "?")) for tool in tools[:8]]
     if len(tools) > 8:
         names.append("...")
     return ",".join(names)
@@ -624,18 +643,45 @@ def _normalize_chat_messages(
         if fill_tool_call_content and role == "assistant" and item.get("tool_calls"):
             if content is None or (isinstance(content, str) and not content.strip()):
                 tool_calls = item.get("tool_calls") or []
-                first = tool_calls[0] if isinstance(tool_calls, list) and tool_calls else {}
+                first = (
+                    tool_calls[0] if isinstance(tool_calls, list) and tool_calls else {}
+                )
                 function = first.get("function") if isinstance(first, dict) else {}
                 tool_name = ""
                 if isinstance(function, dict):
                     tool_name = str(function.get("name", "") or "")
-                item["content"] = (
-                    f"调用工具 {tool_name}" if tool_name else "调用工具"
-                )
+                item["content"] = f"调用工具 {tool_name}" if tool_name else "调用工具"
         elif role in {"user", "assistant", "tool"}:
             if content is None:
                 item["content"] = ""
 
+        normalized.append(item)
+    return normalized
+
+
+def _strip_image_url_blocks(messages: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for msg in messages:
+        item = dict(msg)
+        content = item.get("content")
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            image_count = 0
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text:
+                        text_parts.append(text)
+                elif block_type == "image_url":
+                    image_count += 1
+            if image_count:
+                text_parts.append(
+                    f"[已移除 {image_count} 个 image_url 图片块：DeepSeek 当前接口只接受文本消息。]"
+                )
+            item["content"] = "\n".join(text_parts)
         normalized.append(item)
     return normalized
 
@@ -652,4 +698,6 @@ def _normalize_openai_base_url(base_url: str | None) -> str | None:
             break
     if not path:
         path = ""
-    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+    )

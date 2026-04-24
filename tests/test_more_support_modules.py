@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import agent.provider as provider_module
 from agent.mcp.registry import McpServerRegistry
 from agent.provider import (
     ContextLengthError,
@@ -182,6 +183,55 @@ def test_normalize_openai_base_url_trims_endpoint_suffix():
 
 
 @pytest.mark.asyncio
+async def test_provider_payload_snapshot_switch_default_off_and_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    snapshot_dir = tmp_path / "payloads"
+    last_payload = tmp_path / "last.json"
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(provider_module, "_LAST_PAYLOAD_PATH", last_payload)
+
+    stream = _FakeStream([SimpleNamespace(choices=[])])
+    fake = _FakeClient([_Response(content="off"), _Response(content="ok"), stream])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+
+    provider = LLMProvider(api_key="k")
+    await provider.chat(
+        messages=[{"role": "user", "content": "off"}],
+        tools=[],
+        model="m",
+        max_tokens=10,
+    )
+
+    assert not snapshot_dir.exists()
+    assert not last_payload.exists()
+
+    monkeypatch.setattr(provider_module, "_LLM_PAYLOAD_SNAPSHOT_ENABLED", True)
+    await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="m",
+        max_tokens=10,
+    )
+    await provider.chat(
+        messages=[{"role": "user", "content": "stream"}],
+        tools=[],
+        model="m",
+        max_tokens=10,
+        on_content_delta=lambda chunk: _collect_delta([], chunk),
+    )
+
+    files = sorted(snapshot_dir.glob("*.json"))
+    assert len(files) == 2
+    first_payload = json.loads(files[0].read_text(encoding="utf-8"))
+    second_payload = json.loads(files[1].read_text(encoding="utf-8"))
+    assert first_payload["messages"][0]["content"] == "hi"
+    assert second_payload["messages"][0]["content"] == "stream"
+    assert second_payload["stream"] is True
+
+
+@pytest.mark.asyncio
 async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -190,14 +240,18 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
             SimpleNamespace(
                 choices=[
                     SimpleNamespace(
-                        delta=SimpleNamespace(content="你", reasoning_content="想", tool_calls=[])
+                        delta=SimpleNamespace(
+                            content="你", reasoning_content="想", tool_calls=[]
+                        )
                     )
                 ]
             ),
             SimpleNamespace(
                 choices=[
                     SimpleNamespace(
-                        delta=SimpleNamespace(content="好", reasoning_content="法", tool_calls=[])
+                        delta=SimpleNamespace(
+                            content="好", reasoning_content="法", tool_calls=[]
+                        )
                     )
                 ]
             ),
@@ -277,6 +331,38 @@ async def test_deepseek_strategy_disables_thinking(monkeypatch: pytest.MonkeyPat
 
     assert fake.calls[-1]["extra_body"] == {"thinking": {"type": "disabled"}}
     assert "reasoning_effort" not in fake.calls[-1]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_strategy_strips_image_url_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k", provider_name="deepseek")
+
+    await provider.chat(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    },
+                    {"type": "text", "text": "看看这张图"},
+                ],
+            }
+        ],
+        tools=[],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+    )
+
+    content = fake.calls[-1]["messages"][0]["content"]
+    assert isinstance(content, str)
+    assert "看看这张图" in content
+    assert "image_url" in content
 
 
 @pytest.mark.asyncio
@@ -407,7 +493,9 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
         anyaction_probability_min=0.1,
         anyaction_probability_max=0.9,
     )
-    gate = AnyActionGate(cfg=cfg, quota_store=quota, rng=SimpleNamespace(random=lambda: 0.0))
+    gate = AnyActionGate(
+        cfg=cfg, quota_store=quota, rng=SimpleNamespace(random=lambda: 0.0)
+    )
     act, meta = gate.should_act(now_utc=now, last_user_at=now - timedelta(hours=2))
     assert act is False
     assert meta["reason"] == "quota_exhausted"
@@ -418,7 +506,9 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
     assert meta["reason"] == "min_interval"
 
     quota = QuotaStore(tmp_path / "quota2.json")
-    gate = AnyActionGate(cfg=cfg, quota_store=quota, rng=SimpleNamespace(random=lambda: 0.0))
+    gate = AnyActionGate(
+        cfg=cfg, quota_store=quota, rng=SimpleNamespace(random=lambda: 0.0)
+    )
     act, meta = gate.should_act(now_utc=now, last_user_at=now - timedelta(hours=2))
     assert act is True
     assert meta["reason"] == "probability"
@@ -461,20 +551,28 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
         start=AsyncMock(),
         stop=AsyncMock(),
     )
-    monkeypatch.setattr("bootstrap.app.build_core_runtime", lambda *args, **kwargs: core)
+    monkeypatch.setattr(
+        "bootstrap.app.build_core_runtime", lambda *args, **kwargs: core
+    )
     monkeypatch.setattr(
         "bootstrap.app.start_channels",
         AsyncMock(return_value=(MagicMock(), None, None)),
     )
     build_proactive_runtime = MagicMock(return_value=([], None))
-    monkeypatch.setattr("bootstrap.app.build_proactive_runtime", build_proactive_runtime)
+    monkeypatch.setattr(
+        "bootstrap.app.build_proactive_runtime", build_proactive_runtime
+    )
     build_memory_optimizer_task = MagicMock(return_value=[])
-    monkeypatch.setattr("bootstrap.app.build_memory_optimizer_task", build_memory_optimizer_task)
+    monkeypatch.setattr(
+        "bootstrap.app.build_memory_optimizer_task", build_memory_optimizer_task
+    )
     monkeypatch.setattr(
         "bootstrap.app.TraceWriter",
         lambda path: SimpleNamespace(run=AsyncMock(return_value=None)),
     )
-    monkeypatch.setattr("bootstrap.app.run_retention_if_needed", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "bootstrap.app.run_retention_if_needed", AsyncMock(return_value=None)
+    )
 
     app = AppRuntime(
         config=SimpleNamespace(),
@@ -610,12 +708,17 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     )
     assert tasks == []
     assert loop is None
-    assert build_memory_optimizer_task(cfg, provider=MagicMock(), memory_store=MagicMock()) == []
+    assert (
+        build_memory_optimizer_task(cfg, provider=MagicMock(), memory_store=MagicMock())
+        == []
+    )
 
     proactive_loop = SimpleNamespace(
         run=lambda: "loop-task",
     )
-    monkeypatch.setattr("bootstrap.proactive.ProactiveLoop", lambda **kwargs: proactive_loop)
+    monkeypatch.setattr(
+        "bootstrap.proactive.ProactiveLoop", lambda **kwargs: proactive_loop
+    )
     monkeypatch.setattr("bootstrap.proactive.ProactiveStateStore", lambda path: path)
     monkeypatch.setattr(
         "bootstrap.proactive.MemoryOptimizer",
@@ -623,7 +726,9 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     )
     monkeypatch.setattr(
         "bootstrap.proactive.MemoryOptimizerLoop",
-        lambda opt, interval_seconds: SimpleNamespace(run=lambda: ("mem-task", interval_seconds)),
+        lambda opt, interval_seconds: SimpleNamespace(
+            run=lambda: ("mem-task", interval_seconds)
+        ),
     )
     monkeypatch.setattr(
         "proactive_v2.fitbit_sleep.run_fitbit_monitor",
@@ -650,7 +755,9 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         push_tool=MagicMock(),
         memory_store=MagicMock(),
         presence=MagicMock(),
-        agent_loop=SimpleNamespace(processing_state=SimpleNamespace(is_busy=lambda: False)),
+        agent_loop=SimpleNamespace(
+            processing_state=SimpleNamespace(is_busy=lambda: False)
+        ),
     )
     assert tasks == [
         "loop-task",

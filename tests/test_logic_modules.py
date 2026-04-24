@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.provider import LLMResponse
+from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
 from core.memory.port import DefaultMemoryPort
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import (
@@ -216,6 +217,57 @@ def test_session_get_history_returns_empty_when_window_is_zero():
     session.add_message("assistant", "world")
 
     assert session.get_history(max_messages=0) == []
+
+
+def test_session_get_history_replays_cached_llm_turn_from_consolidated_index():
+    session = Session("cli:1")
+    session.add_message("user", "old")
+    session.add_message("assistant", "old reply")
+    session.last_consolidated = 2
+    frame = f"{SYSTEM_CONTEXT_FRAME_MARKER}\n\n## retrieved_memory\n记忆"
+    user_content = "[当前消息时间: x]\nhello"
+    session.add_message(
+        "user",
+        "hello",
+        llm_context_frame=frame,
+        llm_user_content=user_content,
+    )
+    session.add_message("assistant", "world")
+
+    history = session.get_history(start_index=session.last_consolidated)
+
+    assert history == [
+        {"role": "user", "content": f"{frame}\n\n</system-reminder>"},
+        {"role": "user", "content": user_content},
+        {"role": "assistant", "content": "world"},
+    ]
+
+
+def test_session_get_history_rewinds_consolidated_index_to_user_boundary():
+    session = Session("cli:1")
+    session.add_message("user", "hello")
+    session.add_message("assistant", "world")
+    session.last_consolidated = 1
+
+    history = session.get_history(start_index=session.last_consolidated)
+
+    assert history[0] == {"role": "user", "content": "hello"}
+
+
+def test_session_get_history_normalizes_legacy_context_frame():
+    session = Session("cli:1")
+    session.add_message(
+        "user",
+        "hello",
+        llm_context_frame="[SYSTEM_CONTEXT_FRAME]\n\n## recent_context\n旧内容",
+        llm_user_content="hello",
+    )
+
+    history = session.get_history(start_index=0)
+
+    assert history[0]["role"] == "user"
+    assert history[0]["content"].startswith(SYSTEM_CONTEXT_FRAME_MARKER)
+    assert history[0]["content"].endswith("</system-reminder>")
 
 
 def test_session_get_history_does_not_inject_inference_tag():

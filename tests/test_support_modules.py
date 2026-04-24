@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.context import ContextBuilder, ContextRequest
+from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
@@ -177,7 +178,10 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
         summary="查询 Steam 游戏信息时，必须先使用 steam_mcp 工具查询游戏详情，再用 web_search 补充验证价格和评价信息。",
         memory_type="procedure",
         extra={
-            "steps": ["使用 steam_mcp 工具查询游戏详情", "使用 web_search 补充验证价格和评价"],
+            "steps": [
+                "使用 steam_mcp 工具查询游戏详情",
+                "使用 web_search 补充验证价格和评价",
+            ],
             "tool_requirement": "steam_mcp",
         },
         source_ref="seed",
@@ -280,7 +284,10 @@ async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
         memory_type="procedure",
     )
 
-    assert memorizer.save_item_with_supersede.await_args.kwargs["memory_type"] == "preference"
+    assert (
+        memorizer.save_item_with_supersede.await_args.kwargs["memory_type"]
+        == "preference"
+    )
 
 
 @pytest.mark.asyncio
@@ -361,6 +368,7 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
         _BadSchemaTool().validate_params({})
 
     with pytest.raises(TypeError, match="必须定义字段：description, parameters"):
+
         class _MissingTool(Tool):
             name = "bad"
 
@@ -368,6 +376,7 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
                 return "ok"
 
     with pytest.raises(TypeError, match="字段不能为空：name, description, parameters"):
+
         class _EmptyTool(Tool):
             name = ""
             description = ""
@@ -470,9 +479,12 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         )
     )
     prompt = result.system_prompt
+    context_frame = result.messages[-2]["content"]
     assert "identity" in prompt
     assert "## 行为规范" in prompt
-    assert "retrieved" in prompt
+    assert "retrieved" not in prompt
+    assert context_frame.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
+    assert "retrieved" in context_frame
     assert "memory block" in prompt
     assert "Akashic 自我认知" in prompt
     assert "## 环境" in prompt
@@ -537,6 +549,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert render_result.system_prompt
     assert render_result.turn_injection_context == turn_injection
     assert render_result.messages
+    assert render_result.messages[-2]["role"] == "user"
+    assert render_result.messages[-2]["content"].startswith(SYSTEM_CONTEXT_FRAME_MARKER)
+    assert "pref" in render_result.messages[-2]["content"]
 
     media_only_messages = builder.render(
         ContextRequest(
@@ -551,6 +566,27 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert media_only_text.startswith("[当前消息时间:")
     assert "request_time=" in media_only_text
     assert "今天=" in media_only_text
+
+    text_media_builder = ContextBuilder(
+        tmp_path,
+        _Memory(),  # type: ignore[arg-type]
+        multimodal=False,
+        vl_available=True,
+    )
+    text_media_messages = text_media_builder.render(
+        ContextRequest(
+            history=[],
+            current_message="看看这张图",
+            media=[str(image)],
+            skill_names=["extra"],
+            message_timestamp=now,
+        )
+    ).messages
+    text_media_content = text_media_messages[-1]["content"]
+    assert isinstance(text_media_content, str)
+    assert str(image) in text_media_content
+    assert "read_image_vision" in text_media_content
+    assert "image_url" not in text_media_content
 
 
 def test_context_builder_reproduces_temporal_conflict_baseline(
@@ -583,12 +619,8 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
     monkeypatch.setattr(
         "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
     )
-    monkeypatch.setattr(
-        "agent.context.build_telegram_rendering_prompt", lambda: ""
-    )
-    monkeypatch.setattr(
-        "agent.context.build_skills_catalog_prompt", lambda text: text
-    )
+    monkeypatch.setattr("agent.context.build_telegram_rendering_prompt", lambda: "")
+    monkeypatch.setattr("agent.context.build_skills_catalog_prompt", lambda text: text)
 
     (tmp_path / "memes").mkdir()
     (tmp_path / "memes" / "manifest.json").write_text(
@@ -621,15 +653,17 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
     )
 
     system_prompt = result.messages[0]["content"]
+    context_frame = result.messages[-2]["content"]
     user_message = result.messages[-1]["content"]
 
     assert "request_time=2026-04-08T17:57:00+08:00" not in system_prompt
     assert "local_date=2026-04-08" not in system_prompt
     assert "今天=2026-04-08" not in system_prompt
     assert "明天=2026-04-09" not in system_prompt
-    assert "用户表示明天下午三点有面试" in system_prompt
-    assert "准备次日下午三点的字节跳动面试" in system_prompt
-    assert "4 月 9 日（周四）下午 3 点" in system_prompt
+    assert context_frame.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
+    assert "用户表示明天下午三点有面试" in context_frame
+    assert "准备次日下午三点的字节跳动面试" in context_frame
+    assert "4 月 9 日（周四）下午 3 点" in context_frame
     assert user_message.startswith("[当前消息时间: 2026-04-08 17:57:00")
     assert "request_time=2026-04-08T17:57:00+08:00" in user_message
     assert "今天=2026-04-08" in user_message
@@ -680,8 +714,18 @@ async def test_loop_trigger_and_main_entry_cover_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     module = __import__("main")
-    monkeypatch.setattr(module.Config, "load", classmethod(lambda cls, path="config.toml": SimpleNamespace(channels=SimpleNamespace(socket="/tmp/sock"))))
-    monkeypatch.setitem(sys.modules, "infra.channels.cli_tui", SimpleNamespace(run_tui=MagicMock()))
+    monkeypatch.setattr(
+        module.Config,
+        "load",
+        classmethod(
+            lambda cls, path="config.toml": SimpleNamespace(
+                channels=SimpleNamespace(socket="/tmp/sock")
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules, "infra.channels.cli_tui", SimpleNamespace(run_tui=MagicMock())
+    )
     module.connect_cli("config.toml")
     sys.modules["infra.channels.cli_tui"].run_tui.assert_called_once_with("/tmp/sock")
 
@@ -709,7 +753,11 @@ async def test_loop_trigger_and_main_entry_cover_paths(
     module.connect_cli("config.toml")
 
     runtime = SimpleNamespace(run=AsyncMock())
-    monkeypatch.setattr(module.Config, "load", classmethod(lambda cls, path="config.toml": SimpleNamespace()))
+    monkeypatch.setattr(
+        module.Config,
+        "load",
+        classmethod(lambda cls, path="config.toml": SimpleNamespace()),
+    )
     monkeypatch.setattr(module, "build_app_runtime", lambda config, workspace: runtime)
     await module.serve("config.toml")
     runtime.run.assert_awaited_once()

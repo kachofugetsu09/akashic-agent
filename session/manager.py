@@ -14,6 +14,24 @@ from session.store import SessionStore
 # 保留完整 tool_result 的最近轮次数；更早的轮次仅保留调用结构，结果替换为占位符
 _RECENT_TOOL_ROUNDS = 1
 _CLEARED = "[已清除]"
+_OLD_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
+_CONTEXT_FRAME_MARKER = '<system-reminder data-system-context-frame="true">'
+_CONTEXT_FRAME_END = "</system-reminder>"
+
+
+def _normalize_context_frame(content: str) -> str:
+    text = content.strip()
+    if text.startswith(_OLD_CONTEXT_FRAME_MARKER):
+        text = text.replace(
+            _OLD_CONTEXT_FRAME_MARKER,
+            _CONTEXT_FRAME_MARKER,
+            1,
+        )
+    if text.startswith(_CONTEXT_FRAME_MARKER) and not text.endswith(
+        _CONTEXT_FRAME_END
+    ):
+        text = f"{text}\n\n{_CONTEXT_FRAME_END}"
+    return text
 
 
 def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
@@ -104,16 +122,29 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
-    def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+    def get_history(
+        self,
+        max_messages: int = 500,
+        *,
+        start_index: int | None = None,
+    ) -> list[dict[str, Any]]:
         """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。"""
-        if max_messages <= 0:
+        if start_index is not None:
+            start = max(0, int(start_index))
+            while start > 0 and self.messages[start].get("role") != "user":
+                start -= 1
+            messages = self.messages[start:]
+        elif max_messages <= 0:
             messages = []
         else:
             messages = self.messages[-max_messages:]
         assistant_indices = [
             i for i, m in enumerate(messages) if m.get("role") == "assistant"
         ]
-        recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS] if len(assistant_indices) > _RECENT_TOOL_ROUNDS else 0
+        if start_index is not None or len(assistant_indices) <= _RECENT_TOOL_ROUNDS:
+            recent_boundary = 0
+        else:
+            recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS]
 
         out: list[dict[str, Any]] = []
         for i, m in enumerate(messages):
@@ -121,11 +152,23 @@ class Session:
             is_recent = i >= recent_boundary
 
             if role == "user":
-                text = m.get("content", "")
-                media_paths = m.get("media") or []
-                user_content = (
-                    _rebuild_user_content(text, media_paths) if media_paths else text
-                )
+                context_frame = m.get("llm_context_frame")
+                if isinstance(context_frame, str) and context_frame.strip():
+                    out.append(
+                        {
+                            "role": "user",
+                            "content": _normalize_context_frame(context_frame),
+                        }
+                    )
+                user_content = m.get("llm_user_content")
+                if user_content is None:
+                    text = m.get("content", "")
+                    media_paths = m.get("media") or []
+                    user_content = (
+                        _rebuild_user_content(text, media_paths)
+                        if media_paths
+                        else text
+                    )
                 out.append({"role": "user", "content": user_content})
                 continue
 

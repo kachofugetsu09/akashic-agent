@@ -12,6 +12,8 @@ import json_repair
 from agent.llm_json import load_json_object_loose
 
 logger = logging.getLogger("agent.loop")
+_CONTEXT_FRAME_MARKER = '<system-reminder data-system-context-frame="true">'
+_LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
 
 if TYPE_CHECKING:
     from agent.looping.ports import TurnScheduler
@@ -102,7 +104,11 @@ def _build_consolidation_source_ref(window: ConsolidationWindow) -> str:
     """返回本次 consolidation 窗口内所有消息 ID 的 JSON 列表。
     缺失 id 的消息（迁移前的历史脏数据）直接跳过。
     """
-    ids = [str(msg["id"]) for msg in window.old_messages if msg.get("id")]
+    ids = [
+        str(msg["id"])
+        for msg in window.old_messages
+        if msg.get("id") and not _is_context_frame_message(msg)
+    ]
     return json.dumps(ids, ensure_ascii=False)
 
 
@@ -116,6 +122,8 @@ def _build_entry_source_ref(base_source_ref: str, entry: str) -> str:
 def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
     lines = []
     for message in old_messages:
+        if _is_context_frame_message(message):
+            continue
         if not message.get("content") or message.get("role") == "tool":
             continue
         if message.get("role") == "assistant" and message.get("proactive"):
@@ -188,9 +196,18 @@ def _message_time(message: dict) -> str:
     return str(message.get("timestamp") or "").strip()
 
 
+def _is_context_frame_message(message: dict) -> bool:
+    content = str(message.get("content") or "").lstrip()
+    return content.startswith(_CONTEXT_FRAME_MARKER) or content.startswith(
+        _LEGACY_CONTEXT_FRAME_MARKER
+    )
+
+
 def _format_recent_context_messages(messages: list[dict]) -> str:
     lines = []
     for message in messages:
+        if _is_context_frame_message(message):
+            continue
         content = str(message.get("content") or "").strip()
         role = str(message.get("role") or "").lower()
         if not content or role not in {"user", "assistant"}:
@@ -230,6 +247,8 @@ def _replace_recent_turns_block(existing_text: str, recent_turns: str) -> str:
 def _format_conversation_for_recent_context(messages: list[dict]) -> str:
     lines = []
     for message in messages:
+        if _is_context_frame_message(message):
+            continue
         content = str(message.get("content") or "").strip()
         role = str(message.get("role") or "").upper()
         if not content or role not in {"USER", "ASSISTANT"}:

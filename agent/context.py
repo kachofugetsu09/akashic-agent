@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 import mimetypes
 from datetime import datetime
@@ -25,7 +26,7 @@ from agent.memes.catalog import MemeCatalog
 from agent.prompting import (
     PromptAssembler,
     PromptSectionMeta,
-    build_turn_injection_message,
+    build_context_frame_message,
 )
 from agent.skills import SkillsLoader
 from prompts.agent import (
@@ -55,8 +56,25 @@ class TelegramChannelPolicy:
 
 
 class MessageEnvelopeBuilder:
-    def __init__(self, policies: dict[str, ChannelPolicy] | None = None):
+    def __init__(
+        self,
+        policies: dict[str, ChannelPolicy] | None = None,
+        *,
+        multimodal: bool = True,
+        vl_available: bool = False,
+    ):
         self._policies = policies or {}
+        self._multimodal = multimodal
+        self._vl_available = vl_available
+
+    def set_media_capabilities(
+        self,
+        *,
+        multimodal: bool,
+        vl_available: bool,
+    ) -> None:
+        self._multimodal = multimodal
+        self._vl_available = vl_available
 
     def build(
         self,
@@ -64,7 +82,7 @@ class MessageEnvelopeBuilder:
         history: list[dict[str, Any]],
         current_message: str,
         system_prompt: str,
-        turn_injection_context: dict[str, str] | None,
+        context_frame: str,
         channel: str | None,
         message_timestamp: datetime | None,
         media: list[str] | None,
@@ -75,12 +93,11 @@ class MessageEnvelopeBuilder:
             if policy is not None:
                 prompt = policy.augment_system_prompt(prompt)
 
-        # 顺序是有意设计的：system prompt -> turn injection -> history -> 当前用户消息。
+        # 顺序是有意设计的：stable system -> history -> context frame -> 当前用户消息。
         messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
-        for text in (turn_injection_context or {}).values():
-            if text.strip():
-                messages.append(build_turn_injection_message(text))
         messages.extend(history)
+        if context_frame.strip():
+            messages.append(build_context_frame_message(context_frame))
         messages.append(
             {
                 "role": "user",
@@ -103,6 +120,8 @@ class MessageEnvelopeBuilder:
         text = self._stamp_current_message(text, message_timestamp=message_timestamp)
         if not media:
             return text
+        if not self._multimodal:
+            return self._build_text_with_media_refs(text, media)
 
         images = []
         for item in media:
@@ -128,6 +147,43 @@ class MessageEnvelopeBuilder:
             return text
         return images + [{"type": "text", "text": text}]
 
+    def _build_text_with_media_refs(self, text: str, media: list[str]) -> str:
+        refs: list[str] = []
+        local_image_paths: list[str] = []
+        for item in media:
+            value = str(item)
+            if value.startswith(("http://", "https://")):
+                refs.append(f"- 图片URL: {value}")
+                continue
+
+            p = Path(value)
+            mime, _ = mimetypes.guess_type(p)
+            if not p.is_file() or (mime and not mime.startswith("image/")):
+                continue
+            refs.append(f"- 图片路径: {value}")
+            local_image_paths.append(value)
+
+        if not refs:
+            return text
+
+        lines = [text, "", "[附加媒体]", *refs]
+        if self._vl_available and local_image_paths:
+            lines.append(
+                "当前主模型不能直接接收图片内容；需要识别图片时，调用 read_image_vision 工具。"
+            )
+            for path in local_image_paths:
+                quoted_path = json.dumps(path, ensure_ascii=False)
+                lines.append(
+                    f'- read_image_vision(path={quoted_path}, prompt="描述这张图片的内容")'
+                )
+        elif self._vl_available:
+            lines.append(
+                "当前主模型不能直接接收图片内容；远程图片需先取得本地路径后再读图。"
+            )
+        else:
+            lines.append("当前主模型不能直接接收图片内容，且未配置 VL 视觉模型。")
+        return "\n".join(lines)
+
     def _stamp_current_message(
         self,
         text: str,
@@ -146,7 +202,14 @@ class MessageEnvelopeBuilder:
 
 
 class ContextBuilder:
-    def __init__(self, workspace: Path, memory: "ProfileReader"):
+    def __init__(
+        self,
+        workspace: Path,
+        memory: "ProfileReader",
+        *,
+        multimodal: bool = True,
+        vl_available: bool = False,
+    ):
         self.workspace = workspace
         self.skills = SkillsLoader(workspace)
         self.memory = memory
@@ -165,13 +228,26 @@ class ContextBuilder:
             ]
         )
         self._envelope_builder = MessageEnvelopeBuilder(
-            policies={TelegramChannelPolicy.channel: TelegramChannelPolicy()}
+            policies={TelegramChannelPolicy.channel: TelegramChannelPolicy()},
+            multimodal=multimodal,
+            vl_available=vl_available,
         )
         self._assembler = PromptAssembler(self)
         self._last_debug_breakdown: list[PromptSectionMeta] = []
         self._last_assembled_contexts: dict[str, dict[str, str]] = {
             "turn_injection_context": {},
         }
+
+    def set_media_capabilities(
+        self,
+        *,
+        multimodal: bool,
+        vl_available: bool,
+    ) -> None:
+        self._envelope_builder.set_media_capabilities(
+            multimodal=multimodal,
+            vl_available=vl_available,
+        )
 
     @property
     def last_debug_breakdown(self) -> list[PromptSectionMeta]:
