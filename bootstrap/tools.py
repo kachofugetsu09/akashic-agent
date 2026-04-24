@@ -51,7 +51,7 @@ from bootstrap.wiring import (
     resolve_memory_toolset_provider,
     resolve_toolset_provider,
 )
-from bootstrap.providers import build_providers
+from bootstrap.providers import build_providers, build_vl_provider
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
@@ -119,6 +119,7 @@ def build_registered_tools(
     bus: MessageBus,
     provider,
     light_provider,
+    vl_provider=None,
     session_store=None,
     tools: ToolRegistry | None = None,
     observe_writer=None,
@@ -129,7 +130,11 @@ def build_registered_tools(
     # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
     wiring = getattr(config, "wiring", WiringConfig())
     tools = tools or ToolRegistry()
-    readonly_tools = build_readonly_tools(http_resources)
+    multimodal = getattr(config, "multimodal", True)
+    vl_available = (not multimodal) and bool(getattr(config, "vl_model", ""))
+    readonly_tools = build_readonly_tools(
+        http_resources, multimodal=multimodal, vl_available=vl_available
+    )
     store = session_store or SessionStore(workspace / "sessions.db")
     push_tool = MessagePushTool()
     memory_result = resolve_memory_toolset_provider(wiring.memory).register(
@@ -170,6 +175,8 @@ def build_registered_tools(
                 http_resources=http_resources,
                 provider=provider,
                 light_provider=light_provider,
+                vl_provider=vl_provider,
+                vl_model=getattr(config, "vl_model", ""),
                 bus=bus,
                 memory_port=memory_runtime.port,
                 scheduler=scheduler,
@@ -364,6 +371,7 @@ def build_core_runtime(
 ) -> CoreRuntime:
     bus = MessageBus()
     provider, light_provider, agent_provider = build_providers(config)
+    vl_provider = build_vl_provider(config)
     # agent_provider is used for the AgentLoop (QA / tool calling).
     # provider (llm.main) is used for consolidation event extraction.
     loop_provider = agent_provider or provider
@@ -377,6 +385,7 @@ def build_core_runtime(
         bus=bus,
         provider=provider,
         light_provider=light_provider,
+        vl_provider=vl_provider,
         session_store=session_manager._store,
         observe_writer=observe_writer,
         agent_loop_provider=lambda: loop_ref.get("loop"),
