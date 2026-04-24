@@ -199,6 +199,7 @@ class SubAgent:
                 messages,
                 content=response.content,
                 tool_calls=response.tool_calls,
+                provider_fields=response.provider_fields,
             )
 
             # 执行工具
@@ -340,6 +341,7 @@ class SubAgent:
                 messages,
                 content=response.content,
                 tool_calls=[tc],
+                provider_fields=response.provider_fields,
             )
             exec_result = await self._execute_tool_call(
                 tc.id,

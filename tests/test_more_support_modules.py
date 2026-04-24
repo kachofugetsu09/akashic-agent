@@ -18,6 +18,7 @@ from agent.provider import (
     LLMProvider,
     _normalize_openai_base_url,
 )
+from agent.tool_runtime import append_assistant_tool_calls
 from infra.channels.cli import CLIClient, _print_banner
 from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 from memory2.models import MemoryItem
@@ -27,8 +28,15 @@ from bootstrap.app import AppRuntime
 
 
 class _Response:
-    def __init__(self, content: str = "ok", tool_calls: list | None = None) -> None:
+    def __init__(
+        self,
+        content: str = "ok",
+        tool_calls: list | None = None,
+        reasoning_content: str | None = None,
+    ) -> None:
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
+        if reasoning_content is not None:
+            message.reasoning_content = reasoning_content
         self.choices = [SimpleNamespace(message=message)]
 
 
@@ -193,6 +201,88 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     assert content_deltas == ["你", "好"]
     assert thinking_deltas == ["想", "法"]
     assert fake.calls[0]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_deepseek_strategy_maps_thinking_config(monkeypatch: pytest.MonkeyPatch):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(
+        api_key="k",
+        provider_name="deepseek",
+        extra_body={"enable_thinking": True, "reasoning_effort": "xhigh"},
+    )
+
+    await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+    )
+
+    assert fake.calls[-1]["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert fake.calls[-1]["reasoning_effort"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_strategy_disables_thinking(monkeypatch: pytest.MonkeyPatch):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(
+        api_key="k",
+        provider_name="deepseek",
+        extra_body={
+            "enable_thinking": True,
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "high",
+        },
+    )
+
+    await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+        disable_thinking=True,
+    )
+
+    assert fake.calls[-1]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in fake.calls[-1]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_tool_call_round_trips_reasoning_content(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient(
+        [
+            _Response(
+                content="",
+                tool_calls=[_ToolCall("1", "search", {"q": "x"})],
+                reasoning_content="先查资料",
+            )
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k", provider_name="deepseek")
+
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function"}],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+    )
+
+    messages: list[dict] = []
+    append_assistant_tool_calls(
+        messages,
+        content=result.content,
+        tool_calls=result.tool_calls,
+        provider_fields=result.provider_fields,
+    )
+
+    assert result.thinking == "先查资料"
+    assert messages[0]["reasoning_content"] == "先查资料"
 
 
 async def _collect_delta(bucket: list, chunk) -> None:

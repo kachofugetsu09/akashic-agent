@@ -459,6 +459,7 @@ class DefaultReasoner(Reasoner):
                     messages,
                     content=response.content,
                     tool_calls=response.tool_calls,
+                    provider_fields=response.provider_fields,
                 )
 
                 # 6. 逐个执行本轮工具调用。

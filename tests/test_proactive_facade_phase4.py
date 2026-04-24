@@ -60,6 +60,7 @@ def test_build_proactive_provider_strips_enable_thinking():
 
     assert proactive_provider is not provider
     assert proactive_provider._extra_body == {"foo": "bar"}
+    assert proactive_provider._force_disable_thinking is True
 
 
 def test_sensor_reads_long_term_from_facade():

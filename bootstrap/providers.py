@@ -20,6 +20,7 @@ def build_providers(
         system_prompt=config.system_prompt,
         extra_body=main_extra,
         request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
+        provider_name=config.provider,
     )
 
     light_provider: LLMProvider | None = None
@@ -40,6 +41,7 @@ def build_providers(
             system_prompt=config.system_prompt,
             extra_body=light_extra,
             request_timeout_s=_LIGHT_PROVIDER_TIMEOUT_S,
+            force_disable_thinking=True,
         )
 
     agent_provider: LLMProvider | None = None

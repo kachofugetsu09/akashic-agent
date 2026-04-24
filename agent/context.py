@@ -243,12 +243,4 @@ class ContextBuilder:
             disabled_sections=disabled_sections,
         )
         self._last_debug_breakdown = built.debug_breakdown
-        if built.debug_breakdown:
-            logger.info(
-                "prompt breakdown: %s",
-                ", ".join(
-                    f"{item.name}[chars={item.chars},tokens~={item.est_tokens},static={int(item.is_static)},cache={int(item.cache_hit)}]"
-                    for item in built.debug_breakdown
-                ),
-            )
         return built

@@ -341,9 +341,17 @@ def _load_wiring_config(data: dict) -> WiringConfig:
 def _load_extra_body(data: dict) -> dict:
     llm = _as_dict(data.get("llm"))
     llm_main = _as_dict(llm.get("main"))
+    extra_body = dict(data.get("extra_body", {}))
+    thinking = llm_main.get("thinking")
+    if isinstance(thinking, dict):
+        extra_body["thinking"] = thinking
     if "enable_thinking" in llm_main:
-        return {"enable_thinking": bool(llm_main.get("enable_thinking"))}
-    return dict(data.get("extra_body", {}))
+        extra_body["enable_thinking"] = bool(llm_main.get("enable_thinking"))
+    if "reasoning_effort" in llm_main:
+        effort = str(llm_main.get("reasoning_effort") or "").strip()
+        if effort:
+            extra_body["reasoning_effort"] = effort
+    return extra_body
 
 
 def _as_dict(value: object) -> dict:

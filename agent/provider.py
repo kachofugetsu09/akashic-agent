@@ -60,6 +60,109 @@ class LLMResponse:
     content: str | None
     tool_calls: list[ToolCall] = field(default_factory=list)
     thinking: str | None = None
+    provider_fields: dict[str, Any] = field(default_factory=dict)
+
+
+class ProviderStrategy:
+    def normalize_messages(self, messages: list[dict]) -> list[dict]:
+        return _normalize_chat_messages(messages)
+
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        if disable_thinking:
+            _drop_thinking_keys(extra_body)
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+    def extract_message(
+        self,
+        msg: Any,
+        raw: str | None,
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        thinking: str | None = None
+        if raw:
+            m = _THINK_RE.search(raw)
+            if m:
+                thinking = m.group(1).strip()
+                raw = _THINK_RE.sub("", raw).strip() or None
+        return raw, thinking, {}
+
+    def provider_fields_for_tool_call(
+        self,
+        fields: dict[str, Any],
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        return fields
+
+
+class DeepSeekStrategy(ProviderStrategy):
+    def normalize_messages(self, messages: list[dict]) -> list[dict]:
+        return _normalize_chat_messages(messages, fill_tool_call_content=False)
+
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        thinking_enabled = extra_body.pop("enable_thinking", None)
+        reasoning_effort = extra_body.pop("reasoning_effort", None)
+        if disable_thinking:
+            extra_body["thinking"] = {"type": "disabled"}
+            reasoning_effort = None
+        elif thinking_enabled is not None and "thinking" not in extra_body:
+            extra_body["thinking"] = {
+                "type": "enabled" if bool(thinking_enabled) else "disabled"
+            }
+        if reasoning_effort and not _deepseek_thinking_disabled(extra_body):
+            kwargs["reasoning_effort"] = _normalize_deepseek_effort(
+                str(reasoning_effort)
+            )
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+    def extract_message(
+        self,
+        msg: Any,
+        raw: str | None,
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        reasoning = _get_field(msg, "reasoning_content")
+        if reasoning is None:
+            return raw, None, {}
+        text = str(reasoning)
+        return raw, text, {"reasoning_content": text}
+
+    def provider_fields_for_tool_call(
+        self,
+        fields: dict[str, Any],
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        if _deepseek_thinking_disabled(dict(kwargs.get("extra_body") or {})):
+            return fields
+        if "reasoning_content" in fields:
+            return fields
+        return {**fields, "reasoning_content": ""}
+
+
+class DashScopeStrategy(ProviderStrategy):
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        if disable_thinking:
+            _drop_thinking_keys(extra_body)
+            extra_body["enable_thinking"] = False
+        if extra_body:
+            kwargs["extra_body"] = extra_body
 
 
 class LLMProvider:
@@ -71,14 +174,18 @@ class LLMProvider:
         extra_body: dict | None = None,
         request_timeout_s: float = 90.0,
         max_retries: int = 1,
+        provider_name: str = "",
+        force_disable_thinking: bool = False,
     ) -> None:
         normalized_base_url = _normalize_openai_base_url(base_url)
         self._client = AsyncOpenAI(api_key=api_key, base_url=normalized_base_url)
         self._base_url = normalized_base_url or ""
+        self._provider_name = provider_name
         self._system = system_prompt
         self._extra_body = extra_body or {}
         self._request_timeout_s = max(1.0, float(request_timeout_s))
         self._max_retries = max(0, int(max_retries))
+        self._force_disable_thinking = force_disable_thinking
 
     async def chat(
         self,
@@ -88,8 +195,14 @@ class LLMProvider:
         max_tokens: int,
         tool_choice: str | dict = "auto",
         extra_body: dict | None = None,
+        disable_thinking: bool = False,
         on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
     ) -> LLMResponse:
+        strategy = _select_provider_strategy(
+            provider_name=self._provider_name,
+            base_url=self._base_url,
+            model=model,
+        )
         # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
         already_has_system = messages and messages[0].get("role") == "system"
         full_messages = (
@@ -98,7 +211,7 @@ class LLMProvider:
             else messages
         )
         full_messages = _merge_leading_system_messages(full_messages)
-        full_messages = _normalize_chat_messages(full_messages)
+        full_messages = strategy.normalize_messages(full_messages)
         kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
         if tools:
             kwargs["tools"] = tools
@@ -106,8 +219,11 @@ class LLMProvider:
         merged_extra_body = dict(self._extra_body)
         if extra_body:
             merged_extra_body.update(extra_body)
-        if merged_extra_body:
-            kwargs["extra_body"] = merged_extra_body
+        strategy.prepare_request(
+            kwargs,
+            merged_extra_body,
+            disable_thinking=self._force_disable_thinking or disable_thinking,
+        )
 
         _LAST_PAYLOAD_PATH.write_text(
             json.dumps(kwargs, ensure_ascii=False, indent=2, default=str),
@@ -115,7 +231,7 @@ class LLMProvider:
         )
 
         if on_content_delta is not None:
-            return await self._chat_streaming(kwargs, on_content_delta)
+            return await self._chat_streaming(kwargs, on_content_delta, strategy)
 
         resp = cast(Any, await self._create_with_retry(kwargs))
         msg = resp.choices[0].message
@@ -131,19 +247,24 @@ class LLMProvider:
                     )
                 )
 
-        raw = msg.content
-        thinking: str | None = None
-        if raw:
-            m = _THINK_RE.search(raw)
-            if m:
-                thinking = m.group(1).strip()
-                raw = _THINK_RE.sub("", raw).strip() or None
-        return LLMResponse(content=raw, tool_calls=tool_calls, thinking=thinking)
+        raw, thinking, provider_fields = strategy.extract_message(msg, msg.content)
+        if tool_calls:
+            provider_fields = strategy.provider_fields_for_tool_call(
+                provider_fields,
+                kwargs,
+            )
+        return LLMResponse(
+            content=raw,
+            tool_calls=tool_calls,
+            thinking=thinking,
+            provider_fields=provider_fields,
+        )
 
     async def _chat_streaming(
         self,
         kwargs: dict[str, Any],
         on_content_delta: Callable[[StreamDelta], Awaitable[None]],
+        strategy: ProviderStrategy,
     ) -> LLMResponse:
         stream = cast(Any, await self._create_with_retry({**kwargs, "stream": True}))
         content_parts: list[str] = []
@@ -200,12 +321,22 @@ class LLMProvider:
 
         raw = "".join(content_parts).strip() or None
         thinking = "".join(reasoning_parts).strip() or None
-        if raw:
-            m = _THINK_RE.search(raw)
-            if m:
-                thinking = m.group(1).strip()
-                raw = _THINK_RE.sub("", raw).strip() or None
-        return LLMResponse(content=raw, tool_calls=tool_calls, thinking=thinking)
+        raw, parsed_thinking, provider_fields = strategy.extract_message(
+            {"reasoning_content": thinking} if thinking is not None else {},
+            raw,
+        )
+        thinking = parsed_thinking if parsed_thinking is not None else thinking
+        if tool_calls:
+            provider_fields = strategy.provider_fields_for_tool_call(
+                provider_fields,
+                kwargs,
+            )
+        return LLMResponse(
+            content=raw,
+            tool_calls=tool_calls,
+            thinking=thinking,
+            provider_fields=provider_fields,
+        )
 
     async def _create_with_retry(self, kwargs: dict) -> object:
         last_err: Exception | None = None
@@ -371,14 +502,51 @@ def _merge_leading_system_messages(messages: list[dict]) -> list[dict]:
     return merged if merged else list(messages)
 
 
-def _normalize_chat_messages(messages: list[dict]) -> list[dict]:
+def _select_provider_strategy(
+    *,
+    provider_name: str,
+    base_url: str,
+    model: str,
+) -> ProviderStrategy:
+    provider_text = f"{provider_name} {base_url} {model}".lower()
+    if "deepseek" in provider_text:
+        return DeepSeekStrategy()
+    if "dashscope.aliyuncs.com" in provider_text or "dashscope" in provider_text:
+        return DashScopeStrategy()
+    return ProviderStrategy()
+
+
+def _drop_thinking_keys(extra_body: dict[str, Any]) -> None:
+    for key in ("enable_thinking", "thinking", "reasoning_effort"):
+        extra_body.pop(key, None)
+
+
+def _deepseek_thinking_disabled(extra_body: dict[str, Any]) -> bool:
+    thinking = extra_body.get("thinking")
+    if not isinstance(thinking, dict):
+        return False
+    return str(thinking.get("type", "") or "").lower() == "disabled"
+
+
+def _normalize_deepseek_effort(value: str) -> str:
+    effort = value.strip().lower()
+    if effort == "xhigh":
+        return "max"
+    return effort
+
+
+def _normalize_chat_messages(
+    messages: list[dict],
+    *,
+    fill_tool_call_content: bool = True,
+) -> list[dict]:
     normalized: list[dict] = []
     for msg in messages:
         item = dict(msg)
         role = str(item.get("role", "") or "")
         content = item.get("content")
 
-        if role == "assistant" and item.get("tool_calls"):
+        if fill_tool_call_content and role == "assistant" and item.get("tool_calls"):
             if content is None or (isinstance(content, str) and not content.strip()):
                 tool_calls = item.get("tool_calls") or []
                 first = tool_calls[0] if isinstance(tool_calls, list) and tool_calls else {}
