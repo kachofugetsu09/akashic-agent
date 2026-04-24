@@ -172,6 +172,9 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     )
 
     assert config_path.exists()
+    config_text = config_path.read_text(encoding="utf-8")
+    assert "multimodal = true" in config_text
+    assert "[llm.vl]" in config_text
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe" / "observe.db").exists()
     assert (workspace / "memory" / "consolidation_writes.db").exists()

@@ -82,3 +82,31 @@ def test_scripting_profile_has_no_web_tools(tmp_path: Path):
     assert "web_search" not in tool_names
     assert "shell" in tool_names
     assert "write_file" in tool_names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["research", "scripting", "general"])
+async def test_spawn_read_file_respects_non_multimodal_config(
+    tmp_path: Path,
+    profile: str,
+):
+    workspace = tmp_path / "workspace"
+    task_dir = workspace / "subagent-runs" / "job-1"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    image = workspace / "a.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    spec = build_spawn_spec(
+        workspace=workspace,
+        task_dir=task_dir,
+        fetch_requester=MagicMock(),
+        system_prompt="test",
+        profile=profile,
+        multimodal=False,
+    )
+    read_tool = next(t for t in spec.tools if t.name == "read_file")
+
+    result = await read_tool.execute(path="a.png")
+
+    assert isinstance(result, str)
+    assert "当前主模型不支持多模态" in result

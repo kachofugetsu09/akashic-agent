@@ -99,13 +99,6 @@ _IMAGE_MAX_EDGE = 1568
 _IMAGE_TARGET_B64_LEN = 8_000_000
 _IMAGE_MIN_QUALITY = 45
 _READ_PROBE_BYTES = 4096
-_SUPPORTED_IMAGE_MIME_TYPES = {
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/bmp",
-    "image/webp",
-}
 
 
 def _encode_image_for_model(
@@ -168,7 +161,11 @@ def _read_image(file_path: Path, detected_mime: str | None = None) -> ToolResult
     )
 
 
-def _detect_image_mime_from_header(head: bytes, file_name: str) -> str | None:
+def _detect_image_mime_from_header(head: bytes) -> str | None:
+    return _detect_supported_image_mime_from_header(head)
+
+
+def _detect_supported_image_mime_from_header(head: bytes) -> str | None:
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if head.startswith(b"\xff\xd8\xff"):
@@ -179,9 +176,6 @@ def _detect_image_mime_from_header(head: bytes, file_name: str) -> str | None:
         return "image/bmp"
     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
         return "image/webp"
-    mime, _ = mimetypes.guess_type(file_name)
-    if mime in _SUPPORTED_IMAGE_MIME_TYPES:
-        return mime
     return None
 
 
@@ -270,8 +264,10 @@ def _truncate_numbered_lines(
 class ReadFileTool(Tool):
     """读取文件内容，支持按行分页，超大文件自动截断。"""
 
-    def __init__(self, allowed_dir: Path | None = None):
+    def __init__(self, allowed_dir: Path | None = None, multimodal: bool = True, vl_available: bool = False):
         self._allowed_dir = allowed_dir
+        self._multimodal = multimodal
+        self._vl_available = vl_available
 
     @property
     def name(self) -> str:
@@ -280,8 +276,8 @@ class ReadFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "读取文件内容。文本文件输出带行号格式（如 '     1→内容'），便于 edit_file 精确定位；"
-            "支持的栅格图片会直接提供给多模态模型查看。\n"
+            "读取文件内容。文本文件输出带行号格式（如 '     1→内容'），便于 edit_file 精确定位。"
+            "图片文件由多模态模型直接查看；若非多模态，会提示使用 read_image_vision 工具。\n"
             "文本读取默认受 400 行和 10KB 双重上限保护；大文件须用 limit 分页，不要依赖自动截断后的续读。\n\n"
             "推荐策略：先 limit=50 预览文件结构，再按需读取目标行段（offset=N limit=M）。\n"
             "明显二进制文件不会按文本硬解码，会提示改用 shell 查看。\n"
@@ -327,9 +323,22 @@ class ReadFileTool(Tool):
 
             with builtins.open(file_path, "rb") as fh:
                 head = fh.read(_READ_PROBE_BYTES)
-            image_mime = _detect_image_mime_from_header(head, file_path.name)
+            image_mime = _detect_image_mime_from_header(head)
             if image_mime:
-                return _read_image(file_path, image_mime)
+                if self._multimodal:
+                    return _read_image(file_path, image_mime)
+                if self._vl_available:
+                    return (
+                        f"[检测到图片文件 {file_path.name}（{image_mime}）]\n"
+                        f"当前主模型不支持多模态，无法直接查看图片内容。\n"
+                        f"请使用 read_image_vision 工具来分析此图片：\n"
+                        f"read_image_vision(path='{path}', prompt='描述你想从图片中了解什么')"
+                    )
+                return (
+                    f"[检测到图片文件 {file_path.name}（{image_mime}）]\n"
+                    f"当前主模型不支持多模态，且未配置 VL 视觉模型（llm.vl），无法处理图片。\n"
+                    f"请在 config.toml 中配置 llm.vl 以启用图片识别能力。"
+                )
             if _looks_binary(head):
                 return (
                     f"错误：{path} 看起来是二进制文件，read_file 仅适合文本和图片。"

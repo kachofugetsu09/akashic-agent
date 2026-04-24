@@ -92,7 +92,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
             "mcp": _McpProvider(),
         }[name],
     )
-    monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_: {})
+    monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
     monkeypatch.setattr(
         "bootstrap.tools.build_scheduler",
         lambda *_args, **_kwargs: SimpleNamespace(),

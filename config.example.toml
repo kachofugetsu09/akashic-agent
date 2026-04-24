@@ -6,9 +6,16 @@ model = "qwen3.6-plus"
 api_key = "${QWEN_API_KEY}"
 base_url = "https://coding.dashscope.aliyuncs.com/v1"
 enable_thinking = false
+multimodal = true
 
 [llm.fast]
 model = "qwen-flash"
+api_key = "${QWEN_API_KEY}"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[llm.vl]
+# 当 llm.main.multimodal = false 时启用；model 为空表示不启用独立视觉模型。
+model = ""
 api_key = "${QWEN_API_KEY}"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 

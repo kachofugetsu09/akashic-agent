@@ -74,6 +74,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     llm_main = _as_dict(llm.get("main"))
     llm_fast = _as_dict(llm.get("fast"))
     llm_agent = _as_dict(llm.get("agent"))
+    llm_vl = _as_dict(llm.get("vl"))
     agent_cfg = _as_dict(data.get("agent"))
     agent_context = _as_dict(agent_cfg.get("context"))
     agent_tools = _as_dict(agent_cfg.get("tools"))
@@ -139,6 +140,10 @@ def load_config(path: str | Path = "config.toml") -> Config:
         spawn_enabled=bool(
             agent_tools.get("spawn_enabled", data.get("spawn_enabled", True))
         ),
+        multimodal=bool(llm_main.get("multimodal", True)),
+        vl_model=str(llm_vl.get("model") or data.get("vl_model", "")),
+        vl_api_key=_resolve(str(llm_vl.get("api_key") or data.get("vl_api_key", ""))),
+        vl_base_url=str(llm_vl.get("base_url") or data.get("vl_base_url", "")),
         peer_agents=peer_agents,
         wiring=wiring,
     )

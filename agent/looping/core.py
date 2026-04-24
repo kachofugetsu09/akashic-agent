@@ -577,7 +577,7 @@ class AgentLoop:
             sender="user",
             chat_id=chat_id,
             content=content,
-            metadata={"omit_user_turn": True} if omit_user_turn else None,
+            metadata={"omit_user_turn": True} if omit_user_turn else {},
         )
         response = await self._process(
             msg,

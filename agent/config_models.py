@@ -118,6 +118,10 @@ class Config:
     agent_base_url: str = ""
     memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
     fitbit: FitbitIntegrationConfig = field(default_factory=FitbitIntegrationConfig)
+    multimodal: bool = True
+    vl_model: str = ""
+    vl_api_key: str = ""
+    vl_base_url: str = ""
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -23,6 +24,7 @@ from agent.tools.filesystem import (
     _resolve_path,
     _run_with_file_mutation_lock,
 )
+from agent.tools.vision import _encode_image_data_uri
 from bus.events import OutboundMessage
 from bus.queue import MessageBus
 from infra.channels.ipc_server import IPCServerChannel
@@ -94,6 +96,12 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert weird_image_result.content_blocks[0]["image_url"]["url"].startswith(
         "data:image/png;base64,"
     )
+
+    fake_image = base / "fake.png"
+    fake_image.write_text("secret text", encoding="utf-8")
+    fake_image_result = await reader.execute("fake.png")
+    assert isinstance(fake_image_result, str)
+    assert "secret text" in fake_image_result
 
     svg = base / "icon.svg"
     svg.write_text("<svg><rect width='10' height='10'/></svg>\n", encoding="utf-8")
@@ -228,6 +236,50 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     empty.mkdir()
     assert "为空" in await lister.execute("empty")
     assert "不是目录" in await lister.execute("a.txt")
+
+
+def test_vision_rejects_extension_only_image(tmp_path: Path):
+    fake_image = tmp_path / "secret.png"
+    fake_image.write_text("secret text", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="不支持的图片格式"):
+        _encode_image_data_uri(fake_image)
+
+
+def test_vision_rejects_forged_magic_bytes_image(tmp_path: Path):
+    fake_image = tmp_path / "secret.png"
+    fake_image.write_bytes(b"\x89PNG\r\n\x1a\nsecret text")
+
+    with pytest.raises(ValueError, match="图片文件无法解码"):
+        _encode_image_data_uri(fake_image)
+
+
+def test_vision_reencodes_image_before_sending(tmp_path: Path):
+    from PIL import Image
+
+    image = tmp_path / "with_tail.png"
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(image)
+    image.write_bytes(image.read_bytes() + b"secret text")
+
+    data_uri = _encode_image_data_uri(image)
+    payload = data_uri.split(",", 1)[1]
+
+    assert b"secret text" not in base64.b64decode(payload)
+
+
+def test_vision_rejects_image_when_compression_still_exceeds_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    from PIL import Image
+    from agent.tools import vision
+
+    image = tmp_path / "large.png"
+    Image.new("RGB", (32, 32), (255, 0, 0)).save(image)
+    monkeypatch.setattr(vision, "_VL_MAX_DATA_URI_BYTES", 10)
+
+    with pytest.raises(ValueError, match="压缩后仍然过大"):
+        _encode_image_data_uri(image)
 
 
 def test_append_tool_result_supports_multimodal_blocks() -> None:
