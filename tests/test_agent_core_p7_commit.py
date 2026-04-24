@@ -132,6 +132,7 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     post_turn_action.run.assert_awaited_once()
     assert order == ["persist", "observe", "observe", "post_turn", "post_turn_action", "dispatch"]
     assert session.messages[-1]["content"] == "整理好了"
+    assert session.messages[-1]["reasoning_content"] == "思考"
 
 
 def test_extract_cited_ids_strips_ascii_marker_only_at_end():

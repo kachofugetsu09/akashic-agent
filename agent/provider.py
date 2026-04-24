@@ -61,6 +61,8 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     thinking: str | None = None
     provider_fields: dict[str, Any] = field(default_factory=dict)
+    cache_prompt_tokens: int | None = None
+    cache_hit_tokens: int | None = None
 
 
 class ProviderStrategy:
@@ -99,6 +101,9 @@ class ProviderStrategy:
     ) -> dict[str, Any]:
         return fields
 
+    def prepare_stream_request(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {**kwargs, "stream": True}
+
 
 class DeepSeekStrategy(ProviderStrategy):
     def normalize_messages(self, messages: list[dict]) -> list[dict]:
@@ -113,17 +118,26 @@ class DeepSeekStrategy(ProviderStrategy):
     ) -> None:
         thinking_enabled = extra_body.pop("enable_thinking", None)
         reasoning_effort = extra_body.pop("reasoning_effort", None)
+        thinking_requested = bool(thinking_enabled) or bool(reasoning_effort)
+        if _deepseek_thinking_enabled(extra_body):
+            thinking_requested = True
         if disable_thinking:
             extra_body["thinking"] = {"type": "disabled"}
             reasoning_effort = None
+            thinking_requested = False
         elif thinking_enabled is not None and "thinking" not in extra_body:
             extra_body["thinking"] = {
                 "type": "enabled" if bool(thinking_enabled) else "disabled"
             }
+            thinking_requested = bool(thinking_enabled)
         if reasoning_effort and not _deepseek_thinking_disabled(extra_body):
             kwargs["reasoning_effort"] = _normalize_deepseek_effort(
                 str(reasoning_effort)
             )
+        if thinking_requested and not _deepseek_thinking_disabled(extra_body):
+            messages = kwargs.get("messages")
+            if isinstance(messages, list):
+                kwargs["messages"] = _ensure_deepseek_reasoning_content(messages)
         if extra_body:
             kwargs["extra_body"] = extra_body
 
@@ -148,6 +162,13 @@ class DeepSeekStrategy(ProviderStrategy):
         if "reasoning_content" in fields:
             return fields
         return {**fields, "reasoning_content": ""}
+
+    def prepare_stream_request(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        stream_kwargs = {**kwargs, "stream": True}
+        stream_options = dict(stream_kwargs.get("stream_options") or {})
+        stream_options["include_usage"] = True
+        stream_kwargs["stream_options"] = stream_options
+        return stream_kwargs
 
 
 class DashScopeStrategy(ProviderStrategy):
@@ -248,6 +269,9 @@ class LLMProvider:
                 )
 
         raw, thinking, provider_fields = strategy.extract_message(msg, msg.content)
+        cache_prompt_tokens, cache_hit_tokens = _extract_cache_usage(
+            getattr(resp, "usage", None)
+        )
         if tool_calls:
             provider_fields = strategy.provider_fields_for_tool_call(
                 provider_fields,
@@ -258,6 +282,8 @@ class LLMProvider:
             tool_calls=tool_calls,
             thinking=thinking,
             provider_fields=provider_fields,
+            cache_prompt_tokens=cache_prompt_tokens,
+            cache_hit_tokens=cache_hit_tokens,
         )
 
     async def _chat_streaming(
@@ -266,13 +292,24 @@ class LLMProvider:
         on_content_delta: Callable[[StreamDelta], Awaitable[None]],
         strategy: ProviderStrategy,
     ) -> LLMResponse:
-        stream = cast(Any, await self._create_with_retry({**kwargs, "stream": True}))
+        stream = cast(
+            Any,
+            await self._create_with_retry(strategy.prepare_stream_request(kwargs)),
+        )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_call_chunks: dict[int, dict[str, str]] = {}
         tool_call_seen = False
+        cache_prompt_tokens: int | None = None
+        cache_hit_tokens: int | None = None
 
         async for chunk in stream:
+            prompt_tokens, hit_tokens = _extract_cache_usage(
+                getattr(chunk, "usage", None)
+            )
+            if prompt_tokens is not None:
+                cache_prompt_tokens = prompt_tokens
+                cache_hit_tokens = hit_tokens
             choices = getattr(chunk, "choices", None) or []
             if not choices:
                 continue
@@ -336,6 +373,8 @@ class LLMProvider:
             tool_calls=tool_calls,
             thinking=thinking,
             provider_fields=provider_fields,
+            cache_prompt_tokens=cache_prompt_tokens,
+            cache_hit_tokens=cache_hit_tokens,
         )
 
     async def _create_with_retry(self, kwargs: dict) -> object:
@@ -418,6 +457,25 @@ def _get_field(delta: Any, name: str) -> Any:
     if isinstance(delta, dict):
         return delta.get(name)
     return getattr(delta, name, None)
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_cache_usage(usage: Any) -> tuple[int | None, int | None]:
+    hit_tokens = _coerce_int(_get_field(usage, "prompt_cache_hit_tokens"))
+    miss_tokens = _coerce_int(_get_field(usage, "prompt_cache_miss_tokens"))
+    if hit_tokens is None and miss_tokens is None:
+        return None, None
+    hit = hit_tokens or 0
+    miss = miss_tokens or 0
+    return hit + miss, hit
 
 
 def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:
@@ -528,11 +586,28 @@ def _deepseek_thinking_disabled(extra_body: dict[str, Any]) -> bool:
     return str(thinking.get("type", "") or "").lower() == "disabled"
 
 
+def _deepseek_thinking_enabled(extra_body: dict[str, Any]) -> bool:
+    thinking = extra_body.get("thinking")
+    if not isinstance(thinking, dict):
+        return False
+    return str(thinking.get("type", "") or "").lower() == "enabled"
+
+
 def _normalize_deepseek_effort(value: str) -> str:
     effort = value.strip().lower()
     if effort == "xhigh":
         return "max"
     return effort
+
+
+def _ensure_deepseek_reasoning_content(messages: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for msg in messages:
+        item = dict(msg)
+        if item.get("role") == "assistant" and "reasoning_content" not in item:
+            item["reasoning_content"] = ""
+        normalized.append(item)
+    return normalized
 
 
 def _normalize_chat_messages(

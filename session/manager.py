@@ -137,25 +137,27 @@ class Session:
                 calls: list[dict] = group.get("calls") or []
                 if not calls:
                     continue
-                out.append(
-                    {
-                        "role": "assistant",
-                        "content": group.get("text"),
-                        "tool_calls": [
-                            {
-                                "id": c["call_id"],
-                                "type": "function",
-                                "function": {
-                                    "name": c["name"],
-                                    "arguments": json.dumps(
-                                        c.get("arguments", {}), ensure_ascii=False
-                                    ),
-                                },
-                            }
-                            for c in calls
-                        ],
-                    }
-                )
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": group.get("text"),
+                    "tool_calls": [
+                        {
+                            "id": c["call_id"],
+                            "type": "function",
+                            "function": {
+                                "name": c["name"],
+                                "arguments": json.dumps(
+                                    c.get("arguments", {}), ensure_ascii=False
+                                ),
+                            },
+                        }
+                        for c in calls
+                    ],
+                }
+                reasoning_content = group.get("reasoning_content")
+                if isinstance(reasoning_content, str):
+                    assistant_msg["reasoning_content"] = reasoning_content
+                out.append(assistant_msg)
                 for c in calls:
                     out.append(
                         {
@@ -168,7 +170,11 @@ class Session:
             content = m.get("content", "") or ""
             if content:
                 content = _append_proactive_meta(content, m)
-            out.append({"role": "assistant", "content": content})
+            assistant_msg = {"role": "assistant", "content": content}
+            reasoning_content = m.get("reasoning_content")
+            if isinstance(reasoning_content, str):
+                assistant_msg["reasoning_content"] = reasoning_content
+            out.append(assistant_msg)
 
         return out
 

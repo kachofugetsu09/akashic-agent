@@ -33,11 +33,13 @@ class _Response:
         content: str = "ok",
         tool_calls: list | None = None,
         reasoning_content: str | None = None,
+        usage: object | None = None,
     ) -> None:
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
         if reasoning_content is not None:
             message.reasoning_content = reasoning_content
         self.choices = [SimpleNamespace(message=message)]
+        self.usage = usage
 
 
 class _ToolCall:
@@ -117,6 +119,24 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
 
     fake = _FakeClient(
         [
+            _Response(
+                content="cache-ok",
+                usage=SimpleNamespace(
+                    prompt_cache_hit_tokens=12,
+                    prompt_cache_miss_tokens=28,
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    result = await LLMProvider(api_key="k", provider_name="deepseek").chat(
+        [], [], "deepseek-v4-flash", 1
+    )
+    assert result.cache_prompt_tokens == 40
+    assert result.cache_hit_tokens == 12
+
+    fake = _FakeClient(
+        [
             RuntimeError("Error code: 429"),
             _Response(content="retry-ok"),
         ]
@@ -181,6 +201,13 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
                     )
                 ]
             ),
+            SimpleNamespace(
+                choices=[],
+                usage=SimpleNamespace(
+                    prompt_cache_hit_tokens=16,
+                    prompt_cache_miss_tokens=48,
+                ),
+            ),
         ]
     )
     fake = _FakeClient([stream])
@@ -201,6 +228,8 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     assert content_deltas == ["你", "好"]
     assert thinking_deltas == ["想", "法"]
     assert fake.calls[0]["stream"] is True
+    assert result.cache_prompt_tokens == 64
+    assert result.cache_hit_tokens == 16
 
 
 @pytest.mark.asyncio
@@ -283,6 +312,32 @@ async def test_deepseek_tool_call_round_trips_reasoning_content(
 
     assert result.thinking == "先查资料"
     assert messages[0]["reasoning_content"] == "先查资料"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_thinking_request_patches_dirty_history(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(
+        api_key="k",
+        provider_name="deepseek",
+        extra_body={"enable_thinking": True},
+    )
+
+    await provider.chat(
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "old reply"},
+            {"role": "user", "content": "again"},
+        ],
+        tools=[],
+        model="deepseek-v4-pro",
+        max_tokens=10,
+    )
+
+    assert fake.calls[-1]["messages"][1]["reasoning_content"] == ""
 
 
 async def _collect_delta(bucket: list, chunk) -> None:

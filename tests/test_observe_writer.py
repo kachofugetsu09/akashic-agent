@@ -182,13 +182,16 @@ def test_write_turn_persists_react_budget_fields(tmp_path):
                 react_input_sum_tokens=42100,
                 react_input_peak_tokens=18800,
                 react_final_input_tokens=17500,
+                react_cache_prompt_tokens=32000,
+                react_cache_hit_tokens=18000,
             ),
             "2026-04-12T00:00:00+00:00",
         )
         row = conn.execute(
             """
             select react_iteration_count, react_input_sum_tokens,
-                   react_input_peak_tokens, react_final_input_tokens
+                   react_input_peak_tokens, react_final_input_tokens,
+                   react_cache_prompt_tokens, react_cache_hit_tokens
             from turns
             where session_key = ?
             """,
@@ -201,6 +204,8 @@ def test_write_turn_persists_react_budget_fields(tmp_path):
     assert row[1] == 42100
     assert row[2] == 18800
     assert row[3] == 17500
+    assert row[4] == 32000
+    assert row[5] == 18000
 
 
 def test_open_db_creates_react_budget_columns(tmp_path):
@@ -216,3 +221,5 @@ def test_open_db_creates_react_budget_columns(tmp_path):
     assert "react_input_sum_tokens" in cols
     assert "react_input_peak_tokens" in cols
     assert "react_final_input_tokens" in cols
+    assert "react_cache_prompt_tokens" in cols
+    assert "react_cache_hit_tokens" in cols

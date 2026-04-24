@@ -49,8 +49,18 @@ class _Provider:
 def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     provider = _Provider(
         [
-            LLMResponse(content="", tool_calls=[ToolCall("c1", "dummy", {})]),
-            LLMResponse(content="final", tool_calls=[]),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("c1", "dummy", {})],
+                cache_prompt_tokens=100,
+                cache_hit_tokens=40,
+            ),
+            LLMResponse(
+                content="final",
+                tool_calls=[],
+                cache_prompt_tokens=120,
+                cache_hit_tokens=60,
+            ),
         ]
     )
     tools = ToolRegistry()
@@ -74,6 +84,8 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert react_stats["iteration_count"] == 2
     assert react_stats["turn_input_sum_tokens"] >= react_stats["turn_input_peak_tokens"]
     assert react_stats["final_call_input_tokens"] == react_stats["turn_input_peak_tokens"]
+    assert react_stats["cache_prompt_tokens"] == 220
+    assert react_stats["cache_hit_tokens"] == 100
     first_messages = provider.calls[0]["messages"]
     assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
 

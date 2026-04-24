@@ -216,6 +216,7 @@ function bindElements() {
   el.detailPane = document.getElementById("detailPane");
   el.modalBackdrop = document.getElementById("modalBackdrop");
   el.modal = document.getElementById("modal");
+  el.cacheSummaryButton = document.getElementById("cacheSummaryButton");
   el.viewChipLabel = document.getElementById("viewChipLabel");
   el.sessionsNavGroup = document.getElementById("sessionsNavGroup");
   el.sessionsNavToggle = document.getElementById("sessionsNavToggle");
@@ -466,6 +467,7 @@ function bindEvents() {
   el.proactiveNavToggle.addEventListener("click", async () => {
     await toggleNav("proactive");
   });
+  el.cacheSummaryButton.addEventListener("click", openCacheSummaryModal);
   el.memoryTypeList.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-memory-type]");
     if (!button) {
@@ -1889,12 +1891,100 @@ function openConfirmModal({ title, text, confirmText, danger, onConfirm }) {
   openModal(html, onConfirm);
 }
 
+async function openCacheSummaryModal() {
+  let summary;
+  try {
+    summary = await api("/api/dashboard/cache/summary");
+  } catch (error) {
+    openModal(`
+      <div class="modal-title">DeepSeek KV Cache</div>
+      <div class="modal-sub">读取命中率失败：${escapeHtml(error.message || String(error))}</div>
+      <div class="modal-actions">
+        <button class="ghost" id="modalCancel" type="button">关闭</button>
+      </div>
+    `);
+    return;
+  }
+  const rateText = formatPercent(summary.hit_rate);
+  const trackedText = `${formatNumber(summary.tracked_turn_count)} / ${formatNumber(summary.turn_count)}`;
+  const recentTurns = Array.isArray(summary.recent_turns) ? summary.recent_turns : [];
+  const html = `
+    <div class="modal-title">DeepSeek KV Cache</div>
+    <div class="modal-sub">按已落库的 turn 汇总，并列出最近 30 轮命中率。</div>
+    <div class="cache-summary-grid">
+      <div class="cache-metric-card">
+        <div class="cache-metric-label">Hit Rate</div>
+        <div class="cache-metric-value">${escapeHtml(rateText)}</div>
+      </div>
+      <div class="cache-metric-card">
+        <div class="cache-metric-label">Tracked Turns</div>
+        <div class="cache-metric-value">${escapeHtml(trackedText)}</div>
+      </div>
+      <div class="cache-metric-card">
+        <div class="cache-metric-label">Hit Tokens</div>
+        <div class="cache-metric-value">${escapeHtml(formatNumber(summary.hit_tokens))}</div>
+      </div>
+      <div class="cache-metric-card">
+        <div class="cache-metric-label">Miss Tokens</div>
+        <div class="cache-metric-value">${escapeHtml(formatNumber(summary.miss_tokens))}</div>
+      </div>
+    </div>
+    <div class="cache-meter" aria-label="KV cache hit rate">
+      <div class="cache-meter-fill ${escapeHtml(formatRateBucket(summary.hit_rate))}"></div>
+    </div>
+    <div class="detail-grid">
+      ${detailRow("prompt_tokens", `<code>${escapeHtml(formatNumber(summary.prompt_tokens))}</code>`)}
+      ${detailRow("last_tracked_at", `<code>${escapeHtml(summary.last_tracked_at || "-")}</code>`)}
+    </div>
+    <div class="cache-turns">
+      <div class="cache-turns-head">
+        <span>Recent Turns</span>
+        <span>${escapeHtml(formatNumber(recentTurns.length))}</span>
+      </div>
+      ${renderCacheTurnRows(recentTurns)}
+    </div>
+    <div class="modal-actions">
+      <button class="ghost" id="modalCancel" type="button">关闭</button>
+    </div>
+  `;
+  openModal(html);
+}
+
+function renderCacheTurnRows(turns) {
+  if (!turns.length) {
+    return `<div class="cache-turn-empty">暂无已统计 turn</div>`;
+  }
+  return turns.map((turn) => {
+    const rateText = formatPercent(turn.hit_rate);
+    const preview = turn.user_preview || turn.session_key || "-";
+    return `
+      <div class="cache-turn-row">
+        <div class="cache-turn-main">
+          <span class="cache-turn-rate">${escapeHtml(rateText)}</span>
+          <span class="cache-turn-text">${escapeHtml(preview)}</span>
+        </div>
+        <div class="cache-turn-meta">
+          <code>${escapeHtml(shortTs(turn.ts))}</code>
+          <span>${escapeHtml(turn.source || "-")}</span>
+          <span>${escapeHtml(formatNumber(turn.hit_tokens))} / ${escapeHtml(formatNumber(turn.prompt_tokens))}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
 function openModal(html, onSubmit) {
   el.modal.innerHTML = html;
   el.modal.classList.remove("hidden");
   el.modalBackdrop.classList.remove("hidden");
-  document.getElementById("modalCancel").addEventListener("click", closeModal);
-  document.getElementById("modalSubmit").addEventListener("click", onSubmit);
+  const cancel = document.getElementById("modalCancel");
+  const submit = document.getElementById("modalSubmit");
+  if (cancel) {
+    cancel.addEventListener("click", closeModal);
+  }
+  if (submit && onSubmit) {
+    submit.addEventListener("click", onSubmit);
+  }
 }
 
 function closeModal() {
@@ -2075,6 +2165,26 @@ function shortTs(value) {
   return `${date.getMonth() + 1}-${String(date.getDate()).padStart(2, "0")} ${String(
     date.getHours()
   ).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function formatNumber(value) {
+  const num = Number(value || 0);
+  return new Intl.NumberFormat("zh-CN").format(num);
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+  return `${(Number(value) * 100).toFixed(2)}%`;
+}
+
+function formatRateBucket(value) {
+  if (value === null || value === undefined) {
+    return "cache-rate-0";
+  }
+  const pct = Math.max(0, Math.min(100, Number(value) * 100));
+  return `cache-rate-${Math.round(pct / 10) * 10}`;
 }
 
 function formatScopeChip() {

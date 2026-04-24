@@ -386,6 +386,9 @@ class DefaultReasoner(Reasoner):
         visible_names: set[str] | None = None
         streamed = False
         react_input_samples: list[int] = []
+        react_cache_prompt_tokens = 0
+        react_cache_hit_tokens = 0
+        react_cache_seen = False
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
             visible_names = always_on | (preloaded_tools or set())
@@ -417,6 +420,10 @@ class DefaultReasoner(Reasoner):
             )
             if on_content_delta is not None and response.content:
                 streamed = True
+            if response.cache_prompt_tokens is not None:
+                react_cache_seen = True
+                react_cache_prompt_tokens += response.cache_prompt_tokens
+                react_cache_hit_tokens += response.cache_hit_tokens or 0
 
             # 5. 模型返回 tool_calls 时，进入工具执行分支。
             if response.tool_calls:
@@ -453,6 +460,9 @@ class DefaultReasoner(Reasoner):
                         thinking=None,
                         streamed=False,
                         react_input_samples=react_input_samples,
+                        cache_prompt_tokens=react_cache_prompt_tokens,
+                        cache_hit_tokens=react_cache_hit_tokens,
+                        cache_seen=react_cache_seen,
                     )
 
                 append_assistant_tool_calls(
@@ -583,7 +593,10 @@ class DefaultReasoner(Reasoner):
                     )
 
                 # 7. 本轮工具执行完后，注入 Loop State（3行，每轮工具后更新已解锁工具列表）。
-                tool_chain.append({"text": response.content, "calls": iter_calls})
+                tool_chain_group = {"text": response.content, "calls": iter_calls}
+                if response.thinking is not None:
+                    tool_chain_group["reasoning_content"] = response.thinking
+                tool_chain.append(tool_chain_group)
                 if on_progress is not None:
                     await on_progress(
                         {
@@ -623,6 +636,10 @@ class DefaultReasoner(Reasoner):
                     max_tokens=self._llm_config.max_tokens,
                     on_content_delta=on_content_delta,
                 )
+                if retry_response.cache_prompt_tokens is not None:
+                    react_cache_seen = True
+                    react_cache_prompt_tokens += retry_response.cache_prompt_tokens
+                    react_cache_hit_tokens += retry_response.cache_hit_tokens or 0
                 if retry_response.content:
                     response = retry_response
                     if on_content_delta is not None:
@@ -655,6 +672,9 @@ class DefaultReasoner(Reasoner):
                 thinking=response.thinking,
                 streamed=streamed,
                 react_input_samples=react_input_samples,
+                cache_prompt_tokens=react_cache_prompt_tokens,
+                cache_hit_tokens=react_cache_hit_tokens,
+                cache_seen=react_cache_seen,
             )
 
         # 9. 达到最大迭代次数后，生成不完整进展总结。
@@ -677,6 +697,9 @@ class DefaultReasoner(Reasoner):
             thinking=None,
             streamed=False,
             react_input_samples=react_input_samples,
+            cache_prompt_tokens=react_cache_prompt_tokens,
+            cache_hit_tokens=react_cache_hit_tokens,
+            cache_seen=react_cache_seen,
         )
 
     async def _summarize_incomplete_progress(
@@ -726,6 +749,9 @@ class DefaultReasoner(Reasoner):
         thinking: str | None,
         streamed: bool,
         react_input_samples: list[int],
+        cache_prompt_tokens: int,
+        cache_hit_tokens: int,
+        cache_seen: bool,
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
         invocations: list[LLMToolCall] = []
@@ -741,16 +767,31 @@ class DefaultReasoner(Reasoner):
                 )
 
         # 2. 再把运行时元数据统一塞进 metadata。
+        react_stats = {
+            "iteration_count": len(react_input_samples),
+            "turn_input_sum_tokens": sum(react_input_samples),
+            "turn_input_peak_tokens": max(react_input_samples, default=0),
+            "final_call_input_tokens": react_input_samples[-1] if react_input_samples else 0,
+        }
+        if cache_seen:
+            react_stats["cache_prompt_tokens"] = cache_prompt_tokens
+            react_stats["cache_hit_tokens"] = cache_hit_tokens
+            hit_rate = (
+                cache_hit_tokens / cache_prompt_tokens
+                if cache_prompt_tokens > 0
+                else 0.0
+            )
+            logger.info(
+                "[KV缓存] 本轮 prompt_tokens=%d hit_tokens=%d hit_rate=%.2f%%",
+                cache_prompt_tokens,
+                cache_hit_tokens,
+                hit_rate * 100,
+            )
         metadata = {
             "tools_used": list(tools_used),
             "tool_chain": list(tool_chain),
             "visible_names": set(visible_names) if visible_names is not None else None,
-            "react_stats": {
-                "iteration_count": len(react_input_samples),
-                "turn_input_sum_tokens": sum(react_input_samples),
-                "turn_input_peak_tokens": max(react_input_samples, default=0),
-                "final_call_input_tokens": react_input_samples[-1] if react_input_samples else 0,
-            },
+            "react_stats": react_stats,
         }
 
         # 3. 最后返回标准 ReasonerResult。

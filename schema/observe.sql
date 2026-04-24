@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS turns (
     react_input_sum_tokens INTEGER,         -- 本轮所有 LLM 输入估算 token 累计
     react_input_peak_tokens INTEGER,        -- 本轮最大一次 LLM 输入估算 token
     react_final_input_tokens INTEGER,       -- 最后一次 LLM 输入估算 token
+    react_cache_prompt_tokens INTEGER,      -- DeepSeek KV cache: 本轮输入中 hit+miss tokens
+    react_cache_hit_tokens INTEGER,         -- DeepSeek KV cache: 本轮缓存命中 tokens
     error       TEXT                        -- NULL = 正常
 );
 

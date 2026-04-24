@@ -228,6 +228,35 @@ def test_session_get_history_does_not_inject_inference_tag():
     assert history[-1] == {"role": "assistant", "content": "world"}
 
 
+def test_session_get_history_keeps_reasoning_content():
+    session = Session("cli:1")
+    session.add_message("user", "hello")
+    session.add_message(
+        "assistant",
+        "world",
+        reasoning_content="先想一下",
+    )
+    session.messages[-1]["tool_chain"] = [
+        {
+            "text": "",
+            "reasoning_content": "准备调用工具",
+            "calls": [
+                {
+                    "call_id": "call-1",
+                    "name": "dummy",
+                    "arguments": {},
+                    "result": "ok",
+                }
+            ],
+        }
+    ]
+
+    history = session.get_history()
+
+    assert history[1]["reasoning_content"] == "准备调用工具"
+    assert history[-1]["reasoning_content"] == "先想一下"
+
+
 @pytest.mark.asyncio
 async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     loop = ProactiveLoop.__new__(ProactiveLoop)
