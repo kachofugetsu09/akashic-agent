@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from proactive_v2 import mcp_sources
@@ -11,7 +13,7 @@ class _FakePool:
         responses: dict[tuple[str, str], object],
         failures: set[tuple[str, str]] | None = None,
     ) -> None:
-        self._workspace = mcp_sources._DEFAULT_WORKSPACE
+        self._workspace = Path("unused-workspace")
         self._responses = responses
         self._failures = failures or set()
         self.calls: list[tuple[str, str, dict]] = []
