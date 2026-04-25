@@ -4,6 +4,7 @@ import os
 import signal
 from types import SimpleNamespace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -18,7 +19,9 @@ from agent.tools.shell import (
 
 
 class _FakeProc:
-    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:
+    def __init__(
+        self, stdout: str = "", stderr: str = "", returncode: int | None = 0
+    ) -> None:
         self._stdout = stdout.encode()
         self._stderr = stderr.encode()
         self.returncode = returncode
@@ -93,7 +96,8 @@ async def test_shell_tool_uses_configured_working_dir(monkeypatch, tmp_path: Pat
     tool = ShellTool(working_dir=tmp_path, restricted_dir=tmp_path)
     await tool.execute(command="ls", description="列目录")
 
-    assert observed["kwargs"]["cwd"] == str(tmp_path)
+    observed_kwargs = cast(dict[str, object], observed["kwargs"])
+    assert observed_kwargs["cwd"] == str(tmp_path)
 
 
 @pytest.mark.asyncio
@@ -128,9 +132,11 @@ async def test_shell_tool_supports_spawn_hook_and_streaming(monkeypatch, tmp_pat
         )
     )
 
+    observed_kwargs = cast(dict[str, object], observed["kwargs"])
+    env = cast(dict[str, object], observed_kwargs["env"])
     assert observed["command"] == "printf hooked"
-    assert observed["kwargs"]["cwd"] == str(tmp_path)
-    assert observed["kwargs"]["env"]["TEST_FLAG"] == "1"
+    assert observed_kwargs["cwd"] == str(tmp_path)
+    assert env["TEST_FLAG"] == "1"
     assert streamed == ["part1", "part2"]
     # 新实现 stdout/stderr 直接合流写文件，无分隔行
     assert result["output"] == "part1part2"
@@ -181,7 +187,8 @@ async def test_restricted_shell_spawn_hook_empty_cwd_falls_back_to_restricted_di
     result = json.loads(await tool.execute(command="ls .", description="清空 cwd"))
 
     assert result["exit_code"] == 0
-    assert observed["kwargs"]["cwd"] == str(tmp_path)
+    observed_kwargs = cast(dict[str, object], observed["kwargs"])
+    assert observed_kwargs["cwd"] == str(tmp_path)
 
 
 @pytest.mark.asyncio
@@ -283,7 +290,8 @@ async def test_shell_tool_cancel_kills_process_group(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await __import__("agent.tools.shell", fromlist=["_run"])._run("sleep 10", 5)
 
-    assert observed["kwargs"]["start_new_session"] is True
+    observed_kwargs = cast(dict[str, object], observed["kwargs"])
+    assert observed_kwargs["start_new_session"] is True
     assert killpg_mock == [(proc.pid, signal.SIGKILL)]
 
 

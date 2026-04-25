@@ -1,3 +1,4 @@
+from typing import Any, cast
 import asyncio
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -54,16 +55,16 @@ def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
         )
 
     return DefaultReasoner(
-        llm=LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace()),
+        llm=cast(Any, LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace())),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
-        tools=SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: [], get_tool=lambda name: None),
+        tools=cast(Any, SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: [], get_tool=lambda name: None)),
         discovery=discovery,
         tool_search_enabled=tool_search_enabled,
         memory_window=10,
         context=SimpleNamespace(
             render=_render,
         ),
-        session_manager=SimpleNamespace(save_async=AsyncMock()),
+        session_manager=cast(Any, SimpleNamespace(save_async=AsyncMock())),
     )
 
 
@@ -81,7 +82,7 @@ def test_reasoner_run_turn_retries_and_updates_discovery():
         ]
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=_session()))
+    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, _session())))
 
     assert result.reply == "ok"
     assert result.tools_used == ["tool_search", "x"]
@@ -95,7 +96,7 @@ def test_reasoner_run_turn_context_length_all_fail_returns_fallback():
     reasoner = _make_reasoner(discovery=ToolDiscoveryState(), tool_search_enabled=False)
     reasoner.run = AsyncMock(side_effect=[ContextLengthError("long")] * 7)
 
-    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=_session()))
+    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, _session())))
     assert "上下文过长" in str(result.reply)
     assert result.tools_used == []
     assert result.tool_chain == []
@@ -122,16 +123,16 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
 
     discovery = ToolDiscoveryState()
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace()),
+        llm=cast(Any, LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace())),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
-        tools=SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: [], get_tool=lambda name: None),
+        tools=cast(Any, SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: [], get_tool=lambda name: None)),
         discovery=discovery,
         tool_search_enabled=False,
         memory_window=10,
         context=SimpleNamespace(
             render=_render,
         ),
-        session_manager=SimpleNamespace(save_async=AsyncMock()),
+        session_manager=cast(Any, SimpleNamespace(save_async=AsyncMock())),
     )
     reasoner.run = AsyncMock(
         side_effect=[
@@ -143,7 +144,7 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
         ]
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=_session()))
+    result = asyncio.run(reasoner.run_turn(msg=_msg(), session=cast(Any, _session())))
     assert result.reply == "ok"
     assert result.tools_used == []
     assert result.tool_chain == []

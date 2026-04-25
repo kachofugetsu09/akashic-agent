@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 import asyncio
 import json
@@ -44,8 +45,8 @@ class _ConsolidationHarness:
         self.provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp(payload)))
         self.session_manager = SimpleNamespace(save_async=AsyncMock())
         self._consolidation = ConsolidationService(
-            memory_port=self._memory_port,
-            provider=self.provider,
+            memory_port=cast(Any, self._memory_port),
+            provider=cast(Any, self.provider),
             model="lm",
             keep_count=2,
             profile_extractor=None,
@@ -58,8 +59,8 @@ class _ConsolidationHarness:
 
     def set_profile_extractor(self, extractor) -> None:
         self._consolidation = ConsolidationService(
-            memory_port=self._memory_port,
-            provider=self.provider,
+            memory_port=cast(Any, self._memory_port),
+            provider=cast(Any, self.provider),
             model="lm",
             keep_count=2,
             profile_extractor=extractor,
@@ -148,7 +149,7 @@ async def test_consolidation_helpers(
         ]
     )
     assert json.loads(
-        _build_consolidation_source_ref(window_with_ids)
+        _build_consolidation_source_ref(cast(Any, window_with_ids))
     ) == ["telegram:1:0", "telegram:1:1"]
     assert _format_conversation_for_consolidation(session.messages).count("USER") == 1
 
@@ -212,7 +213,7 @@ async def test_consolidation_background_and_error_accounting(monkeypatch: pytest
         messages=[{"role": "user", "content": "u1", "timestamp": "2025-01-01T10:00:00"}] * 5,
         last_consolidated=0,
     )
-    await harness._scheduler._run_consolidation_bg(session, "telegram:1")
+    await harness._scheduler._run_consolidation_bg(cast(Any, session), "telegram:1")
     assert harness._scheduler.is_consolidating("telegram:1") is False
     harness.session_manager.save_async.assert_awaited_once()
 
@@ -229,7 +230,7 @@ async def test_consolidation_background_and_error_accounting(monkeypatch: pytest
         def exception(self):
             raise RuntimeError("inspect failed")
 
-    harness._scheduler._on_post_mem_done(_BrokenTask(), "s2")
+    harness._scheduler._on_post_mem_done(cast(Any, _BrokenTask()), "s2")
 
 
 @pytest.mark.asyncio
@@ -245,11 +246,11 @@ async def test_turn_scheduler_requires_min_ready_messages_before_consolidation()
         last_consolidated=0,
     )
 
-    scheduler.schedule_consolidation(session, "telegram:1")
+    scheduler.schedule_consolidation(cast(Any, session), "telegram:1")
     assert scheduler.is_consolidating("telegram:1") is False
 
     session.messages.extend([{"role": "assistant", "content": "a"}] * 2)
-    scheduler.schedule_consolidation(session, "telegram:1")
+    scheduler.schedule_consolidation(cast(Any, session), "telegram:1")
     assert scheduler.is_consolidating("telegram:1") is True
     await asyncio.sleep(0)
 
@@ -269,7 +270,7 @@ async def test_post_response_worker_invalidation_paths():
         )
     )
     provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp('["topic"]')))
-    worker = PostResponseMemoryWorker(memorizer, retriever, provider, "lm")
+    worker = PostResponseMemoryWorker(cast(Any, memorizer), cast(Any, retriever), cast(Any, provider), "lm")
 
     assert worker._consume_budget(10, 3) == (True, 7)
     assert worker._collect_explicit_memorized(
@@ -289,7 +290,7 @@ async def test_post_response_worker_budget_exhausted_skips_invalidation():
     memorizer = SimpleNamespace(save_item=AsyncMock(return_value="new:2"), supersede_batch=MagicMock())
     retriever = SimpleNamespace(retrieve=AsyncMock(side_effect=RuntimeError("boom")))
     provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp("bad json")))
-    worker = PostResponseMemoryWorker(memorizer, retriever, provider, "lm")
+    worker = PostResponseMemoryWorker(cast(Any, memorizer), cast(Any, retriever), cast(Any, provider), "lm")
 
     topics, remain = await worker._extract_invalidation_topics("也许这个流程不对", 0)
     assert topics == []

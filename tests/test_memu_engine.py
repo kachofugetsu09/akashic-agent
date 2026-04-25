@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from datetime import datetime
 from pathlib import Path
@@ -184,7 +185,7 @@ async def test_memu_engine_retrieval_pipeline_injects_memory_block(tmp_path: Pat
             ),
         ),
         memory_config=MemoryConfig(),
-        llm=LLMServices(provider=object(), light_provider=object()),
+        llm=LLMServices(provider=cast(Any, object()), light_provider=cast(Any, object())),
         workspace=tmp_path,
         light_model="test-light",
     )

@@ -1,3 +1,4 @@
+from typing import Any, cast
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -56,8 +57,8 @@ def test_consolidation_service_archive_all_and_profile_extract():
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
     service = ConsolidationService(
-        memory_port=memory,
-        provider=provider,
+        memory_port=cast(Any, memory),
+        provider=cast(Any, provider),
         model="m",
         keep_count=20,
     )
@@ -135,9 +136,9 @@ def test_consolidation_service_uses_profile_maint_for_file_side_io():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationService(
-        memory_port=memory_port,
-        profile_maint=profile_maint,
-        provider=provider,
+        memory_port=cast(Any, memory_port),
+        profile_maint=cast(Any, profile_maint),
+        provider=cast(Any, provider),
         model="m",
         keep_count=20,
         profile_extractor=None,
@@ -204,8 +205,8 @@ def test_consolidation_event_failure_does_not_write_implicit_long_term():
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
     service = ConsolidationService(
-        memory_port=memory,
-        provider=provider,
+        memory_port=cast(Any, memory),
+        provider=cast(Any, provider),
         model="m",
         keep_count=20,
     )
@@ -257,8 +258,8 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationService(
-        memory_port=memory,
-        provider=provider,
+        memory_port=cast(Any, memory),
+        provider=cast(Any, provider),
         model="m",
         keep_count=4,
     )
@@ -340,8 +341,8 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationService(
-        memory_port=memory,
-        provider=provider,
+        memory_port=cast(Any, memory),
+        provider=cast(Any, provider),
         model="m",
         keep_count=4,
     )
@@ -426,8 +427,8 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationService(
-        memory_port=memory,
-        provider=provider,
+        memory_port=cast(Any, memory),
+        provider=cast(Any, provider),
         model="m",
         keep_count=4,
     )
@@ -507,8 +508,8 @@ def test_consolidation_recent_context_invalid_json_keeps_old_compression():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationService(
-        memory_port=memory,
-        provider=provider,
+        memory_port=cast(Any, memory),
+        provider=cast(Any, provider),
         model="m",
         keep_count=4,
     )

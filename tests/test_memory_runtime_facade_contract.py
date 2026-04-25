@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -45,7 +46,7 @@ async def test_default_runtime_facade_ingest_post_turn_delegates_to_engine():
     )
     facade = DefaultMemoryRuntimeFacade(
         port=MagicMock(),
-        engine=engine,
+        engine=cast(Any, engine),
         profile_maint=MagicMock(),
     )
 
@@ -58,7 +59,7 @@ async def test_default_runtime_facade_ingest_post_turn_delegates_to_engine():
             assistant_response="好的",
             tools_used=["memorize"],
             tool_chain=[
-                _ToolGroup(
+                cast(Any, _)ToolGroup(
                     text="memo",
                     calls=[
                         _ToolCall(
@@ -70,7 +71,7 @@ async def test_default_runtime_facade_ingest_post_turn_delegates_to_engine():
                     ],
                 )
             ],
-            session=object(),
+            session=cast(Any, object()),
         )
     )
 
@@ -162,7 +163,7 @@ async def test_default_runtime_facade_retrieve_context_fallback_keeps_hits_and_i
     )
     facade = DefaultMemoryRuntimeFacade(
         port=port,
-        engine=engine,
+        engine=cast(Any, engine),
         profile_maint=MagicMock(),
     )
 
@@ -224,7 +225,7 @@ async def test_default_runtime_facade_remember_explicit_delegates_to_engine():
     )
     facade = DefaultMemoryRuntimeFacade(
         port=MagicMock(),
-        engine=engine,
+        engine=cast(Any, engine),
         profile_maint=MagicMock(),
     )
 
@@ -294,7 +295,7 @@ def test_default_runtime_facade_reads_file_side_context_from_profile_maint():
     facade = DefaultMemoryRuntimeFacade(
         port=MagicMock(),
         engine=None,
-        profile_maint=profile_maint,
+        profile_maint=cast(Any, profile_maint),
     )
 
     assert facade.read_long_term_context() == "MEMORY"

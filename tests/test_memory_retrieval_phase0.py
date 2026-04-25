@@ -265,7 +265,7 @@ async def test_update_now_tool_uses_memory_port():
     memory = MagicMock()
     tool = UpdateNowTool(cast(Any, memory))
 
-    result = await tool.execute(add='["任务A"]', remove_keywords=["旧任务"])
+    result = await tool.execute(add=cast(Any, '["任务A"]'), remove_keywords=["旧任务"])
 
     memory.update_now_ongoing.assert_called_once_with(
         add=["任务A"],
@@ -476,13 +476,13 @@ def test_phase0_proactive_runtime_keeps_memory_port_entrypoint(tmp_path: Path):
     tasks, proactive_loop = build_proactive_runtime(
         config,
         tmp_path,
-        session_manager=session_manager,
+        session_manager=cast(Any, session_manager),
         provider=cast(Any, _FakeProvider()),
         light_provider=None,
         push_tool=MagicMock(),
         memory_store=facade,
         presence=MagicMock(),
-        agent_loop=agent_loop,
+        agent_loop=cast(Any, agent_loop),
         observe_writer=None,
     )
 
@@ -764,7 +764,7 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
         rewritten_query="Fitbit 型号",
         history_memory_types=["event", "profile"],
         hyde_context="recent turns",
-        memory=memory,
+        memory=cast(Any, memory),
         config=AgentLoopConfig().memory,
     )
 
@@ -797,7 +797,7 @@ async def test_retrieve_episodic_items_returns_disabled_without_engine():
         rewritten_query="历史查询",
         history_memory_types=["event"],
         hyde_context="recent turns",
-        memory=memory,
+        memory=cast(Any, memory),
         config=AgentLoopConfig().memory,
     )
 
@@ -862,7 +862,7 @@ async def test_retrieve_episodic_items_uses_engine_hyde_path_when_enabled():
         rewritten_query="历史查询",
         history_memory_types=["event"],
         hyde_context="recent turns",
-        memory=memory,
+        memory=cast(Any, memory),
         config=AgentLoopConfig().memory,
     )
 
@@ -948,7 +948,7 @@ async def test_retrieve_episodic_items_hyde_max_pools_same_id_to_higher_score():
         rewritten_query="历史查询",
         history_memory_types=["event"],
         hyde_context="recent turns",
-        memory=memory,
+        memory=cast(Any, memory),
         config=AgentLoopConfig().memory,
     )
 
@@ -1012,7 +1012,7 @@ async def test_retrieve_episodic_items_returns_engine_managed_injection():
         rewritten_query="Fitbit 型号",
         history_memory_types=["event", "profile"],
         hyde_context="recent turns",
-        memory=memory,
+        memory=cast(Any, memory),
         config=AgentLoopConfig().memory,
     )
 

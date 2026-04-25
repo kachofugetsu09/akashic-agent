@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 import asyncio
 import json
@@ -128,7 +129,7 @@ async def test_memorize_tool_cover_branches(
         DefaultMemoryEngine(
             retriever=MagicMock(),
             memorizer=memorizer,
-            tagger=_Tagger(),
+            tagger=cast(Any, _Tagger()),
         )
     )
     result = await tool.execute(
@@ -152,7 +153,7 @@ async def test_memorize_tool_cover_branches(
         DefaultMemoryEngine(
             retriever=MagicMock(),
             memorizer=memorizer,
-            tagger=_BadTagger(),
+            tagger=cast(Any, _BadTagger()),
         )
     )
     await bad.execute(summary="普通偏好", memory_type="procedure")
@@ -166,7 +167,7 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
             return [1.0, 0.0]
 
     store = MemoryStore2(":memory:")
-    memorizer = Memorizer(store, _Embedder())
+    memorizer = Memorizer(store, cast(Any, _Embedder()))
     tool = MemorizeTool(
         DefaultMemoryEngine(
             retriever=MagicMock(),
@@ -213,7 +214,7 @@ async def test_memorizer_profile_supersede_keeps_high_emotional_weight_item_unde
             return mapping[text]
 
     store = MemoryStore2(":memory:")
-    memorizer = Memorizer(store, _Embedder())
+    memorizer = Memorizer(store, cast(Any, _Embedder()))
 
     await memorizer.save_item(
         summary="用户仍在等待 offer",
@@ -246,7 +247,7 @@ async def test_memorizer_profile_supersede_retires_low_emotional_weight_item_at_
             return mapping[text]
 
     store = MemoryStore2(":memory:")
-    memorizer = Memorizer(store, _Embedder())
+    memorizer = Memorizer(store, cast(Any, _Embedder()))
 
     await memorizer.save_item(
         summary="用户仍在等待 offer",

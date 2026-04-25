@@ -76,7 +76,7 @@ class _DummySession:
         }
         msg.update(kwargs)
         if media:
-            msg["media"] = list(media)
+            cast(Any, msg["media"]) = list(media)
         self.messages.append(msg)
 
 

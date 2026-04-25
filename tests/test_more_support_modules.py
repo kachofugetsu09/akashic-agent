@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 import asyncio
 import json
@@ -494,7 +495,7 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
         anyaction_probability_max=0.9,
     )
     gate = AnyActionGate(
-        cfg=cfg, quota_store=quota, rng=SimpleNamespace(random=lambda: 0.0)
+        cfg=cfg, quota_store=quota, rng=cast(Any, SimpleNamespace(random=lambda: 0.0))
     )
     act, meta = gate.should_act(now_utc=now, last_user_at=now - timedelta(hours=2))
     assert act is False
@@ -507,7 +508,7 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
 
     quota = QuotaStore(tmp_path / "quota2.json")
     gate = AnyActionGate(
-        cfg=cfg, quota_store=quota, rng=SimpleNamespace(random=lambda: 0.0)
+        cfg=cfg, quota_store=quota, rng=cast(Any, SimpleNamespace(random=lambda: 0.0))
     )
     act, meta = gate.should_act(now_utc=now, last_user_at=now - timedelta(hours=2))
     assert act is True
@@ -582,7 +583,7 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
     )
 
     app = AppRuntime(
-        config=SimpleNamespace(),
+        config=cast(Any, SimpleNamespace()),
         workspace=tmp_path,
     )
     await app.start()
@@ -597,10 +598,10 @@ async def test_group_filter_and_cli_paths(
 ):
     group = SimpleNamespace(group_id="1", allow_from=["42"], require_at=True)
     event = SimpleNamespace(user_id="42", raw_message="[CQ:at,qq=10001] hi")
-    assert await DefaultGroupFilter("10001").should_process(event, group) is True
+    assert await DefaultGroupFilter("10001").should_process(event, cast(Any, group)) is True
     assert strip_at_segments("x [CQ:at,qq=10001] y") == "x  y".strip()
     bad_user = SimpleNamespace(user_id="9", raw_message="hi")
-    assert await DefaultGroupFilter("10001").should_process(bad_user, group) is False
+    assert await DefaultGroupFilter("10001").should_process(bad_user, cast(Any, group)) is False
 
     reader = MagicMock()
     reader.readline = AsyncMock(side_effect=[b'{"content":"hi"}\n', b""])
@@ -703,7 +704,7 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         light_model="lm",
     )
     tasks, loop = build_proactive_runtime(
-        cfg,
+        cast(Any, cfg),
         tmp_path,
         session_manager=MagicMock(),
         provider=MagicMock(),
@@ -711,12 +712,12 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         push_tool=MagicMock(),
         memory_store=None,
         presence=MagicMock(),
-        agent_loop=SimpleNamespace(processing_state=None),
+        agent_loop=cast(Any, SimpleNamespace(processing_state=None)),
     )
     assert tasks == []
     assert loop is None
     assert (
-        build_memory_optimizer_task(cfg, provider=MagicMock(), memory_store=MagicMock())
+        build_memory_optimizer_task(cast(Any, cfg), provider=MagicMock(), memory_store=MagicMock())
         == []
     )
 
@@ -754,7 +755,7 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         light_model="lm",
     )
     tasks, loop = build_proactive_runtime(
-        cfg,
+        cast(Any, cfg),
         tmp_path,
         session_manager=MagicMock(),
         provider=MagicMock(),
@@ -776,7 +777,7 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     ]
     assert loop is proactive_loop
     mem_tasks = build_memory_optimizer_task(
-        cfg,
+        cast(Any, cfg),
         provider=MagicMock(),
         memory_store=MagicMock(),
     )

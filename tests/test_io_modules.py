@@ -5,6 +5,7 @@ import base64
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from typing import cast
 
 import pytest
 import agent.mcp.client as mcp_client_module
@@ -61,6 +62,12 @@ class _Proc:
         return None
 
 
+def _as_text(value: str | ToolResult) -> str:
+    if isinstance(value, ToolResult):
+        return value.text
+    return value
+
+
 @pytest.mark.asyncio
 async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     base = tmp_path / "base"
@@ -74,10 +81,10 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
 
     reader = ReadFileTool(base)
     content = await reader.execute("a.txt", offset=1, limit=1)
-    assert "line2" in content
-    assert "第 2" in content
-    assert "不存在" in await reader.execute("missing.txt")
-    assert "不是文件" in await reader.execute(".")
+    assert "line2" in _as_text(content)
+    assert "第 2" in _as_text(content)
+    assert "不存在" in _as_text(await reader.execute("missing.txt"))
+    assert "不是文件" in _as_text(await reader.execute("."))
 
     image = base / "a.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -123,6 +130,7 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
 
     # 验证行号前缀格式（改动九）
     full_content = await reader.execute("a.txt")
+    full_content = _as_text(full_content)
     assert "     1\u2192line1" in full_content, "read_file 应输出 '     1→line1' 格式的行号前缀"
     assert "     2\u2192line2" in full_content
     assert "     3\u2192line3" in full_content
@@ -143,29 +151,34 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     _fs_mod._READ_MAX_LINES = 2
     truncated_lines = await reader.execute("a.txt")
     _fs_mod._READ_MAX_LINES = orig_max_lines
+    truncated_lines = _as_text(truncated_lines)
     assert "行数超限" in truncated_lines
     assert "本次返回" in truncated_lines
 
     long_line = base / "long_line.txt"
     long_line.write_text("x" * (_READ_MAX_BYTES + 1), encoding="utf-8")
     long_line_result = await reader.execute("long_line.txt")
+    long_line_result = _as_text(long_line_result)
     assert "首行超过 10KB" in long_line_result
 
     boundary = base / "boundary.txt"
     boundary.write_text("x" * (_READ_MAX_BYTES - 1), encoding="utf-8")
     boundary_result = await reader.execute("boundary.txt")
+    boundary_result = _as_text(boundary_result)
     assert "首行超过 10KB" not in boundary_result
     assert "字节数超限" in boundary_result
 
     bad_utf8 = base / "bad.txt"
     bad_utf8.write_bytes(b"ok\xffoops\n")
     bad_utf8_result = await reader.execute("bad.txt")
+    bad_utf8_result = _as_text(bad_utf8_result)
     assert "替代字符" in bad_utf8_result
     assert "oops" in bad_utf8_result
 
     binary = base / "data.dat"
     binary.write_bytes(b"\x00\x01\x02\x03hello")
     binary_result = await reader.execute("data.dat")
+    binary_result = _as_text(binary_result)
     assert "二进制文件" in binary_result
     assert "xxd" in binary_result
 
@@ -180,7 +193,7 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(Path, "read_bytes", _guard_read_bytes)
     streamed = await reader.execute("stream.txt")
-    assert "alpha" in streamed
+    assert "alpha" in _as_text(streamed)
     monkeypatch.setattr(Path, "read_bytes", orig_read_bytes)
 
     writer = WriteFileTool(base)
@@ -338,7 +351,7 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
 ):
     bus = MessageBus()
     loop = SimpleNamespace()
-    channel = IPCServerChannel(bus, str(tmp_path / "agent.sock"), loop)
+    channel = IPCServerChannel(bus, str(tmp_path / "agent.sock"), None)
 
     server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
     monkeypatch.setattr("infra.channels.ipc_server.asyncio.start_unix_server", AsyncMock(return_value=server))
@@ -368,7 +381,9 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
         close=MagicMock(),
         is_closing=lambda: False,
     )
-    await channel._handle_connection(reader, writer)
+    await channel._handle_connection(
+        cast(asyncio.StreamReader, reader), cast(asyncio.StreamWriter, writer)
+    )
     inbound = await bus.consume_inbound()
     assert inbound.content == "hello"
     assert any("command_result" in payload.decode() for payload in writes)

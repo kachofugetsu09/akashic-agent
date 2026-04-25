@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,8 +49,8 @@ def test_system_prompt_builder_uses_prompt_blocks_and_static_cache(tmp_path: Pat
     )
     ctx = TurnContext(
         workspace=tmp_path,
-        memory=_Memory(),
-        skills=_Skills(),
+        memory=cast(Any, _Memory()),
+        skills=cast(Any, _Skills()),
         skill_names=[],
         channel=None,
         chat_id=None,
@@ -73,8 +74,8 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
     )
     ctx = TurnContext(
         workspace=tmp_path,
-        memory=_Memory(),
-        skills=_Skills(),
+        memory=cast(Any, _Memory()),
+        skills=cast(Any, _Skills()),
         skill_names=[],
         channel=None,
         chat_id=None,

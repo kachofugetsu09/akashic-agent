@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,7 +26,7 @@ class _DummySession:
             "content": content,
         }
         if media:
-            msg["media"] = list(media)
+            cast(Any, msg["media"]) = list(media)
         msg.update(kwargs)
         self.messages.append(msg)
 
@@ -46,11 +47,11 @@ async def test_orchestrator_skip_runs_side_effects_without_dispatch():
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=SessionServices(
-                session_manager=SimpleNamespace(get_or_create=lambda _key: _DummySession("telegram:123")),
+                session_manager=cast(Any, SimpleNamespace(get_or_create=lambda _key: _DummySession("telegram:123"))),
                 presence=None,
             ),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=None),
-            post_turn=SimpleNamespace(schedule=lambda event: order.append("post_turn")),
+            post_turn=cast(Any, SimpleNamespace(schedule=lambda event: order.append("post_turn"))),
             outbound=_Outbound(),
         )
     )
@@ -105,9 +106,9 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     )
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
-            session=SessionServices(session_manager=session_manager, presence=presence),
+            session=SessionServices(session_manager=cast(Any, session_manager), presence=cast(Any, presence)),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
-            post_turn=SimpleNamespace(schedule=lambda event: post_turn_events.append(event)),
+            post_turn=cast(Any, SimpleNamespace(schedule=lambda event: post_turn_events.append(event))),
             outbound=_Outbound(),
         )
     )

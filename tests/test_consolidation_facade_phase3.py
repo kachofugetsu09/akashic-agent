@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -65,7 +66,7 @@ async def test_turn_scheduler_runner_can_go_through_facade():
         keep_count=20,
     )
 
-    await scheduler._run_consolidation_bg(session, "telegram:1")
+    await scheduler._run_consolidation_bg(cast(Any, session), "telegram:1")
 
     facade.run_consolidation.assert_awaited_once_with(session)
     save_async.assert_awaited_once_with(session)

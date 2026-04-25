@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -28,15 +29,15 @@ def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
     facade = MagicMock()
 
     tasks, loop = build_proactive_runtime(
-        cfg,
+        cast(Any, cfg),
         tmp_path,
-        session_manager=SimpleNamespace(workspace=tmp_path),
-        provider=SimpleNamespace(),
+        session_manager=cast(Any, SimpleNamespace(workspace=tmp_path)),
+        provider=cast(Any, SimpleNamespace()),
         light_provider=None,
-        push_tool=SimpleNamespace(),
+        push_tool=cast(Any, SimpleNamespace()),
         memory_store=facade,
-        presence=SimpleNamespace(),
-        agent_loop=SimpleNamespace(processing_state=None),
+        presence=cast(Any, SimpleNamespace()),
+        agent_loop=cast(Any, SimpleNamespace(processing_state=None)),
     )
 
     assert loop is not None
@@ -56,7 +57,7 @@ def test_build_proactive_provider_strips_enable_thinking():
         extra_body={"enable_thinking": True, "foo": "bar"},
     )
 
-    proactive_provider = _build_proactive_provider(cfg, provider)
+    proactive_provider = _build_proactive_provider(cast(Any, cfg), provider)
 
     assert proactive_provider is not provider
     assert proactive_provider._extra_body == {"foo": "bar"}
@@ -67,9 +68,9 @@ def test_sensor_reads_long_term_from_facade():
     facade = SimpleNamespace(read_long_term_context=lambda: "MEMORY")
     sensor = Sensor(
         cfg=SimpleNamespace(default_channel="telegram", default_chat_id="1"),
-        sessions=SimpleNamespace(),
-        state=SimpleNamespace(),
-        memory=facade,
+        sessions=cast(Any, SimpleNamespace()),
+        state=cast(Any, SimpleNamespace()),
+        memory=cast(Any, facade),
         presence=None,
         rng=SimpleNamespace(),
     )

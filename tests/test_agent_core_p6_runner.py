@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from typing import cast
 
 import pytest
 
+from agent.context import ContextBuilder
+from agent.core.context_store import ContextStore
+from agent.looping.ports import SessionServices
+from agent.tools.registry import ToolRegistry
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from bus.events import InboundMessage, OutboundMessage
 
@@ -13,14 +18,17 @@ from bus.events import InboundMessage, OutboundMessage
 async def test_core_runner_routes_passive_message_to_agent_core():
     runner = CoreRunner(
         CoreRunnerDeps(
-            agent_core=SimpleNamespace(
+            agent_core=cast(
+                object,
+                SimpleNamespace(
                 process=AsyncMock(
                     return_value=OutboundMessage(
                         channel="cli",
                         chat_id="1",
                         content="final",
                     )
-                )
+                ),
+                ),
             ),
         )
     )
@@ -61,11 +69,14 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     )
     runner = CoreRunner(
         CoreRunnerDeps(
-            agent_core=SimpleNamespace(process=AsyncMock()),
-            session=session_svc,
-            context=context,
-            context_store=context_store,
-            tools=tools,
+            agent_core=cast(
+                object,
+                SimpleNamespace(process=AsyncMock()),
+            ),
+            session=cast(SessionServices, session_svc),
+            context=cast(ContextBuilder, context),
+            context_store=cast(ContextStore, context_store),
+            tools=cast(ToolRegistry, tools),
             memory_window=12,
             run_agent_loop_fn=run_agent_loop_fn,
         )

@@ -1,3 +1,4 @@
+from typing import Any, cast
 from types import SimpleNamespace
 
 import pytest
@@ -38,7 +39,7 @@ async def test_send_markdown_splits_long_code_block_into_multiple_messages():
     code = "print('x')\n" * 800
     markdown = f"```python\n{code}```"
 
-    await send_markdown(bot, "123", markdown)
+    await send_markdown(cast(Any, bot), "123", markdown)
 
     assert len(bot.messages) >= 2
     assert bot.document_calls == 0
@@ -60,7 +61,7 @@ async def test_send_markdown_falls_back_to_plain_text(monkeypatch):
         "infra.channels.telegram_utils.convert_with_segments", fake_convert_with_segments
     )
 
-    await send_markdown(bot, 456, "line1\nline2")
+    await send_markdown(cast(Any, bot), 456, "line1\nline2")
 
     assert bot.messages == [{"chat_id": 456, "text": "line1\nline2"}]
 
@@ -101,7 +102,7 @@ async def test_stream_message_falls_back_to_plain_text_on_html_parse_error():
         bot.edits.append(kwargs)
 
     bot.edit_message_text = broken_edit_message_text
-    stream = TelegramStreamMessage(bot, 123)
+    stream = TelegramStreamMessage(cast(Any, bot), 123)
     await stream.push_delta("**hello**")
     await stream.finalize("**hello**\n\n- a\n- b")
 
@@ -123,7 +124,7 @@ async def test_stream_message_ignores_message_not_modified_error():
         )
 
     bot.edit_message_text = unchanged_edit_message_text
-    stream = TelegramStreamMessage(bot, 123)
+    stream = TelegramStreamMessage(cast(Any, bot), 123)
 
     await stream.push_delta("hello")
     await stream.finalize("hello")
@@ -134,7 +135,7 @@ async def test_stream_message_ignores_message_not_modified_error():
 @pytest.mark.asyncio
 async def test_stream_message_skips_duplicate_truncated_preview():
     bot = BotStub()
-    stream = TelegramStreamMessage(bot, 123)
+    stream = TelegramStreamMessage(cast(Any, bot), 123)
     first = "a" * 4096 + "X"
     second = "a" * 4096 + "Y"
 
@@ -162,7 +163,7 @@ async def test_stream_message_retry_after_enters_cooldown_without_blocking(monke
             return value
 
     async def limited_edit_message_text(**kwargs):
-        raise mod.RetryAfter(48.0)
+        raise mod.RetryAfter(cast(Any, 48.0))
 
     bot.edit_message_text = limited_edit_message_text
     sleep_mock = AsyncMock()
@@ -172,7 +173,7 @@ async def test_stream_message_retry_after_enters_cooldown_without_blocking(monke
         lambda: _Loop(),
     )
 
-    stream = TelegramStreamMessage(bot, 123)
+    stream = TelegramStreamMessage(cast(Any, bot), 123)
     await stream.push_delta("hello", force=True)
     await stream.push_delta(" world", force=True)
     assert stream._edit_cooldown_until > 30.0
@@ -189,7 +190,7 @@ async def test_send_thinking_block_splits_long_content():
     bot = BotStub()
     # 每个中文字符占 1 个 UTF-16 code unit，构造超长 thinking
     thinking = "思" * 5000
-    await send_thinking_block(bot, 123, thinking)
+    await send_thinking_block(cast(Any, bot), 123, thinking)
     assert len(bot.messages) >= 2
     # 每条消息都应该有 expandable_blockquote entity
     for msg in bot.messages:
@@ -206,6 +207,6 @@ async def test_send_thinking_block_splits_long_content():
 @pytest.mark.asyncio
 async def test_send_thinking_block_short_content_single_message():
     bot = BotStub()
-    await send_thinking_block(bot, 123, "短思考")
+    await send_thinking_block(cast(Any, bot), 123, "短思考")
     assert len(bot.messages) == 1
     assert "短思考" in bot.messages[0]["text"]

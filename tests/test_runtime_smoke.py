@@ -3,7 +3,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from typing import cast
+from typing import cast, Any
 
 import pytest
 
@@ -331,11 +331,11 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
         controller = object()
         ipc, tg, qq = await start_channels(
             config,
-            bus=object(),
-            session_manager=object(),
-            push_tool=_PushTool(),
+            bus=cast(Any, object()),
+            session_manager=cast(Any, object()),
+            push_tool=cast(Any, _PushTool()),
             http_resources=resources,
-            interrupt_controller=controller,
+            interrupt_controller=cast(Any, controller),
         )
     finally:
         await resources.aclose()
@@ -402,9 +402,9 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     try:
         ipc, tg, qq = await start_channels(
             config,
-            bus=object(),
-            session_manager=object(),
-            push_tool=_PushTool(),
+            bus=cast(Any, object()),
+            session_manager=cast(Any, object()),
+            push_tool=cast(Any, _PushTool()),
             http_resources=resources,
         )
     finally:

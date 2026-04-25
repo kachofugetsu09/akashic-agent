@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from pathlib import Path
 
@@ -45,7 +46,7 @@ async def test_fetch_alert_events_async_filters_kind_and_sets_ack_server(monkeyp
         }
     )
 
-    result = await mcp_sources.fetch_alert_events_async(pool)
+    result = await mcp_sources.fetch_alert_events_async(cast(Any, pool))
 
     assert result == [{"kind": "alert", "event_id": "a1", "ack_server": "s1"}]
 
@@ -70,7 +71,7 @@ async def test_fetch_content_events_async_keeps_default_compat_channel_filter(mo
         }
     )
 
-    result = await mcp_sources.fetch_content_events_async(pool)
+    result = await mcp_sources.fetch_content_events_async(cast(Any, pool))
 
     assert result == [{"kind": "content", "event_id": "n1", "ack_server": "s1"}]
 
@@ -92,7 +93,7 @@ async def test_fetch_context_data_async_accepts_dict_and_list(monkeypatch):
         }
     )
 
-    result = await mcp_sources.fetch_context_data_async(pool)
+    result = await mcp_sources.fetch_context_data_async(cast(Any, pool))
 
     assert result == [
         {"available": True, "_source": "ctx1"},
@@ -121,7 +122,7 @@ async def test_poll_content_feeds_async_raises_when_any_source_failed(monkeypatc
     )
 
     with pytest.raises(RuntimeError) as exc:
-        await mcp_sources.poll_content_feeds_async(pool)
+        await mcp_sources.poll_content_feeds_async(cast(Any, pool))
 
     assert "s2" in str(exc.value)
     assert ("a1", "poll", {}) not in pool.calls
@@ -156,7 +157,7 @@ async def test_acknowledge_events_async_groups_by_ack_server(monkeypatch):
         _Evt("", "a3", source_name="feed"),
         _Evt("unknown", "x"),
     ]
-    await mcp_sources.acknowledge_events_async(pool, events)
+    await mcp_sources.acknowledge_events_async(cast(Any, pool), events)
 
     assert ("fitbit", "ack_events", {"event_ids": ["a1", "a2"]}) in pool.calls
     assert ("feed", "ack_events", {"event_ids": ["a3"]}) in pool.calls
@@ -176,7 +177,7 @@ async def test_acknowledge_content_entries_async_passes_ttl_hours(monkeypatch):
         ("mcp:feed", "evt-2"),
         ("rss:other", "skip"),
     ]
-    await mcp_sources.acknowledge_content_entries_async(pool, entries, ttl_hours=24)
+    await mcp_sources.acknowledge_content_entries_async(cast(Any, pool), entries, ttl_hours=24)
 
     assert (
         "feed",

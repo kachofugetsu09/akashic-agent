@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from types import SimpleNamespace
 
@@ -89,15 +90,15 @@ def test_build_proactive_runtime_accepts_light_agent_loop_stub(tmp_path):
         light_model="lm",
     )
     tasks, loop = build_proactive_runtime(
-        cfg,
+        cast(Any, cfg),
         tmp_path,
-        session_manager=SimpleNamespace(),
-        provider=SimpleNamespace(),
+        session_manager=cast(Any, SimpleNamespace()),
+        provider=cast(Any, SimpleNamespace()),
         light_provider=None,
-        push_tool=SimpleNamespace(),
+        push_tool=cast(Any, SimpleNamespace()),
         memory_store=None,
-        presence=SimpleNamespace(),
-        agent_loop=SimpleNamespace(processing_state=None),
+        presence=cast(Any, SimpleNamespace()),
+        agent_loop=cast(Any, SimpleNamespace(processing_state=None)),
     )
     assert tasks == []
     assert loop is None

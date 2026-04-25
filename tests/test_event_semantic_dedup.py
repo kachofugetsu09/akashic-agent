@@ -1,3 +1,4 @@
+from typing import Any, cast
 import asyncio
 from datetime import datetime, timedelta, timezone
 
@@ -21,7 +22,7 @@ def test_near_duplicate_event_not_saved_again(tmp_path):
             "用户公开了脱敏后的仓库": [0.99, 0.01],
         }
     )
-    memorizer = Memorizer(store, embedder)
+    memorizer = Memorizer(store, cast(Any, embedder))
 
     async def _run() -> None:
         await memorizer.save_from_consolidation(
@@ -53,7 +54,7 @@ def test_distinct_event_saves_normally(tmp_path):
             "用户买了一个新键盘": [0.0, 1.0],
         }
     )
-    memorizer = Memorizer(store, embedder)
+    memorizer = Memorizer(store, cast(Any, embedder))
 
     async def _run() -> None:
         await memorizer.save_from_consolidation(
@@ -85,7 +86,7 @@ def test_reinforcement_incremented_on_dedup(tmp_path):
             "用户公开了脱敏后的仓库": [0.99, 0.01],
         }
     )
-    memorizer = Memorizer(store, embedder)
+    memorizer = Memorizer(store, cast(Any, embedder))
 
     async def _run() -> None:
         await memorizer.save_from_consolidation(
@@ -117,7 +118,7 @@ def test_emotional_weight_merged_on_event_dedup(tmp_path):
             "用户公开了脱敏后的仓库": [0.99, 0.01],
         }
     )
-    memorizer = Memorizer(store, embedder)
+    memorizer = Memorizer(store, cast(Any, embedder))
 
     async def _run() -> None:
         await memorizer.save_from_consolidation(
@@ -151,7 +152,7 @@ def test_dedup_window_is_7_days(tmp_path):
             "用户公开了脱敏后的仓库": [0.99, 0.01],
         }
     )
-    memorizer = Memorizer(store, embedder)
+    memorizer = Memorizer(store, cast(Any, embedder))
 
     async def _run() -> None:
         await memorizer.save_from_consolidation(

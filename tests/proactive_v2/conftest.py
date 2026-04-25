@@ -8,7 +8,7 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from proactive_v2.config import ProactiveConfig
@@ -156,7 +156,7 @@ class _FakeSession:
     def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
         msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat()}
         if media:
-            msg["media"] = list(media)
+            cast(Any, msg["media"]) = list(media)
         msg.update(kwargs)
         self.messages.append(msg)
 
@@ -258,8 +258,8 @@ def make_agent_tick(
         append_messages=AsyncMock(return_value=None),
     )
     session_svc = SessionServices(
-        session_manager=session_manager,
-        presence=SimpleNamespace(record_proactive_sent=lambda _key: None),
+        session_manager=cast(Any, session_manager),
+        presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
     )
     trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
 

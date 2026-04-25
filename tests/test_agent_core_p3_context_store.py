@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from datetime import datetime
 from types import SimpleNamespace
@@ -65,7 +66,7 @@ async def test_default_context_store_prepare_returns_bundle_with_legacy_metadata
             )
         )
     )
-    store = DefaultContextStore(retrieval=retrieval, context=context)
+    store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
     session = _DummySession()
     msg = InboundMessage(
         channel="cli",
@@ -75,7 +76,7 @@ async def test_default_context_store_prepare_returns_bundle_with_legacy_metadata
         timestamp=datetime(2026, 4, 4, 20, 0, 0),
     )
 
-    bundle = await store.prepare(msg=msg, session_key="cli:1", session=session)
+    bundle = await store.prepare(msg=msg, session_key="cli:1", session=cast(Any, session))
 
     assert [item.content for item in bundle.history] == ["hello", "world"]
     assert bundle.memory_blocks == ["remembered"]
@@ -103,7 +104,7 @@ async def test_default_context_store_prepare_uses_explicit_session_key_for_retri
     context = SimpleNamespace(
         skills=SimpleNamespace(list_skills=MagicMock(return_value=[]))
     )
-    store = DefaultContextStore(retrieval=retrieval, context=context)
+    store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
     session = _DummySession()
     msg = InboundMessage(
         channel="telegram",
@@ -112,7 +113,7 @@ async def test_default_context_store_prepare_uses_explicit_session_key_for_retri
         content="定时任务执行一下",
     )
 
-    await store.prepare(msg=msg, session_key="scheduler:job-123", session=session)
+    await store.prepare(msg=msg, session_key="scheduler:job-123", session=cast(Any, session))
 
     request = retrieval.retrieve.await_args.args[0]
     assert request.session_key == "scheduler:job-123"
@@ -145,7 +146,7 @@ def test_build_post_reply_context_budget_combines_history_and_prompt():
     )
 
     budget = _build_post_reply_context_budget(
-        context=context,
+        context=cast(Any, context),
         history=[{"role": "user", "content": "你好"}],
         history_window=40,
     )

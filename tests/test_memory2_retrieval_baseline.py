@@ -13,6 +13,8 @@ Memory2 检索排序能力基线测试
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import math
 from datetime import datetime, timedelta, timezone
 
@@ -52,7 +54,7 @@ def test_baseline_superseded_excluded_from_retrieval(tmp_path):
 
     store.upsert_item("procedure", "旧规则（已退休）", embedding=[1.0, 0.0], extra={})
     old_id = store.list_by_type("procedure")[0]["id"]
-    store.mark_superseded(old_id)
+    store.mark_superseded(cast(Any, old_id))
 
     store.upsert_item("procedure", "新规则（active）", embedding=[0.9, 0.0], extra={})
 

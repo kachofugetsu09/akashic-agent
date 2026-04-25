@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 import json
 from pathlib import Path
@@ -267,8 +268,8 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
     build_registered_tools(
         config=config,
         workspace=tmp_path,
-        http_resources=SimpleNamespace(),
-        bus=SimpleNamespace(),
+        http_resources=cast(Any, SimpleNamespace()),
+        bus=cast(Any, SimpleNamespace()),
         provider=object(),
         light_provider=object(),
         session_store=object(),
@@ -304,14 +305,14 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     deps = _build_loop_deps(
         config=config,
         workspace=tmp_path,
-        bus=SimpleNamespace(),
-        provider=object(),
+        bus=cast(Any, SimpleNamespace()),
+        provider=cast(Any, object()),
         light_provider=None,
         tools=ToolRegistry(),
-        session_manager=SimpleNamespace(),
-        presence=None,
-        processing_state=SimpleNamespace(),
-        memory_runtime=SimpleNamespace(port=object(), post_response_worker=None),
+        session_manager=cast(Any, SimpleNamespace()),
+        presence=cast(Any, None),
+        processing_state=cast(Any, SimpleNamespace()),
+        memory_runtime=cast(Any, SimpleNamespace(port=object(), post_response_worker=None)),
         observe_writer=None,
     )
 
@@ -398,8 +399,8 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
     _, _, _, mcp_registry, _, _, _ = build_registered_tools(
         config=config,
         workspace=tmp_path,
-        http_resources=SimpleNamespace(),
-        bus=SimpleNamespace(),
+        http_resources=cast(Any, SimpleNamespace()),
+        bus=cast(Any, SimpleNamespace()),
         provider=object(),
         light_provider=object(),
         session_store=object(),

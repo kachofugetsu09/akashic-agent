@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 import json
 from datetime import datetime, timezone
@@ -181,7 +182,7 @@ async def test_drift_web_fetch_keeps_drift_level_truncation(tmp_path: Path):
         ),
     )
     raw = await reg.execute("web_fetch", {"url": "https://example.com"})
-    payload = json.loads(raw)
+    payload = json.loads(cast(Any, raw))
     assert payload["text"] == "x" * 8
     assert payload["length"] == 8
     assert payload["truncated"] is True
@@ -227,7 +228,7 @@ async def test_finish_drift_rejects_unknown_skill(tmp_path: Path):
         {"skill_used": "missing", "one_line": "x", "next": "y"},
         store=store,
     )
-    assert json.loads(raw)["error"] == "unknown skill: missing"
+    assert json.loads(cast(Any, raw))["error"] == "unknown skill: missing"
 
 
 @pytest.mark.asyncio
@@ -278,7 +279,7 @@ async def test_drift_runner_runs_and_finishes(tmp_path: Path):
         ),
         max_steps=5,
     )
-    entered = await runner.run(ctx, llm)
+    entered = await runner.run(ctx, cast(Any, llm))
     assert entered is True
     assert ctx.drift_finished is True
     drift = store.load_drift()
@@ -307,7 +308,7 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
         max_steps=5,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    await runner.run(ctx, llm)
+    await runner.run(ctx, cast(Any, llm))
     second_names = {schema["function"]["name"] for schema in llm.calls[1][0:1]} if False else None
     assert llm.calls
     # 第二次 llm 调用的 schemas 只能由 DriftRunner 约束为 write_file/edit_file/finish_drift；
@@ -349,7 +350,7 @@ async def test_drift_runner_forced_write_allows_write_file_or_edit_file(tmp_path
         max_steps=3,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    await runner.run(ctx, llm)
+    await runner.run(ctx, cast(Any, llm))
     assert captured[1][1] == "required"
     assert set(captured[1][0]) == {"write_file", "edit_file"}
 
@@ -442,8 +443,8 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=SessionServices(
-                session_manager=session_manager,
-                presence=SimpleNamespace(record_proactive_sent=lambda _key: None),
+                session_manager=cast(Any, session_manager),
+                presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
             ),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
             post_turn=_PostTurn(),
@@ -654,7 +655,7 @@ async def test_drift_runner_filters_skills_by_mcp(tmp_path: Path):
         max_steps=5,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    entered = await runner.run(ctx, FakeLLM([]))
+    entered = await runner.run(ctx, cast(Any, FakeLLM([])))
     assert entered is False  # all skills filtered, drift should skip
 
 
@@ -674,7 +675,7 @@ async def test_drift_runner_keeps_skills_when_mcp_available(tmp_path: Path):
         max_steps=5,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    entered = await runner.run(ctx, llm)
+    entered = await runner.run(ctx, cast(Any, llm))
     assert entered is True
     assert ctx.drift_finished is True
 
@@ -694,7 +695,7 @@ async def test_mount_server_adds_tools_and_schemas(tmp_path: Path):
     )
     assert reg.has_tool("mount_server")
     raw = await reg.execute("mount_server", {"server": "calendar"})
-    result = json.loads(raw)
+    result = json.loads(cast(Any, raw))
     assert result["ok"] is True
     assert "mcp_calendar__tool_a" in result["tools"]
     assert "mcp_calendar__tool_b" in result["tools"]
@@ -716,7 +717,7 @@ async def test_mount_server_idempotent(tmp_path: Path):
     )
     await reg.execute("mount_server", {"server": "calendar"})
     raw = await reg.execute("mount_server", {"server": "calendar"})
-    result = json.loads(raw)
+    result = json.loads(cast(Any, raw))
     assert result["ok"] is True
     assert "已挂载" in result["message"]
 
@@ -775,7 +776,7 @@ async def test_drift_runner_executes_mounted_mcp_tool(tmp_path: Path):
         max_steps=10,
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
-    await runner.run(ctx, llm)
+    await runner.run(ctx, cast(Any, llm))
     assert ctx.drift_finished is True
     # After mount (step 1), step 2 should see MCP tools in schemas
     assert "mcp_calendar__tool_a" in captured_schemas[1]
@@ -860,8 +861,8 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=SessionServices(
-                session_manager=session_manager,
-                presence=SimpleNamespace(record_proactive_sent=lambda _key: None),
+                session_manager=cast(Any, session_manager),
+                presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
             ),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=None),
             post_turn=_PostTurn(),

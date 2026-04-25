@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ def test_scheduler_toolset_provider_registers_expected_tools(tmp_path: Path):
 
     result = SchedulerToolsetProvider().register(
         registry,
-        SimpleNamespace(
+        cast(Any, S)impleNamespace(
             config=None,
             workspace=tmp_path,
             scheduler=scheduler,
@@ -104,10 +105,10 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
 
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
         build_registered_tools(
-            config=SimpleNamespace(spawn_enabled=False, proactive=SimpleNamespace()),
+            config=cast(Any, SimpleNamespace(spawn_enabled=False, proactive=SimpleNamespace())),
             workspace=tmp_path,
-            http_resources=SimpleNamespace(),
-            bus=SimpleNamespace(),
+            http_resources=cast(Any, SimpleNamespace()),
+            bus=cast(Any, SimpleNamespace()),
             provider=object(),
             light_provider=object(),
             session_store=object(),
@@ -133,7 +134,7 @@ def test_build_registration_result_uses_public_registry_names():
     )
 
     result = build_registration_result(
-        registry=registry,
+        registry=cast(Any, registry),
         source_name="demo",
         before={"a"},
     )

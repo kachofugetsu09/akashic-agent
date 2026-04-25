@@ -66,7 +66,7 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
@@ -106,7 +106,7 @@ def test_default_reasoner_unlocks_tool_search_visibility():
     hidden = _DummyTool("hidden_tool")
     tools.register(hidden)
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
@@ -142,7 +142,7 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         source_name="github",
     )
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
@@ -187,7 +187,7 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
     tools.register(_DummyTool(), always_on=True)
     tools.register(_DummyTool("schedule"))
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
@@ -213,7 +213,7 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
     tools.register(_DummyTool(), always_on=True)
     tools.register(_DummyTool("schedule"))
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
@@ -237,7 +237,7 @@ def test_default_reasoner_run_turn_uses_context_render():
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
@@ -267,7 +267,7 @@ def test_default_reasoner_run_turn_uses_context_render():
         timestamp=datetime(2026, 4, 5, 12, 0, 0),
     )
 
-    result = asyncio.run(reasoner.run_turn(msg=msg, session=session))
+    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
 
     assert result.reply == "done"
 
@@ -282,7 +282,7 @@ def test_empty_content_with_thinking_triggers_retry_and_succeeds():
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
@@ -309,7 +309,7 @@ def test_empty_content_with_thinking_retry_still_empty_falls_back():
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
@@ -333,7 +333,7 @@ def test_empty_content_without_thinking_no_retry():
     tools = ToolRegistry()
     tools.register(_DummyTool(), always_on=True)
     reasoner = DefaultReasoner(
-        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),

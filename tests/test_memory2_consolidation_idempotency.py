@@ -1,3 +1,4 @@
+from typing import Any, cast
 import asyncio
 
 from memory2.memorizer import Memorizer, _parse_history_entry_happened_at
@@ -47,7 +48,7 @@ def test_upsert_consolidation_event_fills_missing_happened_at_on_duplicate(tmp_p
 
 def test_save_from_consolidation_writes_happened_at(tmp_path):
     store = MemoryStore2(tmp_path / "memory2.db")
-    memorizer = Memorizer(store, _FakeEmbedder())
+    memorizer = Memorizer(store, cast(Any, _FakeEmbedder()))
 
     async def _run() -> None:
         await memorizer.save_from_consolidation(
@@ -67,7 +68,7 @@ def test_save_from_consolidation_writes_happened_at(tmp_path):
 
 def test_save_from_consolidation_skips_duplicate_source_ref(tmp_path):
     store = MemoryStore2(tmp_path / "memory2.db")
-    memorizer = Memorizer(store, _FakeEmbedder())
+    memorizer = Memorizer(store, cast(Any, _FakeEmbedder()))
 
     async def _run() -> None:
         await memorizer.save_from_consolidation(

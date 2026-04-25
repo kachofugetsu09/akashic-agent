@@ -207,7 +207,7 @@ def test_used_hyde_true_when_hyde_appended_new_item():
     )
 
     assert used_hyde is True
-    assert len(results) == 2
+    assert len(cast(Any, results)) == 2
 
 
 def test_used_hyde_false_when_hyde_adds_nothing_new():
@@ -239,7 +239,7 @@ def test_used_hyde_false_when_hyde_adds_nothing_new():
     )
 
     assert used_hyde is False
-    assert len(results) == 1
+    assert len(cast(Any, results)) == 1
 
 
 # ── 6. retrieve_history_items scope_mode 标记 ─────────────────────────────────

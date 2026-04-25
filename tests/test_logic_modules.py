@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 import asyncio
 from datetime import datetime, timezone
@@ -89,7 +90,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
         build_injection_block=lambda items: ("block", ["1"]),
         _store=SimpleNamespace(keyword_match_procedures=lambda action_tokens: [{"id": "p1"}]),
     )
-    port = DefaultMemoryPort(store, memorizer, retriever)
+    port = DefaultMemoryPort(cast(Any, store), cast(Any, memorizer), cast(Any, retriever))
     assert port.read_history(3) == "def"
     assert port.has_long_term_memory() is True
     assert await port.retrieve_related("q") == [{"id": "1"}]
@@ -103,7 +104,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     assert port.keyword_match_procedures(["shell"]) == [{"id": "p1"}]
 
     broken = DefaultMemoryPort(
-        SimpleNamespace(
+        cast(Any, S)impleNamespace(
             read_long_term=lambda: (_ for _ in ()).throw(RuntimeError("x")),
             write_long_term=lambda content: None,
             read_self=lambda: "",

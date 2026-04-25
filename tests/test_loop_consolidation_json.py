@@ -1,3 +1,4 @@
+from typing import Any, cast
 import json
 from types import SimpleNamespace
 
@@ -54,7 +55,7 @@ def test_build_consolidation_source_ref_returns_message_id_list_json():
         ]
     )
 
-    ref = _build_consolidation_source_ref(window)
+    ref = _build_consolidation_source_ref(cast(Any, window))
     assert json.loads(ref) == ["telegram:123:4", "telegram:123:5"]
 
 
@@ -108,7 +109,7 @@ def test_consolidation_formatters_skip_context_frame_messages():
 
     window = SimpleNamespace(old_messages=messages)
 
-    assert json.loads(_build_consolidation_source_ref(window)) == ["2"]
+    assert json.loads(_build_consolidation_source_ref(cast(Any, window))) == ["2"]
     assert "内部上下文" not in _format_conversation_for_consolidation(messages)
     assert "内部上下文" not in _format_conversation_for_recent_context(messages)
     assert "内部上下文" not in _format_recent_context_messages(messages)

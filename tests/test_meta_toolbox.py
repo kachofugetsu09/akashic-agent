@@ -1,3 +1,4 @@
+from typing import Any, cast
 from agent.tools.base import Tool
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.meta import (
@@ -44,7 +45,7 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     tools = ToolRegistry()
     readonly_tools = {
         "web_search": WebSearchTool(),
-        "web_fetch": WebFetchTool(requester=object()),
+        "web_fetch": WebFetchTool(requester=cast(Any, object())),
         "read_file": ReadFileTool(),
         "list_dir": ListDirTool(),
     }
@@ -56,8 +57,8 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     )
     register_memory_meta_tools(
         tools,
-        forget_tool=_ForgetMemoryToolStub(),
-        recall_tool=_RecallMemoryToolStub(),
+        forget_tool=cast(Any, _ForgetMemoryToolStub()),
+        recall_tool=cast(Any, _RecallMemoryToolStub()),
         write_file_tool=WriteFileTool(),
         edit_file_tool=EditFileTool(),
     )

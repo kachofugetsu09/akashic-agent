@@ -5,8 +5,8 @@ TDD — Phase 6: proactive_v2/agent_tick.py — Post-guard + ACK
   A. 模块级纯函数（build_delivery_key、ack_* helpers）— 无需 tick()
   B. tick() 集成测试 — 验证 flow 分支正确触发 guard 和 ACK
 """
-
 from __future__ import annotations
+from typing import Any, cast
 
 import json
 from hashlib import sha1
@@ -39,7 +39,7 @@ from tests.proactive_v2.conftest import (
 
 # ── build_delivery_key ────────────────────────────────────────────────────
 
-def _make_ctx(cited: list[str] = (), message: str = "") -> AgentTickContext:
+def _make_ctx(cited: list[str] = cast(Any, ()), message: str = "") -> AgentTickContext:
     ctx = AgentTickContext()
     ctx.cited_item_ids = list(cited)
     ctx.final_message = message

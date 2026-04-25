@@ -41,7 +41,7 @@ if "telegram" not in sys.modules:
         async def edit_message_text(self, *args, **kwargs):
             return True
 
-    class MessageEntity:
+    class TelegramMessageEntity:
         def __init__(self, *, type, offset, length):
             self.type = type
             self.offset = offset
@@ -62,7 +62,7 @@ if "telegram" not in sys.modules:
         pass
 
     telegram_stub.Bot = Bot
-    telegram_stub.MessageEntity = MessageEntity
+    telegram_stub.MessageEntity = TelegramMessageEntity
     telegram_error_stub.BadRequest = BadRequest
     telegram_error_stub.RetryAfter = RetryAfter
     telegram_error_stub.NetworkError = NetworkError
@@ -159,7 +159,7 @@ def make_job(
     fire_at=None,
     channel="telegram",
     chat_id="123",
-    message="hello",
+    message: str | None = "hello",
     prompt=None,
     name=None,
     interval_seconds=None,

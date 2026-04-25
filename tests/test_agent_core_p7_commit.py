@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from datetime import datetime
 from pathlib import Path
@@ -30,7 +31,7 @@ class _DummySession:
             "timestamp": datetime.now().isoformat(),
         }
         if media:
-            msg["media"] = list(media)
+            cast(Any, msg["media"]) = list(media)
         msg.update(kwargs)
         self.messages.append(msg)
 
@@ -65,13 +66,13 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
         )
     )
     store = DefaultContextStore(
-        retrieval=SimpleNamespace(retrieve=AsyncMock(return_value=RetrievalResult(block=""))),
-        context=SimpleNamespace(skills=SimpleNamespace(list_skills=MagicMock(return_value=[]))),
-        session=SimpleNamespace(session_manager=session_manager, presence=presence),
-        trace=SimpleNamespace(workspace=Path("."), observe_writer=writer),
-        post_turn=post_turn,
-        outbound=outbound,
-        meme_decorator=decorator,
+        retrieval=cast(Any, SimpleNamespace(retrieve=AsyncMock(return_value=RetrievalResult(block="")))),
+        context=cast(Any, SimpleNamespace(skills=SimpleNamespace(list_skills=MagicMock(return_value=[])))),
+        session=cast(Any, SimpleNamespace(session_manager=session_manager, presence=presence)),
+        trace=cast(Any, SimpleNamespace(workspace=Path("."), observe_writer=writer)),
+        post_turn=cast(Any, post_turn),
+        outbound=cast(Any, outbound),
+        meme_decorator=cast(Any, decorator),
     )
     msg = InboundMessage(
         channel="telegram",

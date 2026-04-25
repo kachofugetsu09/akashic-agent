@@ -1,5 +1,6 @@
 """Tests for current proactive.memory_optimizer behavior."""
 
+from typing import Any, cast
 import asyncio
 import types
 from datetime import datetime
@@ -30,7 +31,7 @@ def test_optimize_skips_when_memory_pending_history_all_empty(tmp_path):
     provider = types.SimpleNamespace()
     provider.chat = AsyncMock()
 
-    optimizer = MemoryOptimizer(memory, provider, "test-model")
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
 
@@ -42,7 +43,7 @@ def test_optimize_rewrites_memory_from_first_llm_call(tmp_path):
     memory.write_long_term("old profile")
 
     provider = _provider_with_responses("## 用户画像\n- 新版本\n")
-    optimizer = MemoryOptimizer(memory, provider, "test-model")
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
 
@@ -55,7 +56,7 @@ def test_optimize_rolls_back_snapshot_when_merge_returns_empty(tmp_path):
     memory.append_pending("- pending fact")
 
     provider = _provider_with_responses("")
-    optimizer = MemoryOptimizer(memory, provider, "test-model")
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
 
@@ -74,7 +75,7 @@ def test_optimize_updates_self_using_pending_only(tmp_path):
         "## 新记忆",
         "# Akashic 的自我认知\n\n## 人格与形象\n\n- 新版人格\n\n## 我对当前用户的理解\n\n- 新版理解\n\n## 我们关系的定义\n\n- 新版关系\n",
     )
-    optimizer = MemoryOptimizer(memory, provider, "test-model")
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
 
@@ -93,7 +94,7 @@ def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path):
     memory.append_history("[2026-03-03 10:00] USER: 这段历史不该进入长期记忆")
 
     provider = _provider_with_responses("## 用户画像\n- 新版本\n")
-    optimizer = MemoryOptimizer(memory, provider, "test-model")
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
 
@@ -116,7 +117,7 @@ def test_parse_cleanup_json_supports_fenced_json():
 def test_request_text_response_uses_expected_chat_kwargs(tmp_path):
     memory = DefaultMemoryPort(MemoryStore(tmp_path))
     provider = _provider_with_responses("merged")
-    optimizer = MemoryOptimizer(memory, provider, "test-model")
+    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
 
     result = asyncio.run(
         optimizer._request_text_response(
