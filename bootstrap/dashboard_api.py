@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+import logging
 import json
 import sqlite3
 import threading
 from datetime import timedelta
-from typing import Any
+from typing import Any, Protocol
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
@@ -20,6 +21,8 @@ from core.observe.db import open_db
 from session.store import SessionStore
 from memory2.store import MemoryStore2
 
+logger = logging.getLogger(__name__)
+
 
 class SessionUpdatePayload(BaseModel):
     metadata: dict[str, Any] | None = None
@@ -31,6 +34,11 @@ class SessionUpdatePayload(BaseModel):
 class SessionBatchDeletePayload(BaseModel):
     keys: list[str]
     cascade: bool = True
+
+
+class SessionConsolidatePayload(BaseModel):
+    archive_all: bool = False
+    force: bool = True
 
 
 class MessageUpdatePayload(BaseModel):
@@ -60,6 +68,16 @@ class MemoryBatchDeletePayload(BaseModel):
 class ProactiveDeletePayload(BaseModel):
     source_key: str | None = None
     item_ids: list[str] | None = None
+
+
+class ManualConsolidator(Protocol):
+    async def trigger_memory_consolidation(
+        self,
+        session_key: str,
+        *,
+        archive_all: bool = False,
+        force: bool = False,
+    ) -> bool: ...
 
 
 class ProactiveDashboardReader:
@@ -530,7 +548,11 @@ def _preview_text(value: Any, limit: int) -> str:
     return text[:limit].rstrip() + "..."
 
 
-def create_dashboard_app(workspace: Path) -> FastAPI:
+def create_dashboard_app(
+    workspace: Path,
+    *,
+    manual_consolidator: ManualConsolidator | None = None,
+) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
     memory_store = MemoryStore2(workspace / "memory" / "memory2.db")
@@ -612,6 +634,48 @@ def create_dashboard_app(workspace: Path) -> FastAPI:
             "total": total,
             "page": max(1, page),
             "page_size": max(1, min(page_size, 200)),
+        }
+
+    @app.post("/api/dashboard/sessions/{session_key:path}/consolidate")
+    async def consolidate_session(
+        session_key: str,
+        payload: SessionConsolidatePayload | None = None,
+    ) -> dict[str, Any]:
+        archive_all = bool(payload.archive_all) if payload is not None else False
+        force = bool(payload.force) if payload is not None else True
+        if manual_consolidator is None:
+            raise HTTPException(status_code=503, detail="manual consolidation 未启用")
+        if not store.session_exists(session_key):
+            raise HTTPException(status_code=404, detail="session 不存在")
+        logger.info(
+            "Manual memory consolidation requested: session=%s archive_all=%s force=%s",
+            session_key,
+            archive_all,
+            force,
+        )
+        try:
+            triggered = await manual_consolidator.trigger_memory_consolidation(
+                session_key,
+                archive_all=archive_all,
+                force=force,
+            )
+        except TimeoutError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        meta = store.get_session_meta(session_key) or {"key": session_key}
+        meta["message_count"] = store.count_messages(session_key)
+        logger.info(
+            "Manual memory consolidation response: session=%s triggered=%s last_consolidated=%s message_count=%s",
+            session_key,
+            triggered,
+            meta.get("last_consolidated"),
+            meta.get("message_count"),
+        )
+        return {
+            "session_key": session_key,
+            "archive_all": archive_all,
+            "force": force,
+            "triggered": triggered,
+            "session": meta,
         }
 
     @app.post("/api/dashboard/sessions/batch-delete")
@@ -1000,9 +1064,13 @@ def run_dashboard_api(
     workspace: Path,
     host: str = "127.0.0.1",
     port: int = 2236,
+    manual_consolidator: ManualConsolidator | None = None,
 ) -> None:
     uvicorn.run(
-        create_dashboard_app(workspace),
+        create_dashboard_app(
+            workspace,
+            manual_consolidator=manual_consolidator,
+        ),
         host=host,
         port=port,
         log_level="info",
@@ -1014,9 +1082,13 @@ def build_dashboard_server(
     workspace: Path,
     host: str = "127.0.0.1",
     port: int = 2236,
+    manual_consolidator: ManualConsolidator | None = None,
 ) -> uvicorn.Server:
     config = uvicorn.Config(
-        create_dashboard_app(workspace),
+        create_dashboard_app(
+            workspace,
+            manual_consolidator=manual_consolidator,
+        ),
         host=host,
         port=port,
         log_level="info",

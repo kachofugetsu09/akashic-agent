@@ -94,6 +94,8 @@ const state = {
   sessionMap: new Map(),
   activeSessionKey: null,
   activeSession: null,
+  consolidatingSessionKeys: new Set(),
+  sessionActionNotice: null,
   selectedMessageIds: new Set(),
   sessionSearch: "",
   sessionChannel: "",
@@ -700,6 +702,9 @@ async function selectSession(session) {
   state.activeSessionKey = session.key;
   state.activeSession = session;
   state.activeMessage = null;
+  if (state.sessionActionNotice?.key !== session.key) {
+    state.sessionActionNotice = null;
+  }
   state.selectedMessageIds.clear();
   state.page = 1;
   await loadMessages();
@@ -1440,6 +1445,10 @@ function renderMessageDetail() {
 
 function renderSessionDetail() {
   const session = state.activeSession;
+  const isConsolidating = state.consolidatingSessionKeys.has(session.key);
+  const notice = state.sessionActionNotice?.key === session.key
+    ? state.sessionActionNotice
+    : null;
   el.detailPane.innerHTML = `
     <div class="detail-wrap">
       <div class="detail-toolbar">
@@ -1448,10 +1457,12 @@ function renderSessionDetail() {
           <div class="detail-subtext">${escapeHtml(session.key)}</div>
         </div>
         <div class="table-actions">
+          <button class="ghost" id="sessionConsolidateButton" type="button" ${isConsolidating ? "disabled" : ""}>${isConsolidating ? "整理中" : "整理记忆"}</button>
           <button class="ghost" id="sessionDetailEditButton" type="button">编辑</button>
           <button class="danger-ghost" id="sessionDetailDeleteButton" type="button">删除</button>
         </div>
       </div>
+      ${notice ? `<div class="detail-callout ${notice.type}">${escapeHtml(notice.text)}</div>` : ""}
 
       <div class="detail-block">
         <div class="detail-label">Fields</div>
@@ -1473,12 +1484,51 @@ function renderSessionDetail() {
   `;
 
   document
+    .getElementById("sessionConsolidateButton")
+    .addEventListener("click", () => consolidateSession(session));
+  document
     .getElementById("sessionDetailEditButton")
     .addEventListener("click", () => openSessionEditModal(session));
   document
     .getElementById("sessionDetailDeleteButton")
     .addEventListener("click", () => openSessionDeleteModal(session));
   attachJsonViewers(el.detailPane);
+}
+
+async function consolidateSession(session) {
+  if (state.consolidatingSessionKeys.has(session.key)) {
+    return;
+  }
+  const beforeConsolidated = Number(session.last_consolidated ?? 0);
+  state.consolidatingSessionKeys.add(session.key);
+  state.sessionActionNotice = null;
+  renderSessionDetail();
+  try {
+    const result = await api(
+      `/api/dashboard/sessions/${encodePath(session.key)}/consolidate`,
+      {
+        method: "POST",
+        body: JSON.stringify({ archive_all: false, force: true }),
+      }
+    );
+    const afterConsolidated = Number(
+      result.session?.last_consolidated ?? beforeConsolidated
+    );
+    const delta = afterConsolidated - beforeConsolidated;
+    state.sessionActionNotice = {
+      key: session.key,
+      type: result.triggered ? "success" : "idle",
+      text: result.triggered
+        ? `记忆整理完成，last_consolidated ${beforeConsolidated} -> ${afterConsolidated}${delta > 0 ? `，推进 ${delta} 条` : ""}`
+        : `当前没有未整理消息，last_consolidated 仍为 ${afterConsolidated}`,
+    };
+    await loadSessions();
+    await loadMessages();
+    await loadMemorySidebar();
+  } finally {
+    state.consolidatingSessionKeys.delete(session.key);
+    render();
+  }
 }
 
 function renderMemoryDetail() {

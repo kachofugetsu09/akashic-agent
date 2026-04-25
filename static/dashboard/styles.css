@@ -823,6 +823,18 @@ textarea:focus {
   background: var(--bg-soft);
 }
 
+.btn-ghost:disabled,
+.ghost:disabled,
+.primary:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+}
+
+.btn-ghost:disabled:hover,
+.ghost:disabled:hover {
+  background: transparent;
+}
+
 .btn-ghost.danger,
 .danger-ghost {
   border: 1px solid var(--line);
@@ -871,6 +883,21 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.detail-callout {
+  margin: 12px 0 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--yellow-soft);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.detail-callout.success {
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .detail-block {

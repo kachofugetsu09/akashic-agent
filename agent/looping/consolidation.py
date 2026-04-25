@@ -74,6 +74,7 @@ def _select_consolidation_window(
     keep_count: int,
     consolidation_min_new_messages: int,
     archive_all: bool,
+    force: bool = False,
 ) -> ConsolidationWindow | None:
     total_messages = len(session.messages)
     if archive_all:
@@ -83,18 +84,23 @@ def _select_consolidation_window(
             consolidate_up_to=total_messages,
         )
 
-    if total_messages <= keep_count:
-        return None
     if total_messages - session.last_consolidated <= 0:
         return None
 
-    consolidate_up_to = total_messages - keep_count
+    if force:
+        consolidate_up_to = total_messages
+    else:
+        if total_messages <= keep_count:
+            return None
+        consolidate_up_to = total_messages - keep_count
     old_messages = session.messages[session.last_consolidated : consolidate_up_to]
-    if len(old_messages) < max(1, int(consolidation_min_new_messages)):
+    if not old_messages:
+        return None
+    if not force and len(old_messages) < max(1, int(consolidation_min_new_messages)):
         return None
     return ConsolidationWindow(
         old_messages=old_messages,
-        keep_count=keep_count,
+        keep_count=0 if force else keep_count,
         consolidate_up_to=consolidate_up_to,
     )
 
@@ -957,6 +963,7 @@ ongoing_threads 严格限制：
         self,
         session,
         archive_all: bool = False,
+        force: bool = False,
     ) -> None:
         memory = self._memory_port
         profile_maint = self._profile_maint
@@ -966,6 +973,7 @@ ongoing_threads 严格限制：
             keep_count=self._keep_count,
             consolidation_min_new_messages=self._consolidation_min_new_messages,
             archive_all=archive_all,
+            force=force,
         )
         if archive_all:
             logger.info(
@@ -995,10 +1003,11 @@ ongoing_threads 严格限制：
                     )
                 return
             logger.info(
-                "Memory consolidation started: %d total, %d new to consolidate, %d keep",
+                "Memory consolidation started: %d total, %d new to consolidate, %d keep, force=%s",
                 len(session.messages),
                 len(window.old_messages),
                 window.keep_count,
+                force,
             )
 
         if window is None:
@@ -1322,8 +1331,9 @@ class ConsolidationRuntime:
         session,
         *,
         archive_all: bool = False,
+        force: bool = False,
     ) -> None:
-        if self._facade is not None:
+        if self._facade is not None and not force:
             await self._facade.run_consolidation(
                 session,
                 archive_all=archive_all,
@@ -1332,6 +1342,7 @@ class ConsolidationRuntime:
         await self._consolidation.consolidate(
             session,
             archive_all=archive_all,
+            force=force,
         )
 
     async def trigger_memory_consolidation(
@@ -1339,6 +1350,7 @@ class ConsolidationRuntime:
         session_key: str,
         *,
         archive_all: bool = False,
+        force: bool = False,
         consolidate_fn: Callable[..., Awaitable[None]] | None = None,
     ) -> bool:
         # 1. 先读取真实 session，并判断当前是否真的需要 consolidation。
@@ -1348,12 +1360,32 @@ class ConsolidationRuntime:
             keep_count=self._keep_count,
             consolidation_min_new_messages=self._consolidation_min_new_messages,
             archive_all=archive_all,
+            force=force,
         )
         if window is None:
+            total_messages = len(session.messages)
+            last_consolidated = int(getattr(session, "last_consolidated", 0))
+            boundary = total_messages if force else total_messages - self._keep_count
+            ready_count = max(0, boundary - last_consolidated)
+            logger.info(
+                "Manual memory consolidation skipped: session=%s total=%d keep=%d last_consolidated=%d ready=%d min=%d archive_all=%s force=%s",
+                session_key,
+                total_messages,
+                self._keep_count,
+                last_consolidated,
+                ready_count,
+                self._consolidation_min_new_messages,
+                archive_all,
+                force,
+            )
             return False
 
         # 2. 若后台已在跑，同步等待那次 consolidation 完成，避免返回语义含糊的 False。
         if self._scheduler.is_consolidating(session_key):
+            logger.info(
+                "Manual memory consolidation waits for inflight task: session=%s",
+                session_key,
+            )
             await self.wait_for_consolidation_idle(session_key)
             session = self._session_manager.get_or_create(session_key)
             window = _select_consolidation_window(
@@ -1361,20 +1393,43 @@ class ConsolidationRuntime:
                 keep_count=self._keep_count,
                 consolidation_min_new_messages=self._consolidation_min_new_messages,
                 archive_all=archive_all,
+                force=force,
             )
             if window is None:
+                logger.info(
+                    "Manual memory consolidation already covered by inflight task: session=%s",
+                    session_key,
+                )
                 return True
 
         # 3. 再复用现有真实 consolidation 逻辑执行一次，避免测试绕过主实现。
         if not self._scheduler.mark_manual_start(session_key):
+            logger.info(
+                "Manual memory consolidation skipped because session is locked: session=%s",
+                session_key,
+            )
             return False
         try:
             runner = consolidate_fn or self.consolidate_memory
+            logger.info(
+                "Manual memory consolidation started: session=%s messages=%d last_consolidated=%d archive_all=%s force=%s",
+                session_key,
+                len(session.messages),
+                int(getattr(session, "last_consolidated", 0)),
+                archive_all,
+                force,
+            )
             await runner(
                 session,
                 archive_all=archive_all,
+                force=force,
             )
             await self._session_manager.save_async(session)
+            logger.info(
+                "Manual memory consolidation done: session=%s last_consolidated=%d",
+                session_key,
+                int(getattr(session, "last_consolidated", 0)),
+            )
             return True
         finally:
             self._scheduler.mark_manual_end(session_key)

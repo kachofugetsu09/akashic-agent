@@ -148,7 +148,10 @@ class AppRuntime:
                 self.observe_task = asyncio.create_task(
                     self.observe_writer.run(), name="observe_writer"
                 )
-            self.dashboard_server = build_dashboard_server(workspace=self.workspace)
+            self.dashboard_server = build_dashboard_server(
+                workspace=self.workspace,
+                manual_consolidator=self.agent_loop,
+            )
             self.dashboard_task = asyncio.create_task(
                 self.dashboard_server.serve(),
                 name="dashboard_server",

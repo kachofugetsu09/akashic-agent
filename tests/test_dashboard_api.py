@@ -13,6 +13,25 @@ from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
 
 
+class _ManualConsolidator:
+    def __init__(self, *, result: bool = True, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[tuple[str, bool, bool]] = []
+
+    async def trigger_memory_consolidation(
+        self,
+        session_key: str,
+        *,
+        archive_all: bool = False,
+        force: bool = False,
+    ) -> bool:
+        self.calls.append((session_key, archive_all, force))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
 def _seed_workspace(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     store.create_session(
@@ -281,6 +300,64 @@ def test_update_and_delete_session(tmp_path) -> None:
 
     get_resp = client.get("/api/dashboard/sessions/telegram:100")
     assert get_resp.status_code == 404
+
+
+def test_manual_consolidate_session_uses_runtime_entrypoint(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    consolidator = _ManualConsolidator(result=True)
+    client = TestClient(
+        create_dashboard_app(tmp_path, manual_consolidator=consolidator)
+    )
+
+    resp = client.post(
+        "/api/dashboard/sessions/telegram:100/consolidate",
+        json={"archive_all": True},
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["triggered"] is True
+    assert payload["archive_all"] is True
+    assert payload["force"] is True
+    assert payload["session"]["key"] == "telegram:100"
+    assert consolidator.calls == [("telegram:100", True, True)]
+
+
+def test_manual_consolidate_session_requires_existing_session(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    consolidator = _ManualConsolidator(result=True)
+    client = TestClient(
+        create_dashboard_app(tmp_path, manual_consolidator=consolidator)
+    )
+
+    resp = client.post("/api/dashboard/sessions/missing/consolidate", json={})
+
+    assert resp.status_code == 404
+    assert consolidator.calls == []
+
+
+def test_manual_consolidate_session_reports_unavailable_runtime(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
+
+    assert resp.status_code == 503
+
+
+def test_manual_consolidate_session_reports_concurrency_timeout(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(
+        create_dashboard_app(
+            tmp_path,
+            manual_consolidator=_ManualConsolidator(error=TimeoutError("busy")),
+        )
+    )
+
+    resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "busy"
 
 
 def test_list_update_and_batch_delete_messages(tmp_path) -> None:

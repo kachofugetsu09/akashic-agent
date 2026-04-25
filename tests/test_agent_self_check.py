@@ -84,6 +84,30 @@ async def test_trigger_memory_consolidation_uses_real_entrypoint(tmp_path: Path)
     loop._consolidate_memory.assert_awaited_once_with(
         session,
         archive_all=False,
+        force=False,
+    )
+    loop.session_manager.save_async.assert_awaited_once_with(session)
+
+
+@pytest.mark.asyncio
+async def test_trigger_memory_consolidation_force_runs_below_threshold(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    session = SimpleNamespace(
+        key="cli:test",
+        messages=[{"role": "user", "content": "u"}] * 4,
+        last_consolidated=0,
+    )
+    loop.session_manager.get_or_create = MagicMock(return_value=session)
+    loop.session_manager.save_async = AsyncMock()
+    loop._consolidate_memory = AsyncMock()
+
+    triggered = await loop.trigger_memory_consolidation("cli:test", force=True)
+
+    assert triggered is True
+    loop._consolidate_memory.assert_awaited_once_with(
+        session,
+        archive_all=False,
+        force=True,
     )
     loop.session_manager.save_async.assert_awaited_once_with(session)
 

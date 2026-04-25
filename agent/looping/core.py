@@ -646,10 +646,12 @@ class AgentLoop:
         self,
         session,
         archive_all: bool = False,
+        force: bool = False,
     ) -> None:
         await self._consolidation_runtime.consolidate_memory(
             session,
             archive_all=archive_all,
+            force=force,
         )
 
     async def trigger_memory_consolidation(
@@ -657,10 +659,12 @@ class AgentLoop:
         session_key: str,
         *,
         archive_all: bool = False,
+        force: bool = False,
     ) -> bool:
         return await self._consolidation_runtime.trigger_memory_consolidation(
             session_key,
             archive_all=archive_all,
+            force=force,
             consolidate_fn=self._consolidate_memory,
         )
 
