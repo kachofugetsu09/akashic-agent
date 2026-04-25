@@ -5,11 +5,16 @@ Memory v2 写入器：将 consolidation 结果保存到 SQLite
 from __future__ import annotations
 
 import logging
+import re
 
 from memory2.store import MemoryStore2
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
+
+_TIME_PREFIX_RE = re.compile(
+    r"^\[(?P<date>\d{4}-\d{2}-\d{2})(?:[ T](?P<hour>\d{2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?)?\]"
+)
 
 
 def _coerce_emotional_weight(value: object) -> int:
@@ -21,6 +26,17 @@ def _coerce_emotional_weight(value: object) -> int:
         return max(0, min(10, int(value)))
     except (TypeError, ValueError):
         return 0
+
+
+def _parse_history_entry_happened_at(summary: str) -> str | None:
+    match = _TIME_PREFIX_RE.match((summary or "").strip())
+    if not match:
+        return None
+    date = match.group("date")
+    hour = match.group("hour") or "00"
+    minute = match.group("minute") or "00"
+    second = match.group("second") or "00"
+    return f"{date}T{hour}:{minute}:{second}"
 
 
 class Memorizer:
@@ -185,6 +201,7 @@ class Memorizer:
                             "scope_channel": scope_channel,
                             "scope_chat_id": scope_chat_id,
                         },
+                        happened_at=_parse_history_entry_happened_at(text),
                         emotional_weight=emotional_weight,
                     )
                     if result.startswith("skipped:"):

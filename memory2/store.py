@@ -380,13 +380,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 row_id, status = existing
                 if status == "superseded":
                     self._db.execute(
-                        "UPDATE memory_items SET status='active', reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?) WHERE id=?",
-                        (_now_iso(), emotional_weight, row_id),
+                        "UPDATE memory_items SET status='active', reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?), happened_at=COALESCE(NULLIF(happened_at, ''), ?) WHERE id=?",
+                        (_now_iso(), emotional_weight, happened_at, row_id),
                     )
                 else:
                     self._db.execute(
-                        "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?) WHERE id=?",
-                        (_now_iso(), emotional_weight, row_id),
+                        "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=?, emotional_weight=MAX(emotional_weight, ?), happened_at=COALESCE(NULLIF(happened_at, ''), ?) WHERE id=?",
+                        (_now_iso(), emotional_weight, happened_at, row_id),
                     )
                 item_id = row_id
                 result = f"reinforced:{row_id}"
