@@ -56,11 +56,6 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
             calls.append("meta")
             return ToolsetRegistrationResult(source_name="meta_common")
 
-    class _FitbitProvider:
-        def register(self, registry, deps):
-            calls.append("fitbit")
-            return ToolsetRegistrationResult(source_name="fitbit")
-
     class _SpawnProvider:
         def register(self, registry, deps):
             calls.append("spawn")
@@ -87,7 +82,6 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         "bootstrap.tools.resolve_toolset_provider",
         lambda name, readonly_tools=None: {
             "meta_common": _MetaProvider(readonly_tools),
-            "fitbit": _FitbitProvider(),
             "spawn": _SpawnProvider(),
             "schedule": _ScheduleProvider(),
             "mcp": _McpProvider(),
@@ -118,7 +112,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
         )
     )
 
-    assert calls == ["memory", "meta", "fitbit", "spawn", "schedule", "mcp"]
+    assert calls == ["memory", "meta", "spawn", "schedule", "mcp"]
     assert push_tool is not None
     assert scheduler is not None
     assert mcp_registry is not None

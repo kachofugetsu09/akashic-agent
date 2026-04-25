@@ -9,7 +9,6 @@ from agent.context import ContextBuilder
 from agent.config_models import Config
 from agent.provider import LLMProvider
 from agent.tools.base import Tool
-from bootstrap.toolsets.fitbit import FitbitToolsetProvider
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider, SpawnToolsetProvider
@@ -116,7 +115,6 @@ _CONTEXT_WIRING: dict[str, ContextFactory] = {
     ),
 }
 _TOOLSET_WIRING = {
-    "fitbit": FitbitToolsetProvider,
     "spawn": SpawnToolsetProvider,
     "schedule": SchedulerToolsetProvider,
     "mcp": McpToolsetProvider,

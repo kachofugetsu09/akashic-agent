@@ -32,7 +32,6 @@ from agent.tools.registry import ToolRegistry
 from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
 from agent.turns.outbound import BusOutboundPort
-from bootstrap.toolsets.fitbit import FitbitToolsetProvider
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import (

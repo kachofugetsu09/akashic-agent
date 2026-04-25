@@ -4,7 +4,6 @@ from pathlib import Path
 
 from agent.tools.base import Tool
 from agent.tools.filesystem import ListDirTool, ReadFileTool
-from agent.tools.fitbit import FitbitHealthSnapshotTool, FitbitSleepReportTool
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
 from core.net.http import HttpRequester
@@ -24,16 +23,3 @@ def build_readonly_research_tools(
     tools.append(WebFetchTool(fetch_requester))
     tools.append(WebSearchTool())
     return tools
-
-
-def build_fitbit_tools(
-    *,
-    fitbit_url: str,
-    requester: HttpRequester,
-) -> list[Tool]:
-    if not fitbit_url:
-        return []
-    return [
-        FitbitHealthSnapshotTool(fitbit_url, requester=requester),
-        FitbitSleepReportTool(fitbit_url, requester=requester),
-    ]

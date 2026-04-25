@@ -46,7 +46,7 @@
   },
   {
     "query": "健康数据",
-    "expected_top1": "fitbit_health_snapshot",
+    "expected_top1": "mcp_fitbit__fitbit_health_snapshot",
     "comment": "描述含'健康'+'数据'"
   },
   {

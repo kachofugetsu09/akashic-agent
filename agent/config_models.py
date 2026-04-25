@@ -87,7 +87,6 @@ class WiringConfig:
     toolsets: list[str] = field(
         default_factory=lambda: [
             "meta_common",
-            "fitbit",
             "spawn",
             "schedule",
             "mcp",

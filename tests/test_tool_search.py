@@ -99,10 +99,12 @@ def _make_registry() -> ToolRegistry:
     )
     reg.register(
         _StubTool(
-            "fitbit_health_snapshot",
+            "mcp_fitbit__fitbit_health_snapshot",
             "[Fitbit] 获取健康快照：步数、心率、运动数据等",
         ),
         risk="read-only",
+        source_type="mcp",
+        source_name="fitbit",
     )
     reg.register(
         _StubTool("message_push", "向用户推送或发送一条消息通知"),
@@ -179,7 +181,7 @@ class TestRegistrySearch:
         assert "feed_manage" in self._names(reg.search("RSS订阅"))
 
     def test_健康数据(self, reg):
-        assert "fitbit_health_snapshot" in self._names(reg.search("健康数据"))
+        assert "mcp_fitbit__fitbit_health_snapshot" in self._names(reg.search("健康数据"))
 
     def test_推送消息(self, reg):
         assert "message_push" in self._names(reg.search("推送消息给用户"))

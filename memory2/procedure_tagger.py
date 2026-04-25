@@ -34,8 +34,8 @@ KNOWN_TOOLS = [
     "spawn",
     "tool_search",
     "update_now",
-    "fitbit_health_snapshot",
-    "fitbit_sleep_report",
+    "mcp_fitbit__fitbit_health_snapshot",
+    "mcp_fitbit__fitbit_sleep_report",
 ]
 
 _SYSTEM_PROMPT = "你是一个记忆标注助手，输出严格的 JSON，不加任何额外文字。"
