@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent.memes.catalog import MemeCatalog
-from agent.memes.decorator import DecorateResult, MemeDecorator
+from agent.memes.decorator import MemeDecorator
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -196,37 +196,36 @@ def test_decorator_no_tag_passes_through(memes_dir: Path) -> None:
     assert result.media == []
 
 
-def test_decorator_extracts_tag_and_cleans_content(memes_dir: Path) -> None:
+def test_decorator_uses_explicit_tag(memes_dir: Path) -> None:
     dec = _make_decorator(memes_dir, "agree")
-    result = dec.decorate("好的，我这就去做 <meme:agree>")
+    result = dec.decorate("好的，我这就去做", meme_tag="agree")
     assert result.content == "好的，我这就去做"
     assert len(result.media) == 1
 
 
 def test_decorator_tag_only_gives_empty_content(memes_dir: Path) -> None:
-    """纯 tag 回复清洗后 content 为空字符串，不报错。"""
     dec = _make_decorator(memes_dir, "happy")
-    result = dec.decorate("<meme:happy>")
+    result = dec.decorate("", meme_tag="happy")
     assert result.content == ""
     assert len(result.media) == 1
 
 
-def test_decorator_unknown_tag_removes_marker_no_media(memes_dir: Path) -> None:
+def test_decorator_unknown_tag_has_no_media(memes_dir: Path) -> None:
     dec = _make_decorator(memes_dir, "happy")
-    result = dec.decorate("发个不存在的表情 <meme:nonexistent>")
+    result = dec.decorate("发个不存在的表情", meme_tag="nonexistent")
     assert result.content == "发个不存在的表情"
     assert result.media == []
+    assert result.tag == "nonexistent"
 
 
-def test_decorator_empty_dir_removes_marker_no_media(memes_dir: Path) -> None:
+def test_decorator_empty_dir_has_no_media(memes_dir: Path) -> None:
     dec = _make_decorator(memes_dir, "shy", with_image=False)
-    result = dec.decorate("害羞一下 <meme:shy>")
+    result = dec.decorate("害羞一下", meme_tag="shy")
     assert result.content == "害羞一下"
     assert result.media == []
 
 
-def test_decorator_multiple_tags_only_first_used(memes_dir: Path) -> None:
-    """多个 tag 时只取第一个图，文本中全部被清除。"""
+def test_decorator_picks_image_for_parsed_tag(memes_dir: Path) -> None:
     write_manifest(memes_dir, {
         "happy": {"desc": "开心", "enabled": True},
         "agree": {"desc": "同意", "enabled": True},
@@ -235,15 +234,15 @@ def test_decorator_multiple_tags_only_first_used(memes_dir: Path) -> None:
     add_image(memes_dir, "agree", "001.png")
     catalog = MemeCatalog(memes_dir)
     dec = MemeDecorator(catalog)
-    result = dec.decorate("好的 <meme:happy> 收到 <meme:agree>")
-    assert "<meme:" not in result.content
+    result = dec.decorate("好的  收到", meme_tag="happy")
+    assert result.content == "好的  收到"
     assert len(result.media) == 1
     assert "happy" in result.media[0]
 
 
 def test_decorator_case_insensitive_tag(memes_dir: Path) -> None:
     dec = _make_decorator(memes_dir, "agree")
-    result = dec.decorate("收到 <meme:AGREE>")
+    result = dec.decorate("收到", meme_tag="AGREE")
     assert result.content == "收到"
     assert len(result.media) == 1
 
@@ -268,5 +267,5 @@ def test_decorator_reflects_hot_reload(memes_dir: Path) -> None:
     manifest.touch()
     add_image(memes_dir, "shy")
 
-    result = dec.decorate("害羞一下 <meme:shy>")
+    result = dec.decorate("害羞一下", meme_tag="shy")
     assert len(result.media) == 1, "热更新后新类别应立即可用"

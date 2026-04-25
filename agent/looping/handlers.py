@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from agent.core.response_parser import parse_response
 from agent.core.runtime_support import AgentLoopRunner
 from agent.looping.ports import SessionServices
 from bus.events import InboundMessage, OutboundMessage
@@ -98,6 +99,8 @@ async def process_spawn_completion_event(
     marker = f"[后台任务完成] {label} ({status})"
     if exit_reason:
         marker += f" [{exit_reason}]"
+    parsed_tool_chain = cast(list[dict[str, object]], tool_chain)
+    parsed_response = parse_response(final_content, tool_chain=parsed_tool_chain)
     pseudo_msg = InboundMessage(
         channel=msg.channel,
         sender=msg.sender,
@@ -110,9 +113,10 @@ async def process_spawn_completion_event(
     return await context_store.commit(
         msg=pseudo_msg,
         session_key=key,
-        reply=final_content,
+        reply=parsed_response.clean_text,
+        response_metadata=parsed_response.metadata,
         tools_used=tools_used,
-        tool_chain=tool_chain,
+        tool_chain=parsed_tool_chain,
         thinking=None,
         streamed_reply=False,
         retrieval_raw=None,

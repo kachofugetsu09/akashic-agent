@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from agent.core.response_parser import parse_response
 from agent.core.types import ContextRequest
 from bus.events import InboundMessage, OutboundMessage
 
@@ -92,14 +93,17 @@ class AgentCore:
         final_content = turn_result.reply
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+        tool_chain = cast(list[dict[str, object]], turn_result.tool_chain)
+        parsed_response = parse_response(final_content, tool_chain=tool_chain)
 
         # 4. 继续走新的 ContextStore.commit 做被动 turn 提交。
         return await self._context_store.commit(
             msg=msg,
             session_key=key,
-            reply=final_content,
+            reply=parsed_response.clean_text,
+            response_metadata=parsed_response.metadata,
             tools_used=turn_result.tools_used,
-            tool_chain=turn_result.tool_chain,
+            tool_chain=tool_chain,
             thinking=turn_result.thinking,
             streamed_reply=turn_result.streamed,
             retrieval_raw=context_bundle.retrieval_trace_raw,

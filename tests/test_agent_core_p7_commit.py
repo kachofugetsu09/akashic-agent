@@ -7,11 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.context_store import (
-    DefaultContextStore,
-    _extract_cited_ids,
-    _extract_cited_ids_from_tool_chain,
-)
+from agent.core.context_store import DefaultContextStore
+from agent.core.response_parser import ResponseMetadata, parse_response
 from agent.retrieval.protocol import RetrievalResult
 from bus.events import InboundMessage
 
@@ -90,7 +87,12 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     out = await store.commit(
         msg=msg,
         session_key="telegram:123",
-        reply="<meme:shy> 整理好了",
+        reply="整理好了",
+        response_metadata=ResponseMetadata(
+            raw_text="<meme:shy> 整理好了\n§cited:[mem_1]§",
+            cited_memory_ids=["mem_1"],
+            meme_tag="shy",
+        ),
         tools_used=["noop"],
         tool_chain=[{"text": "", "calls": []}],
         thinking="思考",
@@ -127,38 +129,49 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     assert turn_event.react_input_sum_tokens == 42100
     assert turn_event.react_input_peak_tokens == 18800
     assert turn_event.react_final_input_tokens == 17500
+    assert turn_event.raw_llm_output == "<meme:shy> 整理好了\n§cited:[mem_1]§"
+    assert turn_event.meme_tag == "shy"
     assert post_turn.events[0].assistant_response == "整理好了"
     outbound.dispatch.assert_awaited_once()
     post_turn_action.run.assert_awaited_once()
     assert order == ["persist", "observe", "observe", "post_turn", "post_turn_action", "dispatch"]
     assert session.messages[-1]["content"] == "整理好了"
     assert session.messages[-1]["reasoning_content"] == "思考"
+    assert session.messages[-1]["cited_memory_ids"] == ["mem_1"]
+    decorator.decorate.assert_called_once_with("整理好了", meme_tag="shy")
 
 
-def test_extract_cited_ids_strips_ascii_marker_only_at_end():
-    clean, ids = _extract_cited_ids("答复正文\n§cited:[mem_1,mem-2]§")
+def test_response_parser_strips_ascii_marker_only_at_end():
+    parsed = parse_response("答复正文\n§cited:[mem_1,mem-2]§", tool_chain=[])
 
-    assert clean == "答复正文"
-    assert ids == ["mem_1", "mem-2"]
-
-
-def test_extract_cited_ids_strips_marker_with_spaces_after_commas():
-    clean, ids = _extract_cited_ids("答复正文\n§cited:[mem_1, mem-2]§")
-
-    assert clean == "答复正文"
-    assert ids == ["mem_1", "mem-2"]
+    assert parsed.clean_text == "答复正文"
+    assert parsed.metadata.cited_memory_ids == ["mem_1", "mem-2"]
 
 
-def test_extract_cited_ids_keeps_body_text_when_marker_not_at_end():
+def test_response_parser_strips_marker_with_spaces_after_commas():
+    parsed = parse_response("答复正文\n§cited:[mem_1, mem-2]§", tool_chain=[])
+
+    assert parsed.clean_text == "答复正文"
+    assert parsed.metadata.cited_memory_ids == ["mem_1", "mem-2"]
+
+
+def test_response_parser_keeps_body_text_when_marker_not_at_end():
     text = "正文里提到 §cited:[mem_1]§ 这串文本，但不是协议行。\n后面还有内容"
 
-    clean, ids = _extract_cited_ids(text)
+    parsed = parse_response(text, tool_chain=[])
 
-    assert clean == text
-    assert ids == []
+    assert parsed.clean_text == text
+    assert parsed.metadata.cited_memory_ids == []
 
 
-def test_extract_cited_ids_from_tool_chain_uses_recall_memory_cited_item_ids():
+def test_response_parser_strips_meme_tags_and_keeps_first_tag():
+    parsed = parse_response("好的 <meme:HAPPY> 收到 <meme:agree>", tool_chain=[])
+
+    assert parsed.clean_text == "好的  收到"
+    assert parsed.metadata.meme_tag == "happy"
+
+
+def test_response_parser_tool_chain_fallback_uses_recall_memory_cited_item_ids():
     tool_chain = [
         {
             "text": "thinking",
@@ -171,12 +184,13 @@ def test_extract_cited_ids_from_tool_chain_uses_recall_memory_cited_item_ids():
         }
     ]
 
-    ids = _extract_cited_ids_from_tool_chain(tool_chain)
+    parsed = parse_response("答复正文", tool_chain=tool_chain)
 
-    assert ids == ["mem_1", "mem_2"]
+    assert parsed.clean_text == "答复正文"
+    assert parsed.metadata.cited_memory_ids == ["mem_1", "mem_2"]
 
 
-def test_extract_cited_ids_from_tool_chain_falls_back_to_item_ids():
+def test_response_parser_tool_chain_fallback_uses_item_ids():
     tool_chain = [
         {
             "text": "thinking",
@@ -194,6 +208,6 @@ def test_extract_cited_ids_from_tool_chain_falls_back_to_item_ids():
         }
     ]
 
-    ids = _extract_cited_ids_from_tool_chain(tool_chain)
+    parsed = parse_response("答复正文", tool_chain=tool_chain)
 
-    assert ids == ["mem_1", "mem_2"]
+    assert parsed.metadata.cited_memory_ids == ["mem_1", "mem_2"]

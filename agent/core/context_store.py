@@ -7,6 +7,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from agent.core.response_parser import ResponseMetadata
 from agent.core.types import (
     ChatMessage,
     ContextBundle,
@@ -71,6 +72,7 @@ class ContextStore(ABC):
         msg: "InboundMessage",
         session_key: str,
         reply: str,
+        response_metadata: ResponseMetadata,
         tools_used: list[str],
         tool_chain: list[dict],
         thinking: str | None,
@@ -160,6 +162,7 @@ class DefaultContextStore(ContextStore):
         msg: "InboundMessage",
         session_key: str,
         reply: str,
+        response_metadata: ResponseMetadata,
         tools_used: list[str],
         tool_chain: list[dict],
         thinking: str | None,
@@ -177,17 +180,17 @@ class DefaultContextStore(ContextStore):
         ):
             raise RuntimeError("ContextStore.commit requires session/trace/post_turn/outbound")
 
-        # 0. 从 reply 里剥离隐式引用行 §cited:[id1,id2]§，存入 cited_memory_ids。
-        reply, cited_memory_ids = _extract_cited_ids(reply)
-        if not cited_memory_ids:
-            cited_memory_ids = _extract_cited_ids_from_tool_chain(tool_chain)
+        cited_memory_ids = list(response_metadata.cited_memory_ids)
 
         # 1. 先做 meme decorate，并准备最终回复文本。
         final_content = reply
         meme_media: list[str] = []
-        meme_tag: str | None = None
+        meme_tag = response_metadata.meme_tag
         if self._meme_decorator is not None:
-            decorated = self._meme_decorator.decorate(final_content)
+            decorated = self._meme_decorator.decorate(
+                final_content,
+                meme_tag=meme_tag,
+            )
             final_content = decorated.content
             meme_media = decorated.media
             meme_tag = decorated.tag
@@ -242,7 +245,7 @@ class DefaultContextStore(ContextStore):
             session_key=session_key,
             msg=msg,
             final_content=final_content,
-            raw_content=reply,
+            raw_content=response_metadata.raw_text,
             meme_tag=meme_tag,
             meme_media_count=len(meme_media),
             tool_chain=tool_chain,
@@ -536,61 +539,6 @@ async def _run_effects(effects: list[object]) -> None:
             logger.warning("turn side effect failed: %s", e)
 
 
-# ── Citation extraction ────────────────────────────────────────────────────────
-
-_CITED_RE = re.compile(r"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]+)\]§\s*$")
-
-
-def _extract_cited_ids(response: str) -> tuple[str, list[str]]:
-    """从回复正文中剥离隐式引用行 §cited:[id1,id2]§。
-
-    返回 (干净回复, cited_id列表)。若无引用行则返回原文和空列表。
-    """
-    match = _CITED_RE.search(response)
-    if not match:
-        return response, []
-    raw = match.group(1)
-    ids = [i.strip() for i in raw.split(",") if i.strip()]
-    clean = response[: match.start()].rstrip()
-    return clean, ids
-
-
-def _extract_cited_ids_from_tool_chain(tool_chain: list[dict]) -> list[str]:
-    """从工具结果里兜底提取 cited ids。
-
-    目标场景：模型调用了 recall_memory，但忘了在最终回复里输出 §cited:[...]§。
-    这时至少把工具结果里明确返回的 cited_item_ids 落库，避免本轮引用信息彻底丢失。
-    """
-    cited: list[str] = []
-    seen: set[str] = set()
-    for group in tool_chain:
-        if not isinstance(group, dict):
-            continue
-        for call in group.get("calls") or []:
-            if not isinstance(call, dict):
-                continue
-            if str(call.get("name", "") or "") != "recall_memory":
-                continue
-            raw_result = str(call.get("result", "") or "").strip()
-            if not raw_result:
-                continue
-            try:
-                data = json.loads(raw_result)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                continue
-            raw_ids = data.get("cited_item_ids")
-            if not isinstance(raw_ids, list):
-                items = data.get("items")
-                if isinstance(items, list):
-                    raw_ids = [item.get("id") for item in items if isinstance(item, dict)]
-                else:
-                    raw_ids = []
-            for raw_id in raw_ids:
-                item_id = str(raw_id or "").strip()
-                if item_id and item_id not in seen:
-                    seen.add(item_id)
-                    cited.append(item_id)
-    return cited
 
 
 # ── Session metadata helpers (moved from agent/looping/memory_gate.py) ────────

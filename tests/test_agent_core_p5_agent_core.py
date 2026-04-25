@@ -52,7 +52,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
         run_turn=AsyncMock(
             side_effect=lambda *args, **kwargs: order.append("run")
             or TurnRunResult(
-                reply="final",
+                reply="final <meme:shy>\n§cited:[mem_1]§",
                 tools_used=["shell"],
                 tool_chain=[{"text": "done", "calls": []}],
                 thinking="think",
@@ -62,7 +62,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     )
     context_store.commit = AsyncMock(
         side_effect=lambda **kwargs: order.append("commit")
-        or OutboundMessage(channel="telegram", chat_id="123", content="final")
+        or OutboundMessage(channel="telegram", chat_id="123", content=kwargs["reply"])
     )
     agent_core = AgentCore(
         AgentCoreDeps(
@@ -105,6 +105,11 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     assert context_store.commit.await_args.kwargs["retrieval_raw"] == {"route": "RETRIEVE"}
     assert context_store.commit.await_args.kwargs["thinking"] == "think"
     assert context_store.commit.await_args.kwargs["context_retry"] == {"selected_plan": "full"}
+    assert context_store.commit.await_args.kwargs["reply"] == "final"
+    response_metadata = context_store.commit.await_args.kwargs["response_metadata"]
+    assert response_metadata.raw_text == "final <meme:shy>\n§cited:[mem_1]§"
+    assert response_metadata.cited_memory_ids == ["mem_1"]
+    assert response_metadata.meme_tag == "shy"
 
 
 @pytest.mark.asyncio
