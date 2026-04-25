@@ -27,6 +27,9 @@ jobs:
       - name: Run pyright
         run: |
           pyright --level error
+      - name: Run pyright for tests
+        run: |
+          pyright --project pyrightconfig.tests.json --level error
 
       - name: Run pytest
         timeout-minutes: 10

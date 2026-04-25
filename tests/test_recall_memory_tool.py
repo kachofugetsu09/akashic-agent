@@ -1,15 +1,47 @@
+# pyright: reportPrivateUsage=false, reportUnusedCallResult=false
+
 import asyncio
 import json
 from datetime import datetime
-from types import SimpleNamespace
+from pathlib import Path
+from typing import TypeAlias, cast
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
 
 import agent.tools.recall_memory as recall_memory_module
+from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
+from memory2.embedder import Embedder
 from memory2.store import MemoryStore2
+
+_MemoryHit: TypeAlias = dict[str, object]
+_EmbeddingRow: TypeAlias = tuple[
+    str,
+    str,
+    str,
+    list[float] | None,
+    dict[str, object],
+    str | None,
+    str | None,
+]
+
+
+def _recall_tool(store: object, embedder: object, provider: object) -> RecallMemoryTool:
+    return RecallMemoryTool(
+        store=cast(MemoryStore2, store),
+        embedder=cast(Embedder, embedder),
+        provider=cast(LLMProvider, provider),
+        model="test-model",
+    )
+
+
+class _FakeProvider:
+    chat: AsyncMock
+
+    def __init__(self, content: str = "") -> None:
+        self.chat = AsyncMock(return_value=LLMResponse(content=content))
 
 
 class _FailingEmbedder:
@@ -32,11 +64,17 @@ class _KeywordOnlyStore:
     def __init__(self) -> None:
         self.vector_search_called = False
 
-    def vector_search(self, *_args, **_kwargs):
+    def vector_search(self, *_args: object, **_kwargs: object) -> list[_MemoryHit]:
         self.vector_search_called = True
         return []
 
-    def keyword_search_summary(self, terms, memory_types=None, limit=20, **_kwargs):
+    def keyword_search_summary(
+        self,
+        terms: list[str],
+        memory_types: list[str] | None = None,
+        limit: int = 20,
+        **_kwargs: object,
+    ) -> list[_MemoryHit]:
         assert "支付" in terms
         assert memory_types is None
         assert limit == 30
@@ -56,22 +94,26 @@ class _TimelineStore:
     def __init__(self) -> None:
         self.vector_search_called = False
         self.keyword_search_called = False
-        self.time_start = None
-        self.time_end = None
+        self.time_start: datetime | None = None
+        self.time_end: datetime | None = None
 
-    def vector_search(self, *_args, **_kwargs):
+    def vector_search(self, *_args: object, **_kwargs: object) -> list[_MemoryHit]:
         self.vector_search_called = True
         return []
 
-    def keyword_search_summary(self, *_args, **_kwargs):
+    def keyword_search_summary(
+        self, *_args: object, **_kwargs: object
+    ) -> list[_MemoryHit]:
         self.keyword_search_called = True
         return []
 
-    def list_events_by_time_range(self, time_start, time_end, limit=200):
+    def list_events_by_time_range(
+        self, time_start: datetime, time_end: datetime, limit: int = 200
+    ) -> list[_MemoryHit]:
         self.time_start = time_start
         self.time_end = time_end
         assert limit == 80
-        return [
+        hits: list[_MemoryHit] = [
             {
                 "id": "e1",
                 "memory_type": "event",
@@ -86,21 +128,26 @@ class _TimelineStore:
                 "source_ref": "tg:2",
                 "happened_at": "2026-04-25T11:00:00",
             },
-        ][:limit]
+        ]
+        return hits[:limit]
 
 
 class _TimedSemanticStore:
     def __init__(self) -> None:
-        self.vector_kwargs = []
-        self.vector_batch_kwargs = []
+        self.vector_kwargs: list[dict[str, object]] = []
+        self.vector_batch_kwargs: list[dict[str, object]] = []
         self.vector_batch_vec_count = 0
-        self.keyword_kwargs = []
+        self.keyword_kwargs: list[dict[str, object]] = []
 
-    def vector_search(self, *_args, **kwargs):
+    def vector_search(
+        self, *_args: object, **kwargs: object
+    ) -> list[_MemoryHit]:
         self.vector_kwargs.append(kwargs)
         raise AssertionError("带 time_filter 的 semantic 模式应复用 batch 候选")
 
-    def vector_search_batch(self, query_vecs, **kwargs):
+    def vector_search_batch(
+        self, query_vecs: list[list[float]], **kwargs: object
+    ) -> list[list[_MemoryHit]]:
         self.vector_batch_kwargs.append(kwargs)
         self.vector_batch_vec_count = len(query_vecs)
         return [
@@ -117,15 +164,21 @@ class _TimedSemanticStore:
             for _query_vec in query_vecs
         ]
 
-    def keyword_search_summary(self, _terms, **kwargs):
+    def keyword_search_summary(
+        self, _terms: list[str], **kwargs: object
+    ) -> list[_MemoryHit]:
         self.keyword_kwargs.append(kwargs)
         return []
 
-    def list_events_by_time_range(self, *_args, **_kwargs):
+    def list_events_by_time_range(
+        self, *_args: object, **_kwargs: object
+    ) -> list[_MemoryHit]:
         raise AssertionError("semantic 模式不应直接走 grep 列表")
 
 
-def test_parse_time_filter_supports_presets_and_ranges(monkeypatch):
+def test_parse_time_filter_supports_presets_and_ranges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tz = ZoneInfo("Asia/Shanghai")
     monkeypatch.setattr(
         recall_memory_module,
@@ -154,7 +207,7 @@ def test_parse_time_filter_supports_presets_and_ranges(monkeypatch):
     assert date_range[1] == datetime(2026, 4, 26, 0, 0, tzinfo=tz)
 
 
-def test_store_time_range_filters_mixed_timezone_happened_at(tmp_path):
+def test_store_time_range_filters_mixed_timezone_happened_at(tmp_path: Path) -> None:
     store = MemoryStore2(tmp_path / "memory2.db")
     tz = ZoneInfo("Asia/Shanghai")
     store.upsert_item(
@@ -189,7 +242,9 @@ def test_store_time_range_filters_mixed_timezone_happened_at(tmp_path):
     ]
 
 
-def test_store_time_range_limit_keeps_latest_events_in_chronological_order(tmp_path):
+def test_store_time_range_limit_keeps_latest_events_in_chronological_order(
+    tmp_path: Path,
+) -> None:
     store = MemoryStore2(tmp_path / "memory2.db")
     tz = ZoneInfo("Asia/Shanghai")
     for hour in (9, 10, 11):
@@ -212,7 +267,7 @@ def test_store_time_range_limit_keeps_latest_events_in_chronological_order(tmp_p
     ]
 
 
-def test_store_semantic_searches_respect_time_range(tmp_path):
+def test_store_semantic_searches_respect_time_range(tmp_path: Path) -> None:
     store = MemoryStore2(tmp_path / "memory2.db")
     tz = ZoneInfo("Asia/Shanghai")
     store.upsert_item(
@@ -254,7 +309,10 @@ def test_store_semantic_searches_respect_time_range(tmp_path):
     ]
 
 
-def test_store_vector_batch_reuses_time_filtered_embedding_rows(tmp_path, monkeypatch):
+def test_store_vector_batch_reuses_time_filtered_embedding_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     store = MemoryStore2(tmp_path / "memory2.db")
     tz = ZoneInfo("Asia/Shanghai")
     store.upsert_item(
@@ -272,10 +330,27 @@ def test_store_vector_batch_reuses_time_filtered_embedding_rows(tmp_path, monkey
     calls = 0
     original = store._get_embedding_rows_by_time_filter
 
-    def counted_get_embedding_rows_by_time_filter(**kwargs):
+    def counted_get_embedding_rows_by_time_filter(
+        *,
+        memory_types: list[str] | None,
+        include_superseded: bool,
+        scope_channel: str | None,
+        scope_chat_id: str | None,
+        require_scope_match: bool,
+        time_start: datetime | None,
+        time_end: datetime | None,
+    ) -> list[_EmbeddingRow]:
         nonlocal calls
         calls += 1
-        return original(**kwargs)
+        return original(
+            memory_types=memory_types,
+            include_superseded=include_superseded,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+            require_scope_match=require_scope_match,
+            time_start=time_start,
+            time_end=time_end,
+        )
 
     monkeypatch.setattr(
         store,
@@ -297,7 +372,9 @@ def test_store_vector_batch_reuses_time_filtered_embedding_rows(tmp_path, monkey
     assert results[1][0]["summary"] == "[2026-04-25 10:00] 重构今日事件"
 
 
-def test_store_keyword_time_filter_prefilters_before_candidate_limit(tmp_path):
+def test_store_keyword_time_filter_prefilters_before_candidate_limit(
+    tmp_path: Path,
+) -> None:
     store = MemoryStore2(tmp_path / "memory2.db")
     tz = ZoneInfo("Asia/Shanghai")
     for index in range(1005):
@@ -332,15 +409,10 @@ def test_store_keyword_time_filter_prefilters_before_candidate_limit(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_recall_memory_grep_mode_lists_events_without_embedding():
+async def test_recall_memory_grep_mode_lists_events_without_embedding() -> None:
     store = _TimelineStore()
-    provider = SimpleNamespace(chat=AsyncMock())
-    tool = RecallMemoryTool(
-        store=store,
-        embedder=_FailingEmbedder(),
-        provider=provider,
-        model="test-model",
-    )
+    provider = _FakeProvider()
+    tool = _recall_tool(store, _FailingEmbedder(), provider)
 
     payload = json.loads(
         await tool.execute(
@@ -361,17 +433,10 @@ async def test_recall_memory_grep_mode_lists_events_without_embedding():
 
 
 @pytest.mark.asyncio
-async def test_recall_memory_semantic_mode_passes_time_range_to_searches():
+async def test_recall_memory_semantic_mode_passes_time_range_to_searches() -> None:
     store = _TimedSemanticStore()
-    provider = SimpleNamespace(
-        chat=AsyncMock(return_value=SimpleNamespace(content="用户讨论 DeepSeek 缓存"))
-    )
-    tool = RecallMemoryTool(
-        store=store,
-        embedder=_StaticEmbedder(),
-        provider=provider,
-        model="test-model",
-    )
+    provider = _FakeProvider("用户讨论 DeepSeek 缓存")
+    tool = _recall_tool(store, _StaticEmbedder(), provider)
 
     payload = json.loads(
         await tool.execute(
@@ -395,17 +460,10 @@ async def test_recall_memory_semantic_mode_passes_time_range_to_searches():
 
 
 @pytest.mark.asyncio
-async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails():
+async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails() -> None:
     store = _KeywordOnlyStore()
-    provider = SimpleNamespace(
-        chat=AsyncMock(return_value=SimpleNamespace(content="用户处理过支付相关问题"))
-    )
-    tool = RecallMemoryTool(
-        store=store,
-        embedder=_FailingEmbedder(),
-        provider=provider,
-        model="test-model",
-    )
+    provider = _FakeProvider("用户处理过支付相关问题")
+    tool = _recall_tool(store, _FailingEmbedder(), provider)
 
     payload = json.loads(await tool.execute(query="phase 支付"))
 
@@ -420,18 +478,13 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails():
 
 
 @pytest.mark.asyncio
-async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(monkeypatch):
+async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(recall_memory_module, "_EMBED_TIMEOUT_S", 0.01)
     store = _KeywordOnlyStore()
-    provider = SimpleNamespace(
-        chat=AsyncMock(return_value=SimpleNamespace(content="用户处理过支付相关问题"))
-    )
-    tool = RecallMemoryTool(
-        store=store,
-        embedder=_HangingEmbedder(),
-        provider=provider,
-        model="test-model",
-    )
+    provider = _FakeProvider("用户处理过支付相关问题")
+    tool = _recall_tool(store, _HangingEmbedder(), provider)
 
     payload = json.loads(
         await asyncio.wait_for(tool.execute(query="phase 支付"), timeout=0.5)
@@ -442,6 +495,6 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(monkey
     assert store.vector_search_called is False
 
 
-def test_recall_memory_description_emphasizes_mandatory_citation():
+def test_recall_memory_description_emphasizes_mandatory_citation() -> None:
     assert "只要最终回复使用了本工具返回的任何记忆条目" in RecallMemoryTool.description
     assert "cited_item_ids / citation_required / citation_format" in RecallMemoryTool.description

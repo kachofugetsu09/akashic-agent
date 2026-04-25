@@ -1,0 +1,41 @@
+{
+  "typeCheckingMode": "basic",
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "tests"
+  ],
+  "exclude": [
+    ".venv",
+    ".venv-test",
+    "mcp_servers",
+    "eval",
+    "private_runtime/scripts"
+  ],
+  "reportMissingTypeArgument": "warning",
+  "reportPrivateUsage": "warning",
+  "reportUnknownParameterType": "warning",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownMemberType": "warning",
+  "reportUnknownVariableType": "warning",
+  "reportUnknownLambdaType": "warning",
+  "reportUnusedCallResult": "warning",
+  "reportUnusedImport": "warning",
+  "reportDeprecated": "warning",
+  "reportArgumentType": "error",
+  "reportOptionalMemberAccess": "warning",
+  "reportAttributeAccessIssue": "warning",
+  "reportAssignmentType": "error",
+  "reportOperatorIssue": "error",
+  "reportCallIssue": "error",
+  "reportGeneralTypeIssues": "error",
+  "reportMissingImports": "error",
+  "reportIndexIssue": "error",
+  "reportOptionalSubscript": "warning",
+  "reportOptionalCall": "warning",
+  "reportOptionalOperand": "warning",
+  "reportRedeclaration": "error",
+  "reportReturnType": "error",
+  "reportUndefinedVariable": "error",
+  "reportUnboundVariable": "error"
+}

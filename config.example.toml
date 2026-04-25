@@ -30,12 +30,6 @@ memory_window = 24
 [agent.tools]
 search_enabled = true
 
-[agent.wiring]
-context = "default"
-memory = "default"
-memory_engine = "default"
-toolsets = ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
-
 [channels.telegram]
 token = ""
 allow_from = ["your_username"]
@@ -91,7 +85,7 @@ channel = "telegram"
 chat_id = ""
 
 [proactive.agent]
-max_steps = 20
+max_steps = 35
 content_limit = 5
 web_fetch_max_chars = 8000
 context_prob = 0.03
@@ -104,3 +98,13 @@ min_interval_hours = 3
 
 [integrations.fitbit]
 enabled = false
+
+# 可选：接入外部 Peer Agent。取消注释并改成自己的服务后才会启用。
+# [[integrations.peer_agents]]
+# name = "DeepResearch Agent"
+# base_url = "http://127.0.0.1:9404"
+# launcher = ["uv", "run", "--project", "/path/to/deepresearch", "python", "-m", "app.a2a_server"]
+# cwd = "/path/to/deepresearch"
+# description = "对复杂问题执行多轮深度调研，生成结构化长报告。"
+# startup_timeout_s = 30
+# shutdown_timeout_s = 60

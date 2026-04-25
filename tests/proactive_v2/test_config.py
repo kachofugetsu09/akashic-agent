@@ -22,7 +22,7 @@ def test_use_agent_tick_removed():
 # ── agent loop ───────────────────────────────────────────────────────────
 
 def test_agent_tick_max_steps_default():
-    assert ProactiveConfig().agent_tick_max_steps == 20
+    assert ProactiveConfig().agent_tick_max_steps == 35
 
 
 def test_agent_tick_max_steps_is_int():
