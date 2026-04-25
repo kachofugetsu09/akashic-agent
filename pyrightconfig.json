@@ -1,5 +1,7 @@
 {
   "typeCheckingMode": "basic",
+  "venvPath": ".",
+  "venv": ".venv",
   "include": [
     "main.py",
     "agent",
