@@ -34,28 +34,6 @@ def test_snapshot_and_rollback_merges_new_pending(tmp_path):
     assert "- new" in pending
 
 
-def test_update_now_ongoing_add_and_remove_by_keyword(tmp_path):
-    store = MemoryStore(tmp_path)
-    store.write_now("## 近期进行中\n\n- 任务A\n\n## 待确认事项\n\n- 问题1\n")
-
-    store.update_now_ongoing(add=["任务B"], remove_keywords=["任务A"])
-
-    now_text = store.read_now()
-    assert "任务A" not in now_text
-    assert "- 任务B" in now_text
-
-
-def test_read_now_ongoing_extracts_section_body(tmp_path):
-    store = MemoryStore(tmp_path)
-    store.write_now("## 近期进行中\n\n- A\n- B\n\n## 待确认事项\n\n- C\n")
-
-    ongoing = store.read_now_ongoing()
-
-    assert "- A" in ongoing
-    assert "- B" in ongoing
-    assert "- C" not in ongoing
-
-
 def test_get_memory_context_empty_and_nonempty(tmp_path):
     store = MemoryStore(tmp_path)
     assert store.get_memory_context() == ""

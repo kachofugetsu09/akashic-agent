@@ -1,24 +1,22 @@
 """
 proactive/memory_optimizer.py — 记忆质量优化器
 
-每轮运行三步：
+每轮运行两步：
   1. 重写 MEMORY.md：把 PENDING 事实 → 凝练用户档案
   2. 更新 SELF.md：只改写既有三段自我认知
-  3. 更新 NOW.md：清理过期条目
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from core.memory.profile import MemoryOptimizerStore
 
 from agent.provider import LLMProvider
-from proactive_v2.json_utils import extract_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -123,60 +121,6 @@ _SELF_PROMPT = """\
 {pending}
 """
 
-_NOW_CLEANUP_SYSTEM = "你是记忆管理助手，负责清理 NOW.md 中已过期或已完成的条目。"
-
-_NOW_CLEANUP_PROMPT = """\
-今天日期：{today}
-
-请检查 NOW.md 中「近期进行中」和「待确认事项」两节，识别需要清理的条目：
-- 「近期进行中」：日期已明确过去的日程条目（如"2026-03-02 返校"且今天已超过该日期）
-- 「待确认事项」：在近期历史中已明确得到答案或已完结的事项
-
-只输出 JSON：{{"remove_ongoing": ["条目原文1", ...], "remove_pending": ["条目原文1", ...]}}
-若无需清理，对应列表为空数组。
-
-NOW.md 当前内容：
-{now_content}
-
-近期历史（供判断是否已完结）：
-{history}
-"""
-
-
-# ── helpers ───────────────────────────────────────────────────────
-
-
-def _parse_cleanup_json(text: str) -> tuple[list[str], list[str]]:
-    try:
-        data = extract_json_object(text)
-        ongoing = [str(x).strip() for x in data.get("remove_ongoing", [])]
-        pending = [str(x).strip() for x in data.get("remove_pending", [])]
-        return ongoing, pending
-    except Exception:
-        return [], []
-
-
-def _remove_items_from_section(
-    text: str, section_header: str, items_to_remove: list[str]
-) -> str:
-    """从 NOW.md 指定 section 中删除匹配的 bullet 条目。"""
-    if not items_to_remove:
-        return text
-    lines = text.splitlines(keepends=True)
-    result = []
-    in_section = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("## "):
-            in_section = stripped == section_header.strip()
-        if in_section and stripped.startswith("- "):
-            item_text = stripped[2:].strip()
-            if any(item_text in r or r in item_text for r in items_to_remove):
-                continue  # 删除该条目
-        result.append(line)
-    return "".join(result)
-
-
 # ── MemoryOptimizer ───────────────────────────────────────────────
 
 
@@ -199,15 +143,14 @@ class MemoryOptimizer:
     _STEP_DELAY_SECONDS: int = 15
 
     async def optimize(self) -> None:
-        """三步优化：合并 PENDING → MEMORY，更新 SELF，刷新 NOW。"""
-        recent_history = self._read_recent_history()
+        """两步优化：合并 PENDING → MEMORY，更新 SELF。"""
 
         # ── Step 1: MEMORY.md 合并 ────────────────────────────────
         pending = self._memory.snapshot_pending()
         current_memory = self._memory.read_long_term().strip()
 
-        if not current_memory and not pending and not recent_history:
-            logger.info("[memory_optimizer] 记忆、pending 和历史均为空，跳过优化")
+        if not current_memory and not pending:
+            logger.info("[memory_optimizer] 记忆和 pending 均为空，跳过优化")
             return
 
         merged_memory = await self._merge_memory(current_memory, pending)
@@ -241,10 +184,6 @@ class MemoryOptimizer:
         # ── Step 2: SELF.md 更新 ──────────────────────────────────
         await asyncio.sleep(self._STEP_DELAY_SECONDS)
         await self._update_self(pending)
-
-        # ── Step 3: NOW.md 清理过期条目 ───────────────────────────
-        await asyncio.sleep(self._STEP_DELAY_SECONDS)
-        await self._cleanup_now(recent_history)
 
     async def _merge_memory(self, memory: str, pending: str) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -284,39 +223,6 @@ class MemoryOptimizer:
                 logger.info("[memory_optimizer] SELF.md 已更新")
         except Exception as e:
             logger.error("[memory_optimizer] SELF.md 更新失败: %s", e)
-
-    async def _cleanup_now(self, history: str) -> None:
-        """扫描 NOW.md，清理已过期或已完结的条目。"""
-        now_content = self._memory.read_now().strip()
-        if not now_content:
-            return
-        today = datetime.now().strftime("%Y-%m-%d")
-        prompt = _NOW_CLEANUP_PROMPT.format(
-            today=today,
-            now_content=now_content,
-            history=history[-2000:] if len(history) > 2000 else history or "（无）",
-        )
-        try:
-            response_text = await self._request_text_response(
-                system_content=_NOW_CLEANUP_SYSTEM,
-                user_content=prompt,
-                max_tokens=256,
-            )
-            remove_ongoing, remove_pending_items = _parse_cleanup_json(response_text)
-            if remove_ongoing or remove_pending_items:
-                text = self._memory.read_now()
-                text = _remove_items_from_section(text, "## 近期进行中", remove_ongoing)
-                text = _remove_items_from_section(
-                    text, "## 待确认事项", remove_pending_items
-                )
-                self._memory.write_now(text)
-                logger.info(
-                    "[memory_optimizer] NOW.md 清理完成: ongoing=%d pending=%d",
-                    len(remove_ongoing),
-                    len(remove_pending_items),
-                )
-        except Exception as e:
-            logger.error("[memory_optimizer] NOW.md 清理失败: %s", e)
 
     def _read_recent_history(self) -> str:
         try:

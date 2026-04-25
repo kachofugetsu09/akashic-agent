@@ -44,7 +44,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
             runtime = SimpleNamespace(port=object())
             return ToolsetRegistrationResult(
                 source_name="memory",
-                tool_names=["update_now"],
+                tool_names=[],
                 extras={"memory_runtime": runtime},
             )
 

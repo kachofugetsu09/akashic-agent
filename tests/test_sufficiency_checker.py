@@ -72,7 +72,7 @@ def test_should_not_check_when_forced_procedure_present():
             "memory_type": "procedure",
             "score": 0.42,
             "summary": "必须先查工具状态",
-            "extra_json": {"tool_requirement": "update_now"},
+            "extra_json": {"tool_requirement": "tool_search"},
         },
     ]
     assert should_check_sufficiency(items) is False
@@ -112,7 +112,7 @@ async def test_check_returns_insufficient_with_refined_query():
         _item(
             "procedure",
             0.479,
-            "分享《西历 2236》阅读进度前，必须先调用 update_now 更新 NOW.md",
+            "分享《西历 2236》阅读进度前，必须先回源确认阅读记录",
         )
     ]
     result = await checker.check(

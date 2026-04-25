@@ -14,13 +14,6 @@ from proactive_v2.loop import ProactiveLoop
 from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
 
-_DEFAULT_NOW = """# Now
-
-## 近期进行中
-
-## 待确认事项
-"""
-
 _EMPTY_FILES: dict[str, str] = {
     "memory/MEMORY.md": "",
     "memory/SELF.md": "",
@@ -31,7 +24,6 @@ _EMPTY_FILES: dict[str, str] = {
 
 _TEXT_FILES: dict[str, str] = {
     **_EMPTY_FILES,
-    "memory/NOW.md": _DEFAULT_NOW,
     "PROACTIVE_CONTEXT.md": ProactiveLoop._PROACTIVE_CONTEXT_TEMPLATE,
 }
 

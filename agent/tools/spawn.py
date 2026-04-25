@@ -41,7 +41,7 @@ class SpawnTool(Tool):
 何时不用 spawn：
 - 只需 1–3 次工具调用 → 直接调用工具，更快
 - 直接回答问题（查询 / 解释 / 计算）→ 直接回答
-- 任务需要修改当前会话状态（update_now / 写 session memory）→ 主 agent 自己做
+- 任务需要修改当前会话状态（写 session memory）→ 主 agent 自己做
 - 任务需要和用户来回确认才能推进
 - 用户说"发送/告诉/立即执行"——需要立即生效的行动
 

@@ -194,9 +194,6 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert (workspace / "memory" / "consolidation_writes.db").exists()
     assert (workspace / "memory" / "journal").is_dir()
     assert (workspace / "memory" / "memory2.db").exists()
-    assert (workspace / "memory" / "NOW.md").read_text(encoding="utf-8").startswith(
-        "# Now"
-    )
     assert "Proactive Context" in (
         workspace / "PROACTIVE_CONTEXT.md"
     ).read_text(encoding="utf-8")
@@ -220,23 +217,23 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
         config_path=config_path,
         workspace=workspace,
     )
-    now_path = workspace / "memory" / "NOW.md"
-    now_path.write_text("custom\n", encoding="utf-8")
+    self_path = workspace / "memory" / "SELF.md"
+    self_path.write_text("custom\n", encoding="utf-8")
 
     summary_skip = workspace_init.init_workspace(
         config_path=config_path,
         workspace=workspace,
     )
-    assert now_path.read_text(encoding="utf-8") == "custom\n"
-    assert any(path == now_path for path in summary_skip.skipped)
+    assert self_path.read_text(encoding="utf-8") == "custom\n"
+    assert any(path == self_path for path in summary_skip.skipped)
 
     summary_force = workspace_init.init_workspace(
         config_path=config_path,
         workspace=workspace,
         force=True,
     )
-    assert now_path.read_text(encoding="utf-8").startswith("# Now")
-    assert any(path == now_path for path in summary_force.overwritten)
+    assert self_path.read_text(encoding="utf-8") == ""
+    assert any(path == self_path for path in summary_force.overwritten)
 
 
 @pytest.mark.asyncio

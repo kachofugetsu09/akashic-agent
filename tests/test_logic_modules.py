@@ -16,8 +16,6 @@ from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
-    _parse_cleanup_json,
-    _remove_items_from_section,
 )
 from session.manager import Session, SessionManager, _safe_filename
 
@@ -28,7 +26,6 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     memory.snapshot_pending.return_value = "- [identity] x"
     memory.read_long_term.return_value = "MEM"
     memory.read_self.return_value = "# Akashic 的自我认知\n## 人格与形象\n- x"
-    memory.read_now.return_value = "## 近期进行中\n- 旧任务\n## 待确认事项\n- 已确认"
     memory.read_history.return_value = "history"
     memory.get_memory_context.return_value = "ctx"
     memory.write_long_term = MagicMock()
@@ -36,14 +33,11 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     memory.commit_pending_snapshot = MagicMock()
     memory.rollback_pending_snapshot = MagicMock()
     memory.write_self = MagicMock()
-    memory.write_now = MagicMock()
-    memory.read_now_ongoing.return_value = "ongoing"
     provider = MagicMock()
     provider.chat = AsyncMock(
         side_effect=[
             LLMResponse(content="merged"),
             LLMResponse(content="updated self"),
-            LLMResponse(content='{"remove_ongoing":["旧任务"],"remove_pending":["已确认"]}'),
         ]
     )
     opt = MemoryOptimizer(memory, provider, "m", max_tokens=100, history_max_chars=20)
@@ -51,9 +45,6 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     await opt.optimize()
     memory.write_long_term.assert_called_once_with("merged")
     memory.write_self.assert_called_once()
-    memory.write_now.assert_called_once()
-    assert _parse_cleanup_json('{"remove_ongoing":["a"],"remove_pending":["b"]}') == (["a"], ["b"])
-    assert "近期进行中" in _remove_items_from_section("## 近期进行中\n- a\n", "## 近期进行中", ["a"])
 
     loop = MemoryOptimizerLoop(opt, interval_seconds=10, _now_fn=lambda: datetime(2025, 1, 1, 0, 0, 1))
     assert loop._seconds_until_next_tick() >= 1.0
@@ -64,10 +55,6 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
         write_long_term=lambda content: None,
         read_self=lambda: "self",
         write_self=lambda content: None,
-        read_now=lambda: "now",
-        write_now=lambda content: None,
-        read_now_ongoing=lambda: "ongoing",
-        update_now_ongoing=lambda add, remove_keywords: None,
         read_pending=lambda: "pending",
         append_pending=lambda facts: None,
         snapshot_pending=lambda: "snapshot",
@@ -109,10 +96,6 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
             write_long_term=lambda content: None,
             read_self=lambda: "",
             write_self=lambda content: None,
-            read_now=lambda: "",
-            write_now=lambda content: None,
-            read_now_ongoing=lambda: "",
-            update_now_ongoing=lambda add, remove_keywords: None,
             read_pending=lambda: "",
             append_pending=lambda facts: None,
             snapshot_pending=lambda: "",

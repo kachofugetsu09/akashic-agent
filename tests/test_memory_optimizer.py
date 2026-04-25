@@ -11,7 +11,6 @@ from core.memory.port import DefaultMemoryPort
 from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
-    _parse_cleanup_json,
 )
 
 
@@ -103,15 +102,6 @@ def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path):
 
     assert "近期历史摘要" not in prompt
     assert "- [identity] 新身份" in prompt
-
-
-def test_parse_cleanup_json_supports_fenced_json():
-    ongoing, pending = _parse_cleanup_json(
-        '```json\n{"remove_ongoing":["明天返校"],"remove_pending":["确认显卡型号"]}\n```'
-    )
-
-    assert ongoing == ["明天返校"]
-    assert pending == ["确认显卡型号"]
 
 
 def test_request_text_response_uses_expected_chat_kwargs(tmp_path):

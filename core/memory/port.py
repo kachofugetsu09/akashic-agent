@@ -25,9 +25,7 @@ class MemoryPort(Protocol):
     v1 (Markdown files) operations:
       read_long_term / write_long_term   — MEMORY.md stable user profile
       read_self / write_self             — SELF.md Akashic self-model
-      read_now / write_now               — NOW.md short-term state
-      read_now_ongoing                   — NOW.md "近期进行中" section
-      update_now_ongoing                 — mutate "近期进行中" section
+      read_recent_context / write_recent_context — RECENT_CONTEXT.md compacted context
       append_pending / read_pending      — PENDING.md incremental facts
       snapshot_pending                   — two-phase commit phase-1
       commit_pending_snapshot            — two-phase commit phase-2 (success)
@@ -52,13 +50,7 @@ class MemoryPort(Protocol):
     def read_self(self) -> str: ...
     def write_self(self, content: str) -> None: ...
 
-    # ── v1: short-term state (NOW.md) ─────────────────────────────
-    def read_now(self) -> str: ...
-    def write_now(self, content: str) -> None: ...
-    def read_now_ongoing(self) -> str: ...
-    def update_now_ongoing(
-        self, add: list[str], remove_keywords: list[str]
-    ) -> None: ...
+    # ── v1: compacted recent context ─────────────────────────────
     def read_recent_context(self) -> str: ...
     def write_recent_context(self, content: str) -> None: ...
 
@@ -194,19 +186,7 @@ class DefaultMemoryPort:
     def write_self(self, content: str) -> None:
         self._store.write_self(content)
 
-    # ── v1: short-term state ───────────────────────────────────────
-
-    def read_now(self) -> str:
-        return self._store.read_now()
-
-    def write_now(self, content: str) -> None:
-        self._store.write_now(content)
-
-    def read_now_ongoing(self) -> str:
-        return self._store.read_now_ongoing()
-
-    def update_now_ongoing(self, add: list[str], remove_keywords: list[str]) -> None:
-        self._store.update_now_ongoing(add, remove_keywords)
+    # ── v1: compacted recent context ──────────────────────────────
 
     def read_recent_context(self) -> str:
         if hasattr(self._store, "read_recent_context"):

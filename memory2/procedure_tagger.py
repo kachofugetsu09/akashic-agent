@@ -33,7 +33,6 @@ KNOWN_TOOLS = [
     "list_schedules",
     "spawn",
     "tool_search",
-    "update_now",
     "mcp_fitbit__fitbit_health_snapshot",
     "mcp_fitbit__fitbit_sleep_report",
 ]

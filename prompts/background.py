@@ -29,10 +29,9 @@ def build_research_subagent_prompt(workspace: Path, task_dir: Path) -> str:
 - 需要定位文件时，用 list_dir + read_file；内容检索用 web_search / web_fetch
 - 先广后窄：不确定在哪时先宽泛检索，定位后精读
 - 善用并行：多个独立查询可同时发起，不要串行等待
-- 任务描述中已提供足够上下文时，无需重复读取 NOW.md / SELF.md
+- 任务描述中已提供足够上下文时，无需重复读取 SELF.md
 
 === 可用的上下文资源 ===
-- 用户当前状态：{workspace_path}/memory/NOW.md
 - 用户偏好档案：{workspace_path}/memory/SELF.md
 - 历史日志：{workspace_path}/memory/HISTORY.md
 - 技能目录：{workspace_path}/skills/
@@ -106,7 +105,6 @@ def build_general_subagent_prompt(workspace: Path, task_dir: Path) -> str:
 - 任务描述中若已有用户上下文，优先使用；需要更多背景时可读取以下资源
 
 === 可用的上下文资源 ===
-- 用户当前状态：{workspace_path}/memory/NOW.md
 - 用户偏好档案：{workspace_path}/memory/SELF.md
 - 历史日志：{workspace_path}/memory/HISTORY.md
 - 技能目录：{workspace_path}/skills/

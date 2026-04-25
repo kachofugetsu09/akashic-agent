@@ -20,7 +20,6 @@ from agent.retrieval.default_pipeline import (
 )
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
-from agent.tools.update_now import UpdateNowTool
 from agent.tools.registry import ToolRegistry
 from bootstrap.tools import _build_loop_deps
 from core.memory.port import DefaultMemoryPort
@@ -240,13 +239,13 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
 
     _update_session_runtime_metadata(
         session,
-        tools_used=["web_search", "update_now"],
+        tools_used=["web_search"],
         tool_chain=[{"calls": [{"name": "a"}, {"name": "b"}]}],
     )
 
     assert session.metadata["last_turn_tool_calls_count"] == 2
-    assert session.metadata["last_turn_had_task_tool"] is True
-    assert "update_now" in session.metadata["recent_task_tools"]
+    assert session.metadata["last_turn_had_task_tool"] is False
+    assert session.metadata["recent_task_tools"] == []
     assert isinstance(session.metadata.get("last_turn_ts"), str)
 
     _update_session_runtime_metadata(
@@ -261,20 +260,6 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_update_now_tool_uses_memory_port():
-    memory = MagicMock()
-    tool = UpdateNowTool(cast(Any, memory))
-
-    result = await tool.execute(add=cast(Any, '["任务A"]'), remove_keywords=["旧任务"])
-
-    memory.update_now_ongoing.assert_called_once_with(
-        add=["任务A"],
-        remove_keywords=["旧任务"],
-    )
-    assert "NOW.md 已更新" in result
-
-
-@pytest.mark.asyncio
 async def test_memorize_tool_uses_engine_remember_without_scope():
     engine = MagicMock()
     engine.remember = AsyncMock(
@@ -285,7 +270,7 @@ async def test_memorize_tool_uses_engine_remember_without_scope():
     result = await tool.execute(
         summary="以后先查工具状态",
         memory_type="procedure",
-        tool_requirement="update_now",
+        tool_requirement="tool_search",
         steps=["先查", "再执行"],
     )
 
@@ -294,7 +279,7 @@ async def test_memorize_tool_uses_engine_remember_without_scope():
     assert request.summary == "以后先查工具状态"
     assert request.memory_type == "procedure"
     assert request.raw_extra == {
-        "tool_requirement": "update_now",
+        "tool_requirement": "tool_search",
         "steps": ["先查", "再执行"],
     }
     assert "已记住" in result
@@ -311,7 +296,7 @@ async def test_memorize_tool_uses_engine_remember():
     result = await tool.execute(
         summary="以后先查工具状态",
         memory_type="procedure",
-        tool_requirement="update_now",
+        tool_requirement="tool_search",
         steps=["先查", "再执行"],
         channel="cli",
         chat_id="1",
@@ -599,7 +584,7 @@ def test_retriever_internal_select_for_injection_keeps_protected_procedure():
             "memory_type": "procedure",
             "score": 0.42,
             "summary": "必须先查工具状态",
-            "extra_json": {"tool_requirement": "update_now"},
+            "extra_json": {"tool_requirement": "tool_search"},
         },
         {"id": "e1", "memory_type": "event", "score": 0.75, "summary": "普通历史"},
     ]
@@ -628,7 +613,7 @@ def test_retriever_internal_select_for_injection_can_drop_protected_when_guard_d
             "memory_type": "procedure",
             "score": 0.42,
             "summary": "必须先查工具状态",
-            "extra_json": {"tool_requirement": "update_now"},
+            "extra_json": {"tool_requirement": "tool_search"},
         },
     ]
 

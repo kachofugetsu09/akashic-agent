@@ -4,7 +4,6 @@ from pathlib import Path
 
 from agent.config_models import Config
 from agent.tools.registry import ToolRegistry
-from agent.tools.update_now import UpdateNowTool
 from bootstrap.memory import build_memory_runtime
 from bootstrap.toolsets.protocol import (
     ToolsetDeps,
@@ -34,10 +33,6 @@ class MemoryToolsetProvider(ToolsetProvider):
             deps.light_provider,
             http_resources,
             observe_writer=deps.observe_writer,
-        )
-        registry.register(
-            UpdateNowTool(memory_runtime.profile_maint or memory_runtime.port),
-            risk="write",
         )
         return build_registration_result(
             registry=registry,

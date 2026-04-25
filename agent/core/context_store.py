@@ -546,7 +546,7 @@ async def _run_effects(effects: list[object]) -> None:
 
 
 def _extract_task_tools(tools_used: list[str]) -> list[str]:
-    return [name for name in tools_used if name in {"update_now"}]
+    return []
 
 
 def _update_session_runtime_metadata(

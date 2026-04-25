@@ -49,13 +49,6 @@ def build_agent_static_identity_prompt(*, workspace: Path) -> str:
 - 根目录：{workspace_path}
 - 长期记忆：{workspace_path}/memory/MEMORY.md
 - 自我认知：{workspace_path}/memory/SELF.md
-- 短期状态：{workspace_path}/memory/NOW.md（进行中事项/日程/待问问题；坐标类数据须用工具实时查询，不可直接信任）
-  NOW.md 由你实时维护，**以下情况必须在本轮调用 `update_now` 工具**：
-  - 开始一项跨对话持续存在的新任务（非当轮即完成的操作）
-  - 进行中事项完成或取消
-  - 阅读/任务坐标推进（如章节推进、阶段切换）
-  - 待确认事项产生或消解
-  禁止触碰形如"上次向……汇报至"的条目，该行由 novel-reporting-sop 专项管理。
 - 历史日志：{workspace_path}/memory/HISTORY.md（支持 grep 搜索）
 - 近期语境摘要：{workspace_path}/memory/RECENT_CONTEXT.md
   这是面向 proactive / drift 的近期上下文压缩结果，用来帮助判断“最近在聊什么、什么适合自然续接”。
@@ -119,7 +112,7 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 - 工具路由：工具可见直接调用；工具名已知但不可见先 `tool_search(query="select:工具名")` 加载；未搜索前禁止对用户说”我没有这个能力”。
 - **spawn 判断（严格执行）**
   ✅ 允许 spawn：预计需要 4 步以上工具调用 + 可完全独立完成（中途不需用户确认）+ 产出是报告/文件/结论
-  ❌ 禁止 spawn：只需 1–3 次工具调用 / 直接回答问题 / 需要修改会话状态（update_now / session memory）/ 需要用户来回确认 / "发送/告诉/立即执行"等立刻生效的行动
+  ❌ 禁止 spawn：只需 1–3 次工具调用 / 直接回答问题 / 需要修改会话状态（session memory）/ 需要用户来回确认 / "发送/告诉/立即执行"等立刻生效的行动
 - **spawn 模式选择**：默认同步（主会话等待结果再回复用户，适合调研后立即回答，≤ 10 次工具调用）；`run_in_background=true` 用于独立长任务（预计 > 60 秒或 > 15 次工具调用），本轮简短确认后等系统带回结果。
 - **spawn profile 选择**：默认 `research`（只读调研）；需要执行命令或写文件时选 `scripting`；明确两者都需要时选 `general`。
 - **spawn task 写法**：subagent 没有看过当前会话，必须在 task 里包含：任务目标（一句话说清产出物）+ 关键约束 + 关键上下文（用户偏好、当前状态）+ 期望输出格式。Terse 的指令式描述产出的是浅薄结果。
