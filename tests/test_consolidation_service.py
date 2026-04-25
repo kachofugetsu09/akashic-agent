@@ -34,6 +34,7 @@ def test_consolidation_service_archive_all_and_profile_extract():
         write_recent_context=MagicMock(),
         append_history_once=MagicMock(return_value=True),
         append_pending_once=MagicMock(return_value=True),
+        append_journal=MagicMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -75,6 +76,12 @@ def test_consolidation_service_archive_all_and_profile_extract():
 
     memory.append_history_once.assert_called_once()
     memory.save_from_consolidation.assert_awaited_once()
+    memory.append_journal.assert_called_once_with(
+        "2026-03-15",
+        "[2026-03-15 10:00] 用户聊了 Zigbee 方案",
+        source_ref="[]",
+        kind="journal:2026-03-15",
+    )
     # 当前 tail 太短，没有 compression 源段，因此只会调用 event + 长期记忆
     assert provider.chat.await_count == 2
     event_prompt = next(
@@ -112,6 +119,7 @@ def test_consolidation_service_uses_profile_maint_for_file_side_io():
         write_recent_context=MagicMock(),
         append_history_once=MagicMock(return_value=True),
         append_pending_once=MagicMock(return_value=True),
+        append_journal=MagicMock(),
     )
     async def _chat_side_effect(**kwargs):
         text = _message_text(kwargs)
@@ -149,6 +157,12 @@ def test_consolidation_service_uses_profile_maint_for_file_side_io():
 
     profile_maint.read_long_term.assert_called_once()
     profile_maint.append_history_once.assert_called_once()
+    profile_maint.append_journal.assert_called_once_with(
+        "2026-03-15",
+        "[2026-03-15 10:00] 用户聊了 Zigbee 方案",
+        source_ref="[]",
+        kind="journal:2026-03-15",
+    )
     profile_maint.write_recent_context.assert_called_once()
     memory_port.save_from_consolidation.assert_awaited_once()
 
@@ -165,6 +179,7 @@ def test_consolidation_event_failure_does_not_write_implicit_long_term():
         write_recent_context=MagicMock(),
         append_history_once=MagicMock(return_value=True),
         append_pending_once=MagicMock(return_value=True),
+        append_journal=MagicMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -211,6 +226,7 @@ def test_consolidation_event_failure_does_not_write_implicit_long_term():
     assert session.last_consolidated == 0
     memory.save_item_with_supersede.assert_not_awaited()
     memory.append_history_once.assert_not_called()
+    memory.append_journal.assert_not_called()
     memory.write_recent_context.assert_not_called()
 
 
@@ -222,6 +238,7 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
         write_recent_context=MagicMock(),
         append_history_once=MagicMock(return_value=True),
         append_pending_once=MagicMock(return_value=True),
+        append_journal=MagicMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -300,6 +317,7 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
         write_recent_context=MagicMock(),
         append_history_once=MagicMock(return_value=True),
         append_pending_once=MagicMock(return_value=True),
+        append_journal=MagicMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -386,6 +404,7 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
         write_recent_context=MagicMock(),
         append_history_once=MagicMock(return_value=True),
         append_pending_once=MagicMock(return_value=True),
+        append_journal=MagicMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -470,6 +489,7 @@ def test_consolidation_recent_context_invalid_json_keeps_old_compression():
         write_recent_context=MagicMock(),
         append_history_once=MagicMock(return_value=True),
         append_pending_once=MagicMock(return_value=True),
+        append_journal=MagicMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),

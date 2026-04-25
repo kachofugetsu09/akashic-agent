@@ -736,7 +736,7 @@ def create_dashboard_app(workspace: Path) -> FastAPI:
         has_embedding: bool | None = None,
         page: int = 1,
         page_size: int = 50,
-        sort_by: str = "updated_at",
+        sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
         items, total = memory_store.list_items_for_dashboard(

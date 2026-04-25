@@ -85,6 +85,11 @@ class MemoryPort(Protocol):
     ) -> bool: ...
     def read_history(self, max_chars: int = 0) -> str: ...
 
+    # ── v1: journal (journal/YYYY-MM-DD.md) ───────────────────────
+    def append_journal(
+        self, date_str: str, entry: str, *, source_ref: str = "", kind: str = "journal"
+    ) -> bool: ...
+
     # ── v1: context helpers ────────────────────────────────────────
     def get_memory_context(self) -> str: ...
     def has_long_term_memory(self) -> bool: ...
@@ -283,6 +288,11 @@ class DefaultMemoryPort:
             return text
         except Exception:
             return ""
+
+    def append_journal(
+        self, date_str: str, entry: str, *, source_ref: str = "", kind: str = "journal"
+    ) -> bool:
+        return self._store.append_journal(date_str, entry, source_ref=source_ref, kind=kind)
 
     # ── v1: context helpers ────────────────────────────────────────
 

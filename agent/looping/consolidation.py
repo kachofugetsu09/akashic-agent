@@ -147,6 +147,27 @@ def _coerce_history_text(value: object) -> str:
     return ""
 
 
+_DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})")
+
+
+def _append_entries_to_journal(
+    profile_maint: "ProfileMaintenanceStore",
+    entries: list[str],
+    source_ref: str,
+) -> None:
+    by_date: dict[str, list[str]] = {}
+    for entry in entries:
+        m = _DATE_PREFIX_RE.match(entry)
+        if not m:
+            continue
+        by_date.setdefault(m.group(1), []).append(entry)
+    for date_str, date_entries in by_date.items():
+        combined = "\n".join(date_entries)
+        profile_maint.append_journal(
+            date_str, combined, source_ref=source_ref, kind=f"journal:{date_str}"
+        )
+
+
 def _coerce_emotional_weight(value: object) -> int:
     if value is None or value == "":
         return 0
@@ -274,8 +295,7 @@ def _render_recent_context(
         ("最近待延续话题", compression.get("follow_ups") or []),
         ("最近避免事项", compression.get("avoidances") or []),
     ]
-    lines = ["# Recent Context", "", "## Compression"]
-    lines.append(f"until: {compression_until or 'none'}")
+    lines = ["# Recent Context", "", "## Compression", f"until: {compression_until or 'none'}"]
     rendered_any = False
     for title, items in sections:
         cleaned = [str(item).strip() for item in items if str(item).strip()]
@@ -1245,7 +1265,16 @@ history_entries.emotional_weight 规则：
                     recent_context_text,
                 )
 
-            # 7. 更新 session.last_consolidated，表示这批旧消息已经被归档过。
+            # 7. 把 event 按日期写入 journal/YYYY-MM-DD.md。
+            if history_entries:
+                await asyncio.to_thread(
+                    _append_entries_to_journal,
+                    profile_maint,
+                    history_entries,
+                    source_ref,
+                )
+
+            # 8. 更新 session.last_consolidated，表示这批旧消息已经被归档过。
             if archive_all:
                 session.last_consolidated = 0
             else:

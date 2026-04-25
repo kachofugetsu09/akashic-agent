@@ -349,6 +349,79 @@ def test_list_memory_items_with_filters(tmp_path) -> None:
     assert status_resp.json()["items"][0]["memory_type"] == "profile"
 
 
+def test_list_memory_items_sorts_by_created_at_desc(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    conn = sqlite3.connect(tmp_path / "memory" / "memory2.db")
+    try:
+        conn.execute(
+            "UPDATE memory_items SET created_at=? WHERE source_ref=?",
+            ("2026-04-19T10:00:00+08:00", "telegram:100:pref"),
+        )
+        conn.execute(
+            "UPDATE memory_items SET created_at=? WHERE source_ref=?",
+            ("2026-04-19T11:00:00+08:00", "telegram:100:event"),
+        )
+        conn.execute(
+            "UPDATE memory_items SET created_at=? WHERE source_ref=?",
+            ("2026-04-19T12:00:00+08:00", "cli:local:profile"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    resp = client.get(
+        "/api/dashboard/memories",
+        params={"sort_by": "created_at", "sort_order": "desc"},
+    )
+
+    assert resp.status_code == 200
+    assert [item["source_ref"] for item in resp.json()["items"]] == [
+        "cli:local:profile",
+        "telegram:100:event",
+        "telegram:100:pref",
+    ]
+
+
+def test_list_memory_items_default_sort_is_created_at_desc(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    conn = sqlite3.connect(tmp_path / "memory" / "memory2.db")
+    try:
+        conn.execute(
+            "UPDATE memory_items SET created_at=?, updated_at=? WHERE source_ref=?",
+            (
+                "2026-04-19T10:00:00+08:00",
+                "2026-04-19T13:00:00+08:00",
+                "telegram:100:pref",
+            ),
+        )
+        conn.execute(
+            "UPDATE memory_items SET created_at=?, updated_at=? WHERE source_ref=?",
+            (
+                "2026-04-19T11:00:00+08:00",
+                "2026-04-19T12:00:00+08:00",
+                "telegram:100:event",
+            ),
+        )
+        conn.execute(
+            "UPDATE memory_items SET created_at=?, updated_at=? WHERE source_ref=?",
+            (
+                "2026-04-19T12:00:00+08:00",
+                "2026-04-19T11:00:00+08:00",
+                "cli:local:profile",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    resp = client.get("/api/dashboard/memories")
+
+    assert resp.status_code == 200
+    assert resp.json()["items"][0]["source_ref"] == "cli:local:profile"
+
+
 def test_get_update_and_delete_memory(tmp_path) -> None:
     _seed_workspace(tmp_path)
     client = TestClient(create_dashboard_app(tmp_path))

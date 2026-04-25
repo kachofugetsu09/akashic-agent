@@ -119,7 +119,7 @@ const state = {
   memoryScopeFilter: null,
   memoryPage: 1,
   memoryPageSize: 25,
-  memorySortBy: "updated_at",
+  memorySortBy: "created_at",
   memorySortOrder: "desc",
   totalMemories: 0,
   proactiveOverview: null,
@@ -1064,6 +1064,7 @@ function renderTableHead() {
       <div>${renderSortHeader("memory", "reinforcement", "Uses")}</div>
       <div>${renderSortHeader("memory", "emotional_weight", "Weight")}</div>
       <div>Source</div>
+      <div>${renderSortHeader("memory", "created_at", "Created")}</div>
       <div>${renderSortHeader("memory", "updated_at", "Updated")}</div>
       <div>Status</div>
       <div></div>
@@ -1263,6 +1264,7 @@ function renderMemoryRows() {
       <div class="mono cell-metric" title="reinforcement">${escapeHtml(String(item.reinforcement ?? 0))}</div>
       <div class="mono cell-metric" title="emotional_weight">${escapeHtml(String(item.emotional_weight ?? 0))}</div>
       <div class="mono cell-source" title="${escapeHtml(item.source_ref || "")}">${escapeHtml(shortSource(item.source_ref || "-"))}</div>
+      <div class="mono cell-time" title="${escapeHtml(item.created_at)}">${escapeHtml(shortTs(item.created_at))}</div>
       <div class="mono cell-time" title="${escapeHtml(item.updated_at)}">${escapeHtml(shortTs(item.updated_at))}</div>
       <div class="cell-status"><span class="status-pill" style="${memoryStatusStyle(item.status)}">${escapeHtml(item.status)}</span></div>
       <div class="table-actions">

@@ -619,7 +619,7 @@ textarea:focus {
 
 .table-head.mode-memory,
 .table-row.mode-memory {
-  grid-template-columns: 34px 88px 1.4fr 56px 64px 1fr 90px 72px 60px;
+  grid-template-columns: 34px 88px minmax(180px, 1.5fr) 56px 64px 88px 90px 90px 72px 60px;
 }
 
 .table-head.mode-proactive-deliveries,
@@ -1423,6 +1423,6 @@ textarea:focus {
 
   .table-head.mode-memory,
   .table-row.mode-memory {
-    grid-template-columns: 34px 72px 1.1fr 48px 52px 1fr 84px 70px 56px;
+    grid-template-columns: 34px 72px minmax(140px, 1.25fr) 48px 52px 64px 76px 76px 70px 56px;
   }
 }

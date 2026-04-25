@@ -12,6 +12,7 @@ _NOW_SECTIONS_ORDER = ["## 近期进行中", "## 待确认事项"]
 _CONSOLIDATION_MARKER_PREFIX = "<!-- consolidation:"
 _CONSOLIDATION_MARKER_SUFFIX = " -->"
 _CONSOLIDATION_TAIL_BYTES = 1024 * 1024
+_JOURNAL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class MemoryStore:
@@ -22,10 +23,12 @@ class MemoryStore:
     - NOW.md      : short-term state (ongoing tasks, schedule, open questions)
     - HISTORY.md  : grep-searchable event log, permanent append
     - RECENT_CONTEXT.md : compacted recent context snapshot for proactive/drift
+    - journal/    : per-day event timeline, append-only YYYY-MM-DD.md
     """
 
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
+        self.journal_dir = ensure_dir(self.memory_dir / "journal")
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
         self.recent_context_file = self.memory_dir / "RECENT_CONTEXT.md"
@@ -83,6 +86,35 @@ class MemoryStore:
         if max_chars > 0 and len(text) > max_chars:
             return text[-max_chars:]
         return text
+
+    # ── journal/ (per-day event timeline) ───────────────────────────
+
+    def append_journal(
+        self,
+        date_str: str,
+        entry: str,
+        *,
+        source_ref: str = "",
+        kind: str = "journal",
+    ) -> bool:
+        date_str = date_str.strip()
+        text = (entry or "").strip()
+        if not _JOURNAL_DATE_RE.fullmatch(date_str) or not text:
+            return False
+        journal_file = self.journal_dir / f"{date_str}.md"
+        if not journal_file.exists():
+            journal_file.write_text(f"# {date_str}\n\n", encoding="utf-8")
+        if source_ref:
+            return self._append_once_with_index(
+                target_file=journal_file,
+                text=text,
+                source_ref=source_ref,
+                kind=kind,
+                trailing_blank_line=True,
+            )
+        with open(journal_file, "a", encoding="utf-8") as f:
+            f.write(text.rstrip() + "\n\n")
+        return True
 
     # ── RECENT_CONTEXT.md (compacted recent context) ──────────────
 
