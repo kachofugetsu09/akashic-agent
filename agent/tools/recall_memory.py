@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _RRF_K = 60
 _HYPOTHESIS_MAX_TOKENS = 80
 _HYPOTHESIS_TIMEOUT_S = 3.0
+_EMBED_TIMEOUT_S = 8.0
 _VECTOR_SCORE_THRESHOLD = 0.35   # 比自动注入低一档，宁可多召回
 _VECTOR_TOP_K = 15
 
@@ -106,17 +107,11 @@ class RecallMemoryTool(Tool):
         types = [memory_type] if memory_type else None
 
         # 并行：embed(query) + 生成 2 条 HyDE 假想条目
-        embed_task = asyncio.create_task(self._embedder.embed(query))
+        embed_task = asyncio.create_task(self._embed(query, label="query"))
         hyp1_task = asyncio.create_task(self._gen_hypothesis(query, style="event"))
         hyp2_task = asyncio.create_task(self._gen_hypothesis(query, style="general"))
 
-        hyp1, hyp2 = await asyncio.gather(hyp1_task, hyp2_task)
-
-        query_vec: list[float] | None = None
-        try:
-            query_vec = await embed_task
-        except Exception as e:
-            logger.warning("recall_memory: query embed failed, fallback to keyword only: %s", e)
+        query_vec, hyp1, hyp2 = await asyncio.gather(embed_task, hyp1_task, hyp2_task)
 
         vector_results: list[dict] = []
         if query_vec is not None:
@@ -177,12 +172,13 @@ class RecallMemoryTool(Tool):
         """embed query + hypotheses，各自 vector_search，union dedup。"""
         hyp_vecs = []
         if hypotheses:
-            try:
-                hyp_vecs = await asyncio.gather(
-                    *[self._embedder.embed(h) for h in hypotheses]
+            hyp_vecs = [
+                v
+                for v in await asyncio.gather(
+                    *[self._embed(h, label="hypothesis") for h in hypotheses]
                 )
-            except Exception as e:
-                logger.debug("recall_memory: hypothesis embed failed: %s", e)
+                if v is not None
+            ]
 
         all_vecs = [query_vec] + list(hyp_vecs)
         seen: dict[str, dict[str, object]] = {}
@@ -214,6 +210,20 @@ class RecallMemoryTool(Tool):
                 if hit_id not in seen or hit_score > seen_score:
                     seen[hit_id] = hit
         return list(seen.values())
+
+    async def _embed(self, text: str, *, label: str) -> list[float] | None:
+        try:
+            return await asyncio.wait_for(
+                self._embedder.embed(text),
+                timeout=_EMBED_TIMEOUT_S,
+            )
+        except Exception as e:
+            logger.warning(
+                "recall_memory: %s embed failed, fallback to keyword only: %s",
+                label,
+                e,
+            )
+            return None
 
     async def _gen_hypothesis(self, query: str, style: str) -> str | None:
         """生成一条假想记忆条目，style=event 生成带时间戳的事件，style=general 生成通用陈述。"""

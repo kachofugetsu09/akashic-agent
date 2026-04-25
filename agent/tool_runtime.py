@@ -74,14 +74,16 @@ def append_assistant_tool_calls(
     *,
     content: str | None,
     tool_calls: list[Any],
+    provider_fields: dict[str, Any] | None = None,
 ) -> None:
-    messages.append(
-        {
-            "role": "assistant",
-            "content": content,
-            "tool_calls": format_tool_calls(tool_calls),
-        }
-    )
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": format_tool_calls(tool_calls),
+    }
+    if provider_fields:
+        message.update(provider_fields)
+    messages.append(message)
 
 
 def append_tool_result(

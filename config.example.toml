@@ -1,14 +1,21 @@
 [llm]
-provider = "qwen"
+provider = "deepseek"
 
 [llm.main]
-model = "qwen3.6-plus"
-api_key = "${QWEN_API_KEY}"
-base_url = "https://coding.dashscope.aliyuncs.com/v1"
-enable_thinking = false
+model = "deepseek-v4-flash"
+api_key = "${DEEPSEEK_API_KEY}"
+base_url = "https://api.deepseek.com/v1"
+enable_thinking = true
+multimodal = false
 
 [llm.fast]
 model = "qwen-flash"
+api_key = "${QWEN_API_KEY}"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[llm.vl]
+# 当 llm.main.multimodal = false 时启用；model 为空表示不启用独立视觉模型。
+model = "qwen-vl-plus"
 api_key = "${QWEN_API_KEY}"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
@@ -26,6 +33,7 @@ search_enabled = true
 [agent.wiring]
 context = "default"
 memory = "default"
+memory_engine = "default"
 toolsets = ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
 
 [channels.telegram]
@@ -80,7 +88,7 @@ profile = "daily"
 
 [proactive.target]
 channel = "telegram"
-chat_id = "your_chat_id"
+chat_id = ""
 
 [proactive.agent]
 max_steps = 20

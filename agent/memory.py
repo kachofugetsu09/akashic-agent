@@ -12,6 +12,7 @@ _NOW_SECTIONS_ORDER = ["## 近期进行中", "## 待确认事项"]
 _CONSOLIDATION_MARKER_PREFIX = "<!-- consolidation:"
 _CONSOLIDATION_MARKER_SUFFIX = " -->"
 _CONSOLIDATION_TAIL_BYTES = 1024 * 1024
+_JOURNAL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class MemoryStore:
@@ -98,13 +99,11 @@ class MemoryStore:
     ) -> bool:
         date_str = date_str.strip()
         text = (entry or "").strip()
-        if not date_str or not text:
+        if not _JOURNAL_DATE_RE.fullmatch(date_str) or not text:
             return False
         journal_file = self.journal_dir / f"{date_str}.md"
         if not journal_file.exists():
-            journal_file.write_text(
-                f"# {date_str}\n\n", encoding="utf-8"
-            )
+            journal_file.write_text(f"# {date_str}\n\n", encoding="utf-8")
         if source_ref:
             return self._append_once_with_index(
                 target_file=journal_file,

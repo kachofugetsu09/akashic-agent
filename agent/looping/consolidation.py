@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 import json_repair
 
 from agent.llm_json import load_json_object_loose
+from agent.prompting import is_context_frame
 
 logger = logging.getLogger("agent.loop")
 
@@ -102,7 +103,11 @@ def _build_consolidation_source_ref(window: ConsolidationWindow) -> str:
     """返回本次 consolidation 窗口内所有消息 ID 的 JSON 列表。
     缺失 id 的消息（迁移前的历史脏数据）直接跳过。
     """
-    ids = [str(msg["id"]) for msg in window.old_messages if msg.get("id")]
+    ids = [
+        str(msg["id"])
+        for msg in window.old_messages
+        if msg.get("id") and not _is_context_frame_message(msg)
+    ]
     return json.dumps(ids, ensure_ascii=False)
 
 
@@ -116,6 +121,8 @@ def _build_entry_source_ref(base_source_ref: str, entry: str) -> str:
 def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
     lines = []
     for message in old_messages:
+        if _is_context_frame_message(message):
+            continue
         if not message.get("content") or message.get("role") == "tool":
             continue
         if message.get("role") == "assistant" and message.get("proactive"):
@@ -162,9 +169,9 @@ def _append_entries_to_journal(
 
 
 def _coerce_emotional_weight(value: object) -> int:
-    if value is None:
+    if value is None or value == "":
         return 0
-    if not isinstance(value, int | float | str):
+    if not isinstance(value, str | int | float):
         return 0
     try:
         return max(0, min(10, int(value)))
@@ -209,9 +216,16 @@ def _message_time(message: dict) -> str:
     return str(message.get("timestamp") or "").strip()
 
 
+def _is_context_frame_message(message: dict) -> bool:
+    content = str(message.get("content") or "")
+    return is_context_frame(content)
+
+
 def _format_recent_context_messages(messages: list[dict]) -> str:
     lines = []
     for message in messages:
+        if _is_context_frame_message(message):
+            continue
         content = str(message.get("content") or "").strip()
         role = str(message.get("role") or "").lower()
         if not content or role not in {"user", "assistant"}:
@@ -251,6 +265,8 @@ def _replace_recent_turns_block(existing_text: str, recent_turns: str) -> str:
 def _format_conversation_for_recent_context(messages: list[dict]) -> str:
     lines = []
     for message in messages:
+        if _is_context_frame_message(message):
+            continue
         content = str(message.get("content") or "").strip()
         role = str(message.get("role") or "").upper()
         if not content or role not in {"USER", "ASSISTANT"}:
@@ -1191,15 +1207,6 @@ history_entries.emotional_weight 规则：
                     len(history_entries),
                 )
 
-            # 5b. 把 event 按日期写入 journal/YYYY-MM-DD.md
-            if history_entries:
-                await asyncio.to_thread(
-                    _append_entries_to_journal,
-                    profile_maint,
-                    history_entries,
-                    source_ref,
-                )
-
             # 6. 等待隐式提取完成（仅 LLM 调用，无写库），然后统一写库。
             # event 路径走到这里说明 JSON 合法，两侧提取均已成功后才提交，保证幂等。
             # 进程在此之前崩溃，last_consolidated 不更新，下次重跑同窗口。
@@ -1258,7 +1265,16 @@ history_entries.emotional_weight 规则：
                     recent_context_text,
                 )
 
-            # 7. 更新 session.last_consolidated，表示这批旧消息已经被归档过。
+            # 7. 把 event 按日期写入 journal/YYYY-MM-DD.md。
+            if history_entries:
+                await asyncio.to_thread(
+                    _append_entries_to_journal,
+                    profile_maint,
+                    history_entries,
+                    source_ref,
+                )
+
+            # 8. 更新 session.last_consolidated，表示这批旧消息已经被归档过。
             if archive_all:
                 session.last_consolidated = 0
             else:

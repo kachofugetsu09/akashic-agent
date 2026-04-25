@@ -191,6 +191,7 @@ class FakeLLM:
 
 def cfg_with(**kwargs) -> ProactiveConfig:
     """从默认 ProactiveConfig 创建，只覆盖指定字段。"""
+    kwargs.setdefault("default_chat_id", "test_chat_id")
     return ProactiveConfig(**kwargs)
 
 
@@ -280,7 +281,7 @@ def make_agent_tick(
     )
 
     return AgentTick(
-        cfg=cfg or ProactiveConfig(),
+        cfg=cfg or cfg_with(),
         session_key=session_key,
         state_store=state_store,
         any_action_gate=any_action_gate,

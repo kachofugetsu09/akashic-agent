@@ -8,7 +8,12 @@ from agent.provider import LLMProvider
 from agent.subagent import SubAgent
 from agent.tool_bundles import build_readonly_research_tools
 from agent.tools.base import Tool
-from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from agent.tools.filesystem import (
+    EditFileTool,
+    ListDirTool,
+    ReadFileTool,
+    WriteFileTool,
+)
 from agent.tools.shell import ShellTool
 from core.net.http import HttpRequester
 
@@ -50,12 +55,14 @@ def build_research_spec(
     fetch_requester: HttpRequester,
     system_prompt: str,
     max_iterations: int = 20,
+    multimodal: bool = True,
 ) -> SubagentSpec:
     """只读调研：搜索、读文件、抓网页；禁止执行命令和写文件。"""
     tools = build_readonly_research_tools(
         fetch_requester=fetch_requester,
         allowed_dir=workspace,
         include_list_dir=True,
+        multimodal=multimodal,
     )
     return SubagentSpec(
         tools=tools,
@@ -71,10 +78,11 @@ def build_scripting_spec(
     fetch_requester: HttpRequester,
     system_prompt: str,
     max_iterations: int = 20,
+    multimodal: bool = True,
 ) -> SubagentSpec:
     """执行型：运行命令、读写文件（仅限 task_dir）；禁止网络访问。"""
     tools: list[Tool] = [
-        ReadFileTool(allowed_dir=workspace),
+        ReadFileTool(allowed_dir=workspace, multimodal=multimodal),
         ListDirTool(allowed_dir=workspace),
         WriteFileTool(allowed_dir=task_dir),
         EditFileTool(allowed_dir=task_dir),
@@ -98,12 +106,14 @@ def build_general_spec(
     fetch_requester: HttpRequester,
     system_prompt: str,
     max_iterations: int = 20,
+    multimodal: bool = True,
 ) -> SubagentSpec:
     """通用型：调研与执行兼有；仅在任务明确需要两者时使用。"""
     tools = build_readonly_research_tools(
         fetch_requester=fetch_requester,
         allowed_dir=workspace,
         include_list_dir=True,
+        multimodal=multimodal,
     ) + [
         WriteFileTool(allowed_dir=task_dir),
         EditFileTool(allowed_dir=task_dir),
@@ -135,6 +145,7 @@ def build_spawn_spec(
     system_prompt: str,
     max_iterations: int = 20,
     profile: str = PROFILE_RESEARCH,
+    multimodal: bool = True,
 ) -> SubagentSpec:
     """根据 profile 选择对应的工具集构建 SubagentSpec。
 
@@ -150,4 +161,5 @@ def build_spawn_spec(
         fetch_requester=fetch_requester,
         system_prompt=system_prompt,
         max_iterations=max_iterations,
+        multimodal=multimodal,
     )

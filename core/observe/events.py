@@ -67,6 +67,8 @@ class TurnTrace:
     react_input_sum_tokens: int | None = None
     react_input_peak_tokens: int | None = None
     react_final_input_tokens: int | None = None
+    react_cache_prompt_tokens: int | None = None
+    react_cache_hit_tokens: int | None = None
 
 
 @dataclass

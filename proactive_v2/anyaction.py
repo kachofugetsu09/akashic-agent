@@ -6,21 +6,12 @@ import random as _random_module
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
 from core.common.timekit import parse_iso as _parse_iso, safe_zone as _safe_zone
 from infra.persistence.json_store import atomic_save_json, load_json
 
 logger = logging.getLogger(__name__)
-
-
-class _QuotaState(TypedDict):
-    version: int
-    window_key: str
-    next_reset_at: str
-    used: int
-    last_action_at: str
 
 
 @dataclass
@@ -37,7 +28,7 @@ class QuotaStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._state: _QuotaState = self._load()
+        self._state = self._load()
 
     def snapshot(
         self, *, now_utc: datetime, reset_hour: int, timezone_name: str
@@ -51,8 +42,8 @@ class QuotaStore:
         return QuotaSnapshot(
             window_key=self._state["window_key"],
             next_reset_at=_parse_iso(self._state["next_reset_at"]) or now_utc,
-            used=self._state["used"],
-            last_action_at=_parse_iso(self._state["last_action_at"]),
+            used=int(self._state["used"]),
+            last_action_at=_parse_iso(self._state.get("last_action_at")),
         )
 
     def record_action(
@@ -63,7 +54,7 @@ class QuotaStore:
         )
         self._state["window_key"] = snap.window_key
         self._state["next_reset_at"] = snap.next_reset_at.isoformat()
-        self._state["used"] = self._state["used"] + 1
+        self._state["used"] = int(self._state.get("used", 0)) + 1
         self._state["last_action_at"] = now_utc.isoformat()
         self._save()
 
@@ -91,14 +82,14 @@ class QuotaStore:
             "window_key": window_key,
             "next_reset_at": next_reset_at.isoformat(),
             "used": 0,
-            "last_action_at": self._state["last_action_at"],
+            "last_action_at": self._state.get("last_action_at"),
         }
         self._save()
 
-    def _load(self) -> _QuotaState:
+    def _load(self) -> dict:
         # 1. 读取磁盘数据
         raw = load_json(self.path, default=None, domain="anyaction.quota")
-        if not isinstance(raw, dict):
+        if raw is None:
             return {
                 "version": 1,
                 "window_key": "",
@@ -109,22 +100,15 @@ class QuotaStore:
 
         # 2. 规范化字段
         return {
-            "version": self._coerce_int(raw.get("version"), 1),
+            "version": int(raw.get("version", 1)),
             "window_key": str(raw.get("window_key", "")),
             "next_reset_at": str(raw.get("next_reset_at", "")),
-            "used": self._coerce_int(raw.get("used"), 0),
+            "used": int(raw.get("used", 0)),
             "last_action_at": str(raw.get("last_action_at", "")),
         }
 
     def _save(self) -> None:
         atomic_save_json(self.path, self._state, domain="anyaction.quota")
-
-    @staticmethod
-    def _coerce_int(value: Any, default: int) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
 
 
 class AnyActionGate:

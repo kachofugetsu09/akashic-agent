@@ -20,17 +20,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SOURCES_CONFIG = Path.home() / ".akashic/workspace/proactive_sources.json"
-_MCP_SERVERS_CONFIG = Path.home() / ".akashic/workspace/mcp_servers.json"
+_DEFAULT_WORKSPACE = Path.home() / ".akashic" / "workspace"
 
 
 # ---------------------------------------------------------------------------
 # Config loaders
 # ---------------------------------------------------------------------------
 
-def _load_sources() -> list[dict]:
+def _load_sources(workspace: Path) -> list[dict]:
+    path = workspace / "proactive_sources.json"
     try:
-        data = json.loads(_SOURCES_CONFIG.read_text())
+        data = json.loads(path.read_text())
         return [s for s in data.get("sources", []) if s.get("enabled", True)]
     except FileNotFoundError:
         return []
@@ -39,9 +39,10 @@ def _load_sources() -> list[dict]:
         return []
 
 
-def _get_server_cfg(server_name: str) -> dict | None:
+def _get_server_cfg(server_name: str, workspace: Path) -> dict | None:
+    path = workspace / "mcp_servers.json"
     try:
-        data = json.loads(_MCP_SERVERS_CONFIG.read_text())
+        data = json.loads(path.read_text())
         return data.get("servers", {}).get(server_name)
     except Exception as e:
         logger.warning("[mcp_sources] mcp_servers.json 读取失败: %s", e)
@@ -93,7 +94,8 @@ class McpClientPool:
         await pool.disconnect_all()   # agent 关闭时（finally 块）
     """
 
-    def __init__(self) -> None:
+    def __init__(self, workspace: Path | None = None) -> None:
+        self._workspace = workspace or _DEFAULT_WORKSPACE
         self._clients: dict[str, Any] = {}               # server -> McpClient
         self._configs: dict[str, tuple[list, dict]] = {}  # server -> (command, env)
         self._locks: dict[str, asyncio.Lock] = {}         # server -> per-server lock（MCP stdio 不支持并发调用）
@@ -101,12 +103,12 @@ class McpClientPool:
     async def connect_all(self) -> None:
         """按当前配置连接所有 server，连接失败的 server 跳过。"""
         seen: set[str] = set()
-        for src in _load_sources():
+        for src in _load_sources(self._workspace):
             server = src.get("server", "")
             if not server or server in seen:
                 continue
             seen.add(server)
-            cfg = _get_server_cfg(server)
+            cfg = _get_server_cfg(server, self._workspace)
             if not cfg:
                 continue
             command = cfg.get("command", [])
@@ -227,7 +229,7 @@ def _extract_context_items(data: Any, *, server: str) -> list[dict]:
 async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[dict]:
     result: list[dict] = []
     # 1. 先按 channel 从 proactive_sources.json 中挑出本轮该访问的源。
-    for src in _iter_sources_by_channel(channel):
+    for src in _iter_sources_by_channel(channel, pool._workspace):
         server = src.get("server", "")
         # 2. 每个源默认调用：
         #    - context 走 get_context
@@ -264,8 +266,8 @@ async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[
     return result
 
 
-def _iter_sources_by_channel(channel: str) -> list[dict]:
-    sources = _load_sources()
+def _iter_sources_by_channel(channel: str, workspace: Path = _DEFAULT_WORKSPACE) -> list[dict]:
+    sources = _load_sources(workspace)
     result: list[dict] = []
     # 根据 channel 做一层静态路由：
     # - context 只取 channel=context 的源
@@ -298,7 +300,7 @@ def _build_ack_map(sources: list[dict]) -> dict[str, tuple[str, list[str]]]:
 
 async def poll_content_feeds_async(pool: McpClientPool) -> None:
     failed_servers: list[str] = []
-    for src in _iter_sources_by_channel("content"):
+    for src in _iter_sources_by_channel("content", pool._workspace):
         poll_tool = src.get("poll_tool")
         if not poll_tool:
             continue
@@ -319,7 +321,7 @@ async def poll_content_feeds_async(pool: McpClientPool) -> None:
 
 
 async def acknowledge_events_async(pool: McpClientPool, events: list) -> None:
-    ack_map = _build_ack_map(_load_sources())
+    ack_map = _build_ack_map(_load_sources(pool._workspace))
     for e in events:
         ack_server: str = getattr(e, "_ack_server", None) or ""
         if not ack_server:
@@ -344,7 +346,7 @@ async def acknowledge_content_entries_async(
 ) -> None:
     if not entries:
         return
-    ack_map = _build_ack_map(_load_sources())
+    ack_map = _build_ack_map(_load_sources(pool._workspace))
     for source_key, item_id in entries:
         if not source_key.startswith("mcp:"):
             continue

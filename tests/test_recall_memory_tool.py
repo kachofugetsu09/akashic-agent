@@ -1,15 +1,23 @@
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+import agent.tools.recall_memory as recall_memory_module
 from agent.tools.recall_memory import RecallMemoryTool
 
 
 class _FailingEmbedder:
     async def embed(self, text: str) -> list[float]:
         raise RuntimeError(f"embed failed: {text}")
+
+
+class _HangingEmbedder:
+    async def embed(self, text: str) -> list[float]:
+        await asyncio.Event().wait()
+        return []
 
 
 class _KeywordOnlyStore:
@@ -58,6 +66,29 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails():
     assert payload["citation_format"] == "§cited:[id1,id2,...]§"
     assert payload["cited_item_ids"] == ["mem:1"]
     assert "§cited:[" in payload["citation_rule"]
+    assert store.vector_search_called is False
+
+
+@pytest.mark.asyncio
+async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(monkeypatch):
+    monkeypatch.setattr(recall_memory_module, "_EMBED_TIMEOUT_S", 0.01)
+    store = _KeywordOnlyStore()
+    provider = SimpleNamespace(
+        chat=AsyncMock(return_value=SimpleNamespace(content="用户处理过支付相关问题"))
+    )
+    tool = RecallMemoryTool(
+        store=store,
+        embedder=_HangingEmbedder(),
+        provider=provider,
+        model="test-model",
+    )
+
+    payload = json.loads(
+        await asyncio.wait_for(tool.execute(query="phase 支付"), timeout=0.5)
+    )
+
+    assert payload["count"] == 1
+    assert payload["items"][0]["id"] == "mem:1"
     assert store.vector_search_called is False
 
 

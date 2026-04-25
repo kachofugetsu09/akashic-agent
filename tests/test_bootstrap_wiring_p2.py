@@ -247,7 +247,7 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
         "bootstrap.tools.resolve_toolset_provider",
         lambda name, readonly_tools=None: _ToolsetProvider(name),
     )
-    monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_: {})
+    monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
     monkeypatch.setattr(
         "bootstrap.tools.build_scheduler",
         lambda *_args, **_kwargs: SimpleNamespace(),
@@ -378,7 +378,7 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
             register=lambda registry, deps: SimpleNamespace(extras={})
         ),
     )
-    monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_: {})
+    monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
     monkeypatch.setattr(
         "bootstrap.tools.build_scheduler",
         lambda *_args, **_kwargs: SimpleNamespace(),

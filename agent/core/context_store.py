@@ -14,6 +14,7 @@ from agent.core.types import (
     to_tool_call_groups,
 )
 from agent.postturn.protocol import PostTurnEvent
+from agent.prompting import is_context_frame
 from agent.retrieval.protocol import RetrievalRequest
 from agent.turns.outbound import OutboundDispatch
 from bus.events import OutboundMessage
@@ -112,7 +113,11 @@ class DefaultContextStore(ContextStore):
         session: "SessionLike",
     ) -> ContextBundle:
         # 1. 先读取 session history，并转换成 retrieval pipeline 需要的结构。
-        raw_history = session.get_history()
+        raw_history = [
+            item
+            for item in session.get_history()
+            if not _is_llm_context_frame(item)
+        ]
         history_messages = _to_history_messages(raw_history)
 
         # 2. 再执行 retrieval，保持当前 pipeline 行为不变。
@@ -193,11 +198,25 @@ class DefaultContextStore(ContextStore):
         if not omit_user_turn:
             if self._session.presence:
                 self._session.presence.record_user_message(session.key)
-            session.add_message("user", msg.content, media=msg.media if msg.media else None)
+            user_kwargs: dict[str, object] = {}
+            llm_user_content = context_retry.get("llm_user_content")
+            if isinstance(llm_user_content, (str, list)):
+                user_kwargs["llm_user_content"] = llm_user_content
+            llm_context_frame = context_retry.get("llm_context_frame")
+            if isinstance(llm_context_frame, str) and llm_context_frame.strip():
+                user_kwargs["llm_context_frame"] = llm_context_frame
+            session.add_message(
+                "user",
+                msg.content,
+                media=msg.media if msg.media else None,
+                **user_kwargs,
+            )
         _assistant_kwargs: dict = {
             "tools_used": tools_used if tools_used else None,
             "tool_chain": tool_chain if tool_chain else None,
         }
+        if thinking is not None:
+            _assistant_kwargs["reasoning_content"] = thinking
         if cited_memory_ids:
             _assistant_kwargs["cited_memory_ids"] = cited_memory_ids
         session.add_message("assistant", final_content, **_assistant_kwargs)
@@ -327,6 +346,11 @@ def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
     return out
 
 
+def _is_llm_context_frame(message: dict) -> bool:
+    content = message.get("content")
+    return isinstance(content, str) and is_context_frame(content)
+
+
 def _emit_observe_traces(
     *,
     trace: "ObservabilityServices",
@@ -399,6 +423,8 @@ def _emit_observe_traces(
             react_input_sum_tokens=react_stats.get("turn_input_sum_tokens"),
             react_input_peak_tokens=react_stats.get("turn_input_peak_tokens"),
             react_final_input_tokens=react_stats.get("final_call_input_tokens"),
+            react_cache_prompt_tokens=react_stats.get("cache_prompt_tokens"),
+            react_cache_hit_tokens=react_stats.get("cache_hit_tokens"),
         )
     )
     if retrieval_raw is not None:
@@ -454,6 +480,8 @@ def _extract_react_stats(context_retry: dict[str, object]) -> dict[str, int]:
         "turn_input_sum_tokens",
         "turn_input_peak_tokens",
         "final_call_input_tokens",
+        "cache_prompt_tokens",
+        "cache_hit_tokens",
     ):
         value = raw.get(key)
         if value is None:
@@ -473,12 +501,14 @@ def _log_react_context_budget(
     if not react_stats:
         return
     logger.info(
-        "react_context: session_key=%s iteration_count=%d turn_input_sum_tokens~=%d turn_input_peak_tokens~=%d final_call_input_tokens~=%d",
+        "react_context: session_key=%s iteration_count=%d turn_input_sum_tokens~=%d turn_input_peak_tokens~=%d final_call_input_tokens~=%d cache_hit=%d/%d",
         session_key,
         react_stats.get("iteration_count", 0),
         react_stats.get("turn_input_sum_tokens", 0),
         react_stats.get("turn_input_peak_tokens", 0),
         react_stats.get("final_call_input_tokens", 0),
+        react_stats.get("cache_hit_tokens", 0),
+        react_stats.get("cache_prompt_tokens", 0),
     )
 
 

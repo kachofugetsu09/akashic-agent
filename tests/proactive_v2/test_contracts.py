@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 from proactive_v2.contracts import (
     MAX_METRICS_KEYS,
     AlertContract,
@@ -7,6 +9,7 @@ from proactive_v2.contracts import (
     normalize_content,
     normalize_context,
 )
+from proactive_v2.event import GenericAlertEvent
 
 
 def test_normalize_alert_supports_body_alias_and_default_severity():
@@ -76,10 +79,21 @@ def test_normalize_context_adds_local_time_fields_for_aware_timestamps():
         },
     }
 
-    payload = normalize_context(item).to_prompt_item()
+    payload = normalize_context(item, local_tz="Asia/Shanghai").to_prompt_item()
 
     assert payload["updated_at_local"] == "2026-04-15 01:58:54 +0800"
     assert payload["device"]["last_seen_local"] == "2026-04-15 01:58:54 +0800"
+
+
+def test_normalize_context_accepts_other_local_timezones():
+    item = {"_source": "zigbee", "updated_at": "2026-04-14T17:58:54+00:00"}
+
+    payload = normalize_context(
+        item,
+        local_tz=ZoneInfo("America/Los_Angeles"),
+    ).to_prompt_item()
+
+    assert payload["updated_at_local"] == "2026-04-14 10:58:54 -0700"
 
 
 def test_normalize_context_skips_local_time_for_naive_timestamp():
@@ -88,3 +102,30 @@ def test_normalize_context_skips_local_time_for_naive_timestamp():
     payload = normalize_context(item).to_prompt_item()
 
     assert "updated_at_local" not in payload
+
+
+def test_generic_alert_event_from_mcp_payload():
+    payload = {
+        "event_id": "TEST-0001",
+        "kind": "alert",
+        "source_type": "health_event",
+        "source_name": "fitbit",
+        "title": "test_alert",
+        "content": "[TEST] 这是一条测试告警事件，请忽略",
+        "severity": "high",
+        "published_at": "2099-01-01T00:00:00",
+    }
+
+    evt = GenericAlertEvent.from_mcp_payload(payload)
+
+    assert evt.kind == "alert"
+    assert evt.event_id == "TEST-0001"
+    assert evt.ack_id == "TEST-0001"
+    assert evt._ack_server is None
+    assert evt.source_name == "fitbit"
+    assert evt.is_urgent() is True
+
+    sig = evt.to_signal_dict()
+    assert sig["kind"] == "alert"
+    assert sig["severity"] == "high"
+    assert sig["message"] == evt.content

@@ -107,7 +107,8 @@ class ProactiveLoop:
         from proactive_v2.mcp_sources import McpClientPool
         self._running = False
         self._feed_poll_lock = asyncio.Lock()
-        self._mcp_pool = McpClientPool()
+        workspace = getattr(self._sessions, "workspace", None)
+        self._mcp_pool = McpClientPool(Path(workspace) if workspace else None)
 
     def _build_state_store(
         self,
@@ -347,7 +348,8 @@ class ProactiveLoop:
         )
         if not hasattr(self, "_mcp_pool"):
             from proactive_v2.mcp_sources import McpClientPool
-            self._mcp_pool = McpClientPool()
+            workspace = getattr(self._sessions, "workspace", None)
+            self._mcp_pool = McpClientPool(Path(workspace) if workspace else None)
         await self._mcp_pool.connect_all()
         try:
             await self._run_loop()

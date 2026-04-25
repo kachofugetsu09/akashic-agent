@@ -90,8 +90,12 @@ def _content_hash(summary: str, memory_type: str) -> str:
 
 
 def _coerce_emotional_weight(value: object) -> int:
+    if value is None or value == "":
+        return 0
+    if not isinstance(value, str | int | float):
+        return 0
     try:
-        return max(0, min(10, int(value or 0)))
+        return max(0, min(10, int(value)))
     except (TypeError, ValueError):
         return 0
 

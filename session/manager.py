@@ -9,11 +9,33 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agent.prompting import (
+    LEGACY_CONTEXT_FRAME_MARKER,
+    SYSTEM_CONTEXT_FRAME_END,
+    SYSTEM_CONTEXT_FRAME_MARKER,
+)
 from session.store import SessionStore
+
+logger = logging.getLogger(__name__)
 
 # 保留完整 tool_result 的最近轮次数；更早的轮次仅保留调用结构，结果替换为占位符
 _RECENT_TOOL_ROUNDS = 1
 _CLEARED = "[已清除]"
+
+
+def _normalize_context_frame(content: str) -> str:
+    text = content.strip()
+    if text.startswith(LEGACY_CONTEXT_FRAME_MARKER):
+        text = text.replace(
+            LEGACY_CONTEXT_FRAME_MARKER,
+            SYSTEM_CONTEXT_FRAME_MARKER,
+            1,
+        )
+    if text.startswith(SYSTEM_CONTEXT_FRAME_MARKER) and not text.endswith(
+        SYSTEM_CONTEXT_FRAME_END
+    ):
+        text = f"{text}\n\n{SYSTEM_CONTEXT_FRAME_END}"
+    return text
 
 
 def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
@@ -73,6 +95,13 @@ def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict
     return images + [{"type": "text", "text": combined_text}]
 
 
+def _align_to_user_boundary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            return messages[i:]
+    return []
+
+
 def _safe_filename(key: str) -> str:
     """Convert a session key to a safe filename."""
     return re.sub(r"[^\w\-]", "_", key)
@@ -104,16 +133,50 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
 
-    def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+    def get_history(
+        self,
+        max_messages: int = 500,
+        *,
+        start_index: int | None = None,
+    ) -> list[dict[str, Any]]:
         """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。"""
-        if max_messages <= 0:
+        cache_tail_mode = False
+        if start_index is not None:
+            if max_messages <= 0:
+                return []
+            start = max(0, int(start_index))
+            if start >= len(self.messages):
+                return []
+            # 向前回退到最近的 user 边界（保留完整 turn）
+            while start > 0 and self.messages[start].get("role") != "user":
+                start -= 1
+            # start=0 但仍非 user 时，向后找第一个 user
+            messages = self.messages[start:]
+            if messages and messages[0].get("role") != "user":
+                messages = _align_to_user_boundary(messages)
+            if not messages:
+                return []
+            if len(messages) > max_messages * 2:
+                logger.warning(
+                    "get_history: consolidated tail (%d) exceeds 2x window (%d), "
+                    "falling back to sliding window",
+                    len(messages), max_messages,
+                )
+                messages = self.messages[-max_messages:]
+                messages = _align_to_user_boundary(messages)
+            else:
+                cache_tail_mode = True
+        elif max_messages <= 0:
             messages = []
         else:
             messages = self.messages[-max_messages:]
         assistant_indices = [
             i for i, m in enumerate(messages) if m.get("role") == "assistant"
         ]
-        recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS] if len(assistant_indices) > _RECENT_TOOL_ROUNDS else 0
+        if cache_tail_mode or len(assistant_indices) <= _RECENT_TOOL_ROUNDS:
+            recent_boundary = 0
+        else:
+            recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS]
 
         out: list[dict[str, Any]] = []
         for i, m in enumerate(messages):
@@ -121,11 +184,23 @@ class Session:
             is_recent = i >= recent_boundary
 
             if role == "user":
-                text = m.get("content", "")
-                media_paths = m.get("media") or []
-                user_content = (
-                    _rebuild_user_content(text, media_paths) if media_paths else text
-                )
+                context_frame = m.get("llm_context_frame")
+                if isinstance(context_frame, str) and context_frame.strip():
+                    out.append(
+                        {
+                            "role": "user",
+                            "content": _normalize_context_frame(context_frame),
+                        }
+                    )
+                user_content = m.get("llm_user_content")
+                if user_content is None:
+                    text = m.get("content", "")
+                    media_paths = m.get("media") or []
+                    user_content = (
+                        _rebuild_user_content(text, media_paths)
+                        if media_paths
+                        else text
+                    )
                 out.append({"role": "user", "content": user_content})
                 continue
 
@@ -137,25 +212,27 @@ class Session:
                 calls: list[dict] = group.get("calls") or []
                 if not calls:
                     continue
-                out.append(
-                    {
-                        "role": "assistant",
-                        "content": group.get("text"),
-                        "tool_calls": [
-                            {
-                                "id": c["call_id"],
-                                "type": "function",
-                                "function": {
-                                    "name": c["name"],
-                                    "arguments": json.dumps(
-                                        c.get("arguments", {}), ensure_ascii=False
-                                    ),
-                                },
-                            }
-                            for c in calls
-                        ],
-                    }
-                )
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": group.get("text"),
+                    "tool_calls": [
+                        {
+                            "id": c["call_id"],
+                            "type": "function",
+                            "function": {
+                                "name": c["name"],
+                                "arguments": json.dumps(
+                                    c.get("arguments", {}), ensure_ascii=False
+                                ),
+                            },
+                        }
+                        for c in calls
+                    ],
+                }
+                reasoning_content = group.get("reasoning_content")
+                if isinstance(reasoning_content, str):
+                    assistant_msg["reasoning_content"] = reasoning_content
+                out.append(assistant_msg)
                 for c in calls:
                     out.append(
                         {
@@ -168,7 +245,11 @@ class Session:
             content = m.get("content", "") or ""
             if content:
                 content = _append_proactive_meta(content, m)
-            out.append({"role": "assistant", "content": content})
+            assistant_msg = {"role": "assistant", "content": content}
+            reasoning_content = m.get("reasoning_content")
+            if isinstance(reasoning_content, str):
+                assistant_msg["reasoning_content"] = reasoning_content
+            out.append(assistant_msg)
 
         return out
 

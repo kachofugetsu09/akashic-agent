@@ -6,6 +6,7 @@ Telegram Channel
 
 import logging
 import asyncio
+from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -51,7 +52,8 @@ class TelegramChannel:
         self._interrupt_controller = interrupt_controller
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._message_deduper = MessageDeduper(_SEEN_MSG_MAXSIZE)
-        self._attachments = AttachmentStore()
+        ws = getattr(session_manager, "workspace", None)
+        self._attachments = AttachmentStore(Path(ws) / "uploads" if ws else None)
         self._identity_index = SessionIdentityIndex(
             session_manager,
             channel=_CHANNEL,

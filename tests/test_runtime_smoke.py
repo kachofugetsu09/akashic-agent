@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 import types
@@ -18,6 +19,15 @@ from agent.config import (
     TelegramChannelConfig,
 )
 from core.net.http import SharedHttpResources
+
+
+class _FakeDashboardServer:
+    def __init__(self) -> None:
+        self.should_exit = False
+
+    async def serve(self) -> None:
+        while not self.should_exit:
+            await asyncio.sleep(0)
 
 
 def _toml_value(value):
@@ -113,6 +123,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     monkeypatch.setattr(
         bootstrap_app, "build_core_runtime", _patched_build_core_runtime
     )
+    monkeypatch.setattr(
+        bootstrap_app, "build_dashboard_server", lambda **_: _FakeDashboardServer()
+    )
     monkeypatch.setattr(main.Path, "home", lambda: tmp_path)
 
     await main.serve(str(config_path))
@@ -172,9 +185,14 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     )
 
     assert config_path.exists()
+    config_text = config_path.read_text(encoding="utf-8")
+    assert "multimodal = false" in config_text
+    assert "[llm.vl]" in config_text
+    assert 'model = "qwen-vl-plus"' in config_text
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe" / "observe.db").exists()
     assert (workspace / "memory" / "consolidation_writes.db").exists()
+    assert (workspace / "memory" / "journal").is_dir()
     assert (workspace / "memory" / "memory2.db").exists()
     assert (workspace / "memory" / "NOW.md").read_text(encoding="utf-8").startswith(
         "# Now"

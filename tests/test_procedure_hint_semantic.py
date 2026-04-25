@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+from agent.prompting import is_context_frame
+
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.memory import MemoryStore
@@ -83,5 +85,13 @@ def test_reflect_prompt_no_longer_contains_procedure_hint(tmp_path: Path):
 
     asyncio.run(loop._run_agent_loop([{"role": "user", "content": "test"}]))
 
-    reflect_messages = [m for m in provider.calls[1]["messages"] if m.get("role") == "system"]
-    assert "【⚠️ 操作规范提醒 | 适用于本轮工具调用】" not in reflect_messages[-1]["content"]
+    reflect_msgs = provider.calls[1]["messages"]
+    all_content = " ".join(str(m.get("content", "")) for m in reflect_msgs)
+    assert "【⚠️ 操作规范提醒 | 适用于本轮工具调用】" not in all_content
+    # context frame 应作为 user 消息存在
+    context_frame_msgs = [
+        m for m in reflect_msgs
+        if m.get("role") == "user"
+        and is_context_frame(str(m.get("content", "")))
+    ]
+    assert len(context_frame_msgs) > 0, "expected at least one context frame user message"

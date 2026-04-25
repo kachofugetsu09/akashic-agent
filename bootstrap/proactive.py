@@ -38,6 +38,8 @@ def _build_proactive_provider(config: Config, provider: LLMProvider) -> LLMProvi
         base_url=base_url,
         system_prompt=system_prompt,
         extra_body=extra_body,
+        provider_name=str(getattr(config, "provider", "") or ""),
+        force_disable_thinking=True,
     )
 
 

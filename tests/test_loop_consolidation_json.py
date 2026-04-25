@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from agent.looping.consolidation import (
     _build_consolidation_source_ref,
     _format_conversation_for_consolidation,
+    _format_conversation_for_recent_context,
+    _format_recent_context_messages,
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
@@ -95,3 +97,18 @@ def test_format_conversation_for_consolidation_skips_proactive_assistant_message
     assert "主动 RSS 推送" not in text
     assert "[2026-03-09T10:00] USER: 你好" in text
     assert "[2026-03-09T10:02] ASSISTANT: 这是正常回复" in text
+
+
+def test_consolidation_formatters_skip_context_frame_messages():
+    frame = '<system-reminder data-system-context-frame="true">\n内部上下文'
+    messages = [
+        {"id": "1", "role": "user", "content": frame, "timestamp": "2026-03-09T10:00:00"},
+        {"id": "2", "role": "user", "content": "真实用户内容", "timestamp": "2026-03-09T10:01:00"},
+    ]
+
+    window = SimpleNamespace(old_messages=messages)
+
+    assert json.loads(_build_consolidation_source_ref(window)) == ["2"]
+    assert "内部上下文" not in _format_conversation_for_consolidation(messages)
+    assert "内部上下文" not in _format_conversation_for_recent_context(messages)
+    assert "内部上下文" not in _format_recent_context_messages(messages)

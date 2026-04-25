@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, tzinfo
+from zoneinfo import ZoneInfo
 from typing import Any
 
 MAX_METRICS_KEYS = 8
@@ -48,7 +49,21 @@ def _looks_like_time_key(key: str) -> bool:
     return key in _TIME_KEYS or key.endswith(_TIME_KEY_SUFFIXES)
 
 
-def _format_local_time(raw: str) -> str | None:
+def _resolve_tz(value: str | tzinfo | None) -> tzinfo | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return ZoneInfo(text)
+        except Exception:
+            return None
+    return value
+
+
+def _format_local_time(raw: str, local_tz: str | tzinfo | None = None) -> str | None:
     text = str(raw or "").strip()
     if not text:
         return None
@@ -58,22 +73,23 @@ def _format_local_time(raw: str) -> str | None:
         return None
     if dt.tzinfo is None:
         return None
-    local_dt = dt.astimezone()
+    tz = _resolve_tz(local_tz)
+    local_dt = dt.astimezone(tz) if tz is not None else dt.astimezone()
     return local_dt.strftime("%Y-%m-%d %H:%M:%S %z")
 
 
-def _annotate_local_times(value: Any) -> Any:
+def _annotate_local_times(value: Any, local_tz: str | tzinfo | None = None) -> Any:
     if isinstance(value, dict):
         annotated: dict[str, Any] = {}
         for key, item in value.items():
-            annotated[key] = _annotate_local_times(item)
+            annotated[key] = _annotate_local_times(item, local_tz)
             if isinstance(item, str) and _looks_like_time_key(str(key)):
-                local_text = _format_local_time(item)
+                local_text = _format_local_time(item, local_tz)
                 if local_text:
                     annotated[f"{key}_local"] = local_text
         return annotated
     if isinstance(value, list):
-        return [_annotate_local_times(item) for item in value]
+        return [_annotate_local_times(item, local_tz) for item in value]
     return value
 
 
@@ -155,9 +171,10 @@ class ContextContract:
     available: bool | None
     source: str
     raw: dict[str, Any] = field(default_factory=dict)
+    local_tz: str | tzinfo | None = None
 
     def to_prompt_item(self) -> dict[str, Any]:
-        payload = _annotate_local_times(dict(self.raw))
+        payload = _annotate_local_times(dict(self.raw), self.local_tz)
         if self.available is not None:
             payload["available"] = self.available
         if self.source:
@@ -168,7 +185,11 @@ class ContextContract:
         return payload
 
 
-def normalize_context(item: dict[str, Any]) -> ContextContract:
+def normalize_context(
+    item: dict[str, Any],
+    *,
+    local_tz: str | tzinfo | None = None,
+) -> ContextContract:
     source = str(item.get("_source") or "").strip()
     available_raw = item.get("available")
     available = None if available_raw is None else bool(available_raw)
@@ -176,4 +197,5 @@ def normalize_context(item: dict[str, Any]) -> ContextContract:
         available=available,
         source=source,
         raw=item,
+        local_tz=local_tz,
     )

@@ -6,10 +6,13 @@ LLM Provider — OpenAI 兼容格式
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
+import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +22,10 @@ from openai import AsyncOpenAI
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 logger = logging.getLogger(__name__)
+_LLM_PAYLOAD_SNAPSHOT_ENABLED = False
 _LAST_PAYLOAD_PATH = Path(tempfile.gettempdir()) / "akashic-last-llm-payload.json"
+_PAYLOAD_SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "akashic-llm-payloads"
+_PAYLOAD_SNAPSHOT_SEQ = itertools.count(1)
 StreamDelta = dict[str, str]
 
 # 安全审查错误码（各厂商）
@@ -60,6 +66,132 @@ class LLMResponse:
     content: str | None
     tool_calls: list[ToolCall] = field(default_factory=list)
     thinking: str | None = None
+    provider_fields: dict[str, Any] = field(default_factory=dict)
+    cache_prompt_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+
+
+class ProviderStrategy:
+    def normalize_messages(self, messages: list[dict]) -> list[dict]:
+        return _strip_reasoning_content(_normalize_chat_messages(messages))
+
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        if disable_thinking:
+            _drop_thinking_keys(extra_body)
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+    def extract_message(
+        self,
+        msg: Any,
+        raw: str | None,
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        thinking: str | None = None
+        if raw:
+            m = _THINK_RE.search(raw)
+            if m:
+                thinking = m.group(1).strip()
+                raw = _THINK_RE.sub("", raw).strip() or None
+        return raw, thinking, {}
+
+    def provider_fields_for_tool_call(
+        self,
+        fields: dict[str, Any],
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        return fields
+
+    def prepare_stream_request(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {**kwargs, "stream": True}
+
+
+class DeepSeekStrategy(ProviderStrategy):
+    def normalize_messages(self, messages: list[dict]) -> list[dict]:
+        return _strip_image_url_blocks(
+            _normalize_chat_messages(messages, fill_tool_call_content=False)
+        )
+
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        thinking_enabled = extra_body.pop("enable_thinking", None)
+        reasoning_effort = extra_body.pop("reasoning_effort", None)
+        thinking_requested = bool(thinking_enabled) or bool(reasoning_effort)
+        if _deepseek_thinking_enabled(extra_body):
+            thinking_requested = True
+        if disable_thinking:
+            extra_body["thinking"] = {"type": "disabled"}
+            reasoning_effort = None
+            thinking_requested = False
+        elif thinking_enabled is not None and "thinking" not in extra_body:
+            extra_body["thinking"] = {
+                "type": "enabled" if bool(thinking_enabled) else "disabled"
+            }
+            thinking_requested = bool(thinking_enabled)
+        if reasoning_effort and not _deepseek_thinking_disabled(extra_body):
+            kwargs["reasoning_effort"] = _normalize_deepseek_effort(
+                str(reasoning_effort)
+            )
+        if thinking_requested and not _deepseek_thinking_disabled(extra_body):
+            messages = kwargs.get("messages")
+            if isinstance(messages, list):
+                kwargs["messages"] = _ensure_deepseek_reasoning_content(messages)
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+    def extract_message(
+        self,
+        msg: Any,
+        raw: str | None,
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        reasoning = _get_field(msg, "reasoning_content")
+        if reasoning is None:
+            return raw, None, {}
+        text = str(reasoning)
+        return raw, text, {"reasoning_content": text}
+
+    def provider_fields_for_tool_call(
+        self,
+        fields: dict[str, Any],
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        if _deepseek_thinking_disabled(dict(kwargs.get("extra_body") or {})):
+            return fields
+        if "reasoning_content" in fields:
+            return fields
+        return {**fields, "reasoning_content": ""}
+
+    def prepare_stream_request(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        stream_kwargs = {**kwargs, "stream": True}
+        stream_options = dict(stream_kwargs.get("stream_options") or {})
+        stream_options["include_usage"] = True
+        stream_kwargs["stream_options"] = stream_options
+        return stream_kwargs
+
+
+class DashScopeStrategy(ProviderStrategy):
+    def prepare_request(
+        self,
+        kwargs: dict[str, Any],
+        extra_body: dict[str, Any],
+        *,
+        disable_thinking: bool,
+    ) -> None:
+        if disable_thinking:
+            _drop_thinking_keys(extra_body)
+            extra_body["enable_thinking"] = False
+        if extra_body:
+            kwargs["extra_body"] = extra_body
 
 
 class LLMProvider:
@@ -71,14 +203,18 @@ class LLMProvider:
         extra_body: dict | None = None,
         request_timeout_s: float = 90.0,
         max_retries: int = 1,
+        provider_name: str = "",
+        force_disable_thinking: bool = False,
     ) -> None:
         normalized_base_url = _normalize_openai_base_url(base_url)
         self._client = AsyncOpenAI(api_key=api_key, base_url=normalized_base_url)
         self._base_url = normalized_base_url or ""
+        self._provider_name = provider_name
         self._system = system_prompt
         self._extra_body = extra_body or {}
         self._request_timeout_s = max(1.0, float(request_timeout_s))
         self._max_retries = max(0, int(max_retries))
+        self._force_disable_thinking = force_disable_thinking
 
     async def chat(
         self,
@@ -88,8 +224,14 @@ class LLMProvider:
         max_tokens: int,
         tool_choice: str | dict = "auto",
         extra_body: dict | None = None,
+        disable_thinking: bool = False,
         on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
     ) -> LLMResponse:
+        strategy = _select_provider_strategy(
+            provider_name=self._provider_name,
+            base_url=self._base_url,
+            model=model,
+        )
         # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
         already_has_system = messages and messages[0].get("role") == "system"
         full_messages = (
@@ -98,7 +240,7 @@ class LLMProvider:
             else messages
         )
         full_messages = _merge_leading_system_messages(full_messages)
-        full_messages = _normalize_chat_messages(full_messages)
+        full_messages = strategy.normalize_messages(full_messages)
         kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
         if tools:
             kwargs["tools"] = tools
@@ -106,16 +248,14 @@ class LLMProvider:
         merged_extra_body = dict(self._extra_body)
         if extra_body:
             merged_extra_body.update(extra_body)
-        if merged_extra_body:
-            kwargs["extra_body"] = merged_extra_body
-
-        _LAST_PAYLOAD_PATH.write_text(
-            json.dumps(kwargs, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
+        strategy.prepare_request(
+            kwargs,
+            merged_extra_body,
+            disable_thinking=self._force_disable_thinking or disable_thinking,
         )
 
         if on_content_delta is not None:
-            return await self._chat_streaming(kwargs, on_content_delta)
+            return await self._chat_streaming(kwargs, on_content_delta, strategy)
 
         resp = cast(Any, await self._create_with_retry(kwargs))
         msg = resp.choices[0].message
@@ -131,27 +271,48 @@ class LLMProvider:
                     )
                 )
 
-        raw = msg.content
-        thinking: str | None = None
-        if raw:
-            m = _THINK_RE.search(raw)
-            if m:
-                thinking = m.group(1).strip()
-                raw = _THINK_RE.sub("", raw).strip() or None
-        return LLMResponse(content=raw, tool_calls=tool_calls, thinking=thinking)
+        raw, thinking, provider_fields = strategy.extract_message(msg, msg.content)
+        cache_prompt_tokens, cache_hit_tokens = _extract_cache_usage(
+            getattr(resp, "usage", None)
+        )
+        if tool_calls:
+            provider_fields = strategy.provider_fields_for_tool_call(
+                provider_fields,
+                kwargs,
+            )
+        return LLMResponse(
+            content=raw,
+            tool_calls=tool_calls,
+            thinking=thinking,
+            provider_fields=provider_fields,
+            cache_prompt_tokens=cache_prompt_tokens,
+            cache_hit_tokens=cache_hit_tokens,
+        )
 
     async def _chat_streaming(
         self,
         kwargs: dict[str, Any],
         on_content_delta: Callable[[StreamDelta], Awaitable[None]],
+        strategy: ProviderStrategy,
     ) -> LLMResponse:
-        stream = cast(Any, await self._create_with_retry({**kwargs, "stream": True}))
+        stream = cast(
+            Any,
+            await self._create_with_retry(strategy.prepare_stream_request(kwargs)),
+        )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_call_chunks: dict[int, dict[str, str]] = {}
         tool_call_seen = False
+        cache_prompt_tokens: int | None = None
+        cache_hit_tokens: int | None = None
 
         async for chunk in stream:
+            prompt_tokens, hit_tokens = _extract_cache_usage(
+                getattr(chunk, "usage", None)
+            )
+            if prompt_tokens is not None:
+                cache_prompt_tokens = prompt_tokens
+                cache_hit_tokens = hit_tokens
             choices = getattr(chunk, "choices", None) or []
             if not choices:
                 continue
@@ -200,14 +361,27 @@ class LLMProvider:
 
         raw = "".join(content_parts).strip() or None
         thinking = "".join(reasoning_parts).strip() or None
-        if raw:
-            m = _THINK_RE.search(raw)
-            if m:
-                thinking = m.group(1).strip()
-                raw = _THINK_RE.sub("", raw).strip() or None
-        return LLMResponse(content=raw, tool_calls=tool_calls, thinking=thinking)
+        raw, parsed_thinking, provider_fields = strategy.extract_message(
+            {"reasoning_content": thinking} if thinking is not None else {},
+            raw,
+        )
+        thinking = parsed_thinking if parsed_thinking is not None else thinking
+        if tool_calls:
+            provider_fields = strategy.provider_fields_for_tool_call(
+                provider_fields,
+                kwargs,
+            )
+        return LLMResponse(
+            content=raw,
+            tool_calls=tool_calls,
+            thinking=thinking,
+            provider_fields=provider_fields,
+            cache_prompt_tokens=cache_prompt_tokens,
+            cache_hit_tokens=cache_hit_tokens,
+        )
 
     async def _create_with_retry(self, kwargs: dict) -> object:
+        _save_llm_payload_snapshot(kwargs)
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -289,6 +463,43 @@ def _get_field(delta: Any, name: str) -> Any:
     return getattr(delta, name, None)
 
 
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _save_llm_payload_snapshot(kwargs: dict) -> Path | None:
+    if not _LLM_PAYLOAD_SNAPSHOT_ENABLED:
+        return None
+    try:
+        payload = json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)
+        _PAYLOAD_SNAPSHOT_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        seq = next(_PAYLOAD_SNAPSHOT_SEQ)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        path = _PAYLOAD_SNAPSHOT_DIR / f"{ts}-{os.getpid()}-{seq:06d}.json"
+        path.write_text(payload, encoding="utf-8")
+        _LAST_PAYLOAD_PATH.write_text(payload, encoding="utf-8")
+        logger.info("[LLM请求快照] saved=%s", path)
+        return path
+    except Exception as exc:
+        logger.warning("[LLM请求快照] 保存失败: %s", exc)
+        return None
+
+
+def _extract_cache_usage(usage: Any) -> tuple[int | None, int | None]:
+    hit_tokens = _coerce_int(_get_field(usage, "prompt_cache_hit_tokens"))
+    miss_tokens = _coerce_int(_get_field(usage, "prompt_cache_miss_tokens"))
+    if hit_tokens is None and miss_tokens is None:
+        return None, None
+    hit = hit_tokens or 0
+    miss = miss_tokens or 0
+    return hit + miss, hit
+
+
 def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:
     raw_items = _get_field(delta, "tool_calls") or []
     result: list[dict[str, str | int]] = []
@@ -347,10 +558,7 @@ def _summarize_message_shapes(messages: list[dict]) -> str:
 
 
 def _summarize_tool_names(tools: list[dict]) -> str:
-    names = [
-        str((tool.get("function") or {}).get("name", "?"))
-        for tool in tools[:8]
-    ]
+    names = [str((tool.get("function") or {}).get("name", "?")) for tool in tools[:8]]
     if len(tools) > 8:
         names.append("...")
     return ",".join(names)
@@ -371,28 +579,114 @@ def _merge_leading_system_messages(messages: list[dict]) -> list[dict]:
     return merged if merged else list(messages)
 
 
-def _normalize_chat_messages(messages: list[dict]) -> list[dict]:
+def _select_provider_strategy(
+    *,
+    provider_name: str,
+    base_url: str,
+    model: str,
+) -> ProviderStrategy:
+    provider_text = f"{provider_name} {base_url} {model}".lower()
+    if "deepseek" in provider_text:
+        return DeepSeekStrategy()
+    if "dashscope.aliyuncs.com" in provider_text or "dashscope" in provider_text:
+        return DashScopeStrategy()
+    return ProviderStrategy()
+
+
+def _drop_thinking_keys(extra_body: dict[str, Any]) -> None:
+    for key in ("enable_thinking", "thinking", "reasoning_effort"):
+        extra_body.pop(key, None)
+
+
+def _deepseek_thinking_disabled(extra_body: dict[str, Any]) -> bool:
+    thinking = extra_body.get("thinking")
+    if not isinstance(thinking, dict):
+        return False
+    return str(thinking.get("type", "") or "").lower() == "disabled"
+
+
+def _deepseek_thinking_enabled(extra_body: dict[str, Any]) -> bool:
+    thinking = extra_body.get("thinking")
+    if not isinstance(thinking, dict):
+        return False
+    return str(thinking.get("type", "") or "").lower() == "enabled"
+
+
+def _normalize_deepseek_effort(value: str) -> str:
+    effort = value.strip().lower()
+    if effort == "xhigh":
+        return "max"
+    return effort
+
+
+def _ensure_deepseek_reasoning_content(messages: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for msg in messages:
+        item = dict(msg)
+        if item.get("role") == "assistant" and "reasoning_content" not in item:
+            item["reasoning_content"] = ""
+        normalized.append(item)
+    return normalized
+
+
+def _normalize_chat_messages(
+    messages: list[dict],
+    *,
+    fill_tool_call_content: bool = True,
+) -> list[dict]:
     normalized: list[dict] = []
     for msg in messages:
         item = dict(msg)
         role = str(item.get("role", "") or "")
         content = item.get("content")
 
-        if role == "assistant" and item.get("tool_calls"):
+        if fill_tool_call_content and role == "assistant" and item.get("tool_calls"):
             if content is None or (isinstance(content, str) and not content.strip()):
                 tool_calls = item.get("tool_calls") or []
-                first = tool_calls[0] if isinstance(tool_calls, list) and tool_calls else {}
+                first = (
+                    tool_calls[0] if isinstance(tool_calls, list) and tool_calls else {}
+                )
                 function = first.get("function") if isinstance(first, dict) else {}
                 tool_name = ""
                 if isinstance(function, dict):
                     tool_name = str(function.get("name", "") or "")
-                item["content"] = (
-                    f"调用工具 {tool_name}" if tool_name else "调用工具"
-                )
+                item["content"] = f"调用工具 {tool_name}" if tool_name else "调用工具"
         elif role in {"user", "assistant", "tool"}:
             if content is None:
                 item["content"] = ""
 
+        normalized.append(item)
+    return normalized
+
+
+def _strip_reasoning_content(messages: list[dict]) -> list[dict]:
+    # 非 DeepSeek provider 不应发送 reasoning_content 字段
+    return [{k: v for k, v in m.items() if k != "reasoning_content"} for m in messages]
+
+
+def _strip_image_url_blocks(messages: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for msg in messages:
+        item = dict(msg)
+        content = item.get("content")
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            image_count = 0
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text:
+                        text_parts.append(text)
+                elif block_type == "image_url":
+                    image_count += 1
+            if image_count:
+                text_parts.append(
+                    f"[已移除 {image_count} 个 image_url 图片块：DeepSeek 当前接口只接受文本消息。]"
+                )
+            item["content"] = "\n".join(text_parts)
         normalized.append(item)
     return normalized
 
@@ -409,4 +703,6 @@ def _normalize_openai_base_url(base_url: str | None) -> str | None:
             break
     if not path:
         path = ""
-    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+    )

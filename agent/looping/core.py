@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
 
+
 class AgentLoop:
     """
     主循环：从 MessageBus 消费 InboundMessage，
@@ -95,8 +96,11 @@ class AgentLoop:
         self._context = deps.context or ContextBuilder(
             deps.workspace,
             memory=(
-                getattr(deps.memory_runtime, "profile_reader", None) or self._memory_port
+                getattr(deps.memory_runtime, "profile_reader", None)
+                or self._memory_port
             ),
+            multimodal=config.llm.multimodal,
+            vl_available=config.llm.vl_available,
         )
         self._post_mem_worker = post_mem_worker
         self._llm_services = deps.llm_services or LLMServices(
@@ -577,7 +581,7 @@ class AgentLoop:
             sender="user",
             chat_id=chat_id,
             content=content,
-            metadata={"omit_user_turn": True} if omit_user_turn else None,
+            metadata={"omit_user_turn": True} if omit_user_turn else {},
         )
         response = await self._process(
             msg,
@@ -593,6 +597,11 @@ class AgentLoop:
         preloaded_tools: set[str] | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
         from agent.core.reasoner import build_turn_injection_prompt
+        from agent.prompting import (
+            PromptSectionRender,
+            build_context_frame_content,
+            build_context_frame_message,
+        )
 
         # 1. 补充 deferred tools hint（与 run_turn 路径保持一致）。
         visible = preloaded_tools if self._tool_search_enabled else None
@@ -602,7 +611,24 @@ class AgentLoop:
             visible_names=visible,
         )
         if hint:
-            initial_messages = initial_messages + [{"role": "user", "content": hint}]
+            hint_message = build_context_frame_message(
+                build_context_frame_content(
+                    [
+                        PromptSectionRender(
+                            name="turn_injection",
+                            content=hint,
+                            is_static=False,
+                        )
+                    ]
+                )
+            )
+            if initial_messages and initial_messages[-1].get("role") == "user":
+                initial_messages = initial_messages[:-1] + [
+                    hint_message,
+                    initial_messages[-1],
+                ]
+            else:
+                initial_messages = initial_messages + [hint_message]
 
         # 2. 内部事件链统一直接走新 Reasoner。
         result = await self._reasoner.run(

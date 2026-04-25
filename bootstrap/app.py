@@ -153,7 +153,6 @@ class AppRuntime:
                 self.dashboard_server.serve(),
                 name="dashboard_server",
             )
-            self.tasks.append(self.dashboard_task)
             proactive_tasks, self.proactive_loop = build_proactive_runtime(
                 self.config,
                 self.workspace,

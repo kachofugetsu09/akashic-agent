@@ -47,6 +47,7 @@ class SubagentManager:
         model: str,
         max_tokens: int,
         fetch_requester: HttpRequester,
+        multimodal: bool = True,
     ) -> None:
         self._workspace = workspace
         self._bus = bus
@@ -56,6 +57,7 @@ class SubagentManager:
             max_tokens=max_tokens,
         )
         self._fetch_requester = fetch_requester
+        self._multimodal = multimodal
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
     def _spawn_jobs_dir(self) -> Path:
@@ -262,9 +264,12 @@ class SubagentManager:
             workspace=self._workspace,
             task_dir=task_dir,
             fetch_requester=self._fetch_requester,
-            system_prompt=self._build_subagent_prompt(task_dir=task_dir, profile=profile),
+            system_prompt=self._build_subagent_prompt(
+                task_dir=task_dir, profile=profile
+            ),
             max_iterations=max_iterations,
             profile=profile,
+            multimodal=self._multimodal,
         )
         return spec.build(self._runtime)
 

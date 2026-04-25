@@ -23,38 +23,62 @@ python main.py init
     RECENT_CONTEXT.md  # 近期上下文摘要（空）
     PENDING.md         # 待提取事实（空）
     NOW.md             # 近期进行中 / 待确认事项（模板）
+    memory2.db         # 语义记忆数据库（memory.enabled=true 时）
+    consolidation_writes.db  # 归档写入记录
   PROACTIVE_CONTEXT.md # 主动推送规则文件（模板）
   mcp_servers.json     # MCP server 注册表
   schedules.json       # 定时任务列表
   proactive_sources.json  # 信息源列表
   memes/manifest.json  # 表情包清单
   skills/              # 用户自定义 skill 目录
-  drift/skills/        # Drift 内建 skill 目录
+  drift/skills/        # 用户自定义 Drift skill 目录
   sessions.db          # 会话存储
   observe/observe.db   # trace 数据库
-  memory/memory2.db    # 语义记忆数据库
-  proactive_state.json # proactive 状态
+  proactive.db         # proactive 状态数据库
+  proactive_quota.json # proactive 配额
 ```
 
 **2. 填写配置**
 
-编辑 `config.toml`，至少要改这几项：
-
+编辑 `config.toml`，至少要改 API key 和频道 token。推荐配置（DeepSeek 主模型 + Qwen 轻量/视觉）：
+推荐如果非多模态模型可以用deepseek-v4-flash,他的agent能力是nextlevel的
 ```toml
+[llm]
+provider = "deepseek"
+
 [llm.main]
-model = "qwen3.5-plus"      # 主模型：必须是多模态模型（用户图片会直接传给它）
-api_key = "sk-..."
+model = "deepseek-v4-flash"     # 主模型：推理能力强、速度快、价格低
+api_key = "sk-..."              # DeepSeek API key
+base_url = "https://api.deepseek.com/v1"
+enable_thinking = true          # 开启 reasoning（R1 模式）
+multimodal = false              # DeepSeek 不支持图片，用 VL 工具补
 
 [llm.fast]
-model = "qwen-flash"        # 轻量模型：用于 memory gate / query rewrite / HyDE 等后台任务
-api_key = "sk-..."          # 可以用同一个 key，也可以换别家更便宜的模型
+model = "qwen-flash"            # 轻量模型：memory gate / query rewrite / HyDE
+api_key = "sk-..."              # Qwen API key（DashScope）
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[llm.vl]
+model = "qwen-vl-plus"          # 视觉模型：主模型 multimodal=false 时自动启用
+api_key = "sk-..."              # 同 Qwen key
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [channels.telegram]
-token = "123456:ABC..."     # BotFather 给的 bot token
+token = "123456:ABC..."         # BotFather 给的 bot token
 allow_from = ["your_username"]  # 你的 Telegram 用户名（不带 @）
 ```
 
-主模型必须是多模态的原因：Telegram 和 QQ 频道收到图片后会直接以 `image_url` 形式拼进消息，主模型需要能处理视觉输入。`llm.fast` 只处理纯文本的轻量判断，不接触图片，用小模型即可。
+也可以用 Qwen 全家桶（主模型换 `qwen3.5-plus`，`multimodal = true`，`llm.vl` 留空），或者用 OpenAI 兼容的任意 provider。
+
+**图像能力**
+
+| 路线 | 配置 | 效果 |
+|------|------|------|
+| A: 主模型多模态 | `multimodal = true`，`llm.vl.model = ""` | 图片直接 `image_url` 进主模型 |
+| B: 主模型 + VL 工具 | `multimodal = false`，`llm.vl.model = "qwen-vl-plus"` | 图片转路径提示，模型按需调用 `read_image_vision` |
+| C: 纯文本 | `multimodal = false`，`llm.vl.model = ""` | 图片不可理解，只保留路径 |
+
+路线 B 是推荐方案：主模型用 DeepSeek 这类纯文本强模型，图片理解交给专门的 VL 模型，性价比最高。
 
 **3. 启动并发消息**
 
@@ -64,20 +88,15 @@ python main.py
 
 打开 Telegram，找到你的 bot，发一条消息，就可以开始对话。
 
-**4. 打开 Proactive**
+**4. 配置 Proactive**
 
-在 `config.toml` 里填上你的 Telegram chat_id（可以向 bot 发一条消息后从日志里拿到）：
+`config.example.toml` 默认 `proactive.enabled = true`。填上你的 Telegram chat_id（可以向 bot 发一条消息后从日志里拿到），agent 就会在订阅的信息源有内容时主动推送消息。如果不需要主动推送，设为 `enabled = false`。
 
 ```toml
-[proactive]
-enabled = true
-
 [proactive.target]
 channel = "telegram"
 chat_id = "123456789"   # 你的 Telegram user id
 ```
-
-Proactive 打开后，agent 会在你订阅的信息源有内容时主动推送消息。
 
 **5. 打开 Drift**
 

@@ -227,4 +227,10 @@ async def drain_tasks():
     """Let all pending asyncio tasks finish."""
     pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+        done, still_pending = await asyncio.wait(pending, timeout=1.0)
+        if still_pending:
+            for task in still_pending:
+                task.cancel()
+            await asyncio.gather(*still_pending, return_exceptions=True)
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)

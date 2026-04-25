@@ -114,9 +114,10 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 history_tokens, prompt_tokens, next_turn_baseline_tokens,
                 react_iteration_count, react_input_sum_tokens,
                 react_input_peak_tokens, react_final_input_tokens,
+                react_cache_prompt_tokens, react_cache_hit_tokens,
                 error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -139,6 +140,8 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
                 e.react_input_sum_tokens,
                 e.react_input_peak_tokens,
                 e.react_final_input_tokens,
+                e.react_cache_prompt_tokens,
+                e.react_cache_hit_tokens,
                 e.error,
             ),
         )

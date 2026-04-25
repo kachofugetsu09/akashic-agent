@@ -110,6 +110,36 @@ def test_append_history_once_is_idempotent_and_hidden_from_read(tmp_path):
     assert raw.count("<!-- consolidation:session@1-10:history_entry -->") == 1
 
 
+def test_append_journal_writes_daily_file_once(tmp_path):
+    store = MemoryStore(tmp_path)
+
+    assert store.append_journal(
+        "2026-03-08",
+        "[2026-03-08 12:00] 用户确认需求",
+        source_ref="session@1-10",
+        kind="journal:2026-03-08",
+    )
+    assert not store.append_journal(
+        "2026-03-08",
+        "[2026-03-08 12:01] 重复写入",
+        source_ref="session@1-10",
+        kind="journal:2026-03-08",
+    )
+
+    raw = (store.journal_dir / "2026-03-08.md").read_text(encoding="utf-8")
+    assert raw.startswith("# 2026-03-08")
+    assert "用户确认需求" in raw
+    assert "重复写入" not in raw
+    assert raw.count("<!-- consolidation:session@1-10:journal:2026-03-08 -->") == 1
+
+
+def test_append_journal_rejects_invalid_date_path(tmp_path):
+    store = MemoryStore(tmp_path)
+
+    assert not store.append_journal("../bad", "x")
+    assert not (store.memory_dir / "bad.md").exists()
+
+
 def test_append_pending_once_repairs_file_when_db_ahead(tmp_path):
     store = MemoryStore(tmp_path)
     assert store.append_pending_once(

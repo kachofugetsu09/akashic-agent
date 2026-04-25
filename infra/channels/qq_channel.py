@@ -115,7 +115,8 @@ class QQChannel:
         self._bot_uin = bot_uin
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._interrupt_controller = interrupt_controller
-        self._attachments = AttachmentStore()
+        ws = getattr(session_manager, "workspace", None)
+        self._attachments = AttachmentStore(Path(ws) / "uploads" if ws else None)
         self._identity_index = SessionIdentityIndex(
             session_manager,
             channel=_CHANNEL,

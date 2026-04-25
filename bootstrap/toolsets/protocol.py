@@ -19,6 +19,8 @@ class ToolsetDeps:
     workspace: Path
     provider: Any = None
     light_provider: Any = None
+    vl_provider: Any = None
+    vl_model: str = ""
     http_resources: "SharedHttpResources | None" = None
     session_store: object | None = None
     push_tool: "MessagePushTool | None" = None

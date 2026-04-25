@@ -1,5 +1,17 @@
 {
   "typeCheckingMode": "basic",
+  "include": [
+    "main.py",
+    "agent",
+    "bootstrap",
+    "bus",
+    "core",
+    "infra",
+    "memory2",
+    "proactive_v2",
+    "prompts",
+    "session"
+  ],
   "exclude": [
     ".venv",
     ".venv-test",

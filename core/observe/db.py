@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS turns (
     react_input_sum_tokens INTEGER,
     react_input_peak_tokens INTEGER,
     react_final_input_tokens INTEGER,
+    react_cache_prompt_tokens INTEGER,
+    react_cache_hit_tokens INTEGER,
     error       TEXT                        -- NULL = 正常
 );
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts  ON turns (session_key, ts);
@@ -197,6 +199,8 @@ _TURNS_COLUMNS: dict[str, str] = {
     "react_input_sum_tokens": "INTEGER",
     "react_input_peak_tokens": "INTEGER",
     "react_final_input_tokens": "INTEGER",
+    "react_cache_prompt_tokens": "INTEGER",
+    "react_cache_hit_tokens": "INTEGER",
 }
 
 

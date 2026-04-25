@@ -49,8 +49,18 @@ class _Provider:
 def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     provider = _Provider(
         [
-            LLMResponse(content="", tool_calls=[ToolCall("c1", "dummy", {})]),
-            LLMResponse(content="final", tool_calls=[]),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("c1", "dummy", {})],
+                cache_prompt_tokens=100,
+                cache_hit_tokens=40,
+            ),
+            LLMResponse(
+                content="final",
+                tool_calls=[],
+                cache_prompt_tokens=120,
+                cache_hit_tokens=60,
+            ),
         ]
     )
     tools = ToolRegistry()
@@ -74,6 +84,8 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert react_stats["iteration_count"] == 2
     assert react_stats["turn_input_sum_tokens"] >= react_stats["turn_input_peak_tokens"]
     assert react_stats["final_call_input_tokens"] == react_stats["turn_input_peak_tokens"]
+    assert react_stats["cache_prompt_tokens"] == 220
+    assert react_stats["cache_hit_tokens"] == 100
     first_messages = provider.calls[0]["messages"]
     assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
 
@@ -113,7 +125,8 @@ def test_default_reasoner_unlocks_tool_search_visibility():
 def test_default_reasoner_preflight_includes_deferred_tool_names():
     """调用方（如 _run_agent_loop）负责注入 deferred tools hint；run() 本身不再自动注入。"""
     from agent.core.reasoner import build_turn_injection_prompt
-    from agent.prompting import build_turn_injection_message
+    from agent.prompting import build_context_frame_content, build_context_frame_message
+    from agent.prompting import PromptSectionRender
 
     provider = _Provider(
         [
@@ -143,9 +156,12 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         tool_search_enabled=True,
         visible_names=tools.get_always_on_names(),
     )
+    frame_content = build_context_frame_content(
+        [PromptSectionRender(name="tool_hint", content=hint, is_static=False)]
+    )
     initial_messages = [
+        build_context_frame_message(frame_content),
         {"role": "user", "content": "hi"},
-        build_turn_injection_message(hint),
     ]
     asyncio.run(reasoner.run(initial_messages))
 
