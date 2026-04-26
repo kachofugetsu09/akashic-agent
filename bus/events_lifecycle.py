@@ -17,7 +17,15 @@ def _empty_metadata() -> dict[str, Any]:
     return {}
 
 
+def _empty_int_metadata() -> dict[str, int]:
+    return {}
+
+
 def _empty_skill_names() -> list[str]:
+    return []
+
+
+def _empty_tool_chain() -> list[dict[str, Any]]:
     return []
 
 
@@ -68,6 +76,13 @@ class TurnPersisted:
     assistant_response: str
     tools_used: list[str]
     thinking: str | None = None
+    raw_reply: str | None = None
+    meme_tag: str | None = None
+    meme_media_count: int | None = None
+    tool_chain: list[dict[str, Any]] = field(default_factory=_empty_tool_chain)
+    retrieval_raw: object | None = None
+    post_reply_budget: dict[str, int] = field(default_factory=_empty_int_metadata)
+    react_stats: dict[str, int] = field(default_factory=_empty_int_metadata)
 
 
 @dataclass(frozen=True)

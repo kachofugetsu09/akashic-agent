@@ -1,10 +1,11 @@
 import asyncio
+import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast, runtime_checkable
 
 from agent.context import ContextBuilder
 from agent.core.agent_core import AgentCore, AgentCoreDeps
@@ -43,7 +44,12 @@ from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
 from bus.event_bus import EventBus
 from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
-from bus.events_lifecycle import PostTurnScheduled, StreamDeltaReady, TurnStarted
+from bus.events_lifecycle import (
+    PostTurnScheduled,
+    StreamDeltaReady,
+    TurnPersisted,
+    TurnStarted,
+)
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -69,6 +75,11 @@ StreamSinkFactory: TypeAlias = Callable[[object], StreamSink | None]
 StreamSupportPolicy: TypeAlias = Callable[[str], bool]
 
 
+@runtime_checkable
+class _ObserveWriter(Protocol):
+    def emit(self, event: object) -> None: ...
+
+
 def _is_positive_int(value: str) -> bool:
     try:
         return int(value) > 0
@@ -90,6 +101,96 @@ def _item_content(item: InboundItem) -> str:
     if isinstance(item, InboundMessage):
         return item.content
     return f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
+
+
+def _emit_turn_trace(writer: _ObserveWriter, event: TurnPersisted) -> None:
+    from core.observe.events import TurnTrace as TurnTraceEvent
+
+    post_reply_budget = event.post_reply_budget
+    react_stats = event.react_stats
+    tool_chain = event.tool_chain
+    tool_chain_json = (
+        json.dumps(_slim_tool_chain(tool_chain), ensure_ascii=False)
+        if tool_chain
+        else None
+    )
+    writer.emit(
+        TurnTraceEvent(
+            source="agent",
+            session_key=event.session_key,
+            user_msg=event.user_message,
+            llm_output=event.assistant_response,
+            raw_llm_output=event.raw_reply,
+            meme_tag=event.meme_tag,
+            meme_media_count=event.meme_media_count,
+            tool_calls=_slim_tool_calls(tool_chain),
+            tool_chain_json=tool_chain_json,
+            history_window=post_reply_budget.get("history_window"),
+            history_messages=post_reply_budget.get("history_messages"),
+            history_chars=post_reply_budget.get("history_chars"),
+            history_tokens=post_reply_budget.get("history_tokens"),
+            prompt_tokens=post_reply_budget.get("prompt_tokens"),
+            next_turn_baseline_tokens=post_reply_budget.get(
+                "next_turn_baseline_tokens"
+            ),
+            react_iteration_count=react_stats.get("iteration_count"),
+            react_input_sum_tokens=react_stats.get("turn_input_sum_tokens"),
+            react_input_peak_tokens=react_stats.get("turn_input_peak_tokens"),
+            react_final_input_tokens=react_stats.get("final_call_input_tokens"),
+            react_cache_prompt_tokens=react_stats.get("cache_prompt_tokens"),
+            react_cache_hit_tokens=react_stats.get("cache_hit_tokens"),
+        )
+    )
+    if event.retrieval_raw is not None:
+        writer.emit(event.retrieval_raw)
+
+
+def _slim_tool_calls(tool_chain: list[dict[str, object]]) -> list[dict[str, str]]:
+    return [
+        {
+            "name": str(call.get("name", "")),
+            "args": str(call.get("arguments", ""))[:300],
+            "result": str(call.get("result", ""))[:500],
+        }
+        for group in tool_chain
+        for call in _group_calls(group)
+    ]
+
+
+def _slim_tool_chain(tool_chain: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            "text": str(group.get("text") or ""),
+            "calls": [
+                {
+                    "name": str(call.get("name", "")),
+                    "args": str(call.get("arguments", ""))[:800],
+                    "result": str(call.get("result", ""))[:1200],
+                }
+                for call in _group_calls(group)
+            ],
+        }
+        for group in tool_chain
+    ]
+
+
+def _group_calls(group: dict[str, object]) -> list[dict[str, object]]:
+    calls = group.get("calls")
+    if not isinstance(calls, list):
+        return []
+    raw_calls = cast(list[object], calls)
+    out: list[dict[str, object]] = []
+    for call in raw_calls:
+        if isinstance(call, Mapping):
+            mapping = cast(Mapping[object, object], call)
+            out.append(
+                {
+                    str(key): value
+                    for key, value in mapping.items()
+                    if isinstance(key, str)
+                }
+            )
+    return out
 
 
 class AgentLoop:
@@ -342,6 +443,8 @@ class AgentLoop:
             observe_writer=deps.observe_writer,
         )
 
+        self._configure_observe_trace_events(trace_svc)
+
         # 2. 再准备 retrieval / scheduler 依赖配置。
         handler_memory_config = MemoryConfig(
             window=config.memory.window,
@@ -457,6 +560,19 @@ class AgentLoop:
                 run_agent_loop_fn=self._run_agent_loop,
             )
         )
+
+    def _configure_observe_trace_events(
+        self,
+        trace_svc: ObservabilityServices,
+    ) -> None:
+        writer = trace_svc.observe_writer
+        if not isinstance(writer, _ObserveWriter):
+            return
+
+        def _observe_turn_persisted(event: TurnPersisted) -> None:
+            _emit_turn_trace(writer, event)
+
+        self._event_bus.on(TurnPersisted, _observe_turn_persisted)
 
     @property
     def light_model(self) -> str:

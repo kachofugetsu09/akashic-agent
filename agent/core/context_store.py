@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import logging
@@ -33,11 +34,6 @@ if TYPE_CHECKING:
     from bus.events import InboundMessage
 
 logger = logging.getLogger("agent.core.context_store")
-
-
-@runtime_checkable
-class _ObserveWriter(Protocol):
-    def emit(self, event: object) -> None: ...
 
 
 @runtime_checkable
@@ -176,13 +172,8 @@ class DefaultContextStore(ContextStore):
         post_turn_actions: list[object] | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
-        if (
-            self._session is None
-            or self._trace is None
-            or self._post_turn is None
-            or self._outbound is None
-        ):
-            raise RuntimeError("ContextStore.commit requires session/trace/post_turn/outbound")
+        if self._session is None or self._post_turn is None or self._outbound is None:
+            raise RuntimeError("ContextStore.commit requires session/post_turn/outbound")
 
         cited_memory_ids = list(response_metadata.cited_memory_ids)
 
@@ -233,7 +224,16 @@ class DefaultContextStore(ContextStore):
             tool_chain=tool_chain,
         )
         persist_count = 1 if omit_user_turn else 2
-        await self._session.session_manager.append_messages(session, session.messages[-persist_count:])
+        await self._session.session_manager.append_messages(
+            session,
+            session.messages[-persist_count:],
+        )
+        post_reply_budget = _build_post_reply_context_budget(
+            context=self._context,
+            history=session.get_history(max_messages=self._history_window),
+            history_window=self._history_window,
+        )
+        react_stats = _extract_react_stats(context_retry)
         if self._event_bus is not None:
             await self._event_bus.observe(
                 TurnPersisted(
@@ -244,31 +244,22 @@ class DefaultContextStore(ContextStore):
                     assistant_response=final_content,
                     tools_used=list(tools_used),
                     thinking=thinking,
+                    raw_reply=response_metadata.raw_text,
+                    meme_tag=meme_tag,
+                    meme_media_count=len(meme_media),
+                    tool_chain=copy.deepcopy(tool_chain),
+                    retrieval_raw=retrieval_raw,
+                    post_reply_budget=dict(post_reply_budget),
+                    react_stats=dict(react_stats),
                 )
             )
-        post_reply_budget = _build_post_reply_context_budget(
-            context=self._context,
-            history=session.get_history(max_messages=self._history_window),
-            history_window=self._history_window,
+        _log_post_reply_context_budget(
+            session_key=session_key,
+            budget=post_reply_budget,
         )
-        _log_post_reply_context_budget(session_key=session_key, budget=post_reply_budget)
-        react_stats = _extract_react_stats(context_retry)
         _log_react_context_budget(session_key=session_key, react_stats=react_stats)
 
-        # 3. 发 observe trace，并安排 post_turn。
-        _emit_observe_traces(
-            trace=self._trace,
-            session_key=session_key,
-            msg=msg,
-            final_content=final_content,
-            raw_content=response_metadata.raw_text,
-            meme_tag=meme_tag,
-            meme_media_count=len(meme_media),
-            tool_chain=tool_chain,
-            retrieval_raw=retrieval_raw,
-            post_reply_budget=post_reply_budget,
-            react_stats=react_stats,
-        )
+        # 3. 安排 post_turn。
         self._post_turn.schedule(
             PostTurnEvent(
                 session_key=session_key,
@@ -391,86 +382,6 @@ def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
 def _is_llm_context_frame(message: dict) -> bool:
     content = message.get("content")
     return isinstance(content, str) and is_context_frame(content)
-
-
-def _emit_observe_traces(
-    *,
-    trace: "ObservabilityServices",
-    session_key: str,
-    msg: "InboundMessage",
-    final_content: str,
-    raw_content: str,
-    meme_tag: str | None,
-    meme_media_count: int,
-    tool_chain: list[dict],
-    retrieval_raw: object | None,
-    post_reply_budget: dict[str, int],
-    react_stats: dict[str, int],
-) -> None:
-    writer = trace.observe_writer
-    if writer is None:
-        return
-    observe_writer = writer if isinstance(writer, _ObserveWriter) else None
-    if observe_writer is None:
-        return
-    from core.observe.events import TurnTrace as TurnTraceEvent
-
-    tool_calls = [
-        {
-            "name": call.get("name", ""),
-            "args": str(call.get("arguments", ""))[:300],
-            "result": str(call.get("result", ""))[:500],
-        }
-        for group in tool_chain
-        for call in (group.get("calls") or [])
-    ]
-
-    def _slim_chain(chain: list[dict]) -> list[dict]:
-        out = []
-        for group in chain:
-            text = str(group.get("text") or "")
-            calls = [
-                {
-                    "name": c.get("name", ""),
-                    "args": str(c.get("arguments", ""))[:800],
-                    "result": str(c.get("result", ""))[:1200],
-                }
-                for c in (group.get("calls") or [])
-            ]
-            out.append({"text": text, "calls": calls})
-        return out
-
-    tool_chain_json = (
-        json.dumps(_slim_chain(tool_chain), ensure_ascii=False) if tool_chain else None
-    )
-
-    observe_writer.emit(
-        TurnTraceEvent(
-            source="agent",
-            session_key=session_key,
-            user_msg=msg.content,
-            llm_output=final_content,
-            raw_llm_output=raw_content,
-            meme_tag=meme_tag,
-            meme_media_count=meme_media_count,
-            tool_calls=tool_calls,
-            tool_chain_json=tool_chain_json,
-            history_window=post_reply_budget["history_window"],
-            history_messages=post_reply_budget["history_messages"],
-            history_chars=post_reply_budget["history_chars"],
-            history_tokens=post_reply_budget["history_tokens"],
-            prompt_tokens=post_reply_budget["prompt_tokens"],
-            next_turn_baseline_tokens=post_reply_budget["next_turn_baseline_tokens"],
-            react_iteration_count=react_stats.get("iteration_count"),
-            react_input_sum_tokens=react_stats.get("turn_input_sum_tokens"),
-            react_input_peak_tokens=react_stats.get("turn_input_peak_tokens"),
-            react_final_input_tokens=react_stats.get("final_call_input_tokens"),
-            react_cache_prompt_tokens=react_stats.get("cache_prompt_tokens"),
-            react_cache_hit_tokens=react_stats.get("cache_hit_tokens"),
-        )
-    )
-    if retrieval_raw is not None:
-        observe_writer.emit(retrieval_raw)
 
 
 def _build_post_reply_context_budget(

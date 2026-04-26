@@ -60,9 +60,25 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     )
     event_bus = EventBus()
     persisted_events: list[TurnPersisted] = []
+    persisted_snapshots: list[dict[str, object]] = []
+
+    def _capture_and_mutate_persisted(event: TurnPersisted) -> None:
+        order.append("persisted")
+        persisted_events.append(event)
+        persisted_snapshots.append(
+            {
+                "history_window": event.post_reply_budget["history_window"],
+                "iteration_count": event.react_stats["iteration_count"],
+                "tool_text": event.tool_chain[0]["text"],
+            }
+        )
+        event.tool_chain[0]["text"] = "mutated"
+        event.post_reply_budget["history_window"] = 1
+        event.react_stats["iteration_count"] = 99
+
     event_bus.on(
         TurnPersisted,
-        lambda event: order.append("persisted") or persisted_events.append(event),
+        _capture_and_mutate_persisted,
     )
     decorator = SimpleNamespace(
         decorate=MagicMock(
@@ -127,28 +143,15 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     assert out.metadata["streamed_reply"] is True
     presence.record_user_message.assert_called_once_with("telegram:123")
     session_manager.append_messages.assert_awaited_once()
-    assert len(writer.events) == 2
-    turn_event = writer.events[0]
-    assert turn_event.history_window == 500
-    assert turn_event.history_messages == 2
-    assert turn_event.history_chars > 0
-    assert turn_event.history_tokens == max(1, turn_event.history_chars // 3)
-    assert turn_event.prompt_tokens == 0
-    assert turn_event.next_turn_baseline_tokens == turn_event.history_tokens
-    assert turn_event.react_iteration_count == 3
-    assert turn_event.react_input_sum_tokens == 42100
-    assert turn_event.react_input_peak_tokens == 18800
-    assert turn_event.react_final_input_tokens == 17500
-    assert turn_event.raw_llm_output == "<meme:shy> 整理好了\n§cited:[mem_1]§"
-    assert turn_event.meme_tag == "shy"
+    assert writer.events == []
     assert post_turn.events[0].assistant_response == "整理好了"
+    assert post_turn.events[0].tool_chain[0].text == ""
+    assert out.metadata["tool_chain"][0]["text"] == ""
     outbound.dispatch.assert_awaited_once()
     post_turn_action.run.assert_awaited_once()
     assert order == [
         "persist",
         "persisted",
-        "observe",
-        "observe",
         "post_turn",
         "post_turn_action",
         "dispatch",
@@ -158,6 +161,24 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     assert persisted_events[0].assistant_response == "整理好了"
     assert persisted_events[0].tools_used == ["noop"]
     assert persisted_events[0].thinking == "思考"
+    assert persisted_events[0].raw_reply == "<meme:shy> 整理好了\n§cited:[mem_1]§"
+    assert persisted_events[0].meme_tag == "shy"
+    assert persisted_events[0].meme_media_count == 1
+    assert persisted_events[0].retrieval_raw == {"route": "RETRIEVE"}
+    assert persisted_snapshots[0]["tool_text"] == ""
+    assert persisted_snapshots[0]["history_window"] == 500
+    assert persisted_snapshots[0]["iteration_count"] == 3
+    assert persisted_events[0].post_reply_budget["history_window"] == 1
+    assert persisted_events[0].react_stats["iteration_count"] == 99
+    assert persisted_events[0].post_reply_budget["history_messages"] == 2
+    assert persisted_events[0].post_reply_budget["history_chars"] > 0
+    assert persisted_events[0].post_reply_budget["history_tokens"] == max(
+        1,
+        persisted_events[0].post_reply_budget["history_chars"] // 3,
+    )
+    assert persisted_events[0].react_stats["turn_input_sum_tokens"] == 42100
+    assert persisted_events[0].react_stats["turn_input_peak_tokens"] == 18800
+    assert persisted_events[0].react_stats["final_call_input_tokens"] == 17500
     assert session.messages[-1]["content"] == "整理好了"
     assert session.messages[-1]["reasoning_content"] == "思考"
     assert session.messages[-1]["cited_memory_ids"] == ["mem_1"]
