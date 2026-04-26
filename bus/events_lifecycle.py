@@ -66,6 +66,31 @@ class TurnPersisted:
     thinking: str | None = None
 
 
+@dataclass(frozen=True)
+class ToolCallStarted:
+    session_key: str
+    channel: str
+    chat_id: str
+    iteration: int
+    call_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolCallCompleted:
+    session_key: str
+    channel: str
+    chat_id: str
+    iteration: int
+    call_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    final_arguments: dict[str, Any]
+    status: str
+    result_preview: str
+
+
 @dataclass
 class BeforeDispatch:
     channel: str

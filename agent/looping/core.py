@@ -368,6 +368,7 @@ class AgentLoop:
             memory_window=config.memory.keep_count,
             context=self._context,
             session_manager=self.session_manager,
+            event_bus=self._event_bus,
         )
         consolidation_service = deps.consolidation_service or ConsolidationService(
             memory_port=self._memory_port,

@@ -10,6 +10,8 @@ from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
+from bus.event_bus import EventBus
+from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
 
 
 class _DummyTool(Tool):
@@ -88,6 +90,131 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert react_stats["cache_hit_tokens"] == 100
     first_messages = provider.calls[0]["messages"]
     assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
+
+
+def test_default_reasoner_observes_tool_lifecycle_events():
+    provider = _Provider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "dummy", {"x": 7})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tool = _DummyTool()
+    tools.register(tool, always_on=True)
+    event_bus = EventBus()
+    order: list[str] = []
+    started_events: list[ToolCallStarted] = []
+    completed_events: list[ToolCallCompleted] = []
+    event_bus.on(
+        ToolCallStarted,
+        lambda event: order.append("started") or started_events.append(event),
+    )
+    event_bus.on(
+        ToolCallCompleted,
+        lambda event: order.append("completed") or completed_events.append(event),
+    )
+    reasoner = DefaultReasoner(
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+        context=cast(Any, SimpleNamespace(
+            render=lambda request: SimpleNamespace(
+                messages=[{"role": "user", "content": request.current_message}],
+            ),
+        )),
+        session_manager=cast(Any, SimpleNamespace()),
+        event_bus=event_bus,
+    )
+    session = SimpleNamespace(
+        key="telegram:123",
+        messages=[],
+        get_history=lambda max_messages=40: [],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="hi",
+        media=[],
+        channel="telegram",
+        chat_id="123",
+        timestamp=datetime(2026, 4, 5, 12, 0, 0),
+    )
+
+    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+
+    assert result.reply == "final"
+    assert order == ["started", "completed"]
+    assert started_events[0].session_key == "telegram:123"
+    assert started_events[0].channel == "telegram"
+    assert started_events[0].chat_id == "123"
+    assert started_events[0].iteration == 1
+    assert started_events[0].call_id == "c1"
+    assert started_events[0].tool_name == "dummy"
+    assert started_events[0].arguments == {"x": 7}
+    assert completed_events[0].session_key == "telegram:123"
+    assert completed_events[0].call_id == "c1"
+    assert completed_events[0].tool_name == "dummy"
+    assert completed_events[0].arguments == {"x": 7}
+    assert completed_events[0].final_arguments == {"x": 7}
+    assert completed_events[0].status == "success"
+    assert completed_events[0].result_preview == "dummy-ok"
+
+
+def test_default_reasoner_observes_blocked_tool_lifecycle_events():
+    provider = _Provider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "hidden_tool", {"x": 1})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
+    hidden = _DummyTool("hidden_tool")
+    tools.register(hidden)
+    event_bus = EventBus()
+    order: list[str] = []
+    started_events: list[ToolCallStarted] = []
+    completed_events: list[ToolCallCompleted] = []
+    event_bus.on(
+        ToolCallStarted,
+        lambda event: order.append("started") or started_events.append(event),
+    )
+    event_bus.on(
+        ToolCallCompleted,
+        lambda event: order.append("completed") or completed_events.append(event),
+    )
+    reasoner = DefaultReasoner(
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=True,
+        memory_window=40,
+        event_bus=event_bus,
+    )
+
+    result = asyncio.run(
+        reasoner.run(
+            [{"role": "user", "content": "hi"}],
+            tool_event_session_key="telegram:123",
+            tool_event_channel="telegram",
+            tool_event_chat_id="123",
+        )
+    )
+
+    assert result.reply == "final"
+    assert hidden.calls == []
+    assert order == ["started", "completed"]
+    assert started_events[0].tool_name == "hidden_tool"
+    assert started_events[0].arguments == {"x": 1}
+    assert completed_events[0].tool_name == "hidden_tool"
+    assert completed_events[0].arguments == {"x": 1}
+    assert completed_events[0].final_arguments == {"x": 1}
+    assert completed_events[0].status == "blocked"
+    assert "select:hidden_tool" in completed_events[0].result_preview
 
 
 def test_default_reasoner_unlocks_tool_search_visibility():
