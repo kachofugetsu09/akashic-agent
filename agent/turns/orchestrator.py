@@ -10,8 +10,10 @@ from agent.core.types import to_tool_call_groups
 from agent.postturn.protocol import PostTurnEvent
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult
+from bus.events_lifecycle import TurnCommitted
 
 if TYPE_CHECKING:
+    from bus.event_bus import EventBus
     from agent.core.runtime_support import SessionLike
     from agent.looping.ports import (
         SessionServices,
@@ -33,6 +35,7 @@ class TurnOrchestratorDeps:
     trace: ObservabilityServices
     post_turn: PostTurnPipeline
     outbound: OutboundPort
+    event_bus: "EventBus | None" = None
 
 
 class TurnOrchestrator:
@@ -41,6 +44,7 @@ class TurnOrchestrator:
         self._trace = deps.trace
         self._post_turn = deps.post_turn
         self._outbound = deps.outbound
+        self._event_bus = deps.event_bus
 
     async def handle_proactive_turn(
         self,
@@ -75,6 +79,12 @@ class TurnOrchestrator:
         )
         await self._session.session_manager.append_messages(session, session.messages[-1:])
 
+        await self._fanout_proactive_turn_committed(
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+            result=result,
+        )
         self._schedule_proactive_post_turn(
             session_key=session_key,
             channel=channel,
@@ -173,6 +183,39 @@ class TurnOrchestrator:
                 tool_chain=to_tool_call_groups(tool_chain),
                 session=session,
             )
+        )
+
+    async def _fanout_proactive_turn_committed(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        result: TurnResult,
+    ) -> None:
+        if self._event_bus is None:
+            return
+        tool_chain = _trace_tool_chain(result.trace)
+        tools_used = _trace_tools_used(result.trace)
+        await self._event_bus.fanout(
+            TurnCommitted(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                input_message="",
+                persisted_user_message=None,
+                assistant_response=result.outbound.content if result.outbound else "",
+                tools_used=tools_used,
+                tool_chain_raw=tool_chain,
+                tool_call_groups=to_tool_call_groups(tool_chain),
+                extra={"skip_observe_trace": True},
+            )
+        )
+        logger.info(
+            "[_fanout_proactive_turn_committed] TurnCommitted fanout 完成 source=proactive session=%s channel=%s tools=%d",
+            session_key,
+            channel,
+            len(tools_used),
         )
 
     def _emit_proactive_observe(

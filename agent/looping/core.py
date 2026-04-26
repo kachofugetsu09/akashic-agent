@@ -428,6 +428,7 @@ class AgentLoop:
             register_post_turn_consumers(
                 event_bus=self._event_bus,
                 consolidation=consolidation_service,
+                session_manager=self.session_manager,
             )
             post_turn_pipeline = DefaultPostTurnPipeline(
                 scheduler=self._scheduler,

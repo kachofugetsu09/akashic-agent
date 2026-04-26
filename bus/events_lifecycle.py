@@ -29,6 +29,10 @@ def _empty_tool_chain() -> list[dict[str, Any]]:
     return []
 
 
+def _empty_tool_call_groups() -> list["ToolCallGroup"]:
+    return []
+
+
 @dataclass(frozen=True)
 class TurnStarted:
     session_key: str
@@ -83,6 +87,30 @@ class TurnPersisted:
     retrieval_raw: object | None = None
     post_reply_budget: dict[str, int] = field(default_factory=_empty_int_metadata)
     react_stats: dict[str, int] = field(default_factory=_empty_int_metadata)
+
+
+@dataclass(frozen=True)
+class TurnCommitted:
+    session_key: str
+    channel: str
+    chat_id: str
+    input_message: str
+    persisted_user_message: str | None
+    assistant_response: str
+    tools_used: list[str]
+    thinking: str | None = None
+    raw_reply: str | None = None
+    meme_tag: str | None = None
+    meme_media_count: int | None = None
+    tool_chain_raw: list[dict[str, Any]] = field(default_factory=_empty_tool_chain)
+    tool_call_groups: list["ToolCallGroup"] = field(
+        default_factory=_empty_tool_call_groups
+    )
+    timestamp: datetime | None = None
+    retrieval_raw: object | None = None
+    post_reply_budget: dict[str, int] = field(default_factory=_empty_int_metadata)
+    react_stats: dict[str, int] = field(default_factory=_empty_int_metadata)
+    extra: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
 @dataclass(frozen=True)

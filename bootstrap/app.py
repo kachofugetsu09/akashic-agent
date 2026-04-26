@@ -163,6 +163,7 @@ class AppRuntime:
                 presence=self.presence,
                 agent_loop=self.agent_loop,
                 observe_writer=self.observe_writer,
+                event_bus=event_bus,
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
@@ -202,12 +203,6 @@ class AppRuntime:
                     await self.dashboard_task
                 except asyncio.CancelledError:
                     pass
-            if self.observe_task is not None:
-                self.observe_task.cancel()
-                try:
-                    await self.observe_task
-                except asyncio.CancelledError:
-                    pass
             await _run_cleanup_steps(
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
@@ -222,6 +217,12 @@ class AppRuntime:
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
             )
+            if self.observe_task is not None:
+                _ = self.observe_task.cancel()
+                try:
+                    await self.observe_task
+                except asyncio.CancelledError:
+                    pass
         finally:
             clear_default_shared_http_resources(self.http_resources)
 

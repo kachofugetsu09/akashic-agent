@@ -107,6 +107,7 @@ class CoreRuntime:
             self.peer_poller.start()
 
     async def stop(self) -> None:
+        await self.event_bus.aclose()
         if self.peer_poller is not None:
             await self.peer_poller.stop()
         if self.peer_process_manager is not None:
@@ -360,6 +361,7 @@ def _build_loop_deps(
     register_post_turn_consumers(
         event_bus=event_bus,
         consolidation=consolidation,
+        session_manager=session_manager,
     )
     post_turn_pipeline = DefaultPostTurnPipeline(
         scheduler=turn_scheduler,

@@ -74,3 +74,49 @@ async def test_event_bus_observe_and_intercept_are_ordered():
 
     assert observed == ["ok"]
     assert dispatch.content == "ok!"
+
+
+@pytest.mark.asyncio
+async def test_event_bus_fanout_keeps_other_observers_when_one_fails(caplog):
+    event_bus = EventBus()
+    observed: list[str] = []
+
+    def _bad(_event: TurnCompleted) -> None:
+        raise RuntimeError("boom")
+
+    event_bus.on(TurnCompleted, _bad)
+    event_bus.on(TurnCompleted, lambda event: observed.append(event.reply))
+
+    await event_bus.fanout(
+        TurnCompleted(
+            session_key="telegram:123",
+            channel="telegram",
+            chat_id="123",
+            reply="ok",
+            tools_used=[],
+        )
+    )
+
+    assert observed == ["ok"]
+    assert "fanout completed with observer errors" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_event_bus_enqueue_runs_observers_in_background():
+    event_bus = EventBus()
+    observed: list[str] = []
+
+    event_bus.on(TurnCompleted, lambda event: observed.append(event.reply))
+    event_bus.enqueue(
+        TurnCompleted(
+            session_key="telegram:123",
+            channel="telegram",
+            chat_id="123",
+            reply="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+
+    assert observed == ["ok"]
+    await event_bus.aclose()

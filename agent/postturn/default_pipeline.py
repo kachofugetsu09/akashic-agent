@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from agent.core.types import ToolCallGroup
 from agent.looping.ports import TurnScheduler
 from agent.postturn.protocol import PostTurnEvent, PostTurnPipeline
-from bus.events_lifecycle import PostTurnScheduled
 from core.memory.engine import MemoryIngestRequest, MemoryScope
 
 if TYPE_CHECKING:
@@ -27,17 +26,14 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
     ) -> None:
         self._scheduler = scheduler
         self._engine = engine
-        self._event_bus = event_bus
+        _ = event_bus
         self._failures: int = 0
-        self._scheduled_event_queues: dict[str, deque[PostTurnScheduled]] = {}
-        self._scheduled_event_tasks: dict[str, asyncio.Task[None]] = {}
         self._post_mem_queues: dict[str, deque[PostTurnEvent]] = {}
         self._post_mem_tasks: dict[str, asyncio.Task[None]] = {}
 
     def schedule(self, event: PostTurnEvent) -> None:
         # 1. 回复一落库就先尝试挂起 consolidation；是否真的执行由 scheduler 决定。
         self._scheduler.schedule_consolidation(event.session, event.session_key)
-        self._enqueue_post_turn_scheduled(event)
         if bool((event.extra or {}).get("skip_post_memory")):
             return
         if self._engine is None:
@@ -124,80 +120,6 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
             logger.warning(
                 "post_mem failed session=%s failures=%d err=%s",
                 key, self._failures, exc,
-            )
-
-    def _enqueue_post_turn_scheduled(self, event: PostTurnEvent) -> None:
-        if self._event_bus is None:
-            return
-        queue = self._scheduled_event_queues.setdefault(event.session_key, deque())
-        queue.append(
-            PostTurnScheduled(
-                session_key=event.session_key,
-                channel=event.channel,
-                chat_id=event.chat_id,
-                user_message=event.user_message,
-                assistant_response=event.assistant_response,
-                tools_used=event.tools_used,
-                tool_chain=event.tool_chain,
-                session=event.session,
-                timestamp=event.timestamp,
-                extra=event.extra,
-            )
-        )
-        if event.session_key in self._scheduled_event_tasks:
-            return
-        task = asyncio.create_task(
-            self._run_scheduled_event_queue(event.session_key),
-            name=f"post_turn_scheduled:{event.session_key}",
-        )
-        self._scheduled_event_tasks[event.session_key] = task
-        task.add_done_callback(
-            lambda t: self._on_scheduled_event_done(t, event.session_key)
-        )
-
-    async def _run_scheduled_event_queue(self, session_key: str) -> None:
-        try:
-            while True:
-                queue = self._scheduled_event_queues.get(session_key)
-                if not queue:
-                    return
-                event = queue.popleft()
-                if self._event_bus is None:
-                    continue
-                await self._event_bus.observe(event)
-        finally:
-            _ = self._scheduled_event_tasks.pop(session_key, None)
-            queue = self._scheduled_event_queues.get(session_key)
-            if queue:
-                task = asyncio.create_task(
-                    self._run_scheduled_event_queue(session_key),
-                    name=f"post_turn_scheduled:{session_key}",
-                )
-                self._scheduled_event_tasks[session_key] = task
-                task.add_done_callback(
-                    lambda t: self._on_scheduled_event_done(t, session_key)
-                )
-            else:
-                _ = self._scheduled_event_queues.pop(session_key, None)
-
-    def _on_scheduled_event_done(self, task: asyncio.Task[None], key: str) -> None:
-        try:
-            exc = task.exception()
-        except asyncio.CancelledError:
-            logger.info("post_turn scheduled observer cancelled: %s", key)
-            return
-        except Exception as e:
-            logger.warning(
-                "post_turn scheduled observer inspect failed session=%s err=%s",
-                key,
-                e,
-            )
-            return
-        if exc is not None:
-            logger.warning(
-                "post_turn scheduled observer failed: session=%s err=%s",
-                key,
-                exc,
             )
 
 

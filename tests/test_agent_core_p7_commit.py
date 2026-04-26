@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from typing import Any, cast
 
 from datetime import datetime
@@ -10,10 +11,14 @@ import pytest
 
 from agent.core.context_store import DefaultContextStore
 from agent.core.response_parser import ResponseMetadata, parse_response
+from agent.looping.lifecycle_consumers import (
+    register_observe_trace_consumers,
+    register_post_turn_consumers,
+)
 from agent.retrieval.protocol import RetrievalResult
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
-from bus.events_lifecycle import TurnPersisted
+from bus.events_lifecycle import TurnCommitted, TurnPersisted
 
 
 class _DummySession:
@@ -39,6 +44,84 @@ class _DummySession:
 
 
 @pytest.mark.asyncio
+async def test_commit_fanout_enqueues_observe_and_recent_before_return():
+    session = _DummySession("telegram:trace")
+    session_manager = SimpleNamespace(
+        get_or_create=MagicMock(return_value=session),
+        append_messages=AsyncMock(),
+    )
+    event_bus = EventBus()
+    release_recent = asyncio.Event()
+    recent_started = asyncio.Event()
+
+    class _Writer:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        def emit(self, event: object) -> None:
+            self.events.append(event)
+
+    async def _refresh_recent_turns(*, session) -> None:
+        recent_started.set()
+        await release_recent.wait()
+
+    writer = _Writer()
+    consolidation = SimpleNamespace(
+        refresh_recent_turns=AsyncMock(side_effect=_refresh_recent_turns)
+    )
+    register_observe_trace_consumers(
+        event_bus=event_bus,
+        trace=cast(Any, SimpleNamespace(observe_writer=writer)),
+    )
+    register_post_turn_consumers(
+        event_bus=event_bus,
+        consolidation=cast(Any, consolidation),
+        session_manager=cast(Any, session_manager),
+    )
+    store = DefaultContextStore(
+        retrieval=cast(Any, SimpleNamespace(retrieve=AsyncMock(return_value=RetrievalResult(block="")))),
+        context=cast(Any, SimpleNamespace(skills=SimpleNamespace(list_skills=MagicMock(return_value=[])))),
+        session=cast(Any, SimpleNamespace(session_manager=session_manager, presence=None)),
+        trace=cast(Any, SimpleNamespace(workspace=Path("."), observe_writer=writer)),
+        post_turn=cast(Any, SimpleNamespace(schedule=MagicMock())),
+        outbound=cast(Any, SimpleNamespace(dispatch=AsyncMock())),
+        event_bus=event_bus,
+    )
+
+    await store.commit(
+        msg=InboundMessage(
+            channel="telegram",
+            sender="hua",
+            chat_id="trace",
+            content="你好",
+        ),
+        session_key="telegram:trace",
+        reply="收到",
+        response_metadata=ResponseMetadata(raw_text="收到"),
+        tools_used=[],
+        tool_chain=[],
+        thinking=None,
+        streamed_reply=False,
+        retrieval_raw=None,
+        context_retry={},
+    )
+
+    recent_tasks = [
+        task
+        for task in asyncio.all_tasks()
+        if task.get_name() == "recent_context:telegram:trace"
+    ]
+    assert writer.events
+    assert cast(Any, writer.events[0]).source == "agent"
+    assert recent_tasks
+
+    release_recent.set()
+    await asyncio.gather(*recent_tasks)
+    assert recent_started.is_set()
+    await event_bus.aclose()
+
+
+@pytest.mark.asyncio
 async def test_context_store_commit_persists_observes_schedules_and_dispatches():
     order: list[str] = []
     session = _DummySession("telegram:123")
@@ -60,6 +143,7 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     )
     event_bus = EventBus()
     persisted_events: list[TurnPersisted] = []
+    committed_events: list[TurnCommitted] = []
     persisted_snapshots: list[dict[str, object]] = []
 
     def _capture_and_mutate_persisted(event: TurnPersisted) -> None:
@@ -79,6 +163,10 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     event_bus.on(
         TurnPersisted,
         _capture_and_mutate_persisted,
+    )
+    event_bus.on(
+        TurnCommitted,
+        lambda event: order.append("committed") or committed_events.append(event),
     )
     decorator = SimpleNamespace(
         decorate=MagicMock(
@@ -135,6 +223,7 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
         },
         post_turn_actions=[post_turn_action],
     )
+    await event_bus.drain()
 
     assert out.content == "整理好了"
     assert out.media == ["/tmp/meme.png"]
@@ -152,6 +241,7 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     assert order == [
         "persist",
         "persisted",
+        "committed",
         "post_turn",
         "post_turn_action",
         "dispatch",
@@ -179,10 +269,18 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     assert persisted_events[0].react_stats["turn_input_sum_tokens"] == 42100
     assert persisted_events[0].react_stats["turn_input_peak_tokens"] == 18800
     assert persisted_events[0].react_stats["final_call_input_tokens"] == 17500
+    assert committed_events[0].input_message == "你好"
+    assert committed_events[0].persisted_user_message == "你好"
+    assert committed_events[0].assistant_response == "整理好了"
+    assert committed_events[0].thinking == "思考"
+    assert committed_events[0].tool_chain_raw[0]["text"] == ""
+    assert committed_events[0].tool_call_groups[0].text == ""
+    assert committed_events[0].extra == {}
     assert session.messages[-1]["content"] == "整理好了"
     assert session.messages[-1]["reasoning_content"] == "思考"
     assert session.messages[-1]["cited_memory_ids"] == ["mem_1"]
     decorator.decorate.assert_called_once_with("整理好了", meme_tag="shy")
+    await event_bus.aclose()
 
 
 @pytest.mark.asyncio
@@ -194,7 +292,9 @@ async def test_turn_persisted_omits_user_message_when_user_turn_not_persisted():
     )
     event_bus = EventBus()
     persisted_events: list[TurnPersisted] = []
+    committed_events: list[TurnCommitted] = []
     event_bus.on(TurnPersisted, lambda event: persisted_events.append(event))
+    event_bus.on(TurnCommitted, lambda event: committed_events.append(event))
     store = DefaultContextStore(
         retrieval=cast(Any, SimpleNamespace(retrieve=AsyncMock(return_value=RetrievalResult(block="")))),
         context=cast(Any, SimpleNamespace(skills=SimpleNamespace(list_skills=MagicMock(return_value=[])))),
@@ -223,11 +323,15 @@ async def test_turn_persisted_omits_user_message_when_user_turn_not_persisted():
         retrieval_raw=None,
         context_retry={},
     )
+    await event_bus.drain()
 
     assert persisted_events[0].user_message is None
+    assert committed_events[0].input_message == "内部提示词"
+    assert committed_events[0].persisted_user_message is None
     assert persisted_events[0].assistant_response == "完成"
     assert [msg["role"] for msg in session.messages] == ["assistant"]
     session_manager.append_messages.assert_awaited_once_with(session, session.messages[-1:])
+    await event_bus.aclose()
 
 
 def test_response_parser_strips_ascii_marker_only_at_end():

@@ -21,7 +21,12 @@ from agent.retrieval.protocol import RetrievalRequest
 from agent.turns.outbound import OutboundDispatch
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
-from bus.events_lifecycle import BeforeDispatch, TurnCompleted, TurnPersisted
+from bus.events_lifecycle import (
+    BeforeDispatch,
+    TurnCommitted,
+    TurnCompleted,
+    TurnPersisted,
+)
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -234,24 +239,60 @@ class DefaultContextStore(ContextStore):
             history_window=self._history_window,
         )
         react_stats = _extract_react_stats(context_retry)
+        persisted_user_message = None if omit_user_turn else msg.content
+        tool_chain_raw = copy.deepcopy(tool_chain)
+        tool_call_groups = to_tool_call_groups(tool_chain_raw)
+        extra: dict[str, object] = (
+            {"skip_post_memory": True}
+            if (msg.metadata or {}).get("skip_post_memory")
+            else {}
+        )
         if self._event_bus is not None:
             await self._event_bus.observe(
                 TurnPersisted(
                     session_key=session_key,
                     channel=msg.channel,
                     chat_id=msg.chat_id,
-                    user_message=None if omit_user_turn else msg.content,
+                    user_message=persisted_user_message,
                     assistant_response=final_content,
                     tools_used=list(tools_used),
                     thinking=thinking,
                     raw_reply=response_metadata.raw_text,
                     meme_tag=meme_tag,
                     meme_media_count=len(meme_media),
-                    tool_chain=copy.deepcopy(tool_chain),
+                    tool_chain=copy.deepcopy(tool_chain_raw),
                     retrieval_raw=retrieval_raw,
                     post_reply_budget=dict(post_reply_budget),
                     react_stats=dict(react_stats),
                 )
+            )
+            await self._event_bus.fanout(
+                TurnCommitted(
+                    session_key=session_key,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    input_message=msg.content,
+                    persisted_user_message=persisted_user_message,
+                    assistant_response=final_content,
+                    tools_used=list(tools_used),
+                    thinking=thinking,
+                    raw_reply=response_metadata.raw_text,
+                    meme_tag=meme_tag,
+                    meme_media_count=len(meme_media),
+                    tool_chain_raw=copy.deepcopy(tool_chain_raw),
+                    tool_call_groups=to_tool_call_groups(tool_chain_raw),
+                    timestamp=msg.timestamp,
+                    retrieval_raw=retrieval_raw,
+                    post_reply_budget=dict(post_reply_budget),
+                    react_stats=dict(react_stats),
+                    extra=dict(extra),
+                )
+            )
+            logger.info(
+                "[commit] TurnCommitted fanout 完成 source=passive session=%s channel=%s tools=%d",
+                session_key,
+                msg.channel,
+                len(tools_used),
             )
         _log_post_reply_context_budget(
             session_key=session_key,
@@ -268,14 +309,10 @@ class DefaultContextStore(ContextStore):
                 user_message=msg.content,
                 assistant_response=final_content,
                 tools_used=tools_used,
-                tool_chain=to_tool_call_groups(tool_chain),
+                tool_chain=tool_call_groups,
                 session=session,
                 timestamp=msg.timestamp,
-                extra=(
-                    {"skip_post_memory": True}
-                    if (msg.metadata or {}).get("skip_post_memory")
-                    else {}
-                ),
+                extra=extra,
             )
         )
         await _run_effects(post_turn_actions or [])

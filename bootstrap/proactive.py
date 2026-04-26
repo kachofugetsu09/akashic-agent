@@ -14,6 +14,7 @@ from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
+    from bus.event_bus import EventBus
     from core.memory.profile import MemoryOptimizerStore, ProfileMaintenanceStore
     from core.memory.runtime_facade import MemoryRuntimeFacade
 
@@ -55,6 +56,7 @@ def build_proactive_runtime(
     presence: PresenceStore,
     agent_loop: AgentLoop,
     observe_writer=None,
+    event_bus: "EventBus | None" = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -85,6 +87,7 @@ def build_proactive_runtime(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
         observe_writer=observe_writer,
+        event_bus=event_bus,
         shared_tools=getattr(agent_loop, "tools", None),
         fitbit_enabled=config.fitbit.enabled,
         fitbit_url=_FITBIT_DEFAULT_URL,
