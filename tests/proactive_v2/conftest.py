@@ -267,10 +267,6 @@ def make_agent_tick(
     )
     trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
 
-    class _PostTurn:
-        def schedule(self, event) -> None:
-            return
-
     class _Outbound:
         async def dispatch(self, outbound: OutboundDispatch) -> bool:
             return await sender.send(outbound.content)
@@ -279,7 +275,6 @@ def make_agent_tick(
         TurnOrchestratorDeps(
             session=session_svc,
             trace=trace_svc,
-            post_turn=_PostTurn(),
             outbound=_Outbound(),
         )
     )

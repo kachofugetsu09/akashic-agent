@@ -39,8 +39,6 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
-    loop._post_mem_worker = MagicMock()
-    loop._post_mem_worker.run = AsyncMock()
 
     session = session_manager.get_or_create("telegram:123")
     session.add_message("user", "帮我整理一下")
@@ -75,8 +73,6 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
         m["content"] != "原始后台结果：文件位于 /tmp/report.md"
         for m in updated.messages
     )
-    loop._post_mem_worker.run.assert_not_called()
-
 
 @pytest.mark.asyncio
 async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path):
@@ -94,8 +90,6 @@ async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
-    loop._post_mem_worker = MagicMock()
-    loop._post_mem_worker.run = AsyncMock()
 
     session = session_manager.get_or_create("telegram:123")
     session.add_message("user", "帮我补跑一下")

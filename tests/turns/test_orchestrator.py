@@ -11,8 +11,6 @@ from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from bus.event_bus import EventBus
-from bus.events_lifecycle import TurnCommitted
 
 
 class _DummySession:
@@ -53,7 +51,6 @@ async def test_orchestrator_skip_runs_side_effects_without_dispatch():
                 presence=None,
             ),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=None),
-            post_turn=cast(Any, SimpleNamespace(schedule=lambda event: order.append("post_turn"))),
             outbound=_Outbound(),
         )
     )
@@ -78,10 +75,6 @@ async def test_orchestrator_skip_runs_side_effects_without_dispatch():
 async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success_effects():
     order: list[str] = []
     session = _DummySession("telegram:123")
-    post_turn_events: list[object] = []
-    committed_events: list[TurnCommitted] = []
-    event_bus = EventBus()
-    event_bus.on(TurnCommitted, lambda event: committed_events.append(event))
 
     class _Effect:
         def __init__(self, name: str) -> None:
@@ -113,9 +106,7 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
         TurnOrchestratorDeps(
             session=SessionServices(session_manager=cast(Any, session_manager), presence=cast(Any, presence)),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
-            post_turn=cast(Any, SimpleNamespace(schedule=lambda event: post_turn_events.append(event))),
             outbound=_Outbound(),
-            event_bus=event_bus,
         )
     )
 
@@ -140,15 +131,8 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
         channel="telegram",
         chat_id="123",
     )
-    await event_bus.drain()
 
     assert sent is True
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
-    assert post_turn_events
-    assert committed_events[0].session_key == "telegram:123"
-    assert committed_events[0].persisted_user_message is None
-    assert committed_events[0].assistant_response == "hello"
-    assert committed_events[0].extra == {"skip_observe_trace": True}
     assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect", "observe"]
-    await event_bus.aclose()

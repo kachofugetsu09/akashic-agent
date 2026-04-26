@@ -15,7 +15,6 @@ from agent.core.types import (
     HistoryMessage,
     to_tool_call_groups,
 )
-from agent.postturn.protocol import PostTurnEvent
 from agent.prompting import is_context_frame
 from agent.retrieval.protocol import RetrievalRequest
 from agent.turns.outbound import OutboundDispatch
@@ -25,7 +24,6 @@ from bus.events_lifecycle import (
     BeforeDispatch,
     TurnCommitted,
     TurnCompleted,
-    TurnPersisted,
 )
 
 if TYPE_CHECKING:
@@ -33,7 +31,6 @@ if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike
     from agent.looping.ports import ObservabilityServices, SessionServices
     from agent.memes.decorator import MemeDecorator
-    from agent.postturn.protocol import PostTurnPipeline
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.turns.outbound import OutboundPort
     from bus.events import InboundMessage
@@ -97,7 +94,6 @@ class DefaultContextStore(ContextStore):
         history_window: int = 500,
         session: "SessionServices | None" = None,
         trace: "ObservabilityServices | None" = None,
-        post_turn: "PostTurnPipeline | None" = None,
         outbound: "OutboundPort | None" = None,
         meme_decorator: "MemeDecorator | None" = None,
         event_bus: EventBus | None = None,
@@ -107,7 +103,6 @@ class DefaultContextStore(ContextStore):
         self._history_window = max(1, int(history_window))
         self._session = session
         self._trace = trace
-        self._post_turn = post_turn
         self._outbound = outbound
         self._meme_decorator = meme_decorator
         self._event_bus = event_bus
@@ -177,8 +172,8 @@ class DefaultContextStore(ContextStore):
         post_turn_actions: list[object] | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
-        if self._session is None or self._post_turn is None or self._outbound is None:
-            raise RuntimeError("ContextStore.commit requires session/post_turn/outbound")
+        if self._session is None or self._outbound is None:
+            raise RuntimeError("ContextStore.commit requires session/outbound")
 
         cited_memory_ids = list(response_metadata.cited_memory_ids)
 
@@ -241,31 +236,12 @@ class DefaultContextStore(ContextStore):
         react_stats = _extract_react_stats(context_retry)
         persisted_user_message = None if omit_user_turn else msg.content
         tool_chain_raw = copy.deepcopy(tool_chain)
-        tool_call_groups = to_tool_call_groups(tool_chain_raw)
         extra: dict[str, object] = (
             {"skip_post_memory": True}
             if (msg.metadata or {}).get("skip_post_memory")
             else {}
         )
         if self._event_bus is not None:
-            await self._event_bus.observe(
-                TurnPersisted(
-                    session_key=session_key,
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    user_message=persisted_user_message,
-                    assistant_response=final_content,
-                    tools_used=list(tools_used),
-                    thinking=thinking,
-                    raw_reply=response_metadata.raw_text,
-                    meme_tag=meme_tag,
-                    meme_media_count=len(meme_media),
-                    tool_chain=copy.deepcopy(tool_chain_raw),
-                    retrieval_raw=retrieval_raw,
-                    post_reply_budget=dict(post_reply_budget),
-                    react_stats=dict(react_stats),
-                )
-            )
             await self._event_bus.fanout(
                 TurnCommitted(
                     session_key=session_key,
@@ -300,24 +276,9 @@ class DefaultContextStore(ContextStore):
         )
         _log_react_context_budget(session_key=session_key, react_stats=react_stats)
 
-        # 3. 安排 post_turn。
-        self._post_turn.schedule(
-            PostTurnEvent(
-                session_key=session_key,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                user_message=msg.content,
-                assistant_response=final_content,
-                tools_used=tools_used,
-                tool_chain=tool_call_groups,
-                session=session,
-                timestamp=msg.timestamp,
-                extra=extra,
-            )
-        )
         await _run_effects(post_turn_actions or [])
 
-        # 4. 发出成功完成事件，再给出站消息留出最后干预点。
+        # 3. 发出成功完成事件，再给出站消息留出最后干预点。
         if self._event_bus is not None:
             await self._event_bus.observe(
                 TurnCompleted(

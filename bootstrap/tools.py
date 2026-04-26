@@ -5,13 +5,11 @@ from typing import Any, Callable
 
 from agent.config_models import Config, WiringConfig
 from agent.context import ContextBuilder
-from agent.core.context_store import DefaultContextStore
 from agent.looping.consolidation import ConsolidationService
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
 from agent.looping.core import AgentLoop
-from agent.looping.lifecycle_consumers import register_post_turn_consumers
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
@@ -24,14 +22,11 @@ from agent.looping.ports import (
     TurnScheduler,
 )
 from agent.mcp.registry import McpServerRegistry
-from agent.postturn.default_pipeline import DefaultPostTurnPipeline
 from agent.provider import LLMProvider
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
-from agent.memes.catalog import MemeCatalog
-from agent.memes.decorator import MemeDecorator
 from agent.turns.outbound import BusOutboundPort
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
@@ -346,7 +341,6 @@ def _build_loop_deps(
         await session_manager.save_async(session)  # type: ignore[arg-type]
 
     turn_scheduler = TurnScheduler(
-        post_mem_worker=memory_runtime.post_response_worker,
         consolidation_runner=_consolidate_and_save,
         keep_count=memory_config.keep_count,
     )
@@ -358,17 +352,6 @@ def _build_loop_deps(
         light_model=llm_config.light_model or llm_config.model,
     )
 
-    register_post_turn_consumers(
-        event_bus=event_bus,
-        consolidation=consolidation,
-        session_manager=session_manager,
-    )
-    post_turn_pipeline = DefaultPostTurnPipeline(
-        scheduler=turn_scheduler,
-        engine=memory_engine,
-        event_bus=event_bus,
-    )
-    passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
     return AgentLoopDeps(
         bus=bus,
         event_bus=event_bus,
@@ -385,7 +368,6 @@ def _build_loop_deps(
         sufficiency_checker=sufficiency_checker,
         profile_extractor=profile_extractor,
         retrieval_pipeline=retrieval_pipeline,
-        post_turn_pipeline=post_turn_pipeline,
         context=context,
         llm_services=llm_services,
         memory_services=memory_services,

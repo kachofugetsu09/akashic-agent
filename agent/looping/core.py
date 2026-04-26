@@ -20,7 +20,7 @@ from agent.looping.consolidation import (
 )
 from agent.looping.lifecycle_consumers import (
     register_observe_trace_consumers,
-    register_post_turn_consumers,
+    register_turn_committed_consumers,
 )
 from agent.looping.ports import (
     AgentLoopConfig,
@@ -33,8 +33,6 @@ from agent.looping.ports import (
     SessionServices,
     TurnScheduler,
 )
-from agent.postturn.default_pipeline import DefaultPostTurnPipeline
-from agent.postturn.protocol import PostTurnPipeline
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.outbound import BusOutboundPort
@@ -53,7 +51,6 @@ from bus.events_lifecycle import (
 )
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.profile_extractor import ProfileFactExtractor
 from memory2.query_rewriter import QueryRewriter
 from memory2.sufficiency_checker import SufficiencyChecker
@@ -129,7 +126,7 @@ class AgentLoop:
         self._interrupt_states: dict[str, TurnInterruptState] = {}
 
         # 2. 再解析 memory runtime 入口。
-        memory_port, post_mem_worker = self._resolve_memory_runtime(deps)
+        memory_port = self._resolve_memory_runtime(deps)
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
         self._memory_port = memory_port
         self._context = deps.context or ContextBuilder(
@@ -141,7 +138,6 @@ class AgentLoop:
             multimodal=config.llm.multimodal,
             vl_available=config.llm.vl_available,
         )
-        self._post_mem_worker = post_mem_worker
         self._llm_services = deps.llm_services or LLMServices(
             provider=deps.provider,
             light_provider=deps.light_provider or deps.provider,
@@ -160,7 +156,6 @@ class AgentLoop:
             deps=deps,
             config=config,
             memory_port=memory_port,
-            post_mem_worker=post_mem_worker,
             hyde_enhancer=hyde_enhancer,
         )
         self._configure_stream_events()
@@ -280,20 +275,18 @@ class AgentLoop:
     def _resolve_memory_runtime(
         self,
         deps: AgentLoopDeps,
-    ) -> tuple["MemoryPort", "PostResponseMemoryWorker | None"]:
+    ) -> "MemoryPort":
         # 1. 先取显式注入的 memory 对象。
         memory_port = deps.memory_port
-        post_mem_worker = deps.post_mem_worker
 
         # 2. 如果给了 memory_runtime，就优先使用 runtime 里的实现。
         if deps.memory_runtime is not None:
             memory_port = deps.memory_runtime.port
-            post_mem_worker = deps.memory_runtime.post_response_worker
 
         # 3. 当前主链必须拿到 memory_port。
         if memory_port is None:
             raise ValueError("AgentLoop requires memory_port or memory_runtime")
-        return memory_port, post_mem_worker
+        return memory_port
 
     def _build_hyde_enhancer(
         self,
@@ -331,7 +324,6 @@ class AgentLoop:
         deps: AgentLoopDeps,
         config: AgentLoopConfig,
         memory_port: "MemoryPort",
-        post_mem_worker: "PostResponseMemoryWorker | None",
         hyde_enhancer: "HyDEEnhancer | None",
     ) -> None:
         # 1. 先组基础 service ports。
@@ -402,7 +394,6 @@ class AgentLoop:
                 )
             )
         self._scheduler = deps.scheduler or TurnScheduler(
-            post_mem_worker=post_mem_worker,
             consolidation_runner=self._consolidate_and_save,
             keep_count=config.memory.keep_count,
         )
@@ -424,19 +415,13 @@ class AgentLoop:
             light_model=self.light_model,
         )
         self._retrieval_pipeline = retrieval_pipeline
-        if deps.post_turn_pipeline is None:
-            register_post_turn_consumers(
-                event_bus=self._event_bus,
-                consolidation=consolidation_service,
-                session_manager=self.session_manager,
-            )
-            post_turn_pipeline = DefaultPostTurnPipeline(
-                scheduler=self._scheduler,
-                engine=memory_svc.engine,
-                event_bus=self._event_bus,
-            )
-        else:
-            post_turn_pipeline = deps.post_turn_pipeline
+        register_turn_committed_consumers(
+            event_bus=self._event_bus,
+            consolidation=consolidation_service,
+            session_manager=self.session_manager,
+            scheduler=self._scheduler,
+            memory_engine=memory_svc.engine,
+        )
         passive_meme_decorator = MemeDecorator(MemeCatalog(deps.workspace / "memes"))
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
@@ -444,7 +429,6 @@ class AgentLoop:
             history_window=config.memory.keep_count,
             session=session_svc,
             trace=trace_svc,
-            post_turn=post_turn_pipeline,
             outbound=BusOutboundPort(self.bus),
             meme_decorator=passive_meme_decorator,
             event_bus=self._event_bus,

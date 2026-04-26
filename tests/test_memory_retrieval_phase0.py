@@ -346,10 +346,8 @@ def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
     tools = ToolRegistry()
     tools.register(_NoopTool())
     memory_port = cast(Any, MagicMock())
-    post_mem_worker = MagicMock()
     runtime = MemoryRuntime(
         port=memory_port,
-        post_response_worker=post_mem_worker,
     )
 
     loop = AgentLoop(
@@ -365,7 +363,6 @@ def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
     )
 
     assert loop._memory_port is memory_port
-    assert loop._post_mem_worker is post_mem_worker
     assert loop.context.memory is memory_port
 
 
@@ -411,12 +408,10 @@ def test_phase0_loop_wiring_keeps_split_memory_entrypoints(tmp_path: Path):
     memory_port = MagicMock()
     profile_maint = MagicMock()
     memory_engine = MagicMock()
-    post_mem_worker = MagicMock()
     runtime = MemoryRuntime(
         port=cast(Any, memory_port),
         engine=cast(Any, memory_engine),
         profile_maint=cast(Any, profile_maint),
-        post_response_worker=post_mem_worker,
     )
 
     deps = _build_loop_deps(
@@ -436,7 +431,6 @@ def test_phase0_loop_wiring_keeps_split_memory_entrypoints(tmp_path: Path):
 
     assert deps.memory_services.engine is memory_engine
     assert deps.memory_services.facade is runtime.facade
-    assert deps.post_turn_pipeline._engine is memory_engine
     assert deps.consolidation_service._memory_port is memory_port
     assert deps.consolidation_service._profile_maint is profile_maint
 

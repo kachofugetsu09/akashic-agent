@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from bus.event_bus import EventBus
     from core.memory.runtime_facade import MemoryRuntimeFacade
 
 from agent.looping.ports import ObservabilityServices, SessionServices
@@ -76,7 +75,6 @@ class ProactiveLoop:
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
         observe_writer=None,
-        event_bus: "EventBus | None" = None,
         shared_tools: ToolRegistry | None = None,
         fitbit_enabled: bool = False,
         fitbit_url: str = "http://127.0.0.1:18765",
@@ -95,7 +93,6 @@ class ProactiveLoop:
         self._light_provider = light_provider or provider
         self._light_model = light_model or (config.model or model)
         self._observe_writer = observe_writer
-        self._event_bus = event_bus
         self._passive_busy_fn = passive_busy_fn
         self._shared_tools = shared_tools
         self._fitbit_enabled = bool(fitbit_enabled)
@@ -134,10 +131,6 @@ class ProactiveLoop:
         )
 
     def _build_turn_orchestrator(self) -> TurnOrchestrator:
-        class _NoopPostTurn:
-            def schedule(self, event) -> None:
-                return
-
         return TurnOrchestrator(
             TurnOrchestratorDeps(
                 session=SessionServices(
@@ -148,9 +141,7 @@ class ProactiveLoop:
                     workspace=self._sessions.workspace,
                     observe_writer=self._observe_writer,
                 ),
-                post_turn=_NoopPostTurn(),
                 outbound=PushToolOutboundPort(self._push),
-                event_bus=self._event_bus,
             )
         )
 

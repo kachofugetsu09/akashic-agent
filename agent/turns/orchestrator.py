@@ -6,20 +6,15 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from agent.core.types import to_tool_call_groups
-from agent.postturn.protocol import PostTurnEvent
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult
-from bus.events_lifecycle import TurnCommitted
 
 if TYPE_CHECKING:
-    from bus.event_bus import EventBus
     from agent.core.runtime_support import SessionLike
     from agent.looping.ports import (
         SessionServices,
         ObservabilityServices,
     )
-    from agent.postturn.protocol import PostTurnPipeline
 
 logger = logging.getLogger("agent.turn_orchestrator")
 
@@ -33,18 +28,14 @@ class _ObserveWriter(Protocol):
 class TurnOrchestratorDeps:
     session: SessionServices
     trace: ObservabilityServices
-    post_turn: PostTurnPipeline
     outbound: OutboundPort
-    event_bus: "EventBus | None" = None
 
 
 class TurnOrchestrator:
     def __init__(self, deps: TurnOrchestratorDeps) -> None:
         self._session = deps.session
         self._trace = deps.trace
-        self._post_turn = deps.post_turn
         self._outbound = deps.outbound
-        self._event_bus = deps.event_bus
 
     async def handle_proactive_turn(
         self,
@@ -71,27 +62,13 @@ class TurnOrchestrator:
 
         content = result.outbound.content
         session = self._session.session_manager.get_or_create(session_key)
-        # 2. reply 路径先把主动消息写进 session，再安排 post_turn。
+        # 2. reply 路径只写 proactive session；后处理只归 passive commit 管。
         self._persist_proactive_session(
             session=session,
             content=content,
             result=result,
         )
         await self._session.session_manager.append_messages(session, session.messages[-1:])
-
-        await self._fanout_proactive_turn_committed(
-            session_key=session_key,
-            channel=channel,
-            chat_id=chat_id,
-            result=result,
-        )
-        self._schedule_proactive_post_turn(
-            session_key=session_key,
-            channel=channel,
-            chat_id=chat_id,
-            session=session,
-            result=result,
-        )
 
         sent = False
         try:
@@ -161,63 +138,6 @@ class TurnOrchestrator:
             state_summary_tag=state_summary_tag,
         )
 
-    def _schedule_proactive_post_turn(
-        self,
-        *,
-        session_key: str,
-        channel: str,
-        chat_id: str,
-        session: SessionLike,
-        result: TurnResult,
-    ) -> None:
-        tool_chain = _trace_tool_chain(result.trace)
-        tools_used = _trace_tools_used(result.trace)
-        self._post_turn.schedule(
-            PostTurnEvent(
-                session_key=session_key,
-                channel=channel,
-                chat_id=chat_id,
-                user_message="",
-                assistant_response=result.outbound.content if result.outbound else "",
-                tools_used=tools_used,
-                tool_chain=to_tool_call_groups(tool_chain),
-                session=session,
-            )
-        )
-
-    async def _fanout_proactive_turn_committed(
-        self,
-        *,
-        session_key: str,
-        channel: str,
-        chat_id: str,
-        result: TurnResult,
-    ) -> None:
-        if self._event_bus is None:
-            return
-        tool_chain = _trace_tool_chain(result.trace)
-        tools_used = _trace_tools_used(result.trace)
-        await self._event_bus.fanout(
-            TurnCommitted(
-                session_key=session_key,
-                channel=channel,
-                chat_id=chat_id,
-                input_message="",
-                persisted_user_message=None,
-                assistant_response=result.outbound.content if result.outbound else "",
-                tools_used=tools_used,
-                tool_chain_raw=tool_chain,
-                tool_call_groups=to_tool_call_groups(tool_chain),
-                extra={"skip_observe_trace": True},
-            )
-        )
-        logger.info(
-            "[_fanout_proactive_turn_committed] TurnCommitted fanout 完成 source=proactive session=%s channel=%s tools=%d",
-            session_key,
-            channel,
-            len(tools_used),
-        )
-
     def _emit_proactive_observe(
         self,
         *,
@@ -260,21 +180,3 @@ class TurnOrchestrator:
                 ],
             )
         )
-
-
-def _trace_tools_used(trace: Any | None) -> list[str]:
-    if trace is None:
-        return []
-    raw = trace.extra.get("tools_used", []) if isinstance(trace.extra, dict) else []
-    if not isinstance(raw, list):
-        return []
-    return [str(name) for name in raw if isinstance(name, str)]
-
-
-def _trace_tool_chain(trace: Any | None) -> list[dict]:
-    if trace is None:
-        return []
-    raw = trace.extra.get("tool_chain", []) if isinstance(trace.extra, dict) else []
-    if not isinstance(raw, list):
-        return []
-    return [item for item in raw if isinstance(item, dict)]
