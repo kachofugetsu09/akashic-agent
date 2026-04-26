@@ -230,7 +230,10 @@ async def test_turn_committed_consumers_schedule_consolidation_and_ingest_memory
     assert request.source_kind == "conversation_turn"
     assert request.scope.session_key == "cli:1"
     assert request.metadata["source_ref"] == "cli:1@post_response"
-    assert request.content["tool_chain"][0]["calls"][0]["name"] == "tool_a"
+    content = cast(dict[str, object], request.content)
+    tool_chain = cast(list[dict[str, object]], content["tool_chain"])
+    calls = cast(list[dict[str, object]], tool_chain[0]["calls"])
+    assert calls[0]["name"] == "tool_a"
     await event_bus.aclose()
 
 
