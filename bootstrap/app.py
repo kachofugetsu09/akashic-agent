@@ -14,6 +14,7 @@ from bootstrap.memory import build_memory_runtime
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.providers import build_providers
 from bootstrap.tools import CoreRuntime, build_core_runtime
+from bus.event_bus import EventBus
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -65,6 +66,7 @@ class AppRuntime:
         self.core: CoreRuntime | None = None
         self.agent_loop = None
         self.bus = None
+        self.event_bus: EventBus | None = None
         self.tools = None
         self.push_tool = None
         self.session_manager = None
@@ -108,6 +110,7 @@ class AppRuntime:
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus
+            self.event_bus = self.core.event_bus
             self.tools = self.core.tools
             self.push_tool = self.core.push_tool
             self.session_manager = self.core.session_manager

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from agent.provider import LLMProvider
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tools.registry import ToolRegistry
+    from bus.event_bus import EventBus
     from bus.processing import ProcessingState
     from bus.queue import MessageBus
     from core.memory.engine import MemoryEngine
@@ -113,6 +114,7 @@ class AgentLoopDeps:
     tools: "ToolRegistry"
     session_manager: "SessionManager"
     workspace: Path
+    event_bus: "EventBus | None" = None
     presence: "PresenceStore | None" = None
     light_provider: "LLMProvider | None" = None
     processing_state: "ProcessingState | None" = None

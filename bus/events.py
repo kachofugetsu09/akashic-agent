@@ -2,7 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agent.policies.delegation import SpawnDecision
+    from bus.internal_events import SpawnCompletionEvent
+
+
+def _empty_media() -> list[str]:
+    return []
+
+
+def _empty_metadata() -> dict[str, Any]:
+    return {}
 
 
 @dataclass
@@ -14,8 +26,8 @@ class InboundMessage:
     chat_id: str  # 会话 ID（用于路由回复）
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
-    media: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    media: list[str] = field(default_factory=_empty_media)
+    metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
     @property
     def session_key(self) -> str:
@@ -32,5 +44,23 @@ class OutboundMessage:
     content: str
     thinking: str | None = None
     reply_to: str | None = None
-    media: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    media: list[str] = field(default_factory=_empty_media)
+    metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+
+
+@dataclass
+class SpawnCompletionItem:
+    """Typed internal work item，替代 metadata 编解码。"""
+
+    channel: str
+    chat_id: str
+    event: "SpawnCompletionEvent"
+    decision: "SpawnDecision | None" = None
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def session_key(self) -> str:
+        return f"{self.channel}:{self.chat_id}"
+
+
+InboundItem = InboundMessage | SpawnCompletionItem

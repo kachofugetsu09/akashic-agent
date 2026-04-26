@@ -27,6 +27,7 @@ from memory2.models import MemoryItem
 from proactive_v2.anyaction import AnyActionGate, QuotaStore
 from proactive_v2.memory_sampler import sample_memory_chunks, split_memory_chunks
 from bootstrap.app import AppRuntime
+from bus.event_bus import EventBus
 
 
 class _Response:
@@ -538,6 +539,7 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
     core = SimpleNamespace(
         loop=SimpleNamespace(run=lambda: "loop-task"),
         bus=SimpleNamespace(dispatch_outbound=lambda: "bus-task"),
+        event_bus=EventBus(),
         tools=MagicMock(),
         push_tool=MagicMock(),
         session_manager=MagicMock(),

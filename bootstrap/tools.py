@@ -51,6 +51,7 @@ from bootstrap.wiring import (
     resolve_toolset_provider,
 )
 from bootstrap.providers import build_providers, build_vl_provider
+from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
@@ -68,6 +69,7 @@ class CoreRuntime:
     http_resources: SharedHttpResources
     loop: AgentLoop
     bus: MessageBus
+    event_bus: EventBus
     tools: ToolRegistry
     push_tool: MessagePushTool
     session_manager: SessionManager
@@ -223,6 +225,7 @@ def _build_loop_deps(
     session_manager: SessionManager,
     presence: PresenceStore,
     processing_state: ProcessingState,
+    event_bus: EventBus,
     memory_runtime: MemoryRuntime,
     observe_writer: object | None,
 ) -> AgentLoopDeps:
@@ -362,6 +365,7 @@ def _build_loop_deps(
     passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
     return AgentLoopDeps(
         bus=bus,
+        event_bus=event_bus,
         provider=provider,
         tools=tools,
         session_manager=session_manager,
@@ -418,6 +422,7 @@ def build_core_runtime(
     )
     presence = PresenceStore(session_manager._store)
     processing_state = ProcessingState()
+    event_bus = EventBus()
     loop_deps = _build_loop_deps(
         config=config,
         workspace=workspace,
@@ -428,6 +433,7 @@ def build_core_runtime(
         session_manager=session_manager,
         presence=presence,
         processing_state=processing_state,
+        event_bus=event_bus,
         memory_runtime=memory_runtime,
         observe_writer=observe_writer,
     )
@@ -463,6 +469,7 @@ def build_core_runtime(
         http_resources=http_resources,
         loop=loop,
         bus=bus,
+        event_bus=event_bus,
         tools=tools,
         push_tool=push_tool,
         session_manager=session_manager,

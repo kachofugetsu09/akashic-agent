@@ -40,7 +40,9 @@ __all__ = [
 ]
 from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
-from bus.events import InboundMessage, OutboundMessage
+from bus.event_bus import EventBus
+from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
+from bus.events_lifecycle import TurnStarted
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -59,6 +61,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
+
+
+def _item_content(item: InboundItem) -> str:
+    if isinstance(item, InboundMessage):
+        return item.content
+    return f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
 
 
 class AgentLoop:
@@ -83,6 +91,7 @@ class AgentLoop:
         self.memory_window = config.memory.window
         self._running = False
         self._processing_state = deps.processing_state
+        self._event_bus = deps.event_bus or EventBus()
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task] = {}
@@ -355,6 +364,7 @@ class AgentLoop:
             post_turn=post_turn_pipeline,
             outbound=BusOutboundPort(self.bus),
             meme_decorator=passive_meme_decorator,
+            event_bus=self._event_bus,
         )
         agent_core = AgentCore(
             AgentCoreDeps(
@@ -417,17 +427,13 @@ class AgentLoop:
         logger.info(f"AgentLoop 启动  max_iter={self.max_iterations}")
         while self._running:
             try:
-                msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                item = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
 
-            key = msg.session_key
-            self._active_turn_states[key] = TurnInterruptState(
-                session_key=key,
-                original_user_message=msg.content,
-                original_metadata=dict(msg.metadata or {}),
-            )
-            task = asyncio.create_task(self._process(msg))
+            key = item.session_key
+            self._active_turn_states[key] = self._build_initial_turn_state(item, key)
+            task = asyncio.create_task(self._process(item))
             self._active_tasks[key] = task
             try:
                 await task
@@ -437,8 +443,8 @@ class AgentLoop:
                 logger.error(f"处理消息出错: {e}", exc_info=True)
                 await self.bus.publish_outbound(
                     OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
+                        channel=item.channel,
+                        chat_id=item.chat_id,
                         content=f"出错：{e}",
                     )
                 )
@@ -505,40 +511,92 @@ class AgentLoop:
             return None
         return state
 
+    def _build_initial_turn_state(
+        self,
+        item: InboundItem,
+        key: str,
+    ) -> TurnInterruptState:
+        # 1. 普通消息保留真实用户输入，spawn 回传用固定 marker 表示内部工作项。
+        match item:
+            case InboundMessage():
+                return TurnInterruptState(
+                    session_key=key,
+                    original_user_message=item.content,
+                    original_metadata=dict(item.metadata or {}),
+                )
+            case SpawnCompletionItem():
+                return TurnInterruptState(
+                    session_key=key,
+                    original_user_message=_item_content(item),
+                    original_metadata={},
+                )
+        raise TypeError(f"unsupported inbound item: {type(item).__name__}")
+
+    def _resume_interrupted_message(
+        self,
+        msg: InboundItem,
+        key: str,
+    ) -> tuple[InboundItem, bool]:
+        # 1. 只有普通入站消息参与续跑，内部工作项不消费中断态。
+        if not isinstance(msg, InboundMessage):
+            return msg, False
+        interrupted = self._get_interrupt_state(key)
+        if interrupted is None:
+            return msg, False
+
+        # 2. 有中断态时，把上一轮进度和本轮补充拼成新的用户消息。
+        resumed = InboundMessage(
+            channel=msg.channel,
+            sender=msg.sender,
+            chat_id=msg.chat_id,
+            content=_build_resume_content(interrupted, msg.content),
+            timestamp=msg.timestamp,
+            media=msg.media,
+            metadata={**(msg.metadata or {}), "resumed_from_interrupt": True},
+        )
+        logger.info(f"Resuming interrupted turn for {key}")
+        self._active_turn_states[key] = TurnInterruptState(
+            session_key=key,
+            original_user_message=resumed.content,
+            original_metadata=dict(resumed.metadata or {}),
+        )
+        return resumed, True
+
+    async def _observe_turn_started(
+        self,
+        msg: InboundItem,
+        key: str,
+    ) -> None:
+        # 1. 对外发布被动 turn 开始事件，具体副作用由 observer 决定。
+        await self._event_bus.observe(
+            TurnStarted(
+                session_key=key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=_item_content(msg),
+                timestamp=msg.timestamp,
+            )
+        )
+
     # ── 被动 turn 处理 ────────────────────────────────────────────
 
     async def _process(
         self,
-        msg: InboundMessage,
+        msg: InboundItem,
         session_key: str | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         started = time.time()
         key = session_key or msg.session_key
 
-        # ── 续跑拼装：消费上一轮中断态 ──
-        interrupted = self._get_interrupt_state(key)
-        resumed_from_interrupt = interrupted is not None
-        if interrupted is not None:
-            msg = InboundMessage(
-                channel=msg.channel,
-                sender=msg.sender,
-                chat_id=msg.chat_id,
-                content=_build_resume_content(interrupted, msg.content),
-                timestamp=msg.timestamp,
-                media=msg.media,
-                metadata={**(msg.metadata or {}), "resumed_from_interrupt": True},
-            )
-            logger.info(f"Resuming interrupted turn for {key}")
-            self._active_turn_states[key] = TurnInterruptState(
-                session_key=key,
-                original_user_message=msg.content,
-                original_metadata=dict(msg.metadata or {}),
-            )
+        # 1. 先处理可能存在的续跑态，并发布 turn started。
+        msg, resumed_from_interrupt = self._resume_interrupted_message(msg, key)
+        await self._observe_turn_started(msg, key)
+        content = _item_content(msg)
+        preview = content[:60] + "..." if len(content) > 60 else content
+        logger.info(f"Processing message from {msg.channel}: {preview}")
 
-        preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
-        logger.info(f"Processing message from {msg.channel}:{msg.sender}: {preview}")
-
+        # 2. 再进入 busy 状态并执行核心处理。
         if self._processing_state:
             self._processing_state.enter(key)
         try:
@@ -564,6 +622,7 @@ class AgentLoop:
                 content="（处理超时，请重试）",
             )
         finally:
+            # 3. 最后无论成功失败都直接释放 busy 状态。
             if self._processing_state:
                 self._processing_state.exit(key)
             _ = started

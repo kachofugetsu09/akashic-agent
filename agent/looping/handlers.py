@@ -5,8 +5,7 @@ from typing import TYPE_CHECKING, cast
 from agent.core.response_parser import parse_response
 from agent.core.runtime_support import AgentLoopRunner
 from agent.looping.ports import SessionServices
-from bus.events import InboundMessage, OutboundMessage
-from bus.internal_events import parse_spawn_completion
+from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -15,7 +14,7 @@ if TYPE_CHECKING:
 
 async def process_spawn_completion_event(
     *,
-    msg: InboundMessage,
+    item: SpawnCompletionItem,
     key: str,
     session_svc: SessionServices,
     context: "ContextBuilder",
@@ -26,7 +25,7 @@ async def process_spawn_completion_event(
 ) -> OutboundMessage:
     # 1. 先读取 session 和内部事件，准备要给主模型的回传消息。
     session = session_svc.session_manager.get_or_create(key)
-    event = parse_spawn_completion(msg)
+    event = item.event
     label = event.label or "后台任务"
     task = event.task.strip()
     status = (event.status or "incomplete").strip()
@@ -72,20 +71,20 @@ async def process_spawn_completion_event(
     )
 
     # 2. 再调用主模型生成用户可见回复。
-    tools.set_context(channel=msg.channel, chat_id=msg.chat_id)
+    tools.set_context(channel=item.channel, chat_id=item.chat_id)
     from agent.core.types import ContextRequest
     initial_messages = context.render(
         ContextRequest(
             history=session.get_history(max_messages=memory_window),
             current_message=current_message,
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            message_timestamp=msg.timestamp,
+            channel=item.channel,
+            chat_id=item.chat_id,
+            message_timestamp=item.timestamp,
         )
     ).messages
     final_content, tools_used, tool_chain, _, _thinking = await run_agent_loop_fn(
         initial_messages,
-        request_time=msg.timestamp,
+        request_time=item.timestamp,
         preloaded_tools=None,
     )
     if final_content is None:
@@ -105,13 +104,13 @@ async def process_spawn_completion_event(
     parsed_tool_chain = cast(list[dict[str, object]], tool_chain)
     parsed_response = parse_response(final_content, tool_chain=parsed_tool_chain)
     pseudo_msg = InboundMessage(
-        channel=msg.channel,
-        sender=msg.sender,
-        chat_id=msg.chat_id,
+        channel=item.channel,
+        sender="spawn",
+        chat_id=item.chat_id,
         content=marker,
-        timestamp=msg.timestamp,
+        timestamp=item.timestamp,
         media=[],
-        metadata={**(msg.metadata or {}), "skip_post_memory": True},
+        metadata={"skip_post_memory": True},
     )
     return await context_store.commit(
         msg=pseudo_msg,

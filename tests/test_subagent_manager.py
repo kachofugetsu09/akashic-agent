@@ -6,6 +6,7 @@ import pytest
 from agent.background.subagent_manager import SubagentManager
 from agent.policies.delegation import SpawnDecision, SpawnDecisionMeta
 from agent.provider import LLMResponse
+from bus.events import SpawnCompletionItem
 from bus.queue import MessageBus
 
 
@@ -99,18 +100,15 @@ async def test_subagent_manager_announces_completion_to_origin_session(tmp_path)
         ),
     )
 
-    msg = await asyncio.wait_for(bus.consume_inbound(), timeout=0.2)
+    item = await asyncio.wait_for(bus.consume_inbound(), timeout=0.2)
 
-    assert msg.channel == "telegram"
-    assert msg.chat_id == "42"
-    assert msg.sender == "spawn"
-    assert msg.metadata["internal_event"] == "spawn_completed"
-    assert msg.metadata["spawn"]["status"] == "incomplete"
-    assert msg.metadata["spawn"]["exit_reason"] == "forced_summary"
-    assert (
-        msg.metadata["spawn_decision"]["meta"]["reason_code"]
-        == "context_isolation_needed"
-    )
+    assert isinstance(item, SpawnCompletionItem)
+    assert item.channel == "telegram"
+    assert item.chat_id == "42"
+    assert item.event.status == "incomplete"
+    assert item.event.exit_reason == "forced_summary"
+    assert item.decision is not None
+    assert item.decision.meta.reason_code == "context_isolation_needed"
 
     trace_path = tmp_path / "memory" / "spawn_trace.jsonl"
     lines = [
@@ -160,9 +158,10 @@ async def test_subagent_manager_lists_and_cancels_running_job(tmp_path):
     assert jobs[0]["label"] == "long"
     assert await manager.cancel(job_id) is True
 
-    msg = await asyncio.wait_for(bus.consume_inbound(), timeout=0.2)
-    assert msg.metadata["spawn"]["status"] == "cancelled"
-    assert msg.metadata["spawn"]["exit_reason"] == "cancelled"
+    item = await asyncio.wait_for(bus.consume_inbound(), timeout=0.2)
+    assert isinstance(item, SpawnCompletionItem)
+    assert item.event.status == "cancelled"
+    assert item.event.exit_reason == "cancelled"
     await asyncio.sleep(0)
     assert manager.get_running_count() == 0
 

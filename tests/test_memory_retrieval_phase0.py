@@ -22,6 +22,7 @@ from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.registry import ToolRegistry
 from bootstrap.tools import _build_loop_deps
+from bus.event_bus import EventBus
 from core.memory.port import DefaultMemoryPort
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
@@ -428,6 +429,7 @@ def test_phase0_loop_wiring_keeps_split_memory_entrypoints(tmp_path: Path):
         session_manager=MagicMock(),
         presence=MagicMock(),
         processing_state=MagicMock(),
+        event_bus=EventBus(),
         memory_runtime=runtime,
         observe_writer=None,
     )

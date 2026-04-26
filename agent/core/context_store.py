@@ -18,7 +18,9 @@ from agent.postturn.protocol import PostTurnEvent
 from agent.prompting import is_context_frame
 from agent.retrieval.protocol import RetrievalRequest
 from agent.turns.outbound import OutboundDispatch
+from bus.event_bus import EventBus
 from bus.events import OutboundMessage
+from bus.events_lifecycle import BeforeDispatch, TurnCompleted
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -97,6 +99,7 @@ class DefaultContextStore(ContextStore):
         post_turn: "PostTurnPipeline | None" = None,
         outbound: "OutboundPort | None" = None,
         meme_decorator: "MemeDecorator | None" = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._retrieval = retrieval
         self._context = context
@@ -106,6 +109,7 @@ class DefaultContextStore(ContextStore):
         self._post_turn = post_turn
         self._outbound = outbound
         self._meme_decorator = meme_decorator
+        self._event_bus = event_bus
 
     async def prepare(
         self,
@@ -273,13 +277,24 @@ class DefaultContextStore(ContextStore):
         )
         await _run_effects(post_turn_actions or [])
 
-        # 4. 最后构造 outbound，并按需 dispatch。
-        outbound = OutboundMessage(
+        # 4. 发出成功完成事件，再给出站消息留出最后干预点。
+        if self._event_bus is not None:
+            await self._event_bus.observe(
+                TurnCompleted(
+                    session_key=session_key,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    reply=final_content,
+                    tools_used=list(tools_used),
+                    thinking=thinking,
+                )
+            )
+        dispatch_event = BeforeDispatch(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
             thinking=thinking,
-            media=meme_media,
+            media=list(meme_media),
             metadata={
                 **(msg.metadata or {}),
                 "tools_used": tools_used,
@@ -287,6 +302,18 @@ class DefaultContextStore(ContextStore):
                 "context_retry": context_retry,
                 "streamed_reply": streamed_reply,
             },
+        )
+        if self._event_bus is not None:
+            dispatch_event = await self._event_bus.emit(dispatch_event)
+
+        # 5. 最后构造 outbound，并按需 dispatch。
+        outbound = OutboundMessage(
+            channel=dispatch_event.channel,
+            chat_id=dispatch_event.chat_id,
+            content=dispatch_event.content,
+            thinking=dispatch_event.thinking,
+            media=list(dispatch_event.media),
+            metadata=dict(dispatch_event.metadata),
         )
         if dispatch_outbound:
             await self._outbound.dispatch(
@@ -296,7 +323,7 @@ class DefaultContextStore(ContextStore):
                     content=outbound.content,
                     thinking=outbound.thinking,
                     metadata=outbound.metadata,
-                    media=meme_media,
+                    media=outbound.media,
                 )
             )
         return outbound

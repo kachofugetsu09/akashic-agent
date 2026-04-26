@@ -22,8 +22,8 @@ from agent.background.subagent_profiles import (
 )
 from bus.internal_events import (
     SpawnCompletionEvent,
-    make_spawn_completion_message,
 )
+from bus.events import SpawnCompletionItem
 from bus.queue import MessageBus
 from core.common.strategy_trace import build_strategy_trace_envelope
 from core.net.http import HttpRequester
@@ -394,8 +394,8 @@ class SubagentManager:
                 payload_result[:_RESULT_MAX_CHARS]
                 + f"\n...[结果已截断，原始长度 {original_len}]"
             )
-        # 2. 再把结果包成 spawn completion message，路由回原 channel/chat_id。
-        msg = make_spawn_completion_message(
+        # 2. 再把结果包成 typed inbox item，路由回原 channel/chat_id。
+        item = SpawnCompletionItem(
             channel=origin_channel,
             chat_id=origin_chat_id,
             event=SpawnCompletionEvent(
@@ -411,7 +411,7 @@ class SubagentManager:
             decision=decision,
         )
         # 3. 最后发布到 bus，让主 agent 以同一会话身份继续回复用户。
-        await self._bus.publish_inbound(msg)
+        await self._bus.publish_inbound(item)
         logger.info(
             "[spawn] completed job_id=%s status=%s exit_reason=%s profile=%s retry_count=%d route=%s:%s decision_reason=%s",
             job_id,
