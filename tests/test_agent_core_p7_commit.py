@@ -123,7 +123,7 @@ async def test_commit_fanout_enqueues_observe_and_recent_before_return():
 
 
 @pytest.mark.asyncio
-async def test_context_store_commit_persists_commits_actions_and_dispatches():
+async def test_context_store_commit_persists_commits_and_dispatches():
     order: list[str] = []
     session = _DummySession("telegram:123")
     presence = SimpleNamespace(record_user_message=MagicMock(side_effect=lambda _key: None))
@@ -169,10 +169,6 @@ async def test_context_store_commit_persists_commits_actions_and_dispatches():
         content="你好",
         metadata={"req_id": "r1"},
     )
-    post_turn_action = SimpleNamespace(
-        run=AsyncMock(side_effect=lambda: order.append("post_turn_action"))
-    )
-
     out = await store.commit(
         msg=msg,
         session_key="telegram:123",
@@ -196,7 +192,6 @@ async def test_context_store_commit_persists_commits_actions_and_dispatches():
                 "final_call_input_tokens": 17500,
             },
         },
-        post_turn_actions=[post_turn_action],
     )
     await event_bus.drain()
 
@@ -210,11 +205,9 @@ async def test_context_store_commit_persists_commits_actions_and_dispatches():
     assert writer.events == []
     assert out.metadata["tool_chain"][0]["text"] == ""
     outbound.dispatch.assert_awaited_once()
-    post_turn_action.run.assert_awaited_once()
     assert order == [
         "persist",
         "committed",
-        "post_turn_action",
         "dispatch",
     ]
     assert committed_events[0].session_key == "telegram:123"

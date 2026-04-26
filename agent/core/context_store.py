@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import copy
-import inspect
 import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from agent.core.response_parser import ResponseMetadata
 from agent.core.types import (
@@ -36,11 +35,6 @@ if TYPE_CHECKING:
     from bus.events import InboundMessage
 
 logger = logging.getLogger("agent.core.context_store")
-
-
-@runtime_checkable
-class _SideEffect(Protocol):
-    def run(self) -> object: ...
 
 
 class ContextStore(ABC):
@@ -79,7 +73,6 @@ class ContextStore(ABC):
         streamed_reply: bool,
         retrieval_raw: object | None,
         context_retry: dict[str, object],
-        post_turn_actions: list[object] | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         """提交本轮被动 turn，并返回最终出站消息。"""
@@ -169,7 +162,6 @@ class DefaultContextStore(ContextStore):
         streamed_reply: bool,
         retrieval_raw: object | None,
         context_retry: dict[str, object],
-        post_turn_actions: list[object] | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         if self._session is None or self._outbound is None:
@@ -275,8 +267,6 @@ class DefaultContextStore(ContextStore):
             budget=post_reply_budget,
         )
         _log_react_context_budget(session_key=session_key, react_stats=react_stats)
-
-        await _run_effects(post_turn_actions or [])
 
         # 3. 发出成功完成事件，再给出站消息留出最后干预点。
         if self._event_bus is not None:
@@ -473,20 +463,6 @@ def _estimate_history_budget(history: list[dict]) -> dict[str, int]:
         "chars": chars,
         "tokens": max(1, chars // 3),
     }
-
-
-async def _run_effects(effects: list[object]) -> None:
-    for effect in effects:
-        if not isinstance(effect, _SideEffect):
-            continue
-        try:
-            maybe = effect.run()
-            if inspect.isawaitable(maybe):
-                await maybe
-        except Exception as e:
-            logger.warning("turn side effect failed: %s", e)
-
-
 
 
 # ── Session metadata helpers (moved from agent/looping/memory_gate.py) ────────
