@@ -18,6 +18,7 @@ from agent.config import (
     QQGroupConfig,
     TelegramChannelConfig,
 )
+from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
 
 
@@ -324,6 +325,7 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
         ),
     )
     resources = SharedHttpResources()
+    event_bus = EventBus()
     try:
         controller = object()
         ipc, tg, qq = await start_channels(
@@ -332,6 +334,7 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
             session_manager=cast(Any, object()),
             push_tool=cast(Any, _PushTool()),
             http_resources=resources,
+            event_bus=event_bus,
             interrupt_controller=cast(Any, controller),
         )
     finally:
@@ -342,6 +345,7 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     assert qq is not None
     assert starts == ["ipc", "telegram", "qq"]
     assert registrations == ["telegram", "qq"]
+    assert tg.kwargs["event_bus"] is event_bus
     assert tg.kwargs["interrupt_controller"] is controller
     assert qq.kwargs["interrupt_controller"] is controller
 
@@ -403,6 +407,7 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
             session_manager=cast(Any, object()),
             push_tool=cast(Any, _PushTool()),
             http_resources=resources,
+            event_bus=EventBus(),
         )
     finally:
         await resources.aclose()

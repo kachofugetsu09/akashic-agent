@@ -117,6 +117,7 @@ class Session:
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0
+    consolidation_requested: bool = False
 
     def add_message(
         self, role: str, content: str, media: list[str] | None = None, **kwargs: Any
@@ -157,6 +158,7 @@ class Session:
             if not messages:
                 return []
             if len(messages) > max_messages * 2:
+                self.consolidation_requested = True
                 logger.warning(
                     "get_history: consolidated tail (%d) exceeds 2x window (%d), "
                     "falling back to sliding window",
@@ -257,6 +259,7 @@ class Session:
         self.messages = []
         self.updated_at = datetime.now()
         self.last_consolidated = 0
+        self.consolidation_requested = False
 
 
 class SessionManager:

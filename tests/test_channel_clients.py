@@ -10,7 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from bus.event_bus import EventBus
 from bus.events import OutboundMessage
+from bus.events_lifecycle import StreamDeltaReady
 
 
 class _Bus:
@@ -479,6 +481,7 @@ async def test_cli_tui_paths(monkeypatch: pytest.MonkeyPatch):
 async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     mod = _import_telegram_channel(monkeypatch)
     bus = _Bus()
+    event_bus = EventBus()
     session_manager = _SessionManager()
     interrupt_controller = MagicMock()
     interrupt_controller.request_interrupt.return_value = SimpleNamespace(
@@ -491,6 +494,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         bus,
         session_manager,
         allow_from=["1", "Alice"],
+        event_bus=event_bus,
         interrupt_controller=interrupt_controller,
     )
     monkeypatch.setattr(mod, "send_markdown", AsyncMock())
@@ -604,6 +608,15 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     await sender("流式片段")
     await sender("继续补充一大段内容继续补充一大段内容继续补充一大段内容继续补充一大段内容")
     assert channel._app.bot.send_message.await_count >= 1
+    await event_bus.observe(
+        StreamDeltaReady(
+            session_key="telegram:456",
+            channel="telegram",
+            chat_id="456",
+            content_delta="事件片段",
+        )
+    )
+    assert channel._active_streams.get("456") is not None
     channel.user_map["group"] = "-1001"
     assert channel.create_stream_sender("@group") is None
     await channel._on_response(

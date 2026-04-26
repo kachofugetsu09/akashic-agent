@@ -5,12 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.postturn.protocol import PostTurnEvent
 from core.memory.default_runtime_facade import DefaultMemoryRuntimeFacade
 from core.memory.engine import (
     MemoryEngineRetrieveResult,
     MemoryHit,
-    MemoryIngestResult,
     MemoryScope,
     RememberRequest,
     RememberResult,
@@ -21,49 +19,6 @@ from core.memory.runtime_facade import (
     InterestRetrievalRequest,
     MemoryRuntimeFacade,
 )
-from agent.core.types import ToolCall, ToolCallGroup
-
-@pytest.mark.asyncio
-async def test_default_runtime_facade_ingest_post_turn_delegates_to_engine():
-    engine = SimpleNamespace(
-        ingest=AsyncMock(return_value=MemoryIngestResult(accepted=True, raw={"ok": True}))
-    )
-    facade = DefaultMemoryRuntimeFacade(
-        port=MagicMock(),
-        engine=cast(Any, engine),
-        profile_maint=MagicMock(),
-    )
-
-    result = await facade.ingest_post_turn(
-        PostTurnEvent(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            user_message="以后用中文",
-            assistant_response="好的",
-            tools_used=["memorize"],
-        tool_chain=[
-            ToolCallGroup(
-                text="memo",
-                calls=[
-                    ToolCall(
-                        call_id="call-1",
-                        name="memorize",
-                        arguments={"summary": "以后用中文"},
-                        result="ok",
-                    )
-                    ],
-                )
-            ],
-            session=cast(Any, object()),
-        )
-    )
-
-    assert result.accepted is True
-    request = engine.ingest.await_args.args[0]
-    assert request.scope.session_key == "cli:1"
-    assert request.metadata["source_ref"] == "cli:1@post_response"
-    assert request.content["tool_chain"][0]["calls"][0]["name"] == "memorize"
 
 
 @pytest.mark.asyncio

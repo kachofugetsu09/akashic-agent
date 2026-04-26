@@ -51,7 +51,6 @@ async def test_orchestrator_skip_runs_side_effects_without_dispatch():
                 presence=None,
             ),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=None),
-            post_turn=cast(Any, SimpleNamespace(schedule=lambda event: order.append("post_turn"))),
             outbound=_Outbound(),
         )
     )
@@ -76,7 +75,6 @@ async def test_orchestrator_skip_runs_side_effects_without_dispatch():
 async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success_effects():
     order: list[str] = []
     session = _DummySession("telegram:123")
-    post_turn_events: list[object] = []
 
     class _Effect:
         def __init__(self, name: str) -> None:
@@ -108,7 +106,6 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
         TurnOrchestratorDeps(
             session=SessionServices(session_manager=cast(Any, session_manager), presence=cast(Any, presence)),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
-            post_turn=cast(Any, SimpleNamespace(schedule=lambda event: post_turn_events.append(event))),
             outbound=_Outbound(),
         )
     )
@@ -138,5 +135,4 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     assert sent is True
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
-    assert post_turn_events
     assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect", "observe"]

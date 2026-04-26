@@ -19,7 +19,9 @@ from telegram.ext import (
     filters,
 )
 
+from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
+from bus.events_lifecycle import StreamDeltaReady
 from bus.queue import MessageBus
 from agent.looping.interrupt import InterruptController
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
@@ -45,6 +47,7 @@ class TelegramChannel:
         bus: MessageBus,
         session_manager: SessionManager,
         allow_from: list[str] | None = None,
+        event_bus: EventBus | None = None,
         interrupt_controller: InterruptController | None = None,
     ) -> None:
         self._bus = bus
@@ -72,6 +75,8 @@ class TelegramChannel:
             MessageHandler(filters.Document.ALL & ~filters.COMMAND, self._on_document)
         )
         bus.subscribe_outbound(_CHANNEL, self._on_response)
+        if event_bus is not None:
+            event_bus.on(StreamDeltaReady, self._on_stream_delta)
         self.user_map = self._identity_index.mapping
         self._polling_conflict_task: asyncio.Task[None] | None = None
         self._active_streams: dict[str, TelegramStreamMessage] = {}
@@ -395,6 +400,23 @@ class TelegramChannel:
             await stream.push_delta(delta)
 
         return _push
+
+    async def _on_stream_delta(self, event: StreamDeltaReady) -> None:
+        if event.channel != _CHANNEL:
+            return
+        cid = int(self._resolve_chat_id(event.chat_id))
+        if cid <= 0:
+            return
+        stream = self._active_streams.get(str(cid))
+        if stream is None:
+            stream = TelegramStreamMessage(self._app.bot, cid)
+            self._active_streams[str(cid)] = stream
+        await stream.push_delta(
+            {
+                "content_delta": event.content_delta,
+                "thinking_delta": event.thinking_delta,
+            }
+        )
 
     async def send_file(
         self,

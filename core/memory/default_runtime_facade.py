@@ -18,8 +18,6 @@ from core.memory.engine import (
     MemoryHit,
     MemoryEngineRetrieveResult,
     MemoryEngineRetrieveRequest,
-    MemoryIngestRequest,
-    MemoryIngestResult,
     MemoryScope,
     RememberRequest,
     RememberResult,
@@ -35,11 +33,9 @@ from core.memory.runtime_facade import (
 )
 
 if TYPE_CHECKING:
-    from agent.postturn.protocol import PostTurnEvent
     from agent.core.types import HistoryMessage
     from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
     from core.observe.events import RagTrace
-    from agent.core.types import ToolCallGroup
     from core.memory.engine import MemoryEngine
     from core.memory.port import MemoryPort
     from core.memory.profile import ProfileMaintenanceStore
@@ -114,37 +110,6 @@ class DefaultMemoryRuntimeFacade:
         except Exception as e:
             logger.warning("[memory_runtime_facade] reinforce_items_batch failed: %s", e)
         return result
-
-    async def ingest_post_turn(self, event: PostTurnEvent) -> MemoryIngestResult:
-        # 1. 先保证 post-turn 入口和旧 pipeline 一样只依赖 engine。
-        if self._engine is None:
-            return MemoryIngestResult(
-                accepted=False,
-                summary="memory engine unavailable",
-                raw={"reason": "engine_unavailable"},
-            )
-
-        # 2. 按旧 post-turn 语义组装标准 ingest request。
-        # 2.1 tool_chain 保持旧结构，避免 worker 侧归一化漂移。
-        # 2.2 source_ref 继续固定到 @post_response。
-        source_ref = f"{event.session_key}@post_response"
-        return await self._engine.ingest(
-            MemoryIngestRequest(
-                content={
-                    "user_message": event.user_message,
-                    "assistant_response": event.assistant_response,
-                    "tool_chain": [_tool_group_to_dict(group) for group in event.tool_chain],
-                    "source_ref": source_ref,
-                },
-                source_kind="conversation_turn",
-                scope=MemoryScope(
-                    session_key=event.session_key,
-                    channel=event.channel,
-                    chat_id=event.chat_id,
-                ),
-                metadata={"source_ref": source_ref},
-            )
-        )
 
     async def retrieve_context(
         self, request: ContextRetrievalRequest
@@ -1311,21 +1276,6 @@ def _build_agent_rag_trace(
         fallback_reason=fallback_reason,
         error=error,
     )
-
-
-def _tool_group_to_dict(group: "ToolCallGroup") -> dict[str, Any]:
-    return {
-        "text": group.text,
-        "calls": [
-            {
-                "call_id": call.call_id,
-                "name": call.name,
-                "arguments": call.arguments,
-                "result": call.result,
-            }
-            for call in group.calls
-        ],
-    }
 
 
 def _memory_hit_to_item(hit) -> dict[str, Any]:

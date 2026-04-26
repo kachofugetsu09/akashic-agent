@@ -85,6 +85,10 @@ def test_consolidation_service_archive_all_and_profile_extract():
     )
     # 当前 tail 太短，没有 compression 源段，因此只会调用 event + 长期记忆
     assert provider.chat.await_count == 2
+    assert all(
+        call.kwargs.get("disable_thinking") is True
+        for call in provider.chat.await_args_list
+    )
     event_prompt = next(
         call.kwargs["messages"][1]["content"]
         for call in provider.chat.await_args_list
@@ -456,6 +460,10 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
 
     asyncio.run(service.consolidate(session, archive_all=True))
 
+    assert all(
+        call.kwargs.get("disable_thinking") is True
+        for call in provider.chat.await_args_list
+    )
     prompt = next(
         call.kwargs["messages"][1]["content"]
         for call in provider.chat.await_args_list

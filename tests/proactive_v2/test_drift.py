@@ -432,10 +432,6 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
         append_messages=AsyncMock(return_value=None),
     )
 
-    class _PostTurn:
-        def schedule(self, event) -> None:
-            return
-
     class _Outbound:
         async def dispatch(self, outbound: OutboundDispatch) -> bool:
             return await sender(outbound.content)
@@ -447,7 +443,6 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
                 presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
             ),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
-            post_turn=_PostTurn(),
             outbound=_Outbound(),
         )
     )
@@ -847,10 +842,6 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
         append_messages=AsyncMock(return_value=None),
     )
 
-    class _PostTurn:
-        def schedule(self, event) -> None:
-            return
-
     class _Outbound:
         async def dispatch(self, outbound) -> bool:
             return await sender.send(outbound.content)
@@ -865,7 +856,6 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
                 presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
             ),
             trace=ObservabilityServices(workspace=Path("."), observe_writer=None),
-            post_turn=_PostTurn(),
             outbound=_Outbound(),
         )
     )

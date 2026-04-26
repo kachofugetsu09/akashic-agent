@@ -131,10 +131,6 @@ class ProactiveLoop:
         )
 
     def _build_turn_orchestrator(self) -> TurnOrchestrator:
-        class _NoopPostTurn:
-            def schedule(self, event) -> None:
-                return
-
         return TurnOrchestrator(
             TurnOrchestratorDeps(
                 session=SessionServices(
@@ -145,7 +141,6 @@ class ProactiveLoop:
                     workspace=self._sessions.workspace,
                     observe_writer=self._observe_writer,
                 ),
-                post_turn=_NoopPostTurn(),
                 outbound=PushToolOutboundPort(self._push),
             )
         )

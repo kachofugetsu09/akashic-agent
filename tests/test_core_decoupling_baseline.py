@@ -259,11 +259,9 @@ def test_turn_types_shim_is_removed():
 
 
 def test_core_boundary_modules_do_not_import_looping_turn_types():
-    """Canonical core/retrieval/postturn contracts must not depend on looping.turn_types."""
+    """Canonical core/retrieval contracts must not depend on looping.turn_types."""
     from agent.core import context_store
-    from agent.postturn import protocol as postturn_protocol
     from agent.retrieval import protocol as retrieval_protocol
 
     assert "agent.looping.turn_types" not in inspect.getsource(context_store)
     assert "agent.looping.turn_types" not in inspect.getsource(retrieval_protocol)
-    assert "agent.looping.turn_types" not in inspect.getsource(postturn_protocol)

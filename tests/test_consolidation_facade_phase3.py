@@ -61,7 +61,6 @@ async def test_turn_scheduler_runner_can_go_through_facade():
         await save_async(session_obj)
 
     scheduler = TurnScheduler(
-        post_mem_worker=None,
         consolidation_runner=runner,
         keep_count=20,
     )

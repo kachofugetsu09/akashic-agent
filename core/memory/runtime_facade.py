@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol, runtime_checkable
 
 from core.memory.engine import (
-    MemoryIngestResult,
     MemoryScope,
     RememberRequest,
     RememberResult,
@@ -13,7 +12,6 @@ from core.memory.engine import (
 
 if TYPE_CHECKING:
     from agent.core.types import HistoryMessage
-    from agent.postturn.protocol import PostTurnEvent
 
 
 @dataclass(frozen=True)
@@ -67,8 +65,6 @@ class MemoryRuntimeFacade(Protocol):
     def bind_retrieval_semantics(self, retriever: ContextRetriever) -> None: ...
 
     def bind_consolidation_runner(self, runner: ConsolidationRunner) -> None: ...
-
-    async def ingest_post_turn(self, event: PostTurnEvent) -> MemoryIngestResult: ...
 
     async def retrieve_context(
         self, request: ContextRetrievalRequest

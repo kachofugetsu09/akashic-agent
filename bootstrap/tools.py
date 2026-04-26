@@ -5,7 +5,6 @@ from typing import Any, Callable
 
 from agent.config_models import Config, WiringConfig
 from agent.context import ContextBuilder
-from agent.core.context_store import DefaultContextStore
 from agent.looping.consolidation import ConsolidationService
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
@@ -23,14 +22,11 @@ from agent.looping.ports import (
     TurnScheduler,
 )
 from agent.mcp.registry import McpServerRegistry
-from agent.postturn.default_pipeline import DefaultPostTurnPipeline
 from agent.provider import LLMProvider
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
-from agent.memes.catalog import MemeCatalog
-from agent.memes.decorator import MemeDecorator
 from agent.turns.outbound import BusOutboundPort
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
@@ -51,6 +47,7 @@ from bootstrap.wiring import (
     resolve_toolset_provider,
 )
 from bootstrap.providers import build_providers, build_vl_provider
+from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
@@ -68,6 +65,7 @@ class CoreRuntime:
     http_resources: SharedHttpResources
     loop: AgentLoop
     bus: MessageBus
+    event_bus: EventBus
     tools: ToolRegistry
     push_tool: MessagePushTool
     session_manager: SessionManager
@@ -104,6 +102,7 @@ class CoreRuntime:
             self.peer_poller.start()
 
     async def stop(self) -> None:
+        await self.event_bus.aclose()
         if self.peer_poller is not None:
             await self.peer_poller.stop()
         if self.peer_process_manager is not None:
@@ -223,6 +222,7 @@ def _build_loop_deps(
     session_manager: SessionManager,
     presence: PresenceStore,
     processing_state: ProcessingState,
+    event_bus: EventBus,
     memory_runtime: MemoryRuntime,
     observe_writer: object | None,
 ) -> AgentLoopDeps:
@@ -341,7 +341,6 @@ def _build_loop_deps(
         await session_manager.save_async(session)  # type: ignore[arg-type]
 
     turn_scheduler = TurnScheduler(
-        post_mem_worker=memory_runtime.post_response_worker,
         consolidation_runner=_consolidate_and_save,
         keep_count=memory_config.keep_count,
     )
@@ -352,16 +351,10 @@ def _build_loop_deps(
         workspace=workspace,
         light_model=llm_config.light_model or llm_config.model,
     )
-    post_turn_pipeline = DefaultPostTurnPipeline(
-        scheduler=turn_scheduler,
-        engine=memory_engine,
-        recent_context_refresher=lambda event: consolidation.refresh_recent_turns(
-            session=event.session,
-        ),
-    )
-    passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
+
     return AgentLoopDeps(
         bus=bus,
+        event_bus=event_bus,
         provider=provider,
         tools=tools,
         session_manager=session_manager,
@@ -375,7 +368,6 @@ def _build_loop_deps(
         sufficiency_checker=sufficiency_checker,
         profile_extractor=profile_extractor,
         retrieval_pipeline=retrieval_pipeline,
-        post_turn_pipeline=post_turn_pipeline,
         context=context,
         llm_services=llm_services,
         memory_services=memory_services,
@@ -418,6 +410,7 @@ def build_core_runtime(
     )
     presence = PresenceStore(session_manager._store)
     processing_state = ProcessingState()
+    event_bus = EventBus()
     loop_deps = _build_loop_deps(
         config=config,
         workspace=workspace,
@@ -428,6 +421,7 @@ def build_core_runtime(
         session_manager=session_manager,
         presence=presence,
         processing_state=processing_state,
+        event_bus=event_bus,
         memory_runtime=memory_runtime,
         observe_writer=observe_writer,
     )
@@ -463,6 +457,7 @@ def build_core_runtime(
         http_resources=http_resources,
         loop=loop,
         bus=bus,
+        event_bus=event_bus,
         tools=tools,
         push_tool=push_tool,
         session_manager=session_manager,

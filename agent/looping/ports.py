@@ -16,10 +16,10 @@ if TYPE_CHECKING:
         ToolDiscoveryState,
     )
     from agent.looping.consolidation import ConsolidationService
-    from agent.postturn.protocol import PostTurnPipeline
     from agent.provider import LLMProvider
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tools.registry import ToolRegistry
+    from bus.event_bus import EventBus
     from bus.processing import ProcessingState
     from bus.queue import MessageBus
     from core.memory.engine import MemoryEngine
@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from core.memory.runtime import MemoryRuntime
     from core.memory.runtime_facade import MemoryRuntimeFacade
     from memory2.hyde_enhancer import HyDEEnhancer
-    from memory2.post_response_worker import PostResponseMemoryWorker
     from memory2.profile_extractor import ProfileFactExtractor
     from memory2.query_rewriter import QueryRewriter
     from memory2.sufficiency_checker import SufficiencyChecker
@@ -113,18 +112,17 @@ class AgentLoopDeps:
     tools: "ToolRegistry"
     session_manager: "SessionManager"
     workspace: Path
+    event_bus: "EventBus | None" = None
     presence: "PresenceStore | None" = None
     light_provider: "LLMProvider | None" = None
     processing_state: "ProcessingState | None" = None
     memory_runtime: "MemoryRuntime | None" = None
     memory_port: "MemoryPort | None" = None
-    post_mem_worker: "PostResponseMemoryWorker | None" = None
     observe_writer: object | None = None
     query_rewriter: "QueryRewriter | None" = None
     sufficiency_checker: "SufficiencyChecker | None" = None
     profile_extractor: "ProfileFactExtractor | None" = None
     retrieval_pipeline: "MemoryRetrievalPipeline | None" = None
-    post_turn_pipeline: "PostTurnPipeline | None" = None
     context: "ContextBuilder | None" = None
     llm_services: LLMServices | None = None
     memory_services: MemoryServices | None = None
@@ -148,7 +146,7 @@ class AgentLoopConfig:
 
 
 class TurnScheduler:
-    """Encapsulates async task scheduling for consolidation and post-response memory.
+    """Encapsulates async task scheduling for consolidation.
 
     Owns _consolidating dedup set and _post_mem_failures counter, which previously
     lived in AgentLoop (core.py / consolidation.py).
@@ -159,11 +157,9 @@ class TurnScheduler:
 
     def __init__(
         self,
-        post_mem_worker: PostResponseMemoryWorker | None,
         consolidation_runner: ConsolidationRunner,
         keep_count: int,
     ) -> None:
-        self._post_mem_worker = post_mem_worker
         self._consolidation_runner = consolidation_runner
         self._keep_count = keep_count
         self._consolidation_min_new_messages = max(5, keep_count // 2)
@@ -183,16 +179,25 @@ class TurnScheduler:
 
     def schedule_consolidation(self, session: SessionLike, key: str) -> None:
         """Fire-and-forget consolidation; deduplicates by key."""
-        # 1. 只有累计足够多新旧消息可归档，且当前 session 没在 consolidate 中，才起后台任务。
+        # 1. 先计算普通归档窗口；历史回放溢出时允许补触发一次。
+        requested = bool(getattr(session, "consolidation_requested", False))
         ready_count = (
             len(session.messages)
             - self._keep_count
             - int(getattr(session, "last_consolidated", 0))
         )
         if (
-            ready_count >= self._consolidation_min_new_messages
+            (requested or ready_count >= self._consolidation_min_new_messages)
             and key not in self._consolidating
         ):
+            if requested:
+                setattr(session, "consolidation_requested", False)
+                logger.info(
+                    "consolidation requested by long history tail: session=%s ready=%d min=%d",
+                    key,
+                    ready_count,
+                    self._consolidation_min_new_messages,
+                )
             self._consolidating.add(key)
             task = asyncio.create_task(
                 self._run_consolidation_bg(session, key),
@@ -220,24 +225,3 @@ class TurnScheduler:
             return
         if exc is not None:
             logger.warning("consolidation task failed: session=%s err=%s", key, exc)
-
-    def _on_post_mem_done(self, task: asyncio.Task, key: str) -> None:
-        try:
-            exc = task.exception()
-        except asyncio.CancelledError:
-            logger.info("post_response_memorize task cancelled: %s", key)
-            return
-        except Exception as e:
-            logger.warning(
-                "post_response_memorize task inspection failed session=%s err=%s",
-                key,
-                e,
-            )
-            return
-
-        if exc is not None:
-            logger.warning(
-                "post_response_memorize task failed session=%s err=%s",
-                key,
-                exc,
-            )

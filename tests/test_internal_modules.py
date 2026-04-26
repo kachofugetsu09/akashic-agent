@@ -52,7 +52,6 @@ class _ConsolidationHarness:
             profile_extractor=None,
         )
         self._scheduler = TurnScheduler(
-            post_mem_worker=None,
             consolidation_runner=self._consolidate_and_save,
             keep_count=2,
         )
@@ -217,27 +216,10 @@ async def test_consolidation_background_and_error_accounting(monkeypatch: pytest
     assert harness._scheduler.is_consolidating("telegram:1") is False
     harness.session_manager.save_async.assert_awaited_once()
 
-    ok = asyncio.create_task(asyncio.sleep(0))
-    await ok
-    harness._scheduler._on_post_mem_done(ok, "s1")
-    bad = asyncio.create_task(asyncio.sleep(0))
-    bad.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await bad
-    harness._scheduler._on_post_mem_done(bad, "s1")
-
-    class _BrokenTask:
-        def exception(self):
-            raise RuntimeError("inspect failed")
-
-    harness._scheduler._on_post_mem_done(cast(Any, _BrokenTask()), "s2")
-
-
 @pytest.mark.asyncio
 async def test_turn_scheduler_requires_min_ready_messages_before_consolidation():
     runner = AsyncMock()
     scheduler = TurnScheduler(
-        post_mem_worker=None,
         consolidation_runner=runner,
         keep_count=20,
     )
@@ -253,6 +235,27 @@ async def test_turn_scheduler_requires_min_ready_messages_before_consolidation()
     scheduler.schedule_consolidation(cast(Any, session), "telegram:1")
     assert scheduler.is_consolidating("telegram:1") is True
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_turn_scheduler_honors_session_consolidation_request():
+    runner = AsyncMock()
+    scheduler = TurnScheduler(
+        consolidation_runner=runner,
+        keep_count=20,
+    )
+    session = SimpleNamespace(
+        messages=[{"role": "user", "content": "u"}] * 21,
+        last_consolidated=0,
+        consolidation_requested=True,
+    )
+
+    scheduler.schedule_consolidation(cast(Any, session), "telegram:1")
+
+    assert session.consolidation_requested is False
+    assert scheduler.is_consolidating("telegram:1") is True
+    await asyncio.sleep(0)
+    runner.assert_awaited_once_with(session)
 
 
 @pytest.mark.asyncio

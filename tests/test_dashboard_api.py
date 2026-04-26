@@ -614,7 +614,10 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
     assert seen_resp.status_code == 200
     assert seen_resp.json()["total"] == 2
 
-    semantic_resp = client.get("/api/dashboard/proactive/semantic_items")
+    semantic_resp = client.get(
+        "/api/dashboard/proactive/semantic_items",
+        params={"window_hours": 100000},
+    )
     assert semantic_resp.status_code == 200
     assert semantic_resp.json()["total"] == 2
 

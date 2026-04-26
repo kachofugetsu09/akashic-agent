@@ -27,12 +27,14 @@ from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
 from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
+from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.looping.ports import LLMConfig, LLMServices
     from agent.core.runtime_support import SessionLike, TurnRunResult
     from agent.tools.registry import ToolRegistry
+    from bus.event_bus import EventBus
     from core.memory.port import MemoryPort
     from session.manager import SessionManager
 
@@ -192,6 +194,9 @@ class Reasoner(ABC):
         preloaded_tools: set[str] | None = None,
         preflight_injected: bool = True,
         on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
+        tool_event_session_key: str = "",
+        tool_event_channel: str = "",
+        tool_event_chat_id: str = "",
     ) -> ReasonerResult:
         """执行多轮 tool loop，并返回本轮结果。调用方负责提前注入 turn injection。"""
 
@@ -220,6 +225,7 @@ class DefaultReasoner(Reasoner):
         memory_window: int,
         context: "ContextBuilder | None" = None,
         session_manager: "SessionManager | None" = None,
+        event_bus: "EventBus | None" = None,
     ) -> None:
         self._llm = llm
         self._llm_config = llm_config
@@ -229,6 +235,7 @@ class DefaultReasoner(Reasoner):
         self._memory_window = memory_window
         self._context = context
         self._session_manager = session_manager
+        self._event_bus = event_bus
         # Direct reference to ToolSearchTool so we can pass excluded_names
         # explicitly instead of routing through the ContextVar side-channel.
         _ts = tools.get_tool("tool_search")
@@ -348,6 +355,9 @@ class DefaultReasoner(Reasoner):
                     preflight_injected=True,
                     on_content_delta=stream_sink,
                     on_progress=progress_sink,
+                    tool_event_session_key=session.key,
+                    tool_event_channel=msg.channel,
+                    tool_event_chat_id=msg.chat_id,
                 )
                 tools_used = list(result.metadata.get("tools_used") or [])
                 tool_chain = list(result.metadata.get("tool_chain") or [])
@@ -433,6 +443,9 @@ class DefaultReasoner(Reasoner):
         preflight_injected: bool = True,
         on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
         on_progress: Callable[[dict[str, object]], Awaitable[None]] | None = None,
+        tool_event_session_key: str = "",
+        tool_event_channel: str = "",
+        tool_event_chat_id: str = "",
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹、循环检测状态。
         messages = initial_messages
@@ -535,6 +548,15 @@ class DefaultReasoner(Reasoner):
                 for tool_call in response.tool_calls:
                     # 6.1 deferred 工具未解锁时，先回填 select: 引导错误。
                     if visible_names is not None and tool_call.name not in visible_names:
+                        await self._observe_tool_call_started(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                            iteration=iteration + 1,
+                            call_id=tool_call.id,
+                            tool_name=tool_call.name,
+                            arguments=tool_call.arguments,
+                        )
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
                             tool_call.name,
@@ -548,6 +570,18 @@ class DefaultReasoner(Reasoner):
                             messages,
                             tool_call_id=tool_call.id,
                             content=result,
+                        )
+                        await self._observe_tool_call_completed(
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                            iteration=iteration + 1,
+                            call_id=tool_call.id,
+                            tool_name=tool_call.name,
+                            arguments=tool_call.arguments,
+                            final_arguments=tool_call.arguments,
+                            status="blocked",
+                            result_preview=_log_preview(result),
                         )
                         iter_calls.append(
                             {
@@ -570,6 +604,15 @@ class DefaultReasoner(Reasoner):
                         self._tool_search_tool.set_excluded_names(visible_names)
                     _args_preview = _log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
+                    await self._observe_tool_call_started(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                        iteration=iteration + 1,
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        arguments=tool_call.arguments,
+                    )
                     # 工具调用统一先过 ToolExecutor：
                     # pre_hook 可改参/拒绝，真实执行后再补 post_hook trace。
                     exec_result = await self._tool_executor.execute(
@@ -578,6 +621,9 @@ class DefaultReasoner(Reasoner):
                             tool_name=tool_call.name,
                             arguments=tool_call.arguments,
                             source="passive",
+                            session_key=tool_event_session_key,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
                         ),
                         # 真实工具执行入口仍是 ToolRegistry.execute；
                         # hook 只负责拦截与记录，不替代 registry。
@@ -589,6 +635,18 @@ class DefaultReasoner(Reasoner):
                     normalized = normalize_tool_result(result)
                     _result_preview = _log_preview(normalized.preview())
                     _result_len = len(normalized.preview() or "")
+                    await self._observe_tool_call_completed(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                        iteration=iteration + 1,
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        arguments=tool_call.arguments,
+                        final_arguments=exec_result.final_arguments,
+                        status=exec_result.status,
+                        result_preview=normalized.preview(),
+                    )
                     logger.info(
                         "[工具结果←] %s  结果预览=%s  result_len=%d",
                         tool_call.name,
@@ -761,6 +819,62 @@ class DefaultReasoner(Reasoner):
             cache_prompt_tokens=react_cache_prompt_tokens,
             cache_hit_tokens=react_cache_hit_tokens,
             cache_seen=react_cache_seen,
+        )
+
+    async def _observe_tool_call_started(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        iteration: int,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> None:
+        if self._event_bus is None or not session_key:
+            return
+        await self._event_bus.observe(
+            ToolCallStarted(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                iteration=iteration,
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=dict(arguments),
+            )
+        )
+
+    async def _observe_tool_call_completed(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        iteration: int,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        final_arguments: dict[str, Any],
+        status: str,
+        result_preview: str,
+    ) -> None:
+        if self._event_bus is None or not session_key:
+            return
+        await self._event_bus.observe(
+            ToolCallCompleted(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                iteration=iteration,
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=dict(arguments),
+                final_arguments=dict(final_arguments),
+                status=status,
+                result_preview=result_preview,
+            )
         )
 
     async def _summarize_incomplete_progress(

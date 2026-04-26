@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agent.looping.handlers import process_spawn_completion_event
-from bus.events import InboundMessage, OutboundMessage
-from bus.internal_events import is_spawn_completion_message
+from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
 
 if TYPE_CHECKING:
     from agent.core.agent_core import AgentCore
@@ -49,36 +48,38 @@ class CoreRunner:
 
     async def process(
         self,
-        msg: InboundMessage,
+        msg: InboundItem,
         key: str,
         *,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
-        # 1. 先处理内部事件，统一走默认 helper 链。
-        if is_spawn_completion_message(msg):
-            if (
-                self._session is not None
-                and self._context is not None
-                and self._context_store is not None
-                and self._tools is not None
-                and self._memory_window is not None
-                and self._run_agent_loop_fn is not None
-            ):
-                return await process_spawn_completion_event(
-                    msg=msg,
-                    key=key,
-                    session_svc=self._session,
-                    context=self._context,
-                    context_store=self._context_store,
-                    tools=self._tools,
-                    memory_window=self._memory_window,
-                    run_agent_loop_fn=self._run_agent_loop_fn,
+        # 1. 先处理 typed 内部工作项，统一走默认 helper 链。
+        match msg:
+            case SpawnCompletionItem():
+                if (
+                    self._session is not None
+                    and self._context is not None
+                    and self._context_store is not None
+                    and self._tools is not None
+                    and self._memory_window is not None
+                    and self._run_agent_loop_fn is not None
+                ):
+                    return await process_spawn_completion_event(
+                        item=msg,
+                        key=key,
+                        session_svc=self._session,
+                        context=self._context,
+                        context_store=self._context_store,
+                        tools=self._tools,
+                        memory_window=self._memory_window,
+                        run_agent_loop_fn=self._run_agent_loop_fn,
+                    )
+                raise RuntimeError("spawn completion 缺少处理依赖")
+            case InboundMessage():
+                # 2. 默认普通被动消息统一走 AgentCore。
+                return await self._agent_core.process(
+                    msg,
+                    key,
+                    dispatch_outbound=dispatch_outbound,
                 )
-            raise RuntimeError("spawn completion 缺少处理依赖")
-
-        # 2. 默认普通被动消息统一走 AgentCore。
-        return await self._agent_core.process(
-            msg,
-            key,
-            dispatch_outbound=dispatch_outbound,
-        )
+        raise TypeError(f"unsupported inbound item: {type(msg).__name__}")

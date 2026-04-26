@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from agent.context import ContextBuilder
 from agent.core.agent_core import AgentCore, AgentCoreDeps
@@ -17,6 +18,10 @@ from agent.looping.consolidation import (
     ConsolidationService,
     _select_consolidation_window,
 )
+from agent.looping.lifecycle_consumers import (
+    register_observe_trace_consumers,
+    register_turn_committed_consumers,
+)
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
@@ -28,8 +33,6 @@ from agent.looping.ports import (
     SessionServices,
     TurnScheduler,
 )
-from agent.postturn.default_pipeline import DefaultPostTurnPipeline
-from agent.postturn.protocol import PostTurnPipeline
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.outbound import BusOutboundPort
@@ -40,10 +43,14 @@ __all__ = [
 ]
 from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
-from bus.events import InboundMessage, OutboundMessage
+from bus.event_bus import EventBus
+from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
+from bus.events_lifecycle import (
+    StreamDeltaReady,
+    TurnStarted,
+)
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.profile_extractor import ProfileFactExtractor
 from memory2.query_rewriter import QueryRewriter
 from memory2.sufficiency_checker import SufficiencyChecker
@@ -59,6 +66,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
+
+StreamDelta: TypeAlias = dict[str, str] | str
+StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
+StreamSinkFactory: TypeAlias = Callable[[object], StreamSink | None]
+StreamSupportPolicy: TypeAlias = Callable[[str], bool]
+
+
+def _is_positive_int(value: str) -> bool:
+    try:
+        return int(value) > 0
+    except ValueError:
+        return False
+
+
+_STREAM_SUPPORT_POLICIES: dict[str, StreamSupportPolicy] = {
+    "telegram": _is_positive_int,
+}
+
+
+def _supports_stream_events(channel: str, chat_id: str) -> bool:
+    policy = _STREAM_SUPPORT_POLICIES.get(channel)
+    return bool(policy is not None and policy(chat_id))
+
+
+def _item_content(item: InboundItem) -> str:
+    if isinstance(item, InboundMessage):
+        return item.content
+    return f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
 
 
 class AgentLoop:
@@ -83,6 +118,7 @@ class AgentLoop:
         self.memory_window = config.memory.window
         self._running = False
         self._processing_state = deps.processing_state
+        self._event_bus = deps.event_bus or EventBus()
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task] = {}
@@ -90,7 +126,7 @@ class AgentLoop:
         self._interrupt_states: dict[str, TurnInterruptState] = {}
 
         # 2. 再解析 memory runtime 入口。
-        memory_port, post_mem_worker = self._resolve_memory_runtime(deps)
+        memory_port = self._resolve_memory_runtime(deps)
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
         self._memory_port = memory_port
         self._context = deps.context or ContextBuilder(
@@ -102,7 +138,6 @@ class AgentLoop:
             multimodal=config.llm.multimodal,
             vl_available=config.llm.vl_available,
         )
-        self._post_mem_worker = post_mem_worker
         self._llm_services = deps.llm_services or LLMServices(
             provider=deps.provider,
             light_provider=deps.light_provider or deps.provider,
@@ -121,32 +156,42 @@ class AgentLoop:
             deps=deps,
             config=config,
             memory_port=memory_port,
-            post_mem_worker=post_mem_worker,
             hyde_enhancer=hyde_enhancer,
         )
+        self._configure_stream_events()
         self._configure_interrupt_progress_tracking()
 
-    def set_stream_sink_factory(self, factory) -> None:
+    def set_stream_sink_factory(self, factory: StreamSinkFactory | None) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
         if callable(setter):
-            setter(self._wrap_stream_sink_factory(factory))
+            _ = setter(self._wrap_stream_sink_factory(factory))
+
+    def _configure_stream_events(self) -> None:
+        setter = getattr(self._reasoner, "set_stream_sink_factory", None)
+        if callable(setter):
+            _ = setter(self._build_stream_event_sink)
 
     def _configure_interrupt_progress_tracking(self) -> None:
         progress_setter = getattr(self._reasoner, "set_progress_sink_factory", None)
         if callable(progress_setter):
-            progress_setter(self._build_progress_sink)
+            _ = progress_setter(self._build_progress_sink)
 
-    def _wrap_stream_sink_factory(self, factory):
+    def _wrap_stream_sink_factory(
+        self,
+        factory: StreamSinkFactory | None,
+    ) -> StreamSinkFactory | None:
         if factory is None:
             return None
 
-        def _build(msg):
+        def _build(msg: object) -> StreamSink | None:
             downstream = factory(msg)
-            session_key = getattr(msg, "session_key", f"{msg.channel}:{msg.chat_id}")
+            channel = str(getattr(msg, "channel", ""))
+            chat_id = str(getattr(msg, "chat_id", ""))
+            session_key = str(getattr(msg, "session_key", f"{channel}:{chat_id}"))
             if downstream is None:
                 return None
 
-            async def _push(delta: dict[str, str] | str) -> None:
+            async def _push(delta: StreamDelta) -> None:
                 if isinstance(delta, str):
                     payload = {"content_delta": delta}
                 else:
@@ -162,6 +207,36 @@ class AgentLoop:
             return _push
 
         return _build
+
+    def _build_stream_event_sink(self, msg: object) -> StreamSink | None:
+        channel = str(getattr(msg, "channel", ""))
+        chat_id = str(getattr(msg, "chat_id", ""))
+        if not _supports_stream_events(channel, chat_id):
+            return None
+        session_key = str(getattr(msg, "session_key", f"{channel}:{chat_id}"))
+
+        async def _push(delta: StreamDelta) -> None:
+            if isinstance(delta, str):
+                payload = {"content_delta": delta}
+            else:
+                payload = delta
+            content_delta = payload.get("content_delta")
+            if isinstance(content_delta, str) and content_delta:
+                self._append_partial_reply(session_key, content_delta)
+            thinking_delta = payload.get("thinking_delta")
+            if isinstance(thinking_delta, str) and thinking_delta:
+                self._append_partial_thinking(session_key, thinking_delta)
+            await self._event_bus.observe(
+                StreamDeltaReady(
+                    session_key=session_key,
+                    channel=channel,
+                    chat_id=chat_id,
+                    content_delta=content_delta if isinstance(content_delta, str) else "",
+                    thinking_delta=thinking_delta if isinstance(thinking_delta, str) else "",
+                )
+            )
+
+        return _push
 
     def _build_progress_sink(self, msg):
         session_key = getattr(msg, "session_key", f"{msg.channel}:{msg.chat_id}")
@@ -200,20 +275,18 @@ class AgentLoop:
     def _resolve_memory_runtime(
         self,
         deps: AgentLoopDeps,
-    ) -> tuple["MemoryPort", "PostResponseMemoryWorker | None"]:
+    ) -> "MemoryPort":
         # 1. 先取显式注入的 memory 对象。
         memory_port = deps.memory_port
-        post_mem_worker = deps.post_mem_worker
 
         # 2. 如果给了 memory_runtime，就优先使用 runtime 里的实现。
         if deps.memory_runtime is not None:
             memory_port = deps.memory_runtime.port
-            post_mem_worker = deps.memory_runtime.post_response_worker
 
         # 3. 当前主链必须拿到 memory_port。
         if memory_port is None:
             raise ValueError("AgentLoop requires memory_port or memory_runtime")
-        return memory_port, post_mem_worker
+        return memory_port
 
     def _build_hyde_enhancer(
         self,
@@ -251,7 +324,6 @@ class AgentLoop:
         deps: AgentLoopDeps,
         config: AgentLoopConfig,
         memory_port: "MemoryPort",
-        post_mem_worker: "PostResponseMemoryWorker | None",
         hyde_enhancer: "HyDEEnhancer | None",
     ) -> None:
         # 1. 先组基础 service ports。
@@ -267,6 +339,11 @@ class AgentLoop:
         trace_svc = deps.observability_services or ObservabilityServices(
             workspace=deps.workspace,
             observe_writer=deps.observe_writer,
+        )
+
+        register_observe_trace_consumers(
+            event_bus=self._event_bus,
+            trace=trace_svc,
         )
 
         # 2. 再准备 retrieval / scheduler 依赖配置。
@@ -295,6 +372,7 @@ class AgentLoop:
             memory_window=config.memory.keep_count,
             context=self._context,
             session_manager=self.session_manager,
+            event_bus=self._event_bus,
         )
         consolidation_service = deps.consolidation_service or ConsolidationService(
             memory_port=self._memory_port,
@@ -316,7 +394,6 @@ class AgentLoop:
                 )
             )
         self._scheduler = deps.scheduler or TurnScheduler(
-            post_mem_worker=post_mem_worker,
             consolidation_runner=self._consolidate_and_save,
             keep_count=config.memory.keep_count,
         )
@@ -338,12 +415,12 @@ class AgentLoop:
             light_model=self.light_model,
         )
         self._retrieval_pipeline = retrieval_pipeline
-        post_turn_pipeline = deps.post_turn_pipeline or DefaultPostTurnPipeline(
+        register_turn_committed_consumers(
+            event_bus=self._event_bus,
+            consolidation=consolidation_service,
+            session_manager=self.session_manager,
             scheduler=self._scheduler,
-            engine=memory_svc.engine,
-            recent_context_refresher=lambda event: consolidation_service.refresh_recent_turns(
-                session=event.session,
-            ),
+            memory_engine=memory_svc.engine,
         )
         passive_meme_decorator = MemeDecorator(MemeCatalog(deps.workspace / "memes"))
         passive_context_store = DefaultContextStore(
@@ -352,9 +429,9 @@ class AgentLoop:
             history_window=config.memory.keep_count,
             session=session_svc,
             trace=trace_svc,
-            post_turn=post_turn_pipeline,
             outbound=BusOutboundPort(self.bus),
             meme_decorator=passive_meme_decorator,
+            event_bus=self._event_bus,
         )
         agent_core = AgentCore(
             AgentCoreDeps(
@@ -363,6 +440,7 @@ class AgentLoop:
                 context=self._context,
                 tools=deps.tools,
                 reasoner=self._reasoner,
+                event_bus=self._event_bus,
             )
         )
         self._core_runner = deps.core_runner or CoreRunner(
@@ -417,17 +495,13 @@ class AgentLoop:
         logger.info(f"AgentLoop 启动  max_iter={self.max_iterations}")
         while self._running:
             try:
-                msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                item = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
 
-            key = msg.session_key
-            self._active_turn_states[key] = TurnInterruptState(
-                session_key=key,
-                original_user_message=msg.content,
-                original_metadata=dict(msg.metadata or {}),
-            )
-            task = asyncio.create_task(self._process(msg))
+            key = item.session_key
+            self._active_turn_states[key] = self._build_initial_turn_state(item, key)
+            task = asyncio.create_task(self._process(item))
             self._active_tasks[key] = task
             try:
                 await task
@@ -437,8 +511,8 @@ class AgentLoop:
                 logger.error(f"处理消息出错: {e}", exc_info=True)
                 await self.bus.publish_outbound(
                     OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
+                        channel=item.channel,
+                        chat_id=item.chat_id,
                         content=f"出错：{e}",
                     )
                 )
@@ -505,40 +579,92 @@ class AgentLoop:
             return None
         return state
 
+    def _build_initial_turn_state(
+        self,
+        item: InboundItem,
+        key: str,
+    ) -> TurnInterruptState:
+        # 1. 普通消息保留真实用户输入，spawn 回传用固定 marker 表示内部工作项。
+        match item:
+            case InboundMessage():
+                return TurnInterruptState(
+                    session_key=key,
+                    original_user_message=item.content,
+                    original_metadata=dict(item.metadata or {}),
+                )
+            case SpawnCompletionItem():
+                return TurnInterruptState(
+                    session_key=key,
+                    original_user_message=_item_content(item),
+                    original_metadata={},
+                )
+        raise TypeError(f"unsupported inbound item: {type(item).__name__}")
+
+    def _resume_interrupted_message(
+        self,
+        msg: InboundItem,
+        key: str,
+    ) -> tuple[InboundItem, bool]:
+        # 1. 只有普通入站消息参与续跑，内部工作项不消费中断态。
+        if not isinstance(msg, InboundMessage):
+            return msg, False
+        interrupted = self._get_interrupt_state(key)
+        if interrupted is None:
+            return msg, False
+
+        # 2. 有中断态时，把上一轮进度和本轮补充拼成新的用户消息。
+        resumed = InboundMessage(
+            channel=msg.channel,
+            sender=msg.sender,
+            chat_id=msg.chat_id,
+            content=_build_resume_content(interrupted, msg.content),
+            timestamp=msg.timestamp,
+            media=msg.media,
+            metadata={**(msg.metadata or {}), "resumed_from_interrupt": True},
+        )
+        logger.info(f"Resuming interrupted turn for {key}")
+        self._active_turn_states[key] = TurnInterruptState(
+            session_key=key,
+            original_user_message=resumed.content,
+            original_metadata=dict(resumed.metadata or {}),
+        )
+        return resumed, True
+
+    async def _observe_turn_started(
+        self,
+        msg: InboundItem,
+        key: str,
+    ) -> None:
+        # 1. 对外发布被动 turn 开始事件，具体副作用由 observer 决定。
+        await self._event_bus.observe(
+            TurnStarted(
+                session_key=key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=_item_content(msg),
+                timestamp=msg.timestamp,
+            )
+        )
+
     # ── 被动 turn 处理 ────────────────────────────────────────────
 
     async def _process(
         self,
-        msg: InboundMessage,
+        msg: InboundItem,
         session_key: str | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         started = time.time()
         key = session_key or msg.session_key
 
-        # ── 续跑拼装：消费上一轮中断态 ──
-        interrupted = self._get_interrupt_state(key)
-        resumed_from_interrupt = interrupted is not None
-        if interrupted is not None:
-            msg = InboundMessage(
-                channel=msg.channel,
-                sender=msg.sender,
-                chat_id=msg.chat_id,
-                content=_build_resume_content(interrupted, msg.content),
-                timestamp=msg.timestamp,
-                media=msg.media,
-                metadata={**(msg.metadata or {}), "resumed_from_interrupt": True},
-            )
-            logger.info(f"Resuming interrupted turn for {key}")
-            self._active_turn_states[key] = TurnInterruptState(
-                session_key=key,
-                original_user_message=msg.content,
-                original_metadata=dict(msg.metadata or {}),
-            )
+        # 1. 先处理可能存在的续跑态，并发布 turn started。
+        msg, resumed_from_interrupt = self._resume_interrupted_message(msg, key)
+        await self._observe_turn_started(msg, key)
+        content = _item_content(msg)
+        preview = content[:60] + "..." if len(content) > 60 else content
+        logger.info(f"Processing message from {msg.channel}: {preview}")
 
-        preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
-        logger.info(f"Processing message from {msg.channel}:{msg.sender}: {preview}")
-
+        # 2. 再进入 busy 状态并执行核心处理。
         if self._processing_state:
             self._processing_state.enter(key)
         try:
@@ -564,6 +690,7 @@ class AgentLoop:
                 content="（处理超时，请重试）",
             )
         finally:
+            # 3. 最后无论成功失败都直接释放 busy 状态。
             if self._processing_state:
                 self._processing_state.exit(key)
             _ = started

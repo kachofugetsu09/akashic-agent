@@ -14,6 +14,7 @@ from bootstrap.memory import build_memory_runtime
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.providers import build_providers
 from bootstrap.tools import CoreRuntime, build_core_runtime
+from bus.event_bus import EventBus
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -65,6 +66,7 @@ class AppRuntime:
         self.core: CoreRuntime | None = None
         self.agent_loop = None
         self.bus = None
+        self.event_bus: EventBus | None = None
         self.tools = None
         self.push_tool = None
         self.session_manager = None
@@ -108,6 +110,8 @@ class AppRuntime:
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus
+            event_bus = self.core.event_bus
+            self.event_bus = event_bus
             self.tools = self.core.tools
             self.push_tool = self.core.push_tool
             self.session_manager = self.core.session_manager
@@ -127,17 +131,9 @@ class AppRuntime:
                 session_manager=self.session_manager,
                 push_tool=self.push_tool,
                 http_resources=self.http_resources,
+                event_bus=event_bus,
                 interrupt_controller=self.agent_loop,
             )
-            if self.tg_channel is not None:
-                tg_channel = self.tg_channel
-                self.agent_loop.set_stream_sink_factory(
-                    lambda msg: (
-                        tg_channel.create_stream_sender(msg.chat_id)
-                        if getattr(msg, "channel", "") == "telegram"
-                        else None
-                    )
-                )
 
             self.tasks = [
                 self.agent_loop.run(),
@@ -206,12 +202,6 @@ class AppRuntime:
                     await self.dashboard_task
                 except asyncio.CancelledError:
                     pass
-            if self.observe_task is not None:
-                self.observe_task.cancel()
-                try:
-                    await self.observe_task
-                except asyncio.CancelledError:
-                    pass
             await _run_cleanup_steps(
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
@@ -226,6 +216,12 @@ class AppRuntime:
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
             )
+            if self.observe_task is not None:
+                _ = self.observe_task.cancel()
+                try:
+                    await self.observe_task
+                except asyncio.CancelledError:
+                    pass
         finally:
             clear_default_shared_http_resources(self.http_resources)
 

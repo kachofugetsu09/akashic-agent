@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 from agent.core.response_parser import parse_response
 from agent.core.types import ContextRequest
 from bus.events import InboundMessage, OutboundMessage
+from bus.events_lifecycle import BeforeReasoning
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from agent.core.reasoner import Reasoner
     from agent.looping.ports import SessionServices
     from agent.tools.registry import ToolRegistry
+    from bus.event_bus import EventBus
 
 
 @dataclass
@@ -22,6 +24,7 @@ class AgentCoreDeps:
     context: "ContextBuilder"
     tools: "ToolRegistry"
     reasoner: "Reasoner"
+    event_bus: "EventBus | None" = None
 
 
 class AgentCore:
@@ -29,11 +32,39 @@ class AgentCore:
     ┌──────────────────────────────────────┐
     │ AgentCore                            │
     ├──────────────────────────────────────┤
-    │ 1. prepare context                   │
-    │ 2. render prompt preview             │
-    │ 3. run reasoner                      │
-    │ 4. commit via ContextStore           │
-    │ 5. return outbound                   │
+    │ 1. 持有 PassiveTurnPipeline          │
+    │ 2. 委托 pipeline 处理被动消息        │
+    └──────────────────────────────────────┘
+    """
+
+    def __init__(self, deps: AgentCoreDeps) -> None:
+        self._passive_pipeline = PassiveTurnPipeline(deps)
+
+    async def process(
+        self,
+        msg: InboundMessage,
+        key: str,
+        *,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        return await self._passive_pipeline.run(
+            msg,
+            key,
+            dispatch_outbound=dispatch_outbound,
+        )
+
+
+class PassiveTurnPipeline:
+    """
+    ┌──────────────────────────────────────┐
+    │ PassiveTurnPipeline                  │
+    ├──────────────────────────────────────┤
+    │ 1. 准备上下文                        │
+    │ 2. 触发 BeforeReasoning              │
+    │ 3. 渲染 prompt 预览                  │
+    │ 4. 执行 reasoner                     │
+    │ 5. 提交 ContextStore                 │
+    │ 6. 返回出站消息                      │
     └──────────────────────────────────────┘
     """
 
@@ -43,8 +74,10 @@ class AgentCore:
         self._context = deps.context
         self._tools = deps.tools
         self._reasoner = deps.reasoner
+        self._event_bus = deps.event_bus
 
-    async def process(
+    # 处理一条普通被动消息，并提交最终出站结果。
+    async def run(
         self,
         msg: InboundMessage,
         key: str,
@@ -59,10 +92,25 @@ class AgentCore:
             session=session,
         )
 
-        # 2. 再通过 Context 主接口渲染 prompt 预览，提前热身 prompt cache。
+        # 2. 再允许 BeforeReasoning 干预技能列表和检索块。
         skill_mentions = list(context_bundle.skill_mentions)
         retrieved_block = context_bundle.retrieved_memory_block
-        self._context.render(
+        if self._event_bus is not None:
+            before_reasoning = await self._event_bus.emit(
+                BeforeReasoning(
+                    session_key=key,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=msg.content,
+                    skill_names=skill_mentions,
+                    retrieved_memory_block=retrieved_block,
+                )
+            )
+            skill_mentions = list(before_reasoning.skill_names)
+            retrieved_block = before_reasoning.retrieved_memory_block
+
+        # 3. 然后通过 Context 主接口渲染 prompt 预览，提前热身 prompt cache。
+        _ = self._context.render(
             ContextRequest(
                 history=[],
                 current_message="",
@@ -74,7 +122,7 @@ class AgentCore:
             )
         )
 
-        # 3. 先同步 tool context，再执行被动链 reasoner。
+        # 4. 先同步 tool context，再执行被动链 reasoner。
         self._tools.set_context(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -96,7 +144,7 @@ class AgentCore:
         tool_chain = cast(list[dict[str, object]], turn_result.tool_chain)
         parsed_response = parse_response(final_content, tool_chain=tool_chain)
 
-        # 4. 继续走新的 ContextStore.commit 做被动 turn 提交。
+        # 5. 最后走 ContextStore.commit 做被动 turn 提交。
         return await self._context_store.commit(
             msg=msg,
             session_key=key,

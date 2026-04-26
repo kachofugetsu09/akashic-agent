@@ -1,45 +1,14 @@
-from bus.internal_events import (
-    SPAWN_COMPLETED,
-    SpawnCompletionEvent,
-    is_spawn_completion_message,
-    make_spawn_completion_message,
-    parse_spawn_completion,
-    parse_spawn_decision,
-)
+import pytest
+
 from agent.policies.delegation import SpawnDecision, SpawnDecisionMeta
+from bus.event_bus import EventBus
+from bus.events import SpawnCompletionItem
+from bus.events_lifecycle import BeforeDispatch, TurnCompleted
+from bus.internal_events import SpawnCompletionEvent
 
 
-def test_spawn_completion_helpers_roundtrip():
-    event = SpawnCompletionEvent(
-        job_id="abcd1234",
-        label="job",
-        task="do work",
-        status="incomplete",
-        exit_reason="forced_summary",
-        result="partial",
-    )
-    msg = make_spawn_completion_message(
-        channel="telegram",
-        chat_id="123",
-        event=event,
-        decision=SpawnDecision(
-            should_spawn=True,
-            label="job",
-            meta=SpawnDecisionMeta(
-                source="heuristic",
-                confidence="high",
-                reason_code="long_running",
-            ),
-        ),
-    )
-
-    assert msg.channel == "telegram"
-    assert msg.chat_id == "123"
-    assert msg.sender == "spawn"
-    assert msg.metadata["internal_event"] == SPAWN_COMPLETED
-    assert is_spawn_completion_message(msg) is True
-    assert parse_spawn_completion(msg) == event
-    assert parse_spawn_decision(msg) == SpawnDecision(
+def test_spawn_completion_item_carries_typed_payload():
+    decision = SpawnDecision(
         should_spawn=True,
         label="job",
         meta=SpawnDecisionMeta(
@@ -48,3 +17,106 @@ def test_spawn_completion_helpers_roundtrip():
             reason_code="long_running",
         ),
     )
+    event = SpawnCompletionEvent(
+        job_id="abcd1234",
+        label="job",
+        task="do work",
+        status="incomplete",
+        exit_reason="forced_summary",
+        result="partial",
+    )
+
+    item = SpawnCompletionItem(
+        channel="telegram",
+        chat_id="123",
+        event=event,
+        decision=decision,
+    )
+
+    assert item.session_key == "telegram:123"
+    assert item.event == event
+    assert item.decision == decision
+
+
+@pytest.mark.asyncio
+async def test_event_bus_observe_and_intercept_are_ordered():
+    event_bus = EventBus()
+    observed: list[str] = []
+
+    event_bus.on(
+        TurnCompleted,
+        lambda event: observed.append(event.reply),
+    )
+    event_bus.on(
+        BeforeDispatch,
+        lambda event: BeforeDispatch(
+            channel=event.channel,
+            chat_id=event.chat_id,
+            content=event.content + "!",
+            thinking=event.thinking,
+            media=event.media,
+            metadata=event.metadata,
+        ),
+    )
+
+    await event_bus.observe(
+        TurnCompleted(
+            session_key="telegram:123",
+            channel="telegram",
+            chat_id="123",
+            reply="ok",
+            tools_used=[],
+        )
+    )
+    dispatch = await event_bus.emit(
+        BeforeDispatch(channel="telegram", chat_id="123", content="ok")
+    )
+
+    assert observed == ["ok"]
+    assert dispatch.content == "ok!"
+
+
+@pytest.mark.asyncio
+async def test_event_bus_fanout_keeps_other_observers_when_one_fails(caplog):
+    event_bus = EventBus()
+    observed: list[str] = []
+
+    def _bad(_event: TurnCompleted) -> None:
+        raise RuntimeError("boom")
+
+    event_bus.on(TurnCompleted, _bad)
+    event_bus.on(TurnCompleted, lambda event: observed.append(event.reply))
+
+    await event_bus.fanout(
+        TurnCompleted(
+            session_key="telegram:123",
+            channel="telegram",
+            chat_id="123",
+            reply="ok",
+            tools_used=[],
+        )
+    )
+
+    assert observed == ["ok"]
+    assert "fanout completed with observer errors" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_event_bus_enqueue_runs_observers_in_background():
+    event_bus = EventBus()
+    observed: list[str] = []
+
+    event_bus.on(TurnCompleted, lambda event: observed.append(event.reply))
+    event_bus.enqueue(
+        TurnCompleted(
+            session_key="telegram:123",
+            channel="telegram",
+            chat_id="123",
+            reply="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+
+    assert observed == ["ok"]
+    await event_bus.aclose()

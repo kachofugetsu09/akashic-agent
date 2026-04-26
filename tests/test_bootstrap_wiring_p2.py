@@ -15,6 +15,7 @@ from bootstrap.wiring import (
     resolve_memory_toolset_provider,
     resolve_toolset_provider,
 )
+from bus.event_bus import EventBus
 
 
 def _toml_value(value):
@@ -312,6 +313,7 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         session_manager=cast(Any, SimpleNamespace()),
         presence=cast(Any, None),
         processing_state=cast(Any, SimpleNamespace()),
+        event_bus=EventBus(),
         memory_runtime=cast(Any, SimpleNamespace(port=object(), post_response_worker=None)),
         observe_writer=None,
     )

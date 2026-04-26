@@ -11,7 +11,8 @@ from agent.core.context_store import ContextStore
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.core.runner import CoreRunner, CoreRunnerDeps
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
+from bus.internal_events import SpawnCompletionEvent
 
 
 @pytest.mark.asyncio
@@ -81,25 +82,21 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
             run_agent_loop_fn=run_agent_loop_fn,
         )
     )
-    msg = InboundMessage(
+    item = SpawnCompletionItem(
         channel="telegram",
-        sender="spawn",
         chat_id="123",
-        content="[internal spawn completed]",
-        metadata={
-            "internal_event": "spawn_completed",
-            "spawn": {
-                "label": "任务",
-                "task": "总结结果",
-                "status": "completed",
-                "result": "ok",
-                "exit_reason": "completed",
-                "retry_count": 0,
-            },
-        },
+        event=SpawnCompletionEvent(
+            job_id="",
+            label="任务",
+            task="总结结果",
+            status="completed",
+            result="ok",
+            exit_reason="completed",
+            retry_count=0,
+        ),
     )
 
-    out = await runner.process(msg, "scheduler:job-1", dispatch_outbound=False)
+    out = await runner.process(item, "scheduler:job-1", dispatch_outbound=False)
 
     assert out.content == "spawn done"
     session_svc.session_manager.get_or_create.assert_called_once_with("scheduler:job-1")

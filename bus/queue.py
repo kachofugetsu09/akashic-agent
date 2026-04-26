@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
-from bus.events import InboundMessage, OutboundMessage
+from bus.events import InboundItem, OutboundMessage
 
 logger = logging.getLogger(__name__)
 
@@ -11,18 +11,18 @@ class MessageBus:
     """agent 与各 channel 之间的异步消息总线"""
 
     def __init__(self) -> None:
-        self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
+        self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue()
         self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
         self._subscribers: dict[
             str, list[Callable[[OutboundMessage], Awaitable[None]]]
         ] = {}
         self._running = False
 
-    async def publish_inbound(self, msg: InboundMessage) -> None:
+    async def publish_inbound(self, msg: InboundItem) -> None:
         """channel → agent"""
         await self._inbound.put(msg)
 
-    async def consume_inbound(self) -> InboundMessage:
+    async def consume_inbound(self) -> InboundItem:
         """阻塞直到有消息可消费"""
         return await self._inbound.get()
 

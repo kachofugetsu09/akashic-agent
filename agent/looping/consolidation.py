@@ -630,6 +630,7 @@ USER: 那就直接写个脚本绕过去吧
                 tools=[],
                 model=self._model,
                 max_tokens=600,
+                disable_thinking=True,
             )
             text = (resp.content or "").strip()
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -910,6 +911,7 @@ ongoing_threads 严格限制：
                 tools=[],
                 model=self._recent_context_model,
                 max_tokens=512,
+                disable_thinking=True,
             )
             text = (response.content or "").strip()
             parsed = _parse_consolidation_payload(text) if text else None
@@ -1138,6 +1140,7 @@ history_entries.emotional_weight 规则：
                 tools=[],
                 model=self._model,
                 max_tokens=1024,
+                disable_thinking=True,
             )
             text = (response.content or "").strip()
             event_elapsed_ms = int((time.perf_counter() - event_started_at) * 1000)
