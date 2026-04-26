@@ -185,16 +185,25 @@ class TurnScheduler:
 
     def schedule_consolidation(self, session: SessionLike, key: str) -> None:
         """Fire-and-forget consolidation; deduplicates by key."""
-        # 1. 只有累计足够多新旧消息可归档，且当前 session 没在 consolidate 中，才起后台任务。
+        # 1. 先计算普通归档窗口；历史回放溢出时允许补触发一次。
+        requested = bool(getattr(session, "consolidation_requested", False))
         ready_count = (
             len(session.messages)
             - self._keep_count
             - int(getattr(session, "last_consolidated", 0))
         )
         if (
-            ready_count >= self._consolidation_min_new_messages
+            (requested or ready_count >= self._consolidation_min_new_messages)
             and key not in self._consolidating
         ):
+            if requested:
+                setattr(session, "consolidation_requested", False)
+                logger.info(
+                    "consolidation requested by long history tail: session=%s ready=%d min=%d",
+                    key,
+                    ready_count,
+                    self._consolidation_min_new_messages,
+                )
             self._consolidating.add(key)
             task = asyncio.create_task(
                 self._run_consolidation_bg(session, key),

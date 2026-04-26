@@ -256,6 +256,28 @@ async def test_turn_scheduler_requires_min_ready_messages_before_consolidation()
 
 
 @pytest.mark.asyncio
+async def test_turn_scheduler_honors_session_consolidation_request():
+    runner = AsyncMock()
+    scheduler = TurnScheduler(
+        post_mem_worker=None,
+        consolidation_runner=runner,
+        keep_count=20,
+    )
+    session = SimpleNamespace(
+        messages=[{"role": "user", "content": "u"}] * 21,
+        last_consolidated=0,
+        consolidation_requested=True,
+    )
+
+    scheduler.schedule_consolidation(cast(Any, session), "telegram:1")
+
+    assert session.consolidation_requested is False
+    assert scheduler.is_consolidating("telegram:1") is True
+    await asyncio.sleep(0)
+    runner.assert_awaited_once_with(session)
+
+
+@pytest.mark.asyncio
 async def test_post_response_worker_invalidation_paths():
     memorizer = SimpleNamespace(
         save_item=AsyncMock(return_value="new:1"),
