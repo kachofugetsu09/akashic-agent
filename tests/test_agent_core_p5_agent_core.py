@@ -15,7 +15,9 @@ from agent.core.agent_core import AgentCore, AgentCoreDeps, _predict_current_use
 from agent.core.types import ContextBundle
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
+from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
+from bus.events_lifecycle import BeforeReasoning
 
 
 class _DummySession:
@@ -172,6 +174,69 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
     await agent_core.process(msg, "cli:1")
 
     assert "no response to give" in context_store.commit.await_args.kwargs["reply"]
+
+
+@pytest.mark.asyncio
+async def test_agent_core_before_reasoning_can_patch_context():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(
+            return_value=ContextBundle(
+                skill_mentions=["old"],
+                retrieved_memory_block="old memory",
+            )
+        ),
+        commit=AsyncMock(
+            return_value=OutboundMessage(channel="telegram", chat_id="123", content="ok")
+        ),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="prompt", messages=[]))
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(return_value=TurnRunResult(reply="ok")),
+    )
+    event_bus = EventBus()
+
+    event_bus.on(
+        BeforeReasoning,
+        lambda event: BeforeReasoning(
+            session_key=event.session_key,
+            channel=event.channel,
+            chat_id=event.chat_id,
+            content=event.content,
+            skill_names=["new"],
+            retrieved_memory_block="new memory",
+        ),
+    )
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
+                    )
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            event_bus=event_bus,
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    await agent_core.process(msg, "telegram:123")
+
+    render_request = context.render.call_args.args[0]
+    assert render_request.skill_names == ["new"]
+    assert render_request.retrieved_memory_block == "new memory"
+    assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["new"]
+    assert reasoner.run_turn.await_args.kwargs["retrieved_memory_block"] == "new memory"
 
 
 def test_predict_current_user_source_ref_falls_back_to_last_session_message():

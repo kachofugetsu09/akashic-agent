@@ -437,6 +437,7 @@ class AgentLoop:
                 context=self._context,
                 tools=deps.tools,
                 reasoner=self._reasoner,
+                event_bus=self._event_bus,
             )
         )
         self._core_runner = deps.core_runner or CoreRunner(
