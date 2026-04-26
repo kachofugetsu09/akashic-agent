@@ -12,7 +12,7 @@ import pytest
 
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
-from bus.events_lifecycle import StreamDeltaReady
+from bus.events_lifecycle import StreamDeltaReady, ToolCallCompleted, ToolCallStarted
 
 
 class _Bus:
@@ -239,6 +239,7 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
                 send_document=AsyncMock(),
                 send_photo=AsyncMock(),
                 send_chat_action=AsyncMock(),
+                delete_message=AsyncMock(),
                 get_file=AsyncMock(),
             )
             self.updater = _Updater()
@@ -497,6 +498,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         event_bus=event_bus,
         interrupt_controller=interrupt_controller,
     )
+    channel._live_edit_queue._min_interval_s = 0.0
     monkeypatch.setattr(mod, "send_markdown", AsyncMock())
     monkeypatch.setattr(mod, "send_stream_markdown", AsyncMock())
     monkeypatch.setattr(mod, "send_thinking_block", AsyncMock())
@@ -608,6 +610,20 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     await sender("流式片段")
     await sender("继续补充一大段内容继续补充一大段内容继续补充一大段内容继续补充一大段内容")
     assert channel._app.bot.send_message.await_count >= 1
+    before_send = channel._app.bot.send_message.await_count
+    before_edit = channel._app.bot.edit_message_text.await_count
+    live = mod.TelegramLiveTextMessage(
+        channel._app.bot,
+        mod.TelegramLiveEditQueue(min_interval_s=0.0),
+        123,
+    )
+    await asyncio.gather(
+        live.update("工具调用\na"),
+        live.update("工具调用\nb"),
+        live.update("工具调用\nc"),
+    )
+    assert channel._app.bot.send_message.await_count == before_send + 1
+    assert channel._app.bot.edit_message_text.await_count >= before_edit + 1
     await event_bus.observe(
         StreamDeltaReady(
             session_key="telegram:456",
@@ -616,7 +632,109 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
             content_delta="事件片段",
         )
     )
-    assert channel._active_streams.get("456") is not None
+    assert channel._active_streams.get("456") is None
+    await asyncio.sleep(0)
+    assert channel._live_messages.get("telegram:456") is not None
+    channel._thinking_live_next_at["telegram:456"] = 0.0
+    await event_bus.observe(
+        StreamDeltaReady(
+            session_key="telegram:456",
+            channel="telegram",
+            chat_id="456",
+            thinking_delta="事件思考",
+        )
+    )
+    await asyncio.sleep(0)
+    live_texts = [
+        call.kwargs.get("text", "")
+        for call in (
+            channel._app.bot.send_message.await_args_list
+            + channel._app.bot.edit_message_text.await_args_list
+        )
+    ]
+    assert any(
+        "临时回复" in text and "事件片段" in text and "思考过程" in text and "事件思考" in text
+        for text in live_texts
+    )
+    assert any(
+        text.find("思考过程") < text.find("临时回复")
+        for text in live_texts
+        if "思考过程" in text and "临时回复" in text
+    )
+    before_threshold_edit = channel._app.bot.edit_message_text.await_count
+    await event_bus.observe(
+        StreamDeltaReady(
+            session_key="telegram:456",
+            channel="telegram",
+            chat_id="456",
+            thinking_delta="继续分析" * 60,
+        )
+    )
+    await asyncio.sleep(0)
+    assert channel._app.bot.edit_message_text.await_count > before_threshold_edit
+    await event_bus.observe(
+        ToolCallStarted(
+            session_key="telegram:456",
+            channel="telegram",
+            chat_id="456",
+            iteration=1,
+            call_id="call-1",
+            tool_name="shell",
+            arguments={"cmd": "df -h", "description": "查看磁盘空间"},
+        )
+    )
+    await event_bus.observe(
+        ToolCallCompleted(
+            session_key="telegram:456",
+            channel="telegram",
+            chat_id="456",
+            iteration=1,
+            call_id="call-1",
+            tool_name="shell",
+            arguments={"cmd": "df -h", "description": "查看磁盘空间"},
+            final_arguments={"cmd": "df -h", "description": "查看磁盘空间"},
+            status="ok",
+            result_preview="exit=0",
+        )
+    )
+    await asyncio.sleep(0)
+    if channel._live_tasks:
+        await asyncio.gather(*list(channel._live_tasks))
+    assert channel._live_messages.get("telegram:456") is not None
+    assert any(
+        "工具调用" in call.kwargs.get("text", "")
+        for call in channel._app.bot.send_message.await_args_list
+    )
+    tool_texts = [
+        call.kwargs.get("text", "")
+        for call in (
+            channel._app.bot.send_message.await_args_list
+            + channel._app.bot.edit_message_text.await_args_list
+        )
+        if "工具调用" in call.kwargs.get("text", "")
+    ]
+    assert any(
+        "shell: 查看磁盘空间" in text and "df -h" in text and "✅" in text
+        for text in tool_texts
+    )
+    assert all("exit=0" not in text for text in tool_texts)
+    long_text, long_html = mod._format_turn_live(
+        [
+            mod._ToolLiveLine(
+                call_id="long",
+                tool_name="shell",
+                intent="查看长输出",
+                target="工具开头" + "x" * 1300 + "工具结尾",
+                status="done",
+            )
+        ],
+        "回复开头" + "y" * 1300 + "回复结尾",
+        "思考开头" + "z" * 1600 + "思考结尾",
+    )
+    assert "思考结尾" in long_text and "思考开头" not in long_text
+    assert "工具结尾" in long_text and "工具开头" not in long_text
+    assert "回复结尾" in long_text and "回复开头" not in long_text
+    assert "<blockquote>" in long_html and "<pre>" in long_html
     channel.user_map["group"] = "-1001"
     assert channel.create_stream_sender("@group") is None
     await channel._on_response(
@@ -630,6 +748,22 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert channel._app.bot.edit_message_text.await_count >= 1
     assert mod.send_markdown.await_count == 2
     assert mod.send_stream_markdown.await_count == 2
+    mod.send_thinking_block.reset_mock()
+    await channel._on_response(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="456",
+            content="事件最终回复",
+            thinking="继续分析",
+        )
+    )
+    assert channel._app.bot.delete_message.await_count == 0
+    mod.send_thinking_block.assert_not_awaited()
+    last_live_edit = channel._app.bot.edit_message_text.await_args_list[-1].kwargs["text"]
+    assert last_live_edit.find("思考过程") < last_live_edit.find("工具调用")
+    assert "工具调用" in last_live_edit
+    assert "事件思考继续分析" in last_live_edit
+    assert "临时回复" not in last_live_edit
 
     mod.send_thinking_block.reset_mock()
     sender = channel.create_stream_sender("123")

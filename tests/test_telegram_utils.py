@@ -5,6 +5,8 @@ import pytest
 from unittest.mock import AsyncMock
 
 from infra.channels.telegram_utils import (
+    TelegramLiveEditQueue,
+    TelegramLiveTextMessage,
     TelegramStreamMessage,
     render_telegram_preview_html,
     send_markdown,
@@ -183,6 +185,49 @@ async def test_stream_message_retry_after_enters_cooldown_without_blocking(monke
     assert sleep_mock.await_count == 0
     assert len(bot.messages) == 1
     assert len(bot.edits) == 0
+
+
+@pytest.mark.asyncio
+async def test_live_edit_queue_backoff_and_force_retry(monkeypatch):
+    from infra.channels import telegram_utils as mod
+
+    class _Loop:
+        def __init__(self):
+            self._now = 10.0
+
+        def time(self):
+            self._now += 1.0
+            return self._now
+
+    bot = BotStub()
+    sleep_mock = AsyncMock()
+    loop = _Loop()
+    monkeypatch.setattr("infra.channels.telegram_utils.asyncio.sleep", sleep_mock)
+    monkeypatch.setattr(
+        "infra.channels.telegram_utils.asyncio.get_running_loop",
+        lambda: loop,
+    )
+    queue = TelegramLiveEditQueue(min_interval_s=1.0)
+    live = TelegramLiveTextMessage(cast(Any, bot), queue, 123)
+
+    await live.update("hello")
+    sleep_mock.reset_mock()
+    bot.edit_message_text = AsyncMock(side_effect=mod.RetryAfter(cast(Any, 8.0)))
+    await live.update("hello world")
+    assert queue._flood_strikes[123] == 1
+    assert queue._current_interval_s[123] == 2.0
+    assert sleep_mock.await_count == 0
+
+    bot.edit_message_text = AsyncMock(side_effect=mod.RetryAfter(cast(Any, 1.0)))
+    await live.update("hello world again")
+    assert queue._flood_strikes[123] >= 3
+
+    bot.edit_message_text = AsyncMock(return_value=True)
+    await live.update("hello world final")
+    assert bot.edit_message_text.await_count == 0
+    await live.update("hello world final", force=True)
+    assert bot.edit_message_text.await_count == 1
+    assert queue._flood_strikes[123] == 0
 
 
 @pytest.mark.asyncio

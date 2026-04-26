@@ -6,7 +6,12 @@ Telegram Channel
 
 import logging
 import asyncio
+import html
+import json
+from collections.abc import Coroutine
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -21,11 +26,18 @@ from telegram.ext import (
 
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
-from bus.events_lifecycle import StreamDeltaReady
+from bus.events_lifecycle import (
+    StreamDeltaReady,
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnStarted,
+)
 from bus.queue import MessageBus
 from agent.looping.interrupt import InterruptController
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
 from infra.channels.telegram_utils import (
+    TelegramLiveEditQueue,
+    TelegramLiveTextMessage,
     TelegramStreamMessage,
     send_markdown,
     send_stream_markdown,
@@ -37,6 +49,21 @@ logger = logging.getLogger(__name__)
 
 _CHANNEL = "telegram"
 _SEEN_MSG_MAXSIZE = 500  # 滑动窗口大小，防止内存无限增长
+_THINKING_LIVE_TAIL = 1400
+_TOOL_LIVE_TAIL = 1000
+_REPLY_LIVE_TAIL = 1100
+_TOOL_PREVIEW_LIMIT = 80
+_LIVE_STREAM_MIN_INTERVAL_S = 2.5
+_LIVE_STREAM_MIN_CHARS = 200
+
+
+@dataclass
+class _ToolLiveLine:
+    call_id: str
+    tool_name: str
+    intent: str
+    target: str
+    status: str = "running"
 
 
 class TelegramChannel:
@@ -76,14 +103,40 @@ class TelegramChannel:
         )
         bus.subscribe_outbound(_CHANNEL, self._on_response)
         if event_bus is not None:
+            event_bus.on(TurnStarted, self._on_turn_started)
             event_bus.on(StreamDeltaReady, self._on_stream_delta)
+            event_bus.on(ToolCallStarted, self._on_tool_call_started)
+            event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
         self.user_map = self._identity_index.mapping
         self._polling_conflict_task: asyncio.Task[None] | None = None
         self._active_streams: dict[str, TelegramStreamMessage] = {}
+        self._live_edit_queue = TelegramLiveEditQueue()
+        self._live_messages: dict[str, TelegramLiveTextMessage] = {}
+        self._reply_buffers: dict[str, str] = {}
+        self._thinking_buffers: dict[str, str] = {}
+        self._thinking_live_next_at: dict[str, float] = {}
+        self._live_last_lengths: dict[str, int] = {}
+        self._tool_lines: dict[str, list[_ToolLiveLine]] = {}
+        self._live_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def bot(self):
         return self._app.bot
+
+    def _start_live_task(self, coro: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(coro)
+        self._live_tasks.add(task)
+
+        def _done(done_task: asyncio.Task[None]) -> None:
+            self._live_tasks.discard(done_task)
+            try:
+                _ = done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning("[telegram] live 更新任务失败: %s", e)
+
+        task.add_done_callback(_done)
 
     async def start(self) -> None:
         self._rebuild_user_map()
@@ -101,6 +154,8 @@ class TelegramChannel:
     async def stop(self) -> None:
         if self._polling_conflict_task and not self._polling_conflict_task.done():
             await self._polling_conflict_task
+        if self._live_tasks:
+            _ = await asyncio.gather(*self._live_tasks, return_exceptions=True)
         updater = self._app.updater
         if updater and updater.running:
             await updater.stop()
@@ -401,22 +456,140 @@ class TelegramChannel:
 
         return _push
 
+    async def _on_turn_started(self, event: TurnStarted) -> None:
+        if event.channel != _CHANNEL:
+            return
+        _ = self._tool_lines.pop(event.session_key, None)
+        _ = self._reply_buffers.pop(event.session_key, None)
+        _ = self._thinking_buffers.pop(event.session_key, None)
+        _ = self._thinking_live_next_at.pop(event.session_key, None)
+        _ = self._live_last_lengths.pop(event.session_key, None)
+        _ = self._live_messages.pop(event.session_key, None)
+
     async def _on_stream_delta(self, event: StreamDeltaReady) -> None:
+        if event.channel != _CHANNEL:
+            return
+        if not event.content_delta and not event.thinking_delta:
+            return
+        cid = int(self._resolve_chat_id(event.chat_id))
+        if cid <= 0:
+            return
+        if event.content_delta:
+            reply = self._reply_buffers.get(event.session_key, "")
+            self._reply_buffers[event.session_key] = reply + event.content_delta
+        if event.thinking_delta:
+            thinking = self._thinking_buffers.get(event.session_key, "")
+            self._thinking_buffers[event.session_key] = thinking + event.thinking_delta
+        live_len = _live_buffer_len(
+            self._reply_buffers.get(event.session_key, ""),
+            self._thinking_buffers.get(event.session_key, ""),
+        )
+        last_len = self._live_last_lengths.get(event.session_key, 0)
+        now = asyncio.get_running_loop().time()
+        next_at = self._thinking_live_next_at.get(event.session_key, 0.0)
+        if now < next_at and live_len - last_len < _LIVE_STREAM_MIN_CHARS:
+            return
+        self._thinking_live_next_at[event.session_key] = now + _LIVE_STREAM_MIN_INTERVAL_S
+        self._live_last_lengths[event.session_key] = live_len
+        self._start_live_task(self._sync_live_message(event.session_key, cid))
+
+    async def _on_tool_call_started(self, event: ToolCallStarted) -> None:
         if event.channel != _CHANNEL:
             return
         cid = int(self._resolve_chat_id(event.chat_id))
         if cid <= 0:
             return
-        stream = self._active_streams.get(str(cid))
-        if stream is None:
-            stream = TelegramStreamMessage(self._app.bot, cid)
-            self._active_streams[str(cid)] = stream
-        await stream.push_delta(
-            {
-                "content_delta": event.content_delta,
-                "thinking_delta": event.thinking_delta,
-            }
+        lines = self._tool_lines.setdefault(event.session_key, [])
+        lines.append(
+            _ToolLiveLine(
+                call_id=event.call_id,
+                tool_name=event.tool_name,
+                intent=_format_tool_intent(event.arguments),
+                target=_format_tool_target(event.arguments),
+            )
         )
+        self._start_live_task(self._sync_live_message(event.session_key, cid))
+
+    async def _on_tool_call_completed(self, event: ToolCallCompleted) -> None:
+        if event.channel != _CHANNEL:
+            return
+        cid = int(self._resolve_chat_id(event.chat_id))
+        if cid <= 0:
+            return
+        lines = self._tool_lines.setdefault(event.session_key, [])
+        line = next((item for item in lines if item.call_id == event.call_id), None)
+        if line is None:
+            line = _ToolLiveLine(
+                call_id=event.call_id,
+                tool_name=event.tool_name,
+                intent=_format_tool_intent(event.final_arguments or event.arguments),
+                target=_format_tool_target(event.final_arguments or event.arguments),
+            )
+            lines.append(line)
+        line.status = "error" if event.status == "error" else "done"
+        self._start_live_task(self._sync_live_message(event.session_key, cid))
+
+    async def _sync_live_message(
+        self,
+        session_key: str,
+        chat_id: int,
+        *,
+        terminal: bool = False,
+    ) -> None:
+        text, html_text = _format_turn_live(
+            self._tool_lines.get(session_key, []),
+            self._reply_buffers.get(session_key, ""),
+            self._thinking_buffers.get(session_key, ""),
+            terminal=terminal,
+        )
+        if not text:
+            return
+        message = self._live_messages.get(session_key)
+        if message is None:
+            message = TelegramLiveTextMessage(
+                self._app.bot,
+                self._live_edit_queue,
+                chat_id,
+            )
+            self._live_messages[session_key] = message
+        await message.update(text, html_text=html_text, force=terminal)
+
+    def _has_live_messages(self, session_key: str) -> bool:
+        return session_key in self._live_messages
+
+    async def _drain_live_tasks(self) -> None:
+        tasks = [task for task in self._live_tasks if not task.done()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _final_thinking_text(
+        self,
+        session_key: str,
+        thinking: str | None,
+    ) -> str:
+        streamed = self._thinking_buffers.get(session_key, "").strip()
+        final = (thinking or "").strip()
+        if streamed and final:
+            if final in streamed:
+                return streamed
+            if streamed in final:
+                return final
+            return f"{streamed}\n\n{final}"
+        return streamed or final
+
+    async def _send_final_thinking(
+        self,
+        chat_id: int,
+        original_chat_id: str,
+        thinking: str,
+    ) -> None:
+        if not thinking:
+            return
+        await self._live_edit_queue.reserve(
+            chat_id,
+            label="send_message(final_thinking)",
+        )
+        await send_thinking_block(self._app.bot, original_chat_id, thinking)
 
     async def send_file(
         self,
@@ -444,6 +617,18 @@ class TelegramChannel:
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
+        cid = int(self._resolve_chat_id(msg.chat_id))
+        session_key = f"{_CHANNEL}:{msg.chat_id}"
+        had_live = self._has_live_messages(session_key)
+        await self._drain_live_tasks()
+        final_thinking = self._final_thinking_text(session_key, msg.thinking)
+        if had_live:
+            if final_thinking:
+                self._thinking_buffers[session_key] = final_thinking
+            if msg.content.strip():
+                self._reply_buffers[session_key] = msg.content
+            await self._sync_live_message(session_key, cid, terminal=True)
+            await self._live_edit_queue.reserve(cid, label="send_message(response)")
         streamed_reply = bool((msg.metadata or {}).get("streamed_reply"))
         if msg.content.strip():
             if streamed_reply:
@@ -454,8 +639,10 @@ class TelegramChannel:
                     await send_markdown(self._app.bot, msg.chat_id, msg.content)
             else:
                 await send_stream_markdown(self._app.bot, msg.chat_id, msg.content)
-        if msg.thinking:
-            await send_thinking_block(self._app.bot, msg.chat_id, msg.thinking)
+        if final_thinking and not had_live:
+            await self._send_final_thinking(cid, msg.chat_id, final_thinking)
+        self._reply_buffers.pop(session_key, None)
+        self._thinking_buffers.pop(session_key, None)
         for image in (msg.media or []):
             try:
                 await self.send_image(str(msg.chat_id), image)
@@ -527,6 +714,130 @@ class TelegramChannel:
             )
         except Exception as e:
             logger.warning("[telegram] 停止 polling 失败: %s", e)
+
+
+def _format_turn_live(
+    lines: list[_ToolLiveLine],
+    reply: str,
+    thinking: str,
+    *,
+    terminal: bool = False,
+) -> tuple[str, str]:
+    blocks: list[str] = []
+    html_blocks: list[str] = []
+    thinking_body = _tail_text(thinking.strip(), _THINKING_LIVE_TAIL)
+    if thinking_body:
+        thinking_text = f"思考过程\n{thinking_body}"
+        blocks.append(thinking_text)
+        html_blocks.append(f"<blockquote>{html.escape(thinking_text)}</blockquote>")
+    if lines:
+        tool_text = _tail_text(_format_tool_live(lines), _TOOL_LIVE_TAIL)
+        blocks.append(tool_text)
+        html_blocks.append(f"<pre>{html.escape(tool_text)}</pre>")
+    reply_body = _tail_text(reply.strip(), _REPLY_LIVE_TAIL)
+    if reply_body and not terminal:
+        reply_text = f"临时回复\n{reply_body}"
+        blocks.append(reply_text)
+        html_blocks.append(f"<b>临时回复</b>\n{html.escape(reply_body)}")
+    if terminal and not blocks:
+        return "本轮预览完成", "<pre>本轮预览完成</pre>"
+    return "\n\n".join(blocks), "\n\n".join(html_blocks)
+
+
+def _format_tool_live(lines: list[_ToolLiveLine]) -> str:
+    shown = lines[-12:]
+    rows = ["工具调用"]
+    hidden = len(lines) - len(shown)
+    if hidden > 0:
+        rows.append(f"... {hidden} more")
+    for line in shown:
+        status = "..."
+        if line.status == "done":
+            status = "✅"
+        elif line.status == "error":
+            status = "✗"
+        target = f" {line.target}" if line.target else ""
+        rows.append(
+            f"{_tool_emoji(line.tool_name)} {_clip_inline(line.tool_name, 32)}: "
+            f"{line.intent}{target} {status}"
+        )
+    if lines and all(line.status != "running" for line in lines):
+        rows.append(f"Done · {len(lines)} tools")
+    return "\n".join(rows)
+
+
+def _format_tool_intent(arguments: dict[str, object]) -> str:
+    value = arguments.get("description")
+    if value is None or value == "":
+        return ""
+    return _clip_inline(_stringify_tool_value(value), _TOOL_PREVIEW_LIMIT)
+
+
+def _format_tool_target(arguments: dict[str, object]) -> str:
+    if not arguments:
+        return ""
+    primary_keys = (
+        "cmd",
+        "command",
+        "query",
+        "url",
+        "path",
+        "file",
+        "text",
+        "content",
+        "prompt",
+        "name",
+    )
+    for key in primary_keys:
+        value = arguments.get(key)
+        if value is not None and value != "":
+            return f"\"{_clip_inline(_stringify_tool_value(value), _TOOL_PREVIEW_LIMIT)}\""
+    return ""
+
+
+def _stringify_tool_value(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        return str(value)
+
+
+def _clip_inline(text: str, limit: int) -> str:
+    plain = " ".join(str(text).split())
+    if len(plain) <= limit:
+        return plain
+    if limit <= 3:
+        return plain[:limit]
+    return plain[: limit - 3] + "..."
+
+
+def _tail_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return "..." + text[-(limit - 3):]
+
+
+def _live_buffer_len(reply: str, thinking: str) -> int:
+    return len(reply) + len(thinking)
+
+
+def _tool_emoji(tool_name: str) -> str:
+    name = tool_name.lower()
+    if name.startswith("mcp"):
+        return "📡"
+    if "search" in name:
+        return "🔍"
+    if "web" in name or "url" in name:
+        return "🌐"
+    if "file" in name or "read" in name:
+        return "📄"
+    if "write" in name or "save" in name:
+        return "💾"
+    if "shell" in name or "exec" in name:
+        return "⚙"
+    return "🔧"
 
 
 def _build_inbound_text_with_reply(

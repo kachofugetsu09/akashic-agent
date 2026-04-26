@@ -185,7 +185,7 @@ def test_normalize_openai_base_url_trims_endpoint_suffix():
 
 
 @pytest.mark.asyncio
-async def test_provider_payload_snapshot_switch_default_off_and_opt_in(
+async def test_provider_payload_snapshot_switch_default_on_and_can_toggle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -199,6 +199,7 @@ async def test_provider_payload_snapshot_switch_default_off_and_opt_in(
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
 
     provider = LLMProvider(api_key="k")
+    monkeypatch.setattr(provider_module, "_LLM_PAYLOAD_SNAPSHOT_ENABLED", False)
     await provider.chat(
         messages=[{"role": "user", "content": "off"}],
         tools=[],

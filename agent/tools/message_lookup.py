@@ -72,13 +72,16 @@ class FetchMessagesTool(Tool):
 
         ctx = max(0, min(int(context), _MAX_CONTEXT))
         if ctx == 0:
-            messages = self._store.fetch_by_ids(clean_ids)
+            messages = [_to_public_message(m) for m in self._store.fetch_by_ids(clean_ids)]
             return json.dumps(
                 {"count": len(messages), "matched_count": len(messages), "messages": messages},
                 ensure_ascii=False,
             )
 
-        messages = self._store.fetch_by_ids_with_context(clean_ids, ctx)
+        messages = [
+            _to_public_message(m)
+            for m in self._store.fetch_by_ids_with_context(clean_ids, ctx)
+        ]
         matched = sum(1 for m in messages if m.get("in_source_ref"))
         return json.dumps(
             {"count": len(messages), "matched_count": matched, "messages": messages},
@@ -118,6 +121,11 @@ def _expand_source_ref(value: str | None) -> list[str]:
     if isinstance(parsed, str) and parsed.strip():
         return [parsed.strip()]
     return []
+
+
+def _to_public_message(message: dict[str, Any]) -> dict[str, Any]:
+    keep = {"id", "session_key", "seq", "role", "content", "timestamp", "in_source_ref"}
+    return {k: v for k, v in message.items() if k in keep}
 
 
 class SearchMessagesTool(Tool):

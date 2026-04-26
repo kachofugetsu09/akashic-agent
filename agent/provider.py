@@ -22,7 +22,7 @@ from openai import AsyncOpenAI
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 logger = logging.getLogger(__name__)
-_LLM_PAYLOAD_SNAPSHOT_ENABLED = False
+_LLM_PAYLOAD_SNAPSHOT_ENABLED = True
 _LAST_PAYLOAD_PATH = Path(tempfile.gettempdir()) / "akashic-last-llm-payload.json"
 _PAYLOAD_SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "akashic-llm-payloads"
 _PAYLOAD_SNAPSHOT_SEQ = itertools.count(1)

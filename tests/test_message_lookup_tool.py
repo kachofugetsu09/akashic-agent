@@ -42,6 +42,41 @@ async def test_fetch_messages_returns_rows_in_input_order(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fetch_messages_strips_internal_metadata(tmp_path):
+    store = SessionStore(tmp_path / "sessions.db")
+    store.upsert_session(
+        "tg:1",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        last_consolidated=0,
+        metadata={},
+    )
+    store.insert_message(
+        "tg:1",
+        role="assistant",
+        content="answer",
+        ts="2026-01-01T00:00:00+00:00",
+        seq=0,
+        tool_chain=[{"calls": [{"name": "fetch_messages", "result": "huge"}]}],
+        extra={"tools_used": ["fetch_messages"], "reasoning_content": "think"},
+    )
+
+    tool = FetchMessagesTool(store)
+    payload = json.loads(await tool.execute(ids=["tg:1:0"]))
+
+    assert payload["messages"] == [
+        {
+            "id": "tg:1:0",
+            "session_key": "tg:1",
+            "seq": 0,
+            "role": "assistant",
+            "content": "answer",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_fetch_messages_with_context(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _setup_session(store, "tg:1", 7)  # seq 0..6
