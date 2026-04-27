@@ -13,7 +13,7 @@ from session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
-_TOOL_RESULT_CHAR_BUDGET = 4_000
+_TOOL_RESULT_CHAR_BUDGET = 1_000
 
 
 def _truncate_tool_result(content: object) -> str:
