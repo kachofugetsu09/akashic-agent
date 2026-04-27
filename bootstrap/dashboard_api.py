@@ -1062,7 +1062,7 @@ def create_dashboard_app(
 def run_dashboard_api(
     *,
     workspace: Path,
-    host: str = "127.0.0.1",
+    host: str = "0.0.0.0",
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
 ) -> None:
@@ -1080,7 +1080,7 @@ def run_dashboard_api(
 def build_dashboard_server(
     *,
     workspace: Path,
-    host: str = "127.0.0.1",
+    host: str = "0.0.0.0",
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
 ) -> uvicorn.Server:

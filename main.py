@@ -81,7 +81,7 @@ if __name__ == "__main__":
     workspace: Path | None = None
     force = "--force" in args
     with_fitbit = "--with-fitbit" in args
-    dashboard_host = "127.0.0.1"
+    dashboard_host = "0.0.0.0"
     dashboard_port = 2236
 
     try:
