@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+from bus.events import InboundMessage, OutboundMessage
+from agent.core.response_parser import ResponseMetadata
+from agent.core.runtime_support import SessionLike, TurnRunResult
+
+
+# 1. 工厂函数：给 dataclass field(default_factory=...) 提供显式类型签名，消除 pyright Unknown 推断。
+def _empty_str_list() -> list[str]:
+    return []
+
+
+def _empty_metadata() -> dict[str, Any]:
+    return {}
+
+
+@dataclass
+class TurnState:
+    msg: InboundMessage
+    session_key: str
+    dispatch_outbound: bool
+    session: SessionLike | None = None
+    retrieval_raw: object | None = None
+
+
+@dataclass
+class BeforeTurnCtx:
+    # read-only by convention
+    session_key: str
+    channel: str
+    chat_id: str
+    content: str
+    timestamp: datetime
+    retrieved_memory_block: str
+    retrieval_trace_raw: object | None
+    history_messages: tuple[Any, ...]
+    # writable
+    skill_names: list[str] = field(default_factory=_empty_str_list)
+    abort: bool = False
+    abort_reply: str = ""
+    extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+
+
+@dataclass(frozen=True)
+class BeforeReasoningInput:
+    state: TurnState
+    before_turn: BeforeTurnCtx
+
+
+@dataclass
+class BeforeReasoningCtx:
+    # read-only by convention
+    session_key: str
+    channel: str
+    chat_id: str
+    content: str
+    timestamp: datetime
+    # writable
+    skill_names: list[str]
+    retrieved_memory_block: str
+    extra_hints: list[str] = field(default_factory=_empty_str_list)
+    abort: bool = False
+    abort_reply: str = ""
+
+
+@dataclass(frozen=True)
+class BeforeStepInput:
+    session_key: str
+    channel: str
+    chat_id: str
+    iteration: int
+    messages: list[dict[str, Any]]
+    visible_names: set[str] | None
+
+
+@dataclass
+class BeforeStepCtx:
+    # read-only by convention
+    session_key: str
+    channel: str
+    chat_id: str
+    iteration: int
+    input_tokens_estimate: int
+    visible_tool_names: frozenset[str] | None
+    # writable
+    extra_hints: list[str] = field(default_factory=_empty_str_list)
+    early_stop: bool = False
+    early_stop_reply: str = ""
+
+
+@dataclass(frozen=True)
+class AfterStepCtx:
+    session_key: str
+    channel: str
+    chat_id: str
+    iteration: int
+    tools_called: tuple[str, ...]
+    partial_reply: str
+    tools_used_so_far: tuple[str, ...]
+    tool_chain_partial: tuple[dict[str, Any], ...]
+    partial_thinking: str | None
+    has_more: bool
+
+
+@dataclass(frozen=True)
+class AfterReasoningInput:
+    state: TurnState
+    turn_result: TurnRunResult
+
+
+@dataclass
+class AfterReasoningCtx:
+    # read-only by convention
+    session_key: str
+    channel: str
+    chat_id: str
+    tools_used: tuple[str, ...]
+    thinking: str | None
+    response_metadata: ResponseMetadata
+    streamed: bool
+    tool_chain: tuple[dict[str, Any], ...]
+    context_retry: dict[str, object]
+    # writable
+    reply: str
+    media: list[str] = field(default_factory=_empty_str_list)
+    meme_tag: str | None = None
+    outbound_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+
+
+@dataclass(frozen=True)
+class AfterReasoningResult:
+    ctx: AfterReasoningCtx
+    outbound: OutboundMessage
+
+
+@dataclass
+class TurnSnapshot:
+    state: TurnState
+    outbound: OutboundMessage
+    ctx: AfterReasoningCtx
+
+
+@dataclass(frozen=True)
+class AfterTurnCtx:
+    session_key: str
+    channel: str
+    chat_id: str
+    reply: str
+    tools_used: tuple[str, ...]
+    thinking: str | None
+    dispatch_outbound: bool
