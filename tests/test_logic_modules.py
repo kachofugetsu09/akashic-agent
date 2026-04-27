@@ -10,14 +10,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.provider import LLMResponse
-from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
 from core.memory.port import DefaultMemoryPort
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
 )
-from session.manager import Session, SessionManager, _safe_filename
+from session.manager import (
+    Session,
+    SessionManager,
+    _TOOL_RESULT_CHAR_BUDGET,
+    _safe_filename,
+)
 
 
 @pytest.mark.asyncio
@@ -209,12 +213,11 @@ def test_session_get_history_replays_cached_llm_turn_from_consolidated_index():
     session.add_message("user", "old")
     session.add_message("assistant", "old reply")
     session.last_consolidated = 2
-    frame = f"{SYSTEM_CONTEXT_FRAME_MARKER}\n\n## retrieved_memory\n记忆"
     user_content = "[当前消息时间: x]\nhello"
     session.add_message(
         "user",
         "hello",
-        llm_context_frame=frame,
+        llm_context_frame="<system-reminder data-system-context-frame=\"true\">\n\n## retrieved_memory\n旧记忆",
         llm_user_content=user_content,
     )
     session.add_message("assistant", "world")
@@ -222,7 +225,6 @@ def test_session_get_history_replays_cached_llm_turn_from_consolidated_index():
     history = session.get_history(start_index=session.last_consolidated)
 
     assert history == [
-        {"role": "user", "content": f"{frame}\n\n</system-reminder>"},
         {"role": "user", "content": user_content},
         {"role": "assistant", "content": "world"},
     ]
@@ -261,7 +263,7 @@ def test_session_get_history_assistant_only_returns_empty():
     assert session.get_history(start_index=0) == []
 
 
-def test_session_get_history_normalizes_legacy_context_frame():
+def test_session_get_history_drops_persisted_context_frame():
     session = Session("cli:1")
     session.add_message(
         "user",
@@ -272,9 +274,7 @@ def test_session_get_history_normalizes_legacy_context_frame():
 
     history = session.get_history(start_index=0)
 
-    assert history[0]["role"] == "user"
-    assert history[0]["content"].startswith(SYSTEM_CONTEXT_FRAME_MARKER)
-    assert history[0]["content"].endswith("</system-reminder>")
+    assert history == [{"role": "user", "content": "hello"}]
 
 
 def test_session_get_history_does_not_inject_inference_tag():
@@ -314,6 +314,60 @@ def test_session_get_history_keeps_reasoning_content():
 
     assert history[1]["reasoning_content"] == "准备调用工具"
     assert history[-1]["reasoning_content"] == "先想一下"
+
+
+def test_session_get_history_keeps_short_tool_results_after_consolidation_tail():
+    session = Session("cli:1")
+    session.last_consolidated = 0
+    for i in range(3):
+        session.add_message("user", f"u{i}")
+        session.add_message("assistant", f"a{i}")
+        session.messages[-1]["tool_chain"] = [
+            {
+                "text": "",
+                "calls": [
+                    {
+                        "call_id": f"call-{i}",
+                        "name": "dummy",
+                        "arguments": {},
+                        "result": f"result-{i}",
+                    }
+                ],
+            }
+        ]
+
+    history = session.get_history(start_index=session.last_consolidated)
+    tool_contents = [m["content"] for m in history if m.get("role") == "tool"]
+
+    assert tool_contents == ["result-0", "result-1", "result-2"]
+
+
+def test_session_get_history_truncates_long_tool_results_in_middle():
+    session = Session("cli:1")
+    long_result = "head-" + "x" * (_TOOL_RESULT_CHAR_BUDGET + 200) + "-tail"
+    session.add_message("user", "u")
+    session.add_message("assistant", "a")
+    session.messages[-1]["tool_chain"] = [
+        {
+            "text": "",
+            "calls": [
+                {
+                    "call_id": "call-1",
+                    "name": "dummy",
+                    "arguments": {},
+                    "result": long_result,
+                }
+            ],
+        }
+    ]
+
+    history = session.get_history()
+    tool_content = next(m["content"] for m in history if m.get("role") == "tool")
+
+    assert tool_content.startswith("Total output lines: 1\n\nhead-")
+    assert "chars truncated" in tool_content
+    assert tool_content.endswith("-tail")
+    assert len(tool_content) < len(long_result)
 
 
 @pytest.mark.asyncio

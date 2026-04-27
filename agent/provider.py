@@ -205,6 +205,7 @@ class LLMProvider:
         max_retries: int = 1,
         provider_name: str = "",
         force_disable_thinking: bool = False,
+        payload_snapshot_enabled: bool | None = None,
     ) -> None:
         normalized_base_url = _normalize_openai_base_url(base_url)
         self._client = AsyncOpenAI(api_key=api_key, base_url=normalized_base_url)
@@ -215,6 +216,11 @@ class LLMProvider:
         self._request_timeout_s = max(1.0, float(request_timeout_s))
         self._max_retries = max(0, int(max_retries))
         self._force_disable_thinking = force_disable_thinking
+        self._payload_snapshot_enabled = (
+            _LLM_PAYLOAD_SNAPSHOT_ENABLED
+            if payload_snapshot_enabled is None
+            else bool(payload_snapshot_enabled)
+        )
 
     async def chat(
         self,
@@ -381,7 +387,7 @@ class LLMProvider:
         )
 
     async def _create_with_retry(self, kwargs: dict) -> object:
-        _save_llm_payload_snapshot(kwargs)
+        _save_llm_payload_snapshot(kwargs, enabled=self._payload_snapshot_enabled)
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -472,8 +478,12 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
-def _save_llm_payload_snapshot(kwargs: dict) -> Path | None:
-    if not _LLM_PAYLOAD_SNAPSHOT_ENABLED:
+def _save_llm_payload_snapshot(
+    kwargs: dict,
+    *,
+    enabled: bool | None = None,
+) -> Path | None:
+    if not (_LLM_PAYLOAD_SNAPSHOT_ENABLED if enabled is None else enabled):
         return None
     try:
         payload = json.dumps(kwargs, ensure_ascii=False, indent=2, default=str)

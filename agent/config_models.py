@@ -123,6 +123,7 @@ class Config:
     vl_base_url: str = ""
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
+    dev_mode: bool = False
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
 

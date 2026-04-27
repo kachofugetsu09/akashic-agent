@@ -23,6 +23,7 @@ base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 system_prompt = "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses."
 max_tokens = 8192
 max_iterations = 40
+dev_mode = false
 
 [agent.context]
 memory_window = 24

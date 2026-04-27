@@ -1,6 +1,8 @@
 import logging
 from collections.abc import Set as AbstractSet
+from copy import deepcopy
 from dataclasses import dataclass
+from typing import Any, cast
 
 from agent.tools.base import Tool, ToolResult
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
@@ -9,6 +11,52 @@ logger = logging.getLogger(__name__)
 
 # 元工具（不参与搜索结果，也不出现在 deferred 工具目录里）
 _META_TOOLS: frozenset[str] = frozenset({"tool_search"})
+_PROGRESS_DESCRIPTION_FIELD = "description"
+_PROGRESS_DESCRIPTION_SCHEMA: dict[str, str] = {
+    "type": "string",
+    "description": (
+        "用 5-12 个字说明这次工具调用的意图，只写给用户看的短语。"
+        "不要复述工具名，不要粘贴长参数。例如：查看目录、读取配置、搜索健康数据。"
+    ),
+}
+
+
+def _schema_properties(parameters: dict[str, Any]) -> dict[str, Any]:
+    raw_properties = parameters.get("properties")
+    if isinstance(raw_properties, dict):
+        return cast(dict[str, Any], raw_properties)
+    properties: dict[str, Any] = {}
+    parameters["properties"] = properties
+    return properties
+
+
+def _tool_defines_parameter(tool: Tool, name: str) -> bool:
+    parameters: dict[str, Any] = tool.parameters or {}
+    properties = parameters.get("properties")
+    return isinstance(properties, dict) and name in properties
+
+
+def _with_progress_description(schema: dict[str, Any], tool: Tool) -> dict[str, Any]:
+    cloned = cast(dict[str, Any], deepcopy(schema))
+    function = cloned.get("function")
+    if not isinstance(function, dict):
+        return cloned
+    function = cast(dict[str, Any], function)
+    parameters = function.get("parameters")
+    if not isinstance(parameters, dict):
+        return cloned
+    parameters = cast(dict[str, Any], parameters)
+    if _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
+        return cloned
+    properties = _schema_properties(parameters)
+    properties[_PROGRESS_DESCRIPTION_FIELD] = dict(_PROGRESS_DESCRIPTION_SCHEMA)
+    required = parameters.get("required")
+    if isinstance(required, list):
+        if _PROGRESS_DESCRIPTION_FIELD not in required:
+            cast(list[Any], required).append(_PROGRESS_DESCRIPTION_FIELD)
+    else:
+        parameters["required"] = [_PROGRESS_DESCRIPTION_FIELD]
+    return cloned
 
 
 # ── ToolMeta ──────────────────────────────────────────────────────────────────
@@ -106,9 +154,9 @@ class ToolRegistry:
         logger.debug(f"注册工具: {tool.name}")
 
     def unregister(self, name: str) -> None:
-        self._tools.pop(name, None)
-        self._metadata.pop(name, None)
-        self._documents.pop(name, None)
+        _ = self._tools.pop(name, None)
+        _ = self._metadata.pop(name, None)
+        _ = self._documents.pop(name, None)
         self._backend.remove(name)
         logger.debug(f"注销工具: {name}")
 
@@ -122,14 +170,21 @@ class ToolRegistry:
         """返回当前已注册工具名集合。"""
         return set(self._tools.keys())
 
-    def get_schemas(self, names: set[str] | None = None) -> list[dict]:
+    def get_schemas(self, names: set[str] | None = None) -> list[dict[str, Any]]:
         """返回 OpenAI function calling 格式的工具定义列表。
 
         names 为 None 时返回全量；否则只返回指定名称的工具。
         """
         if names is None:
-            return [t.to_schema() for t in self._tools.values()]
-        return [t.to_schema() for name, t in self._tools.items() if name in names]
+            return [
+                _with_progress_description(t.to_schema(), t)
+                for t in self._tools.values()
+            ]
+        return [
+            _with_progress_description(t.to_schema(), t)
+            for name, t in self._tools.items()
+            if name in names
+        ]
 
     def get_always_on_names(self) -> set[str]:
         """返回标记为 always_on 的工具名称集合。"""
@@ -166,25 +221,27 @@ class ToolRegistry:
             "mcp": {k: sorted(v) for k, v in sorted(mcp.items())},
         }
 
-    async def execute(self, name: str, arguments: dict) -> str | ToolResult:
+    async def execute(self, name: str, arguments: dict[str, Any]) -> str | ToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return f"工具 '{name}' 不存在"
         try:
             # 将会话上下文（channel、chat_id）作为低优先级默认值合并进 kwargs，
             # 工具可按需读取，不感知此机制的工具会直接忽略多余的 key。
-            merged = {**self._context, **arguments}
+            merged: dict[str, Any] = {**self._context, **arguments}
+            if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
+                merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
             return await tool.execute(**merged)
         except Exception as e:
             logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
             return f"工具执行出错: {e}"
 
-    def get_schemas_as_doc_results(self, names: list[str]) -> list[dict]:
+    def get_schemas_as_doc_results(self, names: list[str]) -> list[dict[str, Any]]:
         """将工具名列表转为与 search() 相同格式的结果列表。
 
         供 select: 精确加载路径使用，why_matched 固定为"名称:精确匹配"。
         """
-        results = []
+        results: list[dict[str, Any]] = []
         for name in names:
             doc = self._documents.get(name)
             if doc:
@@ -221,16 +278,19 @@ class ToolRegistry:
         top_k: int = 5,
         allowed_risk: list[str] | None = None,
         excluded_names: AbstractSet[str] | None = None,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """关键词搜索工具目录，返回匹配的工具信息列表。
 
         excluded_names: 调用方（当前 turn）传入的排除集合，通常为已可见工具名。
         meta_tools 始终被排除。搜索逻辑委托给 SearchBackend。
         """
         excluded = _META_TOOLS | (excluded_names or set())
-        return self._backend.search(
-            query=query,
-            top_k=top_k,
-            allowed_risk=allowed_risk,
-            excluded_names=excluded,
+        return cast(
+            list[dict[str, Any]],
+            self._backend.search(
+                query=query,
+                top_k=top_k,
+                allowed_risk=allowed_risk,
+                excluded_names=excluded,
+            ),
         )

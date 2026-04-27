@@ -122,6 +122,54 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
     assert cfg.memory_window == 20
 
 
+def test_config_load_reads_agent_dev_mode(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {
+                "system_prompt": "s",
+                "dev_mode": True,
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.dev_mode is True
+
+
+def test_config_load_accepts_dev_model_alias(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {
+                "system_prompt": "s",
+                "dev_model": True,
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.dev_mode is True
+
+
 def test_config_load_skips_unfilled_channels(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(

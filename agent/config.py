@@ -140,6 +140,15 @@ def load_config(path: str | Path = "config.toml") -> Config:
         spawn_enabled=bool(
             agent_tools.get("spawn_enabled", data.get("spawn_enabled", True))
         ),
+        dev_mode=bool(
+            agent_cfg.get(
+                "dev_mode",
+                agent_cfg.get(
+                    "dev_model",
+                    data.get("dev_mode", data.get("dev_model", False)),
+                ),
+            )
+        ),
         multimodal=bool(llm_main.get("multimodal", True)),
         vl_model=str(llm_vl.get("model") or data.get("vl_model", "")),
         vl_api_key=_resolve(str(llm_vl.get("api_key") or data.get("vl_api_key", ""))),

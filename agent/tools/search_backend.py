@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Set as AbstractSet
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from agent.tools.registry import ToolDocument
@@ -41,7 +41,7 @@ class SearchBackend(ABC):
         top_k: int = 5,
         allowed_risk: list[str] | None = None,
         excluded_names: AbstractSet[str] | None = None,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """搜索工具目录，返回匹配的工具信息列表。
 
         返回格式：
@@ -66,7 +66,7 @@ class KeywordSearchBackend(SearchBackend):
         self._docs[document.name] = document
 
     def remove(self, name: str) -> None:
-        self._docs.pop(name, None)
+        _ = self._docs.pop(name, None)
 
     def search(
         self,
@@ -74,7 +74,7 @@ class KeywordSearchBackend(SearchBackend):
         top_k: int = 5,
         allowed_risk: list[str] | None = None,
         excluded_names: AbstractSet[str] | None = None,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         risk_filter = set(allowed_risk) if allowed_risk else None
         skip = excluded_names or set()
 
@@ -92,7 +92,7 @@ class KeywordSearchBackend(SearchBackend):
             # 空/纯空白 query 归一化后无有效词，直接返回空，不做全量扫描
             return []
 
-        results = []
+        results: list[tuple[int, str, dict[str, Any]]] = []
         for name, doc in self._docs.items():
             if name in skip:
                 continue
@@ -113,7 +113,7 @@ class KeywordSearchBackend(SearchBackend):
 # ── 内部工具函数 ───────────────────────────────────────────────────────────────
 
 
-def _doc_to_result(doc: "ToolDocument", why_matched: list[str]) -> dict:
+def _doc_to_result(doc: "ToolDocument", why_matched: list[str]) -> dict[str, Any]:
     """将 ToolDocument 转为 search() 标准返回格式。"""
     return {
         "name": doc.name,

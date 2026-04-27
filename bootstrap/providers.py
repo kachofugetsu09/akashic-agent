@@ -10,6 +10,7 @@ _LIGHT_PROVIDER_TIMEOUT_S = 180.0
 def build_providers(
     config: Config,
 ) -> tuple[LLMProvider, LLMProvider | None, LLMProvider | None]:
+    payload_snapshot_enabled = bool(getattr(config, "dev_mode", False))
     main_extra = _sanitize_extra_body(
         base_url=config.base_url,
         extra_body=config.extra_body,
@@ -21,6 +22,7 @@ def build_providers(
         extra_body=main_extra,
         request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
         provider_name=config.provider,
+        payload_snapshot_enabled=payload_snapshot_enabled,
     )
 
     light_provider: LLMProvider | None = None
@@ -42,6 +44,7 @@ def build_providers(
             extra_body=light_extra,
             request_timeout_s=_LIGHT_PROVIDER_TIMEOUT_S,
             force_disable_thinking=True,
+            payload_snapshot_enabled=payload_snapshot_enabled,
         )
 
     agent_provider: LLMProvider | None = None
@@ -54,6 +57,7 @@ def build_providers(
             system_prompt=config.system_prompt,
             extra_body=agent_extra,
             request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
+            payload_snapshot_enabled=payload_snapshot_enabled,
         )
 
     return provider, light_provider, agent_provider
@@ -62,6 +66,7 @@ def build_providers(
 def build_vl_provider(config: Config) -> LLMProvider | None:
     """构建 VL 视觉模型 provider，仅当主模型不支持多模态且配置了 vl_model 时返回。"""
     if not getattr(config, "multimodal", True) and getattr(config, "vl_model", ""):
+        payload_snapshot_enabled = bool(getattr(config, "dev_mode", False))
         vl_url = getattr(config, "vl_base_url", "") or getattr(config, "base_url", "") or ""
         vl_extra = _sanitize_extra_body(base_url=vl_url, extra_body={})
         return LLMProvider(
@@ -70,6 +75,7 @@ def build_vl_provider(config: Config) -> LLMProvider | None:
             system_prompt="",
             extra_body=vl_extra,
             request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
+            payload_snapshot_enabled=payload_snapshot_enabled,
         )
     return None
 

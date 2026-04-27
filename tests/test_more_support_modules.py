@@ -210,13 +210,14 @@ async def test_provider_payload_snapshot_switch_default_off_and_opt_in(
     assert not last_payload.exists()
 
     monkeypatch.setattr(provider_module, "_LLM_PAYLOAD_SNAPSHOT_ENABLED", True)
-    await provider.chat(
+    provider_enabled = LLMProvider(api_key="k")
+    await provider_enabled.chat(
         messages=[{"role": "user", "content": "hi"}],
         tools=[],
         model="m",
         max_tokens=10,
     )
-    await provider.chat(
+    await provider_enabled.chat(
         messages=[{"role": "user", "content": "stream"}],
         tools=[],
         model="m",
@@ -231,6 +232,34 @@ async def test_provider_payload_snapshot_switch_default_off_and_opt_in(
     assert first_payload["messages"][0]["content"] == "hi"
     assert second_payload["messages"][0]["content"] == "stream"
     assert second_payload["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_provider_payload_snapshot_can_enable_per_instance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    snapshot_dir = tmp_path / "payloads"
+    last_payload = tmp_path / "last.json"
+    monkeypatch.setattr(provider_module, "_PAYLOAD_SNAPSHOT_DIR", snapshot_dir)
+    monkeypatch.setattr(provider_module, "_LAST_PAYLOAD_PATH", last_payload)
+    monkeypatch.setattr(provider_module, "_LLM_PAYLOAD_SNAPSHOT_ENABLED", False)
+
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+
+    provider = LLMProvider(api_key="k", payload_snapshot_enabled=True)
+    await provider.chat(
+        messages=[{"role": "user", "content": "dev"}],
+        tools=[],
+        model="m",
+        max_tokens=10,
+    )
+
+    files = sorted(snapshot_dir.glob("*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text(encoding="utf-8"))
+    assert payload["messages"][0]["content"] == "dev"
 
 
 @pytest.mark.asyncio

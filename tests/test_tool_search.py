@@ -50,6 +50,36 @@ class _StubTool(Tool):
         return "ok"
 
 
+class _PathOnlyTool(Tool):
+    name = "path_only"
+    description = "测试只接收 path 的工具"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "路径"},
+        },
+        "required": ["path"],
+    }
+
+    async def execute(self, path: str) -> str:
+        return path
+
+
+class _ExistingDescriptionTool(Tool):
+    name = "existing_description"
+    description = "测试自带 description 参数的工具"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "业务描述"},
+        },
+        "required": ["description"],
+    }
+
+    async def execute(self, description: str) -> str:
+        return description
+
+
 def _make_registry() -> ToolRegistry:
     """构建测试用 registry。
 
@@ -120,6 +150,43 @@ def _make_registry() -> ToolRegistry:
         always_on=True,
     )
     return reg
+
+
+def test_registry_adds_model_description_for_progress() -> None:
+    reg = ToolRegistry()
+    reg.register(_PathOnlyTool())
+
+    schema = reg.get_schemas(names={"path_only"})[0]["function"]["parameters"]
+
+    assert "description" in schema["properties"]
+    assert "description" in schema["required"]
+    assert "description" not in _PathOnlyTool.parameters["properties"]
+
+
+@pytest.mark.asyncio
+async def test_registry_strips_progress_description_before_execute() -> None:
+    reg = ToolRegistry()
+    reg.register(_PathOnlyTool())
+
+    result = await reg.execute(
+        "path_only",
+        {"path": "/tmp/a", "description": "读取文件"},
+    )
+
+    assert result == "/tmp/a"
+
+
+@pytest.mark.asyncio
+async def test_registry_keeps_real_description_parameter() -> None:
+    reg = ToolRegistry()
+    reg.register(_ExistingDescriptionTool())
+
+    result = await reg.execute(
+        "existing_description",
+        {"description": "业务描述"},
+    )
+
+    assert result == "业务描述"
 
 
 # ── _default_normalize 单元测试 ───────────────────────────────────────────────
