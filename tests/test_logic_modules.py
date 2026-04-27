@@ -16,7 +16,12 @@ from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
 )
-from session.manager import Session, SessionManager, _safe_filename
+from session.manager import (
+    Session,
+    SessionManager,
+    _TOOL_RESULT_CHAR_BUDGET,
+    _safe_filename,
+)
 
 
 @pytest.mark.asyncio
@@ -311,7 +316,7 @@ def test_session_get_history_keeps_reasoning_content():
     assert history[-1]["reasoning_content"] == "先想一下"
 
 
-def test_session_get_history_clears_old_tool_results_after_consolidation_tail():
+def test_session_get_history_keeps_short_tool_results_after_consolidation_tail():
     session = Session("cli:1")
     session.last_consolidated = 0
     for i in range(3):
@@ -334,7 +339,35 @@ def test_session_get_history_clears_old_tool_results_after_consolidation_tail():
     history = session.get_history(start_index=session.last_consolidated)
     tool_contents = [m["content"] for m in history if m.get("role") == "tool"]
 
-    assert tool_contents == ["[已清除]", "[已清除]", "result-2"]
+    assert tool_contents == ["result-0", "result-1", "result-2"]
+
+
+def test_session_get_history_truncates_long_tool_results_in_middle():
+    session = Session("cli:1")
+    long_result = "head-" + "x" * (_TOOL_RESULT_CHAR_BUDGET + 200) + "-tail"
+    session.add_message("user", "u")
+    session.add_message("assistant", "a")
+    session.messages[-1]["tool_chain"] = [
+        {
+            "text": "",
+            "calls": [
+                {
+                    "call_id": "call-1",
+                    "name": "dummy",
+                    "arguments": {},
+                    "result": long_result,
+                }
+            ],
+        }
+    ]
+
+    history = session.get_history()
+    tool_content = next(m["content"] for m in history if m.get("role") == "tool")
+
+    assert tool_content.startswith("Total output lines: 1\n\nhead-")
+    assert "chars truncated" in tool_content
+    assert tool_content.endswith("-tail")
+    assert len(tool_content) < len(long_result)
 
 
 @pytest.mark.asyncio

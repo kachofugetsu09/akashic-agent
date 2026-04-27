@@ -118,17 +118,25 @@ class TelegramChannel:
         self._live_last_lengths: dict[str, int] = {}
         self._tool_lines: dict[str, list[_ToolLiveLine]] = {}
         self._live_tasks: set[asyncio.Task[None]] = set()
+        self._live_tasks_by_session: dict[str, set[asyncio.Task[None]]] = {}
 
     @property
     def bot(self):
         return self._app.bot
 
-    def _start_live_task(self, coro: Coroutine[Any, Any, None]) -> None:
+    def _start_live_task(
+        self,
+        session_key: str,
+        coro: Coroutine[Any, Any, None],
+    ) -> None:
         task = asyncio.create_task(coro)
         self._live_tasks.add(task)
+        self._live_tasks_by_session.setdefault(session_key, set()).add(task)
 
         def _done(done_task: asyncio.Task[None]) -> None:
             self._live_tasks.discard(done_task)
+            for tasks in self._live_tasks_by_session.values():
+                tasks.discard(done_task)
             try:
                 _ = done_task.result()
             except asyncio.CancelledError:
@@ -137,6 +145,14 @@ class TelegramChannel:
                 logger.warning("[telegram] live 更新任务失败: %s", e)
 
         task.add_done_callback(_done)
+
+    async def _cancel_live_tasks(self, session_key: str) -> None:
+        tasks = [task for task in self._live_tasks_by_session.get(session_key, set()) if not task.done()]
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def start(self) -> None:
         self._rebuild_user_map()
@@ -459,6 +475,7 @@ class TelegramChannel:
     async def _on_turn_started(self, event: TurnStarted) -> None:
         if event.channel != _CHANNEL:
             return
+        await self._cancel_live_tasks(event.session_key)
         _ = self._tool_lines.pop(event.session_key, None)
         _ = self._reply_buffers.pop(event.session_key, None)
         _ = self._thinking_buffers.pop(event.session_key, None)
@@ -491,7 +508,10 @@ class TelegramChannel:
             return
         self._thinking_live_next_at[event.session_key] = now + _LIVE_STREAM_MIN_INTERVAL_S
         self._live_last_lengths[event.session_key] = live_len
-        self._start_live_task(self._sync_live_message(event.session_key, cid))
+        self._start_live_task(
+            event.session_key,
+            self._sync_live_message(event.session_key, cid),
+        )
 
     async def _on_tool_call_started(self, event: ToolCallStarted) -> None:
         if event.channel != _CHANNEL:
@@ -508,7 +528,10 @@ class TelegramChannel:
                 target=_format_tool_target(event.arguments),
             )
         )
-        self._start_live_task(self._sync_live_message(event.session_key, cid))
+        self._start_live_task(
+            event.session_key,
+            self._sync_live_message(event.session_key, cid),
+        )
 
     async def _on_tool_call_completed(self, event: ToolCallCompleted) -> None:
         if event.channel != _CHANNEL:
@@ -527,7 +550,10 @@ class TelegramChannel:
             )
             lines.append(line)
         line.status = "error" if event.status == "error" else "done"
-        self._start_live_task(self._sync_live_message(event.session_key, cid))
+        self._start_live_task(
+            event.session_key,
+            self._sync_live_message(event.session_key, cid),
+        )
 
     async def _sync_live_message(
         self,
@@ -556,6 +582,11 @@ class TelegramChannel:
 
     def _has_live_messages(self, session_key: str) -> bool:
         return session_key in self._live_messages
+
+    async def _delete_live_message(self, session_key: str) -> None:
+        message = self._live_messages.pop(session_key, None)
+        if message is not None:
+            await message.delete()
 
     async def _drain_live_tasks(self) -> None:
         tasks = [task for task in self._live_tasks if not task.done()]
@@ -591,6 +622,18 @@ class TelegramChannel:
         )
         await send_thinking_block(self._app.bot, original_chat_id, thinking)
 
+    async def _send_final_tool_snapshot(
+        self,
+        session_key: str,
+        chat_id: str,
+    ) -> None:
+        lines = self._tool_lines.get(session_key, [])
+        if not lines:
+            return
+        tool_text = _tail_text(_format_tool_live(lines), _TOOL_LIVE_TAIL)
+        if tool_text:
+            await send_markdown(self._app.bot, chat_id, f"```\n{tool_text}\n```")
+
     async def send_file(
         self,
         chat_id: str,
@@ -620,15 +663,14 @@ class TelegramChannel:
         cid = int(self._resolve_chat_id(msg.chat_id))
         session_key = f"{_CHANNEL}:{msg.chat_id}"
         had_live = self._has_live_messages(session_key)
-        await self._drain_live_tasks()
+        if had_live:
+            await self._cancel_live_tasks(session_key)
+            await self._delete_live_message(session_key)
         final_thinking = self._final_thinking_text(session_key, msg.thinking)
         if had_live:
             if final_thinking:
-                self._thinking_buffers[session_key] = final_thinking
-            if msg.content.strip():
-                self._reply_buffers[session_key] = msg.content
-            await self._sync_live_message(session_key, cid, terminal=True)
-            await self._live_edit_queue.reserve(cid, label="send_message(response)")
+                await send_thinking_block(self._app.bot, msg.chat_id, final_thinking)
+            await self._send_final_tool_snapshot(session_key, msg.chat_id)
         streamed_reply = bool((msg.metadata or {}).get("streamed_reply"))
         if msg.content.strip():
             if streamed_reply:
@@ -638,7 +680,7 @@ class TelegramChannel:
                 else:
                     await send_markdown(self._app.bot, msg.chat_id, msg.content)
             else:
-                await send_stream_markdown(self._app.bot, msg.chat_id, msg.content)
+                await send_markdown(self._app.bot, msg.chat_id, msg.content)
         if final_thinking and not had_live:
             await self._send_final_thinking(cid, msg.chat_id, final_thinking)
         self._reply_buffers.pop(session_key, None)

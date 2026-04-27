@@ -13,9 +13,25 @@ from session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
-# 保留完整 tool_result 的最近轮次数；更早的轮次仅保留调用结构，结果替换为占位符
-_RECENT_TOOL_ROUNDS = 1
-_CLEARED = "[已清除]"
+_TOOL_RESULT_CHAR_BUDGET = 4_000
+
+
+def _truncate_tool_result(content: object) -> str:
+    text = content if isinstance(content, str) else str(content)
+    if len(text) <= _TOOL_RESULT_CHAR_BUDGET:
+        return text
+    omitted = len(text) - _TOOL_RESULT_CHAR_BUDGET
+    while True:
+        marker = f"…{omitted} chars truncated…"
+        keep = max(0, _TOOL_RESULT_CHAR_BUDGET - len(marker))
+        actual_omitted = len(text) - keep
+        if actual_omitted == omitted:
+            break
+        omitted = actual_omitted
+    head = keep // 2
+    tail = keep - head
+    truncated = text[:head] + marker + (text[-tail:] if tail else "")
+    return f"Total output lines: {len(text.splitlines())}\n\n{truncated}"
 
 
 def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
@@ -152,18 +168,9 @@ class Session:
             messages = []
         else:
             messages = self.messages[-max_messages:]
-        assistant_indices = [
-            i for i, m in enumerate(messages) if m.get("role") == "assistant"
-        ]
-        if len(assistant_indices) <= _RECENT_TOOL_ROUNDS:
-            recent_boundary = 0
-        else:
-            recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS]
-
         out: list[dict[str, Any]] = []
-        for i, m in enumerate(messages):
+        for m in messages:
             role = m.get("role")
-            is_recent = i >= recent_boundary
 
             if role == "user":
                 user_content = m.get("llm_user_content")
@@ -212,7 +219,7 @@ class Session:
                         {
                             "role": "tool",
                             "tool_call_id": c["call_id"],
-                            "content": c["result"] if is_recent else _CLEARED,
+                            "content": _truncate_tool_result(c.get("result", "")),
                         }
                     )
 

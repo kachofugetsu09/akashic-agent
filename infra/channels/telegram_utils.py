@@ -26,9 +26,9 @@ _STREAM_PUSH_MIN_INTERVAL_S = 2.5
 _STREAM_PUSH_MIN_CHARS = 200
 _TELEGRAM_MSG_LIMIT = 4096
 _LIVE_MESSAGE_LIMIT = 3900
-_LIVE_EDIT_MIN_INTERVAL_S = 0.2
+_LIVE_EDIT_MIN_INTERVAL_S = 1.0
 _LIVE_MAX_FLOOD_STRIKES = 3
-_LIVE_MAX_INLINE_RETRY_S = 5.0
+_LIVE_MAX_INLINE_RETRY_S = 2.0
 _LIVE_MAX_BACKOFF_S = 10.0
 _THINKING_CAP = 800
 _THINKING_MIN = 100
@@ -429,6 +429,21 @@ class TelegramLiveTextMessage:
         )
         if ok:
             self._last_plain = plain
+
+    async def delete(self) -> None:
+        if self._message_id is None:
+            return
+        try:
+            await self._bot.delete_message(
+                chat_id=self._chat_id,
+                message_id=self._message_id,
+            )
+            self._message_id = None
+            self._last_plain = ""
+        except RetryAfter as e:
+            logger.warning("[telegram] live 预览删除命中限流，已跳过: %s", e)
+        except (TimedOut, NetworkError) as e:
+            logger.warning("[telegram] live 预览删除失败，已跳过: %s", e)
 
 
 def _clip_live_text(text: str) -> str:

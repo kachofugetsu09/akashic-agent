@@ -602,8 +602,8 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     await channel.send_image("123", "https://example.com/img.jpg")
     await channel.send_image("123", str(sample))
     await channel._on_response(OutboundMessage(channel="telegram", chat_id="123", content="pong"))
-    assert mod.send_markdown.await_count == 2
-    assert mod.send_stream_markdown.await_count == 2
+    assert mod.send_markdown.await_count == 3
+    assert mod.send_stream_markdown.await_count == 1
     sender = channel.create_stream_sender("123")
     assert sender is not None
     await sender({"thinking_delta": "先想一点"})
@@ -746,9 +746,11 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         )
     )
     assert channel._app.bot.edit_message_text.await_count >= 1
-    assert mod.send_markdown.await_count == 2
-    assert mod.send_stream_markdown.await_count == 2
+    assert mod.send_markdown.await_count == 3
+    assert mod.send_stream_markdown.await_count == 1
     mod.send_thinking_block.reset_mock()
+    before_final_markdown = mod.send_markdown.await_count
+    before_delete = channel._app.bot.delete_message.await_count
     await channel._on_response(
         OutboundMessage(
             channel="telegram",
@@ -757,13 +759,14 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
             thinking="继续分析",
         )
     )
-    assert channel._app.bot.delete_message.await_count == 0
-    mod.send_thinking_block.assert_not_awaited()
-    last_live_edit = channel._app.bot.edit_message_text.await_args_list[-1].kwargs["text"]
-    assert last_live_edit.find("思考过程") < last_live_edit.find("工具调用")
-    assert "工具调用" in last_live_edit
-    assert "事件思考继续分析" in last_live_edit
-    assert "临时回复" not in last_live_edit
+    assert channel._app.bot.delete_message.await_count == before_delete + 1
+    mod.send_thinking_block.assert_awaited_once()
+    assert mod.send_markdown.await_count == before_final_markdown + 2
+    snapshot_text = mod.send_markdown.await_args_list[-2].args[2]
+    assert "工具调用" in snapshot_text
+    assert "事件思考继续分析" not in snapshot_text
+    assert "临时回复" not in snapshot_text
+    assert snapshot_text.startswith("```")
 
     mod.send_thinking_block.reset_mock()
     sender = channel.create_stream_sender("123")
