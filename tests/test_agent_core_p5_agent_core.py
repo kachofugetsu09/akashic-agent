@@ -9,15 +9,17 @@ import pytest
 
 from agent.context import ContextBuilder
 from agent.core.passive_turn import ContextStore, Reasoner
-from agent.core.runtime_support import TurnRunResult
+from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.core.passive_support import predict_current_user_source_ref
 from agent.core.passive_turn import AgentCore, AgentCoreDeps
 from agent.core.types import ContextBundle
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
+from agent.turns.outbound import OutboundPort
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
+from session.manager import SessionManager
 
 
 class _DummySession:
@@ -27,10 +29,25 @@ class _DummySession:
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
 
-    def get_history(self, max_messages: int = 500) -> list[dict]:
+    def get_history(
+        self,
+        max_messages: int = 500,
+        *,
+        start_index: int | None = None,
+    ) -> list[dict]:
+        if start_index is not None:
+            return self.messages[start_index:][-max_messages:]
         return self.messages[-max_messages:]
 
-    def add_message(self, role: str, content: str, **kwargs: object) -> None:
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        media=None,
+        **kwargs: object,
+    ) -> None:
+        if media is not None:
+            kwargs["media"] = media
         self.messages.append({"role": role, "content": content, **kwargs})
 
 
@@ -236,8 +253,8 @@ def test_predict_current_user_source_ref_falls_back_to_last_session_message():
     session.messages.append({"id": "telegram:123:41"})
 
     value = predict_current_user_source_ref(
-        session_manager=SimpleNamespace(),
-        session=session,
+        session_manager=cast(SessionManager, SimpleNamespace()),
+        session=cast(SessionLike, session),
     )
 
     assert value == "telegram:123:41"
@@ -279,7 +296,7 @@ async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
             tools=cast(ToolRegistry, tools),
             reasoner=cast(Reasoner, reasoner),
             event_bus=event_bus,
-            outbound_port=dispatch_port,
+            outbound_port=cast(OutboundPort, dispatch_port),
         )
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
@@ -331,7 +348,7 @@ async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches()
             tools=cast(ToolRegistry, tools),
             reasoner=cast(Reasoner, reasoner),
             event_bus=event_bus,
-            outbound_port=dispatch_port,
+            outbound_port=cast(OutboundPort, dispatch_port),
         )
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
@@ -381,7 +398,7 @@ async def test_abort_does_not_dispatch_when_dispatch_outbound_false():
             tools=cast(ToolRegistry, tools),
             reasoner=cast(Reasoner, reasoner),
             event_bus=event_bus,
-            outbound_port=dispatch_port,
+            outbound_port=cast(OutboundPort, dispatch_port),
         )
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
@@ -425,7 +442,7 @@ async def test_reasoner_exception_turn_returns_control_outbound():
             context=cast(ContextBuilder, context),
             tools=cast(ToolRegistry, tools),
             reasoner=cast(Reasoner, reasoner),
-            outbound_port=dispatch_port,
+            outbound_port=cast(OutboundPort, dispatch_port),
         )
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
@@ -480,7 +497,7 @@ async def test_after_turn_dispatch_exception_is_not_wrapped_by_control_outbound(
             context=cast(ContextBuilder, context),
             tools=cast(ToolRegistry, tools),
             reasoner=cast(Reasoner, reasoner),
-            outbound_port=dispatch_port,
+            outbound_port=cast(OutboundPort, dispatch_port),
         )
     )
     msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")

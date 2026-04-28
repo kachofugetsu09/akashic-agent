@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from agent.context import ContextBuilder
+from agent.core.passive_support import build_context_hint_message
+from agent.core.passive_turn import ContextStore
+from agent.core.types import ContextBundle
+from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
-from agent.core.types import ContextBundle
-from agent.core.passive_support import build_context_hint_message
 from agent.lifecycle.types import (
     AfterStepCtx,
     BeforeReasoningCtx,
@@ -23,6 +27,7 @@ from agent.lifecycle.phases.after_step import AfterStepPhase
 from agent.lifecycle.phases.before_step import BeforeStepPhase
 from agent.lifecycle.phases.before_turn import BeforeTurnPhase
 from agent.lifecycle.phases.before_reasoning import BeforeReasoningPhase
+from session.manager import SessionManager
 
 _now = datetime.now()
 
@@ -74,7 +79,11 @@ async def test_before_turn_setup_fills_turn_state():
         prepare=AsyncMock(return_value=bundle),
     )
 
-    phase = BeforeTurnPhase(bus, session_mgr, ctx_store)
+    phase = BeforeTurnPhase(
+        bus,
+        cast(SessionManager, session_mgr),
+        cast(ContextStore, ctx_store),
+    )
     msg = _inbound()
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
 
@@ -105,7 +114,11 @@ async def test_before_turn_chain_can_abort():
 
     bus.on(BeforeTurnCtx, abort_handler)
 
-    phase = BeforeTurnPhase(bus, session_mgr, ctx_store)
+    phase = BeforeTurnPhase(
+        bus,
+        cast(SessionManager, session_mgr),
+        cast(ContextStore, ctx_store),
+    )
     msg = _inbound()
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
 
@@ -129,7 +142,11 @@ async def test_before_turn_chain_can_modify_skill_names():
 
     bus.on(BeforeTurnCtx, add_skill)
 
-    phase = BeforeTurnPhase(bus, session_mgr, ctx_store)
+    phase = BeforeTurnPhase(
+        bus,
+        cast(SessionManager, session_mgr),
+        cast(ContextStore, ctx_store),
+    )
     msg = _inbound()
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
 
@@ -153,7 +170,12 @@ async def test_before_reasoning_setup_calls_tools_set_context():
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
 
-    phase = BeforeReasoningPhase(bus, tools, session_mgr, context_builder)
+    phase = BeforeReasoningPhase(
+        bus,
+        cast(ToolRegistry, tools),
+        cast(SessionManager, session_mgr),
+        cast(ContextBuilder, context_builder),
+    )
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
@@ -187,7 +209,12 @@ async def test_before_reasoning_requires_session():
     session_mgr = Mock()
     context_builder = Mock()
 
-    phase = BeforeReasoningPhase(bus, tools, session_mgr, context_builder)
+    phase = BeforeReasoningPhase(
+        bus,
+        cast(ToolRegistry, tools),
+        cast(SessionManager, session_mgr),
+        cast(ContextBuilder, context_builder),
+    )
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
@@ -218,7 +245,12 @@ async def test_before_reasoning_finalize_calls_render():
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
 
-    phase = BeforeReasoningPhase(bus, tools, session_mgr, context_builder)
+    phase = BeforeReasoningPhase(
+        bus,
+        cast(ToolRegistry, tools),
+        cast(SessionManager, session_mgr),
+        cast(ContextBuilder, context_builder),
+    )
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
@@ -260,7 +292,12 @@ async def test_before_reasoning_chain_can_add_extra_hints():
 
     bus.on(BeforeReasoningCtx, hint_handler)
 
-    phase = BeforeReasoningPhase(bus, tools, session_mgr, context_builder)
+    phase = BeforeReasoningPhase(
+        bus,
+        cast(ToolRegistry, tools),
+        cast(SessionManager, session_mgr),
+        cast(ContextBuilder, context_builder),
+    )
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(
@@ -296,7 +333,12 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
 
     bus.on(BeforeReasoningCtx, modify_chain)
 
-    phase = BeforeReasoningPhase(bus, tools, session_mgr, context_builder)
+    phase = BeforeReasoningPhase(
+        bus,
+        cast(ToolRegistry, tools),
+        cast(SessionManager, session_mgr),
+        cast(ContextBuilder, context_builder),
+    )
     msg = _inbound()
 
     before_turn = BeforeTurnCtx(

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.types import ToolCall, ToolCallGroup
-from agent.core.runtime_support import TurnRunResult
+from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
 from agent.lifecycle.facade import TurnLifecycle
@@ -588,14 +588,16 @@ async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: P
     session = SimpleNamespace(
         key=session_key,
         messages=[],
+        metadata={},
         last_consolidated=0,
         get_history=MagicMock(return_value=[]),
+        add_message=MagicMock(),
     )
     loop.session_manager.get_or_create.return_value = session
 
     await loop._reasoner.run_turn(
         msg=msg,
-        session=session,
+        session=cast(SessionLike, session),
         base_history=[],
     )
 
