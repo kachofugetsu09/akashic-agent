@@ -376,11 +376,7 @@ class DefaultContextStore(ContextStore):
         session: "SessionLike",
     ) -> ContextBundle:
         # 1. 先读取 session history，并转换成 retrieval pipeline 需要的结构。
-        raw_history = [
-            item
-            for item in session.get_history()
-            if not support.is_llm_context_frame(item)
-        ]
+        raw_history = list(session.get_history())
         history_messages = support.to_history_messages(raw_history)
 
         # 2. 再执行 retrieval，保持当前 pipeline 行为不变。

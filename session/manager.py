@@ -173,6 +173,9 @@ class Session:
             role = m.get("role")
 
             if role == "user":
+                context_frame = m.get("llm_context_frame")
+                if isinstance(context_frame, str) and context_frame.strip():
+                    out.append({"role": "user", "content": context_frame})
                 user_content = m.get("llm_user_content")
                 if user_content is None:
                     text = m.get("content", "")

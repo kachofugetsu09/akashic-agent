@@ -12,6 +12,7 @@ from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
 from agent.looping.memory_gate import (
     _decide_history_route,
+    _format_gate_history,
     _is_flow_execution_state,
     _trace_route_reason,
 )
@@ -130,6 +131,20 @@ def _req(msg: InboundMessage, session: _DummySession) -> RetrievalRequest:
         session_metadata=session.metadata,
         timestamp=msg.timestamp,
     )
+
+
+def test_format_gate_history_skips_context_frames():
+    history = [
+        {"role": "user", "content": '<system-reminder data-system-context-frame="true">内部</system-reminder>'},
+        {"role": "user", "content": "真实用户消息"},
+        {"role": "assistant", "content": "真实回复"},
+    ]
+
+    text = _format_gate_history(history)
+
+    assert "内部" not in text
+    assert "真实用户消息" in text
+    assert "真实回复" in text
 
 
 def test_route_gate_no_retrieve_when_high_confidence_no_retrieve():

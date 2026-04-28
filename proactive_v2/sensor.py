@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from agent.prompting import is_context_frame
 from proactive_v2.energy import compute_energy, d_recent
 from proactive_v2.presence import PresenceStore
 from proactive_v2.state import ProactiveStateStore
@@ -109,10 +110,13 @@ class Sensor:
                 continue
             if not message.get("content"):
                 continue
+            content = str(message.get("content", ""))
+            if is_context_frame(content):
+                continue
             results.append(
                 {
                     "role": message["role"],
-                    "content": str(message.get("content", ""))[:200],
+                    "content": content[:200],
                     "timestamp": str(message.get("timestamp", "")),
                 }
             )

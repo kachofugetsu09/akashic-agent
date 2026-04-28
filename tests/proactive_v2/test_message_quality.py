@@ -63,6 +63,21 @@ async def test_get_recent_chat_keeps_passive_assistant_replies():
 
 
 @pytest.mark.asyncio
+async def test_get_recent_chat_filters_context_frames():
+    mixed = [
+        {"role": "user", "content": '<system-reminder data-system-context-frame="true">内部</system-reminder>'},
+        {"role": "user", "content": "真实用户消息"},
+    ]
+    fake_chat_fn = AsyncMock(return_value=mixed)
+    ctx = AgentTickContext()
+
+    raw = await _get_recent_chat(ctx, {}, recent_chat_fn=fake_chat_fn)
+    result = json.loads(raw)
+
+    assert [m["content"] for m in result] == ["真实用户消息"]
+
+
+@pytest.mark.asyncio
 async def test_get_recent_chat_empty_after_filtering_all_proactive():
     """全部是主动推送时，返回空列表。"""
     all_proactive = [

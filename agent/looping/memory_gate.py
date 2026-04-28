@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from agent.looping.constants import _RETRIEVE_TRACE_SUMMARY_MAX
 from agent.policies.history_route import HistoryRoutePolicy, RouteDecision
+from agent.prompting import is_context_frame
 from core.common.strategy_trace import build_strategy_trace_envelope
 
 if TYPE_CHECKING:
@@ -111,6 +112,8 @@ def _format_gate_history(
                 c.get("text", "") for c in content if isinstance(c, dict)
             )
         content = str(content).strip()
+        if is_context_frame(content):
+            continue
         if max_content_len is not None:
             content = content[:max_content_len]
         if content:

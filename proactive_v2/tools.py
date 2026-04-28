@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent.prompting import is_context_frame
 from proactive_v2.context import AgentTickContext
 
 logger = logging.getLogger(__name__)
@@ -294,10 +295,15 @@ async def _get_recent_chat(ctx: AgentTickContext, args: dict, *, recent_chat_fn)
     #   role=assistant, proactive 为假 → 保留（被动回复，代表用户主动发起的对话上下文）
     #   role=assistant, proactive=True → 过滤（主动推送，不能当成事实被循环引用；
     #                                           去重逻辑由 recent_proactive_fn 独立负责）
-    filtered = [
-        m for m in (messages or [])
-        if m.get("role") == "user" or (m.get("role") == "assistant" and not m.get("proactive"))
-    ]
+    filtered = []
+    for m in messages or []:
+        content = str(m.get("content") or "")
+        if is_context_frame(content):
+            continue
+        if m.get("role") == "user" or (
+            m.get("role") == "assistant" and not m.get("proactive")
+        ):
+            filtered.append(m)
     return json.dumps(filtered, ensure_ascii=False)
 
 
