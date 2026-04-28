@@ -7,7 +7,6 @@ from typing import Any, cast
 import pytest
 
 from agent.context import ContextBuilder
-from agent.core.context_store import ContextStore
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.core.runner import CoreRunner, CoreRunnerDeps
@@ -22,13 +21,14 @@ async def test_core_runner_routes_passive_message_to_agent_core():
             agent_core=cast(
                 Any,
                 SimpleNamespace(
-                process=AsyncMock(
-                    return_value=OutboundMessage(
-                        channel="cli",
-                        chat_id="1",
-                        content="final",
-                    )
-                ),
+                    process=AsyncMock(
+                        return_value=OutboundMessage(
+                            channel="cli",
+                            chat_id="1",
+                            content="final",
+                        )
+                    ),
+                    pipeline=SimpleNamespace(),
                 ),
             ),
         )
@@ -55,8 +55,8 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     context = SimpleNamespace(
         render=MagicMock(return_value=SimpleNamespace(messages=[{"role": "system", "content": "prompt"}]))
     )
-    context_store = SimpleNamespace(
-        commit=AsyncMock(
+    pipeline_mock = SimpleNamespace(
+        post_reasoning=AsyncMock(
             return_value=OutboundMessage(
                 channel="telegram",
                 chat_id="123",
@@ -72,11 +72,13 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
         CoreRunnerDeps(
             agent_core=cast(
                 Any,
-                SimpleNamespace(process=AsyncMock()),
+                SimpleNamespace(
+                    process=AsyncMock(),
+                    pipeline=pipeline_mock,
+                ),
             ),
             session=cast(SessionServices, session_svc),
             context=cast(ContextBuilder, context),
-            context_store=cast(ContextStore, context_store),
             tools=cast(ToolRegistry, tools),
             memory_window=12,
             run_agent_loop_fn=run_agent_loop_fn,
@@ -103,5 +105,7 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     tools.set_context.assert_called_once_with(channel="telegram", chat_id="123")
     context.render.assert_called_once()
     run_agent_loop_fn.assert_awaited_once()
-    context_store.commit.assert_awaited_once()
+    pipeline_mock.post_reasoning.assert_awaited_once()
+    pr_kwargs = pipeline_mock.post_reasoning.await_args.kwargs
+    assert pr_kwargs["dispatch_outbound"] is False
     runner._agent_core.process.assert_not_awaited()

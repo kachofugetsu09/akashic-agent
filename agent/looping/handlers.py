@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from agent.core.response_parser import parse_response
-from agent.core.runtime_support import AgentLoopRunner
+from agent.core.runtime_support import AgentLoopRunner, TurnRunResult
 from agent.looping.ports import SessionServices
 from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
-    from agent.core.context_store import ContextStore
+    from agent.core.passive_turn import PassiveTurnPipeline
     from agent.tools.registry import ToolRegistry
 
 async def process_spawn_completion_event(
@@ -18,10 +17,11 @@ async def process_spawn_completion_event(
     key: str,
     session_svc: SessionServices,
     context: "ContextBuilder",
-    context_store: "ContextStore",
+    pipeline: "PassiveTurnPipeline",
     tools: "ToolRegistry",
     memory_window: int,
     run_agent_loop_fn: AgentLoopRunner,
+    dispatch_outbound: bool = True,
 ) -> OutboundMessage:
     # 1. 先读取 session 和内部事件，准备要给主模型的回传消息。
     session = session_svc.session_manager.get_or_create(key)
@@ -97,12 +97,10 @@ async def process_spawn_completion_event(
         else:
             final_content = "后台任务执行出错。"
 
-    # 3. 最后复用 ContextStore.commit() 落盘、派发和 side effects。
+    # 3. 走 AfterReasoning + dispatch 流程，经过插件链。
     marker = f"[后台任务完成] {label} ({status})"
     if exit_reason:
         marker += f" [{exit_reason}]"
-    parsed_tool_chain = cast(list[dict[str, object]], tool_chain)
-    parsed_response = parse_response(final_content, tool_chain=parsed_tool_chain)
     pseudo_msg = InboundMessage(
         channel=item.channel,
         sender="spawn",
@@ -112,16 +110,14 @@ async def process_spawn_completion_event(
         media=[],
         metadata={"skip_post_memory": True},
     )
-    return await context_store.commit(
+    parsed_tool_chain = cast(list[dict[str, object]], tool_chain)
+    return await pipeline.post_reasoning(
         msg=pseudo_msg,
         session_key=key,
-        reply=parsed_response.clean_text,
-        response_metadata=parsed_response.metadata,
-        tools_used=tools_used,
-        tool_chain=parsed_tool_chain,
-        thinking=None,
-        streamed_reply=False,
-        retrieval_raw=None,
-        context_retry={},
-        dispatch_outbound=True,
+        turn_result=TurnRunResult(
+            reply=final_content,
+            tools_used=tools_used,
+            tool_chain=parsed_tool_chain,
+        ),
+        dispatch_outbound=dispatch_outbound,
     )

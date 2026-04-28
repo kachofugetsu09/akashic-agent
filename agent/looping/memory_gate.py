@@ -91,21 +91,6 @@ def _trace_memory_retrieve(
         logger.warning("memory2 retrieve trace write failed: %s", e)
 
 
-# Canonical implementations moved to agent/core/context_store.py.
-# Lazy-import wrappers here so existing callers continue to work without
-# creating a circular import at module load time.
-
-
-def _update_session_runtime_metadata(
-    session: object,
-    *,
-    tools_used: list[str],
-    tool_chain: list[dict],
-) -> None:
-    from agent.core.context_store import _update_session_runtime_metadata as _impl
-    return _impl(session, tools_used=tools_used, tool_chain=tool_chain)
-
-
 def _is_flow_execution_state(user_msg: str, metadata: dict) -> bool:
     return HistoryRoutePolicy.is_flow_execution_state(user_msg, metadata)
 

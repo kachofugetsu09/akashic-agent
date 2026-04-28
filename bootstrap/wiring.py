@@ -3,10 +3,11 @@ from __future__ import annotations
 from importlib import import_module
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
 from agent.context import ContextBuilder
 from agent.config_models import Config
+from agent.lifecycle.facade import TurnLifecycle
 from agent.provider import LLMProvider
 from agent.tools.base import Tool
 from bootstrap.toolsets.mcp import McpToolsetProvider
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from memory2.post_response_worker import PostResponseMemoryWorker
     from memory2.procedure_tagger import ProcedureTagger
     from memory2.retriever import Retriever
+    from agent.memes.decorator import MemeDecorator
+    from agent.looping.interrupt import TurnInterruptState
 
 
 ContextFactory = Callable[[Path, Any], Any]
@@ -119,6 +122,38 @@ _TOOLSET_WIRING = {
     "schedule": SchedulerToolsetProvider,
     "mcp": McpToolsetProvider,
 }
+
+
+def wire_turn_lifecycle(
+    lifecycle: TurnLifecycle,
+    *,
+    meme_decorator: "MemeDecorator | None",
+    active_turn_states: Mapping[str, "TurnInterruptState"],
+) -> None:
+    from agent.lifecycle.types import AfterReasoningCtx, AfterStepCtx
+
+    if meme_decorator is not None:
+        async def _meme_handler(ctx: AfterReasoningCtx) -> AfterReasoningCtx:
+            decorated = meme_decorator.decorate(ctx.reply, meme_tag=ctx.response_metadata.meme_tag)
+            ctx.reply = decorated.content
+            ctx.media.extend(decorated.media)
+            ctx.meme_tag = decorated.tag
+            return ctx
+
+        lifecycle.on_after_reasoning(_meme_handler)
+
+    async def _progress_reporter(ctx: AfterStepCtx) -> None:
+        state = active_turn_states.get(ctx.session_key)
+        if state is None:
+            return
+        if ctx.partial_reply:
+            state.partial_reply = ctx.partial_reply
+        if ctx.partial_thinking:
+            state.partial_thinking = ctx.partial_thinking
+        state.tools_used = list(ctx.tools_used_so_far)
+        state.tool_chain_partial = list(ctx.tool_chain_partial)
+
+    lifecycle.on_after_step(_progress_reporter)
 
 
 def resolve_memory_toolset_provider(name: str):

@@ -8,9 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.types import ToolCall, ToolCallGroup
-from agent.core.runtime_support import TurnRunResult
+from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
+from agent.lifecycle.facade import TurnLifecycle
 from agent.looping.lifecycle_consumers import register_turn_committed_consumers
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
@@ -27,6 +28,7 @@ from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryIngestRequest
 from core.memory.port import DefaultMemoryPort
+from bootstrap.wiring import wire_turn_lifecycle
 
 
 class _NoopTool(Tool):
@@ -570,43 +572,36 @@ async def test_resumed_interrupt_state_survives_timeout(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_interrupt_state_carries_partial_progress(tmp_path: Path):
+async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: Path):
     loop = _make_loop(tmp_path)
-    session_key = "telegram:123"
-    msg = InboundMessage(
-        channel="telegram",
-        sender="1",
-        chat_id="123",
-        content="原始消息 A",
-    )
-    loop._active_turn_states[session_key] = TurnInterruptState(  # type: ignore[attr-defined]
+    session_key = "cli:123"
+    loop._active_turn_states[session_key] = TurnInterruptState(
         session_key=session_key,
-        original_user_message=msg.content,
+        original_user_message="hello",
     )
-    progress_sink = loop._build_progress_sink(msg)  # type: ignore[attr-defined]
-    await progress_sink(
-        {
-            "partial_reply": "工具阶段说明",
-            "partial_thinking": "思考片段",
-            "tools_used": ["shell"],
-            "tool_chain_partial": [{"text": "tool", "calls": []}],
-        }
+    wire_turn_lifecycle(
+        lifecycle=TurnLifecycle(loop._event_bus),
+        meme_decorator=cast(Any, None),
+        active_turn_states=loop.active_turn_states,
     )
-    loop._append_partial_reply(session_key, " + 流式增量")  # type: ignore[attr-defined]
-    pending = _PendingTask()
-    loop._active_tasks[session_key] = pending  # type: ignore[attr-defined]
+    msg = InboundMessage(channel="cli", sender="u", chat_id="123", content="你好")
+    session = SimpleNamespace(
+        key=session_key,
+        messages=[],
+        metadata={},
+        last_consolidated=0,
+        get_history=MagicMock(return_value=[]),
+        add_message=MagicMock(),
+    )
+    loop.session_manager.get_or_create.return_value = session
 
-    loop.request_interrupt(session_key)
-    state = loop._interrupt_states[session_key]  # type: ignore[attr-defined]
+    await loop._reasoner.run_turn(
+        msg=msg,
+        session=cast(SessionLike, session),
+        base_history=[],
+    )
 
-    assert state.partial_reply == "工具阶段说明 + 流式增量"
-    assert state.partial_thinking == "思考片段"
-    assert state.tools_used == ["shell"]
-    assert state.tool_chain_partial == [{"text": "tool", "calls": []}]
-
-
-def test_agent_loop_configures_progress_sink_without_stream_factory(tmp_path: Path):
-    loop = _make_loop(tmp_path)
-    progress_factory = getattr(loop._reasoner, "_progress_sink_factory", None)
-
-    assert callable(progress_factory)
+    state = loop._active_turn_states[session_key]
+    assert state.partial_reply == "ok"
+    assert state.tools_used == []
+    assert state.tool_chain_partial == []

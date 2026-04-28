@@ -7,10 +7,13 @@ from datetime import datetime
 from typing import TYPE_CHECKING, TypeAlias
 
 from agent.context import ContextBuilder
-from agent.core.agent_core import AgentCore, AgentCoreDeps
+from agent.core.passive_turn import (
+    AgentCore,
+    AgentCoreDeps,
+    DefaultContextStore,
+    DefaultReasoner,
+)
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
-from agent.core.context_store import DefaultContextStore
-from agent.core.reasoner import DefaultReasoner
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.consolidation import (
@@ -41,8 +44,6 @@ from agent.turns.outbound import BusOutboundPort
 __all__ = [
     "AgentLoop",
 ]
-from agent.memes.catalog import MemeCatalog
-from agent.memes.decorator import MemeDecorator
 from bus.event_bus import EventBus
 from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
 from bus.events_lifecycle import (
@@ -159,7 +160,6 @@ class AgentLoop:
             hyde_enhancer=hyde_enhancer,
         )
         self._configure_stream_events()
-        self._configure_interrupt_progress_tracking()
 
     def set_stream_sink_factory(self, factory: StreamSinkFactory | None) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
@@ -170,11 +170,6 @@ class AgentLoop:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
         if callable(setter):
             _ = setter(self._build_stream_event_sink)
-
-    def _configure_interrupt_progress_tracking(self) -> None:
-        progress_setter = getattr(self._reasoner, "set_progress_sink_factory", None)
-        if callable(progress_setter):
-            _ = progress_setter(self._build_progress_sink)
 
     def _wrap_stream_sink_factory(
         self,
@@ -237,28 +232,6 @@ class AgentLoop:
             )
 
         return _push
-
-    def _build_progress_sink(self, msg):
-        session_key = getattr(msg, "session_key", f"{msg.channel}:{msg.chat_id}")
-
-        async def _progress(payload: dict[str, object]) -> None:
-            state = self._active_turn_states.get(session_key)
-            if state is None:
-                return
-            partial_reply = payload.get("partial_reply")
-            if isinstance(partial_reply, str) and partial_reply:
-                state.partial_reply = partial_reply
-            partial_thinking = payload.get("partial_thinking")
-            if isinstance(partial_thinking, str) and partial_thinking:
-                state.partial_thinking = partial_thinking
-            tools_used = payload.get("tools_used")
-            if isinstance(tools_used, list):
-                state.tools_used = list(tools_used)
-            tool_chain_partial = payload.get("tool_chain_partial")
-            if isinstance(tool_chain_partial, list):
-                state.tool_chain_partial = list(tool_chain_partial)
-
-        return _progress
 
     def _append_partial_reply(self, session_key: str, delta: str) -> None:
         state = self._active_turn_states.get(session_key)
@@ -422,16 +395,10 @@ class AgentLoop:
             scheduler=self._scheduler,
             memory_engine=memory_svc.engine,
         )
-        passive_meme_decorator = MemeDecorator(MemeCatalog(deps.workspace / "memes"))
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
             context=self._context,
             history_window=config.memory.keep_count,
-            session=session_svc,
-            trace=trace_svc,
-            outbound=BusOutboundPort(self.bus),
-            meme_decorator=passive_meme_decorator,
-            event_bus=self._event_bus,
         )
         agent_core = AgentCore(
             AgentCoreDeps(
@@ -441,6 +408,8 @@ class AgentLoop:
                 tools=deps.tools,
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
+                outbound_port=BusOutboundPort(self.bus),
+                history_window=config.memory.keep_count,
             )
         )
         self._core_runner = deps.core_runner or CoreRunner(
@@ -448,7 +417,6 @@ class AgentLoop:
                 agent_core=agent_core,
                 session=session_svc,
                 context=self._context,
-                context_store=passive_context_store,
                 tools=deps.tools,
                 memory_window=config.memory.keep_count,
                 run_agent_loop_fn=self._run_agent_loop,
@@ -523,6 +491,10 @@ class AgentLoop:
     @property
     def processing_state(self) -> ProcessingState | None:
         return self._processing_state
+
+    @property
+    def active_turn_states(self) -> dict[str, TurnInterruptState]:
+        return self._active_turn_states
 
     def stop(self) -> None:
         self._running = False
@@ -723,7 +695,7 @@ class AgentLoop:
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
-        from agent.core.reasoner import build_turn_injection_prompt
+        from agent.core.passive_turn import build_turn_injection_prompt
         from agent.prompting import (
             PromptSectionRender,
             build_context_frame_content,

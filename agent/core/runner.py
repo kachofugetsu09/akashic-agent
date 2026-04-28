@@ -7,8 +7,7 @@ from agent.looping.handlers import process_spawn_completion_event
 from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
 
 if TYPE_CHECKING:
-    from agent.core.agent_core import AgentCore
-    from agent.core.context_store import ContextStore
+    from agent.core.passive_turn import AgentCore
     from agent.core.runtime_support import AgentLoopRunner
     from agent.context import ContextBuilder
     from agent.looping.ports import SessionServices
@@ -20,7 +19,6 @@ class CoreRunnerDeps:
     agent_core: "AgentCore"
     session: "SessionServices | None" = None
     context: "ContextBuilder | None" = None
-    context_store: "ContextStore | None" = None
     tools: "ToolRegistry | None" = None
     memory_window: int | None = None
     run_agent_loop_fn: "AgentLoopRunner | None" = None
@@ -41,7 +39,6 @@ class CoreRunner:
         self._agent_core = deps.agent_core
         self._session = deps.session
         self._context = deps.context
-        self._context_store = deps.context_store
         self._tools = deps.tools
         self._memory_window = deps.memory_window
         self._run_agent_loop_fn = deps.run_agent_loop_fn
@@ -59,7 +56,6 @@ class CoreRunner:
                 if (
                     self._session is not None
                     and self._context is not None
-                    and self._context_store is not None
                     and self._tools is not None
                     and self._memory_window is not None
                     and self._run_agent_loop_fn is not None
@@ -69,10 +65,11 @@ class CoreRunner:
                         key=key,
                         session_svc=self._session,
                         context=self._context,
-                        context_store=self._context_store,
+                        pipeline=self._agent_core.pipeline,
                         tools=self._tools,
                         memory_window=self._memory_window,
                         run_agent_loop_fn=self._run_agent_loop_fn,
+                        dispatch_outbound=dispatch_outbound,
                     )
                 raise RuntimeError("spawn completion 缺少处理依赖")
             case InboundMessage():

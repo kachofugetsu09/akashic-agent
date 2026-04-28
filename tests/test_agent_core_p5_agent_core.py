@@ -8,16 +8,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.context import ContextBuilder
-from agent.core.context_store import ContextStore
-from agent.core.reasoner import Reasoner
-from agent.core.runtime_support import TurnRunResult
-from agent.core.agent_core import AgentCore, AgentCoreDeps, _predict_current_user_source_ref
+from agent.core.passive_turn import ContextStore, Reasoner
+from agent.core.runtime_support import SessionLike, TurnRunResult
+from agent.core.passive_support import predict_current_user_source_ref
+from agent.core.passive_turn import AgentCore, AgentCoreDeps
 from agent.core.types import ContextBundle
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
+from agent.turns.outbound import OutboundPort
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
-from bus.events_lifecycle import BeforeReasoning
+from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
+from session.manager import SessionManager
 
 
 class _DummySession:
@@ -27,8 +29,26 @@ class _DummySession:
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
 
-    def get_history(self, max_messages: int = 500) -> list[dict]:
+    def get_history(
+        self,
+        max_messages: int = 500,
+        *,
+        start_index: int | None = None,
+    ) -> list[dict]:
+        if start_index is not None:
+            return self.messages[start_index:][-max_messages:]
         return self.messages[-max_messages:]
+
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        media=None,
+        **kwargs: object,
+    ) -> None:
+        if media is not None:
+            kwargs["media"] = media
+        self.messages.append({"role": role, "content": content, **kwargs})
 
 
 @pytest.mark.asyncio
@@ -68,10 +88,6 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
             )
         ),
     )
-    context_store.commit = AsyncMock(
-        side_effect=lambda **kwargs: order.append("commit")
-        or OutboundMessage(channel="telegram", chat_id="123", content=kwargs["reply"])
-    )
     agent_core = AgentCore(
         AgentCoreDeps(
             session=cast(
@@ -80,7 +96,9 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
                     session_manager=SimpleNamespace(
                         get_or_create=MagicMock(return_value=session),
                         peek_next_message_id=MagicMock(return_value="telegram:123:0"),
-                    )
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
                 ),
             ),
             context_store=cast(ContextStore, context_store),
@@ -100,7 +118,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     out = await agent_core.process(msg, "telegram:123")
 
     assert out.content == "final"
-    assert order == ["prepare", "render", "tool_context", "run", "commit"]
+    assert order == ["prepare", "tool_context", "render", "run"]
     assert context_store.prepare.await_args.kwargs["session_key"] == "telegram:123"
     render_request = context.render.call_args.args[0]
     assert render_request.current_message == ""
@@ -113,14 +131,11 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     )
     assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["refactor"]
     assert reasoner.run_turn.await_args.kwargs["retrieved_memory_block"] == "remembered"
-    assert context_store.commit.await_args.kwargs["retrieval_raw"] == {"route": "RETRIEVE"}
-    assert context_store.commit.await_args.kwargs["thinking"] == "think"
-    assert context_store.commit.await_args.kwargs["context_retry"] == {"selected_plan": "full"}
-    assert context_store.commit.await_args.kwargs["reply"] == "final"
-    response_metadata = context_store.commit.await_args.kwargs["response_metadata"]
-    assert response_metadata.raw_text == "final <meme:shy>\n§cited:[mem_1]§"
-    assert response_metadata.cited_memory_ids == ["mem_1"]
-    assert response_metadata.meme_tag == "shy"
+    # AfterReasoning persists user+assistant messages to session
+    assert len(session.messages) == 2
+    assert session.messages[0]["role"] == "user"
+    assert session.messages[1]["role"] == "assistant"
+    assert session.messages[1]["content"] == "final"
 
 
 @pytest.mark.asyncio
@@ -128,9 +143,6 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
     session = _DummySession("cli:1")
     context_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle()),
-        commit=AsyncMock(
-            return_value=OutboundMessage(channel="cli", chat_id="1", content="fallback")
-        )
     )
     agent_core = AgentCore(
         AgentCoreDeps(
@@ -140,7 +152,9 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
                     session_manager=SimpleNamespace(
                         get_or_create=MagicMock(return_value=session),
                         peek_next_message_id=MagicMock(return_value="cli:1:0"),
-                    )
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
                 ),
             ),
             context_store=cast(ContextStore, context_store),
@@ -149,11 +163,6 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
                 SimpleNamespace(
                     render=MagicMock(
                         return_value=SimpleNamespace(system_prompt="prompt", messages=[])
-                    ),
-                    build_system_prompt=MagicMock(
-                        side_effect=AssertionError(
-                            "legacy build_system_prompt should not be used"
-                        )
                     ),
                 ),
             ),
@@ -171,9 +180,9 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
     )
     msg = InboundMessage(channel="cli", sender="hua", chat_id="1", content="hi")
 
-    await agent_core.process(msg, "cli:1")
+    out = await agent_core.process(msg, "cli:1")
 
-    assert "no response to give" in context_store.commit.await_args.kwargs["reply"]
+    assert "no response to give" in out.content
 
 
 @pytest.mark.asyncio
@@ -186,9 +195,6 @@ async def test_agent_core_before_reasoning_can_patch_context():
                 retrieved_memory_block="old memory",
             )
         ),
-        commit=AsyncMock(
-            return_value=OutboundMessage(channel="telegram", chat_id="123", content="ok")
-        ),
     )
     context = SimpleNamespace(
         render=MagicMock(return_value=SimpleNamespace(system_prompt="prompt", messages=[]))
@@ -200,12 +206,13 @@ async def test_agent_core_before_reasoning_can_patch_context():
     event_bus = EventBus()
 
     event_bus.on(
-        BeforeReasoning,
-        lambda event: BeforeReasoning(
-            session_key=event.session_key,
-            channel=event.channel,
-            chat_id=event.chat_id,
-            content=event.content,
+        BeforeReasoningCtx,
+        lambda ctx: BeforeReasoningCtx(
+            session_key=ctx.session_key,
+            channel=ctx.channel,
+            chat_id=ctx.chat_id,
+            content=ctx.content,
+            timestamp=ctx.timestamp,
             skill_names=["new"],
             retrieved_memory_block="new memory",
         ),
@@ -218,7 +225,9 @@ async def test_agent_core_before_reasoning_can_patch_context():
                     session_manager=SimpleNamespace(
                         get_or_create=MagicMock(return_value=session),
                         peek_next_message_id=MagicMock(return_value="telegram:123:0"),
-                    )
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
                 ),
             ),
             context_store=cast(ContextStore, context_store),
@@ -243,9 +252,261 @@ def test_predict_current_user_source_ref_falls_back_to_last_session_message():
     session = _DummySession("telegram:123")
     session.messages.append({"id": "telegram:123:41"})
 
-    value = _predict_current_user_source_ref(
-        session_manager=SimpleNamespace(),
-        session=session,
+    value = predict_current_user_source_ref(
+        session_manager=cast(SessionManager, SimpleNamespace()),
+        session=cast(SessionLike, session),
     )
 
     assert value == "telegram:123:41"
+
+
+@pytest.mark.asyncio
+async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(run_turn=AsyncMock())
+    event_bus = EventBus()
+    dispatch_port = AsyncMock(return_value=True)
+
+    async def abort_handler(ctx):
+        ctx.abort = True
+        ctx.abort_reply = "blocked by policy"
+        return ctx
+
+    event_bus.on(BeforeTurnCtx, abort_handler)
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                    )
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            event_bus=event_bus,
+            outbound_port=cast(OutboundPort, dispatch_port),
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert out.content == "blocked by policy"
+    # 不经过 reasoner 和持久化
+    reasoner.run_turn.assert_not_called()
+    # 通过 outbound_port 实际 dispatch
+    dispatch_port.dispatch.assert_awaited_once()
+    dispatched = dispatch_port.dispatch.await_args.args[0]
+    assert dispatched.content == "blocked by policy"
+
+
+@pytest.mark.asyncio
+async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(run_turn=AsyncMock())
+    event_bus = EventBus()
+    dispatch_port = AsyncMock(return_value=True)
+
+    async def abort_handler(ctx):
+        ctx.abort = True
+        ctx.abort_reply = "rate limited"
+        return ctx
+
+    event_bus.on(BeforeReasoningCtx, abort_handler)
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                    )
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            event_bus=event_bus,
+            outbound_port=cast(OutboundPort, dispatch_port),
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert out.content == "rate limited"
+    reasoner.run_turn.assert_not_called()
+    dispatch_port.dispatch.assert_awaited_once()
+    dispatched = dispatch_port.dispatch.await_args.args[0]
+    assert dispatched.content == "rate limited"
+
+
+@pytest.mark.asyncio
+async def test_abort_does_not_dispatch_when_dispatch_outbound_false():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(run_turn=AsyncMock())
+    event_bus = EventBus()
+    dispatch_port = AsyncMock(return_value=True)
+
+    async def abort_handler(ctx):
+        ctx.abort = True
+        ctx.abort_reply = "quiet abort"
+        return ctx
+
+    event_bus.on(BeforeTurnCtx, abort_handler)
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                    )
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            event_bus=event_bus,
+            outbound_port=cast(OutboundPort, dispatch_port),
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=False)
+
+    assert out.content == "quiet abort"
+    reasoner.run_turn.assert_not_called()
+    dispatch_port.dispatch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reasoner_exception_turn_returns_control_outbound():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(side_effect=RuntimeError("budget guard")),
+    )
+    dispatch_port = AsyncMock(return_value=True)
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            outbound_port=cast(OutboundPort, dispatch_port),
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert out.content == "处理消息时出错，请稍后再试。"
+    dispatch_port.dispatch.assert_awaited_once()
+    dispatched = dispatch_port.dispatch.await_args.args[0]
+    assert dispatched.content == "处理消息时出错，请稍后再试。"
+
+
+@pytest.mark.asyncio
+async def test_after_turn_dispatch_exception_is_not_wrapped_by_control_outbound():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(
+            return_value=TurnRunResult(
+                reply="ok",
+                tools_used=[],
+                tool_chain=[],
+                thinking=None,
+                context_retry={},
+            )
+        )
+    )
+    dispatch_port = SimpleNamespace(
+        dispatch=AsyncMock(side_effect=RuntimeError("dispatch failed"))
+    )
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            outbound_port=cast(OutboundPort, dispatch_port),
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert len(session.messages) == 2
+    assert session.messages[0]["role"] == "user"
+    assert session.messages[1]["role"] == "assistant"
+    assert session.messages[1]["content"] == "ok"
+    dispatch_port.dispatch.assert_awaited_once()

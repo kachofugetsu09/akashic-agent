@@ -1,7 +1,12 @@
-from agent.core.agent_core import AgentCore, AgentCoreDeps
-from agent.core.context_store import ContextStore, DefaultContextStore
 from agent.core.prompt_block import PromptBlock, SystemPromptBuilder, TurnContext
-from agent.core.reasoner import DefaultReasoner, Reasoner
+from agent.core.passive_turn import (
+    AgentCore,
+    AgentCoreDeps,
+    ContextStore,
+    DefaultContextStore,
+    DefaultReasoner,
+    Reasoner,
+)
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import (
     AgentLoopRunner,

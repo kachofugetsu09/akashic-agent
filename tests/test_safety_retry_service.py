@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from agent.core.reasoner import DefaultReasoner
+from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.runtime_support import LLMServices
 from agent.core.types import ContextRenderResult

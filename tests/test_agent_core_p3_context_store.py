@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.context_store import (
-    DefaultContextStore,
-    _build_post_reply_context_budget,
-    _estimate_history_budget,
+from agent.core.passive_support import (
+    build_post_reply_context_budget,
+    estimate_history_budget,
 )
+from agent.core.passive_turn import DefaultContextStore
 from agent.core.types import RetrievalTrace
 from agent.retrieval.protocol import RetrievalResult
 from bus.events import InboundMessage
@@ -121,7 +121,7 @@ async def test_default_context_store_prepare_uses_explicit_session_key_for_retri
 
 
 def test_estimate_history_budget_returns_serialized_history_size():
-    stats = _estimate_history_budget(
+    stats = estimate_history_budget(
         [
             {"role": "user", "content": "你好"},
             {
@@ -145,7 +145,7 @@ def test_build_post_reply_context_budget_combines_history_and_prompt():
         ]
     )
 
-    budget = _build_post_reply_context_budget(
+    budget = build_post_reply_context_budget(
         context=cast(Any, context),
         history=[{"role": "user", "content": "你好"}],
         history_window=40,

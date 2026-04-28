@@ -42,16 +42,6 @@ class TurnStarted:
 
 
 @dataclass(frozen=True)
-class TurnCompleted:
-    session_key: str
-    channel: str
-    chat_id: str
-    reply: str
-    tools_used: list[str]
-    thinking: str | None = None
-
-
-@dataclass(frozen=True)
 class StreamDeltaReady:
     session_key: str
     channel: str
@@ -117,13 +107,3 @@ class ToolCallCompleted:
     final_arguments: dict[str, Any]
     status: str
     result_preview: str
-
-
-@dataclass
-class BeforeDispatch:
-    channel: str
-    chat_id: str
-    content: str
-    thinking: str | None = None
-    media: list[str] = field(default_factory=_empty_media)
-    metadata: dict[str, Any] = field(default_factory=_empty_metadata)

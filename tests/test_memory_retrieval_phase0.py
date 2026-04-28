@@ -11,7 +11,7 @@ from bootstrap.proactive import build_proactive_runtime
 from agent.config import Config
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
-from agent.looping.memory_gate import _update_session_runtime_metadata
+from agent.core.passive_support import update_session_runtime_metadata
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.retrieval.default_pipeline import (
@@ -238,7 +238,7 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     )
     session = Session("telegram:1")
 
-    _update_session_runtime_metadata(
+    update_session_runtime_metadata(
         session,
         tools_used=["web_search"],
         tool_chain=[{"calls": [{"name": "a"}, {"name": "b"}]}],
@@ -247,7 +247,7 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     assert session.metadata["last_turn_tool_calls_count"] == 2
     assert isinstance(session.metadata.get("last_turn_ts"), str)
 
-    _update_session_runtime_metadata(
+    update_session_runtime_metadata(
         session,
         tools_used=["web_search"],
         tool_chain=[{"calls": [{"name": "c"}]}],

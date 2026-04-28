@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 from unittest.mock import AsyncMock
 
 import pytest
-from agent.core.context_store import _collect_skill_mentions
-from agent.core.reasoner import DefaultReasoner
+from agent.core.passive_support import collect_skill_mentions
+from agent.core.passive_turn import DefaultReasoner
 from prompts.agent import build_current_message_time_envelope
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
@@ -35,7 +35,7 @@ def test_collect_skill_mentions_returns_unique_existing_names(tmp_path):
         {"name": "refactor"},
     ]
 
-    got = _collect_skill_mentions(
+    got = collect_skill_mentions(
         "请用 $feed-manage 然后 $refactor 再来一次 $feed-manage",
         skills,
     )
@@ -46,7 +46,7 @@ def test_collect_skill_mentions_returns_unique_existing_names(tmp_path):
 def test_collect_skill_mentions_ignores_unknown_skill(tmp_path):
     skills = [{"name": "known"}]
 
-    got = _collect_skill_mentions("$known $unknown", skills)
+    got = collect_skill_mentions("$known $unknown", skills)
 
     assert got == ["known"]
 

@@ -14,9 +14,8 @@ Covers:
     After refactoring: same exclusion, achieved through explicit interface.
 
   Item 2a — session metadata update behavior
-    Currently implemented via _update_session_runtime_metadata in
-    agent/looping/memory_gate.py.
-    After refactoring: same function, lives in agent/core/.
+    Currently implemented via update_session_runtime_metadata in
+    agent/core/passive_support.py.
 
   Item 2b — history type conversion
     Canonical types live in agent/core/types.py.
@@ -176,24 +175,24 @@ def _make_session(metadata: dict | None = None) -> SimpleNamespace:
 
 
 def test_session_metadata_update_counts_tool_calls():
-    """_update_session_runtime_metadata records total tool call count for the turn."""
-    from agent.looping.memory_gate import _update_session_runtime_metadata
+    """update_session_runtime_metadata records total tool call count for the turn."""
+    from agent.core.passive_support import update_session_runtime_metadata
 
     session = _make_session()
     tool_chain = [
         {"calls": [{"name": "shell"}, {"name": "web_search"}]},
         {"calls": [{"name": "read_file"}]},
     ]
-    _update_session_runtime_metadata(session, tools_used=["shell", "web_search", "read_file"], tool_chain=tool_chain)
+    update_session_runtime_metadata(session, tools_used=["shell", "web_search", "read_file"], tool_chain=tool_chain)
     assert session.metadata["last_turn_tool_calls_count"] == 3
 
 
 def test_session_metadata_update_sets_last_turn_ts():
     """last_turn_ts is set to a non-empty ISO timestamp."""
-    from agent.looping.memory_gate import _update_session_runtime_metadata
+    from agent.core.passive_support import update_session_runtime_metadata
 
     session = _make_session()
-    _update_session_runtime_metadata(session, tools_used=[], tool_chain=[])
+    update_session_runtime_metadata(session, tools_used=[], tool_chain=[])
     ts = session.metadata.get("last_turn_ts", "")
     assert ts and "T" in ts, "last_turn_ts must be an ISO-format timestamp"
 
@@ -260,8 +259,8 @@ def test_turn_types_shim_is_removed():
 
 def test_core_boundary_modules_do_not_import_looping_turn_types():
     """Canonical core/retrieval contracts must not depend on looping.turn_types."""
-    from agent.core import context_store
+    from agent.core import passive_turn
     from agent.retrieval import protocol as retrieval_protocol
 
-    assert "agent.looping.turn_types" not in inspect.getsource(context_store)
+    assert "agent.looping.turn_types" not in inspect.getsource(passive_turn)
     assert "agent.looping.turn_types" not in inspect.getsource(retrieval_protocol)

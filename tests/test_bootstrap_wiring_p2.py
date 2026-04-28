@@ -4,12 +4,20 @@ from typing import Any, cast
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 from agent.config import Config
 from agent.config_models import Config as ConfigModel, WiringConfig
+from agent.core.response_parser import ResponseMetadata
+from agent.lifecycle.facade import TurnLifecycle
+from agent.lifecycle.types import AfterReasoningCtx, AfterStepCtx
+from agent.looping.interrupt import TurnInterruptState
 from agent.tools.registry import ToolRegistry
 from bootstrap.tools import _build_loop_deps, build_registered_tools
 from bootstrap.wiring import (
+    wire_turn_lifecycle,
     resolve_context_factory,
     resolve_memory_engine_builder,
     resolve_memory_toolset_provider,
@@ -410,6 +418,85 @@ def test_resolve_memory_engine_builder_supports_memu():
     builder = resolve_memory_engine_builder("memu")
 
     assert callable(builder)
+
+
+@pytest.mark.asyncio
+async def test_wire_turn_lifecycle_registers_after_reasoning_meme_handler():
+    bus = EventBus()
+    decorator = SimpleNamespace(
+        decorate=MagicMock(
+            return_value=SimpleNamespace(
+                content="装饰后",
+                media=["/tmp/m.png"],
+                tag="cute",
+            )
+        )
+    )
+    wire_turn_lifecycle(
+        lifecycle=TurnLifecycle(bus),
+        meme_decorator=cast(Any, decorator),
+        active_turn_states={},
+    )
+
+    ctx = AfterReasoningCtx(
+        session_key="telegram:1",
+        channel="telegram",
+        chat_id="1",
+        tools_used=(),
+        thinking=None,
+        response_metadata=ResponseMetadata(raw_text="ok"),
+        streamed=False,
+        tool_chain=(),
+        context_retry={},
+        reply="raw",
+        media=[],
+        outbound_metadata={},
+    )
+    out = await bus.emit(ctx)
+
+    assert out.reply == "装饰后"
+    assert out.media == ["/tmp/m.png"]
+    assert out.meme_tag == "cute"
+    decorator.decorate.assert_called_once_with("raw", meme_tag=None)
+
+
+@pytest.mark.asyncio
+async def test_wire_turn_lifecycle_registers_afterstep_progress_handler():
+    bus = EventBus()
+    states: dict[str, TurnInterruptState] = {
+        "telegram:1": TurnInterruptState(
+            session_key="telegram:1",
+            original_user_message="hello",
+        )
+    }
+    wire_turn_lifecycle(
+        lifecycle=TurnLifecycle(bus),
+        meme_decorator=cast(Any, None),
+        active_turn_states=states,
+    )
+
+    await bus.emit(
+        AfterStepCtx(
+            session_key="telegram:1",
+            channel="telegram",
+            chat_id="1",
+            iteration=0,
+            tools_called=("noop",),
+            partial_reply="部分回复",
+            tools_used_so_far=("a", "b"),
+            tool_chain_partial=(
+                {"text": "tool", "calls": []},
+            ),
+            partial_thinking="思考",
+            has_more=True,
+        )
+    )
+
+    state = states["telegram:1"]
+    assert state.partial_reply == "部分回复"
+    assert state.partial_thinking == "思考"
+    assert state.tools_used == ["a", "b"]
+    assert state.tool_chain_partial == [{"text": "tool", "calls": []}]
 
 
 def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry(
