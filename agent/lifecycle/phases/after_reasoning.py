@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
-import agent.core.passive_support as support
+from agent.core.passive_support import update_session_runtime_metadata
 from agent.core.response_parser import parse_response
 from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
 from agent.lifecycle.types import (
@@ -33,10 +32,6 @@ AfterReasoningModules: TypeAlias = list[PhaseModule[AfterReasoningFrame]]
 
 _CTX_SLOT = "reasoning:ctx"
 _OUTBOUND_SLOT = "reasoning:outbound"
-_update_session_runtime_metadata = cast(
-    Callable[..., None],
-    getattr(support, "update_session_runtime_metadata"),
-)
 
 
 class _BuildAfterReasoningCtxModule:
@@ -49,7 +44,7 @@ class _BuildAfterReasoningCtxModule:
         raw_reply = turn_result.reply
         if raw_reply is None:
             raw_reply = "I've completed processing but have no response to give."
-        tool_chain = cast(list[dict[str, object]], getattr(turn_result, "tool_chain"))
+        tool_chain = cast(list[dict[str, object]], turn_result.tool_chain)
         parsed = parse_response(raw_reply, tool_chain=tool_chain)
         frame.slots[_CTX_SLOT] = AfterReasoningCtx(
             session_key=input.state.session_key,
@@ -152,7 +147,7 @@ class _UpdateSessionMetadataModule:
         if raw_session is None:
             raise RuntimeError("AfterReasoning requires TurnState.session")
         session = cast("Session", raw_session)
-        _update_session_runtime_metadata(
+        update_session_runtime_metadata(
             session,
             tools_used=list(ctx.tools_used),
             tool_chain=list(ctx.tool_chain),
@@ -171,11 +166,7 @@ class _AppendMessagesModule:
             raise RuntimeError("AfterReasoning requires TurnState.session")
         session = cast("Session", raw_session)
         persist_count = 1 if bool((state.msg.metadata or {}).get("omit_user_turn")) else 2
-        append_messages = cast(
-            Callable[[object, list[dict[str, Any]]], Awaitable[None]],
-            getattr(self._session_services.session_manager, "append_messages"),
-        )
-        await append_messages(
+        await self._session_services.session_manager.append_messages(
             session,
             cast(list[dict[str, Any]], session.messages[-persist_count:]),
         )

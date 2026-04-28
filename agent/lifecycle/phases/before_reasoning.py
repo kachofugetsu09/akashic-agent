@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias, cast
 
-from bus.event_bus import EventBus
+from agent.core.passive_support import predict_current_user_source_ref
 from agent.core.types import ContextRequest
-import agent.core.passive_support as support
 from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeReasoningInput
+from bus.event_bus import EventBus
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -43,7 +43,7 @@ class _SyncToolContextModule:
         self._tools.set_context(
             channel=before_turn.channel,
             chat_id=before_turn.chat_id,
-            current_user_source_ref=support.predict_current_user_source_ref(
+            current_user_source_ref=predict_current_user_source_ref(
                 session_manager=self._session_manager,
                 session=state.session,
             ),

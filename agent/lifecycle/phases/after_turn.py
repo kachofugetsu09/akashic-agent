@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 import copy
 from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
-import agent.core.passive_support as support
-import agent.core.types as core_types
+from agent.core.passive_support import (
+    build_post_reply_context_budget,
+    extract_react_stats,
+    log_post_reply_context_budget,
+    log_react_context_budget,
+)
+from agent.core.types import to_tool_call_groups
 from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
 from agent.lifecycle.types import AfterTurnCtx, TurnSnapshot
 from agent.turns.outbound import OutboundDispatch, OutboundPort
@@ -37,26 +41,6 @@ _OMIT_USER_TURN_SLOT = "turn:omit_user_turn"
 _EXTRA_SLOT = "turn:extra"
 _TURN_COMMITTED_SLOT = "turn:committed"
 _CTX_SLOT = "turn:ctx"
-_build_post_reply_context_budget = cast(
-    Callable[..., dict[str, int]],
-    getattr(support, "build_post_reply_context_budget"),
-)
-_extract_react_stats = cast(
-    Callable[[dict[str, object]], dict[str, int]],
-    getattr(support, "extract_react_stats"),
-)
-_log_post_reply_context_budget = cast(
-    Callable[..., None],
-    getattr(support, "log_post_reply_context_budget"),
-)
-_log_react_context_budget = cast(
-    Callable[..., None],
-    getattr(support, "log_react_context_budget"),
-)
-_to_tool_call_groups = cast(
-    Callable[[list[dict[str, Any]]], Any],
-    getattr(core_types, "to_tool_call_groups"),
-)
 
 
 class _BuildTurnWorkModule:
@@ -85,12 +69,12 @@ class _BuildTurnWorkModule:
             raise RuntimeError("AfterTurn requires TurnState.session")
         session = cast("Session", raw_session)
         hw = self._history_window
-        frame.slots[_BUDGET_SLOT] = _build_post_reply_context_budget(
+        frame.slots[_BUDGET_SLOT] = build_post_reply_context_budget(
             context=self._context,
             history=session.get_history(max_messages=hw),
             history_window=hw,
         )
-        frame.slots[_REACT_STATS_SLOT] = _extract_react_stats(snap.ctx.context_retry)
+        frame.slots[_REACT_STATS_SLOT] = extract_react_stats(snap.ctx.context_retry)
         frame.slots[_EXTRA_SLOT] = (
             {"skip_post_memory": True}
             if (msg.metadata or {}).get("skip_post_memory")
@@ -132,7 +116,7 @@ class _BuildTurnCommittedModule:
             meme_tag=snap.ctx.meme_tag,
             meme_media_count=len(snap.ctx.media),
             tool_chain_raw=copy.deepcopy(tool_chain_list),
-            tool_call_groups=_to_tool_call_groups(tool_chain_list),
+            tool_call_groups=to_tool_call_groups(tool_chain_list),
             timestamp=msg.timestamp,
             retrieval_raw=state.retrieval_raw,
             post_reply_budget=dict(cast(dict[str, int], frame.slots[_BUDGET_SLOT])),
@@ -158,11 +142,11 @@ class _LogBudgetModule:
 
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
         state = frame.input.state
-        _log_post_reply_context_budget(
+        log_post_reply_context_budget(
             session_key=state.session_key,
             budget=cast(dict[str, int], frame.slots[_BUDGET_SLOT]),
         )
-        _log_react_context_budget(
+        log_react_context_budget(
             session_key=state.session_key,
             react_stats=cast(dict[str, int], frame.slots[_REACT_STATS_SLOT]),
         )

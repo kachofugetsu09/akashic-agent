@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Callable
-from typing import Any, TypeAlias, cast
+from typing import TypeAlias, cast
 
-import agent.core.passive_support as support
+from agent.core.passive_support import (
+    build_context_hint_message,
+    estimate_messages_tokens,
+)
 from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeStepCtx, BeforeStepInput
 from bus.event_bus import EventBus
@@ -19,10 +21,6 @@ BeforeStepModules: TypeAlias = list[PhaseModule[BeforeStepFrame]]
 
 
 _CTX_SLOT = "step:ctx"
-_estimate_messages_tokens = cast(
-    Callable[[list[dict[str, Any]]], int],
-    getattr(support, "estimate_messages_tokens"),
-)
 
 
 class _BuildBeforeStepCtxModule:
@@ -35,7 +33,7 @@ class _BuildBeforeStepCtxModule:
             channel=input.channel,
             chat_id=input.chat_id,
             iteration=input.iteration,
-            input_tokens_estimate=_estimate_messages_tokens(input.messages),
+            input_tokens_estimate=estimate_messages_tokens(input.messages),
             visible_tool_names=(
                 frozenset(input.visible_names)
                 if input.visible_names is not None
@@ -65,7 +63,7 @@ class _InjectHintsModule:
         ctx = cast(BeforeStepCtx, frame.slots[_CTX_SLOT])
         if ctx.extra_hints:
             frame.input.messages.append(
-                support.build_context_hint_message(
+                build_context_hint_message(
                     "plugin_hints",
                     "\n".join(ctx.extra_hints),
                 )
