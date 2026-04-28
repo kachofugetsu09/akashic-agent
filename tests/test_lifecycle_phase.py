@@ -9,7 +9,7 @@ import pytest
 from bus.event_bus import EventBus
 from agent.core.response_parser import ResponseMetadata
 from agent.lifecycle.facade import TurnLifecycle
-from agent.lifecycle.phase import GatePhase, TapPhase
+from agent.lifecycle.phase import Phase, PhaseFrame
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterStepCtx,
@@ -20,121 +20,89 @@ from agent.lifecycle.types import (
 )
 
 
-# ── stub contexts ──
-
 @dataclass
-class _GateCtx:
-    value: str = ""
+class _TextFrame(PhaseFrame[str, str]):
+    pass
 
 
-@dataclass(frozen=True)
-class _TapCtx:
-    value: str = ""
+class _SetupModule:
+    produces = ("text:value",)
+
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        frame.slots["text:value"] = f"setup_{frame.input}"
+        return frame
 
 
-# ── GatePhase: setup produces ctx, chain mutates it, finalize produces output ──
+class _MutateModule:
+    requires = ("text:value",)
+    produces = ("text:value",)
 
-class _MutateGate(GatePhase[str, _GateCtx, str]):
-    async def _setup(self, input: str) -> _GateCtx:
-        return _GateCtx(value=f"setup_{input}")
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        frame.slots["text:value"] = f"{frame.slots['text:value']}_mutated"
+        return frame
 
-    async def _finalize(self, ctx: _GateCtx, input: str) -> str:
-        return f"{ctx.value}_finalized"
+
+class _FinalizeModule:
+    requires = ("text:value",)
+
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        frame.output = f"{frame.slots['text:value']}_finalized"
+        return frame
+
+
+class _FailingModule:
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        raise RuntimeError("setup failed")
+
+
+class _NoOutputModule:
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        return frame
+
+
+class _NeedsMissingSlotModule:
+    requires = ("missing:value",)
+
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        frame.output = str(frame.slots["missing:value"])
+        return frame
 
 
 @pytest.mark.asyncio
-async def test_gate_phase_setup_chain_finalize():
-    bus = EventBus()
-
-    async def handler(ctx: _GateCtx) -> _GateCtx:
-        ctx.value = f"{ctx.value}_mutated"
-        return ctx
-
-    bus.on(_GateCtx, handler)
-
-    phase = _MutateGate(bus)
+async def test_phase_modules_run_in_order():
+    phase = Phase[str, str, _TextFrame](
+        [_SetupModule(), _MutateModule(), _FinalizeModule()]
+    )
     result = await phase.run("hello")
     assert result == "setup_hello_mutated_finalized"
 
 
 @pytest.mark.asyncio
-async def test_gate_phase_no_handler_chain_passthrough():
-    bus = EventBus()
-
-    phase = _MutateGate(bus)
+async def test_phase_modules_can_passthrough():
+    phase = Phase[str, str, _TextFrame]([_SetupModule(), _FinalizeModule()])
     result = await phase.run("hello")
     assert result == "setup_hello_finalized"
 
 
-# ── TapPhase: setup produces ctx, chain is read-only, finalize produces output ──
-
-class _ReadonlyTap(TapPhase[str, _TapCtx, str]):
-    async def _setup(self, input: str) -> _TapCtx:
-        return _TapCtx(value=f"setup_{input}")
-
-    async def _finalize(self, ctx: _TapCtx, input: str) -> str:
-        return f"{ctx.value}_finalized"
-
-
 @pytest.mark.asyncio
-async def test_tap_phase_chain_does_not_mutate():
-    bus = EventBus()
-
-    side_effect: list[str] = []
-
-    async def handler(ctx: _TapCtx) -> None:
-        side_effect.append(ctx.value)
-
-    bus.on(_TapCtx, handler)
-
-    phase = _ReadonlyTap(bus)
-    result = await phase.run("hello")
-    assert result == "setup_hello_finalized"
-    assert side_effect == ["setup_hello"]
-
-
-@pytest.mark.asyncio
-async def test_tap_handler_exception_does_not_kill_turn():
-    bus = EventBus()
-
-    call_order: list[str] = []
-
-    async def broken_handler(ctx: _TapCtx) -> None:
-        call_order.append("broken_start")
-        msg = 1 / 0
-        _ = msg
-
-    async def good_handler(ctx: _TapCtx) -> None:
-        call_order.append("good")
-
-    bus.on(_TapCtx, broken_handler)
-    bus.on(_TapCtx, good_handler)
-
-    phase = _ReadonlyTap(bus)
-    result = await phase.run("hello")
-    assert result == "setup_hello_finalized"
-    assert "good" in call_order
-
-
-# ── GatePhase exception propagates ──
-
-class _FailingGate(GatePhase[str, _GateCtx, str]):
-    async def _setup(self, input: str) -> _GateCtx:
-        raise RuntimeError("setup failed")
-
-    async def _finalize(self, ctx: _GateCtx, input: str) -> str:
-        return "never_reached"
-
-
-@pytest.mark.asyncio
-async def test_gate_phase_setup_exception_propagates():
-    bus = EventBus()
-    phase = _FailingGate(bus)
+async def test_phase_module_exception_propagates():
+    phase = Phase[str, str, _TextFrame]([_FailingModule()])
     with pytest.raises(RuntimeError, match="setup failed"):
         await phase.run("x")
 
 
-# ── TurnLifecycle: 每个 on_xxx 单独验证 mapping 正确 ──
+@pytest.mark.asyncio
+async def test_phase_requires_output():
+    phase = Phase[str, str, _TextFrame]([_NoOutputModule()])
+    with pytest.raises(RuntimeError, match="Phase 模块链未产生 output"):
+        await phase.run("x")
+
+
+def test_phase_warns_when_slot_not_closed(caplog: pytest.LogCaptureFixture):
+    with caplog.at_level("WARNING", logger="agent.lifecycle.phase"):
+        Phase[str, str, _TextFrame]([_NeedsMissingSlotModule()])
+    assert "Phase slot 未闭合" in caplog.text
+
 
 _now = datetime.now()
 

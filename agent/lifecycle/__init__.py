@@ -1,5 +1,4 @@
 from agent.lifecycle.facade import TurnLifecycle
-from agent.lifecycle.phase import GatePhase, TapPhase
 from agent.lifecycle.phases.after_reasoning import AfterReasoningPhase
 from agent.lifecycle.phases.after_turn import AfterTurnPhase
 from agent.lifecycle.phases.before_turn import BeforeTurnPhase
@@ -34,8 +33,6 @@ __all__ = [
     "BeforeStepInput",
     "BeforeTurnCtx",
     "BeforeTurnPhase",
-    "GatePhase",
-    "TapPhase",
     "TurnLifecycle",
     "TurnSnapshot",
     "TurnState",
