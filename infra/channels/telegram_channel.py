@@ -94,6 +94,12 @@ class TelegramChannel:
         self._app = Application.builder().token(token).build()
         self._app.add_handler(CommandHandler("stop", self._on_stop_command))
         self._app.add_handler(
+            CommandHandler("memory_status", self._on_memory_status_command)
+        )
+        self._app.add_handler(
+            CommandHandler("compact_status", self._on_memory_status_command)
+        )
+        self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
         )
         self._app.add_handler(
@@ -321,6 +327,31 @@ class TelegramChannel:
             str(chat.id),
             result.message,
             self._telegram_outbound_limiter,
+        )
+
+    async def _on_memory_status_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        msg = update.effective_message
+        chat = update.effective_chat
+        user = update.effective_user
+
+        if not msg or not chat or not user:
+            return
+        if not self._is_allowed(user):
+            logger.warning(
+                f"[telegram] 拒绝未授权 /memory_status  id={user.id}  username=@{user.username}"
+            )
+            return
+
+        await self._bus.publish_inbound(
+            InboundMessage(
+                channel=_CHANNEL,
+                sender=str(user.id),
+                chat_id=str(chat.id),
+                content="/memory_status",
+                metadata={"username": user.username or ""},
+            )
         )
 
     async def _on_photo(

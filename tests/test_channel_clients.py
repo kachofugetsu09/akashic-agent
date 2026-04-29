@@ -513,7 +513,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     monkeypatch.setattr(mod, "send_stream_markdown", AsyncMock())
     monkeypatch.setattr(mod, "send_thinking_block", AsyncMock())
     await channel.start()
-    assert len(channel._app.handlers) == 4
+    assert len(channel._app.handlers) == 6
     assert bus.outbound[0][0] == "telegram"
 
     class _File:
@@ -567,6 +567,16 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
     assert len(bus.inbound) == 1
 
+    status_update = SimpleNamespace(
+        effective_message=SimpleNamespace(text="/memory_status", message_id=100),
+        effective_chat=SimpleNamespace(id=123),
+        effective_user=SimpleNamespace(id=1, username="Alice"),
+    )
+    await channel._on_memory_status_command(status_update, context)
+    assert len(bus.inbound) == 2
+    assert bus.inbound[1].content == "/memory_status"
+    assert bus.inbound[1].metadata["username"] == "Alice"
+
     photo_update = SimpleNamespace(
         effective_message=SimpleNamespace(
             photo=[SimpleNamespace(file_id="main"), SimpleNamespace(file_id="main2")],
@@ -595,7 +605,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         effective_user=SimpleNamespace(id=1, username="Alice"),
     )
     await channel._on_document(doc_update, context)
-    assert len(bus.inbound) == 3
+    assert len(bus.inbound) == 4
     assert bus.inbound[-1].metadata["document_filename"] == "a.md"
 
     assert channel._resolve_chat_id("123") == "123"

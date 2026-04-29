@@ -147,6 +147,51 @@ async def test_before_turn_chain_can_abort():
 
 
 @pytest.mark.asyncio
+async def test_before_turn_memory_status_command_aborts_without_context_prepare():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session.messages = [
+        {
+            "role": "user",
+            "content": '<system-reminder data-system-context-frame="true">内部</system-reminder>',
+        },
+        {"role": "user", "content": "帮我看看 Telegram 流式消息为什么重复发送"},
+        {"role": "assistant", "content": "已修复"},
+        {"role": "user", "content": "再看一下超时问题"},
+    ]
+    session.last_consolidated = 3
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(prepare=AsyncMock())
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="/memory_status",
+        timestamp=_now,
+    )
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert ctx.abort is True
+    assert "上次整理到 1 条用户消息之前。" in ctx.abort_reply
+    assert "帮我看看 Telegram 流式消息为什么重复发送" in ctx.abort_reply
+    assert "尚未整理的用户消息数：1" in ctx.abort_reply
+    assert "当前会话消息数：4" in ctx.abort_reply
+    assert "内部" not in ctx.abort_reply
+    ctx_store.prepare.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_before_turn_chain_can_modify_skill_names():
     bus = EventBus()
     session = _DummySession("telegram:123")
