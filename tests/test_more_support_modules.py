@@ -27,6 +27,7 @@ from memory2.models import MemoryItem
 from proactive_v2.anyaction import AnyActionGate, QuotaStore
 from proactive_v2.memory_sampler import sample_memory_chunks, split_memory_chunks
 from bootstrap.app import AppRuntime
+from bootstrap.providers import build_providers, build_vl_provider
 from bus.event_bus import EventBus
 
 
@@ -70,8 +71,9 @@ class _FakeClient:
 
 
 class _FakeStream:
-    def __init__(self, chunks: list[object]) -> None:
+    def __init__(self, chunks: list[object], delay_s: float = 0.0) -> None:
         self._chunks = list(chunks)
+        self._delay_s = delay_s
 
     def __aiter__(self):
         return self
@@ -79,6 +81,8 @@ class _FakeStream:
     async def __anext__(self):
         if not self._chunks:
             raise StopAsyncIteration
+        if self._delay_s:
+            await asyncio.sleep(self._delay_s)
         return self._chunks.pop(0)
 
 
@@ -315,6 +319,78 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     assert fake.calls[0]["stream"] is True
     assert result.cache_prompt_tokens == 64
     assert result.cache_hit_tokens == 16
+
+
+@pytest.mark.asyncio
+async def test_provider_chat_stream_times_out_when_idle(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(delta=SimpleNamespace(content="慢", tool_calls=[]))
+                ]
+            )
+        ],
+        delay_s=0.05,
+    )
+    fake = _FakeClient([stream])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+
+    provider = LLMProvider(
+        api_key="k",
+        stream_idle_timeout_s=0.01,
+        max_retries=0,
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await provider.chat(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            model="m",
+            max_tokens=10,
+            on_content_delta=lambda chunk: _collect_delta([], chunk),
+        )
+
+
+def test_bootstrap_providers_set_stream_idle_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    created: list[dict] = []
+
+    class _ProviderConfig:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs)
+
+    monkeypatch.setattr("bootstrap.providers.LLMProvider", _ProviderConfig)
+    cfg = SimpleNamespace(
+        api_key="main-key",
+        base_url="https://example.com/v1",
+        system_prompt="system",
+        extra_body={},
+        provider="openai",
+        dev_mode=False,
+        light_model="light",
+        light_api_key="light-key",
+        light_base_url="https://light.example.com/v1",
+        agent_model="agent",
+        agent_api_key="agent-key",
+        agent_base_url="https://agent.example.com/v1",
+        multimodal=False,
+        vl_model="vl",
+        vl_api_key="vl-key",
+        vl_base_url="https://vl.example.com/v1",
+    )
+
+    build_providers(cast(Any, cfg))
+    build_vl_provider(cast(Any, cfg))
+
+    assert [item["stream_idle_timeout_s"] for item in created] == [
+        120.0,
+        60.0,
+        120.0,
+        120.0,
+    ]
 
 
 @pytest.mark.asyncio

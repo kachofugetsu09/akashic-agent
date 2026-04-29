@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -673,6 +674,12 @@ class DefaultReasoner(Reasoner):
                         reply="上下文过长无法处理，请尝试新建对话。",
                         context_retry=retry_trace,
                     )
+            except asyncio.TimeoutError:
+                logger.warning("LLM 流响应超时 (attempt=%d)，远端连接中断", attempt + 1)
+                return TurnRunResult(
+                    reply="模型流响应中断，请刷新对话重试。",
+                    context_retry=retry_trace,
+                )
         return TurnRunResult(reply="（安全重试异常）", context_retry=retry_trace)
 
     async def run(

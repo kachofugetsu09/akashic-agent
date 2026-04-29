@@ -202,6 +202,7 @@ class LLMProvider:
         system_prompt: str = "",
         extra_body: dict | None = None,
         request_timeout_s: float = 90.0,
+        stream_idle_timeout_s: float | None = None,
         max_retries: int = 1,
         provider_name: str = "",
         force_disable_thinking: bool = False,
@@ -214,6 +215,14 @@ class LLMProvider:
         self._system = system_prompt
         self._extra_body = extra_body or {}
         self._request_timeout_s = max(1.0, float(request_timeout_s))
+        self._stream_idle_timeout_s = max(
+            0.001,
+            float(
+                request_timeout_s
+                if stream_idle_timeout_s is None
+                else stream_idle_timeout_s
+            ),
+        )
         self._max_retries = max(0, int(max_retries))
         self._force_disable_thinking = force_disable_thinking
         self._payload_snapshot_enabled = (
@@ -312,7 +321,15 @@ class LLMProvider:
         cache_prompt_tokens: int | None = None
         cache_hit_tokens: int | None = None
 
-        async for chunk in stream:
+        stream_iter = aiter(stream)
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    anext(stream_iter),
+                    timeout=self._stream_idle_timeout_s,
+                )
+            except StopAsyncIteration:
+                break
             prompt_tokens, hit_tokens = _extract_cache_usage(
                 getattr(chunk, "usage", None)
             )

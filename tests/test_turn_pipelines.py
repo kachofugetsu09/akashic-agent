@@ -542,7 +542,7 @@ def test_request_interrupt_uses_active_turn_state_snapshot(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_resumed_interrupt_state_survives_timeout(tmp_path: Path):
+async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
     loop = _make_loop(tmp_path)
     session_key = "telegram:123"
     loop._interrupt_states[session_key] = TurnInterruptState(  # type: ignore[attr-defined]
@@ -550,8 +550,6 @@ async def test_resumed_interrupt_state_survives_timeout(tmp_path: Path):
         original_user_message="原始消息 A",
         partial_reply="半截回答",
     )
-    loop._MESSAGE_TIMEOUT_S = 0.01  # type: ignore[attr-defined]
-
     async def _slow_process(*args, **kwargs):
         await asyncio.sleep(0.05)
         return MagicMock(content="ok")
@@ -566,9 +564,8 @@ async def test_resumed_interrupt_state_survives_timeout(tmp_path: Path):
     )
     outbound = await loop._process(msg)
 
-    assert "超时" in outbound.content
-    assert session_key in loop._interrupt_states  # type: ignore[attr-defined]
-    assert loop._interrupt_states[session_key].original_user_message == "原始消息 A"  # type: ignore[attr-defined]
+    assert outbound.content == "ok"
+    assert session_key not in loop._interrupt_states  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

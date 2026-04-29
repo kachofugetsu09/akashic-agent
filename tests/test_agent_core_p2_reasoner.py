@@ -48,6 +48,15 @@ class _Provider:
         return self._responses.pop(0)
 
 
+class _TimeoutProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        self.calls.append(kwargs)
+        raise asyncio.TimeoutError
+
+
 def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     provider = _Provider(
         [
@@ -397,6 +406,44 @@ def test_default_reasoner_run_turn_uses_context_render():
     result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
 
     assert result.reply == "done"
+
+
+def test_default_reasoner_run_turn_reports_llm_timeout():
+    provider = _TimeoutProvider()
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+        context=cast(Any, SimpleNamespace(
+            render=lambda request: SimpleNamespace(
+                messages=[{"role": "user", "content": request.current_message}],
+            ),
+        )),
+        session_manager=cast(Any, SimpleNamespace(save_async=lambda *_args, **_kwargs: None)),
+    )
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[],
+        get_history=lambda max_messages=40: [],
+        last_consolidated=0,
+    )
+    msg = SimpleNamespace(
+        content="hi",
+        media=[],
+        channel="cli",
+        chat_id="1",
+        timestamp=datetime(2026, 4, 5, 12, 0, 0),
+    )
+
+    result = asyncio.run(reasoner.run_turn(msg=msg, session=cast(Any, session)))
+
+    assert result.reply == "模型流响应中断，请刷新对话重试。"
+    assert len(provider.calls) == 1
 
 
 def test_empty_content_with_thinking_triggers_retry_and_succeeds():
