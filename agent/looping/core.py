@@ -104,7 +104,6 @@ class AgentLoop:
     对话历史按 session_key 独立维护，格式为 OpenAI messages。
     """
 
-    _MESSAGE_TIMEOUT_S: float = 600.0
     _CONSOLIDATION_WAIT_S: float = 30.0
 
     def __init__(
@@ -640,27 +639,14 @@ class AgentLoop:
         if self._processing_state:
             self._processing_state.enter(key)
         try:
-            outbound = await asyncio.wait_for(
-                self._core_runner.process(
-                    msg,
-                    key,
-                    dispatch_outbound=dispatch_outbound,
-                ),
-                timeout=self._MESSAGE_TIMEOUT_S,
+            outbound = await self._core_runner.process(
+                msg,
+                key,
+                dispatch_outbound=dispatch_outbound,
             )
             if resumed_from_interrupt:
                 self._interrupt_states.pop(key, None)
             return outbound
-        except asyncio.TimeoutError:
-            logger.error(
-                f"消息处理超时 ({self._MESSAGE_TIMEOUT_S}s)  "
-                f"channel={msg.channel} chat_id={msg.chat_id}"
-            )
-            return OutboundMessage(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                content="（处理超时，请重试）",
-            )
         finally:
             # 3. 最后无论成功失败都直接释放 busy 状态。
             if self._processing_state:
