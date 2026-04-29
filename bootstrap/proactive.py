@@ -18,12 +18,6 @@ if TYPE_CHECKING:
     from core.memory.runtime_facade import MemoryRuntimeFacade
 
 
-_FITBIT_DEFAULT_URL = "http://127.0.0.1:18765"
-_FITBIT_DEFAULT_PATH = (
-    Path(__file__).resolve().parent.parent / "scripts" / "fitbit-monitor"
-)
-
-
 def _build_proactive_provider(config: Config, provider: LLMProvider) -> LLMProvider:
     api_key = str(getattr(config, "api_key", "") or "").strip()
     system_prompt = str(getattr(config, "system_prompt", "") or "")
@@ -86,19 +80,10 @@ def build_proactive_runtime(
         ),
         observe_writer=observe_writer,
         shared_tools=getattr(agent_loop, "tools", None),
-        fitbit_enabled=config.fitbit.enabled,
-        fitbit_url=_FITBIT_DEFAULT_URL,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。
     tasks.append(proactive_loop.run())
-
-    if config.fitbit.enabled:
-        from proactive_v2.fitbit_sleep import run_fitbit_monitor
-
-        # 5. 可选挂载 fitbit 监控子任务，给主动链路提供睡眠上下文。
-        tasks.append(run_fitbit_monitor(_FITBIT_DEFAULT_PATH, _FITBIT_DEFAULT_URL))
-        print(f"fitbit-monitor 已启动  |  路径={_FITBIT_DEFAULT_PATH}")
 
     return tasks, proactive_loop
 

@@ -69,7 +69,7 @@ class McpClient:
             cwd=self.cwd,
             limit=_STREAM_LIMIT,
         )
-        asyncio.create_task(self._drain_stderr())
+        _ = asyncio.create_task(self._drain_stderr())
 
         # initialize 握手
         init_id = self._new_id()
@@ -85,7 +85,7 @@ class McpClient:
                 },
             }
         )
-        await self._recv(expected_id=init_id, stage="initialize")
+        _ = await self._recv(expected_id=init_id, stage="initialize")
 
         # initialized 通知（无 id，不等响应）
         await self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -145,7 +145,10 @@ class McpClient:
             return
         try:
             self._process.terminate()
-            await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            _ = await asyncio.wait_for(self._process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            self._process.kill()
+            _ = await self._process.wait()
         except Exception as e:
             logger.warning("[mcp] 断开 %r 时出错: %s", self.name, e)
         finally:
