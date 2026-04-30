@@ -152,6 +152,7 @@ class AppRuntime:
                 self.dashboard_server.serve(),
                 name="dashboard_server",
             )
+            plugin_manager = getattr(self.core, "plugin_manager", None)
             proactive_tasks, self.proactive_loop = build_proactive_runtime(
                 self.config,
                 self.workspace,
@@ -163,7 +164,7 @@ class AppRuntime:
                 presence=self.presence,
                 agent_loop=self.agent_loop,
                 observe_writer=self.observe_writer,
-                tool_hooks=list(self.core.plugin_manager.tool_hooks) if self.core.plugin_manager else None,
+                tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:

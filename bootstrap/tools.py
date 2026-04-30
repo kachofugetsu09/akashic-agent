@@ -120,11 +120,10 @@ class CoreRuntime:
                 self.plugin_manager.before_turn_modules_late,
             )
             if self.plugin_manager.tool_hooks:
-                from typing import cast
-                self.loop.add_tool_hooks(cast("list[object]", self.plugin_manager.tool_hooks))
+                self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
                 spawn_tool = self.tools.get_tool("spawn")
                 if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
-                    spawn_tool.add_tool_hooks(cast("list[object]", self.plugin_manager.tool_hooks))
+                    spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
 
     async def stop(self) -> None:
         if self.plugin_manager is not None:
