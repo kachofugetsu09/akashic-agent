@@ -44,8 +44,36 @@ def on_before_turn(**options: Any) -> Callable[[Callable[..., Any]], Callable[..
     return deco
 
 
+def on_before_reasoning(**options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+        _get_or_create_handler(func, PluginEventType.BEFORE_REASONING, HandlerType.GATE, **options)
+        return func
+    return deco
+
+
+def on_before_step(**options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+        _get_or_create_handler(func, PluginEventType.BEFORE_STEP, HandlerType.GATE, **options)
+        return func
+    return deco
+
+
 def on_after_step(**options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def deco(func: Callable[..., Any]) -> Callable[..., Any]:
         _get_or_create_handler(func, PluginEventType.AFTER_STEP, HandlerType.TAP, **options)
+        return func
+    return deco
+
+
+def on_after_reasoning(**options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+        _get_or_create_handler(func, PluginEventType.AFTER_REASONING, HandlerType.GATE, **options)
+        return func
+    return deco
+
+
+def on_after_turn(**options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+        _get_or_create_handler(func, PluginEventType.AFTER_TURN, HandlerType.TAP, **options)
         return func
     return deco

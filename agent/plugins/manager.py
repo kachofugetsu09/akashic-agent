@@ -7,7 +7,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from agent.lifecycle.types import AfterStepCtx, BeforeTurnCtx
+from agent.lifecycle.types import (
+    AfterReasoningCtx,
+    AfterStepCtx,
+    AfterTurnCtx,
+    BeforeReasoningCtx,
+    BeforeStepCtx,
+    BeforeTurnCtx,
+)
 from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
 from bus.event_bus import EventBus
 
@@ -15,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 _EVENT_TYPE_MAP: dict[PluginEventType, type] = {
     PluginEventType.BEFORE_TURN: BeforeTurnCtx,
+    PluginEventType.BEFORE_REASONING: BeforeReasoningCtx,
+    PluginEventType.BEFORE_STEP: BeforeStepCtx,
     PluginEventType.AFTER_STEP: AfterStepCtx,
+    PluginEventType.AFTER_REASONING: AfterReasoningCtx,
+    PluginEventType.AFTER_TURN: AfterTurnCtx,
 }
 
 
