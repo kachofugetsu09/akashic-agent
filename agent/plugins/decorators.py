@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable
+
+import docstring_parser
 
 from agent.plugins.registry import (
     HandlerType,
@@ -77,3 +80,69 @@ def on_after_turn(**options: Any) -> Callable[[Callable[..., Any]], Callable[...
         _get_or_create_handler(func, PluginEventType.AFTER_TURN, HandlerType.TAP, **options)
         return func
     return deco
+
+
+# tool 装饰器：写入 MetadataKind.TOOL，不走 EventBus
+def tool(
+    name: str,
+    *,
+    risk: str = "read-write",
+    always_on: bool = False,
+    search_hint: str | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+        # 校验签名：前两个参数必须是 self 和 event，否则 partial 绑定会静默错位
+        params = list(inspect.signature(func).parameters.keys())
+        if len(params) < 2 or params[0] != "self" or params[1] != "event":
+            raise TypeError(
+                f"@tool handler 前两个参数必须是 self 和 event: {func.__qualname__}"
+            )
+        schema = _derive_params_schema(func)
+        md = PluginHandlerMetadata(
+            kind=MetadataKind.TOOL,
+            event_type=None,
+            handler_type=None,
+            handler=func,
+            handler_name=func.__name__,
+            plugin_module_path=func.__module__,
+            tool_name=name,
+            tool_schema=schema,
+            tool_risk=risk,
+            tool_always_on=always_on,
+            tool_search_hint=search_hint,
+        )
+        plugin_registry._handlers.append(md)
+        return func
+    return deco
+
+
+_PY_TO_JSON: dict[str, str] = {
+    "str": "string",
+    "int": "number",
+    "float": "number",
+    "bool": "boolean",
+    "dict": "object",
+    "list": "array",
+}
+
+
+def _derive_params_schema(func: Callable[..., Any]) -> dict[str, Any]:
+    sig = inspect.signature(func)
+    docs = docstring_parser.parse(func.__doc__ or "")
+    param_docs = {p.arg_name: p.description for p in docs.params}
+    props: dict[str, Any] = {}
+    required: list[str] = []
+    for pn, p in sig.parameters.items():
+        # 1. 跳过 self 和 event（生命周期占位参数，不进 schema）
+        if pn in ("self", "event"):
+            continue
+        ann = p.annotation
+        json_type = _PY_TO_JSON.get(getattr(ann, "__name__", ""), "string")
+        prop: dict[str, Any] = {"type": json_type}
+        if pn in param_docs:
+            prop["description"] = param_docs[pn]
+        props[pn] = prop
+        # 2. 无默认值的参数进入 required
+        if p.default is inspect.Parameter.empty:
+            required.append(pn)
+    return {"type": "object", "properties": props, "required": required}
