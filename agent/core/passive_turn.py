@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike, TurnRunResult
     from agent.looping.ports import LLMConfig, LLMServices, SessionServices
     from agent.retrieval.protocol import MemoryRetrievalPipeline
+    from agent.tool_hooks.base import ToolHook
     from session.manager import SessionManager
     from agent.tools.registry import ToolRegistry
 
@@ -471,7 +472,7 @@ class Reasoner(ABC):
     ) -> "TurnRunResult":
         """执行完整被动 turn，包括 retry / trim / tool loop。"""
 
-    def add_tool_hooks(self, hooks: list[object]) -> None:
+    def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         """子类可重写以注入 tool hooks。默认 no-op。"""
 
 
@@ -528,7 +529,7 @@ class DefaultReasoner(Reasoner):
             frame_factory=AfterStepFrame,
         )
 
-    def add_tool_hooks(self, hooks: list[object]) -> None:
+    def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._tool_executor.add_hooks(hooks)
 
     def set_stream_sink_factory(

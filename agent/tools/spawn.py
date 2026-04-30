@@ -5,6 +5,7 @@ from typing import Any
 
 from agent.background.subagent_manager import SubagentManager
 from agent.policies.delegation import DelegationPolicy
+from agent.tool_hooks.base import ToolHook
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 import logging
@@ -25,7 +26,7 @@ class SpawnTool(Tool):
         self._tool_registry = tool_registry
         self._policy = policy or DelegationPolicy()
 
-    def add_tool_hooks(self, hooks: list[object]) -> None:
+    def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
         self._manager.add_tool_hooks(hooks)
 
     @property

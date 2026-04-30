@@ -21,6 +21,7 @@ from typing import Any, Sequence
 
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks.base import ToolHook
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -136,7 +137,7 @@ class SubAgent:
         self._tool_schemas: list[dict[str, Any]] = prepared.schemas
         self._tool_executor = ToolExecutor([])
 
-    def add_tool_hooks(self, hooks: list[object]) -> None:
+    def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
         self._tool_executor.add_hooks(hooks)
 
     async def run(self, task: str) -> str:

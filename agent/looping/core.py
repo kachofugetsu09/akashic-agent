@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from core.memory.port import MemoryPort
     from core.memory.runtime import MemoryRuntime
     from memory2.hyde_enhancer import HyDEEnhancer
+    from agent.tool_hooks.base import ToolHook
 
 logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
@@ -500,7 +501,7 @@ class AgentLoop:
         self._running = False
         logger.info("AgentLoop 停止")
 
-    def add_tool_hooks(self, hooks: list[object]) -> None:
+    def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._reasoner.add_tool_hooks(hooks)
 
     def add_before_turn_plugin_modules(

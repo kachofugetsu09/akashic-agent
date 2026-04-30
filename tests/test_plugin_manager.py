@@ -15,6 +15,7 @@ from agent.core.passive_turn import ContextStore as _  # noqa: F401
 from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCallCtx, BeforeTurnCtx
 from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
+from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 
@@ -775,11 +776,11 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
 
     class FakeLoop:
         def __init__(self) -> None:
-            self.received_hooks: list[object] | None = None
+            self.received_hooks: list[ToolHook] | None = None
             self.received_before_turn_early: list[object] | None = None
             self.received_before_turn_late: list[object] | None = None
 
-        def add_tool_hooks(self, hooks: list[object]) -> None:
+        def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
             self.received_hooks = list(hooks)
 
         def add_before_turn_plugin_modules(
@@ -792,9 +793,9 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
 
     class FakeSpawnTool:
         def __init__(self) -> None:
-            self.received_hooks: list[object] | None = None
+            self.received_hooks: list[ToolHook] | None = None
 
-        def add_tool_hooks(self, hooks: list[object]) -> None:
+        def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
             self.received_hooks = list(hooks)
 
     class FakeMcpRegistry:
