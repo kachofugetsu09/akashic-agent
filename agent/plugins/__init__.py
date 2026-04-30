@@ -1,4 +1,5 @@
 from agent.plugins.base import Plugin
+from agent.plugins.config import PluginConfig
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.plugins.decorators import (
     on_before_turn,
@@ -11,6 +12,7 @@ from agent.plugins.decorators import (
 
 __all__ = [
     "Plugin",
+    "PluginConfig",
     "PluginContext",
     "PluginKVStore",
     "on_before_turn",

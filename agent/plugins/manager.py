@@ -3,10 +3,11 @@ from __future__ import annotations
 import functools
 import importlib.util
 import inspect
+import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent.lifecycle.types import (
     AfterReasoningCtx,
@@ -101,6 +102,7 @@ class PluginManager:
         plugin_dir = Path(mod["module_path"]).parent
         _apply_manifest(instance, plugin_dir)
         plugin_id = str(instance.name) if instance.name else mod["name"]
+        plugin_config = _load_plugin_config(plugin_dir)
         from agent.plugins.context import PluginContext, PluginKVStore
         instance.context = PluginContext(  # type: ignore[attr-defined]
             event_bus=self._event_bus,
@@ -108,6 +110,7 @@ class PluginManager:
             plugin_id=plugin_id,
             plugin_dir=plugin_dir,
             kv_store=PluginKVStore(plugin_dir / ".kv.json"),
+            config=plugin_config,
         )
         plugin_registry.register_instance(mp, instance)
         self._bind_handlers(instance, mp)
@@ -177,6 +180,32 @@ class PluginManager:
             self._event_bus.on(ctx_type, bound)
 
 
+def _load_plugin_config(plugin_dir: Path) -> "Any":
+    from agent.plugins.config import PluginConfig
+    schema_path = plugin_dir / "_conf_schema.json"
+    if not schema_path.exists():
+        return None
+    try:
+        loaded = json.loads(schema_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("_conf_schema.json 读取失败 (%s): %s", plugin_dir, e)
+        return None
+    if not isinstance(loaded, dict):
+        logger.warning("_conf_schema.json 格式错误，期望 dict (%s)", plugin_dir)
+        return None
+    raw: dict[str, object] = cast("dict[str, object]", loaded)
+    # 只取每个字段的 default 值，不做类型校验或转换
+    values: dict[str, Any] = {}
+    for key, spec in raw.items():
+        if not isinstance(key, str):
+            continue
+        if not isinstance(spec, dict):
+            continue
+        if "default" in spec:
+            values[key] = spec["default"]
+    return PluginConfig(values)
+
+
 _MANIFEST_FIELDS = ("name", "version", "desc", "author")
 
 
@@ -193,7 +222,7 @@ def _apply_manifest(instance: Any, plugin_dir: Path) -> None:
     if not isinstance(loaded, dict):
         logger.warning("manifest.yaml 格式错误，期望 dict (%s)", plugin_dir)
         return
-    raw: dict[str, object] = loaded
+    raw: dict[str, object] = cast("dict[str, object]", loaded)
     # 逐字段覆盖实例属性，非字符串值转 str，缺失字段跳过
     for field in _MANIFEST_FIELDS:
         val = raw.get(field)

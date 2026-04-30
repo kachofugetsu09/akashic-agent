@@ -1,0 +1,5 @@
+{
+  "api_key": {"type": "string", "default": "test-key"},
+  "max_results": {"type": "number", "default": 10},
+  "enabled": {"type": "boolean", "default": true}
+}

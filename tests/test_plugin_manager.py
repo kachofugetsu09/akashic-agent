@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -130,7 +132,6 @@ async def test_after_step_tap_hook_fires():
 async def test_counter_increments_extra_metadata():
     with tempfile.TemporaryDirectory() as tmp:
         # counter 插件写 .kv.json，用临时目录隔离
-        import shutil
         fixture_counter = FIXTURES_DIR / "counter"
         tmp_counter = Path(tmp) / "counter"
         shutil.copytree(fixture_counter, tmp_counter)
@@ -158,7 +159,6 @@ async def test_counter_increments_extra_metadata():
 @pytest.mark.asyncio
 async def test_kv_store_persists_across_manager_instances():
     with tempfile.TemporaryDirectory() as tmp:
-        import shutil
         fixture_counter = FIXTURES_DIR / "counter"
         tmp_counter = Path(tmp) / "counter"
         shutil.copytree(fixture_counter, tmp_counter)
@@ -206,7 +206,6 @@ def _get_instance(name_or_id: str) -> Any:
 async def test_manifest_overrides_class_attributes():
     bus = EventBus()
     # 用包含 manifested/ 子目录的父目录
-    import tempfile, shutil
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "manifested", Path(tmp) / "manifested")
         mgr = _make_manager([Path(tmp)], event_bus=bus)
@@ -223,7 +222,6 @@ async def test_manifest_overrides_class_attributes():
 @pytest.mark.asyncio
 async def test_no_manifest_uses_class_attributes():
     bus = EventBus()
-    import tempfile, shutil
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "hello", Path(tmp) / "hello")
         mgr = _make_manager([Path(tmp)], event_bus=bus)
@@ -258,3 +256,32 @@ async def test_tool_execute_returns_string():
 
     result = await tools.execute("get_weather", {"city": "巴黎"})
     assert "巴黎" in str(result)
+
+
+# ── _conf_schema.json 测试 ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_conf_schema_defaults_injected_into_context():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+        instance = _get_instance("configured")
+        assert instance.context.config is not None
+        assert instance.context.config.api_key == "test-key"
+        assert instance.context.config.max_results == 10
+        assert instance.context.config.enabled is True
+        assert instance.context.config.get("missing", "fallback") == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_missing_conf_schema_leaves_config_none():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "hello", Path(tmp) / "hello")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+        instance = _get_instance("hello")
+        assert instance.context.config is None

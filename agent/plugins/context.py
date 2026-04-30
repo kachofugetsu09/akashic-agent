@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agent.plugins.config import PluginConfig
 
 
 @dataclass
@@ -13,6 +16,7 @@ class PluginContext:
     plugin_id: str
     plugin_dir: Path
     kv_store: "PluginKVStore"
+    config: "PluginConfig | None" = None
 
 
 class PluginKVStore:
@@ -43,6 +47,6 @@ class PluginKVStore:
 
     def _write(self, data: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
+        _ = self._path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
