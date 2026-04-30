@@ -7,12 +7,26 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from bus.event_bus import EventBus
 from agent.plugins.manager import PluginManager
+from agent.plugins.registry import plugin_registry
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "plugins"
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry() -> None:
+    plugin_registry._handlers._handlers.clear()
+    plugin_registry._classes.clear()
+    plugin_registry._instances.clear()
+    yield
+    plugin_registry._handlers._handlers.clear()
+    plugin_registry._classes.clear()
+    plugin_registry._instances.clear()
 
 
 def _make_manager(plugin_dirs: list[Path], *, event_bus: EventBus, tools: Any = None) -> PluginManager:

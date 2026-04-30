@@ -5,6 +5,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -711,3 +712,64 @@ async def test_add_tool_hooks_propagates_to_tool_executor():
         # 注入插件 hook
         reasoner.add_tool_hooks(mgr.tool_hooks)
         assert len(reasoner._tool_executor._hooks) > 0
+
+
+@pytest.mark.asyncio
+async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
+    from bootstrap.tools import CoreRuntime
+
+    class FakePluginManager:
+        def __init__(self) -> None:
+            self.tool_hooks = [object()]
+            self.loaded_count = 0
+
+        async def load_all(self) -> None:
+            self.loaded_count = 1
+
+    class FakeLoop:
+        def __init__(self) -> None:
+            self.received_hooks: list[object] | None = None
+
+        def add_tool_hooks(self, hooks: list[object]) -> None:
+            self.received_hooks = list(hooks)
+
+    class FakeSpawnTool:
+        def __init__(self) -> None:
+            self.received_hooks: list[object] | None = None
+
+        def add_tool_hooks(self, hooks: list[object]) -> None:
+            self.received_hooks = list(hooks)
+
+    class FakeMcpRegistry:
+        async def load_and_connect_all(self) -> None:
+            return None
+
+    spawn_tool = FakeSpawnTool()
+    loop = FakeLoop()
+    plugin_manager = FakePluginManager()
+
+    runtime = CoreRuntime(
+        config=SimpleNamespace(peer_agents=[]),
+        http_resources=SimpleNamespace(local_service=None),
+        loop=loop,  # type: ignore[arg-type]
+        bus=SimpleNamespace(),
+        event_bus=SimpleNamespace(aclose=lambda: None),
+        tools=SimpleNamespace(get_tool=lambda name: spawn_tool if name == "spawn" else None),  # type: ignore[arg-type]
+        push_tool=SimpleNamespace(),
+        session_manager=SimpleNamespace(),
+        scheduler=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        light_provider=None,
+        mcp_registry=FakeMcpRegistry(),  # type: ignore[arg-type]
+        memory_runtime=SimpleNamespace(),
+        presence=SimpleNamespace(),
+        peer_process_manager=None,
+        peer_poller=None,
+        plugin_manager=plugin_manager,  # type: ignore[arg-type]
+    )
+
+    await runtime.start()
+
+    assert plugin_manager.loaded_count == 1
+    assert loop.received_hooks == plugin_manager.tool_hooks
+    assert spawn_tool.received_hooks == plugin_manager.tool_hooks

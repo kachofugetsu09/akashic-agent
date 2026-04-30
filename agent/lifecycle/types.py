@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from bus.events import InboundMessage, OutboundMessage
-from agent.core.response_parser import ResponseMetadata
-from agent.core.runtime_support import SessionLike, TurnRunResult
+
+if TYPE_CHECKING:
+    from agent.core.response_parser import ResponseMetadata
+    from agent.core.runtime_support import SessionLike, TurnRunResult
 
 
 # 1. 工厂函数：给 dataclass field(default_factory=...) 提供显式类型签名，消除 pyright Unknown 推断。
