@@ -25,6 +25,9 @@ class ToolExecutor:
     def __init__(self, hooks: list[ToolHook] | None = None) -> None:
         self._hooks = list(hooks or [])
 
+    def add_hooks(self, hooks: list[ToolHook]) -> None:
+        self._hooks.extend(hooks)
+
     async def execute(
         self,
         request: ToolExecutionRequest,

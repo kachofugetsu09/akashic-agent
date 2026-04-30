@@ -9,6 +9,7 @@ from agent.plugins.decorators import (
     on_after_reasoning,
     on_after_turn,
     on_tool_call,
+    on_tool_pre,
     on_tool_result,
 )
 
@@ -24,5 +25,6 @@ __all__ = [
     "on_after_reasoning",
     "on_after_turn",
     "on_tool_call",
+    "on_tool_pre",
     "on_tool_result",
 ]

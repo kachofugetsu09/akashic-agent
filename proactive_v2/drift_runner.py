@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, cast
 
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
-from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_state import DriftStateStore, SkillMeta
 from proactive_v2.drift_tools import (
@@ -32,7 +32,7 @@ class DriftRunner:
     step_recorder: StepRecorder | None = None
 
     def __post_init__(self) -> None:
-        self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
+        self._tool_executor = ToolExecutor([])
 
     async def run(self, ctx: AgentTickContext, llm_fn: LlmFn | None) -> bool:
         if llm_fn is None:

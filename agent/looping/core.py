@@ -500,6 +500,9 @@ class AgentLoop:
         self._running = False
         logger.info("AgentLoop 停止")
 
+    def add_tool_hooks(self, hooks: list[object]) -> None:
+        self._reasoner.add_tool_hooks(hooks)
+
     # ── 中断控制面 ────────────────────────────────────────────────
 
     def request_interrupt(

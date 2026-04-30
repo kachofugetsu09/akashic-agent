@@ -20,7 +20,7 @@ import logging
 from typing import Any, Sequence
 
 from agent.provider import LLMProvider
-from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -134,7 +134,12 @@ class SubAgent:
         prepared = prepare_toolset(tools)
         self._tool_map: dict[str, Tool] = prepared.tool_map
         self._tool_schemas: list[dict[str, Any]] = prepared.schemas
-        self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
+        self._tool_executor = ToolExecutor([])
+
+    def add_tool_hooks(self, hooks: list[object]) -> None:
+        from agent.tool_hooks.base import ToolHook
+        from typing import cast
+        self._tool_executor.add_hooks(cast("list[ToolHook]", hooks))
 
     async def run(self, task: str) -> str:
         """执行任务并返回文本结果。

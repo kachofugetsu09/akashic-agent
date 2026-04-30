@@ -25,6 +25,9 @@ class SpawnTool(Tool):
         self._tool_registry = tool_registry
         self._policy = policy or DelegationPolicy()
 
+    def add_tool_hooks(self, hooks: list[object]) -> None:
+        self._manager.add_tool_hooks(hooks)
+
     @property
     def name(self) -> str:
         return "spawn"

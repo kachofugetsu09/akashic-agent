@@ -13,6 +13,7 @@ class HandlerType(Enum):
 class MetadataKind(Enum):
     LIFECYCLE = auto()
     TOOL = auto()
+    TOOL_HOOK = auto()
 
 
 class PluginEventType(Enum):
@@ -24,6 +25,7 @@ class PluginEventType(Enum):
     AFTER_TURN = "after_turn"
     BEFORE_TOOL_CALL = "before_tool_call"
     AFTER_TOOL_RESULT = "after_tool_result"
+    PRE_TOOL = "pre_tool"
 
 
 @dataclass
@@ -39,6 +41,7 @@ class PluginHandlerMetadata:
     tool_risk: str | None = None
     tool_always_on: bool = False
     tool_search_hint: str | None = None
+    hook_tool_name: str | None = None
     priority: int = 0
     active: bool = True
 

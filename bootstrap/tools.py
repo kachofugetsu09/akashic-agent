@@ -115,6 +115,12 @@ class CoreRuntime:
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
             logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
+            if self.plugin_manager.tool_hooks:
+                from typing import cast
+                self.loop.add_tool_hooks(cast("list[object]", self.plugin_manager.tool_hooks))
+                spawn_tool = self.tools.get_tool("spawn")
+                if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
+                    spawn_tool.add_tool_hooks(cast("list[object]", self.plugin_manager.tool_hooks))
 
     async def stop(self) -> None:
         await self.event_bus.aclose()

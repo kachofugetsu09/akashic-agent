@@ -18,7 +18,7 @@ from hashlib import sha1
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from core.memory.runtime_facade import MemoryRuntimeFacade
@@ -255,7 +255,7 @@ class AgentTick:
                     )
                 )
             )
-        self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
+        self._tool_executor = ToolExecutor([])
         self.last_ctx: AgentTickContext | None = None  # 供测试检查
 
     async def tick(self) -> float | None:

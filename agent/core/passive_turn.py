@@ -19,7 +19,7 @@ from agent.core.types import (
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.retrieval.protocol import RetrievalRequest
-from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result, tool_call_signature
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
@@ -449,6 +449,9 @@ class Reasoner(ABC):
     ) -> "TurnRunResult":
         """执行完整被动 turn，包括 retry / trim / tool loop。"""
 
+    def add_tool_hooks(self, hooks: list[object]) -> None:
+        """子类可重写以注入 tool hooks。默认 no-op。"""
+
 
 class DefaultReasoner(Reasoner):
     def __init__(
@@ -479,7 +482,7 @@ class DefaultReasoner(Reasoner):
         self._tool_search_tool: ToolSearchTool | None = (
             _ts if isinstance(_ts, ToolSearchTool) else None
         )
-        self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
+        self._tool_executor = ToolExecutor([])
         self._stream_sink_factory: Callable[
             [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
         ] | None = None
@@ -502,6 +505,11 @@ class DefaultReasoner(Reasoner):
             default_after_step_modules(bus),
             frame_factory=AfterStepFrame,
         )
+
+    def add_tool_hooks(self, hooks: list[object]) -> None:
+        from agent.tool_hooks.base import ToolHook
+        tool_hooks = cast(list[ToolHook], hooks)
+        self._tool_executor.add_hooks(tool_hooks)
 
     def set_stream_sink_factory(
         self,

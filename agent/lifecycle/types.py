@@ -174,3 +174,13 @@ class AfterToolResultCtx:
     arguments: dict[str, Any]
     result: str
     status: str
+
+
+@dataclass
+class PreToolCtx:
+    """pre-tool hook 上下文 — mutable，handler 返回 dict 表示新 arguments"""
+    session_key: str
+    channel: str
+    chat_id: str
+    tool_name: str
+    arguments: dict[str, Any]

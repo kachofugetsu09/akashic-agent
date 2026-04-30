@@ -78,6 +78,9 @@ class SubagentManager:
         self._running_jobs: dict[str, RunningSubagentJob] = {}
         self._cancel_announced: set[str] = set()
 
+    def add_tool_hooks(self, hooks: list[object]) -> None:
+        object.__setattr__(self._runtime, "tool_hooks", list(hooks))
+
     def _spawn_jobs_dir(self) -> Path:
         root = self._workspace / "subagent-runs"
         root.mkdir(parents=True, exist_ok=True)

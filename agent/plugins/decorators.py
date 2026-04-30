@@ -96,6 +96,28 @@ def on_tool_result(**options: Any) -> Callable[[Callable[..., Any]], Callable[..
     return deco
 
 
+# on_tool_pre 装饰器：写入 MetadataKind.TOOL_HOOK，不走 EventBus，走 ToolExecutor pre_hook 链
+def on_tool_pre(
+    *,
+    tool_name: str | None = None,
+    **options: Any,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+        md = PluginHandlerMetadata(
+            kind=MetadataKind.TOOL_HOOK,
+            event_type=PluginEventType.PRE_TOOL,
+            handler_type=None,
+            handler=func,
+            handler_name=func.__name__,
+            plugin_module_path=func.__module__,
+            hook_tool_name=tool_name,
+            **options,
+        )
+        plugin_registry._handlers.append(md)
+        return func
+    return deco
+
+
 # tool 装饰器：写入 MetadataKind.TOOL，不走 EventBus
 def tool(
     name: str,
