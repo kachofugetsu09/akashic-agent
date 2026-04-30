@@ -185,6 +185,7 @@ class PluginManager:
 
 
 def _load_plugin_config(plugin_dir: Path) -> "Any":
+    # 1. 读取 _conf_schema.json，提取每个字段的 default 值
     from agent.plugins.config import PluginConfig
     schema_path = plugin_dir / "_conf_schema.json"
     if not schema_path.exists():
@@ -198,7 +199,6 @@ def _load_plugin_config(plugin_dir: Path) -> "Any":
         logger.warning("_conf_schema.json 格式错误，期望 dict (%s)", plugin_dir)
         return None
     raw: dict[str, object] = cast("dict[str, object]", loaded)
-    # 只取每个字段的 default 值，不做类型校验或转换
     values: dict[str, Any] = {}
     for key, spec in raw.items():
         if not isinstance(key, str):
@@ -207,6 +207,22 @@ def _load_plugin_config(plugin_dir: Path) -> "Any":
             continue
         if "default" in spec:
             values[key] = spec["default"]
+    # 2. 读取 plugin_config.json，用户级覆盖默认值
+    override_path = plugin_dir / "plugin_config.json"
+    if override_path.exists():
+        try:
+            override = json.loads(override_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("plugin_config.json 读取失败 (%s): %s", plugin_dir, e)
+        else:
+            if isinstance(override, dict):
+                raw_override: dict[str, object] = cast("dict[str, object]", override)
+                for key, value in raw_override.items():
+                    if not isinstance(key, str):
+                        continue
+                    values[key] = value
+            else:
+                logger.warning("plugin_config.json 格式错误，期望 dict (%s)", plugin_dir)
     return PluginConfig(values)
 
 

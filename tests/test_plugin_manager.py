@@ -287,6 +287,43 @@ async def test_missing_conf_schema_leaves_config_none():
         assert instance.context.config is None
 
 
+# ── plugin_config.json 覆盖测试 ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_plugin_config_json_overrides_defaults():
+    """plugin_config.json 覆盖 _conf_schema.json 的 default，未覆盖字段保留原值。"""
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
+        override = {"api_key": "override-key", "enabled": False}
+        (Path(tmp) / "configured" / "plugin_config.json").write_text(
+            json.dumps(override)
+        )
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+        instance = _get_instance("configured")
+        assert instance.context.config is not None
+        assert instance.context.config.api_key == "override-key"   # overridden
+        assert instance.context.config.max_results == 10            # still default
+        assert instance.context.config.enabled is False             # overridden
+
+
+@pytest.mark.asyncio
+async def test_no_plugin_config_json_keeps_original_defaults():
+    """没有 plugin_config.json 时行为不变。"""
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+        instance = _get_instance("configured")
+        assert instance.context.config is not None
+        assert instance.context.config.api_key == "test-key"       # from schema default
+        assert instance.context.config.max_results == 10
+        assert instance.context.config.enabled is True
+
+
 # ── on_tool_call / on_tool_result 测试 ───────────────────────────────────────
 
 
