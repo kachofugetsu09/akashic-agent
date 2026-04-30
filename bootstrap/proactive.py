@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from agent.config_models import Config
 from agent.looping.core import AgentLoop
 from agent.provider import LLMProvider
+from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
@@ -49,6 +50,7 @@ def build_proactive_runtime(
     presence: PresenceStore,
     agent_loop: AgentLoop,
     observe_writer=None,
+    tool_hooks: list[ToolHook] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -80,6 +82,7 @@ def build_proactive_runtime(
         ),
         observe_writer=observe_writer,
         shared_tools=getattr(agent_loop, "tools", None),
+        tool_hooks=tool_hooks,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。

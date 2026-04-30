@@ -88,6 +88,9 @@ class PluginRegistry:
     def register_instance(self, mp: str, inst: object) -> None:
         self._instances[mp] = inst
 
+    def get_instance(self, mp: str) -> object | None:
+        return self._instances.get(mp)
+
     def get_handlers_by_module_path(self, mp: str) -> list[PluginHandlerMetadata]:
         return self._handlers.get_by_module_path(mp)
 

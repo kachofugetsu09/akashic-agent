@@ -18,7 +18,7 @@ from hashlib import sha1
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from core.memory.runtime_facade import MemoryRuntimeFacade
@@ -226,6 +226,7 @@ class AgentTick:
         rng: Any | None = None,
         recent_proactive_fn: Callable[[], list] | None = None,
         drift_runner: DriftRunner | None = None,
+        tool_hooks: list[ToolHook] | None = None,
     ) -> None:
         self._cfg = cfg
         self._session_key = session_key
@@ -255,7 +256,7 @@ class AgentTick:
                     )
                 )
             )
-        self._tool_executor = ToolExecutor([])
+        self._tool_executor = ToolExecutor(tool_hooks or [])
         self.last_ctx: AgentTickContext | None = None  # 供测试检查
 
     async def tick(self) -> float | None:

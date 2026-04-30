@@ -139,12 +139,26 @@ class PluginManager:
         )
         plugin_registry.register_instance(mp, instance)
         self._bind_handlers(instance, mp)
-        self._register_tools(instance, mp)
+        tool_names = self._register_tools(instance, mp)
+        hook_count_before = len(self._tool_hooks)
         self._bind_tool_hooks(instance, mp)
+        early_count_before = len(self._before_turn_modules_early)
+        late_count_before = len(self._before_turn_modules_late)
         self._collect_before_turn_modules(instance)
-        # 5. 给插件机会做异步初始化
-        if hasattr(instance, "initialize"):
-            await instance.initialize()
+        # 5. 给插件机会做异步初始化；失败时回滚所有注册
+        try:
+            if hasattr(instance, "initialize"):
+                await instance.initialize()
+        except Exception as e:
+            logger.warning("插件 %s 初始化失败，回滚: %s", mod["name"], e)
+            plugin_registry.remove_plugin(mp)
+            for tn in tool_names:
+                if self._tool_registry is not None:
+                    self._tool_registry.unregister(tn)
+            del self._tool_hooks[hook_count_before:]
+            del self._before_turn_modules_early[early_count_before:]
+            del self._before_turn_modules_late[late_count_before:]
+            return
         self._loaded.add(mp)
         logger.info("插件已加载: %s", mod["name"])
 
@@ -158,9 +172,10 @@ class PluginManager:
         sys.modules[module_name] = module
         spec.loader.exec_module(module)  # type: ignore[union-attr]
 
-    def _register_tools(self, instance: Any, module_path: str) -> None:
+    def _register_tools(self, instance: Any, module_path: str) -> list[str]:
+        tool_names: list[str] = []
         if self._tool_registry is None:
-            return
+            return tool_names
         from agent.tools.base import Tool as AgentTool
         for md in plugin_registry.get_handlers_by_module_path(module_path):
             # 1. 只处理 TOOL 类型元数据
@@ -191,7 +206,9 @@ class PluginManager:
                 source_type="plugin",
                 source_name=plugin_name,
             )
+            tool_names.append(tool_name)
             logger.info("插件工具已注册: %s (来自 %s)", tool_name, plugin_name)
+        return tool_names
 
     def _bind_handlers(self, instance: Any, module_path: str) -> None:
         for md in plugin_registry.get_handlers_by_module_path(module_path):
@@ -226,6 +243,24 @@ class PluginManager:
         self._before_turn_modules_late.extend(
             _load_module_list(instance, "before_turn_modules_late")
         )
+
+    async def terminate_all(self) -> None:
+        for mp in list(self._loaded):
+            instance = plugin_registry.get_instance(mp)
+            if instance is not None and hasattr(instance, "terminate"):
+                try:
+                    await instance.terminate()
+                except Exception as e:
+                    logger.warning("插件 terminate 失败 (%s): %s", mp, e)
+            # 注销工具
+            for md in plugin_registry.get_handlers_by_module_path(mp):
+                if md.kind == MetadataKind.TOOL and self._tool_registry is not None:
+                    self._tool_registry.unregister(md.tool_name or md.handler_name)
+            plugin_registry.remove_plugin(mp)
+        self._loaded.clear()
+        self._tool_hooks.clear()
+        self._before_turn_modules_early.clear()
+        self._before_turn_modules_late.clear()
 
 
 def _load_plugin_config(plugin_dir: Path) -> "Any":

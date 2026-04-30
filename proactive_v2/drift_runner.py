@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, cast
 
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks.base import ToolHook
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_state import DriftStateStore, SkillMeta
 from proactive_v2.drift_tools import (
@@ -30,9 +31,10 @@ class DriftRunner:
     tool_deps: DriftToolDeps
     max_steps: int = 20
     step_recorder: StepRecorder | None = None
+    tool_hooks: list[ToolHook] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self._tool_executor = ToolExecutor([])
+        self._tool_executor = ToolExecutor(self.tool_hooks)
 
     async def run(self, ctx: AgentTickContext, llm_fn: LlmFn | None) -> bool:
         if llm_fn is None:

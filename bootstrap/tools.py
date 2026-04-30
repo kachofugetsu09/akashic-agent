@@ -127,6 +127,8 @@ class CoreRuntime:
                     spawn_tool.add_tool_hooks(cast("list[object]", self.plugin_manager.tool_hooks))
 
     async def stop(self) -> None:
+        if self.plugin_manager is not None:
+            await self.plugin_manager.terminate_all()
         await self.event_bus.aclose()
         if self.peer_poller is not None:
             await self.peer_poller.stop()

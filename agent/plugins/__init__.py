@@ -11,6 +11,7 @@ from agent.plugins.decorators import (
     on_tool_call,
     on_tool_pre,
     on_tool_result,
+    tool,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "on_tool_call",
     "on_tool_pre",
     "on_tool_result",
+    "tool",
 ]

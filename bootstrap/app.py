@@ -163,6 +163,7 @@ class AppRuntime:
                 presence=self.presence,
                 agent_loop=self.agent_loop,
                 observe_writer=self.observe_writer,
+                tool_hooks=list(self.core.plugin_manager.tool_hooks) if self.core.plugin_manager else None,
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:

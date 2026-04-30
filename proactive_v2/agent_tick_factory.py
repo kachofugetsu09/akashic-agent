@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha1
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 from agent.skills import BUILTIN_SKILLS_DIR
+from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
@@ -57,6 +58,7 @@ class AgentTickDeps:
     shared_tools: ToolRegistry | None = None
     turn_orchestrator: TurnOrchestrator | None = None
     pool: McpClientPool | None = None
+    tool_hooks: list[ToolHook] = field(default_factory=list)
 
 
 class AgentTickFactory:
@@ -94,6 +96,7 @@ class AgentTickFactory:
             rng=self._deps.rng,
             recent_proactive_fn=recent_proactive_fn,
             drift_runner=drift_runner,
+            tool_hooks=self._deps.tool_hooks,
         )
 
     def _get_session_key(self) -> str:
@@ -285,6 +288,7 @@ class AgentTickFactory:
             ),
             max_steps=getattr(self._deps.cfg, "drift_max_steps", 20),
             step_recorder=self._record_drift_step,
+            tool_hooks=self._deps.tool_hooks,
         )
 
     def _record_drift_step(
