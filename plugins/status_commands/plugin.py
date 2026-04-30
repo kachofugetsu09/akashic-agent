@@ -4,35 +4,32 @@ import logging
 import re
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import cast
 
-from agent.lifecycle.phase import PhaseModule
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
+from agent.plugins import Plugin
 from agent.prompting import is_context_frame
 
-if TYPE_CHECKING:
-    from agent.lifecycle.phases.before_turn import BeforeTurnFrame
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("plugin.status_commands")
 
 _SESSION_SLOT = "session:session"
 _CTX_SLOT = "session:ctx"
-
 _TS_PATTERN = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})")
-
-
-# ── 命令 module ────────────────────────────────────────────────────
 
 
 class MemoryStatusCommandModule:
     requires = (_SESSION_SLOT,)
     produces = (_CTX_SLOT,)
 
-    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+    def __init__(self, plugin_name: str) -> None:
+        self._plugin_name = plugin_name
+
+    async def run(self, frame) -> object:
         if _CTX_SLOT in frame.slots:
             return frame
         state = frame.input
-        if _normalize_command(state.msg.content) not in {
+        command = _normalize_command(state.msg.content)
+        if command not in {
             "/memory_status",
             "/compact_status",
         }:
@@ -43,6 +40,12 @@ class MemoryStatusCommandModule:
         messages = list(getattr(session, "messages", []))
         last = max(0, int(getattr(session, "last_consolidated", 0)))
         last = min(last, len(messages))
+        logger.info(
+            "[%s:%s] 命中命令: %s",
+            self._plugin_name,
+            self.__class__.__name__,
+            command,
+        )
         frame.slots[_CTX_SLOT] = _abort_ctx(
             state, _format_memory_status_reply(messages, last)
         )
@@ -53,15 +56,23 @@ class KVCacheCommandModule:
     requires = (_SESSION_SLOT,)
     produces = (_CTX_SLOT,)
 
-    def __init__(self, observe_db_path: Path | None = None) -> None:
+    def __init__(self, plugin_name: str, observe_db_path: Path | None) -> None:
+        self._plugin_name = plugin_name
         self._observe_db_path = observe_db_path
 
-    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+    async def run(self, frame) -> object:
         if _CTX_SLOT in frame.slots:
             return frame
         state = frame.input
-        if _normalize_command(state.msg.content) not in {"/kvcache", "/cache_status"}:
+        command = _normalize_command(state.msg.content)
+        if command not in {"/kvcache", "/cache_status"}:
             return frame
+        logger.info(
+            "[%s:%s] 命中命令: %s",
+            self._plugin_name,
+            self.__class__.__name__,
+            command,
+        )
         reply = self._build_reply(state)
         frame.slots[_CTX_SLOT] = _abort_ctx(state, reply)
         return frame
@@ -120,16 +131,18 @@ class KVCacheCommandModule:
         return "\n".join(lines).rstrip("\n")
 
 
-def default_before_turn_command_modules(
-    observe_db_path: Path | None = None,
-) -> list[PhaseModule[BeforeTurnFrame]]:
-    return [
-        MemoryStatusCommandModule(),
-        KVCacheCommandModule(observe_db_path),
-    ]
+class StatusCommands(Plugin):
+    name = "status_commands"
 
-
-# ── 内部辅助 ───────────────────────────────────────────────────────
+    def before_turn_modules_early(self) -> list[object]:
+        plugin_name = self.name or "status_commands"
+        return cast(
+            "list[object]",
+            [
+                MemoryStatusCommandModule(plugin_name),
+                KVCacheCommandModule(plugin_name, self.context.observe_db_path),
+            ],
+        )
 
 
 def _normalize_command(content: str) -> str:
@@ -163,9 +176,6 @@ def _format_ts(ts: str) -> str:
     if m:
         return f"{int(m.group(2))}-{int(m.group(3))} {m.group(4)}:{m.group(5)}"
     return ts
-
-
-# ── 格式化辅助（memory_status） ──────────────────────────────────
 
 
 def _format_memory_status_reply(messages: list[dict], last_consolidated: int) -> str:

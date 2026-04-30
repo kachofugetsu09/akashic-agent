@@ -115,6 +115,10 @@ class CoreRuntime:
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
             logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
+            self.loop.add_before_turn_plugin_modules(
+                self.plugin_manager.before_turn_modules_early,
+                self.plugin_manager.before_turn_modules_late,
+            )
             if self.plugin_manager.tool_hooks:
                 from typing import cast
                 self.loop.add_tool_hooks(cast("list[object]", self.plugin_manager.tool_hooks))
@@ -485,6 +489,7 @@ def build_core_runtime(
         plugin_dirs=_resolve_plugin_dirs(workspace),
         event_bus=event_bus,
         tool_registry=tools,
+        observe_db_path=workspace / "observe" / "observe.db",
     )
 
     return CoreRuntime(

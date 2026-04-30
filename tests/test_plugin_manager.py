@@ -259,6 +259,51 @@ async def test_tool_execute_returns_string():
     assert "巴黎" in str(result)
 
 
+@pytest.mark.asyncio
+async def test_collects_before_turn_plugin_modules():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        plugin_dir = Path(tmp) / "phase_plugin"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.py").write_text(
+            """
+from agent.plugins import Plugin
+
+
+class EarlyModule:
+    requires = ("session:session",)
+
+    async def run(self, frame):
+        return frame
+
+
+class LateModule:
+    requires = ("session:ctx",)
+
+    async def run(self, frame):
+        return frame
+
+
+class PhasePlugin(Plugin):
+    name = "phase_plugin"
+
+    def before_turn_modules_early(self):
+        return [EarlyModule()]
+
+    def before_turn_modules_late(self):
+        return [LateModule()]
+""".strip(),
+            encoding="utf-8",
+        )
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+
+        assert len(mgr.before_turn_modules_early) == 1
+        assert len(mgr.before_turn_modules_late) == 1
+        assert mgr.before_turn_modules_early[0].__class__.__name__ == "EarlyModule"
+        assert mgr.before_turn_modules_late[0].__class__.__name__ == "LateModule"
+
+
 # ── _conf_schema.json 测试 ────────────────────────────────────────────────────
 
 
@@ -721,6 +766,8 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     class FakePluginManager:
         def __init__(self) -> None:
             self.tool_hooks = [object()]
+            self.before_turn_modules_early = [object()]
+            self.before_turn_modules_late = [object()]
             self.loaded_count = 0
 
         async def load_all(self) -> None:
@@ -729,9 +776,19 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     class FakeLoop:
         def __init__(self) -> None:
             self.received_hooks: list[object] | None = None
+            self.received_before_turn_early: list[object] | None = None
+            self.received_before_turn_late: list[object] | None = None
 
         def add_tool_hooks(self, hooks: list[object]) -> None:
             self.received_hooks = list(hooks)
+
+        def add_before_turn_plugin_modules(
+            self,
+            early: list[object],
+            late: list[object],
+        ) -> None:
+            self.received_before_turn_early = list(early)
+            self.received_before_turn_late = list(late)
 
     class FakeSpawnTool:
         def __init__(self) -> None:
@@ -771,5 +828,7 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     await runtime.start()
 
     assert plugin_manager.loaded_count == 1
+    assert loop.received_before_turn_early == plugin_manager.before_turn_modules_early
+    assert loop.received_before_turn_late == plugin_manager.before_turn_modules_late
     assert loop.received_hooks == plugin_manager.tool_hooks
     assert spawn_tool.received_hooks == plugin_manager.tool_hooks

@@ -25,7 +25,6 @@ from agent.lifecycle.types import (
     BeforeTurnCtx,
     TurnState,
 )
-from agent.lifecycle.phases.before_turn_commands import MemoryStatusCommandModule
 from agent.lifecycle.phases.after_step import (
     AfterStepFrame,
     default_after_step_modules,
@@ -45,6 +44,153 @@ from agent.lifecycle.phases.before_turn import (
 from session.manager import SessionManager
 
 _now = datetime.now()
+
+
+class _MemoryStatusPluginModule:
+    requires = ("session:session",)
+    produces = ("session:ctx",)
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        if "session:ctx" in frame.slots:
+            return frame
+        state = frame.input
+        if state.msg.content != "/memory_status":
+            return frame
+        session = state.session
+        if session is None:
+            return frame
+        messages = list(getattr(session, "messages", []))
+        last = max(0, int(getattr(session, "last_consolidated", 0)))
+        last = min(last, len(messages))
+        frame.slots["session:ctx"] = BeforeTurnCtx(
+            session_key=state.session_key,
+            channel=state.msg.channel,
+            chat_id=state.msg.chat_id,
+            content=state.msg.content,
+            timestamp=state.msg.timestamp,
+            skill_names=[],
+            retrieved_memory_block="",
+            retrieval_trace_raw=None,
+            history_messages=(),
+            abort=True,
+            abort_reply=_format_memory_status_reply(messages, last),
+        )
+        return frame
+
+
+class _KVCachePluginModule:
+    requires = ("session:session",)
+    produces = ("session:ctx",)
+
+    def __init__(self, observe_db_path) -> None:
+        self._observe_db_path = observe_db_path
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        if "session:ctx" in frame.slots:
+            return frame
+        state = frame.input
+        if state.msg.content != "/kvcache":
+            return frame
+        frame.slots["session:ctx"] = BeforeTurnCtx(
+            session_key=state.session_key,
+            channel=state.msg.channel,
+            chat_id=state.msg.chat_id,
+            content=state.msg.content,
+            timestamp=state.msg.timestamp,
+            skill_names=[],
+            retrieved_memory_block="",
+            retrieval_trace_raw=None,
+            history_messages=(),
+            abort=True,
+            abort_reply=_build_kvcache_reply(state, self._observe_db_path),
+        )
+        return frame
+
+
+def _format_memory_status_reply(messages: list[dict[str, object]], last_consolidated: int) -> str:
+    consolidated_user = _count_real_user_messages(messages[:last_consolidated])
+    total_user = _count_real_user_messages(messages)
+    pending_user = max(0, total_user - consolidated_user)
+    last_user_message = _latest_real_user_content(messages[:last_consolidated])
+
+    lines = ["记忆整理状态："]
+    if last_consolidated <= 0 or not last_user_message:
+        lines.append("当前会话还没有完成过记忆整理。")
+    elif pending_user == 0:
+        lines.append("当前会话已经整理到最新的用户消息。")
+    else:
+        lines.append(f"上次整理到 {pending_user} 条用户消息之前。")
+    if last_user_message:
+        lines.extend(["", "最后已整理的用户消息：", f"“{_preview_text(last_user_message)}”"])
+    lines.extend(
+        [
+            "",
+            f"尚未整理的用户消息数：{pending_user}",
+            f"当前会话消息数：{len(messages)}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_kvcache_reply(state: TurnState, observe_db_path) -> str:
+    if not observe_db_path or not observe_db_path.exists():
+        return "暂无 KVCache 数据（observe 数据库不存在）。"
+    conn = open_observe_db(observe_db_path)
+    try:
+        rows = conn.execute(
+            """SELECT llm_output, ts, react_cache_prompt_tokens, react_cache_hit_tokens
+               FROM turns WHERE session_key=? AND source='agent'
+               ORDER BY id DESC LIMIT ?""",
+            [state.session_key, 5],
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return "暂无 KVCache 数据。"
+    overall_prompt = sum(r[2] or 0 for r in rows)
+    overall_hit = sum(r[3] or 0 for r in rows)
+    overall_pct = (overall_hit / overall_prompt * 100) if overall_prompt > 0 else 0.0
+    lines = [f"最近 {len(rows)} 轮 KVCache 状态（总命中率 {overall_pct:.2f}%）", ""]
+    for llm_output, ts, prompt_tokens, hit_tokens in rows:
+        content = str(llm_output or "").strip()
+        preview = _preview_text(content.replace("\n", " "), limit=80)
+        hit = hit_tokens or 0
+        prompt = prompt_tokens or 0
+        pct = (hit / prompt * 100) if prompt > 0 else 0.0
+        lines.append(preview or "（无内容）")
+        lines.append(_format_ts(str(ts)))
+        lines.append(f"{hit:,} / {prompt:,}")
+        lines.append(f"{pct:.2f}%")
+        lines.append("")
+    return "\n".join(lines).rstrip("\n")
+
+
+def _count_real_user_messages(messages: list[dict[str, object]]) -> int:
+    return sum(1 for item in messages if _is_real_user_message(item))
+
+
+def _latest_real_user_content(messages: list[dict[str, object]]) -> str:
+    for item in reversed(messages):
+        if _is_real_user_message(item):
+            return str(item.get("content", "")).strip()
+    return ""
+
+
+def _is_real_user_message(item: dict[str, object]) -> bool:
+    content = str(item.get("content", "")).strip()
+    return item.get("role") == "user" and bool(content) and "data-system-context-frame" not in content
+
+
+def _preview_text(text: str, limit: int = 80) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1] + "…"
+
+
+def _format_ts(ts: str) -> str:
+    match = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return f"{match.month}-{match.day} {match:%H:%M}"
 
 
 def _inbound() -> InboundMessage:
@@ -99,6 +245,7 @@ async def test_before_turn_setup_fills_turn_state():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
+            plugin_modules_early=[],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -137,6 +284,7 @@ async def test_before_turn_chain_can_abort():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
+            plugin_modules_early=[_MemoryStatusPluginModule()],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -170,6 +318,7 @@ async def test_before_turn_memory_status_command_aborts_without_context_prepare(
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
+            plugin_modules_early=[_MemoryStatusPluginModule()],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -226,7 +375,7 @@ async def test_before_turn_accepts_custom_command_module():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            command_modules=[MemoryStatusCommandModule(), CustomCommandModule()],
+            plugin_modules_early=[_MemoryStatusPluginModule(), CustomCommandModule()],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -244,6 +393,61 @@ async def test_before_turn_accepts_custom_command_module():
     assert ctx.abort is True
     assert ctx.abort_reply == "debug ok"
     ctx_store.prepare.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_before_turn_accepts_plugin_modules_early_and_late():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    bundle = ContextBundle(
+        skill_mentions=["memo"],
+        retrieved_memory_block="retrieved block",
+        retrieval_trace_raw={"trace": 1},
+        history_messages=[{"role": "user", "content": "prev"}],
+    )
+    ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=bundle))
+    seen: list[str] = []
+
+    class EarlyPluginModule:
+        requires = ("session:session",)
+
+        async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+            seen.append("early")
+            frame.input.msg.metadata["early_seen"] = True
+            return frame
+
+    class LatePluginModule:
+        requires = ("session:ctx",)
+        produces = ("session:ctx",)
+
+        async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+            seen.append("late")
+            ctx = cast(BeforeTurnCtx, frame.slots["session:ctx"])
+            ctx.extra_metadata["late_seen"] = ctx.retrieved_memory_block
+            frame.slots["session:ctx"] = ctx
+            return frame
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            plugin_modules_early=[EarlyPluginModule()],
+            plugin_modules_late=[LatePluginModule()],
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    msg.metadata["seed"] = "x"
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert seen == ["early", "late"]
+    assert state.msg.metadata["early_seen"] is True
+    assert ctx.extra_metadata["late_seen"] == "retrieved block"
+    ctx_store.prepare.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -291,7 +495,7 @@ async def test_before_turn_kvcache_command(tmp_path):
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            observe_db_path=db_path,
+            plugin_modules_early=[_KVCachePluginModule(db_path)],
         ),
         frame_factory=BeforeTurnFrame,
     )

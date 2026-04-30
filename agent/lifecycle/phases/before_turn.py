@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, cast
 
 from bus.event_bus import EventBus
@@ -9,10 +8,6 @@ from agent.core.runtime_support import SessionLike
 from agent.core.types import ContextBundle
 from agent.lifecycle.phase import PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
-
-from agent.lifecycle.phases.before_turn_commands import (
-    default_before_turn_command_modules,
-)
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import ContextStore
@@ -117,17 +112,17 @@ def default_before_turn_modules(
     bus: EventBus,
     session_manager: SessionManager,
     context_store: ContextStore,
-    observe_db_path: Path | None = None,
-    command_modules: BeforeTurnModules | None = None,
+    plugin_modules_early: BeforeTurnModules | None = None,
+    plugin_modules_late: BeforeTurnModules | None = None,
 ) -> BeforeTurnModules:
-    commands = command_modules
-    if commands is None:
-        commands = default_before_turn_command_modules(observe_db_path)
+    early_modules = plugin_modules_early or []
+    late_modules = plugin_modules_late or []
     return [
         _AcquireSessionModule(session_manager),
-        *commands,
+        *early_modules,
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),
         _EmitBeforeTurnCtxModule(bus),
+        *late_modules,
         _ReturnBeforeTurnCtxModule(),
     ]

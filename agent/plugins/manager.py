@@ -46,12 +46,16 @@ class PluginManager:
         *,
         event_bus: EventBus,
         tool_registry: Any = None,
+        observe_db_path: Path | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
         self._tool_registry = tool_registry
+        self._observe_db_path = observe_db_path
         self._loaded: set[str] = set()
         self._tool_hooks: list[ToolHook] = []
+        self._before_turn_modules_early: list[object] = []
+        self._before_turn_modules_late: list[object] = []
 
     @property
     def loaded_count(self) -> int:
@@ -60,6 +64,14 @@ class PluginManager:
     @property
     def tool_hooks(self) -> list[ToolHook]:
         return list(self._tool_hooks)
+
+    @property
+    def before_turn_modules_early(self) -> list[object]:
+        return list(self._before_turn_modules_early)
+
+    @property
+    def before_turn_modules_late(self) -> list[object]:
+        return list(self._before_turn_modules_late)
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(self) -> list[dict[str, str]]:
@@ -123,11 +135,13 @@ class PluginManager:
             plugin_dir=plugin_dir,
             kv_store=PluginKVStore(plugin_dir / ".kv.json"),
             config=plugin_config,
+            observe_db_path=self._observe_db_path,
         )
         plugin_registry.register_instance(mp, instance)
         self._bind_handlers(instance, mp)
         self._register_tools(instance, mp)
         self._bind_tool_hooks(instance, mp)
+        self._collect_before_turn_modules(instance)
         # 5. 给插件机会做异步初始化
         if hasattr(instance, "initialize"):
             await instance.initialize()
@@ -205,6 +219,14 @@ class PluginManager:
             self._tool_hooks.append(hook)
             logger.info("插件 tool hook 已注册: %s", hook.name)
 
+    def _collect_before_turn_modules(self, instance: Any) -> None:
+        self._before_turn_modules_early.extend(
+            _load_module_list(instance, "before_turn_modules_early")
+        )
+        self._before_turn_modules_late.extend(
+            _load_module_list(instance, "before_turn_modules_late")
+        )
+
 
 def _load_plugin_config(plugin_dir: Path) -> "Any":
     # 1. 读取 _conf_schema.json，提取每个字段的 default 值
@@ -246,6 +268,26 @@ def _load_plugin_config(plugin_dir: Path) -> "Any":
             else:
                 logger.warning("plugin_config.json 格式错误，期望 dict (%s)", plugin_dir)
     return PluginConfig(values)
+
+
+def _load_module_list(instance: Any, method_name: str) -> list[object]:
+    provider = getattr(instance, method_name, None)
+    if provider is None:
+        return []
+    if not callable(provider):
+        logger.warning("插件 %s.%s 不是可调用对象", type(instance).__name__, method_name)
+        return []
+    try:
+        loaded = provider()
+    except Exception as e:
+        logger.warning("插件 %s.%s 加载失败: %s", type(instance).__name__, method_name, e)
+        return []
+    if loaded is None:
+        return []
+    if not isinstance(loaded, list):
+        logger.warning("插件 %s.%s 返回值不是 list", type(instance).__name__, method_name)
+        return []
+    return loaded
 
 
 _MANIFEST_FIELDS = ("name", "version", "desc", "author")

@@ -5,7 +5,6 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import agent.core.passive_support as support
@@ -114,7 +113,8 @@ class AgentCoreDeps:
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
     history_window: int = 500
-    observe_db_path: Path | None = None
+    before_turn_plugin_modules_early: list[object] | None = None
+    before_turn_plugin_modules_late: list[object] | None = None
 
 
 class AgentCore:
@@ -133,6 +133,13 @@ class AgentCore:
     @property
     def pipeline(self) -> "PassiveTurnPipeline":
         return self._passive_pipeline
+
+    def add_before_turn_plugin_modules(
+        self,
+        early: list[object],
+        late: list[object],
+    ) -> None:
+        self._passive_pipeline.add_before_turn_plugin_modules(early, late)
 
     async def process(
         self,
@@ -169,18 +176,12 @@ class PassiveTurnPipeline:
         self._tools = deps.tools
         self._reasoner = deps.reasoner
         self._outbound_port = deps.outbound_port
+        self._before_turn_plugin_modules_early = list(deps.before_turn_plugin_modules_early or [])
+        self._before_turn_plugin_modules_late = list(deps.before_turn_plugin_modules_late or [])
         bus = deps.event_bus or EventBus()
         self._bus = bus
 
-        self._before_turn: Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame] = Phase(
-            default_before_turn_modules(
-                bus,
-                self._session.session_manager,
-                deps.context_store,
-                observe_db_path=deps.observe_db_path,
-            ),
-            frame_factory=BeforeTurnFrame,
-        )
+        self._before_turn = self._build_before_turn_phase()
         self._before_reasoning: Phase[
             BeforeReasoningInput,
             BeforeReasoningCtx,
@@ -211,6 +212,27 @@ class PassiveTurnPipeline:
                 deps.history_window,
             ),
             frame_factory=AfterTurnFrame,
+        )
+
+    def add_before_turn_plugin_modules(
+        self,
+        early: list[object],
+        late: list[object],
+    ) -> None:
+        self._before_turn_plugin_modules_early.extend(early)
+        self._before_turn_plugin_modules_late.extend(late)
+        self._before_turn = self._build_before_turn_phase()
+
+    def _build_before_turn_phase(self) -> Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]:
+        return Phase(
+            default_before_turn_modules(
+                self._bus,
+                self._session.session_manager,
+                self._context_store,
+                plugin_modules_early=cast("list[Any]", self._before_turn_plugin_modules_early),
+                plugin_modules_late=cast("list[Any]", self._before_turn_plugin_modules_late),
+            ),
+            frame_factory=BeforeTurnFrame,
         )
 
     # 核心方法：处理一条普通被动消息，并提交最终出站结果。
