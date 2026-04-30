@@ -5,6 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import agent.core.passive_support as support
@@ -111,6 +112,7 @@ class AgentCoreDeps:
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
     history_window: int = 500
+    observe_db_path: Path | None = None
 
 
 class AgentCore:
@@ -173,6 +175,7 @@ class PassiveTurnPipeline:
                 bus,
                 self._session.session_manager,
                 deps.context_store,
+                observe_db_path=deps.observe_db_path,
             ),
             frame_factory=BeforeTurnFrame,
         )

@@ -409,6 +409,7 @@ class AgentLoop:
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
                 history_window=config.memory.keep_count,
+                observe_db_path=deps.workspace / "observe" / "observe.db",
             )
         )
         self._core_runner = deps.core_runner or CoreRunner(

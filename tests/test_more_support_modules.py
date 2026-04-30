@@ -845,11 +845,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
             run=lambda: ("mem-task", interval_seconds)
         ),
     )
-    monkeypatch.setattr(
-        "proactive_v2.fitbit_sleep.run_fitbit_monitor",
-        lambda path, url: ("fitbit-task", path, url),
-    )
-
     cfg = SimpleNamespace(
         proactive=SimpleNamespace(
             enabled=True,
@@ -874,14 +869,7 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
             processing_state=SimpleNamespace(is_busy=lambda: False)
         )),
     )
-    assert tasks == [
-        "loop-task",
-        (
-            "fitbit-task",
-            Path(__file__).resolve().parents[1] / "scripts" / "fitbit-monitor",
-            "http://127.0.0.1:18765",
-        ),
-    ]
+    assert tasks == ["loop-task"]
     assert loop is proactive_loop
     mem_tasks = build_memory_optimizer_task(
         cast(Any, cfg),

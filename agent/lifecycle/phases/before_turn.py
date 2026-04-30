@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, cast
 
 from bus.event_bus import EventBus
-from agent.core.types import ContextBundle
 from agent.core.runtime_support import SessionLike
+from agent.core.types import ContextBundle
 from agent.lifecycle.phase import PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
+
+from agent.lifecycle.phases.before_turn_commands import (
+    default_before_turn_command_modules,
+)
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import ContextStore
@@ -36,7 +41,6 @@ class _AcquireSessionModule:
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         state = frame.input
         session = self._session_manager.get_or_create(state.session_key)
-        # TurnState 是跨 phase 通信载体，后续 BeforeReasoning / AfterReasoning 会读取。
         state.session = session
         state.retrieval_raw = None
         frame.slots[_SESSION_SLOT] = session
@@ -51,6 +55,8 @@ class _PrepareContextModule:
         self._context_store = context_store
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        if _CTX_SLOT in frame.slots:
+            return frame
         state = frame.input
         session = cast(SessionLike, frame.slots[_SESSION_SLOT])
         bundle = await self._context_store.prepare(
@@ -58,7 +64,6 @@ class _PrepareContextModule:
             session_key=state.session_key,
             session=session,
         )
-        # TurnState 是跨 phase 通信载体，AfterTurn 会把 retrieval trace 发给后处理。
         state.retrieval_raw = bundle.retrieval_trace_raw
         frame.slots[_CONTEXT_BUNDLE_SLOT] = bundle
         return frame
@@ -69,6 +74,8 @@ class _BuildBeforeTurnCtxModule:
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        if _CTX_SLOT in frame.slots:
+            return frame
         state = frame.input
         bundle = cast(ContextBundle, frame.slots[_CONTEXT_BUNDLE_SLOT])
         frame.slots[_CTX_SLOT] = BeforeTurnCtx(
@@ -110,9 +117,15 @@ def default_before_turn_modules(
     bus: EventBus,
     session_manager: SessionManager,
     context_store: ContextStore,
+    observe_db_path: Path | None = None,
+    command_modules: BeforeTurnModules | None = None,
 ) -> BeforeTurnModules:
+    commands = command_modules
+    if commands is None:
+        commands = default_before_turn_command_modules(observe_db_path)
     return [
         _AcquireSessionModule(session_manager),
+        *commands,
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),
         _EmitBeforeTurnCtxModule(bus),

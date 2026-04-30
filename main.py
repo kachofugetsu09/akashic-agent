@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 from agent.config import Config
@@ -72,7 +74,32 @@ async def serve(
         config,
         workspace=workspace or _default_workspace(),
     )
-    await runtime.run()
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+    watched_signals = (signal.SIGINT, signal.SIGTERM)
+    for sig in watched_signals:
+        loop.add_signal_handler(sig, stop_event.set)
+
+    runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
+    stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
+    try:
+        done, _ = await asyncio.wait(
+            {runtime_task, stop_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if runtime_task in done:
+            _ = stop_task.cancel()
+            await runtime_task
+            return
+        _ = runtime_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await runtime_task
+    finally:
+        for sig in watched_signals:
+            _ = loop.remove_signal_handler(sig)
+        _ = stop_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await stop_task
 
 
 if __name__ == "__main__":

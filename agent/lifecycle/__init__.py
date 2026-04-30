@@ -12,6 +12,11 @@ from agent.lifecycle.phases.before_reasoning import (
 )
 from agent.lifecycle.phases.before_step import BeforeStepFrame, default_before_step_modules
 from agent.lifecycle.phases.before_turn import BeforeTurnFrame, default_before_turn_modules
+from agent.lifecycle.phases.before_turn_commands import (
+    default_before_turn_command_modules,
+    MemoryStatusCommandModule,
+    KVCacheCommandModule,
+)
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterReasoningInput,
@@ -56,4 +61,7 @@ __all__ = [
     "default_before_reasoning_modules",
     "default_before_step_modules",
     "default_before_turn_modules",
+    "default_before_turn_command_modules",
+    "MemoryStatusCommandModule",
+    "KVCacheCommandModule",
 ]

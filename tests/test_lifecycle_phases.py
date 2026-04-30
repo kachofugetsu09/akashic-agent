@@ -13,6 +13,7 @@ from agent.core.passive_turn import ContextStore
 from agent.core.types import ContextBundle
 from agent.lifecycle.phase import Phase
 from agent.tools.registry import ToolRegistry
+from core.observe.db import open_db as open_observe_db
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
 from agent.lifecycle.types import (
@@ -24,6 +25,7 @@ from agent.lifecycle.types import (
     BeforeTurnCtx,
     TurnState,
 )
+from agent.lifecycle.phases.before_turn_commands import MemoryStatusCommandModule
 from agent.lifecycle.phases.after_step import (
     AfterStepFrame,
     default_after_step_modules,
@@ -144,6 +146,178 @@ async def test_before_turn_chain_can_abort():
     ctx = await phase.run(state)
     assert ctx.abort is True
     assert ctx.abort_reply == "rate limited"
+
+
+@pytest.mark.asyncio
+async def test_before_turn_memory_status_command_aborts_without_context_prepare():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session.messages = [
+        {
+            "role": "user",
+            "content": '<system-reminder data-system-context-frame="true">内部</system-reminder>',
+        },
+        {"role": "user", "content": "帮我看看 Telegram 流式消息为什么重复发送"},
+        {"role": "assistant", "content": "已修复"},
+        {"role": "user", "content": "再看一下超时问题"},
+    ]
+    session.last_consolidated = 3
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(prepare=AsyncMock())
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="/memory_status",
+        timestamp=_now,
+    )
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+    ctx = await phase.run(state)
+    assert ctx.abort is True
+    assert "上次整理到 1 条用户消息之前。" in ctx.abort_reply
+    assert "帮我看看 Telegram 流式消息为什么重复发送" in ctx.abort_reply
+    assert "尚未整理的用户消息数：1" in ctx.abort_reply
+    assert "当前会话消息数：4" in ctx.abort_reply
+    assert "内部" not in ctx.abort_reply
+    ctx_store.prepare.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_before_turn_accepts_custom_command_module():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(prepare=AsyncMock())
+
+    class CustomCommandModule:
+        requires = ("session:session",)
+        produces = ("session:ctx",)
+
+        async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+            state = frame.input
+            if state.msg.content != "/debug":
+                return frame
+            frame.slots["session:ctx"] = BeforeTurnCtx(
+                session_key=state.session_key,
+                channel=state.msg.channel,
+                chat_id=state.msg.chat_id,
+                content=state.msg.content,
+                timestamp=state.msg.timestamp,
+                skill_names=[],
+                retrieved_memory_block="",
+                retrieval_trace_raw=None,
+                history_messages=(),
+                abort=True,
+                abort_reply="debug ok",
+            )
+            return frame
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            command_modules=[MemoryStatusCommandModule(), CustomCommandModule()],
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="/debug",
+        timestamp=_now,
+    )
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert ctx.abort is True
+    assert ctx.abort_reply == "debug ok"
+    ctx_store.prepare.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_before_turn_kvcache_command(tmp_path):
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(prepare=AsyncMock())
+
+    db_path = tmp_path / "observe" / "observe.db"
+    conn = open_observe_db(db_path)
+    conn.execute(
+        """INSERT INTO turns (source, session_key, user_msg, llm_output, ts,
+           react_cache_prompt_tokens, react_cache_hit_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [
+            "agent",
+            "telegram:123",
+            "之前的问题",
+            "这是之前的回答",
+            "2026-04-29T16:14:00.123456+00:00",
+            52564,
+            50560,
+        ],
+    )
+    conn.execute(
+        """INSERT INTO turns (source, session_key, user_msg, llm_output, ts,
+           react_cache_prompt_tokens, react_cache_hit_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        [
+            "agent",
+            "telegram:123",
+            "新的问题",
+            "这是新的回答\n有多行",
+            "2026-04-29T16:15:00+00:00",
+            50000,
+            40000,
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            observe_db_path=db_path,
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="/kvcache",
+        timestamp=_now,
+    )
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert ctx.abort is True
+    assert "最近 2 轮 KVCache 状态" in ctx.abort_reply
+    assert "总命中率" in ctx.abort_reply
+    assert "这是之前的回答" in ctx.abort_reply
+    assert "这是新的回答" in ctx.abort_reply
+    assert "4-29 16:14" in ctx.abort_reply
+    assert "4-29 16:15" in ctx.abort_reply
+    assert "50,560 / 52,564" in ctx.abort_reply
+    assert "96.19%" in ctx.abort_reply
+    assert "80.00%" in ctx.abort_reply
+    assert ctx.abort_reply.count("\n\n") <= 2
+    ctx_store.prepare.assert_not_called()
 
 
 @pytest.mark.asyncio
