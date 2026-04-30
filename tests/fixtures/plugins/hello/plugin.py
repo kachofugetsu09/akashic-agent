@@ -3,6 +3,8 @@ import logging
 
 _log = logging.getLogger("plugin.hello")
 
+after_step_calls: list[str] = []
+
 
 class Hello(Plugin):
     name = "hello"
@@ -19,3 +21,4 @@ class Hello(Plugin):
     async def on_after(self, event):
         _log.info("hello: AfterStep iter=%d tools=%s",
                   event.iteration, event.tools_called)
+        after_step_calls.append(event.session_key)

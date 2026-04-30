@@ -113,20 +113,17 @@ async def test_after_step_tap_hook_fires():
     mgr = _make_manager([FIXTURES_DIR], event_bus=bus)
     await mgr.load_all()
 
-    # 加载后 bus 里必须有 hello 注册的 AfterStepCtx handler
-    handlers_before_spy = list(bus._handlers.get(AfterStepCtx, []))
-    assert len(handlers_before_spy) >= 1, "hello 的 on_after_step 未绑定到 EventBus"
+    # 从已加载的 hello 模块取 after_step_calls，断言 handler 真实执行
+    import sys
+    hello_mod = next(
+        m for k, m in sys.modules.items()
+        if k.startswith("akasic_plugin_") and k.endswith("_hello")
+    )
+    hello_mod.after_step_calls.clear()
 
-    calls: list[str] = []
-
-    async def spy(ctx: AfterStepCtx) -> None:
-        calls.append(ctx.session_key)
-
-    bus.on(AfterStepCtx, spy)
-    ctx = _after_step_ctx()
+    ctx = _after_step_ctx(session_key="test:123")
     await bus.fanout(ctx)
-    # spy 被调用，且 bus 里有 hello 的 handler（已由 handlers_before_spy 断言）
-    assert len(calls) == 1
+    assert "test:123" in hello_mod.after_step_calls
 
 
 @pytest.mark.asyncio
