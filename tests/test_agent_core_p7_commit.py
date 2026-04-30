@@ -332,6 +332,13 @@ def test_response_parser_strips_marker_with_spaces_after_commas():
     assert parsed.metadata.cited_memory_ids == ["mem_1", "mem-2"]
 
 
+def test_response_parser_strips_empty_marker_at_end():
+    parsed = parse_response("答复正文\n§cited:[]§", tool_chain=[])
+
+    assert parsed.clean_text == "答复正文"
+    assert parsed.metadata.cited_memory_ids == []
+
+
 def test_response_parser_keeps_body_text_when_marker_not_at_end():
     text = "正文里提到 §cited:[mem_1]§ 这串文本，但不是协议行。\n后面还有内容"
 

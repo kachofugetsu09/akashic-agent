@@ -23,7 +23,7 @@ class ParsedResponse:
     metadata: ResponseMetadata
 
 
-_CITED_RE = re.compile(r"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]+)\]§\s*$")
+_CITED_RE = re.compile(r"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]*)\]§\s*$")
 _MEME_RE = re.compile(r"<meme:([a-zA-Z0-9_-]+)>", re.IGNORECASE)
 
 
