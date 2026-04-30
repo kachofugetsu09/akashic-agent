@@ -137,9 +137,7 @@ class SubAgent:
         self._tool_executor = ToolExecutor([])
 
     def add_tool_hooks(self, hooks: list[object]) -> None:
-        from agent.tool_hooks.base import ToolHook
-        from typing import cast
-        self._tool_executor.add_hooks(cast("list[ToolHook]", hooks))
+        self._tool_executor.add_hooks(hooks)
 
     async def run(self, task: str) -> str:
         """执行任务并返回文本结果。

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Awaitable, Callable
 
-from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import (
     HookContext,
     HookTraceItem,
@@ -22,10 +22,10 @@ class HookExecutionError(RuntimeError):
 
 
 class ToolExecutor:
-    def __init__(self, hooks: list[ToolHook] | None = None) -> None:
+    def __init__(self, hooks: Sequence[object] | None = None) -> None:
         self._hooks = list(hooks or [])
 
-    def add_hooks(self, hooks: list[ToolHook]) -> None:
+    def add_hooks(self, hooks: Sequence[object]) -> None:
         self._hooks.extend(hooks)
 
     async def execute(

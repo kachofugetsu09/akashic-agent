@@ -529,9 +529,7 @@ class DefaultReasoner(Reasoner):
         )
 
     def add_tool_hooks(self, hooks: list[object]) -> None:
-        from agent.tool_hooks.base import ToolHook
-        tool_hooks = cast(list[ToolHook], hooks)
-        self._tool_executor.add_hooks(tool_hooks)
+        self._tool_executor.add_hooks(hooks)
 
     def set_stream_sink_factory(
         self,

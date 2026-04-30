@@ -62,7 +62,7 @@ class PluginManager:
         return len(self._loaded)
 
     @property
-    def tool_hooks(self) -> list[ToolHook]:
+    def tool_hooks(self) -> list[object]:
         return list(self._tool_hooks)
 
     @property

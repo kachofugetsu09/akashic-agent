@@ -4,6 +4,7 @@ import asyncio
 import os
 import shutil
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "plugins"
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry() -> None:
+def _clean_registry() -> Iterator[None]:
     plugin_registry._handlers._handlers.clear()
     plugin_registry._classes.clear()
     plugin_registry._instances.clear()

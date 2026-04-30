@@ -806,20 +806,20 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     plugin_manager = FakePluginManager()
 
     runtime = CoreRuntime(
-        config=SimpleNamespace(peer_agents=[]),
-        http_resources=SimpleNamespace(local_service=None),
+        config=SimpleNamespace(peer_agents=[]),  # type: ignore[arg-type]
+        http_resources=SimpleNamespace(local_service=None),  # type: ignore[arg-type]
         loop=loop,  # type: ignore[arg-type]
-        bus=SimpleNamespace(),
-        event_bus=SimpleNamespace(aclose=lambda: None),
+        bus=SimpleNamespace(),  # type: ignore[arg-type]
+        event_bus=SimpleNamespace(aclose=lambda: None),  # type: ignore[arg-type]
         tools=SimpleNamespace(get_tool=lambda name: spawn_tool if name == "spawn" else None),  # type: ignore[arg-type]
-        push_tool=SimpleNamespace(),
-        session_manager=SimpleNamespace(),
-        scheduler=SimpleNamespace(),
-        provider=SimpleNamespace(),
+        push_tool=SimpleNamespace(),  # type: ignore[arg-type]
+        session_manager=SimpleNamespace(),  # type: ignore[arg-type]
+        scheduler=SimpleNamespace(),  # type: ignore[arg-type]
+        provider=SimpleNamespace(),  # type: ignore[arg-type]
         light_provider=None,
         mcp_registry=FakeMcpRegistry(),  # type: ignore[arg-type]
-        memory_runtime=SimpleNamespace(),
-        presence=SimpleNamespace(),
+        memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
+        presence=SimpleNamespace(),  # type: ignore[arg-type]
         peer_process_manager=None,
         peer_poller=None,
         plugin_manager=plugin_manager,  # type: ignore[arg-type]
