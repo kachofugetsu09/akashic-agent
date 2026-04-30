@@ -45,10 +45,12 @@ from agent.lifecycle.types import (
     AfterReasoningInput,
     AfterReasoningResult,
     AfterStepCtx,
+    AfterToolResultCtx,
     BeforeReasoningCtx,
     BeforeReasoningInput,
     BeforeStepCtx,
     BeforeStepInput,
+    BeforeToolCallCtx,
     BeforeTurnCtx,
     TurnSnapshot,
     TurnState,
@@ -892,6 +894,13 @@ class DefaultReasoner(Reasoner):
                     )
                     # 工具调用统一先过 ToolExecutor：
                     # pre_hook 可改参/拒绝，真实执行后再补 post_hook trace。
+                    await self._bus.fanout(BeforeToolCallCtx(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                        tool_name=tool_call.name,
+                        arguments=dict(tool_call.arguments),
+                    ))
                     exec_result = await self._tool_executor.execute(
                         ToolExecutionRequest(
                             call_id=tool_call.id,
@@ -909,6 +918,15 @@ class DefaultReasoner(Reasoner):
                     if exec_result.status == "success":
                         tools_used.append(tool_call.name)
                     result = exec_result.output
+                    await self._bus.fanout(AfterToolResultCtx(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                        tool_name=tool_call.name,
+                        arguments=dict(exec_result.final_arguments),
+                        result=str(result),
+                        status=exec_result.status,
+                    ))
                     normalized = normalize_tool_result(result)
                     _result_preview = support.log_preview(normalized.preview())
                     _result_len = len(normalized.preview() or "")

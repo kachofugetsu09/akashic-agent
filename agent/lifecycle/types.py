@@ -154,3 +154,23 @@ class AfterTurnCtx:
     thinking: str | None
     # pre-dispatch intent flag: dispatch has NOT happened yet when Tap handlers run
     will_dispatch: bool
+
+
+@dataclass(frozen=True)
+class BeforeToolCallCtx:
+    session_key: str
+    channel: str
+    chat_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AfterToolResultCtx:
+    session_key: str
+    channel: str
+    chat_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    result: str
+    status: str

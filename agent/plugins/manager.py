@@ -12,9 +12,11 @@ from typing import Any, cast
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterStepCtx,
+    AfterToolResultCtx,
     AfterTurnCtx,
     BeforeReasoningCtx,
     BeforeStepCtx,
+    BeforeToolCallCtx,
     BeforeTurnCtx,
 )
 from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
@@ -29,6 +31,8 @@ _EVENT_TYPE_MAP: dict[PluginEventType, type] = {
     PluginEventType.AFTER_STEP: AfterStepCtx,
     PluginEventType.AFTER_REASONING: AfterReasoningCtx,
     PluginEventType.AFTER_TURN: AfterTurnCtx,
+    PluginEventType.BEFORE_TOOL_CALL: BeforeToolCallCtx,
+    PluginEventType.AFTER_TOOL_RESULT: AfterToolResultCtx,
 }
 
 

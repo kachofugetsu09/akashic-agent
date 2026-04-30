@@ -22,6 +22,8 @@ class PluginEventType(Enum):
     AFTER_STEP = "after_step"
     AFTER_REASONING = "after_reasoning"
     AFTER_TURN = "after_turn"
+    BEFORE_TOOL_CALL = "before_tool_call"
+    AFTER_TOOL_RESULT = "after_tool_result"
 
 
 @dataclass

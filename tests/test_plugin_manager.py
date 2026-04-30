@@ -11,7 +11,7 @@ import pytest
 
 # 预热 agent.core 导入链，避免 agent.lifecycle.types 触发循环导入
 from agent.core.passive_turn import ContextStore as _  # noqa: F401
-from agent.lifecycle.types import AfterStepCtx, BeforeTurnCtx
+from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCallCtx, BeforeTurnCtx
 from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
 from agent.tools.registry import ToolRegistry
@@ -285,3 +285,129 @@ async def test_missing_conf_schema_leaves_config_none():
         await mgr.load_all()
         instance = _get_instance("hello")
         assert instance.context.config is None
+
+
+# ── on_tool_call / on_tool_result 测试 ───────────────────────────────────────
+
+
+def _before_tool_call_ctx(**overrides: object) -> BeforeToolCallCtx:
+    defaults: dict = dict(
+        session_key="test:123",
+        channel="cli",
+        chat_id="123",
+        tool_name="get_weather",
+        arguments={"city": "Tokyo"},
+    )
+    defaults.update(overrides)
+    return BeforeToolCallCtx(**defaults)
+
+
+def _after_tool_result_ctx(**overrides: object) -> AfterToolResultCtx:
+    defaults: dict = dict(
+        session_key="test:123",
+        channel="cli",
+        chat_id="123",
+        tool_name="get_weather",
+        arguments={"city": "Tokyo"},
+        result="Tokyo: 22°C",
+        status="success",
+    )
+    defaults.update(overrides)
+    return AfterToolResultCtx(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_on_tool_call_fires_before_tool_execution():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "audit", Path(tmp) / "audit")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+
+        instance = _get_instance("audit")
+        instance.before_tool_calls.clear()  # type: ignore[union-attr]
+
+        await bus.fanout(_before_tool_call_ctx(tool_name="get_weather"))
+        assert "get_weather" in instance.before_tool_calls  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_on_tool_result_fires_after_tool_execution():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "audit", Path(tmp) / "audit")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+
+        instance = _get_instance("audit")
+        instance.after_tool_results.clear()  # type: ignore[union-attr]
+
+        await bus.fanout(_after_tool_result_ctx(tool_name="get_weather", status="success"))
+        assert ("get_weather", "success") in instance.after_tool_results  # type: ignore[union-attr]
+
+
+# ── 接线集成测试：通过真实 DefaultReasoner 触发 on_tool_call / on_tool_result ──
+
+
+@pytest.mark.asyncio
+async def test_tool_hooks_fire_through_real_reasoner():
+    """验证 passive_turn.py 中 BeforeToolCallCtx / AfterToolResultCtx 的真实接线。
+
+    使用 FakeLLM：第一次返回 get_weather 工具调用，第二次返回文本结束循环。
+    接线删除后此测试会失败，bus.fanout 手动测试不能替代它。
+    """
+    from agent.core.passive_turn import DefaultReasoner
+    from agent.core.runtime_support import ToolDiscoveryState
+    from agent.looping.ports import LLMConfig, LLMServices
+    from agent.provider import LLMResponse, ToolCall
+
+    # 1. 构造 fake LLM provider：首轮调 get_weather，次轮返回文本
+    class FakeProvider:
+        _call = 0
+
+        async def chat(self, messages, tools, model, max_tokens, **kwargs) -> LLMResponse:
+            self._call += 1
+            if self._call == 1:
+                return LLMResponse(
+                    content=None,
+                    tool_calls=[ToolCall(id="c1", name="get_weather", arguments={"city": "Tokyo"})],
+                )
+            return LLMResponse(content="Tokyo is sunny.")
+
+    fake_provider = FakeProvider()
+
+    # 2. 注册 audit + weather 插件，共享 bus
+    bus = EventBus()
+    tools = ToolRegistry()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "audit", Path(tmp) / "audit")
+        shutil.copytree(FIXTURES_DIR / "weather", Path(tmp) / "weather")
+        mgr = _make_manager([Path(tmp)], event_bus=bus, tools=tools)
+        await mgr.load_all()
+
+        audit = _get_instance("audit")
+        audit.before_tool_calls.clear()  # type: ignore[union-attr]
+        audit.after_tool_results.clear()  # type: ignore[union-attr]
+
+        # 3. 创建 DefaultReasoner，注入同一 bus
+        reasoner = DefaultReasoner(
+            llm=LLMServices(provider=fake_provider, light_provider=fake_provider),  # type: ignore[arg-type]
+            llm_config=LLMConfig(max_iterations=5),
+            tools=tools,
+            discovery=ToolDiscoveryState(),
+            tool_search_enabled=False,
+            memory_window=40,
+            event_bus=bus,
+        )
+
+        # 4. 直接调用 run()，绕过 ContextBuilder / session 依赖
+        await reasoner.run(
+            [{"role": "user", "content": "Tokyo weather?"}],
+            tool_event_session_key="test:int",
+            tool_event_channel="cli",
+            tool_event_chat_id="0",
+        )
+
+        # 5. 验证插件确实被触发
+        assert "get_weather" in audit.before_tool_calls  # type: ignore[union-attr]
+        assert any(name == "get_weather" for name, _ in audit.after_tool_results)  # type: ignore[union-attr]
