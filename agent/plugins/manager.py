@@ -96,14 +96,16 @@ class PluginManager:
         if cls is None:
             logger.warning("插件 %s 未注册类", mod["name"])
             return
-        # 4. 实例化，注入 PluginContext，再绑定 handlers 和注册工具
+        # 4. 实例化，读 manifest 覆盖元信息，注入 PluginContext
         instance = cls()
         plugin_dir = Path(mod["module_path"]).parent
+        _apply_manifest(instance, plugin_dir)
+        plugin_id = str(instance.name) if instance.name else mod["name"]
         from agent.plugins.context import PluginContext, PluginKVStore
         instance.context = PluginContext(  # type: ignore[attr-defined]
             event_bus=self._event_bus,
             tool_registry=self._tool_registry,
-            plugin_id=mod["name"],
+            plugin_id=plugin_id,
             plugin_dir=plugin_dir,
             kv_store=PluginKVStore(plugin_dir / ".kv.json"),
         )
@@ -173,6 +175,30 @@ class PluginManager:
             # 3. 绑定 instance 为第一个参数，EventBus 已处理 sync/async，直接注册
             bound = functools.partial(md.handler, instance)
             self._event_bus.on(ctx_type, bound)
+
+
+_MANIFEST_FIELDS = ("name", "version", "desc", "author")
+
+
+def _apply_manifest(instance: Any, plugin_dir: Path) -> None:
+    manifest_path = plugin_dir / "manifest.yaml"
+    if not manifest_path.exists():
+        return
+    try:
+        import yaml
+        loaded = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("manifest.yaml 读取失败 (%s): %s", plugin_dir, e)
+        return
+    if not isinstance(loaded, dict):
+        logger.warning("manifest.yaml 格式错误，期望 dict (%s)", plugin_dir)
+        return
+    raw: dict[str, object] = loaded
+    # 逐字段覆盖实例属性，非字符串值转 str，缺失字段跳过
+    for field in _MANIFEST_FIELDS:
+        val = raw.get(field)
+        if val is not None:
+            setattr(instance, field, str(val))
 
 
 def _make_execute(bound: Any) -> Any:

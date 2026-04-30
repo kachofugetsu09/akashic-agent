@@ -188,6 +188,53 @@ async def test_kv_store_persists_across_manager_instances():
         assert data["turn_count"] == 2
 
 
+# ── manifest.yaml 测试 ────────────────────────────────────────────────────────
+
+
+def _get_instance(name_or_id: str) -> Any:
+    # 从 registry 按 plugin_id 或 name 找到已加载的实例
+    for inst in plugin_registry._instances.values():
+        if getattr(inst, "name", None) == name_or_id:
+            return inst
+        ctx = getattr(inst, "context", None)
+        if ctx and getattr(ctx, "plugin_id", None) == name_or_id:
+            return inst
+    raise KeyError(f"no loaded plugin with name/id={name_or_id!r}")
+
+
+@pytest.mark.asyncio
+async def test_manifest_overrides_class_attributes():
+    bus = EventBus()
+    # 用包含 manifested/ 子目录的父目录
+    import tempfile, shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "manifested", Path(tmp) / "manifested")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+
+        instance = _get_instance("manifest_name")
+        assert instance.name == "manifest_name"
+        assert instance.version == "0.2.0"
+        assert instance.desc == "from manifest"
+        assert instance.author == "tester"
+        assert instance.context.plugin_id == "manifest_name"
+
+
+@pytest.mark.asyncio
+async def test_no_manifest_uses_class_attributes():
+    bus = EventBus()
+    import tempfile, shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "hello", Path(tmp) / "hello")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+
+        instance = _get_instance("hello")
+        assert instance.name == "hello"
+        assert instance.version == "0.1.0"
+        assert instance.context.plugin_id == "hello"
+
+
 # ── 工具注册测试 ───────────────────────────────────────────────────────────────
 
 
