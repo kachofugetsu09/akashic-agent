@@ -16,7 +16,7 @@ from agent.lifecycle.types import (
     BeforeStepCtx,
     BeforeTurnCtx,
 )
-from agent.plugins.registry import HandlerType, MetadataKind, PluginEventType, plugin_registry
+from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
 from bus.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
@@ -96,8 +96,17 @@ class PluginManager:
         if cls is None:
             logger.warning("插件 %s 未注册类", mod["name"])
             return
-        # 4. 实例化并绑定生命周期 handlers 到 event_bus，注册工具到 tool_registry
+        # 4. 实例化，注入 PluginContext，再绑定 handlers 和注册工具
         instance = cls()
+        plugin_dir = Path(mod["module_path"]).parent
+        from agent.plugins.context import PluginContext, PluginKVStore
+        instance.context = PluginContext(  # type: ignore[attr-defined]
+            event_bus=self._event_bus,
+            tool_registry=self._tool_registry,
+            plugin_id=mod["name"],
+            plugin_dir=plugin_dir,
+            kv_store=PluginKVStore(plugin_dir / ".kv.json"),
+        )
         plugin_registry.register_instance(mp, instance)
         self._bind_handlers(instance, mp)
         self._register_tools(instance, mp)
@@ -161,19 +170,9 @@ class PluginManager:
             ctx_type = _EVENT_TYPE_MAP.get(md.event_type)  # type: ignore[arg-type]
             if ctx_type is None:
                 continue
-            # 3. 绑定 instance 为第一个参数，TAP handler 用工厂包装确保返回 None
+            # 3. 绑定 instance 为第一个参数，EventBus 已处理 sync/async，直接注册
             bound = functools.partial(md.handler, instance)
-            if md.handler_type == HandlerType.TAP:
-                self._event_bus.on(ctx_type, _make_tap_wrapper(bound))
-            else:
-                self._event_bus.on(ctx_type, bound)
-
-
-def _make_tap_wrapper(bound: Any) -> Any:
-    # TAP handler 只观测，不修改事件；包装确保返回 None，不干扰 fanout 语义
-    async def wrapper(ctx: Any) -> None:
-        await bound(ctx)
-    return wrapper
+            self._event_bus.on(ctx_type, bound)
 
 
 def _make_execute(bound: Any) -> Any:

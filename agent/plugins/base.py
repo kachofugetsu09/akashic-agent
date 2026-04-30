@@ -4,7 +4,7 @@ from abc import ABC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    pass
+    from agent.plugins.context import PluginContext
 
 
 class Plugin(ABC):
@@ -12,6 +12,7 @@ class Plugin(ABC):
     version: str | None = None
     desc: str | None = None
     author: str | None = None
+    context: "PluginContext"
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
