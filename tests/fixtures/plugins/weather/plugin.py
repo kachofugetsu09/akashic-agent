@@ -6,7 +6,7 @@ class Weather(Plugin):
     name = "weather"
     version = "0.1.0"
 
-    @tool(name="get_weather", risk="read-only", always_on=True,
+    @tool(name="get_weather", risk="read-only", always_on=False,
           search_hint="get current weather for a city")
     async def get_weather(self, event, city: str) -> str:
         """Get current weather for a city.
