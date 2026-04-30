@@ -133,7 +133,10 @@ def default_before_turn_command_modules(
 
 
 def _normalize_command(content: str) -> str:
-    head = (content or "").strip().split(maxsplit=1)[0].lower()
+    parts = (content or "").strip().split(maxsplit=1)
+    if not parts:
+        return ""
+    head = parts[0].lower()
     if "@" in head:
         head = head.split("@", 1)[0]
     return head
