@@ -1,7 +1,14 @@
 from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from agent.plugins.manager import PluginManager
+
+logger = logging.getLogger(__name__)
 
 from agent.config_models import Config, WiringConfig
 from agent.context import ContextBuilder
@@ -82,6 +89,7 @@ class CoreRuntime:
     peer_process_manager: PeerProcessManager | None
     peer_poller: PeerAgentPoller | None
     agent_provider: LLMProvider | None = None
+    plugin_manager: "PluginManager | None" = None
 
     async def start(self) -> None:
         await self.mcp_registry.load_and_connect_all()
@@ -104,6 +112,9 @@ class CoreRuntime:
                     risk="external-side-effect",
                 )
             self.peer_poller.start()
+        if self.plugin_manager is not None:
+            await self.plugin_manager.load_all()
+            logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
 
     async def stop(self) -> None:
         await self.event_bus.aclose()
@@ -463,6 +474,13 @@ def build_core_runtime(
         active_turn_states=loop.active_turn_states,
     )
 
+    from agent.plugins.manager import PluginManager as _PluginManager
+    plugin_manager = _PluginManager(
+        plugin_dirs=_resolve_plugin_dirs(workspace),
+        event_bus=event_bus,
+        tool_registry=tools,
+    )
+
     return CoreRuntime(
         config=config,
         http_resources=http_resources,
@@ -481,4 +499,10 @@ def build_core_runtime(
         presence=presence,
         peer_process_manager=peer_pm,
         peer_poller=peer_poller,
+        plugin_manager=plugin_manager,
     )
+
+
+def _resolve_plugin_dirs(workspace: Path) -> list[Path]:
+    project_root = Path(__file__).resolve().parent.parent
+    return [project_root / "plugins"]

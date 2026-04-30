@@ -17,8 +17,6 @@ __pycache__/
 logs/
 /logs
 workspace/
-plugins/
-/plugins
 data/
 /data
 /memory/
