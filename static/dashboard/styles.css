@@ -25,6 +25,14 @@
   --yellow-soft:  #f5edce;
   --red-soft:     #f2d6ce;
   --blue-soft:    #e4ebf5;
+  --neutral-soft: #ece6db;
+  --system:       #8b6b09;
+  --tool:         #276489;
+  --danger:       #b03a3a;
+  --drift-soft:   #dff3ea;
+  --drift:        #166534;
+  --proactive-soft: #efe3d4;
+  --proactive:    #8a5a2b;
 
   /* ── Elevation — color-block first, shadow minimal ── */
   --shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
@@ -614,6 +622,62 @@ textarea:focus {
   font-family: var(--mono);
   white-space: nowrap;
   letter-spacing: 0;
+}
+
+.role-user,
+.memory-type-preference {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.role-assistant,
+.memory-type-event,
+.memory-status-active,
+.proactive-result-reply {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.role-system,
+.memory-status-superseded,
+.proactive-result-skip {
+  background: var(--yellow-soft);
+  color: var(--system);
+}
+
+.role-tool,
+.memory-type-procedure {
+  background: var(--blue-soft);
+  color: var(--tool);
+}
+
+.role-unknown,
+.memory-type-profile,
+.memory-type-unknown,
+.proactive-result-unknown {
+  background: var(--neutral-soft);
+  color: var(--text-soft);
+}
+
+.proactive-result-busy,
+.proactive-result-cooldown,
+.proactive-result-presence {
+  background: var(--red-soft);
+  color: var(--danger);
+}
+
+.proactive-flow-drift {
+  background: var(--drift-soft);
+  color: var(--drift);
+}
+
+.proactive-flow-proactive {
+  background: var(--proactive-soft);
+  color: var(--proactive);
+}
+
+.pre-wrap {
+  white-space: pre-wrap;
 }
 
 .proactive-status-cell {

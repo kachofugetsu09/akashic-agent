@@ -1,12 +1,29 @@
 {
   "name": "akashic-agent-frontend",
   "private": true,
+  "type": "module",
   "scripts": {
+    "build": "npm run build:dashboard && npm run build:plugins",
+    "build:dashboard": "node frontend/dashboard/build.mjs",
     "build:plugins": "node scripts/build-plugins.mjs",
-    "build:watch": "node scripts/build-plugins.mjs --watch"
+    "build:watch": "node scripts/build-plugins.mjs --watch",
+    "lint": "eslint \"frontend/dashboard/src/**/*.{ts,tsx}\" \"plugins/**/*.ts\" \"types/**/*.d.ts\"",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "esbuild": "^0.25.0",
-    "typescript": "^5.8.0"
+    "eslint": "^10.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.59.1"
+  },
+  "dependencies": {
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
   }
 }

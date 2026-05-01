@@ -33,6 +33,11 @@ interface RecallTurnDetail extends RecallTurnRow {
   recall_memory_calls?: RecallCall[];
 }
 
+interface RecallOverview {
+  available: boolean;
+  total: number;
+}
+
 function _memoryTypeClass(t: string): string {
   const map: Record<string, string> = {
     profile: "recall-type-profile",
@@ -97,8 +102,8 @@ window.AkashicDashboard.registerPlugin({
 
   async getCount(): Promise<number | null> {
     try {
-      const r = await api("/api/dashboard/recall-inspector/overview");
-      return r["available"] ? ((r["total"] as number) || 0) : null;
+      const r = await api<RecallOverview>("/api/dashboard/recall-inspector/overview");
+      return r.available ? r.total || 0 : null;
     } catch {
       return null;
     }
@@ -108,10 +113,13 @@ window.AkashicDashboard.registerPlugin({
     const params = new URLSearchParams();
     params.set("page", String(page));
     params.set("page_size", String(pageSize));
-    const data = await api(`/api/dashboard/recall-inspector/turns?${params.toString()}`);
+    const data = await api<{
+      items: Record<string, unknown>[];
+      total: number;
+    }>(`/api/dashboard/recall-inspector/turns?${params.toString()}`);
     return {
-      items: (data["items"] as Record<string, unknown>[]) || [],
-      total: (data["total"] as number) || 0,
+      items: data.items || [],
+      total: data.total || 0,
     };
   },
 

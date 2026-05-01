@@ -307,16 +307,14 @@ input:focus, textarea:focus {
 
 带图标的搜索输入框——用 `.search` div 包裹，图标绝对定位 `left: 10px`，输入框 `padding-left: 28px`。
 
-### 6.3 下拉框（必须使用自定义组件）
+### 6.3 下拉框
 
-**面向用户的筛选器永远不要使用原生 `<select>`。** 浏览器原生下拉框由 OS 渲染——永远无法匹配设计。
+面向用户的筛选器可以使用 React 受控 `<select>`，但必须沿用 `styles.css` 中的统一 select 样式，不要引入新的下拉组件或内联样式。
 
-务必使用 `CustomSelect` 包装（见 `app.js`）。原生 `<select>` 被隐藏；自定义组件在其上触发 `change` 事件，现有事件监听器无需改动。
-
-触发器样式：
+基础样式：
 
 ```css
-.cs-trigger {
+select {
   border: 1px solid var(--line);
   background: var(--paper);
   border-radius: var(--radius);
@@ -565,9 +563,9 @@ Firefox：`scrollbar-width: thin; scrollbar-color: rgba(205, 184, 157, 0.4) tran
 
 | 错误做法 | 正确做法 |
 |---------|---------|
-| 面向用户的筛选器使用原生 `<select>` | 使用 `CustomSelect` 组件 |
-| JSON 数据使用 `<pre>` 块 | 使用 `makeJsonViewer()` |
-| 表格预览中显示原始 markdown 语法 | 先 `stripMarkdown()` 再 `escapeHtml()` |
+| 下拉框引入新组件或内联样式 | 使用现有 select 样式 |
+| JSON 数据使用未样式化 `<pre>` 块 | 使用 `.json-tree` 样式 |
+| 表格预览中显示原始 markdown 语法 | 先 `stripMarkdown()` |
 | 工作区使用 `display: grid` | 使用 `display: flex` |
 | 组件 CSS 中硬编码十六进制颜色 | 使用 `var(--token)` |
 | 表中始终显示三列 | Session-key 列在会话激活时可隐藏 |

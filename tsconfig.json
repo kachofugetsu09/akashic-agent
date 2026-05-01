@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "lib": ["ES2020", "DOM"],
+    "target": "ES2021",
+    "lib": ["ES2021", "DOM"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
@@ -12,7 +12,8 @@
     "paths": {
       "akashic-dashboard": ["types/akashic-dashboard.d.ts"]
     },
-    "noEmit": true
+    "noEmit": true,
+    "jsx": "react-jsx"
   },
-  "include": ["plugins/**/*.ts", "types/**/*.d.ts"]
+  "include": ["frontend/dashboard/src/**/*.ts", "frontend/dashboard/src/**/*.tsx", "plugins/**/*.ts", "types/**/*.d.ts"]
 }
