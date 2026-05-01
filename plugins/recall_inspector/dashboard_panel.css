@@ -69,3 +69,21 @@
   border-color: var(--line-strong);
   font-weight: 600;
 }
+
+/* memory type color coding */
+.recall-tag-type {
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
+.recall-type-profile   { background: var(--blue-soft);   color: #276489; border-color: #c2d5e8; }
+.recall-type-preference{ background: var(--accent-soft);  color: var(--accent); border-color: #e0c0b0; }
+.recall-type-event     { background: var(--green-soft);   color: var(--green); border-color: #b0d8c4; }
+.recall-type-procedure { background: var(--yellow-soft);  color: #8b6b09; border-color: #e0d090; }
+
+.recall-tag-score {
+  color: var(--text-soft);
+  border-color: var(--line-soft);
+  font-family: var(--mono);
+  opacity: 0.8;
+}

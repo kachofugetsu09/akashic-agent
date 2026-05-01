@@ -3,6 +3,8 @@
 interface RecallItem {
   id: string;
   summary: string;
+  memory_type?: string;
+  score?: number | null;
   injected?: boolean;
   tags?: string[];
 }
@@ -30,22 +32,42 @@ interface RecallTurnDetail extends RecallTurnRow {
   recall_memory_calls?: RecallCall[];
 }
 
+function _memoryTypeClass(t: string): string {
+  const map: Record<string, string> = {
+    profile: "recall-type-profile",
+    preference: "recall-type-preference",
+    event: "recall-type-event",
+    procedure: "recall-type-procedure",
+  };
+  return map[t] ?? "";
+}
+
 function _renderRecallItems(items: RecallItem[], source: string): string {
   if (!items.length) {
     return '<div class="muted-text">没有召回条目。</div>';
   }
   return `
     <div class="recall-item-list">
-      ${items.map((item) => `
+      ${items.map((item) => {
+        const typeTag = item.memory_type
+          ? `<span class="recall-tag recall-tag-type ${escapeHtml(_memoryTypeClass(item.memory_type))}">${escapeHtml(item.memory_type)}</span>`
+          : "";
+        const scoreTag = item.score != null
+          ? `<span class="recall-tag recall-tag-score">${item.score.toFixed(2)}</span>`
+          : "";
+        const injectedTag = item.injected === true
+          ? '<span class="recall-tag recall-tag-injected">注入</span>'
+          : "";
+        const extraTags = (item.tags ?? []).map((tag) => `<span class="recall-tag">${escapeHtml(tag)}</span>`).join("");
+        return `
         <div class="recall-item recall-item-${escapeHtml(source)}">
           <div class="recall-item-head">
+            ${typeTag}${injectedTag}${scoreTag}${extraTags}
             <code>${escapeHtml(item.id || "-")}</code>
-            ${item.injected === true ? '<span class="recall-tag recall-tag-injected">已注入</span>' : ""}
-            ${(item.tags ?? []).map((tag) => `<span class="recall-tag">${escapeHtml(tag)}</span>`).join("")}
           </div>
           <div class="recall-summary">${escapeHtml(item.summary || "")}</div>
-        </div>
-      `).join("")}
+        </div>`;
+      }).join("")}
     </div>
   `;
 }
