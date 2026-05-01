@@ -1,37 +1,43 @@
 .recall-item-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   flex-wrap: wrap;
   gap: 5px;
-  margin-bottom: 5px;
+  margin-bottom: 3px;
 }
 
 .recall-item-list {
   display: grid;
-  gap: 6px;
+  gap: 0;
 }
 
+/* log-row style: no card boxing, just thin separators */
 .recall-item {
-  padding: 9px 11px;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius);
-  background: var(--bg-soft);
-  box-shadow: inset 2px 0 0 var(--line-strong);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
-/* source variants: same indicator, rely on section header for semantics */
+.recall-item:last-child {
+  border-bottom: none;
+}
+
+/* source variants: drop color coding, structure carries the meaning */
 .recall-item-context,
 .recall-item-inject,
 .recall-item-recall {
-  box-shadow: inset 2px 0 0 var(--line-strong);
+  box-shadow: none;
 }
 
-/* ID is metadata — push it back */
+/* ID: pure metadata — tiny, faint, mono */
 .recall-item-head code {
+  font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
   color: var(--text-soft);
-  opacity: 0.7;
+  opacity: 0.55;
 }
 
 .recall-summary {
@@ -44,20 +50,19 @@
 .recall-tag {
   display: inline-flex;
   align-items: center;
-  padding: 1px 5px;
-  border-radius: 3px;
+  padding: 0 5px;
+  height: 16px;
+  border-radius: 2px;
   background: transparent;
   color: var(--text-soft);
   border: 1px solid var(--line);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 500;
   letter-spacing: 0.02em;
 }
 
-/* injected tag: understated, no color */
 .recall-tag-injected {
-  background: var(--bg-soft);
   color: var(--text-soft);
   border-color: var(--line-strong);
   font-weight: 600;
