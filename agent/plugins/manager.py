@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, cast
 
 from agent.lifecycle.types import (
@@ -96,6 +97,21 @@ class PluginManager:
     @property
     def after_reasoning_modules_before_persist(self) -> list[object]:
         return list(self._after_reasoning_modules_before_persist)
+
+    @property
+    def telegram_bot_commands(self) -> list[tuple[str, str]]:
+        commands: list[tuple[str, str]] = []
+        for module_path in self._loaded:
+            instance = plugin_registry.get_instance(module_path)
+            if instance is None:
+                continue
+            getter = getattr(instance, "telegram_bot_commands", None)
+            if getter is None:
+                continue
+            typed_getter = cast(Callable[[], list[tuple[str, str]]], getter)
+            for command, description in typed_getter():
+                commands.append((str(command), str(description)))
+        return commands
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(self) -> list[dict[str, str]]:

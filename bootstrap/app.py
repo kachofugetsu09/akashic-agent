@@ -132,6 +132,11 @@ class AppRuntime:
                 push_tool=self.push_tool,
                 http_resources=self.http_resources,
                 event_bus=event_bus,
+                bot_commands=(
+                    self.core.plugin_manager.telegram_bot_commands
+                    if self.core.plugin_manager
+                    else None
+                ),
                 interrupt_controller=self.agent_loop,
             )
 

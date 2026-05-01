@@ -161,6 +161,11 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
         async def edit_message_text(self, *args, **kwargs):
             return True
 
+    class BotCommand:
+        def __init__(self, command, description):
+            self.command = command
+            self.description = description
+
     class MessageEntity:
         def __init__(self, *, type, offset, length):
             self.type = type
@@ -241,6 +246,7 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
                 send_chat_action=AsyncMock(),
                 delete_message=AsyncMock(),
                 get_file=AsyncMock(),
+                set_my_commands=AsyncMock(),
             )
             self.updater = _Updater()
             self.handlers = []
@@ -265,6 +271,7 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
             self.handlers.append(handler)
 
     telegram.Bot = Bot
+    telegram.BotCommand = BotCommand
     telegram.MessageEntity = MessageEntity
     telegram.Update = Update
     telegram_constants.ChatAction = SimpleNamespace(TYPING="typing")
@@ -495,6 +502,10 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         bus,
         session_manager,
         allow_from=["1", "Alice"],
+        bot_commands=[
+            ("memorystatus", "查看记忆整理状态"),
+            ("kvcache", "查看 KVCache 状态"),
+        ],
         event_bus=event_bus,
         interrupt_controller=interrupt_controller,
     )
@@ -513,7 +524,12 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     monkeypatch.setattr(mod, "send_stream_markdown", AsyncMock())
     monkeypatch.setattr(mod, "send_thinking_block", AsyncMock())
     await channel.start()
-    assert len(channel._app.handlers) == 7
+    assert len(channel._app.handlers) == 5
+    assert [cmd.command for cmd in channel._app.bot.set_my_commands.await_args.args[0]] == [
+        "memorystatus",
+        "kvcache",
+        "stop",
+    ]
     assert bus.outbound[0][0] == "telegram"
 
     class _File:
@@ -568,13 +584,13 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert len(bus.inbound) == 1
 
     status_update = SimpleNamespace(
-        effective_message=SimpleNamespace(text="/memory_status", message_id=100),
+        effective_message=SimpleNamespace(text="/memorystatus", message_id=100),
         effective_chat=SimpleNamespace(id=123),
         effective_user=SimpleNamespace(id=1, username="Alice"),
     )
-    await channel._on_memory_status_command(status_update, context)
+    await channel._on_command(status_update, context)
     assert len(bus.inbound) == 2
-    assert bus.inbound[1].content == "/memory_status"
+    assert bus.inbound[1].content == "/memorystatus"
     assert bus.inbound[1].metadata["username"] == "Alice"
 
     kvcache_update = SimpleNamespace(
@@ -582,7 +598,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         effective_chat=SimpleNamespace(id=123),
         effective_user=SimpleNamespace(id=1, username="Alice"),
     )
-    await channel._on_kvcache_command(kvcache_update, context)
+    await channel._on_command(kvcache_update, context)
     assert len(bus.inbound) == 3
     assert bus.inbound[2].content == "/kvcache 5"
     assert bus.inbound[2].metadata["username"] == "Alice"

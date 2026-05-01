@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import cast
+from zoneinfo import ZoneInfo
 
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 from agent.plugins import Plugin
@@ -15,6 +17,7 @@ logger = logging.getLogger("plugin.status_commands")
 _SESSION_SLOT = "session:session"
 _CTX_SLOT = "session:ctx"
 _TS_PATTERN = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})")
+_BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class MemoryStatusCommandModule:
@@ -30,6 +33,7 @@ class MemoryStatusCommandModule:
         state = frame.input
         command = _normalize_command(state.msg.content)
         if command not in {
+            "/memorystatus",
             "/memory_status",
             "/compact_status",
         }:
@@ -113,26 +117,39 @@ class KVCacheCommandModule:
         overall_hit = sum(r[3] or 0 for r in rows)
         overall_pct = (overall_hit / overall_prompt * 100) if overall_prompt > 0 else 0.0
 
-        lines = [f"最近 {len(rows)} 轮 KVCache 状态（总命中率 {overall_pct:.2f}%）", ""]
+        lines = [
+            f"⚡ KVCache · 最近 {len(rows)} 轮",
+            "",
+            f"命中率  {overall_pct:.1f}%  {_pct_bar(overall_pct)}",
+            f"Token  {overall_hit:,} / {overall_prompt:,}",
+        ]
         for row in rows:
             llm_output, ts, prompt_tokens, hit_tokens = row
             content = _content_to_text(llm_output or "")
             if is_context_frame(content):
                 content = ""
-            preview = _preview_text(content, limit=80)
+            preview = _preview_text(content, limit=72)
             hit = hit_tokens or 0
             prompt = prompt_tokens or 0
             pct = (hit / prompt * 100) if prompt > 0 else 0.0
-            lines.append(preview or "（无内容）")
-            lines.append(_format_ts(ts))
-            lines.append(f"{hit:,} / {prompt:,}")
-            lines.append(f"{pct:.2f}%")
-            lines.append("")
-        return "\n".join(lines).rstrip("\n")
+            lines.extend(["", ""])
+            lines.append(
+                f"{_format_ts(ts)}   {_pct_emoji(pct)} {pct:.1f}%  {_pct_bar(pct)}"
+            )
+            lines.append(f"    {hit:,} / {prompt:,} tokens")
+            if preview:
+                lines.append(f"    {preview}")
+        return "\n".join(lines)
 
 
 class StatusCommands(Plugin):
     name = "status_commands"
+
+    def telegram_bot_commands(self) -> list[tuple[str, str]]:
+        return [
+            ("memorystatus", "查看记忆整理状态"),
+            ("kvcache", "查看 KVCache 状态"),
+        ]
 
     def before_turn_modules_early(self) -> list[object]:
         plugin_name = self.name or "status_commands"
@@ -172,6 +189,13 @@ def _abort_ctx(state: TurnState, reply: str) -> BeforeTurnCtx:
 
 
 def _format_ts(ts: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(_BEIJING_TZ)
+        return f"{parsed.month}-{parsed.day} {parsed.hour:02d}:{parsed.minute:02d}"
+    except ValueError:
+        pass
     m = _TS_PATTERN.search(ts)
     if m:
         return f"{int(m.group(2))}-{int(m.group(3))} {m.group(4)}:{m.group(5)}"
@@ -184,7 +208,7 @@ def _format_memory_status_reply(messages: list[dict], last_consolidated: int) ->
     pending_user = max(0, total_user - consolidated_user)
     last_user_message = _latest_real_user_content(messages[:last_consolidated])
 
-    lines = ["记忆整理状态："]
+    lines = ["🧠 记忆整理状态："]
     if last_consolidated <= 0 or not last_user_message:
         lines.append("当前会话还没有完成过记忆整理。")
     elif pending_user == 0:
@@ -238,3 +262,17 @@ def _preview_text(text: str, limit: int = 80) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[: limit - 1] + "…"
+
+
+def _pct_bar(pct: float, width: int = 10) -> str:
+    filled = round(pct / 100 * width)
+    filled = max(0, min(width, filled))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _pct_emoji(pct: float) -> str:
+    if pct >= 80:
+        return "🟢"
+    if pct >= 40:
+        return "🟡"
+    return "🔴"
