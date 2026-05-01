@@ -85,8 +85,18 @@ class CustomSelect {
 
 window.AkashicDashboard = {
   _plugins: [],
+  _formatters: {
+    "text": (v) => String(v ?? ""),
+    "mono-session": (v) => formatSessionKeyForTable(String(v ?? "")),
+    "mono-time": (v) => shortTs(String(v ?? "")),
+    "text-preview": (v) => stripMarkdown(String(v ?? "")),
+    "metric": (v) => String(v ?? 0),
+  },
   registerPlugin(config) {
     this._plugins.push(config);
+  },
+  registerFormatter(name, fn) {
+    this._formatters[name] = fn;
   },
 };
 
@@ -758,6 +768,9 @@ async function loadPlugins() {
       page: 1,
       pageSize: plugin.pageSize || 25,
       total: 0,
+      items: [],
+      activeRowKey: null,
+      activeDetail: null,
     };
   }
   _renderPluginNavGroups();
@@ -850,8 +863,93 @@ async function loadPluginPanel(pluginId) {
   if (!plugin) return;
   const ps = state.pluginState[pluginId];
   if (!ps) return;
-  const result = await plugin.loadPanel({ page: ps.page, pageSize: ps.pageSize });
-  ps.total = (result && result.total) || 0;
+
+  if (plugin.fetchPage) {
+    const result = await plugin.fetchPage({ page: ps.page, pageSize: ps.pageSize });
+    ps.total = result.total || 0;
+    ps.items = result.items || [];
+    // clear active if no longer on this page
+    if (ps.activeRowKey && !ps.items.find((i) => String(i[plugin.rowKey]) === ps.activeRowKey)) {
+      ps.activeRowKey = null;
+      ps.activeDetail = null;
+    }
+  } else {
+    // legacy imperative API
+    const result = await plugin.loadPanel({ page: ps.page, pageSize: ps.pageSize });
+    ps.total = (result && result.total) || 0;
+  }
+}
+
+function _buildGridTemplate(columns) {
+  return columns.map((col) => {
+    if (col.flex) return "1fr";
+    if (col.width) return `${col.width}px`;
+    return "auto";
+  }).join(" ");
+}
+
+function _formatCell(fmt, value, item, plugin) {
+  const fmtName = fmt || "text";
+  const pluginFmt = plugin.formatters?.[fmtName];
+  if (pluginFmt) return escapeHtml(pluginFmt(value, item));
+  const builtinFmt = window.AkashicDashboard._formatters[fmtName];
+  if (builtinFmt) return escapeHtml(builtinFmt(value, item));
+  return escapeHtml(String(value ?? ""));
+}
+
+function _renderPluginTableHead(plugin) {
+  const grid = _buildGridTemplate(plugin.columns);
+  el.tableHead.className = "table-head";
+  el.tableHead.style.gridTemplateColumns = grid;
+  el.tableHead.innerHTML = plugin.columns.map((col) => {
+    const align = col.align === "right" ? ' style="text-align:right"' : "";
+    return `<div${align}>${escapeHtml(col.label)}</div>`;
+  }).join("");
+}
+
+function _renderPluginRows(plugin, ps) {
+  el.batchBar.classList.add("hidden");
+  const pc = Math.max(1, Math.ceil(ps.total / ps.pageSize));
+  const grid = _buildGridTemplate(plugin.columns);
+  el.messageTable.innerHTML = "";
+
+  if (!ps.items || !ps.items.length) {
+    el.messageTable.innerHTML = `<div class="empty-state">${escapeHtml(plugin.emptyMessage || "暂无记录。")}</div>`;
+  } else {
+    for (const item of ps.items) {
+      const rowKeyVal = String(item[plugin.rowKey] ?? "");
+      const row = document.createElement("div");
+      row.className = "table-row" + (plugin.rowClass ? " " + plugin.rowClass(item) : "");
+      if (ps.activeRowKey === rowKeyVal) row.classList.add("active");
+      row.style.gridTemplateColumns = grid;
+
+      row.innerHTML = plugin.columns.map((col) => {
+        const value = item[col.key];
+        const cellClass = col.cellClass ? ` class="${escapeHtml(col.cellClass)}"` : "";
+        const align = col.align === "right" ? " style=\"text-align:right\"" : "";
+        const attrs = cellClass + align;
+        const title = col.rawTitle ? ` title="${escapeHtml(String(value ?? ""))}"` : "";
+        return `<div${attrs}${title}>${_formatCell(col.fmt, value, item, plugin)}</div>`;
+      }).join("");
+
+      row.addEventListener("click", async () => {
+        ps.activeRowKey = rowKeyVal;
+        if (plugin.fetchDetail) {
+          ps.activeDetail = await plugin.fetchDetail(item);
+        } else {
+          ps.activeDetail = item;
+        }
+        render();
+      });
+      el.messageTable.appendChild(row);
+    }
+  }
+
+  const countTitle = plugin.countTitle ? plugin.countTitle(ps.total) : `共 ${ps.total} 条`;
+  el.messageMeta.textContent = countTitle;
+  el.pageText.textContent = `${ps.page} / ${pc}`;
+  el.prevPageButton.disabled = ps.page <= 1;
+  el.nextPageButton.disabled = ps.page >= pc;
 }
 
 async function selectSession(session) {
@@ -1237,7 +1335,13 @@ function renderTableHead() {
   if (state.viewMode.startsWith("plugin:")) {
     const pluginId = state.viewMode.slice(7);
     const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
-    if (plugin) plugin.renderTableHead(el.tableHead);
+    if (plugin) {
+      if (plugin.columns) {
+        _renderPluginTableHead(plugin);
+      } else {
+        plugin.renderTableHead(el.tableHead);
+      }
+    }
     el.selectAllCheckbox = null;
     return;
   }
@@ -1306,20 +1410,24 @@ function renderRows() {
     const pluginId = state.viewMode.slice(7);
     const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
     if (!plugin) return;
-    const ps = state.pluginState[pluginId] || { page: 1, pageSize: 25, total: 0 };
-    const pc = Math.max(1, Math.ceil(ps.total / ps.pageSize));
-    plugin.renderRows({
-      bodyEl: el.messageTable,
-      batchBarEl: el.batchBar,
-      metaEl: el.messageMeta,
-      pageTextEl: el.pageText,
-      prevBtn: el.prevPageButton,
-      nextBtn: el.nextPageButton,
-      page: ps.page,
-      total: ps.total,
-      pageSize: ps.pageSize,
-      pageCount: pc,
-    });
+    const ps = state.pluginState[pluginId] || { page: 1, pageSize: 25, total: 0, items: [] };
+    if (plugin.columns) {
+      _renderPluginRows(plugin, ps);
+    } else {
+      const pc = Math.max(1, Math.ceil(ps.total / ps.pageSize));
+      plugin.renderRows({
+        bodyEl: el.messageTable,
+        batchBarEl: el.batchBar,
+        metaEl: el.messageMeta,
+        pageTextEl: el.pageText,
+        prevBtn: el.prevPageButton,
+        nextBtn: el.nextPageButton,
+        page: ps.page,
+        total: ps.total,
+        pageSize: ps.pageSize,
+        pageCount: pc,
+      });
+    }
   } else if (state.viewMode === "proactive") {
     renderProactiveRows();
   } else if (state.viewMode === "memory") {
@@ -1550,7 +1658,14 @@ function renderDetail() {
   if (state.viewMode.startsWith("plugin:")) {
     const pluginId = state.viewMode.slice(7);
     const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
-    if (plugin) plugin.renderDetail(el.detailPane);
+    if (plugin) {
+      if (plugin.columns) {
+        const ps = state.pluginState[pluginId] || {};
+        plugin.renderDetail(ps.activeDetail ?? null, el.detailPane);
+      } else {
+        plugin.renderDetail(el.detailPane);
+      }
+    }
     return;
   }
 

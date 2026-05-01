@@ -1,0 +1,12 @@
+{
+  "name": "akashic-agent-frontend",
+  "private": true,
+  "scripts": {
+    "build:plugins": "node scripts/build-plugins.mjs",
+    "build:watch": "node scripts/build-plugins.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}

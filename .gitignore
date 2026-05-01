@@ -13,6 +13,13 @@ __pycache__/
 *.pyo
 .venv/
 
+# Node.js
+node_modules/
+package-lock.json
+
+# Compiled plugin panel JS (auto-built from .ts at dashboard startup)
+plugins/*/dashboard_panel.js
+
 # 运行时产物
 logs/
 /logs

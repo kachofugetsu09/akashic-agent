@@ -12,6 +12,8 @@ import threading
 from datetime import timedelta
 from typing import Any, Protocol, cast
 
+import subprocess
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -544,6 +546,48 @@ class ObserveDashboardReader:
         }
 
 
+def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
+    ts_path = plugin_dir / "dashboard_panel.ts"
+    js_path = plugin_dir / "dashboard_panel.js"
+
+    if not ts_path.exists():
+        return
+
+    # Skip if .js exists and is not older than .ts
+    if js_path.exists() and js_path.stat().st_mtime >= ts_path.stat().st_mtime:
+        return
+
+    esbuild_bin = project_root / "node_modules" / ".bin" / "esbuild"
+    if not esbuild_bin.exists():
+        logger.warning(
+            "esbuild 未找到 (%s)；请先运行 'npm install' 启用插件自动编译。如已有 .js 将继续使用。",
+            esbuild_bin,
+        )
+        return
+
+    try:
+        result = subprocess.run(
+            [
+                str(esbuild_bin),
+                str(ts_path),
+                f"--outfile={js_path}",
+                "--bundle=false",
+                "--platform=browser",
+                "--target=es2020",
+                "--format=iife",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            logger.info("插件面板已编译: %s", plugin_dir.name)
+        else:
+            logger.warning("插件面板编译失败 (%s):\n%s", plugin_dir.name, result.stderr)
+    except Exception as exc:
+        logger.warning("插件面板编译异常 (%s): %s", plugin_dir.name, exc)
+
+
 def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path) -> None:
     dash_path = plugin_dir / "dashboard.py"
     module_name = f"akasic_dashboard_plugin_{plugin_dir.name}"
@@ -596,10 +640,13 @@ def create_dashboard_app(
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.mount("/assets", StaticFiles(directory=static_dir), name="dashboard-assets")
 
-    # Mount each plugin's dashboard routes
+    # Compile TypeScript plugin panels and mount plugin routes
     if plugins_root.is_dir():
         for _plugin_dir in sorted(plugins_root.iterdir()):
-            if _plugin_dir.is_dir() and (_plugin_dir / "dashboard.py").exists():
+            if not _plugin_dir.is_dir():
+                continue
+            _build_plugin_panel_js(project_root, _plugin_dir)
+            if (_plugin_dir / "dashboard.py").exists():
                 _load_plugin_dashboard(app, _plugin_dir)
 
     @app.get("/")
