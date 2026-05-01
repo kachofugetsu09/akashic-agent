@@ -1,4 +1,4 @@
-"""异步 TraceWriter：把 TurnTrace / RagTrace 写入 SQLite。
+"""异步 TraceWriter：把 TurnTrace / RagQueryLog 写入 SQLite。
 
 非阻塞：调用方用 emit() put_nowait，后台 task 消费队列写 DB。
 Queue 满时 drop + 计数，不崩溃主循环。
@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.observe.db import open_db
-from core.observe.events import MemoryWriteTrace, ProactiveDecisionTrace, RagItemTrace, RagTrace, TurnTrace
+from core.observe.events import MemoryWriteTrace, ProactiveDecisionTrace, RagQueryLog, TurnTrace
 
 logger = logging.getLogger("observe.writer")
 
@@ -44,7 +44,7 @@ class TraceWriter:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._queue: asyncio.Queue[
-            TurnTrace | RagTrace | ProactiveDecisionTrace | MemoryWriteTrace
+            TurnTrace | RagQueryLog | ProactiveDecisionTrace | MemoryWriteTrace
         ] = asyncio.Queue(
             maxsize=_QUEUE_MAX
         )
@@ -52,7 +52,7 @@ class TraceWriter:
 
     # ── 公共接口 ─────────────────────────────────
 
-    def emit(self, event: TurnTrace | RagTrace | ProactiveDecisionTrace | MemoryWriteTrace) -> None:
+    def emit(self, event: TurnTrace | RagQueryLog | ProactiveDecisionTrace | MemoryWriteTrace) -> None:
         """非阻塞 emit。Queue 满时 drop 并记录计数。"""
         try:
             self._queue.put_nowait(event)
@@ -60,6 +60,10 @@ class TraceWriter:
             self._dropped += 1
             if self._dropped % 100 == 1:
                 logger.warning("observe queue full, total_dropped=%d", self._dropped)
+
+    async def drain(self) -> None:
+        """等待已入队事件写入完成。"""
+        await self._queue.join()
 
     async def run(self) -> None:
         """后台循环，持续消费队列写 DB。作为 asyncio task 运行。"""
@@ -72,26 +76,33 @@ class TraceWriter:
                     self._write_one(conn, event)
                 except Exception:
                     logger.exception("observe write failed for %s", type(event).__name__)
+                finally:
+                    self._queue.task_done()
         finally:
             # flush remaining on shutdown
             while not self._queue.empty():
                 try:
                     e = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                try:
                     self._write_one(conn, e)
                 except Exception:
                     pass
+                finally:
+                    self._queue.task_done()
             conn.close()
             logger.info("observe writer stopped")
 
     # ── 内部写入 ─────────────────────────────────
 
     def _write_one(
-        self, conn, event: TurnTrace | RagTrace | ProactiveDecisionTrace | MemoryWriteTrace
+        self, conn, event: TurnTrace | RagQueryLog | ProactiveDecisionTrace | MemoryWriteTrace
     ) -> None:
         ts = _now_iso()
         if isinstance(event, TurnTrace):
             _write_turn(conn, event, ts)
-        elif isinstance(event, RagTrace):
+        elif isinstance(event, RagQueryLog):
             _write_rag(conn, event, ts)
         elif isinstance(event, ProactiveDecisionTrace):
             _write_proactive_decision(conn, event, ts)
@@ -147,65 +158,45 @@ def _write_turn(conn, e: TurnTrace, ts: str) -> None:
         )
 
 
-def _write_rag(conn, e: RagTrace, ts: str) -> None:
+def _write_rag(conn, e: RagQueryLog, ts: str) -> None:
+    hits_json = (
+        json.dumps(
+            [
+                {
+                    "id": h.item_id,
+                    "type": h.memory_type,
+                    "score": round(h.score, 4),
+                    "summary": h.summary,
+                    "injected": h.injected,
+                }
+                for h in e.hits
+            ],
+            ensure_ascii=False,
+        )
+        if e.hits
+        else None
+    )
     with conn:
-        cur = conn.execute(
+        conn.execute(
             """
-            INSERT INTO rag_events (
-                ts, source, session_key, tick_id,
-                original_query, query, gate_type,
-                route_decision, route_latency_ms,
-                hyde_hypothesis,
-                history_scope_mode, history_gate_reason,
-                injected_block, preference_block, preference_query,
-                sufficiency_check_json, fallback_reason, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rag_queries (
+                ts, caller, session_key, query, orig_query,
+                aux_queries, hits_json, injected_count, route_decision, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
-                e.source,
+                e.caller,
                 e.session_key,
-                e.tick_id or None,
-                e.original_query,
                 e.query,
-                e.gate_type,
+                e.orig_query,
+                json.dumps(e.aux_queries, ensure_ascii=False) if e.aux_queries else None,
+                hits_json,
+                e.injected_count,
                 e.route_decision,
-                e.route_latency_ms,
-                e.hyde_hypothesis,
-                e.history_scope_mode,
-                e.history_gate_reason,
-                e.injected_block or None,
-                e.preference_block or None,
-                e.preference_query or None,
-                e.sufficiency_check_json,
-                e.fallback_reason or None,
                 e.error,
             ),
         )
-        rag_event_id = cur.lastrowid
-        if e.items:
-            conn.executemany(
-                """
-                INSERT INTO rag_items (
-                    rag_event_id, item_id, memory_type, score, summary,
-                    happened_at, extra_json, retrieval_path, injected
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        rag_event_id,
-                        item.item_id,
-                        item.memory_type,
-                        item.score,
-                        item.summary,
-                        item.happened_at,
-                        item.extra_json,
-                        item.retrieval_path,
-                        1 if item.injected else 0,
-                    )
-                    for item in e.items
-                ],
-            )
 
 
 def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:

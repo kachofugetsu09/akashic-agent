@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.looping.memory_gate import _trace_memory_retrieve
 from core.common.strategy_trace import build_strategy_trace_envelope
 from proactive_v2.loop import ProactiveLoop
 
@@ -21,25 +20,6 @@ def test_build_strategy_trace_envelope_uses_subject_scope():
     assert payload["source"] == "agent.spawn"
     assert payload["subject"] == {"kind": "job", "id": "abcd1234"}
     assert payload["payload"] == {"status": "completed"}
-
-
-def test_route_trace_writes_strategy_envelope(tmp_path: Path):
-    _trace_memory_retrieve(
-        tmp_path,
-        session_key="telegram:1",
-        channel="telegram",
-        chat_id="1",
-        user_msg="你好",
-        items=[],
-        injected_block="",
-    )
-
-    trace_path = tmp_path / "memory" / "memory2_retrieve_trace.jsonl"
-    line = json.loads(trace_path.read_text(encoding="utf-8").strip())
-    assert line["trace_type"] == "route"
-    assert line["subject"] == {"kind": "session", "id": "telegram:1"}
-    assert line["payload"]["session_key"] == "telegram:1"
-    assert line["session_key"] == "telegram:1"
 
 
 class _ProactiveTraceLoop(ProactiveLoop):

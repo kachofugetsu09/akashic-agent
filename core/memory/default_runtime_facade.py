@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, TypedDict,
 from agent.looping.memory_gate import (
     _decide_history_route,
     _format_gate_history,
-    _trace_memory_retrieve,
     _trace_route_reason,
 )
 from core.memory.engine import (
@@ -38,7 +37,7 @@ from core.memory.runtime_facade import (
 if TYPE_CHECKING:
     from agent.core.types import HistoryMessage
     from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
-    from core.observe.events import RagTrace
+    from core.observe.events import RagQueryLog
     from core.memory.engine import MemoryEngine
     from core.memory.port import MemoryPort
     from core.memory.profile import ProfileMaintenanceStore
@@ -290,7 +289,6 @@ class DefaultRetrievalSemantics:
         self._finalizer = _MemoryRetrievalFinalizer(
             memory=memory,
             config=config,
-            workspace=workspace,
         )
 
     async def retrieve_context(
@@ -298,7 +296,7 @@ class DefaultRetrievalSemantics:
         request: ContextRetrievalRequest,
     ) -> ContextRetrievalResult:
         retrieved_block = ""
-        rag_trace: RagTrace | None = None
+        rag_trace: RagQueryLog | None = None
         gate_type = "history_route"
         sufficiency_trace: dict[str, object] = _empty_sufficiency_state()
         p_items: list[dict] = []
@@ -354,22 +352,13 @@ class DefaultRetrievalSemantics:
             rag_trace = self._finalizer.finalize(
                 session_key=request.session_key,
                 message=request.message,
-                channel=request.channel,
-                chat_id=request.chat_id,
-                gate_type=gate_type,
-                route_decision=route_decision,
-                rewritten_query=rewritten_query,
-                route_ms=route_ms,
-                fallback_reason=fallback_reason,
-                gate_latency_ms=gate_latency_ms,
                 p_items=p_items,
                 h_items=h_items,
-                h_scope_mode=h_scope_mode,
                 hyde_hypothesis=hyde_hypothesis,
-                selected_items=selected_items,
-                retrieved_block=retrieved_block,
                 injected_item_ids=injected_item_ids,
-                sufficiency_trace=sufficiency_trace,
+                rewritten_query=rewritten_query,
+                route_decision=route_decision,
+                config=self._config,
             )
         except Exception as e:
             logger.warning("memory2 retrieve 失败，跳过: %s", e)
@@ -518,55 +507,33 @@ class _MemoryRetrievalFinalizer:
         *,
         memory: "MemoryServices",
         config: "MemoryConfig",
-        workspace: Path,
     ) -> None:
         self._memory = memory
         self._config = config
-        self._workspace = workspace
 
     def finalize(
         self,
         *,
         session_key: str,
         message: str,
-        channel: str,
-        chat_id: str,
-        gate_type: str,
-        route_decision: str,
-        rewritten_query: str,
-        route_ms: int,
-        fallback_reason: str,
-        gate_latency_ms: dict[str, int],
         p_items: list[dict],
         h_items: list[dict],
-        h_scope_mode: str,
         hyde_hypothesis: str | None,
-        selected_items: list[dict],
-        retrieved_block: str,
         injected_item_ids: list[str],
-        sufficiency_trace: dict[str, object],
-    ) -> RagTrace:
+        rewritten_query: str,
+        route_decision: str,
+        config: "MemoryConfig",
+    ) -> "RagQueryLog":
         return _finalize_memory_retrieval(
             session_key=session_key,
             message=message,
-            channel=channel,
-            chat_id=chat_id,
-            gate_type=gate_type,
-            route_decision=route_decision,
-            rewritten_query=rewritten_query,
-            route_ms=route_ms,
-            fallback_reason=fallback_reason,
-            gate_latency_ms=gate_latency_ms,
             p_items=p_items,
             h_items=h_items,
-            h_scope_mode=h_scope_mode,
             hyde_hypothesis=hyde_hypothesis,
-            selected_items=selected_items,
-            retrieved_block=retrieved_block,
             injected_item_ids=injected_item_ids,
-            sufficiency_trace=sufficiency_trace,
-            workspace=self._workspace,
-            config=self._config,
+            rewritten_query=rewritten_query,
+            route_decision=route_decision,
+            config=config,
         )
 
     def trace_exception(
@@ -579,35 +546,15 @@ class _MemoryRetrievalFinalizer:
         gate_type: str,
         sufficiency_trace: dict[str, object],
         error: Exception,
-    ) -> RagTrace:
-        _trace_memory_retrieve(
-            self._workspace,
-            session_key=session_key,
-            channel=channel,
-            chat_id=chat_id,
-            user_msg=message,
-            items=[],
-            injected_block="",
-            gate_type=gate_type,
-            fallback_reason="retrieve_exception",
-            sufficiency_check=sufficiency_trace,
-            error=str(error),
-        )
-        return _build_agent_rag_trace(
+    ) -> "RagQueryLog":
+        return _build_rag_query_log(
             session_key=session_key,
             user_msg=message,
             rewritten_query=message,
-            gate_type=gate_type,
-            route_decision=None,
-            route_latency_ms=None,
-            h_scope_mode=None,
             p_items=[],
             h_items=[],
             hyde_hypothesis=None,
             injected_id_set=set(),
-            injected_block="",
-            sufficiency_check=sufficiency_trace,
-            fallback_reason="retrieve_exception",
             error=str(error),
         )
 
@@ -1154,76 +1101,24 @@ def _finalize_memory_retrieval(
     *,
     session_key: str,
     message: str,
-    channel: str,
-    chat_id: str,
-    gate_type: str,
-    route_decision: str,
-    rewritten_query: str,
-    route_ms: int,
-    fallback_reason: str,
-    gate_latency_ms: dict[str, int],
     p_items: list[dict],
     h_items: list[dict],
-    h_scope_mode: str,
     hyde_hypothesis: str | None,
-    selected_items: list[dict],
-    retrieved_block: str,
     injected_item_ids: list[str],
-    sufficiency_trace: dict[str, object],
-    workspace: Path,
+    rewritten_query: str,
+    route_decision: str,
     config: "MemoryConfig",
-) -> "RagTrace":
-    logger.info(
-        "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，选出 %d 条，注入 %d 条%s",
-        route_decision,
-        h_scope_mode,
-        rewritten_query[:50],
-        len(p_items),
-        len(h_items),
-        len(selected_items),
-        len(injected_item_ids),
-        "" if retrieved_block else "（无内容注入）",
-    )
-    _log_memory_injection(selected_items)
-    procedure_guard_applied = _has_procedure_guard_hit(
-        procedure_items=p_items,
-        injected_item_ids=injected_item_ids,
-        config=config,
-    )
-    _trace_memory_retrieve(
-        workspace,
-        session_key=session_key,
-        channel=channel,
-        chat_id=chat_id,
-        user_msg=message,
-        items=selected_items,
-        injected_block=retrieved_block,
-        gate_type=gate_type,
-        route_decision=route_decision,
-        rewritten_query=rewritten_query,
-        fallback_reason=fallback_reason,
-        procedure_guard_applied=procedure_guard_applied,
-        procedure_hits=len(p_items),
-        history_hits=len(h_items),
-        injected_item_ids=injected_item_ids,
-        gate_latency_ms=gate_latency_ms,
-        sufficiency_check=sufficiency_trace,
-    )
-    return _build_agent_rag_trace(
+) -> "RagQueryLog":
+    _log_memory_injection([i for i in p_items + h_items if str(i.get("id", "")) in set(injected_item_ids)])
+    return _build_rag_query_log(
         session_key=session_key,
         user_msg=message,
         rewritten_query=rewritten_query,
-        gate_type=gate_type,
-        route_decision=route_decision,
-        route_latency_ms=route_ms,
-        h_scope_mode=h_scope_mode,
         p_items=p_items,
         h_items=h_items,
         hyde_hypothesis=hyde_hypothesis,
         injected_id_set=set(injected_item_ids),
-        injected_block=retrieved_block,
-        sufficiency_check=sufficiency_trace,
-        fallback_reason=fallback_reason,
+        route_decision=route_decision,
     )
 
 
@@ -1265,62 +1160,40 @@ def _has_procedure_guard_hit(
     )
 
 
-def _build_agent_rag_trace(
+def _build_rag_query_log(
     *,
     session_key: str,
     user_msg: str,
     rewritten_query: str,
-    gate_type: str | None,
-    route_decision: str | None,
-    route_latency_ms: int | None,
-    h_scope_mode: str | None,
     p_items: list[dict],
     h_items: list[dict],
     hyde_hypothesis: str | None,
     injected_id_set: set[str],
-    injected_block: str,
-    sufficiency_check: dict[str, object],
-    fallback_reason: str = "",
+    route_decision: str | None = None,
     error: str | None = None,
-) -> "RagTrace":
-    from core.observe.events import RagItemTrace, RagTrace
+) -> "RagQueryLog":
+    from core.observe.events import RagHitLog, RagQueryLog
 
-    def _item_to_trace(item: dict, path: str) -> RagItemTrace:
-        raw_extra = item.get("extra_json")
-        extra_str = json.dumps(raw_extra, ensure_ascii=False) if raw_extra else None
-        return RagItemTrace(
-            item_id=str(item.get("id", "")),
-            memory_type=str(item.get("memory_type", "")),
-            score=float(item.get("score", 0.0)),
-            summary=str(item.get("summary", "")),
-            happened_at=item.get("happened_at"),
-            extra_json=extra_str,
-            retrieval_path=path,
-            injected=str(item.get("id", "")) in injected_id_set,
-        )
+    hits: list[RagHitLog] = []
+    for item in p_items + h_items:
+        item_id = str(item.get("id", "") or "")
+        hits.append(RagHitLog(
+            item_id=item_id,
+            memory_type=str(item.get("memory_type", "") or ""),
+            score=float(item.get("score", 0.0) or 0.0),
+            summary=str(item.get("summary", "") or "")[:120],
+            injected=bool(item_id and item_id in injected_id_set),
+        ))
 
-    trace_items: list[RagItemTrace] = []
-    for item in p_items:
-        trace_items.append(_item_to_trace(item, "procedure"))
-    for item in h_items:
-        path = str(item.get("_retrieval_path", "history_raw") or "history_raw")
-        trace_items.append(_item_to_trace(item, path))
-
-    return RagTrace(
-        source="agent",
+    return RagQueryLog(
+        caller="passive",
         session_key=session_key,
-        original_query=user_msg,
         query=rewritten_query,
-        gate_type=gate_type,
+        orig_query=user_msg if user_msg != rewritten_query else None,
+        aux_queries=[hyde_hypothesis] if hyde_hypothesis else [],
+        hits=hits,
+        injected_count=sum(1 for h in hits if h.injected),
         route_decision=route_decision,
-        route_latency_ms=route_latency_ms,
-        hyde_hypothesis=hyde_hypothesis,
-        history_scope_mode=h_scope_mode,
-        history_gate_reason=None,
-        items=trace_items,
-        injected_block=injected_block,
-        sufficiency_check_json=json.dumps(sufficiency_check, ensure_ascii=False),
-        fallback_reason=fallback_reason,
         error=error,
     )
 

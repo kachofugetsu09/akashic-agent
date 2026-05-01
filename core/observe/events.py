@@ -5,41 +5,29 @@ from typing import Literal
 
 
 @dataclass
-class RagItemTrace:
-    """一个从向量库检索到的 item，保留原始字段。"""
+class RagHitLog:
+    """一次检索中命中的单条记忆条目。"""
 
     item_id: str
     memory_type: str
     score: float
-    summary: str
-    happened_at: str | None
-    extra_json: str | None          # 原始 extra_json 序列化为 JSON string
-    retrieval_path: str             # procedure | history_raw | history_hyde | preference
-    injected: bool                  # 是否最终注入到 context
+    summary: str        # 截断 120 字符
+    injected: bool      # 是否最终注入到 context
 
 
 @dataclass
-class RagTrace:
-    """一次完整的 memory 检索事件。agent 和 proactive 共用同一结构。"""
+class RagQueryLog:
+    """一次 memory 检索事件：query → hits → injected。"""
 
-    source: Literal["agent", "proactive"]
+    caller: str                         # "passive" | "proactive" | "explicit"
     session_key: str
-    original_query: str             # 改写前的原始 query（agent: user_msg）
-    query: str                      # 实际用于检索的 query（route decision 改写后）
-    gate_type: str | None           # 'query_rewriter' | 'history_route' | None
-    route_decision: str | None      # 'RETRIEVE' | 'NO_RETRIEVE'（仅 agent）
-    route_latency_ms: int | None
-    hyde_hypothesis: str | None     # HyDE 生成的假设文本，None = 未使用
-    history_scope_mode: str | None
-    history_gate_reason: str | None
-    items: list[RagItemTrace] = field(default_factory=list)
-    injected_block: str = ""
-    preference_block: str = ""
-    preference_query: str | None = None
-    sufficiency_check_json: str | None = None
-    fallback_reason: str = ""
+    query: str                          # 实际检索用的 query（rewrite 之后）
+    orig_query: str | None              # 改写前原文，None = 未改写
+    aux_queries: list[str]              # HyDE 生成的假想条目列表
+    hits: list[RagHitLog]
+    injected_count: int
+    route_decision: str | None = None   # "RETRIEVE" | "NO_RETRIEVE"；None = 无 gate
     error: str | None = None
-    tick_id: str | None = None      # proactive: 关联 proactive_decisions.tick_id
 
 
 @dataclass

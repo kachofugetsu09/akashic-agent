@@ -6,7 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent.looping.constants import _RETRIEVE_TRACE_SUMMARY_MAX
 from agent.policies.history_route import HistoryRoutePolicy, RouteDecision
 from agent.prompting import is_context_frame
 from core.common.strategy_trace import build_strategy_trace_envelope
@@ -18,78 +17,6 @@ logger = logging.getLogger("agent.loop")
 
 
 # ── Module-level functions (moved from AgentLoopMemoryGateMixin in Phase 2) ──
-
-
-def _trace_memory_retrieve(
-    workspace: Path,
-    *,
-    session_key: str,
-    channel: str,
-    chat_id: str,
-    user_msg: str,
-    items: list[dict],
-    injected_block: str,
-    gate_type: str = "history_route",
-    route_decision: str = "RETRIEVE",
-    rewritten_query: str = "",
-    fallback_reason: str = "",
-    procedure_guard_applied: bool = False,
-    procedure_hits: int = 0,
-    history_hits: int = 0,
-    injected_item_ids: list[str] | None = None,
-    gate_latency_ms: dict | None = None,
-    sufficiency_check: dict | None = None,
-    error: str = "",
-) -> None:
-    try:
-        memory_dir = workspace / "memory"
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        trace_file = memory_dir / "memory2_retrieve_trace.jsonl"
-        payload = {
-            "session_key": session_key,
-            "channel": channel,
-            "chat_id": chat_id,
-            "user_msg": user_msg,
-            "hit_count": len(items),
-            "procedure_hits": procedure_hits,
-            "history_hits": history_hits,
-            "injected_chars": len(injected_block or ""),
-            "gate_type": gate_type,
-            "route_decision": route_decision,
-            "rewritten_query": rewritten_query,
-            "fallback_reason": fallback_reason,
-            "procedure_guard_applied": procedure_guard_applied,
-            "injected_item_ids": injected_item_ids or [],
-            "gate_latency_ms": gate_latency_ms or {},
-            "sufficiency_check": sufficiency_check or {},
-            "error": error,
-            "top_items": [
-                {
-                    "id": item.get("id", ""),
-                    "memory_type": item.get("memory_type", ""),
-                    "score": round(float(item.get("score", 0.0)), 4),
-                    "summary": (item.get("summary", "") or "")[
-                        :_RETRIEVE_TRACE_SUMMARY_MAX
-                    ],
-                }
-                for item in items
-            ],
-        }
-        line = {
-            **build_strategy_trace_envelope(
-                trace_type="route",
-                source="agent.memory_route",
-                subject_kind="session",
-                subject_id=session_key,
-                payload=payload,
-                timestamp=datetime.now().astimezone().isoformat(),
-            ),
-            **payload,
-        }
-        with trace_file.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(line, ensure_ascii=False) + "\n")
-    except Exception as e:
-        logger.warning("memory2 retrieve trace write failed: %s", e)
 
 
 def _is_flow_execution_state(user_msg: str, metadata: dict) -> bool:

@@ -1,8 +1,14 @@
+import asyncio
+from contextlib import suppress
 import sqlite3
 
+import pytest
+
 from core.observe.db import open_db
-from core.observe.events import ProactiveDecisionTrace, TurnTrace
+from core.observe.events import ProactiveDecisionTrace, RagHitLog, RagQueryLog, TurnTrace
+from core.observe.retention import _run_cleanup
 from core.observe.writer import _write_proactive_decision, _write_turn
+from core.observe.writer import TraceWriter
 
 
 def test_write_proactive_decision_backfills_legacy_columns_for_gate_and_sense(tmp_path):
@@ -223,3 +229,184 @@ def test_open_db_creates_react_budget_columns(tmp_path):
     assert "react_final_input_tokens" in cols
     assert "react_cache_prompt_tokens" in cols
     assert "react_cache_hit_tokens" in cols
+
+
+@pytest.mark.asyncio
+async def test_trace_writer_drain_waits_for_rag_query(tmp_path):
+    db_path = tmp_path / "observe.db"
+    writer = TraceWriter(db_path)
+    task = asyncio.create_task(writer.run())
+    row = None
+    try:
+        writer.emit(
+            RagQueryLog(
+                caller="passive",
+                session_key="telegram:1",
+                query="改写问题",
+                orig_query="原问题",
+                aux_queries=[],
+                hits=[
+                    RagHitLog(
+                        item_id="m1",
+                        memory_type="event",
+                        score=0.9,
+                        summary="记忆",
+                        injected=True,
+                    )
+                ],
+                injected_count=1,
+                route_decision="RETRIEVE",
+            )
+        )
+        await writer.drain()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                """
+                select caller, session_key, query, orig_query, injected_count,
+                       route_decision, hits_json
+                from rag_queries
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    assert row is not None
+    assert row[0] == "passive"
+    assert row[1] == "telegram:1"
+    assert row[2] == "改写问题"
+    assert row[3] == "原问题"
+    assert row[4] == 1
+    assert row[5] == "RETRIEVE"
+    assert '"id": "m1"' in row[6]
+
+
+def test_retention_cleans_legacy_rag_events_and_orphan_items(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        with conn:
+            old_event = conn.execute(
+                """
+                insert into rag_events (
+                    ts, source, session_key, original_query, query
+                ) values (
+                    datetime('now', '-91 days'), 'agent', 'cli:1', '旧问题', '旧问题'
+                )
+                """
+            ).lastrowid
+            kept_event = conn.execute(
+                """
+                insert into rag_events (
+                    ts, source, session_key, original_query, query, error
+                ) values (
+                    datetime('now', '-91 days'), 'agent', 'cli:1', '错误问题', '错误问题', 'failed'
+                )
+                """
+            ).lastrowid
+            conn.execute(
+                """
+                insert into rag_items (
+                    rag_event_id, item_id, memory_type, score, summary, retrieval_path
+                ) values (?, 'old-item', 'event', 0.8, '旧记忆', 'history_raw')
+                """,
+                (old_event,),
+            )
+            conn.execute(
+                """
+                insert into rag_items (
+                    rag_event_id, item_id, memory_type, score, summary, retrieval_path
+                ) values (?, 'kept-item', 'event', 0.8, '保留记忆', 'history_raw')
+                """,
+                (kept_event,),
+            )
+    finally:
+        conn.close()
+
+    _run_cleanup(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        event_count = conn.execute("select count(*) from rag_events").fetchone()[0]
+        item_ids = [
+            row[0]
+            for row in conn.execute(
+                "select item_id from rag_items order by item_id"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+    assert event_count == 1
+    assert item_ids == ["kept-item"]
+
+
+def test_retention_initializes_missing_rag_queries_for_old_db(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            conn.executescript(
+                """
+                create table turns (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    source text not null,
+                    session_key text not null,
+                    llm_output text not null default '',
+                    error text
+                );
+                create table rag_events (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    source text not null,
+                    session_key text not null,
+                    original_query text not null,
+                    query text not null,
+                    error text
+                );
+                create table rag_items (
+                    id integer primary key autoincrement,
+                    rag_event_id integer not null references rag_events (id),
+                    item_id text not null,
+                    memory_type text not null,
+                    score real not null,
+                    summary text not null,
+                    retrieval_path text not null,
+                    injected integer not null default 0
+                );
+                create table proactive_decisions (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    session_key text not null,
+                    stage text not null,
+                    error text
+                );
+                insert into rag_events (
+                    ts, source, session_key, original_query, query
+                ) values (
+                    datetime('now', '-91 days'), 'agent', 'cli:1', '旧问题', '旧问题'
+                );
+                """
+            )
+    finally:
+        conn.close()
+
+    _run_cleanup(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rag_query_cols = {
+            row[1]
+            for row in conn.execute("pragma table_info(rag_queries)").fetchall()
+        }
+        legacy_count = conn.execute("select count(*) from rag_events").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert "hits_json" in rag_query_cols
+    assert legacy_count == 0

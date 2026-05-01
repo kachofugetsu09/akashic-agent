@@ -1,9 +1,10 @@
 """淘汰策略：定期清理过期的 observe 数据。
 
 规则：
-  turns:       保留 180 天（error IS NOT NULL 永久保留）
-  rag_events:  保留  90 天（error IS NOT NULL 永久保留）
-  rag_items:   随 rag_events 联动删除（孤立行）
+  turns:        保留 180 天（error IS NOT NULL 永久保留）
+  rag_queries:  保留  90 天（error IS NOT NULL 永久保留）
+  rag_events:   保留  90 天（旧表，error IS NOT NULL 永久保留）
+  rag_items:    随 rag_events 联动删除（孤立行）
 
 触发：启动时后台跑一次，距上次清理超过 24h 才执行。
 """
@@ -14,10 +15,13 @@ import asyncio
 import logging
 from pathlib import Path
 
+from core.observe.db import open_db
+
 logger = logging.getLogger("observe.retention")
 
 _RETENTION_DAYS = {
     "turns": 180,
+    "rag_queries": 90,
     "rag_events": 90,
     "proactive_decisions": 90,
 }
@@ -39,9 +43,7 @@ def _should_run(db_path: Path) -> bool:
 
 
 def _run_cleanup(db_path: Path) -> None:
-    import sqlite3
-
-    conn = sqlite3.connect(str(db_path))
+    conn = open_db(db_path)
     try:
         deleted: dict[str, int] = {}
         with conn:
@@ -52,14 +54,13 @@ def _run_cleanup(db_path: Path) -> None:
                 )
                 deleted[table] = cur.rowcount
 
-            # 清理孤立 rag_items（rag_events 已被删除的）
             cur = conn.execute(
                 "DELETE FROM rag_items WHERE rag_event_id NOT IN (SELECT id FROM rag_events)"
             )
             deleted["rag_items_orphan"] = cur.rowcount
 
         logger.info("observe retention done: %s", deleted)
-        _stamp_path(db_path).write_text("ok")
+        _ = _stamp_path(db_path).write_text("ok")
     except Exception:
         logger.exception("observe retention failed")
     finally:

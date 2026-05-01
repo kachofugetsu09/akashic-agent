@@ -1,10 +1,10 @@
-from core.observe.events import ProactiveDecisionTrace, RagItemTrace, RagTrace, TurnTrace
+from core.observe.events import ProactiveDecisionTrace, RagHitLog, RagQueryLog, TurnTrace
 from core.observe.writer import TraceWriter
 
 __all__ = [
     "TraceWriter",
     "TurnTrace",
-    "RagTrace",
-    "RagItemTrace",
+    "RagQueryLog",
+    "RagHitLog",
     "ProactiveDecisionTrace",
 ]

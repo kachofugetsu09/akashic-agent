@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 from agent.core.types import RetrievalTrace
 from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
@@ -18,14 +17,8 @@ from core.memory.default_runtime_facade import (
     _retrieve_episodic_items,
 )
 from core.memory.runtime_facade import ContextRetrievalRequest, ContextRetrievalResult
-from core.observe.events import RagTrace
 
 logger = logging.getLogger("agent.retrieval")
-
-
-@runtime_checkable
-class _InjectedItem(Protocol):
-    injected: bool
 
 
 class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
@@ -105,19 +98,6 @@ async def _retrieve_context_with_facade(
 def _build_retrieval_trace(
     context_result: ContextRetrievalResult,
 ) -> RetrievalTrace | None:
-    rag_trace = context_result.raw.get("rag_trace")
-    if isinstance(rag_trace, RagTrace):
-        return RetrievalTrace(
-            gate_type=rag_trace.gate_type,
-            route_decision=rag_trace.route_decision,
-            rewritten_query=rag_trace.query,
-            injected_count=sum(
-                1
-                for item in (rag_trace.items or [])
-                if isinstance(item, _InjectedItem) and item.injected
-            ),
-            raw=rag_trace,
-        )
     if not context_result.trace and not context_result.injected_item_ids and not context_result.text_block:
         return None
     return RetrievalTrace(
@@ -125,5 +105,5 @@ def _build_retrieval_trace(
         route_decision=str(context_result.trace.get("route_decision") or "") or None,
         rewritten_query=str(context_result.raw.get("rewritten_query") or "") or None,
         injected_count=len(context_result.injected_item_ids),
-        raw=context_result.trace or None,
+        raw=context_result.raw.get("rag_trace"),
     )
