@@ -138,6 +138,7 @@ async def test_default_retrieval_semantics_returns_rich_context_result(tmp_path:
     assert result.trace["route_decision"] == "RETRIEVE"
     assert result.trace["gate_type"] == "history_route"
     assert result.raw["rewritten_query"] == "改写问题"
+    assert finalizer.finalize.call_args.kwargs["config"] is semantics._config
 
 
 @pytest.mark.asyncio

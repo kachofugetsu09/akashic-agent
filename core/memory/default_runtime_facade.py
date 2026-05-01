@@ -243,6 +243,7 @@ class DefaultRetrievalSemantics:
         workspace: Path,
         light_model: str,
     ) -> None:
+        self._config = config
         self._gate_resolver = _GateResolver(
             memory=memory,
             config=config,
