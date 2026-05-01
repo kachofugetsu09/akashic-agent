@@ -322,6 +322,7 @@ class Retriever:
                 if forced_count >= self._inject_max_forced:
                     continue
                 forced_count += 1
+                item["forced"] = True
                 selected.append(item)
                 if summary:
                     tool_req = extra.get("tool_requirement")

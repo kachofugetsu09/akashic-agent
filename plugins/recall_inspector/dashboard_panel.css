@@ -81,6 +81,13 @@
 .recall-type-event     { background: var(--green-soft);   color: var(--green); border-color: #b0d8c4; }
 .recall-type-procedure { background: var(--yellow-soft);  color: #8b6b09; border-color: #e0d090; }
 
+.recall-tag-forced {
+  color: #8b6b09;
+  border-color: #e0d090;
+  background: var(--yellow-soft);
+  font-weight: 600;
+}
+
 .recall-tag-score {
   color: var(--text-soft);
   border-color: var(--line-soft);

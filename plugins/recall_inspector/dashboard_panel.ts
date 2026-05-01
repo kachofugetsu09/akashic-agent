@@ -6,6 +6,7 @@ interface RecallItem {
   memory_type?: string;
   score?: number | null;
   injected?: boolean;
+  forced?: boolean;
   tags?: string[];
 }
 
@@ -58,11 +59,14 @@ function _renderRecallItems(items: RecallItem[], source: string): string {
         const injectedTag = item.injected === true
           ? '<span class="recall-tag recall-tag-injected">注入</span>'
           : "";
+        const forcedTag = item.forced === true
+          ? '<span class="recall-tag recall-tag-forced">强制</span>'
+          : "";
         const extraTags = (item.tags ?? []).map((tag) => `<span class="recall-tag">${escapeHtml(tag)}</span>`).join("");
         return `
         <div class="recall-item recall-item-${escapeHtml(source)}">
           <div class="recall-item-head">
-            ${typeTag}${injectedTag}${scoreTag}${extraTags}
+            ${typeTag}${injectedTag}${forcedTag}${scoreTag}${extraTags}
             <code>${escapeHtml(item.id || "-")}</code>
           </div>
           <div class="recall-summary">${escapeHtml(item.summary || "")}</div>
