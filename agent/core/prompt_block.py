@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from agent.memes.catalog import MemeCatalog
 from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
 from prompts.agent import (
     build_agent_behavior_rules_prompt,
@@ -52,9 +51,6 @@ class PromptBlock(Protocol):
 #  20 SkillsCatalogPromptBlock → skills.build_skills_summary()
 #                              来源：skills/ 目录扫描结果、技能描述、依赖可用性
 #                              时机：技能文件或环境依赖变化时才变，低频
-#  25 MemesPromptBlock         → memes/manifest.json
-#                              来源：MemeCatalog.build_prompt_block()
-#                              时机：表情 manifest 更新时才变，低频
 #  30 SelfModelPromptBlock     → memory/SELF.md
 #                              来源：memory.read_self()
 #                              时机：自我认知被写回时才变，低频
@@ -121,24 +117,6 @@ class SkillsCatalogPromptBlock:
     def cache_signature(self, ctx: TurnContext) -> str | None:
         summary = ctx.skills.build_skills_summary()
         return summary or None
-
-
-class MemesPromptBlock:
-    priority = 25
-    label = "memes"
-    is_static = False
-
-    def __init__(self, catalog: MemeCatalog) -> None:
-        self._catalog = catalog
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        block = self._catalog.build_prompt_block()
-        if not block:
-            return None
-        return f"# Memes\n\n{block}"
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
 
 
 class SelfModelPromptBlock:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -23,6 +23,8 @@ from agent.lifecycle.types import (
     BeforeStepCtx,
     BeforeStepInput,
     BeforeTurnCtx,
+    PromptRenderCtx,
+    PromptRenderInput,
     TurnState,
 )
 from agent.lifecycle.phases.after_step import (
@@ -41,6 +43,11 @@ from agent.lifecycle.phases.before_turn import (
     BeforeTurnFrame,
     default_before_turn_modules,
 )
+from agent.lifecycle.phases.prompt_render import (
+    PromptRenderFrame,
+    default_prompt_render_modules,
+)
+from agent.prompting import PromptSectionRender
 from session.manager import SessionManager
 
 _now = datetime.now()
@@ -793,6 +800,99 @@ async def test_before_step_setup_records_token_estimate():
     )
 
     assert ctx.input_tokens_estimate > 0
+
+
+@pytest.mark.asyncio
+async def test_prompt_render_chain_appends_bottom_section(tmp_path):
+    bus = EventBus()
+
+    async def append_section(ctx: PromptRenderCtx) -> PromptRenderCtx:
+        ctx.system_sections_bottom.append(
+            PromptSectionRender(
+                name="plugin_protocol",
+                content="# Plugin Protocol\n\n稳定协议",
+                is_static=False,
+            )
+        )
+        return ctx
+
+    bus.on(PromptRenderCtx, append_section)
+    memory = SimpleNamespace(
+        read_self=lambda: "",
+        read_profile=lambda: "",
+        read_recent_context=lambda: "",
+    )
+    context = ContextBuilder(tmp_path, memory=cast(Any, memory))
+    phase = Phase(
+        default_prompt_render_modules(bus, context),
+        frame_factory=PromptRenderFrame,
+    )
+
+    result = await phase.run(
+        PromptRenderInput(
+            session_key="k",
+            channel="cli",
+            chat_id="ch",
+            content="hello",
+            media=None,
+            timestamp=_now,
+            history=[],
+            skill_names=None,
+            retrieved_memory_block="",
+            disabled_sections=set(),
+            turn_injection_prompt="",
+        )
+    )
+
+    assert "Plugin Protocol" in str(result.messages[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
+    class BottomModule:
+        async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
+            ctx = cast(PromptRenderCtx, frame.slots["prompt:ctx"])
+            ctx.system_sections_bottom.append(
+                PromptSectionRender(
+                    name="memes",
+                    content="# Memes\n\n<meme:happy>",
+                    is_static=False,
+                )
+            )
+            return frame
+
+    memory = SimpleNamespace(
+        read_self=lambda: "",
+        read_profile=lambda: "",
+        read_recent_context=lambda: "",
+    )
+    context = ContextBuilder(tmp_path, memory=cast(Any, memory))
+    phase = Phase(
+        default_prompt_render_modules(
+            EventBus(),
+            context,
+            plugin_modules_bottom=[BottomModule()],
+        ),
+        frame_factory=PromptRenderFrame,
+    )
+
+    result = await phase.run(
+        PromptRenderInput(
+            session_key="k",
+            channel="cli",
+            chat_id="ch",
+            content="hello",
+            media=None,
+            timestamp=_now,
+            history=[],
+            skill_names=None,
+            retrieved_memory_block="",
+            disabled_sections={"memes"},
+            turn_injection_prompt="",
+        )
+    )
+
+    assert "<meme:happy>" not in str(result.messages[0]["content"])
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ class PluginContext:
     plugin_dir: Path
     kv_store: "PluginKVStore"
     config: "PluginConfig | None" = None
+    workspace: Path | None = None
     observe_db_path: Path | None = None
 
 

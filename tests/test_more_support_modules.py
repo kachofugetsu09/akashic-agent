@@ -441,6 +441,26 @@ async def test_deepseek_strategy_disables_thinking(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_token_plan_strategy_disables_thinking(monkeypatch: pytest.MonkeyPatch):
+    fake = _FakeClient([_Response(content="ok")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(
+        api_key="k",
+        base_url="https://token-plan-cn.xiaomimimo.com/v1",
+        force_disable_thinking=True,
+    )
+
+    await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="mimo-v2.5",
+        max_tokens=10,
+    )
+
+    assert fake.calls[-1]["extra_body"] == {"enable_thinking": False}
+
+
+@pytest.mark.asyncio
 async def test_deepseek_strategy_strips_image_url_blocks(
     monkeypatch: pytest.MonkeyPatch,
 ):

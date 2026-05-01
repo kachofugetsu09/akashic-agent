@@ -131,7 +131,7 @@ def test_default_reasoner_observes_tool_lifecycle_events():
         tool_search_enabled=False,
         memory_window=40,
         context=cast(Any, SimpleNamespace(
-            render=lambda request: SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
                 messages=[{"role": "user", "content": request.current_message}],
             ),
         )),
@@ -380,7 +380,7 @@ def test_default_reasoner_run_turn_uses_context_render():
         tool_search_enabled=False,
         memory_window=40,
         context=cast(Any, SimpleNamespace(
-            render=lambda request: SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
                 messages=[{"role": "user", "content": request.current_message}],
             ),
             build_messages=lambda **_: (_ for _ in ()).throw(AssertionError("legacy build_messages should not be used")),
@@ -420,7 +420,7 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
         tool_search_enabled=False,
         memory_window=40,
         context=cast(Any, SimpleNamespace(
-            render=lambda request: SimpleNamespace(
+                render=lambda request, **_: SimpleNamespace(
                 messages=[{"role": "user", "content": request.current_message}],
             ),
         )),

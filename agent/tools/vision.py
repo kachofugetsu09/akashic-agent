@@ -178,6 +178,7 @@ class ReadImageVisionTool(Tool):
                 tools=[],
                 model=self._model,
                 max_tokens=2048,
+                disable_thinking=True,
             )
             if response.content:
                 return response.content

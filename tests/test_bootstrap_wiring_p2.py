@@ -4,15 +4,13 @@ from typing import Any, cast
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
 from agent.config import Config
 from agent.config_models import Config as ConfigModel, WiringConfig
-from agent.core.response_parser import ResponseMetadata
 from agent.lifecycle.facade import TurnLifecycle
-from agent.lifecycle.types import AfterReasoningCtx, AfterStepCtx
+from agent.lifecycle.types import AfterStepCtx
 from agent.looping.interrupt import TurnInterruptState
 from agent.tools.registry import ToolRegistry
 from bootstrap.tools import _build_loop_deps, build_registered_tools
@@ -421,46 +419,6 @@ def test_resolve_memory_engine_builder_supports_memu():
 
 
 @pytest.mark.asyncio
-async def test_wire_turn_lifecycle_registers_after_reasoning_meme_handler():
-    bus = EventBus()
-    decorator = SimpleNamespace(
-        decorate=MagicMock(
-            return_value=SimpleNamespace(
-                content="装饰后",
-                media=["/tmp/m.png"],
-                tag="cute",
-            )
-        )
-    )
-    wire_turn_lifecycle(
-        lifecycle=TurnLifecycle(bus),
-        meme_decorator=cast(Any, decorator),
-        active_turn_states={},
-    )
-
-    ctx = AfterReasoningCtx(
-        session_key="telegram:1",
-        channel="telegram",
-        chat_id="1",
-        tools_used=(),
-        thinking=None,
-        response_metadata=ResponseMetadata(raw_text="ok"),
-        streamed=False,
-        tool_chain=(),
-        context_retry={},
-        reply="raw",
-        media=[],
-        outbound_metadata={},
-    )
-    out = await bus.emit(ctx)
-
-    assert out.reply == "装饰后"
-    assert out.media == ["/tmp/m.png"]
-    assert out.meme_tag == "cute"
-    decorator.decorate.assert_called_once_with("raw", meme_tag=None)
-
-
-@pytest.mark.asyncio
 async def test_wire_turn_lifecycle_registers_afterstep_progress_handler():
     bus = EventBus()
     states: dict[str, TurnInterruptState] = {
@@ -471,7 +429,6 @@ async def test_wire_turn_lifecycle_registers_afterstep_progress_handler():
     }
     wire_turn_lifecycle(
         lifecycle=TurnLifecycle(bus),
-        meme_decorator=cast(Any, None),
         active_turn_states=states,
     )
 

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from agent.core.runtime_support import AgentLoopRunner, TurnRunResult
+from agent.core.runtime_support import AgentLoopRunner, PromptRenderRunner, TurnRunResult
+from agent.lifecycle.types import PromptRenderInput
 from agent.looping.ports import SessionServices
 from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
 
 if TYPE_CHECKING:
-    from agent.context import ContextBuilder
     from agent.core.passive_turn import PassiveTurnPipeline
     from agent.tools.registry import ToolRegistry
 
@@ -16,11 +16,11 @@ async def process_spawn_completion_event(
     item: SpawnCompletionItem,
     key: str,
     session_svc: SessionServices,
-    context: "ContextBuilder",
     pipeline: "PassiveTurnPipeline",
     tools: "ToolRegistry",
     memory_window: int,
     run_agent_loop_fn: AgentLoopRunner,
+    prompt_render_fn: PromptRenderRunner,
     dispatch_outbound: bool = True,
 ) -> OutboundMessage:
     # 1. 先读取 session 和内部事件，准备要给主模型的回传消息。
@@ -72,16 +72,22 @@ async def process_spawn_completion_event(
 
     # 2. 再调用主模型生成用户可见回复。
     tools.set_context(channel=item.channel, chat_id=item.chat_id)
-    from agent.core.types import ContextRequest
-    initial_messages = context.render(
-        ContextRequest(
-            history=session.get_history(max_messages=memory_window),
-            current_message=current_message,
+    prompt_render = await prompt_render_fn(
+        PromptRenderInput(
+            session_key=key,
             channel=item.channel,
             chat_id=item.chat_id,
-            message_timestamp=item.timestamp,
+            content=current_message,
+            media=None,
+            timestamp=item.timestamp,
+            history=session.get_history(max_messages=memory_window),
+            skill_names=None,
+            retrieved_memory_block="",
+            disabled_sections=set(),
+            turn_injection_prompt="",
         )
-    ).messages
+    )
+    initial_messages = prompt_render.messages
     final_content, tools_used, tool_chain, _, _thinking = await run_agent_loop_fn(
         initial_messages,
         request_time=item.timestamp,

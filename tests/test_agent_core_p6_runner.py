@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 
 from agent.context import ContextBuilder
+from agent.lifecycle.types import PromptRenderResult
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.core.runner import CoreRunner, CoreRunnerDeps
@@ -68,6 +69,11 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     run_agent_loop_fn = AsyncMock(
         return_value=("done", ["spawn"], [{"name": "spawn"}], None, None)
     )
+    prompt_render_fn = AsyncMock(
+        return_value=PromptRenderResult(
+            messages=[{"role": "system", "content": "prompt"}]
+        )
+    )
     runner = CoreRunner(
         CoreRunnerDeps(
             agent_core=cast(
@@ -82,6 +88,7 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
             tools=cast(ToolRegistry, tools),
             memory_window=12,
             run_agent_loop_fn=run_agent_loop_fn,
+            prompt_render_fn=prompt_render_fn,
         )
     )
     item = SpawnCompletionItem(
@@ -103,7 +110,10 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     assert out.content == "spawn done"
     session_svc.session_manager.get_or_create.assert_called_once_with("scheduler:job-1")
     tools.set_context.assert_called_once_with(channel="telegram", chat_id="123")
-    context.render.assert_called_once()
+    prompt_render_fn.assert_awaited_once()
+    render_input = prompt_render_fn.await_args.args[0]
+    assert render_input.session_key == "scheduler:job-1"
+    assert "后台任务回传" in render_input.content
     run_agent_loop_fn.assert_awaited_once()
     pipeline_mock.post_reasoning.assert_awaited_once()
     pr_kwargs = pipeline_mock.post_reasoning.await_args.kwargs

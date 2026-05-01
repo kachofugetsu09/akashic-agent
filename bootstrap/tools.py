@@ -55,8 +55,6 @@ from bootstrap.wiring import (
     resolve_toolset_provider,
 )
 from agent.lifecycle.facade import TurnLifecycle
-from agent.memes.catalog import MemeCatalog
-from agent.memes.decorator import MemeDecorator
 from bootstrap.providers import build_providers, build_vl_provider
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
@@ -118,6 +116,14 @@ class CoreRuntime:
             self.loop.add_before_turn_plugin_modules(
                 self.plugin_manager.before_turn_modules_early,
                 self.plugin_manager.before_turn_modules_late,
+            )
+            self.loop.add_prompt_render_plugin_modules(
+                self.plugin_manager.prompt_render_modules_top,
+                self.plugin_manager.prompt_render_modules_bottom,
+            )
+            self.loop.add_after_reasoning_plugin_modules(
+                self.plugin_manager.after_reasoning_modules_before_emit,
+                self.plugin_manager.after_reasoning_modules_before_persist,
             )
             if self.plugin_manager.tool_hooks:
                 self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
@@ -334,7 +340,6 @@ def _build_loop_deps(
         hyde_enhancer=hyde_enhancer,
         sufficiency_checker=sufficiency_checker,
     )
-    passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
     )
@@ -403,7 +408,6 @@ def _build_loop_deps(
         observability_services=trace_services,
         hyde_enhancer=hyde_enhancer,
         consolidation_service=consolidation,
-        meme_decorator=passive_meme_decorator,
         scheduler=turn_scheduler,
     )
 
@@ -482,7 +486,6 @@ def build_core_runtime(
     loop_ref["loop"] = loop
     wire_turn_lifecycle(
         lifecycle=TurnLifecycle(event_bus),
-        meme_decorator=loop_deps.meme_decorator,
         active_turn_states=loop.active_turn_states,
     )
 
@@ -491,6 +494,7 @@ def build_core_runtime(
         plugin_dirs=_resolve_plugin_dirs(workspace),
         event_bus=event_bus,
         tool_registry=tools,
+        workspace=workspace,
         observe_db_path=workspace / "observe" / "observe.db",
     )
 

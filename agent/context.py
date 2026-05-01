@@ -12,7 +12,6 @@ from agent.core.prompt_block import (
     BehaviorRulesPromptBlock,
     IdentityPromptBlock,
     LongTermMemoryPromptBlock,
-    MemesPromptBlock,
     MemoryBlockPromptBlock,
     RecentContextPromptBlock,
     SelfModelPromptBlock,
@@ -22,10 +21,10 @@ from agent.core.prompt_block import (
     SystemPromptBuilder,
     TurnContext,
 )
-from agent.memes.catalog import MemeCatalog
 from agent.prompting import (
     PromptAssembler,
     PromptSectionMeta,
+    PromptSectionRender,
     build_context_frame_message,
 )
 from agent.skills import SkillsLoader
@@ -223,7 +222,6 @@ class ContextBuilder:
                 RecentContextPromptBlock(),
                 SessionContextPromptBlock(),
                 ActiveSkillsPromptBlock(),
-                MemesPromptBlock(MemeCatalog(workspace / "memes")),
                 SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),
             ]
         )
@@ -270,7 +268,13 @@ class ContextBuilder:
             return {}
         return {"turn_injection": turn_injection_prompt}
 
-    def render(self, request: ContextRequest) -> ContextRenderResult:
+    def render(
+        self,
+        request: ContextRequest,
+        *,
+        system_sections_top: list[PromptSectionRender] | None = None,
+        system_sections_bottom: list[PromptSectionRender] | None = None,
+    ) -> ContextRenderResult:
         turn_injection_context = self.build_turn_injection_context(
             turn_injection_prompt=request.turn_injection_prompt
         )
@@ -285,6 +289,8 @@ class ContextBuilder:
             retrieved_memory_block=request.retrieved_memory_block,
             disabled_sections=request.disabled_sections,
             turn_injection_context=turn_injection_context,
+            system_sections_top=system_sections_top,
+            system_sections_bottom=system_sections_bottom,
         )
         self._last_debug_breakdown = assembled.debug_breakdown
         self._last_assembled_contexts = {

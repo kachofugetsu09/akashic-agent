@@ -4,16 +4,32 @@ import json
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+
+def _empty_aliases() -> list[str]:
+    return []
+
+
+def _empty_media() -> list[str]:
+    return []
 
 
 @dataclass
 class MemeCategory:
     name: str
     desc: str
-    aliases: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=_empty_aliases)
     enabled: bool = True
+
+
+@dataclass
+class DecorateResult:
+    content: str
+    media: list[str] = field(default_factory=_empty_media)
+    tag: str | None = None
 
 
 class MemeCatalog:
@@ -23,7 +39,6 @@ class MemeCatalog:
         self._manifest_mtime: float = -1.0
 
     def _load(self) -> None:
-        """Load or reload manifest if it has changed on disk."""
         manifest = self._dir / "manifest.json"
         if not manifest.exists():
             self._categories = {}
@@ -35,15 +50,27 @@ class MemeCatalog:
         self._manifest_mtime = mtime
         self._categories = {}
         try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
+            raw: object = json.loads(manifest.read_text(encoding="utf-8"))
         except Exception:
             return
-        for name, info in (data.get("categories") or {}).items():
-            self._categories[name] = MemeCategory(
-                name=name,
-                desc=info.get("desc", ""),
-                aliases=info.get("aliases", []),
-                enabled=info.get("enabled", True),
+        if not isinstance(raw, dict):
+            return
+        data = cast(dict[str, object], raw)
+        categories = data.get("categories")
+        if not isinstance(categories, dict):
+            return
+        categories_map = cast(dict[object, object], categories)
+        for raw_name, raw_info in categories_map.items():
+            if not isinstance(raw_name, str) or not isinstance(raw_info, dict):
+                continue
+            info = cast(dict[str, object], raw_info)
+            aliases = info.get("aliases", [])
+            alias_items = cast(list[object], aliases) if isinstance(aliases, list) else []
+            self._categories[raw_name] = MemeCategory(
+                name=raw_name,
+                desc=str(info.get("desc", "") or ""),
+                aliases=[str(item) for item in alias_items],
+                enabled=bool(info.get("enabled", True)),
             )
 
     def get_enabled_categories(self) -> list[MemeCategory]:
@@ -51,7 +78,6 @@ class MemeCatalog:
         return [c for c in self._categories.values() if c.enabled]
 
     def pick_image(self, tag: str) -> str | None:
-        """Randomly pick an image path from the given category. Returns None if unavailable."""
         self._load()
         tag = tag.lower()
         cat = self._categories.get(tag)
@@ -60,23 +86,19 @@ class MemeCatalog:
         cat_dir = self._dir / tag
         if not cat_dir.is_dir():
             return None
-        images = [
-            f for f in cat_dir.iterdir() if f.suffix.lower() in _IMAGE_SUFFIXES
-        ]
+        images = [f for f in cat_dir.iterdir() if f.suffix.lower() in _IMAGE_SUFFIXES]
         if not images:
             return None
         return str(random.choice(images))
 
     def build_prompt_block(self) -> str | None:
-        """Build the meme categories section for system prompt injection."""
         cats = self.get_enabled_categories()
         if not cats:
             return None
-        names = {cat.name.lower() for cat in cats}
         lines = [
             '【表情协议】`<meme:tag>` 是系统内置回复格式标记，不是 emoji（Unicode 表情符号），不受【禁止 emoji】规则限制。',
-            '',
-            '可用表情类别：',
+            "",
+            "可用表情类别：",
         ]
         for cat in cats:
             lines.append(f"- {cat.name}: {cat.desc}")
@@ -110,3 +132,17 @@ class MemeCatalog:
             "</example>",
         ]
         return "\n".join(lines)
+
+
+class MemeDecorator:
+    def __init__(self, catalog: MemeCatalog) -> None:
+        self._catalog = catalog
+
+    def decorate(self, content: str, *, meme_tag: str | None = None) -> DecorateResult:
+        cleaned = content.strip()
+        if meme_tag is None:
+            return DecorateResult(content=cleaned)
+        tag = meme_tag.lower()
+        image = self._catalog.pick_image(tag)
+        media = [image] if image else []
+        return DecorateResult(content=cleaned, media=media, tag=tag)

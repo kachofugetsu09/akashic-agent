@@ -97,6 +97,8 @@ class PromptAssembler:
         retrieved_memory_block: str = "",
         disabled_sections: set[str] | None = None,
         turn_injection_context: dict[str, str] | None = None,
+        system_sections_top: list[PromptSectionRender] | None = None,
+        system_sections_bottom: list[PromptSectionRender] | None = None,
     ) -> AssembledTurnInput:
         # assembler 负责把“主 prompt + turn injection + message envelope”
         # 收束成一份统一输入，避免调用方各自手拼消息顺序。
@@ -108,14 +110,28 @@ class PromptAssembler:
             disabled_sections=disabled_sections,
         )
         injection_context = turn_injection_context or {}
+        disabled = disabled_sections or set()
+        top_sections = [
+            section for section in (system_sections_top or [])
+            if section.name not in disabled
+        ]
+        bottom_sections = [
+            section for section in (system_sections_bottom or [])
+            if section.name not in disabled
+        ]
+        all_sections = [
+            *top_sections,
+            *built.system_sections,
+            *bottom_sections,
+        ]
         system_sections = [
             section
-            for section in built.system_sections
+            for section in all_sections
             if section.name not in _CONTEXT_FRAME_SECTIONS
         ]
         frame_sections = [
             section
-            for section in built.system_sections
+            for section in all_sections
             if section.name in _CONTEXT_FRAME_SECTIONS
         ]
         for name, content in injection_context.items():
@@ -140,9 +156,26 @@ class PromptAssembler:
             media=media,
         )
         return AssembledTurnInput(
-            system_sections=built.system_sections,
+            system_sections=all_sections,
             system_prompt=system_prompt,
             turn_injection_context=injection_context,
             messages=messages,
-            debug_breakdown=built.debug_breakdown,
+            debug_breakdown=[
+                *_section_meta(top_sections),
+                *built.debug_breakdown,
+                *_section_meta(bottom_sections),
+            ],
         )
+
+
+def _section_meta(sections: list[PromptSectionRender]) -> list[PromptSectionMeta]:
+    return [
+        PromptSectionMeta(
+            name=section.name,
+            chars=len(section.content),
+            est_tokens=max(1, len(section.content) // 3),
+            is_static=section.is_static,
+            cache_hit=section.cache_hit,
+        )
+        for section in sections
+    ]

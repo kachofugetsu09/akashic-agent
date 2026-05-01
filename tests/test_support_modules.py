@@ -460,11 +460,6 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         "agent.context.build_skills_catalog_prompt", lambda text: f"catalog:{text}"
     )
 
-    (tmp_path / "memes").mkdir()
-    (tmp_path / "memes" / "manifest.json").write_text(
-        '{"version":1,"categories":{"shy":{"desc":"害羞","enabled":true}}}',
-        encoding="utf-8",
-    )
     image = tmp_path / "a.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
     now = datetime.now(timezone.utc)
@@ -489,8 +484,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "memory block" in prompt
     assert "Akashic 自我认知" in prompt
     assert "## 环境" in prompt
-    assert "# Memes" in prompt
-    assert "<meme:shy>" in prompt
+    assert "# Memes" not in prompt
+    assert "<meme:shy>" not in prompt
     assert "catalog:skill summary" in prompt
     assert [item.name for item in builder.last_debug_breakdown][:1] == ["identity"]
 

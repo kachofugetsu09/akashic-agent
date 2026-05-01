@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Awaitable, Callable, Protocol
 
+from agent.lifecycle.types import PromptRenderInput, PromptRenderResult
+
 logger = logging.getLogger("agent.tool_discovery")
 
 from bus.events import InboundMessage
@@ -126,4 +128,12 @@ class AgentLoopRunner(Protocol):
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
+        ...
+
+
+class PromptRenderRunner(Protocol):
+    async def __call__(
+        self,
+        input: PromptRenderInput,
+    ) -> PromptRenderResult:
         ...

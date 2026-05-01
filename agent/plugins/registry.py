@@ -19,6 +19,7 @@ class MetadataKind(Enum):
 class PluginEventType(Enum):
     BEFORE_TURN = "before_turn"
     BEFORE_REASONING = "before_reasoning"
+    PROMPT_RENDER = "prompt_render"
     BEFORE_STEP = "before_step"
     AFTER_STEP = "after_step"
     AFTER_REASONING = "after_reasoning"
