@@ -118,7 +118,7 @@ window.AkashicDashboard.registerPlugin({
           </div>
         </div>
         <div class="detail-block">
-          <div class="detail-label">User Message</div>
+          <div class="detail-label">用户消息</div>
           <div class="detail-content">${renderMarkdown(turn.user_text || "")}</div>
         </div>
         <div class="detail-block">
@@ -130,7 +130,7 @@ window.AkashicDashboard.registerPlugin({
           ${_renderRecallItems(contextPrepare.injected_items, "inject")}
         </div>
         <div class="detail-block">
-          <div class="detail-label">Recall 返回</div>
+          <div class="detail-label">召回结果</div>
           ${recallCalls.length
             ? recallCalls.map((call) => _renderRecallItems(call.items || [], "recall")).join("")
             : '<div class="muted-text">本轮没有显式调用 recall_memory。</div>'

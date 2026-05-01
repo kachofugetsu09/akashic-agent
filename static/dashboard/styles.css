@@ -696,8 +696,8 @@ textarea:focus {
 }
 
 .table-row.active {
-  background: var(--accent-soft);
-  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--bg-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .table-row.selected {
@@ -705,7 +705,7 @@ textarea:focus {
 }
 
 .table-row.active:hover {
-  background: var(--accent-soft);
+  background: var(--bg-soft);
 }
 
 .table-foot {

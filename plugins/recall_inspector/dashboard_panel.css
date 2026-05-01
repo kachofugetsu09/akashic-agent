@@ -2,58 +2,63 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: 5px;
+  margin-bottom: 5px;
 }
 
 .recall-item-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .recall-item {
-  padding: 10px 11px;
-  border: 1px solid var(--line);
+  padding: 9px 11px;
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius);
-  background: var(--paper-strong);
+  background: var(--bg-soft);
+  box-shadow: inset 2px 0 0 var(--line-strong);
 }
 
-.recall-item-context {
-  box-shadow: inset 3px 0 0 var(--line-strong);
-}
-
-.recall-item-inject {
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
+/* source variants: same indicator, rely on section header for semantics */
+.recall-item-context,
+.recall-item-inject,
 .recall-item-recall {
-  box-shadow: inset 3px 0 0 var(--green);
+  box-shadow: inset 2px 0 0 var(--line-strong);
 }
 
+/* ID is metadata — push it back */
 .recall-item-head code {
+  font-size: 10px;
+  letter-spacing: 0.03em;
   color: var(--text-soft);
+  opacity: 0.7;
 }
 
 .recall-summary {
-  line-height: 1.65;
+  font-size: 12.5px;
+  line-height: 1.7;
   overflow-wrap: anywhere;
+  color: var(--text);
 }
 
 .recall-tag {
   display: inline-flex;
   align-items: center;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--bg-soft);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: transparent;
   color: var(--text-soft);
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
   font-family: var(--mono);
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
+/* injected tag: understated, no color */
 .recall-tag-injected {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-color: #e6c9bc;
+  background: var(--bg-soft);
+  color: var(--text-soft);
+  border-color: var(--line-strong);
+  font-weight: 600;
 }
