@@ -719,6 +719,45 @@ def test_cache_dashboard_summary_uses_observe_turns(tmp_path) -> None:
     assert payload["recent_turns"][1]["hit_rate"] == 0.4
 
 
+def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    conn = open_db(tmp_path / "observe" / "observe.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO turns(
+                ts, source, session_key, user_msg, llm_output,
+                react_cache_prompt_tokens, react_cache_hit_tokens
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-04-19T03:20:00+00:00",
+                "agent",
+                "telegram:100",
+                "again",
+                "ok",
+                300,
+                260,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    overview = client.get("/api/dashboard/status-commands/kvcache/overview")
+    turns = client.get("/api/dashboard/status-commands/kvcache/turns")
+
+    assert overview.status_code == 200
+    assert overview.json()["tracked_turn_count"] == 1
+    assert overview.json()["hit_rate"] == 260 / 300
+    assert turns.status_code == 200
+    payload = turns.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["session_key"] == "telegram:100"
+    assert payload["items"][0]["user_preview"] == "again"
+
+
 def test_proactive_dashboard_batch_delete(tmp_path) -> None:
     _seed_workspace(tmp_path)
     client = TestClient(create_dashboard_app(tmp_path))

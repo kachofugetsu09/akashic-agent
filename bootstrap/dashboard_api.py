@@ -28,6 +28,45 @@ from memory2.store import MemoryStore2
 
 logger = logging.getLogger(__name__)
 
+_DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets", "/plugins/")
+
+
+def _is_dashboard_access_record(record: logging.LogRecord) -> bool:
+    args = record.args
+    if not isinstance(args, tuple) or len(args) < 3:
+        return False
+    path = args[2]
+    if not isinstance(path, str):
+        return False
+    return path == "/" or any(
+        path.startswith(prefix) for prefix in _DASHBOARD_ACCESS_PREFIXES
+    )
+
+
+# dashboard 会频繁轮询，访问日志只在 debug 模式保留。
+class _DashboardAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not _is_dashboard_access_record(record):
+            return True
+        debug_enabled = logging.getLogger().isEnabledFor(
+            logging.DEBUG
+        ) or logging.getLogger("uvicorn.access").isEnabledFor(logging.DEBUG)
+        if not debug_enabled:
+            return False
+        record.levelno = logging.DEBUG
+        record.levelname = "DEBUG"
+        return True
+
+
+def _install_dashboard_access_log_filter() -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+    if any(
+        isinstance(filter_, _DashboardAccessLogFilter)
+        for filter_ in access_logger.filters
+    ):
+        return
+    access_logger.addFilter(_DashboardAccessLogFilter())
+
 
 class SessionUpdatePayload(BaseModel):
     metadata: dict[str, Any] | None = None
@@ -588,7 +627,7 @@ def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
         logger.warning("插件面板编译异常 (%s): %s", plugin_dir.name, exc)
 
 
-def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path) -> None:
+def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
     dash_path = plugin_dir / "dashboard.py"
     module_name = f"akasic_dashboard_plugin_{plugin_dir.name}"
     try:
@@ -599,7 +638,7 @@ def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path) -> None:
         sys.modules[module_name] = mod
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
         if hasattr(mod, "register"):
-            mod.register(app, plugin_dir)
+            mod.register(app, plugin_dir, workspace)
             logger.info("插件 dashboard 已挂载: %s", plugin_dir.name)
     except Exception as e:
         logger.warning("插件 dashboard 挂载失败 (%s): %s", plugin_dir.name, e)
@@ -668,7 +707,7 @@ def create_dashboard_app(
                 continue
             _build_plugin_panel_js(project_root, _plugin_dir)
             if (_plugin_dir / "dashboard.py").exists():
-                _load_plugin_dashboard(app, _plugin_dir)
+                _load_plugin_dashboard(app, _plugin_dir, workspace)
 
     @app.get("/")
     def dashboard_index() -> FileResponse:
@@ -1190,7 +1229,25 @@ def run_dashboard_api(
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
 ) -> None:
-    uvicorn.run(
+    server = uvicorn.Server(
+        _build_dashboard_uvicorn_config(
+            workspace=workspace,
+            host=host,
+            port=port,
+            manual_consolidator=manual_consolidator,
+        )
+    )
+    server.run()
+
+
+def _build_dashboard_uvicorn_config(
+    *,
+    workspace: Path,
+    host: str,
+    port: int,
+    manual_consolidator: ManualConsolidator | None,
+) -> uvicorn.Config:
+    config = uvicorn.Config(
         create_dashboard_app(
             workspace,
             manual_consolidator=manual_consolidator,
@@ -1199,6 +1256,8 @@ def run_dashboard_api(
         port=port,
         log_level="info",
     )
+    _install_dashboard_access_log_filter()
+    return config
 
 
 def build_dashboard_server(
@@ -1208,13 +1267,10 @@ def build_dashboard_server(
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
 ) -> uvicorn.Server:
-    config = uvicorn.Config(
-        create_dashboard_app(
-            workspace,
-            manual_consolidator=manual_consolidator,
-        ),
+    config = _build_dashboard_uvicorn_config(
+        workspace=workspace,
         host=host,
         port=port,
-        log_level="info",
+        manual_consolidator=manual_consolidator,
     )
     return uvicorn.Server(config)

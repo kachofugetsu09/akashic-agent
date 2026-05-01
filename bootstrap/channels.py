@@ -19,6 +19,7 @@ async def start_channels(
     push_tool: MessagePushTool,
     http_resources: SharedHttpResources,
     event_bus: EventBus,
+    bot_commands: list[tuple[str, str]] | None = None,
     interrupt_controller: InterruptController | None = None,
 ) -> tuple[Any, Any, Any]:
     from infra.channels.ipc_server import IPCServerChannel
@@ -37,6 +38,7 @@ async def start_channels(
             bus=bus,
             session_manager=session_manager,
             allow_from=tg.allow_from,
+            bot_commands=bot_commands,
             event_bus=event_bus,
             interrupt_controller=interrupt_controller,
         )

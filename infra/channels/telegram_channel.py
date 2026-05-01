@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.constants import ChatAction
 from telegram.error import Conflict, NetworkError, TelegramError, TimedOut
 from telegram.ext import (
@@ -75,6 +75,7 @@ class TelegramChannel:
         bus: MessageBus,
         session_manager: SessionManager,
         allow_from: list[str] | None = None,
+        bot_commands: list[tuple[str, str]] | None = None,
         event_bus: EventBus | None = None,
         interrupt_controller: InterruptController | None = None,
     ) -> None:
@@ -92,15 +93,10 @@ class TelegramChannel:
             normalizer=lambda value: value.lower(),
         )
         self._app = Application.builder().token(token).build()
+        self._bot_commands = bot_commands or []
         self._app.add_handler(CommandHandler("stop", self._on_stop_command))
         self._app.add_handler(
-            CommandHandler("memory_status", self._on_memory_status_command)
-        )
-        self._app.add_handler(
-            CommandHandler("compact_status", self._on_memory_status_command)
-        )
-        self._app.add_handler(
-            CommandHandler("kvcache", self._on_kvcache_command)
+            MessageHandler(filters.COMMAND, self._on_command)
         )
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
@@ -169,6 +165,7 @@ class TelegramChannel:
         self._rebuild_user_map()
         await self._app.initialize()
         await self._app.start()
+        await self._register_bot_commands()
         updater = self._app.updater
         if updater is None:
             raise RuntimeError("Telegram updater 未初始化")
@@ -205,6 +202,16 @@ class TelegramChannel:
             user.username
             and user.username.lower() in {u.lower() for u in self._allow_from}
         )
+
+    async def _register_bot_commands(self) -> None:
+        commands = [
+            BotCommand(command, description)
+            for command, description in [
+                *self._bot_commands,
+                ("stop", "中断当前回复"),
+            ]
+        ]
+        await self._app.bot.set_my_commands(commands)
 
     async def _remember_username(self, chat_id: str, username: str | None) -> None:
         if username:
@@ -332,7 +339,7 @@ class TelegramChannel:
             self._telegram_outbound_limiter,
         )
 
-    async def _on_memory_status_command(
+    async def _on_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         msg = update.effective_message
@@ -343,7 +350,7 @@ class TelegramChannel:
             return
         if not self._is_allowed(user):
             logger.warning(
-                f"[telegram] 拒绝未授权 /memory_status  id={user.id}  username=@{user.username}"
+                f"[telegram] 拒绝未授权命令  id={user.id}  username=@{user.username}"
             )
             return
 
@@ -352,32 +359,7 @@ class TelegramChannel:
                 channel=_CHANNEL,
                 sender=str(user.id),
                 chat_id=str(chat.id),
-                content=str(getattr(msg, "text", "") or "/memory_status"),
-                metadata={"username": user.username or ""},
-            )
-        )
-
-    async def _on_kvcache_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        msg = update.effective_message
-        chat = update.effective_chat
-        user = update.effective_user
-
-        if not msg or not chat or not user:
-            return
-        if not self._is_allowed(user):
-            logger.warning(
-                f"[telegram] 拒绝未授权 /kvcache  id={user.id}  username=@{user.username}"
-            )
-            return
-
-        await self._bus.publish_inbound(
-            InboundMessage(
-                channel=_CHANNEL,
-                sender=str(user.id),
-                chat_id=str(chat.id),
-                content=str(getattr(msg, "text", "") or "/kvcache"),
+                content=str(getattr(msg, "text", "") or ""),
                 metadata={"username": user.username or ""},
             )
         )
