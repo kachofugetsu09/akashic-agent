@@ -114,6 +114,7 @@ async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
     assert kwargs["scope_channel"] == "telegram"
     assert kwargs["scope_chat_id"] == "test_user"
     assert kwargs["require_scope_match"] is True
+    assert "keyword_only_enabled" not in kwargs
 
 
 async def test_default_engine_keeps_history_injected_ids():
