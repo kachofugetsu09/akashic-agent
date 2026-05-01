@@ -17,6 +17,7 @@ from typing import Any
 
 from agent.prompting import is_context_frame
 from proactive_v2.context import AgentTickContext
+from proactive_v2.outbound_text import normalize_outbound_text
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +378,7 @@ def _parse_evidence(ctx: AgentTickContext, evidence_raw: object) -> list[str]:
 
 
 def _finish_reply(ctx: AgentTickContext, args: dict) -> str:
-    content = str(args.get("content", "") or "")
+    content = normalize_outbound_text(str(args.get("content", "") or ""))
     if not content.strip():
         raise ValueError("finish_reply requires non-empty content")
     evidence = _parse_evidence(ctx, args.get("evidence", []))
@@ -446,7 +447,7 @@ def _finish_turn(ctx: AgentTickContext, args: dict) -> str:
 def _message_push(ctx: AgentTickContext, args: dict) -> str:
     if ctx.draft_message.strip():
         raise ValueError("message_push already called this turn; cannot overwrite draft")
-    message = str(args.get("message", "") or "")
+    message = normalize_outbound_text(str(args.get("message", "") or ""))
     if not message.strip():
         raise ValueError("message_push requires non-empty message")
     evidence = _parse_evidence(ctx, args.get("evidence", []))

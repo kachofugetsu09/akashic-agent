@@ -11,6 +11,7 @@ from agent.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
 from agent.tools.registry import ToolRegistry
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_state import DriftStateStore
+from proactive_v2.outbound_text import normalize_outbound_text
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ class SendMessageTool(Tool):
         }
 
     async def execute(self, message: str = "", content: str = "", **_: Any) -> str:
-        text = (message or content or "").strip()
+        text = normalize_outbound_text(message or content or "").strip()
         if self._send_message_fn is None:
             logger.info("[drift_tools] message_push unavailable")
             return json.dumps({"error": "message_push not configured"}, ensure_ascii=False)
