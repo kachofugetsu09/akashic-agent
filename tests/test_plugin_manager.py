@@ -799,7 +799,10 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
             self.received_hooks = list(hooks)
 
     class FakeMcpRegistry:
-        async def load_and_connect_all(self) -> None:
+        def start_connect_all_background(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
             return None
 
     spawn_tool = FakeSpawnTool()
