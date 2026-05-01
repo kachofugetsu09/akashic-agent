@@ -3,8 +3,7 @@
 规则：
   turns:        保留 180 天（error IS NOT NULL 永久保留）
   rag_queries:  保留  90 天（error IS NOT NULL 永久保留）
-  rag_events:   保留  90 天（旧表，error IS NOT NULL 永久保留）
-  rag_items:    随 rag_events 联动删除（孤立行）
+  proactive_decisions: 保留 90 天（error IS NOT NULL 永久保留）
 
 触发：启动时后台跑一次，距上次清理超过 24h 才执行。
 """
@@ -22,7 +21,6 @@ logger = logging.getLogger("observe.retention")
 _RETENTION_DAYS = {
     "turns": 180,
     "rag_queries": 90,
-    "rag_events": 90,
     "proactive_decisions": 90,
 }
 _STAMP_FILE = ".last_cleanup"
@@ -53,11 +51,6 @@ def _run_cleanup(db_path: Path) -> None:
                     f"DELETE FROM {table} WHERE ts < {cutoff} AND error IS NULL"
                 )
                 deleted[table] = cur.rowcount
-
-            cur = conn.execute(
-                "DELETE FROM rag_items WHERE rag_event_id NOT IN (SELECT id FROM rag_events)"
-            )
-            deleted["rag_items_orphan"] = cur.rowcount
 
         logger.info("observe retention done: %s", deleted)
         _ = _stamp_path(db_path).write_text("ok")

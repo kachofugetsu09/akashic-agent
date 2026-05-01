@@ -4,7 +4,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import Any, TypeAlias, cast
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
@@ -14,6 +14,9 @@ import agent.tools.recall_memory as recall_memory_module
 import memory2.retriever as retriever_module
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
+from core.memory.default_runtime_facade import DefaultMemoryRuntimeFacade
+from core.memory.explicit_retriever import DefaultExplicitRetriever
+from core.memory.port import DefaultMemoryPort
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
 from memory2.store import MemoryStore2
@@ -31,11 +34,19 @@ _EmbeddingRow: TypeAlias = tuple[
 
 
 def _recall_tool(store: object, embedder: object, provider: object) -> RecallMemoryTool:
-    return RecallMemoryTool(
-        store=cast(MemoryStore2, store),
-        embedder=cast(Embedder, embedder),
+    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, embedder))
+    port = DefaultMemoryPort(cast(Any, store), retriever=retriever)
+    explicit_retriever = DefaultExplicitRetriever(
+        port=port,
         provider=cast(LLMProvider, provider),
         model="test-model",
+    )
+    facade = DefaultMemoryRuntimeFacade(
+        port=port,
+        explicit_retriever=explicit_retriever,
+    )
+    return RecallMemoryTool(
+        facade=facade,
     )
 
 

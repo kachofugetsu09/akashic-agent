@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 import logging
 import asyncio
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, TypedDict, cast
@@ -21,7 +20,6 @@ from core.memory.engine import (
     RememberRequest,
     RememberResult,
 )
-from memory2.query_rewriter import GateDecision
 from core.memory.runtime_facade import (
     ConsolidationRunner,
     ContextRetrievalRequest,
@@ -207,43 +205,9 @@ class DefaultMemoryRuntimeFacade:
         self,
         request: ExplicitRetrievalRequest,
     ) -> ExplicitRetrievalResult:
-        if self._explicit_retriever is not None:
-            return await self._explicit_retriever(request)
-        types = [request.memory_type] if request.memory_type else None
-        if request.search_mode == "grep":
-            if request.time_start is None or request.time_end is None:
-                return ExplicitRetrievalResult(
-                    trace={"source": "default_runtime_facade", "mode": "grep_missing_time"}
-                )
-            hits = self._port.list_events_by_time_range(
-                request.time_start,
-                request.time_end,
-                limit=request.limit,
-            )
-            return ExplicitRetrievalResult(
-                hits=list(hits),
-                trace={"source": "default_runtime_facade", "mode": "grep_port_fallback"},
-                raw={"hits": list(hits)},
-            )
-
-        # TODO: 兼容壳；DefaultExplicitRetriever 接管前保留可用的显式检索 fallback。
-        hits = await self._port.retrieve_related(
-            request.query,
-            memory_types=types,
-            top_k=request.limit,
-            scope_channel=request.scope.channel or None,
-            scope_chat_id=request.scope.chat_id or None,
-            require_scope_match=bool(request.scope.channel and request.scope.chat_id),
-            time_start=request.time_start,
-            time_end=request.time_end,
-            score_threshold=0.35,
-            keyword_enabled=True,
-        )
-        return ExplicitRetrievalResult(
-            hits=list(hits),
-            trace={"source": "default_runtime_facade", "mode": "explicit_port_fallback"},
-            raw={"hits": list(hits)},
-        )
+        if self._explicit_retriever is None:
+            raise RuntimeError("explicit_retriever unavailable")
+        return await self._explicit_retriever(request)
 
     async def remember_explicit(self, request: RememberRequest) -> RememberResult:
         # 1. 显式记忆仍然以 engine 为 owner，facade 只做统一入口。

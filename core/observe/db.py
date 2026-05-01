@@ -39,30 +39,6 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE INDEX IF NOT EXISTS ix_turns_sk_ts  ON turns (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
 
-CREATE TABLE IF NOT EXISTS rag_events (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts                  TEXT    NOT NULL,
-    source              TEXT    NOT NULL,
-    session_key         TEXT    NOT NULL,
-    tick_id             TEXT,           -- proactive: 关联 proactive_decisions.tick_id
-    original_query      TEXT    NOT NULL,
-    query               TEXT    NOT NULL,
-    gate_type           TEXT,
-    route_decision      TEXT,
-    route_latency_ms    INTEGER,
-    hyde_hypothesis     TEXT,
-    history_scope_mode  TEXT,
-    history_gate_reason TEXT,
-    injected_block      TEXT,
-    preference_block    TEXT,
-    preference_query    TEXT,
-    sufficiency_check_json TEXT,
-    fallback_reason     TEXT,
-    error               TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_re_sk_ts   ON rag_events (session_key, ts);
-CREATE INDEX IF NOT EXISTS ix_re_source  ON rag_events (source, ts);
-
 CREATE TABLE IF NOT EXISTS rag_queries (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     ts             TEXT    NOT NULL,
@@ -79,23 +55,8 @@ CREATE TABLE IF NOT EXISTS rag_queries (
 CREATE INDEX IF NOT EXISTS ix_rq_sk_ts  ON rag_queries (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_rq_caller ON rag_queries (caller, ts);
 
-CREATE TABLE IF NOT EXISTS rag_items (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    rag_event_id    INTEGER NOT NULL REFERENCES rag_events (id),
-    item_id         TEXT    NOT NULL,
-    memory_type     TEXT    NOT NULL,
-    score           REAL    NOT NULL,
-    summary         TEXT    NOT NULL,
-    happened_at     TEXT,
-    extra_json      TEXT,
-    retrieval_path  TEXT    NOT NULL,
-    injected        INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS ix_ri_event ON rag_items (rag_event_id);
-CREATE INDEX IF NOT EXISTS ix_ri_item  ON rag_items (item_id);
-
 -- ─────────────────────────────────────────────
--- 5. memory_writes  post-response 记忆写入记录
+-- 3. memory_writes  post-response 记忆写入记录
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory_writes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,12 +155,6 @@ _PROACTIVE_DECISION_COLUMNS: dict[str, str] = {
     "fact_claims_count": "INTEGER",
 }
 
-_RAG_EVENT_COLUMNS: dict[str, str] = {
-    "tick_id": "TEXT",
-    "gate_type": "TEXT",
-    "sufficiency_check_json": "TEXT",
-}
-
 _TURNS_COLUMNS: dict[str, str] = {
     "tool_chain_json": "TEXT",
     "raw_llm_output": "TEXT",
@@ -227,7 +182,7 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
     for col, ddl in _TURNS_COLUMNS.items():
         if col in cols:
             continue
-        conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {ddl}")
+        _ = conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {ddl}")
 
 
 def _ensure_proactive_decision_columns(conn: sqlite3.Connection) -> None:
@@ -237,25 +192,12 @@ def _ensure_proactive_decision_columns(conn: sqlite3.Connection) -> None:
     for col, ddl in _PROACTIVE_DECISION_COLUMNS.items():
         if col in cols:
             continue
-        conn.execute(f"ALTER TABLE proactive_decisions ADD COLUMN {col} {ddl}")
-    conn.execute(
+        _ = conn.execute(f"ALTER TABLE proactive_decisions ADD COLUMN {col} {ddl}")
+    _ = conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_pd_tick_id ON proactive_decisions (tick_id)"
     )
-    conn.execute(
+    _ = conn.execute(
         "UPDATE proactive_decisions SET updated_ts = ts WHERE updated_ts IS NULL OR updated_ts = ''"
-    )
-
-
-def _ensure_rag_event_columns(conn: sqlite3.Connection) -> None:
-    cols = {
-        row[1] for row in conn.execute("PRAGMA table_info(rag_events)").fetchall()
-    }
-    for col, ddl in _RAG_EVENT_COLUMNS.items():
-        if col in cols:
-            continue
-        conn.execute(f"ALTER TABLE rag_events ADD COLUMN {col} {ddl}")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS ix_re_tick_id ON rag_events (tick_id)"
     )
 
 
@@ -263,9 +205,8 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     """打开（或新建）observe.db，初始化 schema，返回连接。"""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.executescript(_SCHEMA_SQL)
+    _ = conn.executescript(_SCHEMA_SQL)
     _ensure_proactive_decision_columns(conn)
-    _ensure_rag_event_columns(conn)
     _ensure_turns_columns(conn)
     conn.commit()
     return conn

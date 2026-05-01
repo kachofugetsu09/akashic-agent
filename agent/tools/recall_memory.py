@@ -16,11 +16,7 @@ from agent.tools.base import Tool
 from core.memory.runtime_facade import ExplicitRetrievalRequest
 
 if TYPE_CHECKING:
-    from agent.provider import LLMProvider
-    from agent.memory import MemoryStore
     from core.memory.runtime_facade import MemoryRuntimeFacade
-    from memory2.embedder import Embedder
-    from memory2.store import MemoryStore2
 
 _LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 _MemoryHit = dict[str, object]
@@ -107,35 +103,9 @@ class RecallMemoryTool(Tool):
 
     def __init__(
         self,
-        facade: "MemoryRuntimeFacade | None" = None,
-        store: "MemoryStore2 | None" = None,
-        embedder: "Embedder | None" = None,
-        provider: "LLMProvider | None" = None,
-        model: str = "",
+        facade: "MemoryRuntimeFacade",
     ) -> None:
-        if facade is not None:
-            self._facade = facade
-            return
-        if store is None or embedder is None or provider is None or not model:
-            raise ValueError("RecallMemoryTool requires facade or legacy memory dependencies")
-
-        # TODO: 兼容壳；旧 bootstrap/tests 仍可传 store/embedder/provider，后续移除。
-        from core.memory.default_runtime_facade import DefaultMemoryRuntimeFacade
-        from core.memory.explicit_retriever import DefaultExplicitRetriever
-        from core.memory.port import DefaultMemoryPort
-        from memory2.retriever import Retriever
-
-        retriever = Retriever(store, embedder)
-        port = DefaultMemoryPort(cast("MemoryStore", store), retriever=retriever)
-        explicit_retriever = DefaultExplicitRetriever(
-            port=port,
-            provider=provider,
-            model=model,
-        )
-        self._facade = DefaultMemoryRuntimeFacade(
-            port=port,
-            explicit_retriever=explicit_retriever,
-        )
+        self._facade = facade
 
     async def execute(
         self,
@@ -176,7 +146,7 @@ class RecallMemoryTool(Tool):
                 time_end=end,
             )
         )
-        return _build_response(result.hits)
+        return _build_response(cast(list[_MemoryHit], result.hits))
 
 
 def _hit_score(item: _MemoryHit, fallback_key: str = "score") -> float:
