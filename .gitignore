@@ -16,6 +16,7 @@ __pycache__/
 # Node.js
 node_modules/
 package-lock.json
+frontend/dashboard/static/
 
 # Compiled plugin panel JS (auto-built from .ts at dashboard startup)
 plugins/*/dashboard_panel.js

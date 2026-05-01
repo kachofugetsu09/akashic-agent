@@ -28,6 +28,45 @@ from memory2.store import MemoryStore2
 
 logger = logging.getLogger(__name__)
 
+_DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets", "/plugins/")
+
+
+def _is_dashboard_access_record(record: logging.LogRecord) -> bool:
+    args = record.args
+    if not isinstance(args, tuple) or len(args) < 3:
+        return False
+    path = args[2]
+    if not isinstance(path, str):
+        return False
+    return path == "/" or any(
+        path.startswith(prefix) for prefix in _DASHBOARD_ACCESS_PREFIXES
+    )
+
+
+# dashboard 会频繁轮询，访问日志只在 debug 模式保留。
+class _DashboardAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not _is_dashboard_access_record(record):
+            return True
+        debug_enabled = logging.getLogger().isEnabledFor(
+            logging.DEBUG
+        ) or logging.getLogger("uvicorn.access").isEnabledFor(logging.DEBUG)
+        if not debug_enabled:
+            return False
+        record.levelno = logging.DEBUG
+        record.levelname = "DEBUG"
+        return True
+
+
+def _install_dashboard_access_log_filter() -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+    if any(
+        isinstance(filter_, _DashboardAccessLogFilter)
+        for filter_ in access_logger.filters
+    ):
+        return
+    access_logger.addFilter(_DashboardAccessLogFilter())
+
 
 class SessionUpdatePayload(BaseModel):
     metadata: dict[str, Any] | None = None
@@ -1190,7 +1229,25 @@ def run_dashboard_api(
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
 ) -> None:
-    uvicorn.run(
+    server = uvicorn.Server(
+        _build_dashboard_uvicorn_config(
+            workspace=workspace,
+            host=host,
+            port=port,
+            manual_consolidator=manual_consolidator,
+        )
+    )
+    server.run()
+
+
+def _build_dashboard_uvicorn_config(
+    *,
+    workspace: Path,
+    host: str,
+    port: int,
+    manual_consolidator: ManualConsolidator | None,
+) -> uvicorn.Config:
+    config = uvicorn.Config(
         create_dashboard_app(
             workspace,
             manual_consolidator=manual_consolidator,
@@ -1199,6 +1256,8 @@ def run_dashboard_api(
         port=port,
         log_level="info",
     )
+    _install_dashboard_access_log_filter()
+    return config
 
 
 def build_dashboard_server(
@@ -1208,13 +1267,10 @@ def build_dashboard_server(
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
 ) -> uvicorn.Server:
-    config = uvicorn.Config(
-        create_dashboard_app(
-            workspace,
-            manual_consolidator=manual_consolidator,
-        ),
+    config = _build_dashboard_uvicorn_config(
+        workspace=workspace,
         host=host,
         port=port,
-        log_level="info",
+        manual_consolidator=manual_consolidator,
     )
     return uvicorn.Server(config)

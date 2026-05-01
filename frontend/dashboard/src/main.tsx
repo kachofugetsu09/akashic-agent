@@ -39,7 +39,7 @@ type MemoryScope = { channel: string; chatId: string } | null;
 
 function App(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
-  const [navOpen, setNavOpen] = useState<NavOpen>({ sessions: true, memory: false, proactive: false });
+  const [navOpen, setNavOpen] = useState<NavOpen>({ sessions: false, memory: false, proactive: false });
   const [plugins, setPlugins] = useState<PluginConfig[]>([]);
   const [pluginState, setPluginState] = useState<Record<string, PluginState>>({});
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -466,19 +466,29 @@ function App(): React.ReactElement {
               </div>
             </NavGroup>
             <NavGroup label="Proactive" count={proactiveOverview?.counts.tick_logs ?? proactiveTotal} active={viewMode === "proactive"} open={!!navOpen.proactive} onToggle={() => toggleNav("proactive")}>
-              {["all", "drift", "proactive", "reply", "skip", "busy", "cooldown", "presence"].map((section) => (
-                <button key={section} className={`proactive-quick-item ${proactiveSection === section ? "active" : ""}`} type="button" onClick={() => {
-                  setProactiveSection(section);
-                  setProactivePage(1);
-                  selectView("proactive");
-                }}>
-                  <div className="nav-item-row">
-                    <span className="nav-item-name">{proactiveSectionLabel(section)}</span>
-                    <span className="nav-item-count">{proactiveSectionCount(section, proactiveOverview)}</span>
-                  </div>
-                </button>
-              ))}
+              <button className={`all-messages-row ${proactiveSection === "all" && viewMode === "proactive" ? "active" : ""}`} type="button" onClick={() => { setProactiveSection("all"); setProactivePage(1); selectView("proactive"); }}>
+                <span>{proactiveSectionLabel("all")}</span><strong>{proactiveSectionCount("all", proactiveOverview)}</strong>
+              </button>
+              <div className="proactive-quick-list">
+                {["drift", "proactive", "reply", "skip", "busy", "cooldown", "presence"].map((section) => (
+                  <button key={section} className={`proactive-quick-item ${proactiveSection === section ? "active" : ""}`} type="button" onClick={() => {
+                    setProactiveSection(section);
+                    setProactivePage(1);
+                    selectView("proactive");
+                  }}>
+                    <div className="nav-item-row">
+                      <span className="nav-item-name">{proactiveSectionLabel(section)}</span>
+                      <span className="nav-item-count">{proactiveSectionCount(section, proactiveOverview)}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </NavGroup>
+            {plugins.length > 0 && (
+              <div className="nav-section-divider">
+                <span>Plugins</span>
+              </div>
+            )}
             {plugins.map((plugin) => (
               <NavGroup key={plugin.id} label={plugin.label} count={pluginState[plugin.id]?.total ?? 0} active={viewMode === `plugin:${plugin.id}`} open={!!navOpen[`plugin:${plugin.id}`]} onToggle={() => toggleNav(`plugin:${plugin.id}`)}>
                 <button className={`all-messages-row ${viewMode === `plugin:${plugin.id}` ? "active" : ""}`} type="button" onClick={() => selectView(`plugin:${plugin.id}`)}>
