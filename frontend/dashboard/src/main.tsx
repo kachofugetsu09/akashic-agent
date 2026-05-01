@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import { api, asPageResult, pageCount } from "./api";
 import {
   encodePath,
-  formatNumber,
   formatSessionKeyForTable,
   jsonText,
   memoryTypeClass,
@@ -36,7 +35,6 @@ import type {
 } from "./types";
 
 type NavOpen = Record<string, boolean>;
-type ModalState = { title: string; body: React.ReactNode } | null;
 type MemoryScope = { channel: string; chatId: string } | null;
 
 function App(): React.ReactElement {
@@ -83,7 +81,6 @@ function App(): React.ReactElement {
   const [activeProactiveKey, setActiveProactiveKey] = useState<string | null>(null);
   const [activeProactiveDetail, setActiveProactiveDetail] = useState<ProactiveTick | null>(null);
   const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
-  const [modal, setModal] = useState<ModalState>(null);
   const [error, setError] = useState<string | null>(null);
 
   const messagePageSize = 25;
@@ -391,7 +388,6 @@ function App(): React.ReactElement {
           clearProactiveSession={() => { setProactiveSessionFilter(""); setProactivePage(1); }}
         />
         <div className="topbar-view">
-          <button className="ghost cache-summary-button" type="button" onClick={() => void run(async () => setModal(await cacheSummaryModal()))}>KV Cache</button>
           <div className="view-chip"><span>{viewLabel(viewMode, currentPlugin)}</span></div>
         </div>
       </header>
@@ -578,7 +574,6 @@ function App(): React.ReactElement {
         </aside>
       </main>
       {error && <div className="modal-backdrop" onClick={() => setError(null)}><div className="modal"><div className="modal-title">请求失败</div><p>{error}</p><div className="modal-actions"><button className="primary" type="button" onClick={() => setError(null)}>关闭</button></div></div></div>}
-      {modal && <div className="modal-backdrop" onClick={() => setModal(null)}><div className="modal" onClick={(event) => event.stopPropagation()}><div className="modal-title">{modal.title}</div>{modal.body}<div className="modal-actions"><button className="primary" type="button" onClick={() => setModal(null)}>关闭</button></div></div></div>}
     </div>
   );
 }
@@ -912,19 +907,6 @@ function viewLabel(viewMode: ViewMode, plugin: PluginConfig | null): string {
   if (viewMode === "memory") return "memory";
   if (viewMode === "proactive") return "proactive";
   return "messages";
-}
-
-async function cacheSummaryModal(): Promise<ModalState> {
-  const summary = await api<Record<string, unknown>>("/api/dashboard/cache/summary");
-  return {
-    title: "KV Cache",
-    body: <div className="detail-wrap">
-      <div className="cache-summary-grid">
-        {["tracked_turn_count", "prompt_tokens", "hit_tokens", "miss_tokens"].map((key) => <div key={key} className="cache-metric-card"><div className="cache-metric-label">{key}</div><div className="cache-metric-value">{formatNumber(summary[key])}</div></div>)}
-      </div>
-      <pre className="json-tree">{jsonText(summary)}</pre>
-    </div>,
-  };
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<App />);

@@ -135,7 +135,7 @@ class RecallInspectorDashboardReader:
         return records
 
 
-def register(app: FastAPI, plugin_dir: Path) -> None:
+def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
     reader = RecallInspectorDashboardReader(plugin_dir)
 
     @app.get("/api/dashboard/recall-inspector/overview")

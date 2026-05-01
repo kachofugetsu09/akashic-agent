@@ -588,7 +588,7 @@ def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
         logger.warning("插件面板编译异常 (%s): %s", plugin_dir.name, exc)
 
 
-def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path) -> None:
+def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
     dash_path = plugin_dir / "dashboard.py"
     module_name = f"akasic_dashboard_plugin_{plugin_dir.name}"
     try:
@@ -599,7 +599,7 @@ def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path) -> None:
         sys.modules[module_name] = mod
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
         if hasattr(mod, "register"):
-            mod.register(app, plugin_dir)
+            mod.register(app, plugin_dir, workspace)
             logger.info("插件 dashboard 已挂载: %s", plugin_dir.name)
     except Exception as e:
         logger.warning("插件 dashboard 挂载失败 (%s): %s", plugin_dir.name, e)
@@ -668,7 +668,7 @@ def create_dashboard_app(
                 continue
             _build_plugin_panel_js(project_root, _plugin_dir)
             if (_plugin_dir / "dashboard.py").exists():
-                _load_plugin_dashboard(app, _plugin_dir)
+                _load_plugin_dashboard(app, _plugin_dir, workspace)
 
     @app.get("/")
     def dashboard_index() -> FileResponse:
