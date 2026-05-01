@@ -1724,6 +1724,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         limit: int = 20,
         time_start: datetime | None = None,
         time_end: datetime | None = None,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
     ) -> list[dict[str, object]]:
         """对 summary 字段做 OR-LIKE 关键字检索，按命中词数降序排列。
 
@@ -1739,6 +1742,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             placeholders = ",".join("?" for _ in memory_types)
             type_filter = f" AND memory_type IN ({placeholders})"
             type_params = list(memory_types)
+
+        scope_filter = ""
+        scope_params: list[str] = []
+        if require_scope_match:
+            scope_filter = (
+                " AND COALESCE(TRIM(json_extract(extra_json, '$.scope_channel')), '') = ?"
+                " AND COALESCE(TRIM(json_extract(extra_json, '$.scope_chat_id')), '') = ?"
+            )
+            scope_params = [(scope_channel or "").strip(), (scope_chat_id or "").strip()]
 
         or_conditions = " OR ".join("summary LIKE ?" for _ in terms)
         score_expr = " + ".join(
@@ -1763,7 +1775,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             f"SELECT id, memory_type, summary, source_ref, happened_at, created_at, "
             f"reinforcement, ({score_expr}) AS kw_score "
             f"FROM memory_items "
-            f"WHERE status='active' AND ({or_conditions}){type_filter}{time_filter} "
+            f"WHERE status='active' AND ({or_conditions}){type_filter}{scope_filter}{time_filter} "
             f"ORDER BY kw_score DESC, reinforcement DESC, id ASC "
             f"LIMIT ? OFFSET ?"
         )
@@ -1774,6 +1786,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 like_vals
                 + like_vals
                 + type_params
+                + scope_params
                 + time_params
                 + [batch_size, offset]
             )

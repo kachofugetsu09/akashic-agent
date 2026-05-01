@@ -11,9 +11,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import agent.tools.recall_memory as recall_memory_module
+import memory2.retriever as retriever_module
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
 from memory2.embedder import Embedder
+from memory2.retriever import Retriever
 from memory2.store import MemoryStore2
 
 _MemoryHit: TypeAlias = dict[str, object]
@@ -176,6 +178,34 @@ class _TimedSemanticStore:
         raise AssertionError("semantic 模式不应直接走 grep 列表")
 
 
+class _FusionStore:
+    def __init__(
+        self,
+        vector_groups: list[list[_MemoryHit]],
+        keyword_hits: list[_MemoryHit],
+    ) -> None:
+        self.vector_groups = vector_groups
+        self.keyword_hits = keyword_hits
+        self.vector_kwargs: list[dict[str, object]] = []
+        self.keyword_kwargs: list[dict[str, object]] = []
+
+    def vector_search_batch(
+        self,
+        _query_vecs: list[list[float]],
+        **kwargs: object,
+    ) -> list[list[_MemoryHit]]:
+        self.vector_kwargs.append(kwargs)
+        return self.vector_groups
+
+    def keyword_search_summary(
+        self,
+        _terms: list[str],
+        **kwargs: object,
+    ) -> list[_MemoryHit]:
+        self.keyword_kwargs.append(kwargs)
+        return self.keyword_hits
+
+
 def test_parse_time_filter_supports_presets_and_ranges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -307,6 +337,86 @@ def test_store_semantic_searches_respect_time_range(tmp_path: Path) -> None:
     assert [item["summary"] for item in keyword_hits] == [
         "[2026-04-25 01:30] DeepSeek 今日事件"
     ]
+
+
+def test_store_keyword_search_respects_required_scope(tmp_path: Path) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    store.upsert_item(
+        "event",
+        "用户在当前会话讨论支付问题",
+        None,
+        extra={"scope_channel": "telegram", "scope_chat_id": "chat-a"},
+    )
+    store.upsert_item(
+        "event",
+        "用户在其他会话讨论支付问题",
+        None,
+        extra={"scope_channel": "telegram", "scope_chat_id": "chat-b"},
+    )
+
+    hits = store.keyword_search_summary(
+        ["支付"],
+        limit=10,
+        scope_channel="telegram",
+        scope_chat_id="chat-a",
+        require_scope_match=True,
+    )
+
+    assert [item["summary"] for item in hits] == ["用户在当前会话讨论支付问题"]
+
+
+@pytest.mark.asyncio
+async def test_retriever_returns_keyword_hits_when_vector_empty() -> None:
+    store = _FusionStore(
+        vector_groups=[[]],
+        keyword_hits=[
+            {
+                "id": "kw1",
+                "memory_type": "event",
+                "summary": "用户处理过支付问题",
+                "keyword_score": 1.0,
+            }
+        ],
+    )
+    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _StaticEmbedder()))
+
+    hits = await retriever.retrieve("支付", top_k=5)
+
+    assert [item["id"] for item in hits] == ["kw1"]
+    assert hits[0]["score"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_retriever_keeps_strong_vector_order_when_keyword_hits_are_low_rank() -> None:
+    vector_hits: list[_MemoryHit] = [
+        {
+            "id": "vec1",
+            "memory_type": "event",
+            "summary": "高质量向量命中 1",
+            "score": 0.95,
+        },
+        {
+            "id": "vec2",
+            "memory_type": "event",
+            "summary": "高质量向量命中 2",
+            "score": 0.9,
+        },
+    ]
+    keyword_hits: list[_MemoryHit] = [
+        {
+            "id": f"kw{i}",
+            "memory_type": "event",
+            "summary": f"低排名关键词命中 {i}",
+            "keyword_score": 1.0,
+        }
+        for i in range(12)
+    ]
+    store = _FusionStore(vector_groups=[vector_hits], keyword_hits=keyword_hits)
+    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _StaticEmbedder()))
+
+    hits = await retriever.retrieve("支付", top_k=2)
+
+    assert [item["id"] for item in hits] == ["vec1", "vec2"]
 
 
 def test_store_vector_batch_reuses_time_filtered_embedding_rows(
@@ -449,7 +559,7 @@ async def test_recall_memory_semantic_mode_passes_time_range_to_searches() -> No
     assert payload["items"][0]["id"] == "deepseek"
     assert store.vector_kwargs == []
     assert store.vector_batch_kwargs
-    assert store.vector_batch_vec_count == 3
+    assert store.vector_batch_vec_count == 2
     assert store.keyword_kwargs
     assert store.vector_batch_kwargs[0]["memory_types"] is None
     assert store.vector_batch_kwargs[0]["time_start"] is not None
@@ -481,7 +591,7 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails() -> N
 async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(recall_memory_module, "_EMBED_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(retriever_module, "_EMBED_TIMEOUT_S", 0.01)
     store = _KeywordOnlyStore()
     provider = _FakeProvider("用户处理过支付相关问题")
     tool = _recall_tool(store, _HangingEmbedder(), provider)

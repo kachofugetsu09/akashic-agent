@@ -54,8 +54,27 @@ class InterestRetrievalResult:
     raw: dict[str, object] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ExplicitRetrievalRequest:
+    query: str
+    memory_type: str = ""
+    search_mode: str = "semantic"
+    limit: int = 8
+    time_start: datetime | None = None
+    time_end: datetime | None = None
+    scope: MemoryScope = field(default_factory=MemoryScope)
+
+
+@dataclass
+class ExplicitRetrievalResult:
+    hits: list[dict] = field(default_factory=list)
+    trace: dict[str, object] = field(default_factory=dict)
+    raw: dict[str, object] = field(default_factory=dict)
+
+
 ContextRetriever = Callable[[ContextRetrievalRequest], Awaitable[ContextRetrievalResult]]
 ConsolidationRunner = Callable[[object, bool], Awaitable[None]]
+ExplicitRetriever = Callable[[ExplicitRetrievalRequest], Awaitable[ExplicitRetrievalResult]]
 
 
 @runtime_checkable
@@ -80,6 +99,10 @@ class MemoryRuntimeFacade(Protocol):
     async def retrieve_interest_block(
         self, request: InterestRetrievalRequest
     ) -> InterestRetrievalResult: ...
+
+    async def retrieve_explicit(
+        self, request: ExplicitRetrievalRequest
+    ) -> ExplicitRetrievalResult: ...
 
     async def remember_explicit(self, request: RememberRequest) -> RememberResult: ...
 

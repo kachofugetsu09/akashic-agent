@@ -4,15 +4,23 @@ Memory v2 检索器：查询 → top-k items + 格式化注入块
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 import json
 import logging
+import re
+from typing import cast
 
 from memory2.store import MemoryStore2
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
 
+_RRF_K = 60
+_KEYWORD_RRF_WEIGHT = 0.5
+_KEYWORD_LIMIT_FLOOR = 30
+_KEYWORD_LIMIT_MULTIPLIER = 2
+_EMBED_TIMEOUT_S = 8.0
 _LOW_CONFIDENCE_PHRASES = (
     "未在对话中明确记录",
     "无法凭记忆确认",
@@ -79,23 +87,160 @@ class Retriever:
         scope_channel: str | None = None,
         scope_chat_id: str | None = None,
         require_scope_match: bool = False,
+        aux_queries: list[str] | None = None,
+        score_threshold: float | None = None,
+        time_start: datetime | None = None,
+        time_end: datetime | None = None,
+        keyword_enabled: bool = True,
     ) -> list[dict]:
-        """embed query → cosine search → 返回命中条目列表"""
-        query_vec = await self._embedder.embed(query)
+        """embed query → vector/keyword search → RRF 融合返回命中条目列表"""
         actual_top_k = self._top_k if top_k is None else max(1, int(top_k))
-        items = self._store.vector_search(
-            query_vec=query_vec,
-            top_k=actual_top_k,
+        actual_threshold = (
+            self._score_threshold if score_threshold is None else float(score_threshold)
+        )
+        query_texts = _dedupe_texts([query, *(aux_queries or [])])
+        vector_items = await self._retrieve_vector_lanes(
+            query_texts,
+            actual_top_k=actual_top_k,
             memory_types=memory_types,
-            score_threshold=self._score_threshold,
+            score_threshold=actual_threshold,
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
             require_scope_match=require_scope_match,
-            hotness_alpha=self._hotness_alpha,
-            hotness_half_life_days=self._hotness_half_life_days,
+            time_start=time_start,
+            time_end=time_end,
         )
-        logger.debug(f"memory2 retrieve: query={query[:60]!r} hits={len(items)}")
+        keyword_items: list[dict] = []
+        if keyword_enabled:
+            keyword_items = self._retrieve_keyword_lane(
+                query,
+                actual_top_k=actual_top_k,
+                memory_types=memory_types,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=require_scope_match,
+                time_start=time_start,
+                time_end=time_end,
+            )
+        items = _rrf_merge(vector_items, keyword_items, top_n=actual_top_k)
+        logger.debug(
+            "memory2 retrieve: query=%r vector=%d keyword=%d fused=%d",
+            query[:60],
+            len(vector_items),
+            len(keyword_items),
+            len(items),
+        )
         return items
+
+    async def _retrieve_vector_lanes(
+        self,
+        query_texts: list[str],
+        *,
+        actual_top_k: int,
+        memory_types: list[str] | None,
+        score_threshold: float,
+        scope_channel: str | None,
+        scope_chat_id: str | None,
+        require_scope_match: bool,
+        time_start: datetime | None,
+        time_end: datetime | None,
+    ) -> list[dict]:
+        if not query_texts:
+            return []
+        vectors = await self._embed_lanes(query_texts)
+        if not vectors:
+            return []
+        hit_groups: list[list[dict]] = []
+        try:
+            hit_groups = self._store.vector_search_batch(
+                vectors,
+                top_k=actual_top_k,
+                memory_types=memory_types,
+                score_threshold=score_threshold,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=require_scope_match,
+                hotness_alpha=self._hotness_alpha,
+                hotness_half_life_days=self._hotness_half_life_days,
+                time_start=time_start,
+                time_end=time_end,
+            )
+        except Exception as e:
+            logger.debug("memory2 retrieve: vector_search_batch failed: %s", e)
+
+        seen: dict[str, dict] = {}
+        if hit_groups:
+            for hits in hit_groups:
+                for hit in hits:
+                    _remember_vector_hit(seen, hit)
+            return list(seen.values())
+
+        for vector in vectors:
+            try:
+                hits = self._store.vector_search(
+                    query_vec=vector,
+                    top_k=actual_top_k,
+                    memory_types=memory_types,
+                    score_threshold=score_threshold,
+                    scope_channel=scope_channel,
+                    scope_chat_id=scope_chat_id,
+                    require_scope_match=require_scope_match,
+                    hotness_alpha=self._hotness_alpha,
+                    hotness_half_life_days=self._hotness_half_life_days,
+                    time_start=time_start,
+                    time_end=time_end,
+                )
+            except Exception as e:
+                logger.debug("memory2 retrieve: vector_search failed: %s", e)
+                continue
+            for hit in hits:
+                _remember_vector_hit(seen, hit)
+        return list(seen.values())
+
+    async def _embed_lanes(self, query_texts: list[str]) -> list[list[float]]:
+        results = await asyncio.gather(
+            *(
+                asyncio.wait_for(
+                    self._embedder.embed(text),
+                    timeout=_EMBED_TIMEOUT_S,
+                )
+                for text in query_texts
+            ),
+            return_exceptions=True,
+        )
+        vectors: list[list[float]] = []
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("memory2 retrieve: embed failed, fallback lane skipped: %s", result)
+                continue
+            vectors.append(cast(list[float], result))
+        return vectors
+
+    def _retrieve_keyword_lane(
+        self,
+        query: str,
+        *,
+        actual_top_k: int,
+        memory_types: list[str] | None,
+        scope_channel: str | None,
+        scope_chat_id: str | None,
+        require_scope_match: bool,
+        time_start: datetime | None,
+        time_end: datetime | None,
+    ) -> list[dict]:
+        terms = _extract_terms(query)
+        if not terms:
+            return []
+        return self._store.keyword_search_summary(
+            terms,
+            memory_types=memory_types,
+            limit=max(_KEYWORD_LIMIT_FLOOR, actual_top_k * _KEYWORD_LIMIT_MULTIPLIER),
+            time_start=time_start,
+            time_end=time_end,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+            require_scope_match=require_scope_match,
+        )
 
     async def embed(self, query: str) -> list[float]:
         """仅做 embedding，不触发 vector_search。"""
@@ -294,6 +439,125 @@ class Retriever:
                     seen_ids.add(item_id)
                     injected_ids.append(item_id)
         return "\n\n".join(final_parts), injected_ids
+
+
+def _dedupe_texts(texts: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for text in texts:
+        normalized = (text or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _remember_vector_hit(
+    seen: dict[str, dict],
+    hit: dict,
+) -> None:
+    hit_id = _hit_id(hit)
+    hit_score = _hit_score(hit)
+    seen_score = _hit_score(seen.get(hit_id, {}))
+    if hit_id and (hit_id not in seen or hit_score > seen_score):
+        seen[hit_id] = hit
+
+
+def _hit_id(item: dict) -> str:
+    return str(item.get("id", "") or "")
+
+
+def _hit_score(item: dict, fallback_key: str = "score") -> float:
+    raw = item.get(fallback_key)
+    if raw is None and fallback_key != "score":
+        raw = item.get("score")
+    return float(raw) if isinstance(raw, int | float) else 0.0
+
+
+_CJK_STOPWORDS = {
+    "用户", "助手", "我们", "他们", "这个", "那个", "什么", "如何", "是否",
+    "有没", "没有", "有过", "做过", "进行", "完成", "包括", "通过", "实现",
+    "行为", "内容", "相关", "情况", "问题", "方式", "时候", "时间", "目前",
+    "当前", "最近", "之前", "以前", "后来", "然后", "因为", "所以", "但是",
+    "用户在", "用户对", "的行为吗", "进行了",
+}
+
+
+def _extract_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    ascii_tokens = re.findall(r"[a-zA-Z0-9_\-\.]{2,}", query)
+    terms.extend(ascii_tokens)
+
+    cjk_chunks = re.findall(r"[\u4e00-\u9fff\u3040-\u30ff]{2,}", query)
+    for chunk in cjk_chunks:
+        if len(chunk) <= 4:
+            if chunk not in _CJK_STOPWORDS:
+                terms.append(chunk)
+            continue
+        for i in range(len(chunk) - 1):
+            bigram = chunk[i:i + 2]
+            if bigram not in _CJK_STOPWORDS:
+                terms.append(bigram)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        result.append(term)
+    return result[:20]
+
+
+def _rrf_merge(
+    vector_items: list[dict],
+    keyword_items: list[dict],
+    *,
+    top_n: int,
+    k: int = _RRF_K,
+) -> list[dict]:
+    vec_rank: dict[str, int] = {}
+    for index, item in enumerate(sorted(vector_items, key=_hit_score, reverse=True)):
+        item_id = _hit_id(item)
+        if item_id and item_id not in vec_rank:
+            vec_rank[item_id] = index + 1
+
+    keyword_rank: dict[str, int] = {}
+    for index, item in enumerate(keyword_items):
+        item_id = _hit_id(item)
+        if item_id and item_id not in keyword_rank:
+            keyword_rank[item_id] = index + 1
+
+    id_to_item: dict[str, dict] = {}
+    for item in keyword_items:
+        item_id = _hit_id(item)
+        if item_id:
+            merged_item = dict(item)
+            if "score" not in merged_item:
+                merged_item["score"] = _hit_score(merged_item, fallback_key="keyword_score")
+            id_to_item[item_id] = merged_item
+    for item in vector_items:
+        item_id = _hit_id(item)
+        if item_id:
+            id_to_item[item_id] = item
+
+    scored: list[tuple[str, float, float]] = []
+    for item_id in set(vec_rank) | set(keyword_rank):
+        rrf_score = 0.0
+        if item_id in vec_rank:
+            rrf_score += 1.0 / (k + vec_rank[item_id])
+        if item_id in keyword_rank:
+            rrf_score += _KEYWORD_RRF_WEIGHT / (k + keyword_rank[item_id])
+        scored.append((item_id, rrf_score, _hit_score(id_to_item.get(item_id, {}))))
+
+    scored.sort(key=lambda item: (item[1], item[2]), reverse=True)
+    result: list[dict] = []
+    for item_id, rrf_score, _score in scored[:top_n]:
+        item = dict(id_to_item[item_id])
+        item["rrf_score"] = rrf_score
+        result.append(item)
+    return result
 
 
 def _format_source_tag(source_ref: str | None) -> str:

@@ -28,6 +28,9 @@ from core.memory.runtime_facade import (
     ContextRetrievalRequest,
     ContextRetrievalResult,
     ContextRetriever,
+    ExplicitRetrievalRequest,
+    ExplicitRetrievalResult,
+    ExplicitRetriever,
     InterestRetrievalRequest,
     InterestRetrievalResult,
 )
@@ -41,8 +44,8 @@ if TYPE_CHECKING:
     from core.memory.profile import ProfileMaintenanceStore
 
 
-InterestRetriever = Callable[[InterestRetrievalRequest], Awaitable[InterestRetrievalResult]]
 logger = logging.getLogger("memory.runtime_facade")
+InterestRetriever = Callable[[InterestRetrievalRequest], Awaitable[InterestRetrievalResult]]
 
 
 class _GateResult(TypedDict):
@@ -76,6 +79,7 @@ class DefaultMemoryRuntimeFacade:
         retrieval_semantics: ContextRetriever | None = None,
         consolidation_runner: ConsolidationRunner | None = None,
         interest_retriever: InterestRetriever | None = None,
+        explicit_retriever: ExplicitRetriever | None = None,
     ) -> None:
         self._port = port
         self._engine = engine
@@ -84,6 +88,7 @@ class DefaultMemoryRuntimeFacade:
         self._retrieval_semantics = retrieval_semantics
         self._consolidation_runner = consolidation_runner
         self._interest_retriever = interest_retriever
+        self._explicit_retriever = explicit_retriever
 
     def bind_context_retriever(self, retriever: ContextRetriever) -> None:
         self._context_retriever = retriever
@@ -177,7 +182,7 @@ class DefaultMemoryRuntimeFacade:
     async def retrieve_interest_block(
         self, request: InterestRetrievalRequest
     ) -> InterestRetrievalResult:
-        # 1. proactive 未来会切到 facade，这里先保留旧的 preference/profile recall 语义。
+        # TODO: 兼容壳；proactive 还保留旧的 preference/profile block 形状。
         if self._interest_retriever is not None:
             return await self._interest_retriever(request)
 
@@ -196,6 +201,48 @@ class DefaultMemoryRuntimeFacade:
             text_block="\n---\n".join(texts),
             hits=list(hits),
             trace={"source": "default_runtime_facade", "mode": "port_fallback"},
+            raw={"hits": list(hits)},
+        )
+
+    async def retrieve_explicit(
+        self,
+        request: ExplicitRetrievalRequest,
+    ) -> ExplicitRetrievalResult:
+        if self._explicit_retriever is not None:
+            return await self._explicit_retriever(request)
+        types = [request.memory_type] if request.memory_type else None
+        if request.search_mode == "grep":
+            if request.time_start is None or request.time_end is None:
+                return ExplicitRetrievalResult(
+                    trace={"source": "default_runtime_facade", "mode": "grep_missing_time"}
+                )
+            hits = self._port.list_events_by_time_range(
+                request.time_start,
+                request.time_end,
+                limit=request.limit,
+            )
+            return ExplicitRetrievalResult(
+                hits=list(hits),
+                trace={"source": "default_runtime_facade", "mode": "grep_port_fallback"},
+                raw={"hits": list(hits)},
+            )
+
+        # TODO: 兼容壳；DefaultExplicitRetriever 接管前保留可用的显式检索 fallback。
+        hits = await self._port.retrieve_related(
+            request.query,
+            memory_types=types,
+            top_k=request.limit,
+            scope_channel=request.scope.channel or None,
+            scope_chat_id=request.scope.chat_id or None,
+            require_scope_match=bool(request.scope.channel and request.scope.chat_id),
+            time_start=request.time_start,
+            time_end=request.time_end,
+            score_threshold=0.35,
+            keyword_enabled=True,
+        )
+        return ExplicitRetrievalResult(
+            hits=list(hits),
+            trace={"source": "default_runtime_facade", "mode": "explicit_port_fallback"},
             raw={"hits": list(hits)},
         )
 

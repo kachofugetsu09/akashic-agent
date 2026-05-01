@@ -5,6 +5,7 @@ core/memory/port.py — 文件层 memory port + 存量向量适配器
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -95,6 +96,11 @@ class MemoryPort(Protocol):
         scope_channel: str | None = None,
         scope_chat_id: str | None = None,
         require_scope_match: bool = False,
+        aux_queries: list[str] | None = None,
+        score_threshold: float | None = None,
+        time_start: datetime | None = None,
+        time_end: datetime | None = None,
+        keyword_enabled: bool = True,
     ) -> list[dict]: ...
 
     async def embed_query(self, query: str) -> list[float]: ...
@@ -110,6 +116,14 @@ class MemoryPort(Protocol):
     ) -> list[dict]: ...
 
     def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]: ...
+
+    def list_events_by_time_range(
+        self,
+        time_start: datetime,
+        time_end: datetime,
+        *,
+        limit: int = 200,
+    ) -> list[dict]: ...
 
     # ── v2: write ─────────────────────────────────────────────────
     async def save_item(
@@ -295,6 +309,11 @@ class DefaultMemoryPort:
         scope_channel: str | None = None,
         scope_chat_id: str | None = None,
         require_scope_match: bool = False,
+        aux_queries: list[str] | None = None,
+        score_threshold: float | None = None,
+        time_start: datetime | None = None,
+        time_end: datetime | None = None,
+        keyword_enabled: bool = True,
     ) -> list[dict]:
         """Embed query and return top-k memory items; empty list if no retriever."""
         if not self._retriever:
@@ -307,6 +326,11 @@ class DefaultMemoryPort:
                 scope_channel=scope_channel,
                 scope_chat_id=scope_chat_id,
                 require_scope_match=require_scope_match,
+                aux_queries=aux_queries,
+                score_threshold=score_threshold,
+                time_start=time_start,
+                time_end=time_end,
+                keyword_enabled=keyword_enabled,
             )
         except Exception as e:
             logger.warning("[memory_port] retrieve_related failed: %s", e)
@@ -355,6 +379,22 @@ class DefaultMemoryPort:
         except Exception as e:
             logger.warning("[memory_port] build_injection_block failed: %s", e)
             return "", []
+
+    def list_events_by_time_range(
+        self,
+        time_start: datetime,
+        time_end: datetime,
+        *,
+        limit: int = 200,
+    ) -> list[dict]:
+        store = getattr(self._retriever, "_store", None) if self._retriever else None
+        if store is None:
+            return []
+        try:
+            return store.list_events_by_time_range(time_start, time_end, limit=limit)
+        except Exception as e:
+            logger.warning("[memory_port] list_events_by_time_range failed: %s", e)
+            return []
 
     # ── v2: write ──────────────────────────────────────────────────
 

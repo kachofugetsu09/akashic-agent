@@ -135,15 +135,22 @@ def build_memory_runtime(
     )
     memory_engine = cast(MemoryEngine, engine)
     from agent.tools.recall_memory import RecallMemoryTool
+    from core.memory.explicit_retriever import DefaultExplicitRetriever
 
     memorize_tool = MemorizeTool(memory_engine)
     forget_tool = ForgetMemoryTool(mem2_store)
-    recall_tool = RecallMemoryTool(
-        store=mem2_store,
-        embedder=embedder,
+    explicit_retriever = DefaultExplicitRetriever(
+        port=port,
         provider=light_provider or provider,
         model=config.light_model or config.model,
     )
+    facade = DefaultMemoryRuntimeFacade(
+        port=port,
+        engine=memory_engine,
+        profile_maint=port,
+        explicit_retriever=explicit_retriever,
+    )
+    recall_tool = RecallMemoryTool(facade=facade)
     register_memory_meta_tools(
         tools,
         memorize_tool=memorize_tool,
@@ -151,11 +158,6 @@ def build_memory_runtime(
         recall_tool=recall_tool,
         write_file_tool=WriteFileTool(),
         edit_file_tool=EditFileTool(),
-    )
-    facade = DefaultMemoryRuntimeFacade(
-        port=port,
-        engine=memory_engine,
-        profile_maint=port,
     )
 
     return MemoryRuntime(
