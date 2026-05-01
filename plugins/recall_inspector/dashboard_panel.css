@@ -1,9 +1,9 @@
 .recall-item-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 5px;
-  margin-bottom: 3px;
+  gap: 6px;
+  margin-bottom: 4px;
 }
 
 .recall-item-list {
@@ -13,9 +13,8 @@
   overflow: hidden;
 }
 
-/* log rows inside the section box */
 .recall-item {
-  padding: 8px 11px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--line-soft);
   background: none;
   border-radius: 0;
@@ -26,20 +25,16 @@
   border-bottom: none;
 }
 
-/* source variants: drop color coding, structure carries the meaning */
 .recall-item-context,
 .recall-item-inject,
 .recall-item-recall {
   box-shadow: none;
 }
 
-/* ID: pure metadata — tiny, faint, mono */
 .recall-item-head code {
   font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  font-size: 10.5px;
   color: var(--text-soft);
-  opacity: 0.55;
 }
 
 .recall-summary {
@@ -52,27 +47,24 @@
 .recall-tag {
   display: inline-flex;
   align-items: center;
-  padding: 0 5px;
-  height: 16px;
-  border-radius: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
   background: transparent;
   color: var(--text-soft);
   border: 1px solid var(--line);
   font-family: var(--mono);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 500;
-  letter-spacing: 0.02em;
 }
 
 .recall-tag-injected {
   color: var(--text-soft);
   border-color: var(--line-strong);
-  font-weight: 600;
+  font-weight: 500;
 }
 
-/* memory type color coding */
 .recall-tag-type {
-  font-weight: 600;
+  font-weight: 500;
   text-transform: lowercase;
 }
 
@@ -85,12 +77,11 @@
   color: #8b6b09;
   border-color: #e0d090;
   background: var(--yellow-soft);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .recall-tag-score {
   color: var(--text-soft);
   border-color: var(--line-soft);
   font-family: var(--mono);
-  opacity: 0.8;
 }
