@@ -615,7 +615,11 @@ def _select_provider_strategy(
     provider_text = f"{provider_name} {base_url} {model}".lower()
     if "deepseek" in provider_text:
         return DeepSeekStrategy()
-    if "dashscope.aliyuncs.com" in provider_text or "dashscope" in provider_text:
+    if (
+        "dashscope.aliyuncs.com" in provider_text
+        or "dashscope" in provider_text
+        or "xiaomimimo.com" in provider_text
+    ):
         return DashScopeStrategy()
     return ProviderStrategy()
 
