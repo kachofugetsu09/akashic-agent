@@ -365,6 +365,19 @@ def test_message_push_writes_draft_not_final():
     assert ctx.terminal_action is None
 
 
+def test_message_push_decodes_escaped_newlines_for_outbound_text():
+    ctx = AgentTickContext()
+    result = json.loads(_message_push(ctx, {"message": "第一段\\n\\n第二段\\n第三段"}))
+    assert result["ok"] is True
+    assert ctx.draft_message == "第一段\n\n第二段\n第三段"
+
+
+def test_message_push_keeps_single_literal_escape_text():
+    ctx = AgentTickContext()
+    _message_push(ctx, {"message": "Python 里换行符写作 \\n"})
+    assert ctx.draft_message == "Python 里换行符写作 \\n"
+
+
 def test_message_push_second_call_raises():
     ctx = AgentTickContext()
     _message_push(ctx, {"message": "first"})

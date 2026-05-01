@@ -296,9 +296,10 @@ async def test_drift_runner_runs_and_finishes(tmp_path: Path):
 async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
+    send_message = AsyncMock(return_value=True)
     llm = FakeLLM(
         [
-            ("message_push", {"message": "hello"}),
+            ("message_push", {"message": "hello\\n\\nfrom drift"}),
             ("finish_drift", {"skill_used": "explore-curiosity", "one_line": "sent", "next": "next"}),
         ]
     )
@@ -308,7 +309,7 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
             drift_dir=tmp_path,
             store=store,
             shared_tools=_build_shared_tools(),
-            send_message_fn=AsyncMock(return_value=True),
+            send_message_fn=send_message,
         ),
         max_steps=5,
     )
@@ -319,6 +320,7 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
     # 第二次 llm 调用的 schemas 只能由 DriftRunner 约束为 write_file/edit_file/finish_drift；
     # FakeLLM 不记录 schemas，这里用行为结果兜底：send 后仍正常 finish。
     assert ctx.drift_finished is True
+    send_message.assert_awaited_once_with("hello\n\nfrom drift")
 
 
 @pytest.mark.asyncio
