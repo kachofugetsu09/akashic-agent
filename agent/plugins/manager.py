@@ -19,6 +19,7 @@ from agent.lifecycle.types import (
     BeforeToolCallCtx,
     BeforeTurnCtx,
     PreToolCtx,
+    PromptRenderCtx,
 )
 from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
 from agent.tool_hooks.base import ToolHook
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 _EVENT_TYPE_MAP: dict[PluginEventType, type] = {
     PluginEventType.BEFORE_TURN: BeforeTurnCtx,
     PluginEventType.BEFORE_REASONING: BeforeReasoningCtx,
+    PluginEventType.PROMPT_RENDER: PromptRenderCtx,
     PluginEventType.BEFORE_STEP: BeforeStepCtx,
     PluginEventType.AFTER_STEP: AfterStepCtx,
     PluginEventType.AFTER_REASONING: AfterReasoningCtx,
@@ -56,6 +58,8 @@ class PluginManager:
         self._tool_hooks: list[ToolHook] = []
         self._before_turn_modules_early: list[object] = []
         self._before_turn_modules_late: list[object] = []
+        self._prompt_render_modules_top: list[object] = []
+        self._prompt_render_modules_bottom: list[object] = []
 
     @property
     def loaded_count(self) -> int:
@@ -72,6 +76,14 @@ class PluginManager:
     @property
     def before_turn_modules_late(self) -> list[object]:
         return list(self._before_turn_modules_late)
+
+    @property
+    def prompt_render_modules_top(self) -> list[object]:
+        return list(self._prompt_render_modules_top)
+
+    @property
+    def prompt_render_modules_bottom(self) -> list[object]:
+        return list(self._prompt_render_modules_bottom)
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(self) -> list[dict[str, str]]:
@@ -145,6 +157,9 @@ class PluginManager:
         early_count_before = len(self._before_turn_modules_early)
         late_count_before = len(self._before_turn_modules_late)
         self._collect_before_turn_modules(instance)
+        prompt_top_count_before = len(self._prompt_render_modules_top)
+        prompt_bottom_count_before = len(self._prompt_render_modules_bottom)
+        self._collect_prompt_render_modules(instance)
         # 5. 给插件机会做异步初始化；失败时回滚所有注册
         try:
             if hasattr(instance, "initialize"):
@@ -158,6 +173,8 @@ class PluginManager:
             del self._tool_hooks[hook_count_before:]
             del self._before_turn_modules_early[early_count_before:]
             del self._before_turn_modules_late[late_count_before:]
+            del self._prompt_render_modules_top[prompt_top_count_before:]
+            del self._prompt_render_modules_bottom[prompt_bottom_count_before:]
             return
         self._loaded.add(mp)
         logger.info("插件已加载: %s", mod["name"])
@@ -244,6 +261,14 @@ class PluginManager:
             _load_module_list(instance, "before_turn_modules_late")
         )
 
+    def _collect_prompt_render_modules(self, instance: Any) -> None:
+        self._prompt_render_modules_top.extend(
+            _load_module_list(instance, "prompt_render_modules_top")
+        )
+        self._prompt_render_modules_bottom.extend(
+            _load_module_list(instance, "prompt_render_modules_bottom")
+        )
+
     async def terminate_all(self) -> None:
         for mp in list(self._loaded):
             instance = plugin_registry.get_instance(mp)
@@ -261,6 +286,8 @@ class PluginManager:
         self._tool_hooks.clear()
         self._before_turn_modules_early.clear()
         self._before_turn_modules_late.clear()
+        self._prompt_render_modules_top.clear()
+        self._prompt_render_modules_bottom.clear()
 
 
 def _load_plugin_config(plugin_dir: Path) -> "Any":

@@ -119,6 +119,10 @@ class CoreRuntime:
                 self.plugin_manager.before_turn_modules_early,
                 self.plugin_manager.before_turn_modules_late,
             )
+            self.loop.add_prompt_render_plugin_modules(
+                self.plugin_manager.prompt_render_modules_top,
+                self.plugin_manager.prompt_render_modules_bottom,
+            )
             if self.plugin_manager.tool_hooks:
                 self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
                 spawn_tool = self.tools.get_tool("spawn")

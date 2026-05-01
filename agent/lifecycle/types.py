@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from agent.prompting.assembler import PromptSectionRender
 from bus.events import InboundMessage, OutboundMessage
 
 if TYPE_CHECKING:
@@ -18,6 +19,10 @@ def _empty_str_list() -> list[str]:
 
 def _empty_metadata() -> dict[str, Any]:
     return {}
+
+
+def _empty_prompt_sections() -> list[PromptSectionRender]:
+    return []
 
 
 @dataclass
@@ -67,6 +72,51 @@ class BeforeReasoningCtx:
     extra_hints: list[str] = field(default_factory=_empty_str_list)
     abort: bool = False
     abort_reply: str = ""
+
+
+@dataclass(frozen=True)
+class PromptRenderInput:
+    session_key: str
+    channel: str
+    chat_id: str
+    content: str
+    media: list[str] | None
+    timestamp: datetime
+    history: list[dict[str, Any]]
+    skill_names: list[str] | None
+    retrieved_memory_block: str
+    disabled_sections: set[str]
+    turn_injection_prompt: str
+    extra_hints: list[str] | None = None
+
+
+@dataclass
+class PromptRenderCtx:
+    # read-only by convention
+    session_key: str
+    channel: str
+    chat_id: str
+    content: str
+    media: list[str] | None
+    timestamp: datetime
+    history: list[dict[str, Any]]
+    skill_names: list[str] | None
+    retrieved_memory_block: str
+    disabled_sections: set[str]
+    turn_injection_prompt: str
+    extra_hints: list[str] = field(default_factory=_empty_str_list)
+    # writable
+    system_sections_top: list[PromptSectionRender] = field(
+        default_factory=_empty_prompt_sections
+    )
+    system_sections_bottom: list[PromptSectionRender] = field(
+        default_factory=_empty_prompt_sections
+    )
+
+
+@dataclass(frozen=True)
+class PromptRenderResult:
+    messages: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)

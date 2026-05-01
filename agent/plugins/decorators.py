@@ -61,6 +61,13 @@ def on_before_step(**options: Any) -> Callable[[Callable[..., Any]], Callable[..
     return deco
 
 
+def on_prompt_render(**options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def deco(func: Callable[..., Any]) -> Callable[..., Any]:
+        _ = _get_or_create_handler(func, PluginEventType.PROMPT_RENDER, HandlerType.GATE, **options)
+        return func
+    return deco
+
+
 def on_after_step(**options: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def deco(func: Callable[..., Any]) -> Callable[..., Any]:
         _ = _get_or_create_handler(func, PluginEventType.AFTER_STEP, HandlerType.TAP, **options)

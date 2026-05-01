@@ -421,6 +421,7 @@ class AgentLoop:
                 tools=deps.tools,
                 memory_window=config.memory.keep_count,
                 run_agent_loop_fn=self._run_agent_loop,
+                prompt_render_fn=self._reasoner.render_prompt,
             )
         )
 
@@ -510,6 +511,13 @@ class AgentLoop:
         late: list[object],
     ) -> None:
         self._agent_core.add_before_turn_plugin_modules(early, late)
+
+    def add_prompt_render_plugin_modules(
+        self,
+        top: list[object],
+        bottom: list[object],
+    ) -> None:
+        self._reasoner.add_prompt_render_plugin_modules(top, bottom)
 
     # ── 中断控制面 ────────────────────────────────────────────────
 

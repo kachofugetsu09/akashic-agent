@@ -11,7 +11,6 @@ import agent.core.passive_support as support
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
-    ContextRequest,
     LLMToolCall,
     ReasonerResult,
 )
@@ -40,6 +39,10 @@ from agent.lifecycle.phases.before_reasoning import (
     default_before_reasoning_modules,
 )
 from agent.lifecycle.phases.before_turn import BeforeTurnFrame, default_before_turn_modules
+from agent.lifecycle.phases.prompt_render import (
+    PromptRenderFrame,
+    default_prompt_render_modules,
+)
 from agent.lifecycle.types import (
     AfterReasoningInput,
     AfterReasoningResult,
@@ -51,6 +54,8 @@ from agent.lifecycle.types import (
     BeforeStepInput,
     BeforeToolCallCtx,
     BeforeTurnCtx,
+    PromptRenderInput,
+    PromptRenderResult,
     TurnSnapshot,
     TurnState,
 )
@@ -77,6 +82,8 @@ logger = logging.getLogger(__name__)
 # │        ├─ BeforeReasoning
 # │        │  └─ tool context sync + EventBus.emit + prompt warmup
 # │        ├─ Reasoner.run_turn
+# │        │  ├─ PromptRender
+# │        │  │  └─ ContextBuilder.render + plugin prompt modules
 # │        │  └─ Reasoner.run
 # │        │     ├─ BeforeStep
 # │        │     │  └─ token estimate + EventBus.emit + hint injection
@@ -475,6 +482,19 @@ class Reasoner(ABC):
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         """子类可重写以注入 tool hooks。默认 no-op。"""
 
+    def add_prompt_render_plugin_modules(
+        self,
+        top: list[object],
+        bottom: list[object],
+    ) -> None:
+        """子类可重写以注入 prompt render modules。默认 no-op。"""
+
+    async def render_prompt(
+        self,
+        input: PromptRenderInput,
+    ) -> PromptRenderResult:
+        raise NotImplementedError
+
 
 class DefaultReasoner(Reasoner):
     def __init__(
@@ -499,6 +519,8 @@ class DefaultReasoner(Reasoner):
         self._context = context
         self._session_manager = session_manager
         self._event_bus = event_bus
+        self._prompt_render_plugin_modules_top: list[object] = []
+        self._prompt_render_plugin_modules_bottom: list[object] = []
         # Direct reference to ToolSearchTool so we can pass excluded_names
         # explicitly instead of routing through the ContextVar side-channel.
         _ts = tools.get_tool("tool_search")
@@ -528,9 +550,58 @@ class DefaultReasoner(Reasoner):
             default_after_step_modules(bus),
             frame_factory=AfterStepFrame,
         )
+        self._prompt_render: Phase[
+            PromptRenderInput,
+            PromptRenderResult,
+            PromptRenderFrame,
+        ] | None = (
+            self._build_prompt_render_phase(context)
+            if context is not None
+            else None
+        )
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._tool_executor.add_hooks(hooks)
+
+    def add_prompt_render_plugin_modules(
+        self,
+        top: list[object],
+        bottom: list[object],
+    ) -> None:
+        self._prompt_render_plugin_modules_top.extend(top)
+        self._prompt_render_plugin_modules_bottom.extend(bottom)
+        if self._context is not None:
+            self._prompt_render = self._build_prompt_render_phase(self._context)
+
+    def _build_prompt_render_phase(
+        self,
+        context: "ContextBuilder",
+    ) -> Phase[PromptRenderInput, PromptRenderResult, PromptRenderFrame]:
+        return Phase(
+            default_prompt_render_modules(
+                self._bus,
+                context,
+                plugin_modules_top=cast(
+                    "list[Any]",
+                    self._prompt_render_plugin_modules_top,
+                ),
+                plugin_modules_bottom=cast(
+                    "list[Any]",
+                    self._prompt_render_plugin_modules_bottom,
+                ),
+            ),
+            frame_factory=PromptRenderFrame,
+        )
+
+    async def render_prompt(
+        self,
+        input: PromptRenderInput,
+    ) -> PromptRenderResult:
+        if self._context is None:
+            raise RuntimeError("DefaultReasoner.render_prompt requires context")
+        if self._prompt_render is None:
+            self._prompt_render = self._build_prompt_render_phase(self._context)
+        return await self._prompt_render.run(input)
 
     def set_stream_sink_factory(
         self,
@@ -555,6 +626,8 @@ class DefaultReasoner(Reasoner):
 
         if self._context is None or self._session_manager is None:
             raise RuntimeError("DefaultReasoner.run_turn requires context and session_manager")
+        if self._prompt_render is None:
+            self._prompt_render = self._build_prompt_render_phase(self._context)
 
         # 1. 先准备 retry trace、history 和 preload 工具集合。
         retry_attempts: list[dict[str, object]] = []
@@ -599,28 +672,23 @@ class DefaultReasoner(Reasoner):
                 tool_search_enabled=self._tool_search_enabled,
                 visible_names=preloaded if self._tool_search_enabled else None,
             )
-            initial_messages = self._context.render(
-                ContextRequest(
-                    history=history_for_attempt,
-                    current_message=msg.content,
-                    media=msg.media if msg.media else None,
-                    skill_names=skill_names,
+            prompt_render = await self.render_prompt(
+                PromptRenderInput(
+                    session_key=session.key,
                     channel=msg.channel,
                     chat_id=msg.chat_id,
-                    message_timestamp=msg.timestamp,
+                    content=msg.content,
+                    media=msg.media if msg.media else None,
+                    timestamp=msg.timestamp,
+                    history=history_for_attempt,
+                    skill_names=skill_names,
                     retrieved_memory_block=retrieved_memory_block,
                     disabled_sections=plan["disabled_sections"],
                     turn_injection_prompt=turn_injection_prompt,
+                    extra_hints=extra_hints,
                 )
-            ).messages
-            # 将 BeforeReasoning 产生的额外提示注入每次 retry 的 prompt。
-            if extra_hints:
-                initial_messages.append(
-                    support.build_context_hint_message(
-                        "plugin_hints",
-                        "\n".join(extra_hints),
-                    )
-                )
+            )
+            initial_messages = prompt_render.messages
             llm_user_content, llm_context_frame = extract_model_facing_turn(
                 initial_messages
             )

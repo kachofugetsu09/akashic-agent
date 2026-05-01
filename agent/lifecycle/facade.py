@@ -10,6 +10,7 @@ from agent.lifecycle.types import (
     BeforeReasoningCtx,
     BeforeStepCtx,
     BeforeTurnCtx,
+    PromptRenderCtx,
 )
 
 
@@ -46,6 +47,15 @@ class TurnLifecycle:
         ],
     ) -> None:
         self._bus.on(BeforeStepCtx, handler)
+
+    def on_prompt_render(
+        self,
+        handler: Callable[
+            [PromptRenderCtx],
+            Awaitable[PromptRenderCtx | None] | PromptRenderCtx | None,
+        ],
+    ) -> None:
+        self._bus.on(PromptRenderCtx, handler)
 
     def on_after_reasoning(
         self,

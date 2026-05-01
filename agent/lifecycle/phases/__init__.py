@@ -10,6 +10,10 @@ from agent.lifecycle.phases.before_reasoning import (
 )
 from agent.lifecycle.phases.before_step import BeforeStepFrame, default_before_step_modules
 from agent.lifecycle.phases.before_turn import BeforeTurnFrame, default_before_turn_modules
+from agent.lifecycle.phases.prompt_render import (
+    PromptRenderFrame,
+    default_prompt_render_modules,
+)
 
 __all__ = [
     "AfterReasoningFrame",
@@ -18,10 +22,12 @@ __all__ = [
     "BeforeReasoningFrame",
     "BeforeStepFrame",
     "BeforeTurnFrame",
+    "PromptRenderFrame",
     "default_after_reasoning_modules",
     "default_after_step_modules",
     "default_after_turn_modules",
     "default_before_reasoning_modules",
     "default_before_step_modules",
     "default_before_turn_modules",
+    "default_prompt_render_modules",
 ]
