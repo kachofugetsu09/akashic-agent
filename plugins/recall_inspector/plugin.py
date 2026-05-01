@@ -158,6 +158,7 @@ def _hits_from_trace(trace: Any) -> list[dict[str, Any]]:
         item_id = str(getattr(hit, "item_id", "") or "")
         if not item_id:
             continue
+        confidence_label = str(getattr(hit, "confidence_label", "") or "")
         items.append(
             {
                 "id": item_id,
@@ -165,6 +166,7 @@ def _hits_from_trace(trace: Any) -> list[dict[str, Any]]:
                 "memory_type": str(getattr(hit, "memory_type", "") or ""),
                 "score": getattr(hit, "score", None),
                 "injected": bool(getattr(hit, "injected", False)),
+                "tags": [confidence_label] if confidence_label else [],
             }
         )
     return items

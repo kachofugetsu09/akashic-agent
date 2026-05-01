@@ -346,6 +346,7 @@ class Retriever:
             confidence_label = ""
             if score < type_th + self._high_inject_delta:
                 confidence_label = "有印象，不确定"
+            item["confidence_label"] = confidence_label
             if mtype == "procedure":
                 steps = extra.get("steps") or []
                 if steps:

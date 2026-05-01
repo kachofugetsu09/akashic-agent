@@ -11,8 +11,9 @@ class RagHitLog:
     item_id: str
     memory_type: str
     score: float
-    summary: str        # 截断 120 字符
-    injected: bool      # 是否最终注入到 context
+    summary: str              # 截断 120 字符
+    injected: bool            # 是否最终注入到 context
+    confidence_label: str = ""  # "有印象，不确定" 等，空串表示正常置信度
 
 
 @dataclass
