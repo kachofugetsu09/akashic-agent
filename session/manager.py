@@ -183,7 +183,6 @@ class Session:
         start_index: int | None = None,
     ) -> list[dict[str, Any]]:
         """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。"""
-        cache_tail_mode = False
         if start_index is not None:
             if max_messages <= 0:
                 return []
@@ -212,17 +211,6 @@ class Session:
                 messages = _align_to_user_boundary(messages)
             if not messages:
                 return []
-            if len(messages) > max_messages * 2:
-                self.consolidation_requested = True
-                logger.warning(
-                    "get_history: consolidated tail (%d) exceeds 2x window (%d), "
-                    "falling back to sliding window",
-                    len(messages), max_messages,
-                )
-                messages = self.messages[-max_messages:]
-                messages = _align_to_user_boundary(messages)
-            else:
-                cache_tail_mode = True
         elif max_messages <= 0:
             messages = []
         else:

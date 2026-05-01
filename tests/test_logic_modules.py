@@ -291,15 +291,18 @@ def test_session_get_history_rewinds_consolidated_index_to_user_boundary():
     assert history[0] == {"role": "user", "content": "hello"}
 
 
-def test_session_get_history_requests_consolidation_when_tail_overflows():
+def test_session_get_history_keeps_full_consolidated_tail():
     session = Session("cli:1")
     for i in range(5):
         session.add_message("user", f"u{i}")
 
     history = session.get_history(max_messages=2, start_index=0)
 
-    assert session.consolidation_requested is True
+    assert session.consolidation_requested is False
     assert history == [
+        {"role": "user", "content": "u0"},
+        {"role": "user", "content": "u1"},
+        {"role": "user", "content": "u2"},
         {"role": "user", "content": "u3"},
         {"role": "user", "content": "u4"},
     ]
