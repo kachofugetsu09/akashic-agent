@@ -7,13 +7,15 @@
 }
 
 .recall-item-list {
-  display: grid;
-  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+  overflow: hidden;
 }
 
-/* log-row style: no card boxing, just thin separators */
+/* log rows inside the section box */
 .recall-item {
-  padding: 8px 0;
+  padding: 8px 11px;
   border-bottom: 1px solid var(--line-soft);
   background: none;
   border-radius: 0;
