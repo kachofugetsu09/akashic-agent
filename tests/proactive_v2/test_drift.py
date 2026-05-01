@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.prompting import is_context_frame
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.looping.ports import ObservabilityServices, SessionServices
@@ -155,7 +156,8 @@ def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_pat
             shared_tools=_build_shared_tools(),
         ),
     )
-    prompt = runner._build_system_prompt(store.scan_skills())
+    prompt = runner._build_system_prompt()
+    runtime = str(runner._build_runtime_context_message(store.scan_skills())["content"])
     assert "不要因为某个 skill 最近刚运行过" in prompt
     assert "如果这个 skill 当前明显处于“等待用户回复/等待外部条件”的状态，就不要选它" in prompt
     assert "对用户的表达要像此刻自然想到的一句聊天" in prompt
@@ -163,6 +165,8 @@ def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_pat
     assert "fetch_messages" in prompt
     assert "search_messages" in prompt
     assert "shell" in prompt
+    assert is_context_frame(runtime)
+    assert "drift_skills" in runtime
 
 
 @pytest.mark.asyncio
@@ -282,6 +286,7 @@ async def test_drift_runner_runs_and_finishes(tmp_path: Path):
     entered = await runner.run(ctx, cast(Any, llm))
     assert entered is True
     assert ctx.drift_finished is True
+    assert is_context_frame(str(llm.calls[0][1]["content"]))
     drift = store.load_drift()
     assert drift["recent_runs"][-1]["skill"] == "explore-curiosity"
     assert llm.tool_choices[:2] == ["required", "required"]
@@ -788,14 +793,18 @@ def test_system_prompt_includes_mcp_directory(tmp_path: Path):
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
     )
-    prompt = runner._build_system_prompt(store.scan_skills(), shared.get_mcp_server_names())
-    assert "可挂载的外部能力" in prompt
-    assert "calendar" in prompt
-    assert "mount_server" in prompt
+    content = str(
+        runner._build_runtime_context_message(
+            store.scan_skills(), shared.get_mcp_server_names()
+        )["content"]
+    )
+    assert "可挂载的外部能力" in content
+    assert "calendar" in content
+    assert "mount_server" in content
     # 不应展开具体工具名，只列 server 名和工具数
-    assert "mcp_calendar__tool_a" not in prompt
-    assert "mcp_calendar__tool_b" not in prompt
-    assert "2 个工具" in prompt
+    assert "mcp_calendar__tool_a" not in content
+    assert "mcp_calendar__tool_b" not in content
+    assert "2 个工具" in content
 
 
 def test_system_prompt_no_mcp_block_without_servers(tmp_path: Path):
@@ -805,9 +814,9 @@ def test_system_prompt_no_mcp_block_without_servers(tmp_path: Path):
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=_build_shared_tools()),
     )
-    prompt = runner._build_system_prompt(store.scan_skills(), set())
-    assert "可挂载的外部能力" not in prompt
-    assert "mount_server" not in prompt
+    content = str(runner._build_runtime_context_message(store.scan_skills(), set())["content"])
+    assert "可挂载的外部能力" not in content
+    assert "mount_server" not in content
 
 
 def test_system_prompt_skill_requires_mcp_annotation(tmp_path: Path):
@@ -818,8 +827,12 @@ def test_system_prompt_skill_requires_mcp_annotation(tmp_path: Path):
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
     )
-    prompt = runner._build_system_prompt(store.scan_skills(), shared.get_mcp_server_names())
-    assert "[需要: calendar]" in prompt
+    content = str(
+        runner._build_runtime_context_message(
+            store.scan_skills(), shared.get_mcp_server_names()
+        )["content"]
+    )
+    assert "[需要: calendar]" in content
 
 
 class _FakeProvider:

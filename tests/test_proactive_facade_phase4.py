@@ -102,10 +102,11 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
         llm_fn=None,
     )
 
-    prompt = tick._build_system_prompt(
+    runtime_context = tick._build_runtime_context_message(
         AgentTickContext(session_key="test"),
         GatewayResult(),
     )
+    content = str(runtime_context["content"])
 
-    assert "Akashic 自我认知" in prompt
-    assert "SELF" in prompt
+    assert "self_model" in content
+    assert "SELF" in content

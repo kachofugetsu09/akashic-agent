@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.prompting import is_context_frame
 from agent.provider import LLMResponse
 from core.memory.port import DefaultMemoryPort
 from proactive_v2.loop import ProactiveLoop
@@ -149,8 +150,11 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
         {"calls": [{"call_id": "1", "name": "tool", "arguments": {}, "result": "ok"}]}
     ]
     history = session.get_history()
+    assert len(history) == 3
     assert history[0]["role"] == "user"
-    assert history[-1]["role"] == "assistant"
+    assert history[1] == {"role": "assistant", "content": "[主动推送] reply"}
+    assert history[2]["role"] == "user"
+    assert is_context_frame(str(history[2]["content"]))
     assert _safe_filename("telegram:1") == "telegram_1"
 
     manager = SessionManager(tmp_path)
@@ -231,6 +235,48 @@ def test_session_get_history_replays_cached_llm_turn_from_consolidated_index():
         },
         {"role": "user", "content": user_content},
         {"role": "assistant", "content": "world"},
+    ]
+
+
+def test_session_get_history_replays_proactive_as_short_assistant_with_meta_frame():
+    session = Session("cli:1")
+    session.add_message(
+        "assistant",
+        "这是一条主动消息",
+        proactive=True,
+        source_refs=[
+            {
+                "source_name": "feed",
+                "title": "标题",
+                "url": "https://example.com/a",
+            }
+        ],
+    )
+
+    history = session.get_history()
+
+    assert len(history) == 2
+    assert history[0] == {"role": "assistant", "content": "[主动推送] 这是一条主动消息"}
+    assert history[1]["role"] == "user"
+    content = str(history[1]["content"])
+    assert is_context_frame(content)
+    assert "recent_proactive_message_meta" in content
+    assert "proactive_meta" in content
+
+
+def test_session_get_history_allows_proactive_assistant_boundary():
+    session = Session("cli:1")
+    session.add_message("user", "old")
+    session.add_message("assistant", "old reply")
+    session.add_message("assistant", "主动消息", proactive=True)
+    session.add_message("user", "刚才那个")
+    session.last_consolidated = 2
+
+    history = session.get_history(start_index=session.last_consolidated)
+
+    assert history == [
+        {"role": "assistant", "content": "[主动推送] 主动消息"},
+        {"role": "user", "content": "刚才那个"},
     ]
 
 

@@ -111,7 +111,13 @@ class McpClient:
         )
         return self._tool_infos
 
-    async def call(self, tool_name: str, arguments: dict[str, Any]) -> str:
+    async def call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> str:
         """调用远端工具，返回结果字符串。"""
         call_id = self._new_id()
         await self._send(
@@ -125,6 +131,7 @@ class McpClient:
         resp = await self._recv(
             expected_id=call_id,
             stage=f"tools/call:{tool_name}",
+            timeout=timeout,
         )
 
         if "error" in resp:
@@ -175,15 +182,19 @@ class McpClient:
         self,
         expected_id: int | None = None,
         stage: str = "recv",
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         assert self._process and self._process.stdout
+        recv_timeout = _RECV_TIMEOUT if timeout is None else timeout
         while True:
             try:
                 line = await asyncio.wait_for(
-                    self._process.stdout.readline(), timeout=_RECV_TIMEOUT
+                    self._process.stdout.readline(), timeout=recv_timeout
                 )
             except asyncio.TimeoutError as e:
-                raise TimeoutError(self._build_timeout_message(stage, expected_id)) from e
+                raise TimeoutError(
+                    self._build_timeout_message(stage, expected_id, recv_timeout)
+                ) from e
             if not line:
                 raise ConnectionError(f"MCP server {self.name!r} 意外关闭了 stdout")
             text = line.decode().strip()
@@ -225,9 +236,14 @@ class McpClient:
         except Exception:
             pass
 
-    def _build_timeout_message(self, stage: str, expected_id: int | None) -> str:
+    def _build_timeout_message(
+        self,
+        stage: str,
+        expected_id: int | None,
+        timeout: float,
+    ) -> str:
         details = [
-            f"MCP server {self.name!r} 在阶段 {stage!r} 等待响应超时（{_RECV_TIMEOUT:.0f}s）",
+            f"MCP server {self.name!r} 在阶段 {stage!r} 等待响应超时（{timeout:.0f}s）",
         ]
         if expected_id is not None:
             details.append(f"expected_id={expected_id}")

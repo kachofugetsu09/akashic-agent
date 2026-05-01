@@ -329,19 +329,10 @@ async def test_system_prompt_contains_training_data_warning():
     验证系统提示里包含"训练数据记忆"不能替代 web_fetch 的规则。
     这是一个确定性测试，不依赖真实 LLM。
     """
-    from proactive_v2.agent_tick import AgentTick, AgentTickContext
-    from proactive_v2.gateway import GatewayResult
-    from proactive_v2.config import ProactiveConfig
-    from datetime import datetime, timezone
-    from unittest.mock import MagicMock
-
     # 构建一个最小化的 AgentTick 来获取系统提示
     tick = make_agent_tick(llm_fn=None)
 
-    ctx = AgentTickContext(session_key="test", now_utc=datetime.now(timezone.utc))
-    gw = GatewayResult()
-
-    prompt = tick._build_system_prompt(ctx, gw)
+    prompt = tick._build_system_prompt()
 
     assert "训练数据" in prompt, (
         "系统提示应包含'训练数据'相关的规则，防止 LLM 用训练记忆跳过 web_fetch 验证"
@@ -356,14 +347,8 @@ async def test_system_prompt_rule8_covers_ranking_verification():
     """
     验证规则第8条明确说明排名/赛况等时效性数据必须 web_fetch，不能用训练记忆。
     """
-    from proactive_v2.context import AgentTickContext
-    from proactive_v2.gateway import GatewayResult
-    from datetime import datetime, timezone
-
     tick = make_agent_tick(llm_fn=None)
-    ctx = AgentTickContext(session_key="test", now_utc=datetime.now(timezone.utc))
-    gw = GatewayResult()
-    prompt = tick._build_system_prompt(ctx, gw)
+    prompt = tick._build_system_prompt()
 
     # 规则8的核心断言
     assert "训练数据记忆" in prompt, "规则8应明确提到训练数据记忆不等于常识"

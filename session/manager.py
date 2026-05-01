@@ -9,11 +9,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agent.prompting import (
+    PromptSectionRender,
+    build_context_frame_content,
+    build_context_frame_message,
+)
 from session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
 _TOOL_RESULT_CHAR_BUDGET = 100
+_PROACTIVE_HISTORY_CHAR_BUDGET = 360
+_PROACTIVE_META_HISTORY_CHAR_BUDGET = 1200
 
 
 def _truncate_tool_result(content: object) -> str:
@@ -59,6 +66,43 @@ def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
     return f"{content}\n\n[proactive_meta]\n" + "\n".join(meta_lines)
 
 
+def _build_proactive_history_messages(
+    content: str,
+    msg: dict[str, Any],
+) -> list[dict[str, str]]:
+    preview = _truncate_text(content, _PROACTIVE_HISTORY_CHAR_BUDGET)
+    messages = [
+        {
+            "role": "assistant",
+            "content": f"[主动推送] {preview}" if preview else "[主动推送]",
+        }
+    ]
+    meta = _append_proactive_meta("", msg).strip()
+    if not meta:
+        return messages
+    frame = build_context_frame_message(
+        build_context_frame_content([
+            PromptSectionRender(
+                name="recent_proactive_message_meta",
+                content=(
+                    "上一条 assistant 消息是系统主动推送。"
+                    "以下 metadata 仅用于理解用户后续指代，不是用户陈述。\n"
+                    + _truncate_text(meta, _PROACTIVE_META_HISTORY_CHAR_BUDGET)
+                ),
+                is_static=False,
+            )
+        ])
+    )
+    messages.append(frame)
+    return messages
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"…（截断 {len(text) - limit} 字）"
+
+
 def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict]":
     """重建带附件的用户消息。图片内联 base64；非图片文件保留路径引用供 agent 调用 read_file。"""
     images = []
@@ -93,7 +137,9 @@ def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict
 
 def _align_to_user_boundary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for i, m in enumerate(messages):
-        if m.get("role") == "user":
+        if m.get("role") == "user" or (
+            m.get("role") == "assistant" and m.get("proactive")
+        ):
             return messages[i:]
     return []
 
@@ -145,11 +191,24 @@ class Session:
             if start >= len(self.messages):
                 return []
             # 向前回退到最近的 user 边界（保留完整 turn）
-            while start > 0 and self.messages[start].get("role") != "user":
+            while (
+                start > 0
+                and self.messages[start].get("role") != "user"
+                and not (
+                    self.messages[start].get("role") == "assistant"
+                    and self.messages[start].get("proactive")
+                )
+            ):
                 start -= 1
-            # start=0 但仍非 user 时，向后找第一个 user
+            # start=0 但仍非合法边界时，向后找第一个 user 或 proactive assistant。
             messages = self.messages[start:]
-            if messages and messages[0].get("role") != "user":
+            if messages and not (
+                messages[0].get("role") == "user"
+                or (
+                    messages[0].get("role") == "assistant"
+                    and messages[0].get("proactive")
+                )
+            ):
                 messages = _align_to_user_boundary(messages)
             if not messages:
                 return []
@@ -191,6 +250,11 @@ class Session:
             if role != "assistant":
                 continue
 
+            content = m.get("content", "") or ""
+            if m.get("proactive"):
+                out.extend(_build_proactive_history_messages(str(content), m))
+                continue
+
             tool_chain: list[dict] = m.get("tool_chain") or []
             for group in tool_chain:
                 calls: list[dict] = group.get("calls") or []
@@ -226,7 +290,6 @@ class Session:
                         }
                     )
 
-            content = m.get("content", "") or ""
             if content:
                 content = _append_proactive_meta(content, m)
             assistant_msg = {"role": "assistant", "content": content}

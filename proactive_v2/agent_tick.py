@@ -18,6 +18,11 @@ from hashlib import sha1
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from agent.prompting import (
+    PromptSectionRender,
+    build_context_frame_content,
+    build_context_frame_message,
+)
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
@@ -409,65 +414,15 @@ class AgentTick:
             final_message_after=ctx.final_message,
         )
 
-    def _build_system_prompt(self, ctx: AgentTickContext, gw: GatewayResult) -> str:
-        fallback_status = "允许" if ctx.context_as_fallback_open else "不允许"
-
-        memory_block = ""
-        self_block = ""
-        recent_context_block = ""
-        if self._tool_deps.memory is not None:
-            try:
-                raw = _read_long_term_text(self._tool_deps.memory).strip()
-                if raw:
-                    memory_block = "\n【用户长期记忆】\n" + raw + "\n"
-            except Exception:
-                pass
-            try:
-                self_content = _read_self_text(self._tool_deps.memory).strip()
-                if self_content:
-                    self_block = f"## Akashic 自我认知\n\n{self_content}\n\n"
-            except Exception:
-                pass
-            try:
-                rc = str(self._tool_deps.memory.read_recent_context() or "").strip()
-                if rc:
-                    recent_context_block = "【近期交互上下文】\n" + rc + "\n\n"
-            except Exception:
-                pass
-
-        alert_block = self._render_alert_block(gw.alerts)
-        context_block = self._render_context_block(gw.context)
-
-        workspace_context_block = ""
-        if self._workspace_context_fn is not None:
-            try:
-                raw = (self._workspace_context_fn() or "").strip()
-                if raw:
-                    workspace_context_block = (
-                        "【Workspace 主动上下文（主/被动 loop 共享规则面板，不是内容源）】\n"
-                        + raw[:3000]
-                        + "\n\n"
-                    )
-            except Exception:
-                pass
-
-        content_block = self._render_content_block(gw.content_meta, gw.content_store)
-
+    def _build_system_prompt(self) -> str:
         from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
 
         return (
             f"{AKASHIC_IDENTITY}\n\n"
             f"{PERSONALITY_RULES}\n\n"
-            f"{self_block}"
             "你现在处于主动推送决策模式：判断现在是否该给用户发一条消息，以及发什么。\n"
-            "数据已预取完毕，基于下方数据直接决策。\n\n"
-            f"{alert_block}"
-            f"{content_block}"
-            f"{context_block}"
-            f"{workspace_context_block}"
-            f"{memory_block}\n"
-            f"{recent_context_block}"
-            f"【优先级】Alert > Content > Context-fallback（本轮：{fallback_status}）\n\n"
+            "数据已预取完毕，会在后续 system context frame 里提供；基于那些数据直接决策。\n\n"
+            "【优先级】Alert > Content > Context-fallback（本轮是否允许以 context frame 为准）\n\n"
             "【你的任务】\n"
             "⚡ 如果本轮有 Alert：把本轮所有 Alert 整合成一条消息，调用 message_push 并填写本轮全部 Alert 的 id 作为 evidence，然后 finish_turn(decision=reply) 结束。Alert 是系统触发的高优先级通知，不走内容筛选流程。\n"
             "1. 对本轮 Content 逐条判断：这条内容是否可能让用户不感兴趣，是否可能不符合规则，是否值得进入 interesting。\n"
@@ -551,6 +506,81 @@ class AgentTick:
             "- 当本轮 content 和 alerts 均为空时，evidence 必须为 []；任何 'feed:xxx' 格式的 id 只能来自本轮真实提供的候选列表，不能自行捏造\n"
             "- 没有实质内容时 finish_turn(decision=skip, reason=no_content) 是正确选择\n\n"
             "【finish_turn.reason】no_content | user_busy | already_sent_similar | other"
+        )
+
+    def _build_runtime_context_message(
+        self,
+        ctx: AgentTickContext,
+        gw: GatewayResult,
+    ) -> dict[str, str]:
+        # 动态上下文统一放进 context frame，避免后续被当作用户原话或普通回复回放。
+        sections: list[PromptSectionRender] = [
+            PromptSectionRender(
+                name="proactive_tick_state",
+                content=(
+                    f"context_fallback={'允许' if ctx.context_as_fallback_open else '不允许'}\n"
+                    f"alert_count={len(gw.alerts)}\n"
+                    f"content_count={len(gw.content_meta)}\n"
+                    f"context_count={len(gw.context)}"
+                ),
+                is_static=False,
+            )
+        ]
+
+        self_content = ""
+        memory_block = ""
+        recent_context_block = ""
+        if self._tool_deps.memory is not None:
+            try:
+                self_content = _read_self_text(self._tool_deps.memory).strip()
+            except Exception:
+                self_content = ""
+            try:
+                memory_block = _read_long_term_text(self._tool_deps.memory).strip()
+            except Exception:
+                memory_block = ""
+            try:
+                recent_context_block = str(
+                    self._tool_deps.memory.read_recent_context() or ""
+                ).strip()
+            except Exception:
+                recent_context_block = ""
+
+        for name, content in (
+            ("self_model", self_content),
+            ("long_term_memory", memory_block),
+            ("recent_context", recent_context_block),
+            ("proactive_alerts", self._render_alert_block(gw.alerts).strip()),
+            (
+                "proactive_content",
+                self._render_content_block(gw.content_meta, gw.content_store).strip(),
+            ),
+            ("proactive_context", self._render_context_block(gw.context).strip()),
+            ("workspace_proactive_context", self._read_workspace_context_for_prompt()),
+        ):
+            if content:
+                sections.append(
+                    PromptSectionRender(
+                        name=name,
+                        content=content,
+                        is_static=False,
+                    )
+                )
+
+        return build_context_frame_message(build_context_frame_content(sections))
+
+    def _read_workspace_context_for_prompt(self) -> str:
+        if self._workspace_context_fn is None:
+            return ""
+        try:
+            raw = (self._workspace_context_fn() or "").strip()
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        return (
+            "【Workspace 主动上下文（主/被动 loop 共享规则面板，不是内容源）】\n"
+            + raw[:3000]
         )
 
     def _render_alert_block(self, alerts: list[dict]) -> str:
@@ -670,8 +700,9 @@ class AgentTick:
             self.last_ctx = ctx
             return False
 
-        # 3. 构造本轮 proactive 专用 system prompt，把预取数据一次性注入给模型。
-        system_msg = {"role": "system", "content": self._build_system_prompt(ctx, gw_result)}
+        # 3. 构造本轮 proactive 输入：稳定规则放 system，本轮数据放 context frame。
+        system_msg = {"role": "system", "content": self._build_system_prompt()}
+        runtime_context_msg = self._build_runtime_context_message(ctx, gw_result)
         kickoff_msg = {
             "role": "user",
             "content": (
@@ -680,7 +711,7 @@ class AgentTick:
                 "最后通过 message_push + finish_turn(decision=reply)，或 finish_turn(decision=skip, reason=...) 收尾。"
             ),
         }
-        messages: list[dict] = [system_msg, kickoff_msg]
+        messages: list[dict] = [system_msg, runtime_context_msg, kickoff_msg]
 
         # 4. 主 loop：每轮允许模型自行决定是否调用工具。
         #    直到 finish_turn 写入 terminal_action，或达到步数上限。

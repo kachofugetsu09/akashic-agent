@@ -18,9 +18,18 @@ class _FakePool:
         self._responses = responses
         self._failures = failures or set()
         self.calls: list[tuple[str, str, dict]] = []
+        self.timeouts: list[float | None] = []
 
-    async def call(self, server: str, tool_name: str, args: dict):
+    async def call(
+        self,
+        server: str,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ):
         self.calls.append((server, tool_name, dict(args)))
+        self.timeouts.append(timeout)
         if (server, tool_name) in self._failures:
             raise RuntimeError(f"failed: {server}.{tool_name}")
         return self._responses[(server, tool_name)]
@@ -126,6 +135,40 @@ async def test_poll_content_feeds_async_raises_when_any_source_failed(monkeypatc
 
     assert "s2" in str(exc.value)
     assert ("a1", "poll", {}) not in pool.calls
+    assert pool.timeouts == [mcp_sources._POLL_TOOL_TIMEOUT, mcp_sources._POLL_TOOL_TIMEOUT]
+
+
+@pytest.mark.asyncio
+async def test_mcp_pool_disconnects_timeout_client_without_retry():
+    class _TimeoutClient:
+        def __init__(self) -> None:
+            self.disconnected = False
+            self.calls = 0
+
+        async def call(
+            self,
+            tool_name: str,
+            args: dict[str, Any],
+            *,
+            timeout: float | None = None,
+        ) -> str:
+            self.calls += 1
+            raise TimeoutError("slow")
+
+        async def disconnect(self) -> None:
+            self.disconnected = True
+
+    pool = mcp_sources.McpClientPool(Path("unused-workspace"))
+    client = _TimeoutClient()
+    pool._configs["feed"] = (["cmd"], {})
+    pool._clients["feed"] = client
+
+    with pytest.raises(TimeoutError):
+        await pool.call("feed", "poll_feeds", {}, timeout=1.0)
+
+    assert client.calls == 1
+    assert client.disconnected is True
+    assert "feed" not in pool._clients
 
 
 @pytest.mark.asyncio

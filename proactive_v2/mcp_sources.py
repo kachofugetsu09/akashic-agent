@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_WORKSPACE = Path.home() / ".akashic" / "workspace"
+_POLL_TOOL_TIMEOUT = 180.0
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +135,14 @@ class McpClientPool:
             logger.warning("[mcp_pool] connect failed %s: %s", server, e, exc_info=True)
             return False
 
-    async def call(self, server: str, tool_name: str, args: dict) -> Any:
+    async def call(
+        self,
+        server: str,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
         """调用 tool，连接断开时自动重连一次。
 
         MCP stdio 传输不支持并发调用，per-server lock 保证串行。
@@ -149,8 +157,15 @@ class McpClientPool:
                     raise RuntimeError(f"[mcp_pool] could not connect: {server}")
             client = self._clients[server]
             try:
-                raw = await client.call(tool_name, args)
+                raw = await client.call(tool_name, args, timeout=timeout)
                 return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
+            except TimeoutError:
+                self._clients.pop(server, None)
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                raise
             except Exception as e:
                 logger.warning(
                     "[mcp_pool] call failed %s.%s, reconnecting: %s", server, tool_name, e
@@ -161,8 +176,17 @@ class McpClientPool:
                 except Exception:
                     pass
                 if await self._connect(server):
-                    raw = await self._clients[server].call(tool_name, args)
-                    return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
+                    retry_client = self._clients[server]
+                    try:
+                        raw = await retry_client.call(tool_name, args, timeout=timeout)
+                        return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
+                    except Exception:
+                        self._clients.pop(server, None)
+                        try:
+                            await retry_client.disconnect()
+                        except Exception:
+                            pass
+                        raise
                 raise
 
     async def disconnect_all(self) -> None:
@@ -306,7 +330,7 @@ async def poll_content_feeds_async(pool: McpClientPool) -> None:
             continue
         server = src.get("server", "")
         try:
-            result = await pool.call(server, poll_tool, {})
+            result = await pool.call(server, poll_tool, {}, timeout=_POLL_TOOL_TIMEOUT)
             if isinstance(result, str) and result.startswith("error:"):
                 raise RuntimeError(f"poll_feeds 系统级失败: {result}")
             logger.info("[mcp_sources] poll_content_feeds: %s.%s 完成", server, poll_tool)

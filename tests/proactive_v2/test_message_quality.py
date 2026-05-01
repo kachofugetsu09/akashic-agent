@@ -8,7 +8,6 @@ tests/proactive_v2/test_message_quality.py
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -135,7 +134,7 @@ async def test_get_recent_chat_mixed_passive_and_proactive():
 
 def _make_system_prompt() -> str:
     from proactive_v2.agent_tick import AgentTick
-    from proactive_v2.gateway import GatewayDeps, GatewayResult
+    from proactive_v2.gateway import GatewayDeps
     from proactive_v2.config import ProactiveConfig
     from unittest.mock import MagicMock
 
@@ -160,9 +159,7 @@ def _make_system_prompt() -> str:
         ),
         llm_fn=None,
     )
-    ctx = AgentTickContext(session_key="test", now_utc=datetime.now(timezone.utc))
-    gw = GatewayResult()
-    return tick._build_system_prompt(ctx, gw)
+    return tick._build_system_prompt()
 
 
 def test_system_prompt_contains_no_hallucination_rule():

@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.prompting import is_context_frame
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_agent_tick
@@ -63,6 +64,38 @@ async def test_loop_stops_when_llm_returns_none():
     await tick.tick()
     assert tick.last_ctx.steps_taken == 0
     assert tick.last_ctx.terminal_action is None
+
+
+@pytest.mark.asyncio
+async def test_loop_puts_runtime_context_frame_before_kickoff():
+    llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "no_content"})])
+    tick = make_agent_tick(
+        llm_fn=llm,
+        gateway_deps=GatewayDeps(
+            alert_fn=AsyncMock(return_value=[]),
+            feed_fn=AsyncMock(
+                return_value=[
+                    {
+                        "event_id": "c1",
+                        "ack_server": "feed",
+                        "title": "测试内容",
+                        "source_name": "feed",
+                        "url": "https://example.com/a",
+                    }
+                ]
+            ),
+            context_fn=AsyncMock(return_value=[]),
+        ),
+    )
+
+    await tick.tick()
+
+    messages = llm.calls[0]
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert is_context_frame(str(messages[1]["content"]))
+    assert "proactive_tick_state" in str(messages[1]["content"])
+    assert str(messages[2]["content"]).startswith("开始本轮 proactive 处理。")
 
 
 @pytest.mark.asyncio

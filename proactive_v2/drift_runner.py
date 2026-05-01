@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, cast
 
+from agent.prompting import (
+    PromptSectionRender,
+    build_context_frame_content,
+    build_context_frame_message,
+)
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_hooks.base import ToolHook
@@ -74,7 +79,8 @@ class DriftRunner:
         base_schemas = tools.get_schemas()
 
         messages: list[dict] = [
-            {"role": "system", "content": self._build_system_prompt(skills, connected_servers)}
+            {"role": "system", "content": self._build_system_prompt()},
+            self._build_runtime_context_message(skills, connected_servers),
         ]
         steps = 0
         warned = False
@@ -208,9 +214,11 @@ class DriftRunner:
         )
         return True
 
-    def _build_system_prompt(
-        self, skills: list[SkillMeta], connected_servers: set[str] | None = None,
-    ) -> str:
+    def _build_runtime_context_message(
+        self,
+        skills: list[SkillMeta],
+        connected_servers: set[str] | None = None,
+    ) -> dict[str, str]:
         memory_text = ""
         recent_context_text = ""
         if self.tool_deps.memory is not None:
@@ -266,20 +274,57 @@ class DriftRunner:
             mcp_block = (
                 "【可挂载的外部能力】\n"
                 + "\n".join(mcp_lines) + "\n"
-                "使用 mount_server(server=\"名称\") 挂载后即可调用其中的工具。\n\n"
+                "使用 mount_server(server=\"名称\") 挂载后即可调用其中的工具。"
             )
 
+        sections = [
+            PromptSectionRender(
+                name="drift_runtime_state",
+                content=f"【Drift 工作区绝对路径】\n{self.store.drift_dir}",
+                is_static=False,
+            ),
+            PromptSectionRender(
+                name="long_term_memory",
+                content=memory_text or "（空）",
+                is_static=False,
+            ),
+            PromptSectionRender(
+                name="recent_context",
+                content=recent_context_text or "（空）",
+                is_static=False,
+            ),
+            PromptSectionRender(
+                name="drift_skills",
+                content=skill_block,
+                is_static=False,
+            ),
+            PromptSectionRender(
+                name="recent_drift_runs",
+                content=recent_block,
+                is_static=False,
+            ),
+            PromptSectionRender(
+                name="drift_note",
+                content=drift_note or "（空）",
+                is_static=False,
+            ),
+        ]
+        if mcp_block:
+            sections.append(
+                PromptSectionRender(
+                    name="drift_mcp_directory",
+                    content=mcp_block,
+                    is_static=False,
+                )
+            )
+        return build_context_frame_message(build_context_frame_content(sections))
+
+    def _build_system_prompt(self) -> str:
         return (
             f"{AKASHIC_IDENTITY}\n\n"
             f"{PERSONALITY_RULES}\n\n"
             "你现在有一段空闲时间（Drift 模式）。没有外部内容需要推送，\n"
-            "你可以自主决定做一件有意义的事。\n\n"
-            f"【Drift 工作区绝对路径】\n{self.store.drift_dir}\n\n"
-            f"【用户长期记忆】\n{memory_text}\n\n"
-            f"【近期交互上下文】\n{recent_context_text or '（空）'}\n\n"
-            f"【可用 Drift Skills】\n{skill_block}\n\n"
-            f"【最近的 Drift 记录】\n{recent_block}\n\n"
-            f"【全局备注】\n{drift_note}\n\n"
+            "你可以自主决定做一件有意义的事。本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
             "【执行规则】\n"
             "1. 每次进入 Drift 都先重新比较所有可用 skill，不要因为某个 skill 最近刚运行过，"
             "或它的 next 很明确，就默认继续它。\n"
@@ -306,11 +351,10 @@ class DriftRunner:
             "9. message_push 成功后不要再调用 recall_memory / web_fetch / web_search / fetch_messages / search_messages / shell，"
             "后续只允许 write_file、edit_file 和 finish_drift 收尾。\n"
             "10. 执行结束前必须调用 finish_drift 保存状态。\n\n"
-            f"{mcp_block}"
             "【可用工具】\n"
             "read_file, write_file, edit_file, recall_memory, web_fetch, web_search, "
-            "fetch_messages, search_messages, shell, message_push, finish_drift"
-            + (", mount_server" if mcp_block else "")
+            "fetch_messages, search_messages, shell, message_push, finish_drift；"
+            "若 context frame 里列出了可挂载外部能力，可用 mount_server 挂载。"
         )
 
     @staticmethod

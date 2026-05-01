@@ -447,13 +447,15 @@ async def test_mcp_recv_timeout_includes_stage_and_recent_output(
     client._recent_stdout.append('{"jsonrpc":"2.0","method":"note"}')
     client._recent_stderr.append("GitHub MCP Server running on stdio")
 
-    async def raise_timeout(*args, **kwargs):
+    async def raise_timeout(awaitable, *args, **kwargs):
+        awaitable.close()
         raise asyncio.TimeoutError
 
     monkeypatch.setattr(mcp_client_module.asyncio, "wait_for", raise_timeout)
     with pytest.raises(TimeoutError) as exc:
-        await client._recv(expected_id=1, stage="initialize")
+        await client._recv(expected_id=1, stage="initialize", timeout=12.0)
     text = str(exc.value)
     assert "initialize" in text
+    assert "12s" in text
     assert "expected_id=1" in text
     assert "recent_stderr=GitHub MCP Server running on stdio" in text
