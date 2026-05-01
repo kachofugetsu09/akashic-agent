@@ -48,11 +48,13 @@ class PluginManager:
         *,
         event_bus: EventBus,
         tool_registry: Any = None,
+        workspace: Path | None = None,
         observe_db_path: Path | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
         self._tool_registry = tool_registry
+        self._workspace = workspace
         self._observe_db_path = observe_db_path
         self._loaded: set[str] = set()
         self._tool_hooks: list[ToolHook] = []
@@ -147,6 +149,7 @@ class PluginManager:
             plugin_dir=plugin_dir,
             kv_store=PluginKVStore(plugin_dir / ".kv.json"),
             config=plugin_config,
+            workspace=self._workspace,
             observe_db_path=self._observe_db_path,
         )
         plugin_registry.register_instance(mp, instance)

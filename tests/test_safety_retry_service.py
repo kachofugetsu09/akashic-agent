@@ -43,7 +43,7 @@ def _session():
 
 
 def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
-    def _render(request: ContextRequest) -> ContextRenderResult:
+    def _render(request: ContextRequest, **kwargs: object) -> ContextRenderResult:
         messages = list(request.history) + [{"role": "user"}]
         return ContextRenderResult(
             system_prompt="",
@@ -105,7 +105,7 @@ def test_reasoner_run_turn_context_length_all_fail_returns_fallback():
 def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history():
     calls: list[dict] = []
 
-    def _render(request: ContextRequest) -> ContextRenderResult:
+    def _render(request: ContextRequest, **kwargs: object) -> ContextRenderResult:
         calls.append(
             {
                 "history_len": len(request.history),

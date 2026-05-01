@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -13,6 +14,7 @@ from agent.core.response_parser import parse_response
 from agent.core.runtime_support import TurnRunResult
 from agent.core.types import ContextBundle
 from agent.lifecycle.facade import TurnLifecycle
+from agent.lifecycle.types import AfterReasoningCtx
 from agent.looping.lifecycle_consumers import (
     register_observe_trace_consumers,
     register_turn_committed_consumers,
@@ -348,11 +350,36 @@ def test_response_parser_keeps_body_text_when_marker_not_at_end():
     assert parsed.metadata.cited_memory_ids == []
 
 
-def test_response_parser_strips_meme_tags_and_keeps_first_tag():
+def test_response_parser_leaves_meme_tags_for_plugin():
     parsed = parse_response("好的 <meme:HAPPY> 收到 <meme:agree>", tool_chain=[])
 
-    assert parsed.clean_text == "好的  收到"
-    assert parsed.metadata.meme_tag == "happy"
+    assert parsed.clean_text == "好的 <meme:HAPPY> 收到 <meme:agree>"
+
+
+def test_response_parser_extracts_citation_before_trailing_meme_tag():
+    parsed = parse_response("答复正文\n§cited:[mem_1]§ <meme:shy>", tool_chain=[])
+
+    assert parsed.clean_text == "答复正文 <meme:shy>"
+    assert parsed.metadata.cited_memory_ids == ["mem_1"]
+
+
+def test_response_parser_keeps_multiple_trailing_meme_tags_after_citation():
+    parsed = parse_response(
+        "答复正文\n§cited:[mem_1]§ <meme:shy> <meme:happy>",
+        tool_chain=[],
+    )
+
+    assert parsed.clean_text == "答复正文 <meme:shy> <meme:happy>"
+    assert parsed.metadata.cited_memory_ids == ["mem_1"]
+
+
+def test_response_parser_rejects_citation_with_trailing_body_text():
+    text = "答复正文\n§cited:[mem_1]§ 其他文字"
+
+    parsed = parse_response(text, tool_chain=[])
+
+    assert parsed.clean_text == text
+    assert parsed.metadata.cited_memory_ids == []
 
 
 def test_response_parser_tool_chain_fallback_uses_recall_memory_cited_item_ids():
@@ -401,10 +428,20 @@ def test_response_parser_tool_chain_fallback_uses_item_ids():
 
 
 @pytest.mark.asyncio
-async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed():
+async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(tmp_path: Path):
     from agent.core.passive_turn import ContextStore
+    from agent.plugins.context import PluginContext, PluginKVStore
+    from plugins.meme.plugin import MemePlugin
 
     order: list[str] = []
+    memes = tmp_path / "memes"
+    (memes / "shy").mkdir(parents=True)
+    image = memes / "shy" / "001.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    (memes / "manifest.json").write_text(
+        '{"categories":{"shy":{"desc":"害羞","enabled":true}}}',
+        encoding="utf-8",
+    )
     session = _DummySession("telegram:456")
     presence = SimpleNamespace(
         record_user_message=MagicMock(side_effect=lambda _key: order.append("presence")),
@@ -423,15 +460,19 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
     dispatch_port = SimpleNamespace(
         dispatch=AsyncMock(side_effect=lambda *a, **kw: order.append("dispatch")),
     )
-    decorator = SimpleNamespace(
-        decorate=MagicMock(
-            return_value=SimpleNamespace(
-                content="装饰后内容",
-                media=["/tmp/meme.png"],
-                tag="shy",
-            )
-        )
+    plugin_dir = tmp_path / "plugins" / "meme"
+    plugin_dir.mkdir(parents=True)
+    meme_plugin = MemePlugin()
+    meme_plugin.context = PluginContext(
+        event_bus=event_bus,
+        tool_registry=None,
+        plugin_id="meme",
+        plugin_dir=plugin_dir,
+        kv_store=PluginKVStore(plugin_dir / ".kv.json"),
+        workspace=tmp_path,
     )
+    await meme_plugin.initialize()
+    event_bus.on(AfterReasoningCtx, meme_plugin.decorate_meme)
     context_store = SimpleNamespace(
         prepare=AsyncMock(
             return_value=ContextBundle(
@@ -482,7 +523,6 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
     )
     wire_turn_lifecycle(
         lifecycle=TurnLifecycle(event_bus),
-        meme_decorator=cast(Any, decorator),
         active_turn_states={},
     )
     msg = InboundMessage(
@@ -496,12 +536,9 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
     out = await agent_core.process(msg, "telegram:456")
     await event_bus.drain()
 
-    # 1. meme handler 经过 AfterReasoning chain 被调用
-    decorator.decorate.assert_called_once_with("原始回复", meme_tag="shy")
-
-    # 2. outbound 内容来自 meme 装饰后
-    assert out.content == "装饰后内容"
-    assert out.media == ["/tmp/meme.png"]
+    # 1. outbound 内容来自 meme 插件装饰后
+    assert out.content == "原始回复"
+    assert out.media == [str(image)]
     assert out.metadata["req_id"] == "r2"
     assert out.metadata["streamed_reply"] is True
 
@@ -509,7 +546,7 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
     assert len(session.messages) == 2
     assert session.messages[0]["role"] == "user"
     assert session.messages[1]["role"] == "assistant"
-    assert session.messages[1]["content"] == "装饰后内容"
+    assert session.messages[1]["content"] == "原始回复"
     assert session.messages[1]["reasoning_content"] == "思考"
     assert session.messages[1]["cited_memory_ids"] == ["mem_1"]
     presence.record_user_message.assert_called_once_with("telegram:456")
@@ -521,7 +558,7 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
     assert tc.session_key == "telegram:456"
     assert tc.input_message == "你好"
     assert tc.persisted_user_message == "你好"
-    assert tc.assistant_response == "装饰后内容"
+    assert tc.assistant_response == "原始回复"
     assert tc.tools_used == ["noop"]
     assert tc.thinking == "思考"
     assert tc.raw_reply == "原始回复 <meme:shy>\n§cited:[mem_1]§"

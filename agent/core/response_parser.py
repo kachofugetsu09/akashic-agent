@@ -14,7 +14,6 @@ def _empty_cited_memory_ids() -> list[str]:
 class ResponseMetadata:
     raw_text: str
     cited_memory_ids: list[str] = field(default_factory=_empty_cited_memory_ids)
-    meme_tag: str | None = None
 
 
 @dataclass
@@ -23,8 +22,10 @@ class ParsedResponse:
     metadata: ResponseMetadata
 
 
-_CITED_RE = re.compile(r"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]*)\]§\s*$")
-_MEME_RE = re.compile(r"<meme:([a-zA-Z0-9_-]+)>", re.IGNORECASE)
+_CITED_RE = re.compile(
+    r"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]*)\]§(?P<trailing>(?:\s*<meme:[a-zA-Z0-9_-]+>\s*)*)$",
+    re.IGNORECASE,
+)
 
 
 def parse_response(
@@ -32,8 +33,7 @@ def parse_response(
     *,
     tool_chain: list[dict[str, object]],
 ) -> ParsedResponse:
-    without_meme, meme_tag = _extract_meme_tag(raw_text)
-    clean_text, cited_memory_ids = _extract_cited_ids(without_meme)
+    clean_text, cited_memory_ids = _extract_cited_ids(raw_text)
     if not cited_memory_ids:
         cited_memory_ids = extract_cited_ids_from_tool_chain(tool_chain)
     return ParsedResponse(
@@ -41,17 +41,8 @@ def parse_response(
         metadata=ResponseMetadata(
             raw_text=raw_text,
             cited_memory_ids=cited_memory_ids,
-            meme_tag=meme_tag,
         ),
     )
-
-
-def _extract_meme_tag(response: str) -> tuple[str, str | None]:
-    first = _MEME_RE.search(response)
-    cleaned = _MEME_RE.sub("", response).strip()
-    if first is None:
-        return cleaned, None
-    return cleaned, first.group(1).lower()
 
 
 def _extract_cited_ids(response: str) -> tuple[str, list[str]]:
@@ -60,7 +51,10 @@ def _extract_cited_ids(response: str) -> tuple[str, list[str]]:
         return response, []
     raw = match.group(1)
     ids = [item.strip() for item in raw.split(",") if item.strip()]
+    trailing = match.group("trailing").strip()
     clean = response[: match.start()].rstrip()
+    if trailing:
+        clean = f"{clean} {trailing}".strip()
     return clean, ids
 
 

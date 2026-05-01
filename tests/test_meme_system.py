@@ -1,12 +1,11 @@
-"""Unit tests for agent/memes/catalog.py and agent/memes/decorator.py"""
+"""Unit tests for plugins/meme/runtime.py."""
 import json
 import time
 from pathlib import Path
 
 import pytest
 
-from agent.memes.catalog import MemeCatalog
-from agent.memes.decorator import MemeDecorator
+from plugins.meme.runtime import MemeCatalog, MemeDecorator
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────

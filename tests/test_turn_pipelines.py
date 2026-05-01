@@ -578,7 +578,6 @@ async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: P
     )
     wire_turn_lifecycle(
         lifecycle=TurnLifecycle(loop._event_bus),
-        meme_decorator=cast(Any, None),
         active_turn_states=loop.active_turn_states,
     )
     msg = InboundMessage(channel="cli", sender="u", chat_id="123", content="你好")

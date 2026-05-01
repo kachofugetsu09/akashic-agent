@@ -12,7 +12,6 @@ from agent.core.prompt_block import (
     BehaviorRulesPromptBlock,
     IdentityPromptBlock,
     LongTermMemoryPromptBlock,
-    MemesPromptBlock,
     MemoryBlockPromptBlock,
     RecentContextPromptBlock,
     SelfModelPromptBlock,
@@ -22,7 +21,6 @@ from agent.core.prompt_block import (
     SystemPromptBuilder,
     TurnContext,
 )
-from agent.memes.catalog import MemeCatalog
 from agent.prompting import (
     PromptAssembler,
     PromptSectionMeta,
@@ -224,7 +222,6 @@ class ContextBuilder:
                 RecentContextPromptBlock(),
                 SessionContextPromptBlock(),
                 ActiveSkillsPromptBlock(),
-                MemesPromptBlock(MemeCatalog(workspace / "memes")),
                 SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),
             ]
         )
