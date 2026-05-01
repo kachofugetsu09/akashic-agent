@@ -36,7 +36,7 @@ async def fetch_agent_card(base_url: str, requester: HttpRequester) -> AgentCard
     """GET {base_url}/.well-known/agent.json 并解析成 AgentCard。"""
     url = base_url.rstrip("/") + "/.well-known/agent.json"
     try:
-        r = await requester.get(url, budget=RequestBudget(total_timeout_s=5.0))
+        r = await requester.get(url, budget=RequestBudget(total_timeout_s=3.0))
         r.raise_for_status()
         data = r.json()
     except Exception as e:

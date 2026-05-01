@@ -92,7 +92,11 @@ class CoreRuntime:
     plugin_manager: "PluginManager | None" = None
 
     async def start(self) -> None:
-        await self.mcp_registry.load_and_connect_all()
+        start_mcp = getattr(self.mcp_registry, "start_connect_all_background", None)
+        if callable(start_mcp):
+            start_mcp()
+        else:
+            await self.mcp_registry.load_and_connect_all()
 
         if (
             self.peer_poller is not None
@@ -128,6 +132,9 @@ class CoreRuntime:
     async def stop(self) -> None:
         if self.plugin_manager is not None:
             await self.plugin_manager.terminate_all()
+        shutdown_mcp = getattr(self.mcp_registry, "shutdown", None)
+        if callable(shutdown_mcp):
+            await shutdown_mcp()
         await self.event_bus.aclose()
         if self.peer_poller is not None:
             await self.peer_poller.stop()

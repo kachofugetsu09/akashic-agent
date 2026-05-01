@@ -1,5 +1,6 @@
 """McpServerRegistry: 管理多个 MCP server 连接，持久化到 mcp_servers.json。"""
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -33,14 +34,45 @@ class McpServerRegistry:
         self._server_tools: dict[str, list[str]] = (
             {}
         )  # server_name -> 已注册的工具名列表
+        self._connect_task: asyncio.Task[None] | None = None
 
     async def load_and_connect_all(self) -> None:
         """启动时读取持久化配置，重连所有 server。"""
-        for name, cfg in self._load_raw_configs().items():
+        async def connect_one(name: str, cfg: dict[str, Any]) -> None:
             try:
                 await self._connect(name, cfg["command"], cfg.get("env"), cfg.get("cwd"))
             except Exception as e:
                 logger.error("[mcp] 重连 %r 失败: %s", name, e)
+
+        await asyncio.gather(
+            *(
+                connect_one(name, cfg)
+                for name, cfg in self._load_raw_configs().items()
+            )
+        )
+
+    def start_connect_all_background(self) -> None:
+        """后台重连所有 server，不阻塞主服务启动。"""
+        if self._connect_task is None or self._connect_task.done():
+            self._connect_task = asyncio.create_task(
+                self.load_and_connect_all(),
+                name="mcp_connect_all",
+            )
+
+    async def shutdown(self) -> None:
+        if self._connect_task is not None and not self._connect_task.done():
+            self._connect_task.cancel()
+            try:
+                await self._connect_task
+            except asyncio.CancelledError:
+                pass
+        clients = list(self._clients.values())
+        self._clients.clear()
+        self._server_tools.clear()
+        await asyncio.gather(
+            *(client.disconnect() for client in clients),
+            return_exceptions=True,
+        )
 
     async def add(
         self,

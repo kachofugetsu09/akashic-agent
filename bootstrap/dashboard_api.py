@@ -619,13 +619,31 @@ def create_dashboard_app(
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
-    memory_store = MemoryStore2(workspace / "memory" / "memory2.db")
-    ProactiveStateStore(workspace / "proactive.db").close()
-    proactive_reader = ProactiveDashboardReader(workspace / "proactive.db")
-    observe_reader = ObserveDashboardReader(workspace / "observe" / "observe.db")
+    memory_store: MemoryStore2 | None = None
+    proactive_reader: ProactiveDashboardReader | None = None
+    observe_reader: ObserveDashboardReader | None = None
     project_root = Path(__file__).resolve().parent.parent
     plugins_root = project_root / "plugins"
     static_dir = project_root / "static" / "dashboard"
+
+    def get_memory_store() -> MemoryStore2:
+        nonlocal memory_store
+        if memory_store is None:
+            memory_store = MemoryStore2(workspace / "memory" / "memory2.db")
+        return memory_store
+
+    def get_proactive_reader() -> ProactiveDashboardReader:
+        nonlocal proactive_reader
+        if proactive_reader is None:
+            ProactiveStateStore(workspace / "proactive.db").close()
+            proactive_reader = ProactiveDashboardReader(workspace / "proactive.db")
+        return proactive_reader
+
+    def get_observe_reader() -> ObserveDashboardReader:
+        nonlocal observe_reader
+        if observe_reader is None:
+            observe_reader = ObserveDashboardReader(workspace / "observe" / "observe.db")
+        return observe_reader
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -633,9 +651,12 @@ def create_dashboard_app(
             yield
         finally:
             store.close()
-            memory_store.close()
-            proactive_reader.close()
-            observe_reader.close()
+            if memory_store is not None:
+                get_memory_store().close()
+            if proactive_reader is not None:
+                get_proactive_reader().close()
+            if observe_reader is not None:
+                get_observe_reader().close()
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.mount("/assets", StaticFiles(directory=static_dir), name="dashboard-assets")
@@ -906,7 +927,7 @@ def create_dashboard_app(
         sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
-        items, total = memory_store.list_items_for_dashboard(
+        items, total = get_memory_store().list_items_for_dashboard(
             q=q,
             memory_type=memory_type,
             status=status,
@@ -924,8 +945,8 @@ def create_dashboard_app(
             "total": total,
             "page": max(1, page),
             "page_size": max(1, min(page_size, 200)),
-            "vec_enabled": memory_store._vec_enabled,
-            "vec_dim": memory_store._vec_dim,
+            "vec_enabled": get_memory_store()._vec_enabled,
+            "vec_dim": get_memory_store()._vec_dim,
         }
 
     @app.get("/api/dashboard/memories/{memory_id:path}/similar")
@@ -937,7 +958,7 @@ def create_dashboard_app(
         include_superseded: bool = False,
     ) -> dict[str, Any]:
         try:
-            items = memory_store.find_similar_items_for_dashboard(
+            items = get_memory_store().find_similar_items_for_dashboard(
                 memory_id,
                 top_k=top_k,
                 memory_type=memory_type,
@@ -959,7 +980,7 @@ def create_dashboard_app(
         memory_id: str,
         include_embedding: bool = False,
     ) -> dict[str, Any]:
-        item = memory_store.get_item_for_dashboard(
+        item = get_memory_store().get_item_for_dashboard(
             memory_id,
             include_embedding=include_embedding,
         )
@@ -973,7 +994,7 @@ def create_dashboard_app(
         payload: MemoryUpdatePayload,
     ) -> dict[str, Any]:
         try:
-            item = memory_store.update_item_for_dashboard(
+            item = get_memory_store().update_item_for_dashboard(
                 memory_id,
                 status=payload.status,
                 extra_json=payload.extra_json,
@@ -989,23 +1010,23 @@ def create_dashboard_app(
 
     @app.delete("/api/dashboard/memories/{memory_id:path}")
     def delete_memory(memory_id: str) -> dict[str, Any]:
-        deleted = memory_store.delete_item(memory_id)
+        deleted = get_memory_store().delete_item(memory_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="memory 不存在")
         return {"deleted": True, "id": memory_id}
 
     @app.post("/api/dashboard/memories/batch-delete")
     def delete_memories_batch(payload: MemoryBatchDeletePayload) -> dict[str, Any]:
-        deleted_count = memory_store.delete_items_batch(payload.ids)
+        deleted_count = get_memory_store().delete_items_batch(payload.ids)
         return {"deleted_count": deleted_count}
 
     @app.get("/api/dashboard/proactive/overview")
     def get_proactive_overview() -> dict[str, Any]:
-        return proactive_reader.get_overview()
+        return get_proactive_reader().get_overview()
 
     @app.get("/api/dashboard/cache/summary")
     def get_cache_summary() -> dict[str, Any]:
-        return observe_reader.get_cache_summary()
+        return get_observe_reader().get_cache_summary()
 
     @app.get("/api/dashboard/proactive/deliveries")
     def list_proactive_deliveries(
@@ -1015,7 +1036,7 @@ def create_dashboard_app(
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
-        items, total = proactive_reader.list_deliveries(
+        items, total = get_proactive_reader().list_deliveries(
             session_key=session_key,
             sent_from=sent_from,
             sent_to=sent_to,
@@ -1035,7 +1056,7 @@ def create_dashboard_app(
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
-        items, total = proactive_reader.list_seen_items(
+        items, total = get_proactive_reader().list_seen_items(
             source_key=source_key,
             page=page,
             page_size=page_size,
@@ -1053,7 +1074,7 @@ def create_dashboard_app(
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
-        items, total = proactive_reader.list_rejection_cooldown(
+        items, total = get_proactive_reader().list_rejection_cooldown(
             source_key=source_key,
             page=page,
             page_size=page_size,
@@ -1071,7 +1092,7 @@ def create_dashboard_app(
         page_size: int = 50,
         window_hours: int = 168,
     ) -> dict[str, Any]:
-        items, total = proactive_reader.list_semantic_items(
+        items, total = get_proactive_reader().list_semantic_items(
             page=page,
             page_size=page_size,
             window_hours=window_hours,
@@ -1097,7 +1118,7 @@ def create_dashboard_app(
         sort_by: str = "started_at",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
-        items, total = proactive_reader.list_tick_logs(
+        items, total = get_proactive_reader().list_tick_logs(
             session_key=session_key,
             terminal_action=terminal_action,
             gate_exit=gate_exit,
@@ -1118,17 +1139,17 @@ def create_dashboard_app(
 
     @app.get("/api/dashboard/proactive/tick_logs/{tick_id}")
     def get_proactive_tick_log(tick_id: str) -> dict[str, Any]:
-        item = proactive_reader.get_tick_log(tick_id)
+        item = get_proactive_reader().get_tick_log(tick_id)
         if item is None:
             raise HTTPException(status_code=404, detail="tick 不存在")
         return item
 
     @app.get("/api/dashboard/proactive/tick_logs/{tick_id}/steps")
     def list_proactive_tick_steps(tick_id: str) -> dict[str, Any]:
-        item = proactive_reader.get_tick_log(tick_id)
+        item = get_proactive_reader().get_tick_log(tick_id)
         if item is None:
             raise HTTPException(status_code=404, detail="tick 不存在")
-        steps = proactive_reader.list_tick_steps(tick_id)
+        steps = get_proactive_reader().list_tick_steps(tick_id)
         return {
             "items": steps,
             "total": len(steps),
@@ -1138,7 +1159,7 @@ def create_dashboard_app(
     @app.delete("/api/dashboard/proactive/seen_items/batch")
     def delete_proactive_seen_items(payload: ProactiveDeletePayload) -> dict[str, Any]:
         try:
-            deleted_count = proactive_reader.delete_seen_items(
+            deleted_count = get_proactive_reader().delete_seen_items(
                 source_key=str(payload.source_key or "").strip(),
                 item_ids=payload.item_ids,
             )
@@ -1151,7 +1172,7 @@ def create_dashboard_app(
         payload: ProactiveDeletePayload,
     ) -> dict[str, Any]:
         try:
-            deleted_count = proactive_reader.delete_rejection_cooldown(
+            deleted_count = get_proactive_reader().delete_rejection_cooldown(
                 source_key=str(payload.source_key or "").strip(),
                 item_ids=payload.item_ids,
             )

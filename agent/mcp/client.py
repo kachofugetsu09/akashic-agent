@@ -12,6 +12,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _RECV_TIMEOUT = 30.0
+_CONNECT_TIMEOUT = 8.0
 _STREAM_LIMIT = 4 * 1024 * 1024  # 4 MB，防止大响应触发 StreamReader 行限
 
 
@@ -57,6 +58,16 @@ class McpClient:
         return self._tool_infos
 
     async def connect(self) -> list[McpToolInfo]:
+        try:
+            return await asyncio.wait_for(
+                self._connect_impl(),
+                timeout=_CONNECT_TIMEOUT,
+            )
+        except Exception:
+            await self.disconnect()
+            raise
+
+    async def _connect_impl(self) -> list[McpToolInfo]:
         """启动子进程，完成握手，获取工具列表。"""
         proc_env = {**os.environ, **self.env}
         logger.debug("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
