@@ -83,6 +83,13 @@ class CustomSelect {
   }
 }
 
+window.AkashicDashboard = {
+  _plugins: [],
+  registerPlugin(config) {
+    this._plugins.push(config);
+  },
+};
+
 const state = {
   viewMode: "sessions",
   navOpen: {
@@ -90,6 +97,7 @@ const state = {
     memory: false,
     proactive: false,
   },
+  pluginState: {},
   sessions: [],
   sessionMap: new Map(),
   activeSessionKey: null,
@@ -143,6 +151,7 @@ const el = {};
 
 document.addEventListener("DOMContentLoaded", async () => {
   bindElements();
+  await loadPlugins();
   bindEvents();
   initCustomSelects();
   await refreshAll();
@@ -402,6 +411,16 @@ function bindEvents() {
   });
 
   el.prevPageButton.addEventListener("click", async () => {
+    if (state.viewMode.startsWith("plugin:")) {
+      const pluginId = state.viewMode.slice(7);
+      const ps = state.pluginState[pluginId];
+      if (!ps || ps.page <= 1) return;
+      ps.page -= 1;
+      await loadPluginPanel(pluginId);
+      render();
+      return;
+    }
+
     if (state.viewMode === "proactive") {
       if (state.proactivePage <= 1) {
         return;
@@ -431,6 +450,16 @@ function bindEvents() {
   });
 
   el.nextPageButton.addEventListener("click", async () => {
+    if (state.viewMode.startsWith("plugin:")) {
+      const pluginId = state.viewMode.slice(7);
+      const ps = state.pluginState[pluginId];
+      if (!ps || ps.page >= pageCount()) return;
+      ps.page += 1;
+      await loadPluginPanel(pluginId);
+      render();
+      return;
+    }
+
     if (state.viewMode === "proactive") {
       if (state.proactivePage >= pageCount()) {
         return;
@@ -498,7 +527,7 @@ async function toggleNav(kind) {
       await loadMessages();
     } else if (kind === "memory") {
       await loadMemoriesAndSidebar();
-    } else {
+    } else if (kind === "proactive") {
       await loadProactiveOverview();
       await loadProactivePanel();
     }
@@ -510,10 +539,24 @@ async function toggleNav(kind) {
   renderNav();
 }
 
+async function togglePluginNav(pluginId) {
+  const viewMode = `plugin:${pluginId}`;
+  if (state.viewMode !== viewMode) {
+    state.viewMode = viewMode;
+    state.navOpen[viewMode] = true;
+    await loadPluginPanel(pluginId);
+    render();
+    return;
+  }
+  state.navOpen[viewMode] = !state.navOpen[viewMode];
+  renderNav();
+}
+
 async function refreshAll() {
   await loadSessions();
   await loadMemorySidebar();
   await loadProactiveOverview();
+  await loadPluginCounts();
   await refreshCurrentView();
 }
 
@@ -523,6 +566,8 @@ async function refreshCurrentView() {
   } else if (state.viewMode === "proactive") {
     await loadProactiveOverview();
     await loadProactivePanel();
+  } else if (state.viewMode.startsWith("plugin:")) {
+    await loadPluginPanel(state.viewMode.slice(7));
   } else {
     await loadMessages();
   }
@@ -697,6 +742,118 @@ async function loadProactivePanel() {
   }
 }
 
+async function loadPlugins() {
+  let plugins;
+  try {
+    plugins = await api("/api/dashboard/plugins");
+  } catch (_e) {
+    return;
+  }
+  for (const p of plugins) {
+    _injectStylesheet(`/plugins/${p.id}/panel.css`);
+    await _injectScript(`/plugins/${p.id}/panel.js`);
+  }
+  for (const plugin of window.AkashicDashboard._plugins) {
+    state.pluginState[plugin.id] = {
+      page: 1,
+      pageSize: plugin.pageSize || 25,
+      total: 0,
+    };
+  }
+  _renderPluginNavGroups();
+  _bindPluginNavEvents();
+}
+
+function _injectScript(src) {
+  return new Promise((resolve) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = resolve;
+    document.head.appendChild(s);
+  });
+}
+
+function _injectStylesheet(href) {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  document.head.appendChild(link);
+}
+
+function _renderPluginNavGroups() {
+  const nav = document.querySelector(".explorer-nav");
+  if (!nav) return;
+  for (const plugin of window.AkashicDashboard._plugins) {
+    if (document.getElementById(`pluginNavGroup_${plugin.id}`)) continue;
+    const section = document.createElement("section");
+    section.className = "nav-group hidden";
+    section.id = `pluginNavGroup_${plugin.id}`;
+    section.innerHTML = `
+      <button class="nav-group-toggle" id="pluginNavToggle_${plugin.id}" type="button">
+        <span class="nav-group-caret">▸</span>
+        <span class="nav-group-label">${escapeHtml(plugin.label)}</span>
+        <span class="nav-group-count" id="pluginNavCount_${plugin.id}">0</span>
+      </button>
+      <div class="nav-group-body hidden" id="pluginNavBody_${plugin.id}">
+        <button class="all-messages-row active" id="pluginAllButton_${plugin.id}" type="button">
+          <span>${escapeHtml(plugin.label)}</span>
+          <strong id="pluginOverviewCount_${plugin.id}">0</strong>
+        </button>
+      </div>
+    `;
+    nav.appendChild(section);
+  }
+}
+
+function _bindPluginNavEvents() {
+  for (const plugin of window.AkashicDashboard._plugins) {
+    const toggle = document.getElementById(`pluginNavToggle_${plugin.id}`);
+    const allBtn = document.getElementById(`pluginAllButton_${plugin.id}`);
+    if (toggle) {
+      toggle.addEventListener("click", async () => {
+        await togglePluginNav(plugin.id);
+      });
+    }
+    if (allBtn) {
+      allBtn.addEventListener("click", async () => {
+        const ps = state.pluginState[plugin.id];
+        if (ps) ps.page = 1;
+        state.viewMode = `plugin:${plugin.id}`;
+        await loadPluginPanel(plugin.id);
+        render();
+      });
+    }
+  }
+}
+
+async function loadPluginCounts() {
+  for (const plugin of window.AkashicDashboard._plugins) {
+    try {
+      const count = await plugin.getCount();
+      const ps = state.pluginState[plugin.id];
+      if (ps !== undefined) {
+        ps.total = typeof count === "number" ? count : 0;
+      }
+      const group = document.getElementById(`pluginNavGroup_${plugin.id}`);
+      if (group) {
+        group.classList.toggle("hidden", count === null || count === undefined);
+      }
+    } catch (_e) {
+      // ignore - plugin count failures are non-fatal
+    }
+  }
+}
+
+async function loadPluginPanel(pluginId) {
+  const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
+  if (!plugin) return;
+  const ps = state.pluginState[pluginId];
+  if (!ps) return;
+  const result = await plugin.loadPanel({ page: ps.page, pageSize: ps.pageSize });
+  ps.total = (result && result.total) || 0;
+}
+
 async function selectSession(session) {
   state.viewMode = "sessions";
   state.activeSessionKey = session.key;
@@ -759,6 +916,21 @@ function renderNav() {
   toggleNavBody(el.sessionsNavBody, el.sessionsNavToggle, state.navOpen.sessions);
   toggleNavBody(el.memoryNavBody, el.memoryNavToggle, state.navOpen.memory);
   toggleNavBody(el.proactiveNavBody, el.proactiveNavToggle, state.navOpen.proactive);
+  for (const plugin of window.AkashicDashboard._plugins) {
+    const viewMode = `plugin:${plugin.id}`;
+    const ps = state.pluginState[plugin.id] || {};
+    const group = document.getElementById(`pluginNavGroup_${plugin.id}`);
+    const toggle = document.getElementById(`pluginNavToggle_${plugin.id}`);
+    const body = document.getElementById(`pluginNavBody_${plugin.id}`);
+    const badge = document.getElementById(`pluginNavCount_${plugin.id}`);
+    const overviewCount = document.getElementById(`pluginOverviewCount_${plugin.id}`);
+    const allBtn = document.getElementById(`pluginAllButton_${plugin.id}`);
+    if (group) group.classList.toggle("active", state.viewMode === viewMode);
+    if (badge) badge.textContent = String(ps.total || 0);
+    if (overviewCount) overviewCount.textContent = String(ps.total || 0);
+    if (allBtn) allBtn.classList.toggle("active", state.viewMode === viewMode);
+    if (body && toggle) toggleNavBody(body, toggle, !!state.navOpen[viewMode]);
+  }
 }
 
 function toggleNavBody(body, toggle, open) {
@@ -776,15 +948,22 @@ function renderSidebar() {
 function renderTopbar() {
   const memoryMode = state.viewMode === "memory";
   const proactiveMode = state.viewMode === "proactive";
-  el.messageFilters.classList.toggle("hidden", memoryMode || proactiveMode);
+  const pluginMode = state.viewMode.startsWith("plugin:");
+  el.messageFilters.classList.toggle("hidden", memoryMode || proactiveMode || pluginMode);
   el.memoryFilters.classList.toggle("hidden", !memoryMode);
   el.proactiveFilters.classList.toggle("hidden", !proactiveMode);
-  el.sessionSidebarFilters.classList.toggle("hidden", memoryMode || proactiveMode);
-  el.viewChipLabel.textContent = proactiveMode
-    ? `proactive · ${proactiveSectionLabel(state.proactiveSection)}`
-    : memoryMode
-      ? "memory"
-      : "messages";
+  el.sessionSidebarFilters.classList.toggle("hidden", memoryMode || proactiveMode || pluginMode);
+  let viewLabel = "messages";
+  if (proactiveMode) {
+    viewLabel = `proactive · ${proactiveSectionLabel(state.proactiveSection)}`;
+  } else if (memoryMode) {
+    viewLabel = "memory";
+  } else if (pluginMode) {
+    const pluginId = state.viewMode.slice(7);
+    const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
+    viewLabel = plugin ? (plugin.viewLabel || plugin.label.toLowerCase()) : pluginId;
+  }
+  el.viewChipLabel.textContent = viewLabel;
   el.batchDeleteButton.textContent = memoryMode ? "批量删除记忆" : "批量删除";
   el.activeProactiveSectionText.textContent = proactiveSectionLabel(state.proactiveSection);
   el.activeProactiveSessionChip.classList.toggle(
@@ -809,12 +988,21 @@ function renderSessionFilters() {
 }
 
 function renderSessions() {
+  const _pluginCountTitle = (() => {
+    if (!state.viewMode.startsWith("plugin:")) return null;
+    const pluginId = state.viewMode.slice(7);
+    const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
+    const ps = state.pluginState[pluginId] || {};
+    return plugin && plugin.countTitle ? plugin.countTitle(ps.total || 0) : `${ps.total || 0} 条`;
+  })();
   el.sessionCountTitle.textContent =
     state.viewMode === "memory"
       ? `${state.totalMemories} 条记忆`
       : state.viewMode === "proactive"
         ? `${state.proactiveTotal} 条 Tick`
-        : `${state.sessions.length} 个会话`;
+        : _pluginCountTitle !== null
+          ? _pluginCountTitle
+          : `${state.sessions.length} 个会话`;
   const total = totalSessionMessages();
   el.allMessagesCount.textContent = String(total);
   el.allSessionsCount.textContent = String(total);
@@ -1046,6 +1234,14 @@ async function applyTableSort(view, key) {
 }
 
 function renderTableHead() {
+  if (state.viewMode.startsWith("plugin:")) {
+    const pluginId = state.viewMode.slice(7);
+    const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
+    if (plugin) plugin.renderTableHead(el.tableHead);
+    el.selectAllCheckbox = null;
+    return;
+  }
+
   if (state.viewMode === "proactive") {
     el.tableHead.className = "table-head mode-proactive-ticks";
     el.tableHead.innerHTML = `
@@ -1106,7 +1302,25 @@ function renderTableHead() {
 }
 
 function renderRows() {
-  if (state.viewMode === "proactive") {
+  if (state.viewMode.startsWith("plugin:")) {
+    const pluginId = state.viewMode.slice(7);
+    const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
+    if (!plugin) return;
+    const ps = state.pluginState[pluginId] || { page: 1, pageSize: 25, total: 0 };
+    const pc = Math.max(1, Math.ceil(ps.total / ps.pageSize));
+    plugin.renderRows({
+      bodyEl: el.messageTable,
+      batchBarEl: el.batchBar,
+      metaEl: el.messageMeta,
+      pageTextEl: el.pageText,
+      prevBtn: el.prevPageButton,
+      nextBtn: el.nextPageButton,
+      page: ps.page,
+      total: ps.total,
+      pageSize: ps.pageSize,
+      pageCount: pc,
+    });
+  } else if (state.viewMode === "proactive") {
     renderProactiveRows();
   } else if (state.viewMode === "memory") {
     renderMemoryRows();
@@ -1333,6 +1547,13 @@ function renderMemoryRows() {
 }
 
 function renderDetail() {
+  if (state.viewMode.startsWith("plugin:")) {
+    const pluginId = state.viewMode.slice(7);
+    const plugin = window.AkashicDashboard._plugins.find((p) => p.id === pluginId);
+    if (plugin) plugin.renderDetail(el.detailPane);
+    return;
+  }
+
   if (state.viewMode === "proactive") {
     renderProactiveDetail();
     return;
@@ -2064,6 +2285,10 @@ async function api(url, options = {}) {
 }
 
 function pageCount() {
+  if (state.viewMode.startsWith("plugin:")) {
+    const ps = state.pluginState[state.viewMode.slice(7)] || { total: 0, pageSize: 25 };
+    return Math.max(1, Math.ceil(ps.total / ps.pageSize));
+  }
   if (state.viewMode === "proactive") {
     return Math.max(1, Math.ceil(state.proactiveTotal / state.proactivePageSize));
   }

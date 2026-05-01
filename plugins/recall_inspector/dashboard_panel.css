@@ -1,0 +1,64 @@
+.table-head.mode-recall,
+.table-row.mode-recall {
+  grid-template-columns: 108px 96px minmax(180px, 1fr) 72px 72px;
+}
+
+.recall-item-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.recall-item-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recall-item {
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-strong);
+}
+
+.recall-item-context {
+  box-shadow: inset 3px 0 0 var(--line-strong);
+}
+
+.recall-item-inject {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.recall-item-recall {
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
+.recall-item-head code {
+  color: var(--text-soft);
+}
+
+.recall-summary {
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.recall-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--text-soft);
+  border: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.recall-tag-injected {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: #e6c9bc;
+}

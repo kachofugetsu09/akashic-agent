@@ -19,6 +19,7 @@ logs/
 workspace/
 data/
 **/.kv.json
+plugins/**/.data/
 /data
 /memory/
 

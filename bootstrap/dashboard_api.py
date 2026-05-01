@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+import importlib.util
 import logging
 import json
+import re
 import sqlite3
+import sys
 import threading
 from datetime import timedelta
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
@@ -541,6 +544,23 @@ class ObserveDashboardReader:
         }
 
 
+def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path) -> None:
+    dash_path = plugin_dir / "dashboard.py"
+    module_name = f"akasic_dashboard_plugin_{plugin_dir.name}"
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, dash_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {dash_path}")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = mod
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        if hasattr(mod, "register"):
+            mod.register(app, plugin_dir)
+            logger.info("插件 dashboard 已挂载: %s", plugin_dir.name)
+    except Exception as e:
+        logger.warning("插件 dashboard 挂载失败 (%s): %s", plugin_dir.name, e)
+
+
 def _preview_text(value: Any, limit: int) -> str:
     text = str(value or "").replace("\n", " ").strip()
     if len(text) <= limit:
@@ -559,7 +579,9 @@ def create_dashboard_app(
     ProactiveStateStore(workspace / "proactive.db").close()
     proactive_reader = ProactiveDashboardReader(workspace / "proactive.db")
     observe_reader = ObserveDashboardReader(workspace / "observe" / "observe.db")
-    static_dir = Path(__file__).resolve().parent.parent / "static" / "dashboard"
+    project_root = Path(__file__).resolve().parent.parent
+    plugins_root = project_root / "plugins"
+    static_dir = project_root / "static" / "dashboard"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -574,9 +596,43 @@ def create_dashboard_app(
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.mount("/assets", StaticFiles(directory=static_dir), name="dashboard-assets")
 
+    # Mount each plugin's dashboard routes
+    if plugins_root.is_dir():
+        for _plugin_dir in sorted(plugins_root.iterdir()):
+            if _plugin_dir.is_dir() and (_plugin_dir / "dashboard.py").exists():
+                _load_plugin_dashboard(app, _plugin_dir)
+
     @app.get("/")
     def dashboard_index() -> FileResponse:
         return FileResponse(static_dir / "index.html")
+
+    @app.get("/api/dashboard/plugins")
+    def list_dashboard_plugins() -> list[dict[str, Any]]:
+        if not plugins_root.is_dir():
+            return []
+        result = []
+        for plugin_dir in sorted(plugins_root.iterdir()):
+            if plugin_dir.is_dir() and (plugin_dir / "dashboard_panel.js").exists():
+                result.append({"id": plugin_dir.name})
+        return result
+
+    @app.get("/plugins/{plugin_id}/panel.js")
+    def get_plugin_panel_js(plugin_id: str) -> FileResponse:
+        if "/" in plugin_id or ".." in plugin_id:
+            raise HTTPException(status_code=400, detail="invalid plugin id")
+        js_path = plugins_root / plugin_id / "dashboard_panel.js"
+        if not js_path.exists():
+            raise HTTPException(status_code=404, detail="plugin panel not found")
+        return FileResponse(js_path, media_type="application/javascript")
+
+    @app.get("/plugins/{plugin_id}/panel.css")
+    def get_plugin_panel_css(plugin_id: str) -> FileResponse:
+        if "/" in plugin_id or ".." in plugin_id:
+            raise HTTPException(status_code=400, detail="invalid plugin id")
+        css_path = plugins_root / plugin_id / "dashboard_panel.css"
+        if not css_path.exists():
+            raise HTTPException(status_code=404, detail="plugin panel css not found")
+        return FileResponse(css_path, media_type="text/css")
 
     @app.get("/api/dashboard/sessions")
     def list_sessions(
