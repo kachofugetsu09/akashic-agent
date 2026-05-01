@@ -125,6 +125,7 @@ class AppRuntime:
             self.peer_poller = self.core.peer_poller
             await self.core.start()
 
+            plugin_manager = getattr(self.core, "plugin_manager", None)
             self.ipc, self.tg_channel, self.qq_channel = await start_channels(
                 self.config,
                 bus=self.bus,
@@ -133,8 +134,8 @@ class AppRuntime:
                 http_resources=self.http_resources,
                 event_bus=event_bus,
                 bot_commands=(
-                    self.core.plugin_manager.telegram_bot_commands
-                    if self.core.plugin_manager
+                    plugin_manager.telegram_bot_commands
+                    if plugin_manager
                     else None
                 ),
                 interrupt_controller=self.agent_loop,
@@ -157,7 +158,6 @@ class AppRuntime:
                 self.dashboard_server.serve(),
                 name="dashboard_server",
             )
-            plugin_manager = getattr(self.core, "plugin_manager", None)
             proactive_tasks, self.proactive_loop = build_proactive_runtime(
                 self.config,
                 self.workspace,
