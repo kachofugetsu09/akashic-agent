@@ -62,6 +62,8 @@ class PluginManager:
         self._before_turn_modules_late: list[object] = []
         self._prompt_render_modules_top: list[object] = []
         self._prompt_render_modules_bottom: list[object] = []
+        self._after_reasoning_modules_before_emit: list[object] = []
+        self._after_reasoning_modules_before_persist: list[object] = []
 
     @property
     def loaded_count(self) -> int:
@@ -86,6 +88,14 @@ class PluginManager:
     @property
     def prompt_render_modules_bottom(self) -> list[object]:
         return list(self._prompt_render_modules_bottom)
+
+    @property
+    def after_reasoning_modules_before_emit(self) -> list[object]:
+        return list(self._after_reasoning_modules_before_emit)
+
+    @property
+    def after_reasoning_modules_before_persist(self) -> list[object]:
+        return list(self._after_reasoning_modules_before_persist)
 
     # 扫描所有 plugin_dirs，返回可加载的插件描述列表
     def discover(self) -> list[dict[str, str]]:
@@ -163,6 +173,13 @@ class PluginManager:
         prompt_top_count_before = len(self._prompt_render_modules_top)
         prompt_bottom_count_before = len(self._prompt_render_modules_bottom)
         self._collect_prompt_render_modules(instance)
+        reasoning_before_emit_count_before = len(
+            self._after_reasoning_modules_before_emit
+        )
+        reasoning_before_persist_count_before = len(
+            self._after_reasoning_modules_before_persist
+        )
+        self._collect_after_reasoning_modules(instance)
         # 5. 给插件机会做异步初始化；失败时回滚所有注册
         try:
             if hasattr(instance, "initialize"):
@@ -178,13 +195,23 @@ class PluginManager:
             del self._before_turn_modules_late[late_count_before:]
             del self._prompt_render_modules_top[prompt_top_count_before:]
             del self._prompt_render_modules_bottom[prompt_bottom_count_before:]
+            del self._after_reasoning_modules_before_emit[
+                reasoning_before_emit_count_before:
+            ]
+            del self._after_reasoning_modules_before_persist[
+                reasoning_before_persist_count_before:
+            ]
             return
         self._loaded.add(mp)
         logger.info("插件已加载: %s", mod["name"])
 
     def _import_plugin(self, module_name: str, path: Path) -> None:
-        # 1. 从文件路径构建 ModuleSpec
-        spec = importlib.util.spec_from_file_location(module_name, path)
+        # 1. 把 plugin.py 当成包入口加载，允许数字前缀目录里的插件使用相对 import。
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            path,
+            submodule_search_locations=[str(path.parent)],
+        )
         if spec is None or spec.loader is None:
             raise ImportError(f"无法加载插件文件: {path}")
         # 2. 先注册到 sys.modules 再执行，避免插件内部相对 import 找不到自身
@@ -272,6 +299,14 @@ class PluginManager:
             _load_module_list(instance, "prompt_render_modules_bottom")
         )
 
+    def _collect_after_reasoning_modules(self, instance: Any) -> None:
+        self._after_reasoning_modules_before_emit.extend(
+            _load_module_list(instance, "after_reasoning_modules_before_emit")
+        )
+        self._after_reasoning_modules_before_persist.extend(
+            _load_module_list(instance, "after_reasoning_modules_before_persist")
+        )
+
     async def terminate_all(self) -> None:
         for mp in list(self._loaded):
             instance = plugin_registry.get_instance(mp)
@@ -291,6 +326,8 @@ class PluginManager:
         self._before_turn_modules_late.clear()
         self._prompt_render_modules_top.clear()
         self._prompt_render_modules_bottom.clear()
+        self._after_reasoning_modules_before_emit.clear()
+        self._after_reasoning_modules_before_persist.clear()
 
 
 def _load_plugin_config(plugin_dir: Path) -> "Any":

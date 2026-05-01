@@ -367,7 +367,6 @@ def test_history_fact_guard_requires_fetch_after_search_preview():
     assert "fetch_messages" in prompt
     assert "source_ref" in prompt
     assert "预览" in prompt
-    assert "§cited:[" in prompt
 
 
 def test_memory_correction_protocol_covers_soft_corrections_and_forget_memory():

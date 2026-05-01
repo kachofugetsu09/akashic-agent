@@ -123,6 +123,8 @@ class AgentCoreDeps:
     history_window: int = 500
     before_turn_plugin_modules_early: list[object] | None = None
     before_turn_plugin_modules_late: list[object] | None = None
+    after_reasoning_plugin_modules_before_emit: list[object] | None = None
+    after_reasoning_plugin_modules_before_persist: list[object] | None = None
 
 
 class AgentCore:
@@ -148,6 +150,16 @@ class AgentCore:
         late: list[object],
     ) -> None:
         self._passive_pipeline.add_before_turn_plugin_modules(early, late)
+
+    def add_after_reasoning_plugin_modules(
+        self,
+        before_emit: list[object],
+        before_persist: list[object],
+    ) -> None:
+        self._passive_pipeline.add_after_reasoning_plugin_modules(
+            before_emit,
+            before_persist,
+        )
 
     async def process(
         self,
@@ -186,6 +198,12 @@ class PassiveTurnPipeline:
         self._outbound_port = deps.outbound_port
         self._before_turn_plugin_modules_early = list(deps.before_turn_plugin_modules_early or [])
         self._before_turn_plugin_modules_late = list(deps.before_turn_plugin_modules_late or [])
+        self._after_reasoning_plugin_modules_before_emit = list(
+            deps.after_reasoning_plugin_modules_before_emit or []
+        )
+        self._after_reasoning_plugin_modules_before_persist = list(
+            deps.after_reasoning_plugin_modules_before_persist or []
+        )
         bus = deps.event_bus or EventBus()
         self._bus = bus
 
@@ -203,14 +221,7 @@ class PassiveTurnPipeline:
             ),
             frame_factory=BeforeReasoningFrame,
         )
-        self._after_reasoning: Phase[
-            AfterReasoningInput,
-            AfterReasoningResult,
-            AfterReasoningFrame,
-        ] = Phase(
-            default_after_reasoning_modules(bus, self._session),
-            frame_factory=AfterReasoningFrame,
-        )
+        self._after_reasoning = self._build_after_reasoning_phase()
         outbound_port = deps.outbound_port or _NoopOutboundPort()
         self._after_turn: Phase[TurnSnapshot, OutboundMessage, AfterTurnFrame] = Phase(
             default_after_turn_modules(
@@ -231,6 +242,15 @@ class PassiveTurnPipeline:
         self._before_turn_plugin_modules_late.extend(late)
         self._before_turn = self._build_before_turn_phase()
 
+    def add_after_reasoning_plugin_modules(
+        self,
+        before_emit: list[object],
+        before_persist: list[object],
+    ) -> None:
+        self._after_reasoning_plugin_modules_before_emit.extend(before_emit)
+        self._after_reasoning_plugin_modules_before_persist.extend(before_persist)
+        self._after_reasoning = self._build_after_reasoning_phase()
+
     def _build_before_turn_phase(self) -> Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]:
         return Phase(
             default_before_turn_modules(
@@ -241,6 +261,25 @@ class PassiveTurnPipeline:
                 plugin_modules_late=cast("list[Any]", self._before_turn_plugin_modules_late),
             ),
             frame_factory=BeforeTurnFrame,
+        )
+
+    def _build_after_reasoning_phase(
+        self,
+    ) -> Phase[AfterReasoningInput, AfterReasoningResult, AfterReasoningFrame]:
+        return Phase(
+            default_after_reasoning_modules(
+                self._bus,
+                self._session,
+                plugin_modules_before_emit=cast(
+                    "list[Any]",
+                    self._after_reasoning_plugin_modules_before_emit,
+                ),
+                plugin_modules_before_persist=cast(
+                    "list[Any]",
+                    self._after_reasoning_plugin_modules_before_persist,
+                ),
+            ),
+            frame_factory=AfterReasoningFrame,
         )
 
     # 核心方法：处理一条普通被动消息，并提交最终出站结果。

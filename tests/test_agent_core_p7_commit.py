@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +25,21 @@ from bootstrap.wiring import wire_turn_lifecycle
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
+
+
+def _load_meme_plugin_class() -> Any:
+    path = Path(__file__).parents[1] / "plugins" / "02_meme" / "plugin.py"
+    spec = importlib.util.spec_from_file_location(
+        "test_p7_02_meme_plugin",
+        path,
+        submodule_search_locations=[str(path.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(str(path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.MemePlugin
 
 
 class _DummySession:
@@ -320,118 +337,32 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
     await event_bus.aclose()
 
 
-def test_response_parser_strips_ascii_marker_only_at_end():
-    parsed = parse_response("答复正文\n§cited:[mem_1,mem-2]§", tool_chain=[])
-
-    assert parsed.clean_text == "答复正文"
-    assert parsed.metadata.cited_memory_ids == ["mem_1", "mem-2"]
-
-
-def test_response_parser_strips_marker_with_spaces_after_commas():
-    parsed = parse_response("答复正文\n§cited:[mem_1, mem-2]§", tool_chain=[])
-
-    assert parsed.clean_text == "答复正文"
-    assert parsed.metadata.cited_memory_ids == ["mem_1", "mem-2"]
-
-
-def test_response_parser_strips_empty_marker_at_end():
-    parsed = parse_response("答复正文\n§cited:[]§", tool_chain=[])
-
-    assert parsed.clean_text == "答复正文"
-    assert parsed.metadata.cited_memory_ids == []
-
-
-def test_response_parser_keeps_body_text_when_marker_not_at_end():
-    text = "正文里提到 §cited:[mem_1]§ 这串文本，但不是协议行。\n后面还有内容"
+def test_response_parser_keeps_reply_protocols_for_plugins():
+    text = "答复正文\n§cited:[mem_1]§ <meme:shy>"
 
     parsed = parse_response(text, tool_chain=[])
 
     assert parsed.clean_text == text
-    assert parsed.metadata.cited_memory_ids == []
-
-
-def test_response_parser_leaves_meme_tags_for_plugin():
-    parsed = parse_response("好的 <meme:HAPPY> 收到 <meme:agree>", tool_chain=[])
-
-    assert parsed.clean_text == "好的 <meme:HAPPY> 收到 <meme:agree>"
-
-
-def test_response_parser_extracts_citation_before_trailing_meme_tag():
-    parsed = parse_response("答复正文\n§cited:[mem_1]§ <meme:shy>", tool_chain=[])
-
-    assert parsed.clean_text == "答复正文 <meme:shy>"
-    assert parsed.metadata.cited_memory_ids == ["mem_1"]
-
-
-def test_response_parser_keeps_multiple_trailing_meme_tags_after_citation():
-    parsed = parse_response(
-        "答复正文\n§cited:[mem_1]§ <meme:shy> <meme:happy>",
-        tool_chain=[],
-    )
-
-    assert parsed.clean_text == "答复正文 <meme:shy> <meme:happy>"
-    assert parsed.metadata.cited_memory_ids == ["mem_1"]
-
-
-def test_response_parser_rejects_citation_with_trailing_body_text():
-    text = "答复正文\n§cited:[mem_1]§ 其他文字"
-
-    parsed = parse_response(text, tool_chain=[])
-
-    assert parsed.clean_text == text
-    assert parsed.metadata.cited_memory_ids == []
-
-
-def test_response_parser_tool_chain_fallback_uses_recall_memory_cited_item_ids():
-    tool_chain = [
-        {
-            "text": "thinking",
-            "calls": [
-                {
-                    "name": "recall_memory",
-                    "result": "{\"count\":2,\"cited_item_ids\":[\"mem_1\",\"mem_2\"]}",
-                }
-            ],
-        }
-    ]
-
-    parsed = parse_response("答复正文", tool_chain=tool_chain)
-
-    assert parsed.clean_text == "答复正文"
-    assert parsed.metadata.cited_memory_ids == ["mem_1", "mem_2"]
-
-
-def test_response_parser_tool_chain_fallback_uses_item_ids():
-    tool_chain = [
-        {
-            "text": "thinking",
-            "calls": [
-                {
-                    "name": "recall_memory",
-                    "result": (
-                        "{\"count\":2,\"items\":["
-                        "{\"id\":\"mem_1\"},"
-                        "{\"id\":\"mem_2\"}"
-                        "]}"
-                    ),
-                }
-            ],
-        }
-    ]
-
-    parsed = parse_response("答复正文", tool_chain=tool_chain)
-
-    assert parsed.metadata.cited_memory_ids == ["mem_1", "mem_2"]
+    assert parsed.metadata.raw_text == text
 
 
 # ── 新链 (AfterReasoning + AfterTurn) 端到端测试 ──
+
+
+class _CitationPersistModule:
+    async def run(self, frame):
+        ctx = frame.slots["reasoning:ctx"]
+        ctx.reply = "原始回复 <meme:shy>"
+        frame.slots["persist:assistant:cited_memory_ids"] = ["mem_1"]
+        return frame
 
 
 @pytest.mark.asyncio
 async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(tmp_path: Path):
     from agent.core.passive_turn import ContextStore
     from agent.plugins.context import PluginContext, PluginKVStore
-    from plugins.meme.plugin import MemePlugin
+
+    MemePlugin = _load_meme_plugin_class()
 
     order: list[str] = []
     memes = tmp_path / "memes"
@@ -519,6 +450,7 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
             event_bus=event_bus,
             outbound_port=cast(Any, dispatch_port),
             history_window=100,
+            after_reasoning_plugin_modules_before_emit=[_CitationPersistModule()],
         )
     )
     wire_turn_lifecycle(

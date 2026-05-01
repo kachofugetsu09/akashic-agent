@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 from agent.plugins import Plugin, on_after_reasoning
 from agent.prompting import PromptSectionRender
-from plugins.meme.runtime import MemeCatalog, MemeDecorator
+from .runtime import MemeCatalog, MemeDecorator
 
 _CTX_SLOT = "prompt:ctx"
 _MEME_RE = re.compile(r"<meme:([a-zA-Z0-9_-]+)>", re.IGNORECASE)
@@ -39,8 +39,8 @@ class MemePromptModule:
 
 class MemePlugin(Plugin):
     name = "meme"
-    _catalog: MemeCatalog | None = None
-    _decorator: MemeDecorator | None = None
+    _catalog: Any = None
+    _decorator: Any = None
 
     async def initialize(self) -> None:
         memes_dir = _workspace(self.context.plugin_dir, self.context.workspace) / "memes"
@@ -60,13 +60,13 @@ class MemePlugin(Plugin):
         return ctx
 
     @property
-    def catalog(self) -> MemeCatalog:
+    def catalog(self) -> Any:
         if self._catalog is None:
             raise RuntimeError("meme 插件尚未初始化")
         return self._catalog
 
     @property
-    def decorator(self) -> MemeDecorator:
+    def decorator(self) -> Any:
         if self._decorator is None:
             raise RuntimeError("meme 插件尚未初始化")
         return self._decorator
@@ -83,4 +83,4 @@ def _extract_meme_tag(response: str) -> tuple[str, str | None]:
 def _workspace(plugin_dir: Path, configured: Path | None) -> Path:
     if configured is not None:
         return configured
-    return plugin_dir.parent.parent
+    return cast(Path, plugin_dir.parent.parent)

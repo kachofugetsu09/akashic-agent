@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
+import importlib.util
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -13,7 +17,26 @@ from agent.plugins.context import PluginContext, PluginKVStore
 from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
 from bus.event_bus import EventBus
-from plugins.meme.plugin import MemePlugin, MemePromptModule
+
+
+def _load_meme_plugin_module() -> Any:
+    path = Path(__file__).parents[1] / "plugins" / "02_meme" / "plugin.py"
+    spec = importlib.util.spec_from_file_location(
+        "test_02_meme_plugin",
+        path,
+        submodule_search_locations=[str(path.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(str(path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_meme_plugin_module = _load_meme_plugin_module()
+MemePlugin = _meme_plugin_module.MemePlugin
+MemePromptModule = _meme_plugin_module.MemePromptModule
 
 
 @pytest.fixture(autouse=True)
@@ -90,13 +113,7 @@ async def test_meme_prompt_module_injects_bottom_section(tmp_path: Path) -> None
 async def test_plugin_manager_collects_meme_prompt_module_before_initialize(tmp_path: Path) -> None:
     _write_meme_workspace(tmp_path)
     plugin_dir = tmp_path / "plugin_src" / "meme"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.py").write_text(
-        "from plugins.meme.plugin import MemePlugin\n"
-        "class TestMemePlugin(MemePlugin):\n"
-        "    name = 'meme'\n",
-        encoding="utf-8",
-    )
+    shutil.copytree(Path(__file__).parents[1] / "plugins" / "02_meme", plugin_dir)
     manager = PluginManager(
         [plugin_dir.parent],
         event_bus=EventBus(),

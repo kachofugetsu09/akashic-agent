@@ -1,11 +1,28 @@
-"""Unit tests for plugins/meme/runtime.py."""
+"""Unit tests for plugins/02_meme/runtime.py."""
+import importlib.util
 import json
+import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from plugins.meme.runtime import MemeCatalog, MemeDecorator
+
+def _load_meme_runtime() -> Any:
+    path = Path(__file__).parents[1] / "plugins" / "02_meme" / "runtime.py"
+    spec = importlib.util.spec_from_file_location("test_02_meme_runtime", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(str(path))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_meme_runtime = _load_meme_runtime()
+MemeCatalog = _meme_runtime.MemeCatalog
+MemeDecorator = _meme_runtime.MemeDecorator
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────

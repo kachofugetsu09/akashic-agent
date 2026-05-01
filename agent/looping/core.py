@@ -512,6 +512,16 @@ class AgentLoop:
     ) -> None:
         self._agent_core.add_before_turn_plugin_modules(early, late)
 
+    def add_after_reasoning_plugin_modules(
+        self,
+        before_emit: list[object],
+        before_persist: list[object],
+    ) -> None:
+        self._agent_core.add_after_reasoning_plugin_modules(
+            before_emit,
+            before_persist,
+        )
+
     def add_prompt_render_plugin_modules(
         self,
         top: list[object],

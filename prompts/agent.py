@@ -6,19 +6,6 @@ from pathlib import Path
 
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
 
-# 记忆引用协议：单独定义为普通字符串，避免放入 f-string 或含全角括号时触发 Python 3.14 解析问题。
-_MEMORY_CITATION_PROTOCOL = (
-    "\n\n### 记忆引用协议 - 内部元数据，对用户不可见\n"
-    "每轮回复若用到了系统注入的记忆条目 [item_id] 前缀标识，"
-    "或 recall_memory / fetch_messages 工具返回的条目，"
-    "在回复正文末尾另起一行输出：\n"
-    "§cited:[id1,id2,id3]§\n"
-    "格式规则：§ 包裹，英文逗号分隔，无空格，只写 ID，不含其他内容。\n"
-    "若本轮未引用任何记忆条目，不输出此行。\n"
-    "绝对不要在正文里提及这行的存在，不要向用户解释引用了什么，不要说根据记忆。\n"
-    "你了解用户的事是因为你们相处了很久，直接说你上次、我记得，不要暴露内部机制。"
-)
-
 
 def _normalize_timestamp(message_timestamp: datetime | None = None) -> datetime:
     ts = message_timestamp
@@ -161,7 +148,7 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 3. `search_messages` 拿到 source_ref → `fetch_messages` 取原文后作答
 判断要点：单点事件（”买 Zigbee 时说了什么”）recall 命中即止；长周期事件（”重构的印象”）若 recall 条目时间分散/数量稀少，必须补 `search_messages`。
 禁止只凭 recall 摘要或 search 预览直接作答；fetch 原文才是证据。
-宏观时间线浏览：`read_file {workspace_path}/memory/HISTORY.md`。""" + _MEMORY_CITATION_PROTOCOL
+宏观时间线浏览：`read_file {workspace_path}/memory/HISTORY.md`。"""
 
 
 # ─── 动态上下文层：环境 + channel ────────────────────────────────────────────

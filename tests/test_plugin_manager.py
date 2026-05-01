@@ -292,6 +292,14 @@ class PromptBottomModule:
     async def run(self, frame):
         return frame
 
+class AfterReasoningBeforeEmitModule:
+    async def run(self, frame):
+        return frame
+
+class AfterReasoningBeforePersistModule:
+    async def run(self, frame):
+        return frame
+
 
 class PhasePlugin(Plugin):
     name = "phase_plugin"
@@ -307,6 +315,12 @@ class PhasePlugin(Plugin):
 
     def prompt_render_modules_bottom(self):
         return [PromptBottomModule()]
+
+    def after_reasoning_modules_before_emit(self):
+        return [AfterReasoningBeforeEmitModule()]
+
+    def after_reasoning_modules_before_persist(self):
+        return [AfterReasoningBeforePersistModule()]
 """.strip(),
             encoding="utf-8",
         )
@@ -317,10 +331,14 @@ class PhasePlugin(Plugin):
         assert len(mgr.before_turn_modules_late) == 1
         assert len(mgr.prompt_render_modules_top) == 1
         assert len(mgr.prompt_render_modules_bottom) == 1
+        assert len(mgr.after_reasoning_modules_before_emit) == 1
+        assert len(mgr.after_reasoning_modules_before_persist) == 1
         assert mgr.before_turn_modules_early[0].__class__.__name__ == "EarlyModule"
         assert mgr.before_turn_modules_late[0].__class__.__name__ == "LateModule"
         assert mgr.prompt_render_modules_top[0].__class__.__name__ == "PromptTopModule"
         assert mgr.prompt_render_modules_bottom[0].__class__.__name__ == "PromptBottomModule"
+        assert mgr.after_reasoning_modules_before_emit[0].__class__.__name__ == "AfterReasoningBeforeEmitModule"
+        assert mgr.after_reasoning_modules_before_persist[0].__class__.__name__ == "AfterReasoningBeforePersistModule"
 
 
 # ── _conf_schema.json 测试 ────────────────────────────────────────────────────
@@ -789,6 +807,8 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
             self.before_turn_modules_late = [object()]
             self.prompt_render_modules_top = [object()]
             self.prompt_render_modules_bottom = [object()]
+            self.after_reasoning_modules_before_emit = [object()]
+            self.after_reasoning_modules_before_persist = [object()]
             self.loaded_count = 0
 
         async def load_all(self) -> None:
@@ -801,6 +821,8 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
             self.received_before_turn_late: list[object] | None = None
             self.received_prompt_render_top: list[object] | None = None
             self.received_prompt_render_bottom: list[object] | None = None
+            self.received_after_reasoning_before_emit: list[object] | None = None
+            self.received_after_reasoning_before_persist: list[object] | None = None
 
         def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
             self.received_hooks = list(hooks)
@@ -820,6 +842,14 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         ) -> None:
             self.received_prompt_render_top = list(top)
             self.received_prompt_render_bottom = list(bottom)
+
+        def add_after_reasoning_plugin_modules(
+            self,
+            before_emit: list[object],
+            before_persist: list[object],
+        ) -> None:
+            self.received_after_reasoning_before_emit = list(before_emit)
+            self.received_after_reasoning_before_persist = list(before_persist)
 
     class FakeSpawnTool:
         def __init__(self) -> None:
@@ -866,5 +896,7 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     assert loop.received_before_turn_late == plugin_manager.before_turn_modules_late
     assert loop.received_prompt_render_top == plugin_manager.prompt_render_modules_top
     assert loop.received_prompt_render_bottom == plugin_manager.prompt_render_modules_bottom
+    assert loop.received_after_reasoning_before_emit == plugin_manager.after_reasoning_modules_before_emit
+    assert loop.received_after_reasoning_before_persist == plugin_manager.after_reasoning_modules_before_persist
     assert loop.received_hooks == plugin_manager.tool_hooks
     assert spawn_tool.received_hooks == plugin_manager.tool_hooks

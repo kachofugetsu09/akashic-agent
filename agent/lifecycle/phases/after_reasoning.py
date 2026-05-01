@@ -32,6 +32,8 @@ AfterReasoningModules: TypeAlias = list[PhaseModule[AfterReasoningFrame]]
 
 _CTX_SLOT = "reasoning:ctx"
 _OUTBOUND_SLOT = "reasoning:outbound"
+_PERSIST_ASSISTANT_PREFIX = "persist:assistant:"
+_ASSISTANT_FIXED_FIELDS = {"tools_used", "tool_chain", "reasoning_content"}
 
 
 class _BuildAfterReasoningCtxModule:
@@ -131,9 +133,7 @@ class _PersistAssistantMessageModule:
         }
         if ctx.thinking is not None:
             assistant_kwargs["reasoning_content"] = ctx.thinking
-        cited_memory_ids = list(ctx.response_metadata.cited_memory_ids)
-        if cited_memory_ids:
-            assistant_kwargs["cited_memory_ids"] = cited_memory_ids
+        assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
         session.add_message("assistant", ctx.reply, **assistant_kwargs)
         return frame
 
@@ -204,10 +204,16 @@ class _ReturnAfterReasoningResultModule:
 def default_after_reasoning_modules(
     bus: EventBus,
     session_services: SessionServices,
+    plugin_modules_before_emit: AfterReasoningModules | None = None,
+    plugin_modules_before_persist: AfterReasoningModules | None = None,
 ) -> AfterReasoningModules:
+    before_emit = plugin_modules_before_emit or []
+    before_persist = plugin_modules_before_persist or []
     return [
         _BuildAfterReasoningCtxModule(),
+        *before_emit,
         _EmitAfterReasoningCtxModule(bus),
+        *before_persist,
         _PersistUserMessageModule(session_services),
         _PersistAssistantMessageModule(),
         _UpdateSessionMetadataModule(),
@@ -215,3 +221,15 @@ def default_after_reasoning_modules(
         _BuildOutboundMessageModule(),
         _ReturnAfterReasoningResultModule(),
     ]
+
+
+def _collect_persist_assistant_slots(slots: dict[str, object]) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for key, value in slots.items():
+        if not key.startswith(_PERSIST_ASSISTANT_PREFIX):
+            continue
+        field = key.removeprefix(_PERSIST_ASSISTANT_PREFIX)
+        if not field or field in _ASSISTANT_FIXED_FIELDS:
+            continue
+        values[field] = value
+    return values
