@@ -18,7 +18,7 @@ from session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
-_TOOL_RESULT_CHAR_BUDGET = 100
+_TOOL_RESULT_CHAR_BUDGET = 10000
 _PROACTIVE_HISTORY_CHAR_BUDGET = 360
 _PROACTIVE_META_HISTORY_CHAR_BUDGET = 1200
 
