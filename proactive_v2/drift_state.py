@@ -135,9 +135,17 @@ class DriftStateStore:
             skill = _clip(row.get("skill", ""), 80)
             run_at = _clip(row.get("run_at", ""), 80)
             one_line = _clip(row.get("one_line", ""), 150)
+            message_result = _clip(row.get("message_result", "silent"), 20)
+            if message_result not in {"sent", "silent"}:
+                message_result = "silent"
             if not skill or not run_at or not one_line:
                 continue
-            rows.append({"skill": skill, "run_at": run_at, "one_line": one_line})
+            rows.append({
+                "skill": skill,
+                "run_at": run_at,
+                "one_line": one_line,
+                "message_result": message_result,
+            })
         return {
             "version": 1,
             "recent_runs": rows[-10:],
@@ -163,6 +171,7 @@ class DriftStateStore:
         skill_used: str,
         one_line: str,
         next_action: str,
+        message_result: str,
         note: str | None,
         now_utc: datetime,
     ) -> None:
@@ -195,6 +204,7 @@ class DriftStateStore:
                 "skill": skill_name,
                 "run_at": now_utc.isoformat(),
                 "one_line": _clip(one_line, 150),
+                "message_result": message_result,
             }
         )
         payload = {

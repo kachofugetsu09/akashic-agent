@@ -288,7 +288,15 @@ async def test_drift_interval_allows_after_window():
     state = FakeStateStore()
     state.set_last_drift_at(datetime.now(timezone.utc) - timedelta(hours=4))
     llm = FakeLLM([
-        ("finish_drift", {"skill_used": "explore-curiosity", "one_line": "x", "next": "y"}),
+        (
+            "finish_drift",
+            {
+                "skill_used": "explore-curiosity",
+                "one_line": "x",
+                "next": "y",
+                "message_result": "silent",
+            },
+        ),
     ])
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:

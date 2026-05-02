@@ -15,22 +15,6 @@ from proactive_v2.outbound_text import normalize_outbound_text
 
 logger = logging.getLogger(__name__)
 
-FORCED_WRITE_PROMPT = (
-    "步数即将用尽。你必须现在调用 write_file 或 edit_file，\n"
-    "将当前 working files 更新到最新状态。\n"
-    "下一步将强制结束，请确保进度已完整写入。"
-)
-
-FORCED_FINISH_PROMPT = (
-    "你正在执行 Drift 任务，步数已用尽。\n"
-    "根据上方对话历史，立即调用 finish_drift，填写：\n"
-    "- skill_used：你执行的技能名\n"
-    "- one_line：一句话总结本次做了什么\n"
-    "- next：下次从哪里继续（一句话）\n"
-    "- note：全局备注（可选）"
-)
-
-
 @dataclass
 class DriftToolDeps:
     drift_dir: Path
@@ -124,9 +108,17 @@ class FinishDriftTool(Tool):
                 "skill_used": {"type": "string"},
                 "one_line": {"type": "string"},
                 "next": {"type": "string"},
+                "message_result": {
+                    "type": "string",
+                    "enum": ["sent", "silent"],
+                    "description": (
+                        "sent 表示本轮已经成功调用 message_push；"
+                        "silent 表示本轮确认不该打扰用户，静默结束。"
+                    ),
+                },
                 "note": {"type": "string"},
             },
-            "required": ["skill_used", "one_line", "next"],
+            "required": ["skill_used", "one_line", "next", "message_result"],
         }
 
     async def execute(
@@ -134,6 +126,7 @@ class FinishDriftTool(Tool):
         skill_used: str,
         one_line: str,
         next: str,
+        message_result: str = "",
         note: str | None = None,
         **_: Any,
     ) -> str:
@@ -150,11 +143,28 @@ class FinishDriftTool(Tool):
             return json.dumps({"error": "one_line is required"}, ensure_ascii=False)
         if not next_action:
             return json.dumps({"error": "next is required"}, ensure_ascii=False)
+        message_result_value = str(message_result or "").strip()
+        if message_result_value not in {"sent", "silent"}:
+            return json.dumps(
+                {"error": "message_result must be one of: sent, silent"},
+                ensure_ascii=False,
+            )
+        if message_result_value == "sent" and not self._ctx.drift_message_sent:
+            return json.dumps(
+                {"error": "message_result=sent requires successful message_push first"},
+                ensure_ascii=False,
+            )
+        if message_result_value == "silent" and self._ctx.drift_message_sent:
+            return json.dumps(
+                {"error": "message_result=silent conflicts with successful message_push"},
+                ensure_ascii=False,
+            )
         note_text = str(note).strip() if note is not None else None
         self._store.save_finish(
             skill_used=skill_name,
             one_line=summary,
             next_action=next_action,
+            message_result=message_result_value,
             note=note_text,
             now_utc=self._ctx.now_utc,
         )

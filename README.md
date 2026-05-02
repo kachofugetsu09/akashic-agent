@@ -106,7 +106,7 @@ enabled = true
 min_interval_hours = 3  # 每次 drift 最小间隔
 ```
 
-Drift 打开后，没有可推送内容时，agent 会利用空闲时间自主执行 `drift/skills/` 下定义的任务，偶尔也会主动发一条消息。
+Drift 打开后，没有可推送内容时，agent 会利用空闲时间自主执行 `drift/skills/` 下定义的任务。本轮不打扰用户时用 `finish_drift(message_result="silent")` 静默收尾；如果已经主动发消息，则必须用 `finish_drift(message_result="sent")` 收尾。
 
 ---
 
@@ -200,33 +200,38 @@ Gateway 的设计原则是：agent 启动前所有数据已经就位，形成一
 
 ## 三、Drift 链路
 
-Proactive gateway 没有可推送内容时，进入 Drift 模式——agent 用一段空闲时间自主做一件有意义的事。
+Proactive gateway 没有 alert、feed 内容和可用 fallback context 时，进入 Drift 模式——agent 用一段空闲时间自主做一件有意义的事。
 
 ```
 AgentTick.tick()
-  └─ (gateway 没有可发内容，或 agent loop 决定不发)
-       └─ DriftRunner.run(ctx, llm_fn)
-            1. scan_skills()              # 扫描 workspace/skills/ 下的 SKILL.md 目录
-            2. 过滤 requires_mcp 未满足的 skill
-            3. 构建 system prompt         # 注入长期记忆 + RECENT_CONTEXT + skill 列表 + 最近运行记录
-            4. tool loop（max 20 步）
-                 工具：read_file / write_file / edit_file
-                       recall_memory / web_fetch / web_search
-                       fetch_messages / search_messages / shell
-                       send_message（最多一次） / finish_drift
-                       mount_server（可挂载 MCP server）
-            5. 强制落地机制：
-                 step N-3  注入警告提示
-                 step N-2  限制 schema 为 write_file/edit_file，强制写文件
-                 step N-1  强制调用 finish_drift
+  └─ DataGateway.run()
+       └─ no alert / no content / no fallback context
+            └─ DriftRunner.run(ctx, llm_fn)
+                 ├─ scan_skills()
+                 │    └─ 读取 drift/skills/ 和内建 skill 的 SKILL.md
+                 ├─ filter_skills()
+                 │    └─ 跳过 requires_mcp 未满足的 skill
+                 ├─ build_context()
+                 │    └─ 注入记忆、近期上下文、skill 列表、recent_runs[message_result]
+                 └─ tool_loop(max_steps)
+                      ├─ read_file / write_file / edit_file
+                      ├─ recall_memory / web_fetch / web_search
+                      ├─ fetch_messages / search_messages / shell
+                      ├─ message_push     # 最多一次
+                      ├─ finish_drift     # 必须声明 message_result
+                      └─ mount_server     # 可挂载 MCP server
 ```
 
 Drift 的核心约束：
 
 - 每次进入都重新比较所有 skill，不默认继续上次的
-- `send_message` 成功后只允许 `write_file` / `edit_file` / `finish_drift` 收尾
+- `message_push` 成功后只允许 `write_file` / `edit_file` / `finish_drift` 收尾
 - 发出的消息要像自然聊天，不像在汇报内部执行流程
-- 执行结束前必须调用 `finish_drift` 保存状态
+- 执行结束前必须调用 `finish_drift` 保存状态，并填写 `message_result`
+- `message_result="sent"` 要求本轮已经成功 `message_push`
+- `message_result="silent"` 要求本轮没有成功 `message_push`
+- `drift.json` 的 `recent_runs` 会记录每轮是 `sent` 还是 `silent`
+- 到达 `max_steps` 时不再强制写文件或强制 `finish_drift`；如果模型没有主动收尾，本轮保持未完成
 
 ---
 
