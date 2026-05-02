@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from typing import Generic, Protocol, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -15,6 +15,47 @@ F = TypeVar("F", bound="PhaseFrame[Any, Any]")
 
 def _empty_slots() -> dict[str, Any]:
     return {}
+
+
+def collect_prefixed_slots(
+    slots: Mapping[str, object],
+    prefix: str,
+    *,
+    reserved: Collection[str] = (),
+) -> dict[str, object]:
+    values: dict[str, object] = {}
+    reserved_fields = set(reserved)
+    for key, value in slots.items():
+        if not key.startswith(prefix):
+            continue
+        field_name = key.removeprefix(prefix)
+        if not field_name or field_name in reserved_fields:
+            continue
+        values[field_name] = value
+    return values
+
+
+def append_string_exports(target: list[str], exports: Mapping[str, object]) -> None:
+    for key, value in exports.items():
+        if isinstance(value, str) and value.strip():
+            target.append(value)
+        elif isinstance(value, list):
+            items = cast(list[object], value)
+            for item in items:
+                if isinstance(item, str) and item.strip():
+                    target.append(item)
+                elif item is not None:
+                    logger.warning(
+                        "忽略非字符串 slot export: key=%s type=%s",
+                        key,
+                        type(item).__name__,
+                    )
+        elif value is not None:
+            logger.warning(
+                "忽略非字符串 slot export: key=%s type=%s",
+                key,
+                type(value).__name__,
+            )
 
 
 @dataclass

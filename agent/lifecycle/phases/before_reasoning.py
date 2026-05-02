@@ -5,7 +5,12 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 
 from agent.core.passive_support import predict_current_user_source_ref
 from agent.core.types import ContextRequest
-from agent.lifecycle.phase import PhaseFrame, PhaseModule
+from agent.lifecycle.phase import (
+    PhaseFrame,
+    PhaseModule,
+    append_string_exports,
+    collect_prefixed_slots,
+)
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeReasoningInput
 from bus.event_bus import EventBus
 
@@ -24,6 +29,8 @@ BeforeReasoningModules: TypeAlias = list[PhaseModule[BeforeReasoningFrame]]
 
 
 _CTX_SLOT = "reasoning:ctx"
+_EXTRA_HINT_PREFIX = "reasoning:extra_hint:"
+_ABORT_REPLY_SLOT = "reasoning:abort_reply"
 
 
 class _SyncToolContextModule:
@@ -64,6 +71,7 @@ class _BuildBeforeReasoningCtxModule:
             timestamp=before_turn.timestamp,
             skill_names=list(before_turn.skill_names),
             retrieved_memory_block=before_turn.retrieved_memory_block,
+            extra_hints=list(before_turn.extra_hints),
         )
         return frame
 
@@ -89,6 +97,8 @@ class _PromptWarmupModule:
 
     async def run(self, frame: BeforeReasoningFrame) -> BeforeReasoningFrame:
         ctx = cast(BeforeReasoningCtx, frame.slots[_CTX_SLOT])
+        if ctx.abort:
+            return frame
         _ = self._context.render(
             ContextRequest(
                 history=[],
@@ -100,6 +110,24 @@ class _PromptWarmupModule:
                 retrieved_memory_block=ctx.retrieved_memory_block,
             )
         )
+        return frame
+
+
+class _CollectBeforeReasoningExportSlotsModule:
+    requires = (_CTX_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeReasoningFrame) -> BeforeReasoningFrame:
+        ctx = cast(BeforeReasoningCtx, frame.slots[_CTX_SLOT])
+        append_string_exports(
+            ctx.extra_hints,
+            collect_prefixed_slots(frame.slots, _EXTRA_HINT_PREFIX),
+        )
+        # 插件也可以在 before_emit 阶段直接改 ctx.abort；after_emit 阶段用 slot export。
+        abort_reply = frame.slots.get(_ABORT_REPLY_SLOT)
+        if isinstance(abort_reply, str) and abort_reply:
+            ctx.abort = True
+            ctx.abort_reply = abort_reply
         return frame
 
 
@@ -116,11 +144,18 @@ def default_before_reasoning_modules(
     tools: ToolRegistry,
     session_manager: SessionManager,
     context: ContextBuilder,
+    plugin_modules_before_emit: BeforeReasoningModules | None = None,
+    plugin_modules_after_emit: BeforeReasoningModules | None = None,
 ) -> BeforeReasoningModules:
+    before_emit = plugin_modules_before_emit or []
+    after_emit = plugin_modules_after_emit or []
     return [
         _SyncToolContextModule(tools, session_manager),
         _BuildBeforeReasoningCtxModule(),
+        *before_emit,
         _EmitBeforeReasoningCtxModule(bus),
+        *after_emit,
+        _CollectBeforeReasoningExportSlotsModule(),
         _PromptWarmupModule(context),
         _ReturnBeforeReasoningCtxModule(),
     ]

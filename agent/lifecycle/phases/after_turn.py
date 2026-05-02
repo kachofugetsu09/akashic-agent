@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
@@ -12,7 +12,7 @@ from agent.core.passive_support import (
     log_react_context_budget,
 )
 from agent.core.types import to_tool_call_groups
-from agent.lifecycle.phase import PhaseFrame, PhaseModule
+from agent.lifecycle.phase import PhaseFrame, PhaseModule, collect_prefixed_slots
 from agent.lifecycle.types import AfterTurnCtx, TurnSnapshot
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
@@ -39,8 +39,11 @@ _REACT_STATS_SLOT = "turn:react_stats"
 _TOOL_CHAIN_SLOT = "turn:tool_chain"
 _OMIT_USER_TURN_SLOT = "turn:omit_user_turn"
 _EXTRA_SLOT = "turn:extra"
+_EXTRA_COLLECTED_SLOT = "turn:extra_collected"
 _TURN_COMMITTED_SLOT = "turn:committed"
 _CTX_SLOT = "turn:ctx"
+_EXTRA_PREFIX = "turn:extra:"
+_TELEMETRY_PREFIX = "turn:telemetry:"
 
 
 class _BuildTurnWorkModule:
@@ -94,6 +97,7 @@ class _BuildTurnCommittedModule:
         _TOOL_CHAIN_SLOT,
         _OMIT_USER_TURN_SLOT,
         _EXTRA_SLOT,
+        _EXTRA_COLLECTED_SLOT,
     )
     produces = (_TURN_COMMITTED_SLOT,)
 
@@ -123,6 +127,18 @@ class _BuildTurnCommittedModule:
             react_stats=dict(cast(dict[str, int], frame.slots[_REACT_STATS_SLOT])),
             extra=dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT])),
         )
+        return frame
+
+
+class _CollectAfterTurnExtraSlotsModule:
+    requires = (_EXTRA_SLOT,)
+    produces = (_EXTRA_SLOT, _EXTRA_COLLECTED_SLOT)
+
+    async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
+        extra = dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT]))
+        extra.update(collect_prefixed_slots(frame.slots, _EXTRA_PREFIX))
+        frame.slots[_EXTRA_SLOT] = extra
+        frame.slots[_EXTRA_COLLECTED_SLOT] = True
         return frame
 
 
@@ -182,6 +198,18 @@ class _FanoutAfterTurnCtxModule:
         return frame
 
 
+class _CollectAfterTurnTelemetrySlotsModule:
+    requires = (_CTX_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
+        ctx = cast(AfterTurnCtx, frame.slots[_CTX_SLOT])
+        extra_metadata = dict(ctx.extra_metadata)
+        extra_metadata.update(collect_prefixed_slots(frame.slots, _TELEMETRY_PREFIX))
+        frame.slots[_CTX_SLOT] = replace(ctx, extra_metadata=extra_metadata)
+        return frame
+
+
 class _DispatchOutboundModule:
     requires = (_CTX_SLOT,)
 
@@ -216,13 +244,21 @@ def default_after_turn_modules(
     outbound: OutboundPort,
     context: ContextBuilder,
     history_window: int = 500,
+    plugin_modules_before_commit: AfterTurnModules | None = None,
+    plugin_modules_before_fanout: AfterTurnModules | None = None,
 ) -> AfterTurnModules:
+    before_commit = plugin_modules_before_commit or []
+    before_fanout = plugin_modules_before_fanout or []
     return [
         _BuildTurnWorkModule(context, history_window),
+        *before_commit,
+        _CollectAfterTurnExtraSlotsModule(),
         _BuildTurnCommittedModule(),
         _FanoutTurnCommittedModule(bus),
         _LogBudgetModule(),
         _BuildAfterTurnCtxModule(),
+        *before_fanout,
+        _CollectAfterTurnTelemetrySlotsModule(),
         _FanoutAfterTurnCtxModule(bus),
         _DispatchOutboundModule(outbound),
         _ReturnOutboundMessageModule(),
