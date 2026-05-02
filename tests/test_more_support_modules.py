@@ -690,15 +690,17 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
     monkeypatch.setattr(
         "bootstrap.app.build_proactive_runtime", build_proactive_runtime
     )
-    build_memory_optimizer_task = MagicMock(return_value=[])
+    memory_optimizer = MagicMock()
+    build_memory_optimizer_task = MagicMock(return_value=([], memory_optimizer))
     monkeypatch.setattr(
         "bootstrap.app.build_memory_optimizer_task", build_memory_optimizer_task
     )
     monkeypatch.setattr(
         "bootstrap.app.build_dashboard_server",
-        lambda **_: SimpleNamespace(
+        lambda **kwargs: SimpleNamespace(
             should_exit=False,
             serve=AsyncMock(return_value=None),
+            manual_memory_optimizer=kwargs["manual_memory_optimizer"],
         ),
     )
 
@@ -710,6 +712,7 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
 
     build_memory_optimizer_task.assert_called_once()
     assert build_memory_optimizer_task.call_args.kwargs["memory_store"] is profile_maint
+    assert app.dashboard_server.manual_memory_optimizer is memory_optimizer
 
 
 @pytest.mark.asyncio
@@ -836,10 +839,13 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     )
     assert tasks == []
     assert loop is None
-    assert (
-        build_memory_optimizer_task(cast(Any, cfg), provider=MagicMock(), memory_store=MagicMock())
-        == []
+    mem_tasks, mem_optimizer = build_memory_optimizer_task(
+        cast(Any, cfg),
+        provider=MagicMock(),
+        memory_store=MagicMock(),
     )
+    assert mem_tasks == []
+    assert mem_optimizer is None
 
     proactive_loop = SimpleNamespace(
         run=lambda: "loop-task",
@@ -884,9 +890,10 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     )
     assert tasks == ["loop-task"]
     assert loop is proactive_loop
-    mem_tasks = build_memory_optimizer_task(
+    mem_tasks, mem_optimizer = build_memory_optimizer_task(
         cast(Any, cfg),
         provider=MagicMock(),
         memory_store=MagicMock(),
     )
     assert mem_tasks == [("mem-task", 7200)]
+    assert mem_optimizer is not None

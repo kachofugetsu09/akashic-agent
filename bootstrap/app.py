@@ -79,6 +79,7 @@ class AppRuntime:
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
+        self._memory_optimizer = None
         self._shutdown = False
         self._started = False
 
@@ -130,9 +131,18 @@ class AppRuntime:
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
+            optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
+                self.config,
+                provider=self.provider,
+                memory_store=(
+                    self.memory_runtime.profile_maint or self.memory_runtime.port
+                ),
+            )
+            self.tasks.extend(optimizer_tasks)
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
                 manual_consolidator=self.agent_loop,
+                manual_memory_optimizer=self._memory_optimizer,
             )
             self.dashboard_task = asyncio.create_task(
                 self.dashboard_server.serve(),
@@ -153,16 +163,6 @@ class AppRuntime:
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
                 self.ipc.set_proactive_loop(self.proactive_loop)
-
-            self.tasks.extend(
-                build_memory_optimizer_task(
-                    self.config,
-                    provider=self.provider,
-                    memory_store=(
-                        self.memory_runtime.profile_maint or self.memory_runtime.port
-                    ),
-                )
-            )
 
             self._started = True
         except Exception:

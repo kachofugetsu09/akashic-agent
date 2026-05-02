@@ -94,10 +94,10 @@ def build_memory_optimizer_task(
     *,
     provider: LLMProvider,
     memory_store: "MemoryOptimizerStore",
-) -> list:
+) -> tuple[list, "MemoryOptimizer | None"]:
     if not config.memory_optimizer_enabled:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
-        return []
+        return [], None
 
     mem_optimizer = MemoryOptimizer(
         memory=memory_store,
@@ -106,4 +106,4 @@ def build_memory_optimizer_task(
     )
     interval = config.memory_optimizer_interval_seconds
     print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
-    return [MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()]
+    return [MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()], mem_optimizer
