@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import sys
 from pathlib import Path
@@ -20,8 +19,8 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
-from core.observe.writer import TraceWriter
 from core.observe.retention import run_retention_if_needed
+from core.observe.writer import TraceWriter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +78,7 @@ class AppRuntime:
         self.proactive_loop = None
         self.peer_process_manager = None
         self.peer_poller = None
+        # DEPRECATED: observe writer 生命周期已迁到 plugins/00_observe。
         self.observe_writer: TraceWriter | None = None
         self.observe_task: asyncio.Task[None] | None = None
         self.dashboard_server = None
@@ -92,21 +92,10 @@ class AppRuntime:
             return
         configure_default_shared_http_resources(self.http_resources)
         try:
-            # 初始化 observe writer
-            observe_db_path = self.workspace / "observe" / "observe.db"
-            self.observe_writer = TraceWriter(observe_db_path)
-            asyncio.create_task(
-                run_retention_if_needed(observe_db_path), name="observe_retention"
-            )
-
-            build_core_kwargs = {}
-            if "observe_writer" in inspect.signature(build_core_runtime).parameters:
-                build_core_kwargs["observe_writer"] = self.observe_writer
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
                 self.http_resources,
-                **build_core_kwargs,
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus
@@ -146,10 +135,6 @@ class AppRuntime:
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
-            if self.observe_writer is not None:
-                self.observe_task = asyncio.create_task(
-                    self.observe_writer.run(), name="observe_writer"
-                )
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
                 manual_consolidator=self.agent_loop,
@@ -168,7 +153,6 @@ class AppRuntime:
                 memory_store=self.memory_runtime.facade,
                 presence=self.presence,
                 agent_loop=self.agent_loop,
-                observe_writer=self.observe_writer,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
             )
             self.tasks.extend(proactive_tasks)

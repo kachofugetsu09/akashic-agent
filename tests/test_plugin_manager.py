@@ -18,6 +18,8 @@ from agent.plugins.registry import plugin_registry
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
+from bus.events_lifecycle import TurnCommitted
+from core.observe.db import open_db
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -84,6 +86,53 @@ async def test_load_hello_plugin():
     assert mgr.loaded_count >= 1
     loaded_names = {m["name"] for m in mgr.discover()}
     assert "hello" in loaded_names
+
+
+@pytest.mark.asyncio
+async def test_observe_plugin_writes_turn_trace(tmp_path: Path):
+    source = Path(__file__).parents[1] / "plugins" / "00_observe"
+    plugin_root = tmp_path / "plugins"
+    shutil.copytree(source, plugin_root / "00_observe")
+    bus = EventBus()
+    mgr = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=bus,
+        workspace=tmp_path,
+    )
+
+    await mgr.load_all()
+    await bus.emit(
+        TurnCommitted(
+            session_key="telegram:observe",
+            channel="telegram",
+            chat_id="observe",
+            input_message="你好",
+            persisted_user_message="你好",
+            assistant_response="收到",
+            tools_used=[],
+            thinking=None,
+            raw_reply="收到",
+            meme_tag=None,
+            meme_media_count=0,
+            tool_chain_raw=[],
+            tool_call_groups=[],
+            retrieval_raw=None,
+            post_reply_budget={"prompt_tokens": 8},
+            react_stats={"cache_prompt_tokens": 8, "cache_hit_tokens": 6},
+        )
+    )
+    await mgr.terminate_all()
+    await bus.aclose()
+
+    conn = open_db(tmp_path / "observe" / "observe.db")
+    try:
+        row = conn.execute(
+            """SELECT session_key, user_msg, llm_output, react_cache_hit_tokens
+               FROM turns WHERE source='agent'"""
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("telegram:observe", "你好", "收到", 6)
 
 
 @pytest.mark.asyncio

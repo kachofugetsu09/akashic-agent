@@ -201,6 +201,7 @@ class PostResponseMemoryWorker:
                     supersede_ids,
                     topic,
                 )
+                # DEPRECATED: observe 插件化后改为发布记忆写入事件。
                 if self._observe_writer is not None and self._current_run_session_key:
                     try:
                         from core.observe.events import MemoryWriteTrace

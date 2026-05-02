@@ -217,6 +217,7 @@ def register_observe_trace_consumers(
     event_bus: "EventBus",
     trace: "ObservabilityServices",
 ) -> None:
+    # DEPRECATED: observe 插件接管 TurnCommitted -> observe 写入。
     writer = trace.observe_writer
     if not isinstance(writer, _ObserveWriter):
         return

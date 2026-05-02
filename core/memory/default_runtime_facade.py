@@ -35,6 +35,7 @@ from core.memory.runtime_facade import (
 if TYPE_CHECKING:
     from agent.core.types import HistoryMessage
     from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
+    # DEPRECATED: retrieval trace 后续改成中立事件，由 observe 插件消费。
     from core.observe.events import RagQueryLog
     from core.memory.engine import MemoryEngine
     from core.memory.port import MemoryPort

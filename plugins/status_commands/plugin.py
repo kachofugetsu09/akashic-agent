@@ -153,11 +153,14 @@ class StatusCommands(Plugin):
 
     def before_turn_modules_early(self) -> list[object]:
         plugin_name = self.name or "status_commands"
+        observe_db_path = self.context.observe_db_path
+        if observe_db_path is None and self.context.workspace is not None:
+            observe_db_path = self.context.workspace / "observe" / "observe.db"
         return cast(
             "list[object]",
             [
                 MemoryStatusCommandModule(plugin_name),
-                KVCacheCommandModule(plugin_name, self.context.observe_db_path),
+                KVCacheCommandModule(plugin_name, observe_db_path),
             ],
         )
 
