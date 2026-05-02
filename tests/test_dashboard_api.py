@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-import importlib
 import sqlite3
-from collections.abc import Callable
 from datetime import datetime
-from pathlib import Path
-from typing import cast
 
 from fastapi.testclient import TestClient
 
@@ -14,9 +10,6 @@ from bootstrap.dashboard_api import create_dashboard_app
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
-
-_observe_db = importlib.import_module("plugins.00_observe.db")
-open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
 
 
 class _ManualConsolidator:
@@ -665,8 +658,24 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
 
 def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    conn = open_db(tmp_path / "observe" / "observe.db")
+    observe_dir = tmp_path / "observe"
+    observe_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(observe_dir / "observe.db")
     try:
+        conn.execute(
+            """
+            CREATE TABLE turns(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                source TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                user_msg TEXT,
+                llm_output TEXT NOT NULL DEFAULT '',
+                react_cache_prompt_tokens INTEGER,
+                react_cache_hit_tokens INTEGER
+            )
+            """
+        )
         conn.execute(
             """
             INSERT INTO turns(
