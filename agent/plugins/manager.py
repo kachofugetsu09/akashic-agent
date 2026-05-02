@@ -477,6 +477,11 @@ class _PluginToolHook(ToolHook):
             chat_id=ctx.request.chat_id,
             tool_name=ctx.request.tool_name,
             arguments=dict(ctx.current_arguments),
+            call_id=ctx.request.call_id,
+            source=ctx.request.source,
+            request_text=ctx.request.request_text,
+            tool_batch=ctx.request.tool_batch,
+            tool_batch_index=ctx.request.tool_batch_index,
         )
         # 2. 调插件 handler，返回值决定行为
         result = self._handler(event)

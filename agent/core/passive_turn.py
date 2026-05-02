@@ -18,7 +18,11 @@ from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.retrieval.protocol import RetrievalRequest
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
-from agent.tool_runtime import append_assistant_tool_calls, append_tool_result, tool_call_signature
+from agent.tool_runtime import (
+    append_assistant_tool_calls,
+    append_tool_result,
+    tool_call_batch_snapshot,
+)
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
 from agent.turns.outbound import OutboundDispatch, OutboundPort
@@ -97,7 +101,6 @@ logger = logging.getLogger(__name__)
 
 # ── 被动 turn 内联常量 ──────────────────────────────────────────
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
-_TOOL_LOOP_REPEAT_LIMIT = 3
 _SUMMARY_MAX_TOKENS = 512
 _INCOMPLETE_SUMMARY_PROMPT = """当前任务未在预算内完成，请直接输出给用户的中文收尾说明（不要提及系统/工具内部细节）。
 必须包含三点：
@@ -105,6 +108,15 @@ _INCOMPLETE_SUMMARY_PROMPT = """当前任务未在预算内完成，请直接输
 2) 目前还缺什么信息或步骤；
 3) 下一步你会怎么继续。
 禁止输出"已达到最大迭代次数"这类模板句；不要输出 JSON。"""
+
+
+def _is_tool_loop_guard_denial(exec_result: object) -> bool:
+    traces = getattr(exec_result, "pre_hook_trace", ()) or ()
+    return any(
+        getattr(item, "decision", "") == "deny"
+        and str(getattr(item, "reason", "")).startswith("tool_loop_guard:")
+        for item in traces
+    )
 
 class _NoopOutboundPort:
     async def dispatch(self, outbound: OutboundDispatch) -> bool:
@@ -835,12 +847,10 @@ class DefaultReasoner(Reasoner):
         tool_event_channel: str = "",
         tool_event_chat_id: str = "",
     ) -> ReasonerResult:
-        # 1. 初始化消息上下文、本轮工具轨迹、循环检测状态。
+        # 1. 初始化消息上下文、本轮工具轨迹。
         messages = initial_messages
         tools_used: list[str] = []
         tool_chain: list[dict] = []
-        last_tool_signature = ""
-        repeat_count = 0
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
         streamed = False
@@ -918,51 +928,32 @@ class DefaultReasoner(Reasoner):
                     iteration + 1,
                     [tc.name for tc in response.tool_calls],
                 )
-                signature = tool_call_signature(response.tool_calls)
-                if signature and signature == last_tool_signature:
-                    repeat_count += 1
-                else:
-                    repeat_count = 1
-                    last_tool_signature = signature
-
-                if repeat_count >= _TOOL_LOOP_REPEAT_LIMIT:
-                    logger.warning(
-                        "[循环检测] 工具调用连续重复%d次，强制收尾 (iteration=%d, signature=%s)",
-                        repeat_count,
-                        iteration + 1,
-                        signature[:80] if signature else "",
-                    )
-                    summary = await self._summarize_incomplete_progress(
-                        messages,
-                        reason="tool_call_loop",
-                        iteration=iteration + 1,
-                        tools_used=tools_used,
-                    )
-                    return self._build_result(
-                        reply=summary,
-                        tools_used=tools_used,
-                        tool_chain=tool_chain,
-                        visible_names=visible_names,
-                        thinking=None,
-                        streamed=False,
-                        react_input_samples=react_input_samples,
-                        cache_prompt_tokens=react_cache_prompt_tokens,
-                        cache_hit_tokens=react_cache_hit_tokens,
-                        cache_seen=react_cache_seen,
-                    )
-
                 append_assistant_tool_calls(
                     messages,
                     content=response.content,
                     tool_calls=response.tool_calls,
                     provider_fields=response.provider_fields,
                 )
+                tool_batch = tool_call_batch_snapshot(response.tool_calls)
 
                 # 6. 逐个执行本轮工具调用。
                 iter_calls: list[dict] = []
-                for tool_call in response.tool_calls:
+                for tool_batch_index, tool_call in enumerate(response.tool_calls):
                     # 6.1 deferred 工具未解锁时，先回填 select: 引导错误。
                     if visible_names is not None and tool_call.name not in visible_names:
+                        exec_result = await self._tool_executor.preflight(
+                            ToolExecutionRequest(
+                                call_id=tool_call.id,
+                                tool_name=tool_call.name,
+                                arguments=tool_call.arguments,
+                                source="passive",
+                                session_key=tool_event_session_key,
+                                channel=tool_event_channel,
+                                chat_id=tool_event_chat_id,
+                                tool_batch=tool_batch,
+                                tool_batch_index=tool_batch_index,
+                            )
+                        )
                         await self._observe_tool_call_started(
                             session_key=tool_event_session_key,
                             channel=tool_event_channel,
@@ -972,6 +963,73 @@ class DefaultReasoner(Reasoner):
                             tool_name=tool_call.name,
                             arguments=tool_call.arguments,
                         )
+                        if _is_tool_loop_guard_denial(exec_result):
+                            result = str(exec_result.output)
+                            append_tool_result(
+                                messages,
+                                tool_call_id=tool_call.id,
+                                content=result,
+                                tool_name=tool_call.name,
+                            )
+                            await self._observe_tool_call_completed(
+                                session_key=tool_event_session_key,
+                                channel=tool_event_channel,
+                                chat_id=tool_event_chat_id,
+                                iteration=iteration + 1,
+                                call_id=tool_call.id,
+                                tool_name=tool_call.name,
+                                arguments=tool_call.arguments,
+                                final_arguments=exec_result.final_arguments,
+                                status=exec_result.status,
+                                result_preview=support.log_preview(result),
+                            )
+                            iter_calls.append(
+                                {
+                                    "call_id": tool_call.id,
+                                    "name": tool_call.name,
+                                    "status": exec_result.status,
+                                    "arguments": tool_call.arguments,
+                                    "final_arguments": exec_result.final_arguments,
+                                    "pre_hook_trace": [
+                                        {
+                                            "hook_name": item.hook_name,
+                                            "event": item.event,
+                                            "matched": item.matched,
+                                            "decision": item.decision,
+                                            "reason": item.reason,
+                                            "extra_message": item.extra_message,
+                                        }
+                                        for item in exec_result.pre_hook_trace
+                                    ],
+                                    "result": result,
+                                }
+                            )
+                            for skipped in response.tool_calls[tool_batch_index + 1:]:
+                                append_tool_result(
+                                    messages,
+                                    tool_call_id=skipped.id,
+                                    content="工具调用已因重复循环检测跳过。",
+                                    tool_name=skipped.name,
+                                )
+                            tool_chain.append({"text": response.content, "calls": iter_calls})
+                            summary = await self._summarize_incomplete_progress(
+                                messages,
+                                reason="tool_call_loop",
+                                iteration=iteration + 1,
+                                tools_used=tools_used,
+                            )
+                            return self._build_result(
+                                reply=summary,
+                                tools_used=tools_used,
+                                tool_chain=tool_chain,
+                                visible_names=visible_names,
+                                thinking=None,
+                                streamed=False,
+                                react_input_samples=react_input_samples,
+                                cache_prompt_tokens=react_cache_prompt_tokens,
+                                cache_hit_tokens=react_cache_hit_tokens,
+                                cache_seen=react_cache_seen,
+                            )
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
                             tool_call.name,
@@ -1046,6 +1104,8 @@ class DefaultReasoner(Reasoner):
                             session_key=tool_event_session_key,
                             channel=tool_event_channel,
                             chat_id=tool_event_chat_id,
+                            tool_batch=tool_batch,
+                            tool_batch_index=tool_batch_index,
                         ),
                         # 真实工具执行入口仍是 ToolRegistry.execute；
                         # hook 只负责拦截与记录，不替代 registry。
@@ -1138,6 +1198,38 @@ class DefaultReasoner(Reasoner):
                             "result": normalized.preview(),
                         }
                     )
+                    if _is_tool_loop_guard_denial(exec_result):
+                        logger.warning(
+                            "[循环检测] 插件截断重复工具调用，进入收尾 (iteration=%d, tool=%s)",
+                            iteration + 1,
+                            tool_call.name,
+                        )
+                        for skipped in response.tool_calls[tool_batch_index + 1:]:
+                            append_tool_result(
+                                messages,
+                                tool_call_id=skipped.id,
+                                content="工具调用已因重复循环检测跳过。",
+                                tool_name=skipped.name,
+                            )
+                        tool_chain.append({"text": response.content, "calls": iter_calls})
+                        summary = await self._summarize_incomplete_progress(
+                            messages,
+                            reason="tool_call_loop",
+                            iteration=iteration + 1,
+                            tools_used=tools_used,
+                        )
+                        return self._build_result(
+                            reply=summary,
+                            tools_used=tools_used,
+                            tool_chain=tool_chain,
+                            visible_names=visible_names,
+                            thinking=None,
+                            streamed=False,
+                            react_input_samples=react_input_samples,
+                            cache_prompt_tokens=react_cache_prompt_tokens,
+                            cache_hit_tokens=react_cache_hit_tokens,
+                            cache_seen=react_cache_seen,
+                        )
 
                 # 7. 本轮工具执行完后，记录 tool_chain 并追加下一轮 loop_state 提示。
                 tool_chain_group = {"text": response.content, "calls": iter_calls}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Awaitable, Callable
 
+from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import (
     HookContext,
     HookTraceItem,
@@ -22,10 +23,10 @@ class HookExecutionError(RuntimeError):
 
 
 class ToolExecutor:
-    def __init__(self, hooks: Sequence[object] | None = None) -> None:
+    def __init__(self, hooks: Sequence[ToolHook] | None = None) -> None:
         self._hooks = list(hooks or [])
 
-    def add_hooks(self, hooks: Sequence[object]) -> None:
+    def add_hooks(self, hooks: Sequence[ToolHook]) -> None:
         self._hooks.extend(hooks)
 
     async def execute(
@@ -140,6 +141,44 @@ class ToolExecutor:
             extra_messages=extra_messages,
             pre_hook_trace=pre_trace,
             post_hook_trace=post_trace,
+        )
+
+    async def preflight(
+        self,
+        request: ToolExecutionRequest,
+    ) -> ToolExecutionResult:
+        current_arguments = dict(request.arguments)
+        extra_messages: list[str] = []
+        pre_trace: list[HookTraceItem] = []
+        try:
+            denied_reason, current_arguments = await self._run_pre_hooks(
+                request=request,
+                current_arguments=current_arguments,
+                extra_messages=extra_messages,
+                traces=pre_trace,
+            )
+        except HookExecutionError as exc:
+            return ToolExecutionResult(
+                status="error",
+                output=f"工具执行出错: {exc}",
+                final_arguments=dict(current_arguments),
+                extra_messages=extra_messages,
+                pre_hook_trace=pre_trace,
+            )
+        if denied_reason:
+            return ToolExecutionResult(
+                status="denied",
+                output=denied_reason,
+                final_arguments=dict(current_arguments),
+                extra_messages=extra_messages,
+                pre_hook_trace=pre_trace,
+            )
+        return ToolExecutionResult(
+            status="success",
+            output="",
+            final_arguments=dict(current_arguments),
+            extra_messages=extra_messages,
+            pre_hook_trace=pre_trace,
         )
 
     async def _run_pre_hooks(
