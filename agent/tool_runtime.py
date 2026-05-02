@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
 from agent.tools.base import Tool, ToolResult, normalize_tool_result
 
@@ -50,6 +51,23 @@ def tool_call_signature(tool_calls: list[Any]) -> str:
         args = json.dumps(tool_call.arguments, ensure_ascii=False, sort_keys=True)
         parts.append(f"{tool_call.name}:{args}")
     return "|".join(parts)
+
+
+def tool_call_batch_snapshot(tool_calls: Sequence[Any]) -> tuple[dict[str, Any], ...]:
+    batch: list[dict[str, Any]] = []
+    for tool_call in tool_calls:
+        raw_arguments: object = getattr(tool_call, "arguments", {})
+        snapshot_args: dict[str, Any] = {}
+        if isinstance(raw_arguments, dict):
+            for key, value in cast("dict[Any, Any]", raw_arguments).items():
+                snapshot_args[str(key)] = value
+        batch.append(
+            {
+                "name": str(getattr(tool_call, "name", "")),
+                "arguments": snapshot_args,
+            }
+        )
+    return tuple(batch)
 
 
 def format_tool_calls(tool_calls: list[Any]) -> list[dict[str, Any]]:

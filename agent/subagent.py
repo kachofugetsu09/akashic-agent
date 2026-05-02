@@ -26,7 +26,7 @@ from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
     prepare_toolset,
-    tool_call_signature,
+    tool_call_batch_snapshot,
 )
 from agent.tool_hooks.types import ToolExecutionResult
 from agent.tools.base import Tool, normalize_tool_result
@@ -56,7 +56,6 @@ _WARN_THRESHOLD = 5  # 剩余步数 <= 此值时开始提示
 _MAX_TOOL_RESULT_CHARS = 100_000  # 单条工具结果字符上限（约 ~25K tokens）
 _RECENT_TOOL_ROUNDS = 3  # 保留完整 tool result 的最近轮次数
 _CLEARED = "[已清除]"  # 旧 tool result 的占位符
-_TOOL_LOOP_REPEAT_LIMIT = 3  # 连续同签名工具调用达到该次数时判定循环
 _SUMMARY_MAX_TOKENS = 512
 _INCOMPLETE_SUMMARY_PROMPT = (
     "当前任务未在步骤预算内完成，请直接输出中文进度总结，不要 JSON。\n"
@@ -73,6 +72,15 @@ _FORCED_FINAL_SUMMARY_FALLBACK = (
     "这次后台任务已先停在当前进度。我已经完成了一部分关键步骤，"
     "但还有剩余工作未收束；下一次可从当前检查点继续推进。"
 )
+
+
+def _is_tool_loop_guard_denial(exec_result: object) -> bool:
+    traces = getattr(exec_result, "pre_hook_trace", ()) or ()
+    return any(
+        getattr(item, "decision", "") == "deny"
+        and str(getattr(item, "reason", "")).startswith("tool_loop_guard:")
+        for item in traces
+    )
 
 
 def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -132,6 +140,7 @@ class SubAgent:
         self.last_exit_reason: str = "idle"
         self.iterations_used: int = 0  # 实际使用的迭代次数
         self.tools_called: list[str] = []  # 实际调用的工具名称列表
+        self._run_seq = 0
         prepared = prepare_toolset(tools)
         self._tool_map: dict[str, Tool] = prepared.tool_map
         self._tool_schemas: list[dict[str, Any]] = prepared.schemas
@@ -151,11 +160,11 @@ class SubAgent:
         self.last_exit_reason = "running"
         self.iterations_used = 0
         self.tools_called = []
+        self._run_seq += 1
+        tool_session_key = f"subagent:{id(self)}:{self._run_seq}"
         if self._system_prompt:
             messages.append({"role": "system", "content": self._system_prompt})
         messages.append({"role": "user", "content": task})
-        last_tool_signature = ""
-        repeat_count = 0
         for iteration in range(self._max_iterations):
             self.iterations_used = iteration + 1
             try:
@@ -176,28 +185,6 @@ class SubAgent:
                 self.last_exit_reason = "completed"
                 return (response.content or "").strip()
 
-            signature = tool_call_signature(response.tool_calls)
-            if signature and signature == last_tool_signature:
-                repeat_count += 1
-            else:
-                repeat_count = 1
-                last_tool_signature = signature
-
-            if repeat_count >= _TOOL_LOOP_REPEAT_LIMIT:
-                logger.warning(
-                    "[subagent] 检测到工具调用循环 signature=%s repeat=%d，提前收尾",
-                    signature[:160],
-                    repeat_count,
-                )
-                self.last_exit_reason = "tool_loop"
-                if self._mandatory_exit_tools:
-                    await self._run_mandatory_exit(messages)
-                return await self._summarize_incomplete_progress(
-                    messages,
-                    reason="tool_call_loop",
-                    iteration=iteration + 1,
-                )
-
             # 追加 assistant 消息（含 tool_calls）
             append_assistant_tool_calls(
                 messages,
@@ -205,9 +192,10 @@ class SubAgent:
                 tool_calls=response.tool_calls,
                 provider_fields=response.provider_fields,
             )
+            tool_batch = tool_call_batch_snapshot(response.tool_calls)
 
             # 执行工具
-            for tc in response.tool_calls:
+            for tool_batch_index, tc in enumerate(response.tool_calls):
                 logger.info(
                     "[subagent] 调用工具 %s args=%s",
                     tc.name,
@@ -217,6 +205,9 @@ class SubAgent:
                     tc.id,
                     tc.name,
                     tc.arguments,
+                    session_key=tool_session_key,
+                    tool_batch=tool_batch,
+                    tool_batch_index=tool_batch_index,
                 )
                 if (
                     exec_result.status == "success"
@@ -247,6 +238,26 @@ class SubAgent:
                     content=normalized,
                     tool_name=tc.name,
                 )
+                if _is_tool_loop_guard_denial(exec_result):
+                    logger.warning(
+                        "[subagent] 插件截断重复工具调用 tool=%s，提前收尾",
+                        tc.name,
+                    )
+                    self.last_exit_reason = "tool_loop"
+                    for skipped in response.tool_calls[tool_batch_index + 1:]:
+                        append_tool_result(
+                            messages,
+                            tool_call_id=skipped.id,
+                            content="工具调用已因重复循环检测跳过。",
+                            tool_name=skipped.name,
+                        )
+                    if self._mandatory_exit_tools:
+                        await self._run_mandatory_exit(messages, tool_session_key)
+                    return await self._summarize_incomplete_progress(
+                        messages,
+                        reason="tool_call_loop",
+                        iteration=iteration + 1,
+                    )
 
             remaining = self._max_iterations - iteration - 1
             if remaining == 0:
@@ -259,7 +270,7 @@ class SubAgent:
 
         logger.warning("[subagent] 已达到最大迭代次数 %d", self._max_iterations)
         if self._mandatory_exit_tools:
-            await self._run_mandatory_exit(messages)
+            await self._run_mandatory_exit(messages, tool_session_key)
         return await self._force_final_summary(
             messages,
             reason="max_iterations",
@@ -318,7 +329,11 @@ class SubAgent:
         self.last_exit_reason = "forced_summary_fallback"
         return _FORCED_FINAL_SUMMARY_FALLBACK
 
-    async def _run_mandatory_exit(self, messages: list[dict[str, Any]]) -> None:
+    async def _run_mandatory_exit(
+        self,
+        messages: list[dict[str, Any]],
+        session_key: str,
+    ) -> None:
         """强制收尾：逐个调用 mandatory_exit_tools 中的工具。"""
         for tool_name in self._mandatory_exit_tools:
             if tool_name not in self._tool_map:
@@ -351,6 +366,7 @@ class SubAgent:
                 tc.id,
                 tc.name,
                 tc.arguments,
+                session_key=session_key,
             )
             normalized = normalize_tool_result(exec_result.output)
             logger.info(
@@ -370,6 +386,10 @@ class SubAgent:
         call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        *,
+        session_key: str = "",
+        tool_batch: tuple[dict[str, Any], ...] = (),
+        tool_batch_index: int = 0,
     ):
         tool = self._tool_map.get(tool_name)
         if tool is None:
@@ -388,6 +408,9 @@ class SubAgent:
                 tool_name=tool_name,
                 arguments=arguments,
                 source="subagent",
+                session_key=session_key,
+                tool_batch=tool_batch,
+                tool_batch_index=tool_batch_index,
             ),
             _invoke,
         )

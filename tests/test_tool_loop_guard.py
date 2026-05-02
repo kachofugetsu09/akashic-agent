@@ -1,4 +1,6 @@
 import asyncio
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -8,16 +10,21 @@ import pytest
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.memory import MemoryStore
+from agent.plugins.manager import PluginManager
 from agent.provider import LLMResponse, ToolCall
 from agent.subagent import SubAgent
+from agent.tool_hooks.base import ToolHook
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from bus.event_bus import EventBus
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
 from core.memory.port import DefaultMemoryPort
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _DummyTool(Tool):
@@ -122,10 +129,17 @@ class _ExitTool(Tool):
         return "noted"
 
 
-def _make_agent_loop(tmp_path: Path, provider: _FakeProvider, tool: Tool) -> AgentLoop:
+def _make_agent_loop_with_tools(
+    tmp_path: Path,
+    provider: _FakeProvider,
+    tools_to_register: list[Tool],
+    *,
+    tool_search_enabled: bool = False,
+) -> AgentLoop:
     tools = ToolRegistry()
-    tools.register(tool)
-    return AgentLoop(
+    for tool in tools_to_register:
+        tools.register(tool)
+    loop = AgentLoop(
         AgentLoopDeps(
             bus=MagicMock(),
             provider=cast(Any, provider),
@@ -134,8 +148,33 @@ def _make_agent_loop(tmp_path: Path, provider: _FakeProvider, tool: Tool) -> Age
             workspace=tmp_path,
             memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
         ),
-        AgentLoopConfig(llm=LLMConfig(max_iterations=10)),
+        AgentLoopConfig(
+            llm=LLMConfig(
+                max_iterations=10,
+                tool_search_enabled=tool_search_enabled,
+            )
+        ),
     )
+    loop.add_tool_hooks(_tool_loop_guard_hooks())
+    return loop
+
+
+def _make_agent_loop(tmp_path: Path, provider: _FakeProvider, tool: Tool) -> AgentLoop:
+    return _make_agent_loop_with_tools(tmp_path, provider, [tool])
+
+
+def _tool_loop_guard_hooks() -> list[ToolHook]:
+    with tempfile.TemporaryDirectory() as tmp:
+        plugin_dir = Path(tmp) / "tool_loop_guard"
+        shutil.copytree(_PROJECT_ROOT / "plugins" / "tool_loop_guard", plugin_dir)
+        mgr = PluginManager(plugin_dirs=[Path(tmp)], event_bus=EventBus())
+        asyncio.run(mgr.load_all())
+        return mgr.tool_hooks
+
+
+def _install_tool_loop_guard(subagent: SubAgent) -> SubAgent:
+    subagent.add_tool_hooks(_tool_loop_guard_hooks())
+    return subagent
 
 
 def test_agent_loop_breaks_on_repeated_same_signature_and_returns_summary(tmp_path):
@@ -161,6 +200,73 @@ def test_agent_loop_breaks_on_repeated_same_signature_and_returns_summary(tmp_pa
     # 第三次重复签名会被提前拦截，不应执行第三次工具
     assert len(tool.calls) == 2
     assert tools_used == ["dummy", "dummy"]
+
+
+def test_agent_loop_breaks_on_repeated_multi_tool_batch_and_keeps_chain_closed(tmp_path):
+    tool_a = _DummyTool("a")
+    tool_b = _DummyTool("b")
+    provider = _StrictProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("a1", "a", {"x": 1}),
+                    ToolCall("b1", "b", {"x": 2}),
+                ],
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("a2", "a", {"x": 1}),
+                    ToolCall("b2", "b", {"x": 2}),
+                ],
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("a3", "a", {"x": 1}),
+                    ToolCall("b3", "b", {"x": 2}),
+                ],
+            ),
+            LLMResponse(content="已总结当前进度", tool_calls=[]),
+        ]
+    )
+    loop = _make_agent_loop_with_tools(tmp_path, provider, [tool_a, tool_b])
+
+    final, tools_used, _, _vn, _ = asyncio.run(
+        loop._run_agent_loop([{"role": "user", "content": "test"}])
+    )
+
+    assert "已总结" in final
+    assert tools_used == ["a", "b", "a", "b"]
+    assert len(tool_a.calls) == 2
+    assert len(tool_b.calls) == 2
+
+
+def test_agent_loop_breaks_on_repeated_unlocked_tool_request(tmp_path):
+    tool = _DummyTool("hidden_tool")
+    provider = _StrictProvider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("h1", "hidden_tool", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("h2", "hidden_tool", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("h3", "hidden_tool", {"x": 1})]),
+            LLMResponse(content="已总结当前进度", tool_calls=[]),
+        ]
+    )
+    loop = _make_agent_loop_with_tools(
+        tmp_path,
+        provider,
+        [tool],
+        tool_search_enabled=True,
+    )
+
+    final, tools_used, _, _vn, _ = asyncio.run(
+        loop._run_agent_loop([{"role": "user", "content": "test"}])
+    )
+
+    assert "已总结" in final
+    assert tools_used == []
+    assert len(tool.calls) == 0
 
 
 def test_agent_loop_does_not_false_positive_when_args_change(tmp_path):
@@ -216,12 +322,58 @@ def test_subagent_marks_tool_loop_and_summarizes():
     subagent = SubAgent(
         provider=cast(Any, provider), model="m", tools=[tool], max_iterations=10
     )
+    _install_tool_loop_guard(subagent)
 
     result = asyncio.run(subagent.run("do work"))
 
     assert subagent.last_exit_reason == "tool_loop"
     assert "最大迭代" not in result
     assert len(tool.calls) == 2
+
+
+def test_subagent_breaks_on_repeated_multi_tool_batch_with_closed_chain():
+    tool_a = _DummyTool("a")
+    tool_b = _DummyTool("b")
+    provider = _StrictProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("a1", "a", {"x": 1}),
+                    ToolCall("b1", "b", {"x": 2}),
+                ],
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("a2", "a", {"x": 1}),
+                    ToolCall("b2", "b", {"x": 2}),
+                ],
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("a3", "a", {"x": 1}),
+                    ToolCall("b3", "b", {"x": 2}),
+                ],
+            ),
+            LLMResponse(content="已总结当前进度", tool_calls=[]),
+        ]
+    )
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[tool_a, tool_b],
+        max_iterations=10,
+    )
+    _install_tool_loop_guard(subagent)
+
+    result = asyncio.run(subagent.run("do work"))
+
+    assert subagent.last_exit_reason == "tool_loop"
+    assert "已总结" in result
+    assert len(tool_a.calls) == 2
+    assert len(tool_b.calls) == 2
 
 
 def test_subagent_no_false_positive_when_same_tool_but_different_args():
@@ -236,6 +388,7 @@ def test_subagent_no_false_positive_when_same_tool_but_different_args():
     subagent = SubAgent(
         provider=cast(Any, provider), model="m", tools=[tool], max_iterations=10
     )
+    _install_tool_loop_guard(subagent)
 
     result = asyncio.run(subagent.run("do work"))
 
@@ -257,6 +410,7 @@ def test_subagent_ignores_repeated_task_output_in_loop_guard():
     subagent = SubAgent(
         provider=cast(Any, provider), model="m", tools=[tool], max_iterations=10
     )
+    _install_tool_loop_guard(subagent)
 
     result = asyncio.run(subagent.run("看后台任务状态"))
 
@@ -278,6 +432,7 @@ def test_subagent_ignores_repeated_task_stop_in_loop_guard():
     subagent = SubAgent(
         provider=cast(Any, provider), model="m", tools=[tool], max_iterations=10
     )
+    _install_tool_loop_guard(subagent)
 
     result = asyncio.run(subagent.run("停止后台任务"))
 
@@ -571,6 +726,7 @@ def test_subagent_loop_path_runs_mandatory_exit_with_closed_chain():
         max_iterations=10,
         mandatory_exit_tools=["checkpoint"],
     )
+    _install_tool_loop_guard(subagent)
 
     result = asyncio.run(subagent.run("do work"))
 

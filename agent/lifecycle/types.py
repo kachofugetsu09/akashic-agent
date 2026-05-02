@@ -236,3 +236,8 @@ class PreToolCtx:
     chat_id: str
     tool_name: str
     arguments: dict[str, Any]
+    call_id: str = ""
+    source: str = ""
+    request_text: str = ""
+    tool_batch: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    tool_batch_index: int = 0
