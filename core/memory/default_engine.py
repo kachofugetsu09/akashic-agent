@@ -121,6 +121,8 @@ class DefaultMemoryEngine:
                 or f"{scope.session_key}@post_response"
             ),
             session_key=scope.session_key,
+            channel=scope.channel,
+            chat_id=scope.chat_id,
         )
 
         return MemoryIngestResult(

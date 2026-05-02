@@ -7,7 +7,6 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 
 from bootstrap.dashboard_api import create_dashboard_app
-from core.observe.db import open_db
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
@@ -657,72 +656,26 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
     assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
 
 
-def test_cache_dashboard_summary_uses_observe_turns(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    conn = open_db(tmp_path / "observe" / "observe.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO turns(
-                ts, source, session_key, user_msg, llm_output,
-                react_cache_prompt_tokens, react_cache_hit_tokens
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "2026-04-19T03:10:00+00:00",
-                "agent",
-                "telegram:100",
-                "hi",
-                "ok",
-                100,
-                40,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO turns(
-                ts, source, session_key, user_msg, llm_output,
-                react_cache_prompt_tokens, react_cache_hit_tokens
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "2026-04-19T03:20:00+00:00",
-                "agent",
-                "telegram:100",
-                "again",
-                "ok",
-                300,
-                260,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    client = TestClient(create_dashboard_app(tmp_path))
-
-    resp = client.get("/api/dashboard/cache/summary")
-
-    assert resp.status_code == 200
-    payload = resp.json()
-    assert payload["turn_count"] == 2
-    assert payload["tracked_turn_count"] == 2
-    assert payload["prompt_tokens"] == 400
-    assert payload["hit_tokens"] == 300
-    assert payload["miss_tokens"] == 100
-    assert payload["hit_rate"] == 0.75
-    assert payload["last_tracked_at"] == "2026-04-19T03:20:00+00:00"
-    assert payload["recent_turns"][0]["ts"] == "2026-04-19T03:20:00+00:00"
-    assert payload["recent_turns"][0]["hit_rate"] == 260 / 300
-    assert payload["recent_turns"][0]["hit_tokens"] == 260
-    assert payload["recent_turns"][0]["miss_tokens"] == 40
-    assert payload["recent_turns"][0]["user_preview"] == "again"
-    assert payload["recent_turns"][1]["hit_rate"] == 0.4
-
-
 def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    conn = open_db(tmp_path / "observe" / "observe.db")
+    observe_dir = tmp_path / "observe"
+    observe_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(observe_dir / "observe.db")
     try:
+        conn.execute(
+            """
+            CREATE TABLE turns(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                source TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                user_msg TEXT,
+                llm_output TEXT NOT NULL DEFAULT '',
+                react_cache_prompt_tokens INTEGER,
+                react_cache_hit_tokens INTEGER
+            )
+            """
+        )
         conn.execute(
             """
             INSERT INTO turns(

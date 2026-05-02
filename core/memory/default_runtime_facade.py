@@ -20,6 +20,7 @@ from core.memory.engine import (
     RememberRequest,
     RememberResult,
 )
+from core.memory.events import RetrievalCompleted, RetrievalHitSummary
 from core.memory.runtime_facade import (
     ConsolidationRunner,
     ContextRetrievalRequest,
@@ -35,7 +36,7 @@ from core.memory.runtime_facade import (
 if TYPE_CHECKING:
     from agent.core.types import HistoryMessage
     from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
-    from core.observe.events import RagQueryLog
+    from bus.publisher import EventPublisher
     from core.memory.engine import MemoryEngine
     from core.memory.port import MemoryPort
     from core.memory.profile import ProfileMaintenanceStore
@@ -242,8 +243,10 @@ class DefaultRetrievalSemantics:
         llm: "LLMServices",
         workspace: Path,
         light_model: str,
+        event_publisher: "EventPublisher | None" = None,
     ) -> None:
         self._config = config
+        self._event_publisher = event_publisher
         self._gate_resolver = _GateResolver(
             memory=memory,
             config=config,
@@ -261,7 +264,7 @@ class DefaultRetrievalSemantics:
         request: ContextRetrievalRequest,
     ) -> ContextRetrievalResult:
         retrieved_block = ""
-        rag_trace: RagQueryLog | None = None
+        retrieval_event: RetrievalCompleted | None = None
         gate_type = "history_route"
         sufficiency_trace: dict[str, object] = _empty_sufficiency_state()
         p_items: list[dict] = []
@@ -314,8 +317,10 @@ class DefaultRetrievalSemantics:
             )
 
             # 4. 最后统一组 trace / injected block，交给上层继续编排。
-            rag_trace = self._finalizer.finalize(
+            retrieval_event = self._finalizer.finalize(
                 session_key=request.session_key,
+                channel=request.channel,
+                chat_id=request.chat_id,
                 message=request.message,
                 p_items=p_items,
                 h_items=h_items,
@@ -327,7 +332,7 @@ class DefaultRetrievalSemantics:
             )
         except Exception as e:
             logger.warning("memory2 retrieve 失败，跳过: %s", e)
-            rag_trace = self._finalizer.trace_exception(
+            retrieval_event = self._finalizer.trace_exception(
                 session_key=request.session_key,
                 message=request.message,
                 channel=request.channel,
@@ -336,6 +341,8 @@ class DefaultRetrievalSemantics:
                 sufficiency_trace=sufficiency_trace,
                 error=e,
             )
+        if retrieval_event is not None and self._event_publisher is not None:
+            await self._event_publisher.fanout(retrieval_event)
         return ContextRetrievalResult(
             normative_hits=list(p_items),
             episodic_hits=list(h_items),
@@ -350,7 +357,10 @@ class DefaultRetrievalSemantics:
             hyde_hypothesis=hyde_hypothesis,
             scope_mode=h_scope_mode,
             sufficiency_trace=dict(sufficiency_trace),
-            raw={"rag_trace": rag_trace, "rewritten_query": rewritten_query},
+            raw={
+                "retrieval_event": retrieval_event,
+                "rewritten_query": rewritten_query,
+            },
         )
 
 
@@ -480,6 +490,8 @@ class _MemoryRetrievalFinalizer:
         self,
         *,
         session_key: str,
+        channel: str,
+        chat_id: str,
         message: str,
         p_items: list[dict],
         h_items: list[dict],
@@ -488,9 +500,11 @@ class _MemoryRetrievalFinalizer:
         rewritten_query: str,
         route_decision: str,
         config: "MemoryConfig",
-    ) -> "RagQueryLog":
+    ) -> RetrievalCompleted:
         return _finalize_memory_retrieval(
             session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
             message=message,
             p_items=p_items,
             h_items=h_items,
@@ -511,9 +525,11 @@ class _MemoryRetrievalFinalizer:
         gate_type: str,
         sufficiency_trace: dict[str, object],
         error: Exception,
-    ) -> "RagQueryLog":
-        return _build_rag_query_log(
+    ) -> RetrievalCompleted:
+        return _build_retrieval_completed(
             session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
             user_msg=message,
             rewritten_query=message,
             p_items=[],
@@ -1065,6 +1081,8 @@ def _dedupe_ids(ids: list[str]) -> list[str]:
 def _finalize_memory_retrieval(
     *,
     session_key: str,
+    channel: str,
+    chat_id: str,
     message: str,
     p_items: list[dict],
     h_items: list[dict],
@@ -1073,10 +1091,12 @@ def _finalize_memory_retrieval(
     rewritten_query: str,
     route_decision: str,
     config: "MemoryConfig",
-) -> "RagQueryLog":
+) -> RetrievalCompleted:
     _log_memory_injection([i for i in p_items + h_items if str(i.get("id", "")) in set(injected_item_ids)])
-    return _build_rag_query_log(
+    return _build_retrieval_completed(
         session_key=session_key,
+        channel=channel,
+        chat_id=chat_id,
         user_msg=message,
         rewritten_query=rewritten_query,
         p_items=p_items,
@@ -1125,9 +1145,11 @@ def _has_procedure_guard_hit(
     )
 
 
-def _build_rag_query_log(
+def _build_retrieval_completed(
     *,
     session_key: str,
+    channel: str,
+    chat_id: str,
     user_msg: str,
     rewritten_query: str,
     p_items: list[dict],
@@ -1136,13 +1158,11 @@ def _build_rag_query_log(
     injected_id_set: set[str],
     route_decision: str | None = None,
     error: str | None = None,
-) -> "RagQueryLog":
-    from core.observe.events import RagHitLog, RagQueryLog
-
-    hits: list[RagHitLog] = []
+) -> RetrievalCompleted:
+    hits: list[RetrievalHitSummary] = []
     for item in p_items + h_items:
         item_id = str(item.get("id", "") or "")
-        hits.append(RagHitLog(
+        hits.append(RetrievalHitSummary(
             item_id=item_id,
             memory_type=str(item.get("memory_type", "") or ""),
             score=float(item.get("score", 0.0) or 0.0),
@@ -1152,9 +1172,10 @@ def _build_rag_query_log(
             forced=bool(item.get("forced", False)),
         ))
 
-    return RagQueryLog(
-        caller="passive",
+    return RetrievalCompleted(
         session_key=session_key,
+        channel=channel,
+        chat_id=chat_id,
         query=rewritten_query,
         orig_query=user_msg if user_msg != rewritten_query else None,
         aux_queries=[hyde_hypothesis] if hyde_hypothesis else [],

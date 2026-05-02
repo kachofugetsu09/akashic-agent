@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from agent.scheduler import SchedulerService
     from agent.tools.message_push import MessagePushTool
     from agent.tools.registry import ToolRegistry
+    from bus.publisher import EventPublisher
     from bus.queue import MessageBus
     from core.net.http import SharedHttpResources
 
@@ -27,7 +28,7 @@ class ToolsetDeps:
     bus: "MessageBus | None" = None
     scheduler: "SchedulerService | None" = None
     memory_port: object | None = None
-    observe_writer: object | None = None
+    event_publisher: "EventPublisher | None" = None
 
 
 @dataclass

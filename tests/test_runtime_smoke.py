@@ -191,7 +191,7 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert "[llm.vl]" in config_text
     assert 'model = "qwen-vl-plus"' in config_text
     assert (workspace / "sessions.db").exists()
-    assert (workspace / "observe" / "observe.db").exists()
+    assert (workspace / "observe").is_dir()
     assert (workspace / "memory" / "consolidation_writes.db").exists()
     assert (workspace / "memory" / "journal").is_dir()
     assert (workspace / "memory" / "memory2.db").exists()

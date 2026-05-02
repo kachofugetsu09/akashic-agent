@@ -54,7 +54,6 @@ class AgentTickDeps:
     deduper: Any | None
     rng: Any
     workspace_context_fn: Callable[[], str]
-    observe_writer: Any | None
     shared_tools: ToolRegistry | None = None
     turn_orchestrator: TurnOrchestrator | None = None
     pool: McpClientPool | None = None

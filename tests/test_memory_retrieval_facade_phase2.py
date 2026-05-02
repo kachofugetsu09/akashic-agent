@@ -26,7 +26,7 @@ async def test_retrieval_pipeline_prefers_facade_retrieve_context(tmp_path: Path
     facade.retrieve_context = AsyncMock(
         return_value=ContextRetrievalResult(
             text_block="facade block",
-            raw={"rag_trace": None},
+            raw={"retrieval_event": None},
         )
     )
     pipeline = DefaultMemoryRetrievalPipeline(
@@ -142,7 +142,7 @@ async def test_default_retrieval_semantics_returns_rich_context_result(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_retrieval_pipeline_builds_trace_from_structured_context_without_rag_trace(
+async def test_retrieval_pipeline_builds_trace_from_structured_context_without_raw_event(
     tmp_path: Path,
 ):
     facade = MagicMock()

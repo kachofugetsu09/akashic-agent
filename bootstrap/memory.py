@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from agent.config_models import Config
 from agent.provider import LLMProvider
@@ -13,6 +13,9 @@ from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from memory2.post_response_worker import PostResponseMemoryWorker
 
+if TYPE_CHECKING:
+    from bus.publisher import EventPublisher
+
 
 def build_memory_runtime(
     config: Config,
@@ -21,7 +24,7 @@ def build_memory_runtime(
     provider: LLMProvider,
     light_provider: LLMProvider | None,
     http_resources: SharedHttpResources,
-    observe_writer=None,
+    event_publisher: "EventPublisher | None" = None,
 ) -> MemoryRuntime:
     from agent.memory import MemoryStore
     from agent.skills import SkillsLoader
@@ -113,7 +116,7 @@ def build_memory_runtime(
         retriever=retriever,
         light_provider=light_provider or provider,
         light_model=config.light_model or config.model,
-        observe_writer=observe_writer,
+        event_publisher=event_publisher,
     )
     from bootstrap.wiring import MemoryEngineBuildDeps, resolve_memory_engine_builder
 

@@ -31,7 +31,6 @@ class TurnState:
     session_key: str
     dispatch_outbound: bool
     session: SessionLike | None = None
-    retrieval_raw: object | None = None
     extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
 

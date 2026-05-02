@@ -122,7 +122,6 @@ class _BuildTurnCommittedModule:
             tool_chain_raw=copy.deepcopy(tool_chain_list),
             tool_call_groups=to_tool_call_groups(tool_chain_list),
             timestamp=msg.timestamp,
-            retrieval_raw=state.retrieval_raw,
             post_reply_budget=dict(cast(dict[str, int], frame.slots[_BUDGET_SLOT])),
             react_stats=dict(cast(dict[str, int], frame.slots[_REACT_STATS_SLOT])),
             extra=dict(cast(dict[str, object], frame.slots[_EXTRA_SLOT])),

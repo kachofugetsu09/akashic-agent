@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from core.observe.db import open_db
+from .db import open_db
 
 
 @dataclass(frozen=True)

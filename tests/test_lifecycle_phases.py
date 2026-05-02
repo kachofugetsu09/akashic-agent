@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import importlib
+import sqlite3
+from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
@@ -15,7 +19,6 @@ from agent.core.runtime_support import TurnRunResult
 from agent.core.types import ContextBundle
 from agent.lifecycle.phase import Phase
 from agent.tools.registry import ToolRegistry
-from core.observe.db import open_db as open_observe_db
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import TurnCommitted
@@ -66,6 +69,12 @@ from agent.prompting import PromptSectionRender
 from agent.turns.outbound import OutboundDispatch
 from session.manager import SessionManager
 
+_observe_db = importlib.import_module("plugins.00_observe.db")
+open_observe_db = cast(
+    Callable[[Path], sqlite3.Connection],
+    getattr(_observe_db, "open_db"),
+)
+
 _now = datetime.now()
 
 
@@ -110,8 +119,8 @@ class _KVCachePluginModule:
     requires = ("session:session",)
     produces = ("session:ctx",)
 
-    def __init__(self, observe_db_path) -> None:
-        self._observe_db_path = observe_db_path
+    def __init__(self, db_path) -> None:
+        self._db_path = db_path
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         if "session:ctx" in frame.slots:
@@ -130,7 +139,7 @@ class _KVCachePluginModule:
             retrieval_trace_raw=None,
             history_messages=(),
             abort=True,
-            abort_reply=_build_kvcache_reply(state, self._observe_db_path),
+            abort_reply=_build_kvcache_reply(state, self._db_path),
         )
         return frame
 
@@ -160,10 +169,10 @@ def _format_memory_status_reply(messages: list[dict[str, object]], last_consolid
     return "\n".join(lines)
 
 
-def _build_kvcache_reply(state: TurnState, observe_db_path) -> str:
-    if not observe_db_path or not observe_db_path.exists():
+def _build_kvcache_reply(state: TurnState, db_path) -> str:
+    if not db_path or not db_path.exists():
         return "暂无 KVCache 数据（observe 数据库不存在）。"
-    conn = open_observe_db(observe_db_path)
+    conn = open_observe_db(db_path)
     try:
         rows = conn.execute(
             """SELECT llm_output, ts, react_cache_prompt_tokens, react_cache_hit_tokens
@@ -283,7 +292,6 @@ async def test_before_turn_setup_fills_turn_state():
     ctx = await phase.run(state)
 
     assert state.session is session
-    assert state.retrieval_raw == {"trace": 1}
     assert ctx.skill_names == ["search"]
     assert ctx.retrieved_memory_block == "block_text"
     assert ctx.retrieval_trace_raw == {"trace": 1}
