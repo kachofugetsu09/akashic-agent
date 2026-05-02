@@ -283,7 +283,6 @@ async def test_before_turn_setup_fills_turn_state():
     ctx = await phase.run(state)
 
     assert state.session is session
-    assert state.retrieval_raw == {"trace": 1}
     assert ctx.skill_names == ["search"]
     assert ctx.retrieved_memory_block == "block_text"
     assert ctx.retrieval_trace_raw == {"trace": 1}

@@ -86,7 +86,6 @@ def _make_loop(
     tmp_path: Path,
     *,
     retrieval_pipeline: MemoryRetrievalPipeline | None = None,
-    observe_writer: object | None = None,
 ) -> AgentLoop:
     tools = ToolRegistry()
     tools.register(_NoopTool())
@@ -100,7 +99,6 @@ def _make_loop(
             workspace=tmp_path,
             memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
             retrieval_pipeline=retrieval_pipeline,
-            observe_writer=observe_writer,
         ),
         AgentLoopConfig(),
     )
@@ -454,20 +452,13 @@ def test_agent_loop_uses_custom_retrieval_pipeline(tmp_path: Path):
     assert run_kwargs["base_history"] is None
 
 
-def test_agent_loop_observes_passive_turn_trace_from_event(tmp_path: Path):
-    class _Writer:
-        def __init__(self) -> None:
-            self.events: list[object] = []
-
-        def emit(self, event: object) -> None:
-            self.events.append(event)
-
-    writer = _Writer()
+def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
     loop = _make_loop(
         tmp_path,
         retrieval_pipeline=_CustomRetrieval(block="MEM_BLOCK"),
-        observe_writer=writer,
     )
+    turn_events: list[TurnCommitted] = []
+    loop._event_bus.on(TurnCommitted, lambda event: turn_events.append(event))
     session = MagicMock()
     session.key = "cli:1"
     session.messages = []
@@ -513,15 +504,14 @@ def test_agent_loop_observes_passive_turn_trace_from_event(tmp_path: Path):
 
     asyncio.run(_process_and_drain())
 
-    assert writer.events
-    turn_event = cast(Any, writer.events[0])
-    assert turn_event.source == "agent"
+    assert turn_events
+    turn_event = turn_events[0]
     assert turn_event.session_key == "cli:1"
-    assert turn_event.user_msg == "hello"
-    assert turn_event.llm_output == "ok"
-    assert turn_event.tool_calls[0]["name"] == "noop"
-    assert turn_event.react_iteration_count == 1
-    assert turn_event.react_input_sum_tokens == 100
+    assert turn_event.persisted_user_message == "hello"
+    assert turn_event.assistant_response == "ok"
+    assert turn_event.tool_chain_raw[0]["calls"][0]["name"] == "noop"
+    assert turn_event.react_stats["iteration_count"] == 1
+    assert turn_event.react_stats["turn_input_sum_tokens"] == 100
 
 
 def test_request_interrupt_uses_active_turn_state_snapshot(tmp_path: Path):

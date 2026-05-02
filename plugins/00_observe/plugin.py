@@ -9,6 +9,7 @@ from typing import Protocol, cast, runtime_checkable
 
 from agent.plugins import Plugin
 from bus.events_lifecycle import TurnCommitted
+from core.memory.events import MemoryWritten, RetrievalCompleted
 from core.observe.retention import run_retention_if_needed
 from core.observe.writer import TraceWriter
 
@@ -39,6 +40,8 @@ class ObservePlugin(Plugin):
             name="observe_retention",
         )
         self.context.event_bus.on(TurnCommitted, self._observe_turn_committed)
+        self.context.event_bus.on(RetrievalCompleted, self._observe_retrieval)
+        self.context.event_bus.on(MemoryWritten, self._observe_memory_written)
 
     async def terminate(self) -> None:
         for task in (
@@ -56,6 +59,18 @@ class ObservePlugin(Plugin):
         if not isinstance(writer, _ObserveWriter):
             return
         _emit_turn_trace(writer, event)
+
+    def _observe_retrieval(self, event: RetrievalCompleted) -> None:
+        writer = getattr(self, "_writer", None)
+        if not isinstance(writer, _ObserveWriter):
+            return
+        writer.emit(_to_rag_query_log(event))
+
+    def _observe_memory_written(self, event: MemoryWritten) -> None:
+        writer = getattr(self, "_writer", None)
+        if not isinstance(writer, _ObserveWriter):
+            return
+        writer.emit(_to_memory_write_trace(event))
 
 
 def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
@@ -97,13 +112,52 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
             react_cache_hit_tokens=react_stats.get("cache_hit_tokens"),
         )
     )
-    if event.retrieval_raw is not None:
-        writer.emit(event.retrieval_raw)
     logger.info(
-        "[observe] turn_trace 已入队 session=%s tool_calls=%d retrieval=%s",
+        "[observe] turn_trace 已入队 session=%s tool_calls=%d",
         event.session_key,
         len(tool_calls),
-        event.retrieval_raw is not None,
+    )
+
+
+def _to_rag_query_log(event: RetrievalCompleted):
+    from core.observe.events import RagHitLog, RagQueryLog
+
+    return RagQueryLog(
+        caller="passive",
+        session_key=event.session_key,
+        query=event.query,
+        orig_query=event.orig_query,
+        aux_queries=list(event.aux_queries),
+        hits=[
+            RagHitLog(
+                item_id=hit.item_id,
+                memory_type=hit.memory_type,
+                score=hit.score,
+                summary=hit.summary[:120],
+                injected=hit.injected,
+                confidence_label=hit.confidence_label,
+                forced=hit.forced,
+            )
+            for hit in event.hits
+        ],
+        injected_count=event.injected_count,
+        route_decision=event.route_decision,
+        error=event.error,
+    )
+
+
+def _to_memory_write_trace(event: MemoryWritten):
+    from core.observe.events import MemoryWriteTrace
+
+    return MemoryWriteTrace(
+        session_key=event.session_key,
+        source_ref=event.source_ref,
+        action=event.action,
+        memory_type=event.memory_type,
+        item_id=event.item_id,
+        summary=event.summary,
+        superseded_ids=list(event.superseded_ids),
+        error=event.error,
     )
 
 

@@ -19,8 +19,6 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
-from core.observe.retention import run_retention_if_needed
-from core.observe.writer import TraceWriter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,9 +76,6 @@ class AppRuntime:
         self.proactive_loop = None
         self.peer_process_manager = None
         self.peer_poller = None
-        # DEPRECATED: observe writer 生命周期已迁到 plugins/00_observe。
-        self.observe_writer: TraceWriter | None = None
-        self.observe_task: asyncio.Task[None] | None = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
@@ -207,12 +202,6 @@ class AppRuntime:
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
             )
-            if self.observe_task is not None:
-                _ = self.observe_task.cancel()
-                try:
-                    await self.observe_task
-                except asyncio.CancelledError:
-                    pass
         finally:
             clear_default_shared_http_resources(self.http_resources)
 

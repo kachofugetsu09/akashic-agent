@@ -10,10 +10,7 @@ from agent.turns.result import TurnResult
 
 if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike
-    from agent.looping.ports import (
-        SessionServices,
-        ObservabilityServices,
-    )
+    from agent.looping.ports import SessionServices
 
 logger = logging.getLogger("agent.turn_orchestrator")
 
@@ -21,14 +18,12 @@ logger = logging.getLogger("agent.turn_orchestrator")
 @dataclass
 class TurnOrchestratorDeps:
     session: SessionServices
-    trace: ObservabilityServices
     outbound: OutboundPort
 
 
 class TurnOrchestrator:
     def __init__(self, deps: TurnOrchestratorDeps) -> None:
         self._session = deps.session
-        self._trace = deps.trace
         self._outbound = deps.outbound
 
     async def handle_proactive_turn(

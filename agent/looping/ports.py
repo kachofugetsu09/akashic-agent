@@ -100,12 +100,6 @@ class SessionServices:
 
 
 @dataclass
-class ObservabilityServices:
-    workspace: Path
-    observe_writer: object | None = None
-
-
-@dataclass
 class AgentLoopDeps:
     bus: "MessageBus"
     provider: "LLMProvider"
@@ -118,7 +112,6 @@ class AgentLoopDeps:
     processing_state: "ProcessingState | None" = None
     memory_runtime: "MemoryRuntime | None" = None
     memory_port: "MemoryPort | None" = None
-    observe_writer: object | None = None
     query_rewriter: "QueryRewriter | None" = None
     sufficiency_checker: "SufficiencyChecker | None" = None
     profile_extractor: "ProfileFactExtractor | None" = None
@@ -127,7 +120,6 @@ class AgentLoopDeps:
     llm_services: LLMServices | None = None
     memory_services: MemoryServices | None = None
     session_services: SessionServices | None = None
-    observability_services: ObservabilityServices | None = None
     hyde_enhancer: "HyDEEnhancer | None" = None
     tool_discovery: "ToolDiscoveryState | None" = None
     reasoner: "Reasoner | None" = None

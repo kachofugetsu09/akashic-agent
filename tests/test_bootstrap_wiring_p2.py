@@ -329,7 +329,7 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
         light_provider=object(),
         session_store=object(),
         tools=ToolRegistry(),
-        observe_writer=None,
+        event_publisher=EventBus(),
         agent_loop_provider=lambda: None,
     )
 
@@ -369,7 +369,6 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         processing_state=cast(Any, SimpleNamespace()),
         event_bus=EventBus(),
         memory_runtime=cast(Any, SimpleNamespace(port=object(), post_response_worker=None)),
-        observe_writer=None,
     )
 
     assert observed["name"] == "default"
@@ -499,7 +498,7 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         light_provider=object(),
         session_store=object(),
         tools=ToolRegistry(),
-        observe_writer=None,
+        event_publisher=EventBus(),
         agent_loop_provider=lambda: None,
     )
 

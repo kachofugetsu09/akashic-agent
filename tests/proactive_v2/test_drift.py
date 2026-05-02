@@ -12,7 +12,7 @@ import pytest
 from agent.prompting import is_context_frame
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
-from agent.looping.ports import ObservabilityServices, SessionServices
+from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
@@ -511,11 +511,6 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
 async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Path):
     _write_skill(tmp_path)
     sender = AsyncMock(return_value=True)
-    events: list[object] = []
-
-    class _Writer:
-        def emit(self, event: object) -> None:
-            events.append(event)
 
     class _Session:
         def __init__(self) -> None:
@@ -545,7 +540,6 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
                 session_manager=cast(Any, session_manager),
                 presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
             ),
-            trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
             outbound=_Outbound(),
         )
     )
@@ -628,13 +622,6 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
     gate.record_action.assert_called_once()
     assert tick.last_ctx.drift_entered is True
     assert tick.last_ctx.drift_message_sent is True
-    assert len(events) == 1
-    event = events[0]
-    assert len(event.tool_calls) == 1
-    payload = json.loads(event.tool_calls[0]["args"])
-    assert payload["decision"] == "reply"
-    assert payload["sent"] is True
-    assert payload["skip_reason"] == ""
 
 
 def _write_skill_with_mcp(
@@ -971,7 +958,7 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
         async def dispatch(self, outbound) -> bool:
             return await sender.send(outbound.content)
 
-    from agent.looping.ports import ObservabilityServices, SessionServices
+    from agent.looping.ports import SessionServices
     from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 
     orchestrator = TurnOrchestrator(
@@ -980,7 +967,6 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
                 session_manager=cast(Any, session_manager),
                 presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
             ),
-            trace=ObservabilityServices(workspace=Path("."), observe_writer=None),
             outbound=_Outbound(),
         )
     )
@@ -1007,7 +993,6 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
         deduper=None,
         rng=SimpleNamespace(),
         workspace_context_fn=lambda: "",
-        observe_writer=None,
         shared_tools=_build_shared_tools(),
         turn_orchestrator=orchestrator,
         pool=McpClientPool(),

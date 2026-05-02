@@ -476,14 +476,12 @@ class PassiveTurnPipeline:
         turn_result: "TurnRunResult",
         *,
         dispatch_outbound: bool = True,
-        retrieval_raw: object | None = None,
     ) -> OutboundMessage:
         state = TurnState(
             msg=msg,
             session_key=session_key,
             dispatch_outbound=dispatch_outbound,
             session=self._session.session_manager.get_or_create(session_key),
-            retrieval_raw=retrieval_raw,
         )
         after_reasoning = await self._after_reasoning.run(
             AfterReasoningInput(state=state, turn_result=turn_result)

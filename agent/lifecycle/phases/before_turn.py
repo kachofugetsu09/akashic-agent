@@ -44,7 +44,6 @@ class _AcquireSessionModule:
         state = frame.input
         session = self._session_manager.get_or_create(state.session_key)
         state.session = session
-        state.retrieval_raw = None
         frame.slots[_SESSION_SLOT] = session
         return frame
 
@@ -66,7 +65,6 @@ class _PrepareContextModule:
             session_key=state.session_key,
             session=session,
         )
-        state.retrieval_raw = bundle.retrieval_trace_raw
         frame.slots[_CONTEXT_BUNDLE_SLOT] = bundle
         return frame
 
