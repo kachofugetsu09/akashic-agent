@@ -22,7 +22,6 @@ from pydantic import BaseModel
 
 from proactive_v2.state import ProactiveStateStore
 from core.common.timekit import utcnow
-from core.observe.db import open_db
 from session.store import SessionStore
 from memory2.store import MemoryStore2
 
@@ -509,82 +508,6 @@ class ProactiveDashboardReader:
         return value if isinstance(value, dict) else {}
 
 
-class ObserveDashboardReader:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = Path(db_path)
-        self._lock = threading.RLock()
-        self._db = open_db(self.db_path)
-        self._db.row_factory = sqlite3.Row
-
-    def close(self) -> None:
-        with self._lock:
-            self._db.close()
-
-    def get_cache_summary(self) -> dict[str, Any]:
-        with self._lock:
-            row = self._db.execute(
-                """
-                SELECT
-                    COUNT(*) AS turn_count,
-                    SUM(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS tracked_turn_count,
-                    COALESCE(SUM(react_cache_prompt_tokens), 0) AS prompt_tokens,
-                    COALESCE(SUM(react_cache_hit_tokens), 0) AS hit_tokens,
-                    MAX(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN ts ELSE NULL END) AS last_tracked_at
-                FROM turns
-                """
-            ).fetchone()
-            turn_rows = self._db.execute(
-                """
-                SELECT
-                    id,
-                    ts,
-                    source,
-                    session_key,
-                    user_msg,
-                    react_cache_prompt_tokens AS prompt_tokens,
-                    react_cache_hit_tokens AS hit_tokens
-                FROM turns
-                WHERE react_cache_prompt_tokens IS NOT NULL
-                ORDER BY ts DESC, id DESC
-                LIMIT 30
-                """
-            ).fetchall()
-        prompt_tokens = int(row["prompt_tokens"] or 0) if row is not None else 0
-        hit_tokens = int(row["hit_tokens"] or 0) if row is not None else 0
-        miss_tokens = max(0, prompt_tokens - hit_tokens)
-        hit_rate = (hit_tokens / prompt_tokens) if prompt_tokens > 0 else None
-        recent_turns = [self._row_to_cache_turn(item) for item in turn_rows]
-        return {
-            "turn_count": int(row["turn_count"] or 0) if row is not None else 0,
-            "tracked_turn_count": (
-                int(row["tracked_turn_count"] or 0) if row is not None else 0
-            ),
-            "prompt_tokens": prompt_tokens,
-            "hit_tokens": hit_tokens,
-            "miss_tokens": miss_tokens,
-            "hit_rate": hit_rate,
-            "last_tracked_at": row["last_tracked_at"] if row is not None else None,
-            "recent_turns": recent_turns,
-        }
-
-    @staticmethod
-    def _row_to_cache_turn(row: sqlite3.Row) -> dict[str, Any]:
-        prompt_tokens = int(row["prompt_tokens"] or 0)
-        hit_tokens = int(row["hit_tokens"] or 0)
-        miss_tokens = max(0, prompt_tokens - hit_tokens)
-        return {
-            "id": int(row["id"]),
-            "ts": row["ts"],
-            "source": row["source"],
-            "session_key": row["session_key"],
-            "user_preview": _preview_text(row["user_msg"], 90),
-            "prompt_tokens": prompt_tokens,
-            "hit_tokens": hit_tokens,
-            "miss_tokens": miss_tokens,
-            "hit_rate": (hit_tokens / prompt_tokens) if prompt_tokens > 0 else None,
-        }
-
-
 def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
     ts_path = plugin_dir / "dashboard_panel.ts"
     js_path = plugin_dir / "dashboard_panel.js"
@@ -660,7 +583,6 @@ def create_dashboard_app(
     store = SessionStore(workspace / "sessions.db")
     memory_store: MemoryStore2 | None = None
     proactive_reader: ProactiveDashboardReader | None = None
-    observe_reader: ObserveDashboardReader | None = None
     project_root = Path(__file__).resolve().parent.parent
     plugins_root = project_root / "plugins"
     static_dir = project_root / "static" / "dashboard"
@@ -678,12 +600,6 @@ def create_dashboard_app(
             proactive_reader = ProactiveDashboardReader(workspace / "proactive.db")
         return proactive_reader
 
-    def get_observe_reader() -> ObserveDashboardReader:
-        nonlocal observe_reader
-        if observe_reader is None:
-            observe_reader = ObserveDashboardReader(workspace / "observe" / "observe.db")
-        return observe_reader
-
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
@@ -694,8 +610,6 @@ def create_dashboard_app(
                 get_memory_store().close()
             if proactive_reader is not None:
                 get_proactive_reader().close()
-            if observe_reader is not None:
-                get_observe_reader().close()
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.mount("/assets", StaticFiles(directory=static_dir), name="dashboard-assets")
@@ -1062,10 +976,6 @@ def create_dashboard_app(
     @app.get("/api/dashboard/proactive/overview")
     def get_proactive_overview() -> dict[str, Any]:
         return get_proactive_reader().get_overview()
-
-    @app.get("/api/dashboard/cache/summary")
-    def get_cache_summary() -> dict[str, Any]:
-        return get_observe_reader().get_cache_summary()
 
     @app.get("/api/dashboard/proactive/deliveries")
     def list_proactive_deliveries(

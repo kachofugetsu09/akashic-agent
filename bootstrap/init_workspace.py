@@ -6,7 +6,6 @@ from pathlib import Path
 
 from agent.config import Config
 from agent.memory import MemoryStore
-from core.observe.db import open_db as open_observe_db
 from infra.persistence.json_store import save_json
 from memory2.store import MemoryStore2
 from proactive_v2.anyaction import QuotaStore
@@ -35,6 +34,7 @@ _JSON_FILES: dict[str, object] = {
 }
 
 _DIRECTORIES: tuple[str, ...] = (
+    "observe",
     "skills",
     "drift/skills",
 )
@@ -136,14 +136,6 @@ def _ensure_workspace_db_assets(
         summary.created.append(sessions_db)
     else:
         summary.skipped.append(sessions_db)
-
-    observe_db = workspace / "observe" / "observe.db"
-    observe_exists = observe_db.exists()
-    open_observe_db(observe_db).close()
-    if not observe_exists:
-        summary.created.append(observe_db)
-    else:
-        summary.skipped.append(observe_db)
 
     consolidation_db = workspace / "memory" / "consolidation_writes.db"
     consolidation_exists = consolidation_db.exists()

@@ -503,7 +503,6 @@ def build_core_runtime(
         event_bus=event_bus,
         tool_registry=tools,
         workspace=workspace,
-        observe_db_path=workspace / "observe" / "observe.db",
     )
 
     return CoreRuntime(

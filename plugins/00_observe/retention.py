@@ -13,7 +13,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from core.observe.db import open_db
+from .db import open_db
 
 logger = logging.getLogger("observe.retention")
 

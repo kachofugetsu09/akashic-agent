@@ -1,20 +1,20 @@
 from __future__ import annotations
 
+import importlib
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 from fastapi import FastAPI
-
-from core.observe.db import open_db
 
 
 class KVCacheDashboardReader:
     def __init__(self, workspace: Path) -> None:
         self.db_path = workspace / "observe" / "observe.db"
         self._lock = threading.RLock()
-        self._db = open_db(self.db_path)
+        self._db = _open_observe_db(self.db_path)
         self._db.row_factory = sqlite3.Row
 
     def get_summary(self) -> dict[str, Any]:
@@ -132,6 +132,15 @@ def _summary_from_row(row: sqlite3.Row | None) -> dict[str, Any]:
         "hit_rate": (hit_tokens / prompt_tokens) if prompt_tokens > 0 else None,
         "last_tracked_at": row["last_tracked_at"] if row is not None else None,
     }
+
+
+def _open_observe_db(db_path: Path) -> sqlite3.Connection:
+    module = importlib.import_module("plugins.00_observe.db")
+    open_db = cast(
+        Callable[[Path], sqlite3.Connection],
+        getattr(module, "open_db"),
+    )
+    return open_db(db_path)
 
 
 def _row_to_cache_turn(row: sqlite3.Row) -> dict[str, Any]:

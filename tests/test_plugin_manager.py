@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import importlib
 import json
 import shutil
 import tempfile
+import sqlite3
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -20,7 +23,9 @@ from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
-from core.observe.db import open_db
+
+_observe_db = importlib.import_module("plugins.00_observe.db")
+open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────

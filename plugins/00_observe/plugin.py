@@ -10,8 +10,9 @@ from typing import Protocol, cast, runtime_checkable
 from agent.plugins import Plugin
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted
-from core.observe.retention import run_retention_if_needed
-from core.observe.writer import TraceWriter
+
+from .retention import run_retention_if_needed
+from .writer import TraceWriter
 
 logger = logging.getLogger("plugin.observe")
 
@@ -74,7 +75,7 @@ class ObservePlugin(Plugin):
 
 
 def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
-    from core.observe.events import TurnTrace as TurnTraceEvent
+    from .events import TurnTrace as TurnTraceEvent
 
     post_reply_budget = event.post_reply_budget
     react_stats = event.react_stats
@@ -120,7 +121,7 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
 
 
 def _to_rag_query_log(event: RetrievalCompleted):
-    from core.observe.events import RagHitLog, RagQueryLog
+    from .events import RagHitLog, RagQueryLog
 
     return RagQueryLog(
         caller="passive",
@@ -147,7 +148,7 @@ def _to_rag_query_log(event: RetrievalCompleted):
 
 
 def _to_memory_write_trace(event: MemoryWritten):
-    from core.observe.events import MemoryWriteTrace
+    from .events import MemoryWriteTrace
 
     return MemoryWriteTrace(
         session_key=event.session_key,

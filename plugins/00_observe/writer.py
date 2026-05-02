@@ -12,8 +12,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.observe.db import open_db
-from core.observe.events import MemoryWriteTrace, RagQueryLog, TurnTrace
+from .db import open_db
+from .events import MemoryWriteTrace, RagQueryLog, TurnTrace
 
 logger = logging.getLogger("observe.writer")
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-# schema 与 schema/observe.sql 保持同步，在代码里内嵌一份避免运行时文件依赖
+# schema 与 observe.sql 保持同步，在代码里内嵌一份避免运行时文件依赖
 _SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = NORMAL;

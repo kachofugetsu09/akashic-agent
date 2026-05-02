@@ -1,16 +1,28 @@
 import asyncio
 from contextlib import suppress
+import importlib
 import json
 import sqlite3
+from collections.abc import Callable
+from pathlib import Path
+from typing import cast
 
 import pytest
 
-from core.observe.db import open_db
-from core.observe.events import RagHitLog, RagQueryLog, TurnTrace
-from core.observe.migrate_legacy_rag import migrate_legacy_rag_tables
-from core.observe.retention import _run_cleanup
-from core.observe.writer import _write_turn
-from core.observe.writer import TraceWriter
+_observe_db = importlib.import_module("plugins.00_observe.db")
+_observe_events = importlib.import_module("plugins.00_observe.events")
+_observe_migration = importlib.import_module("plugins.00_observe.migrate_legacy_rag")
+_observe_retention = importlib.import_module("plugins.00_observe.retention")
+_observe_writer = importlib.import_module("plugins.00_observe.writer")
+
+open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
+RagHitLog = getattr(_observe_events, "RagHitLog")
+RagQueryLog = getattr(_observe_events, "RagQueryLog")
+TurnTrace = getattr(_observe_events, "TurnTrace")
+migrate_legacy_rag_tables = getattr(_observe_migration, "migrate_legacy_rag_tables")
+_run_cleanup = cast(Callable[[Path], None], getattr(_observe_retention, "_run_cleanup"))
+_write_turn = getattr(_observe_writer, "_write_turn")
+TraceWriter = getattr(_observe_writer, "TraceWriter")
 
 
 def test_write_turn_persists_raw_output_and_meme_fields(tmp_path):

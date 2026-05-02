@@ -84,7 +84,7 @@ class PluginContext:
     plugin_dir: Path            # 插件目录
     kv_store: PluginKVStore     # 基于文件的键值存储
     config: PluginConfig | None # 解析后的配置
-    observe_db_path: Path | None # observe.db 路径
+    workspace: Path | None      # 工作区路径
 ```
 
 ---
