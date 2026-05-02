@@ -32,10 +32,12 @@ class TurnState:
     dispatch_outbound: bool
     session: SessionLike | None = None
     retrieval_raw: object | None = None
+    extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
 @dataclass
 class BeforeTurnCtx:
+    # before-* ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
     # read-only by convention
     session_key: str
     channel: str
@@ -49,6 +51,7 @@ class BeforeTurnCtx:
     skill_names: list[str] = field(default_factory=_empty_str_list)
     abort: bool = False
     abort_reply: str = ""
+    extra_hints: list[str] = field(default_factory=_empty_str_list)
     extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
@@ -60,6 +63,7 @@ class BeforeReasoningInput:
 
 @dataclass
 class BeforeReasoningCtx:
+    # before-* ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
     # read-only by convention
     session_key: str
     channel: str
@@ -92,6 +96,7 @@ class PromptRenderInput:
 
 @dataclass
 class PromptRenderCtx:
+    # render/before-step ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
     # read-only by convention
     session_key: str
     channel: str
@@ -131,6 +136,7 @@ class BeforeStepInput:
 
 @dataclass
 class BeforeStepCtx:
+    # before-* ctx 走 GATE 链，插件可直接改写字段影响后续阶段。
     # read-only by convention
     session_key: str
     channel: str
@@ -146,6 +152,7 @@ class BeforeStepCtx:
 
 @dataclass(frozen=True)
 class AfterStepCtx:
+    # after-* fanout ctx 是观察快照；需要补充 metadata 时由 PhaseModule replace 新实例。
     session_key: str
     channel: str
     chat_id: str
@@ -156,6 +163,7 @@ class AfterStepCtx:
     tool_chain_partial: tuple[dict[str, Any], ...]
     partial_thinking: str | None
     has_more: bool
+    extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
 @dataclass(frozen=True)
@@ -166,6 +174,7 @@ class AfterReasoningInput:
 
 @dataclass
 class AfterReasoningCtx:
+    # after_reasoning 仍是 GATE 链，插件可改写 reply/media/outbound_metadata。
     # read-only by convention
     session_key: str
     channel: str
@@ -198,6 +207,7 @@ class TurnSnapshot:
 
 @dataclass(frozen=True)
 class AfterTurnCtx:
+    # after-* fanout ctx 是观察快照；需要补充 metadata 时由 PhaseModule replace 新实例。
     session_key: str
     channel: str
     chat_id: str
@@ -206,6 +216,7 @@ class AfterTurnCtx:
     thinking: str | None
     # pre-dispatch intent flag: dispatch has NOT happened yet when Tap handlers run
     will_dispatch: bool
+    extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
 @dataclass(frozen=True)

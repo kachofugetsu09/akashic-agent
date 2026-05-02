@@ -7,7 +7,12 @@ from agent.core.passive_support import (
     build_context_hint_message,
     estimate_messages_tokens,
 )
-from agent.lifecycle.phase import PhaseFrame, PhaseModule
+from agent.lifecycle.phase import (
+    PhaseFrame,
+    PhaseModule,
+    append_string_exports,
+    collect_prefixed_slots,
+)
 from agent.lifecycle.types import BeforeStepCtx, BeforeStepInput
 from bus.event_bus import EventBus
 
@@ -21,6 +26,9 @@ BeforeStepModules: TypeAlias = list[PhaseModule[BeforeStepFrame]]
 
 
 _CTX_SLOT = "step:ctx"
+_EXTRA_HINT_PREFIX = "step:extra_hint:"
+# slot suffix 统一用 abort_reply；step 内部映射为 early_stop，只终止当前 tool loop。
+_ABORT_REPLY_SLOT = "step:abort_reply"
 
 
 class _BuildBeforeStepCtxModule:
@@ -71,6 +79,23 @@ class _InjectHintsModule:
         return frame
 
 
+class _CollectBeforeStepExportSlotsModule:
+    requires = (_CTX_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
+        ctx = cast(BeforeStepCtx, frame.slots[_CTX_SLOT])
+        append_string_exports(
+            ctx.extra_hints,
+            collect_prefixed_slots(frame.slots, _EXTRA_HINT_PREFIX),
+        )
+        early_stop_reply = frame.slots.get(_ABORT_REPLY_SLOT)
+        if isinstance(early_stop_reply, str) and early_stop_reply:
+            ctx.early_stop = True
+            ctx.early_stop_reply = early_stop_reply
+        return frame
+
+
 class _ReturnBeforeStepCtxModule:
     requires = (_CTX_SLOT,)
 
@@ -79,10 +104,19 @@ class _ReturnBeforeStepCtxModule:
         return frame
 
 
-def default_before_step_modules(bus: EventBus) -> BeforeStepModules:
+def default_before_step_modules(
+    bus: EventBus,
+    plugin_modules_before_emit: BeforeStepModules | None = None,
+    plugin_modules_after_emit: BeforeStepModules | None = None,
+) -> BeforeStepModules:
+    before_emit = plugin_modules_before_emit or []
+    after_emit = plugin_modules_after_emit or []
     return [
         _BuildBeforeStepCtxModule(),
+        *before_emit,
         _EmitBeforeStepCtxModule(bus),
+        *after_emit,
+        _CollectBeforeStepExportSlotsModule(),
         _InjectHintsModule(),
         _ReturnBeforeStepCtxModule(),
     ]

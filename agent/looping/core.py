@@ -512,6 +512,13 @@ class AgentLoop:
     ) -> None:
         self._agent_core.add_before_turn_plugin_modules(early, late)
 
+    def add_before_reasoning_plugin_modules(
+        self,
+        before_emit: list[object],
+        after_emit: list[object],
+    ) -> None:
+        self._agent_core.add_before_reasoning_plugin_modules(before_emit, after_emit)
+
     def add_after_reasoning_plugin_modules(
         self,
         before_emit: list[object],
@@ -522,12 +529,33 @@ class AgentLoop:
             before_persist,
         )
 
+    def add_after_turn_plugin_modules(
+        self,
+        before_commit: list[object],
+        before_fanout: list[object],
+    ) -> None:
+        self._agent_core.add_after_turn_plugin_modules(before_commit, before_fanout)
+
     def add_prompt_render_plugin_modules(
         self,
         top: list[object],
         bottom: list[object],
     ) -> None:
         self._reasoner.add_prompt_render_plugin_modules(top, bottom)
+
+    def add_before_step_plugin_modules(
+        self,
+        before_emit: list[object],
+        after_emit: list[object],
+    ) -> None:
+        self._reasoner.add_before_step_plugin_modules(before_emit, after_emit)
+
+    def add_after_step_plugin_modules(
+        self,
+        before_fanout: list[object],
+        after_fanout: list[object],
+    ) -> None:
+        self._reasoner.add_after_step_plugin_modules(before_fanout, after_fanout)
 
     # ── 中断控制面 ────────────────────────────────────────────────
 
