@@ -10,6 +10,8 @@ import pytest
 from agent.context import ContextBuilder
 from agent.core.passive_support import build_context_hint_message
 from agent.core.passive_turn import ContextStore
+from agent.core.response_parser import ResponseMetadata
+from agent.core.runtime_support import TurnRunResult
 from agent.core.types import ContextBundle
 from agent.lifecycle.phase import Phase
 from agent.tools.registry import ToolRegistry
@@ -61,6 +63,7 @@ from agent.lifecycle.phases.prompt_render import (
     default_prompt_render_modules,
 )
 from agent.prompting import PromptSectionRender
+from agent.turns.outbound import OutboundDispatch
 from session.manager import SessionManager
 
 _now = datetime.now()
@@ -96,6 +99,11 @@ class _MemoryStatusPluginModule:
             abort_reply=_format_memory_status_reply(messages, last),
         )
         return frame
+
+
+class _DummyOutbound:
+    async def dispatch(self, outbound: OutboundDispatch) -> bool:
+        return True
 
 
 class _KVCachePluginModule:
@@ -1187,7 +1195,7 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
         presence=Mock(),
         session_manager=SimpleNamespace(append_messages=AsyncMock()),
     )
-    turn_result = SimpleNamespace(
+    turn_result = TurnRunResult(
         reply="reply",
         tool_chain=[],
         tools_used=[],
@@ -1247,7 +1255,7 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
         chat_id=msg.chat_id,
         tools_used=(),
         thinking=None,
-        response_metadata=SimpleNamespace(raw_text="reply"),
+        response_metadata=ResponseMetadata(raw_text="reply"),
         streamed=False,
         tool_chain=(),
         context_retry={},
@@ -1259,7 +1267,7 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
     phase = Phase(
         default_after_turn_modules(
             bus,
-            SimpleNamespace(dispatch=AsyncMock()),
+            _DummyOutbound(),
             cast(ContextBuilder, context),
             plugin_modules_before_commit=[ExtraModule()],
             plugin_modules_before_fanout=[TelemetryModule()],
