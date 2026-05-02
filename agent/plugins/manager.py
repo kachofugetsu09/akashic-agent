@@ -482,9 +482,11 @@ class _PluginToolHook(ToolHook):
         result = self._handler(event)
         if inspect.isawaitable(result):
             result = await result
-        # 3. None → 不改参；dict → 新 arguments
+        # 3. None → 不改参；dict → 新 arguments；HookOutcome → 允许插件直接 deny
         if result is None:
             return HookOutcome()
+        if isinstance(result, HookOutcome):
+            return result
         if isinstance(result, dict):
             return HookOutcome(updated_input=cast("dict[str, Any]", result))
         return HookOutcome()
