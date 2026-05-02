@@ -3,7 +3,6 @@
 规则：
   turns:        保留 180 天（error IS NOT NULL 永久保留）
   rag_queries:  保留  90 天（error IS NOT NULL 永久保留）
-  proactive_decisions: 保留 90 天（error IS NOT NULL 永久保留）
 
 触发：启动时后台跑一次，距上次清理超过 24h 才执行。
 """
@@ -21,7 +20,6 @@ logger = logging.getLogger("observe.retention")
 _RETENTION_DAYS = {
     "turns": 180,
     "rag_queries": 90,
-    "proactive_decisions": 90,
 }
 _STAMP_FILE = ".last_cleanup"
 

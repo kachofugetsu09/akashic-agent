@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.observe.db import open_db
-from core.observe.events import MemoryWriteTrace, ProactiveDecisionTrace, RagQueryLog, TurnTrace
+from core.observe.events import MemoryWriteTrace, RagQueryLog, TurnTrace
 
 logger = logging.getLogger("observe.writer")
 
@@ -44,7 +44,7 @@ class TraceWriter:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._queue: asyncio.Queue[
-            TurnTrace | RagQueryLog | ProactiveDecisionTrace | MemoryWriteTrace
+            TurnTrace | RagQueryLog | MemoryWriteTrace
         ] = asyncio.Queue(
             maxsize=_QUEUE_MAX
         )
@@ -52,7 +52,7 @@ class TraceWriter:
 
     # ── 公共接口 ─────────────────────────────────
 
-    def emit(self, event: TurnTrace | RagQueryLog | ProactiveDecisionTrace | MemoryWriteTrace) -> None:
+    def emit(self, event: TurnTrace | RagQueryLog | MemoryWriteTrace) -> None:
         """非阻塞 emit。Queue 满时 drop 并记录计数。"""
         try:
             self._queue.put_nowait(event)
@@ -97,15 +97,13 @@ class TraceWriter:
     # ── 内部写入 ─────────────────────────────────
 
     def _write_one(
-        self, conn, event: TurnTrace | RagQueryLog | ProactiveDecisionTrace | MemoryWriteTrace
+        self, conn, event: TurnTrace | RagQueryLog | MemoryWriteTrace
     ) -> None:
         ts = _now_iso()
         if isinstance(event, TurnTrace):
             _write_turn(conn, event, ts)
         elif isinstance(event, RagQueryLog):
             _write_rag(conn, event, ts)
-        elif isinstance(event, ProactiveDecisionTrace):
-            _write_proactive_decision(conn, event, ts)
         elif isinstance(event, MemoryWriteTrace):
             _write_memory_write(conn, event, ts)
 
@@ -196,211 +194,6 @@ def _write_rag(conn, e: RagQueryLog, ts: str) -> None:
                 e.route_decision,
                 e.error,
             ),
-        )
-
-
-def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
-    # 1. 保留 stage 列里的新阶段名，同时把 stage_result_json 回填到旧列，兼容历史读侧。
-    stage_json_columns_map = {
-        "gate": {"gate_result_json"},
-        "sense": {"sense_result_json"},
-        "pre_score": {"pre_score_result_json"},
-        "fetch_filter": {"fetch_filter_result_json"},
-        "score": {"score_result_json"},
-        "decide": {"decide_result_json"},
-        "act": {"act_result_json"},
-        "gate_and_sense": {
-            "gate_result_json",
-            "sense_result_json",
-            "pre_score_result_json",
-        },
-        "evaluate": {
-            "fetch_filter_result_json",
-            "score_result_json",
-        },
-        "judge_and_send": {
-            "decide_result_json",
-            "act_result_json",
-        },
-    }
-    stage_json_columns = stage_json_columns_map.get(e.stage, set())
-    stage_json = e.stage_result_json if stage_json_columns else None
-    payload = {
-        "tick_id": e.tick_id,
-        "ts": ts,
-        "updated_ts": ts,
-        "session_key": e.session_key,
-        "stage": e.stage,
-        "reason_code": e.reason_code,
-        "should_send": None if e.should_send is None else (1 if e.should_send else 0),
-        "action": e.action,
-        "gate_reason": e.gate_reason,
-        "pre_score": e.pre_score,
-        "base_score": e.base_score,
-        "draw_score": e.draw_score,
-        "decision_score": e.decision_score,
-        "send_threshold": e.send_threshold,
-        "interruptibility": e.interruptibility,
-        "candidate_count": e.candidate_count,
-        "candidate_item_ids": (
-            json.dumps(e.candidate_item_ids, ensure_ascii=False)
-            if e.candidate_item_ids
-            else None
-        ),
-        "sleep_state": e.sleep_state,
-        "sleep_prob": e.sleep_prob,
-        "sleep_available": (
-            None if e.sleep_available is None else (1 if e.sleep_available else 0)
-        ),
-        "sleep_data_lag_min": e.sleep_data_lag_min,
-        "user_replied_after_last_proactive": (
-            None
-            if e.user_replied_after_last_proactive is None
-            else (1 if e.user_replied_after_last_proactive else 0)
-        ),
-        "proactive_sent_24h": e.proactive_sent_24h,
-        "fresh_items_24h": e.fresh_items_24h,
-        "delivery_key": e.delivery_key,
-        "is_delivery_duplicate": (
-            None
-            if e.is_delivery_duplicate is None
-            else (1 if e.is_delivery_duplicate else 0)
-        ),
-        "is_message_duplicate": (
-            None
-            if e.is_message_duplicate is None
-            else (1 if e.is_message_duplicate else 0)
-        ),
-        "delivery_attempted": (
-            None
-            if e.delivery_attempted is None
-            else (1 if e.delivery_attempted else 0)
-        ),
-        "delivery_result": e.delivery_result,
-        "reasoning_preview": e.reasoning_preview,
-        "reasoning": e.reasoning,
-        "evidence_item_ids": (
-            json.dumps(e.evidence_item_ids, ensure_ascii=False)
-            if e.evidence_item_ids
-            else None
-        ),
-        "source_refs_json": e.source_refs_json,
-        "fetched_urls": (
-            json.dumps(e.fetched_urls, ensure_ascii=False)
-            if e.fetched_urls
-            else None
-        ),
-        "sent_message": e.sent_message,
-        "candidates_json": e.candidates_json,
-        "research_status": e.research_status,
-        "research_rounds_used": e.research_rounds_used,
-        "research_tools_called": (
-            json.dumps(e.research_tools_called, ensure_ascii=False)
-            if e.research_tools_called
-            else None
-        ),
-        "research_evidence_count": e.research_evidence_count,
-        "research_reason": e.research_reason,
-        "fact_claims_count": e.fact_claims_count,
-        "gate_result_json": (
-            stage_json if "gate_result_json" in stage_json_columns else None
-        ),
-        "sense_result_json": (
-            stage_json if "sense_result_json" in stage_json_columns else None
-        ),
-        "pre_score_result_json": (
-            stage_json if "pre_score_result_json" in stage_json_columns else None
-        ),
-        "fetch_filter_result_json": (
-            stage_json if "fetch_filter_result_json" in stage_json_columns else None
-        ),
-        "score_result_json": (
-            stage_json if "score_result_json" in stage_json_columns else None
-        ),
-        "decide_result_json": (
-            stage_json if "decide_result_json" in stage_json_columns else None
-        ),
-        "act_result_json": (
-            stage_json if "act_result_json" in stage_json_columns else None
-        ),
-        "decision_signals_json": e.decision_signals_json,
-        "error": e.error,
-    }
-    columns = list(payload.keys())
-    insert_columns = ", ".join(columns)
-    placeholders = ", ".join("?" for _ in columns)
-    values = [payload[col] for col in columns]
-    update_columns = [
-        "updated_ts",
-        "session_key",
-        "stage",
-        "reason_code",
-        "should_send",
-        "action",
-        "gate_reason",
-        "pre_score",
-        "base_score",
-        "draw_score",
-        "decision_score",
-        "send_threshold",
-        "interruptibility",
-        "candidate_count",
-        "candidate_item_ids",
-        "sleep_state",
-        "sleep_prob",
-        "sleep_available",
-        "sleep_data_lag_min",
-        "user_replied_after_last_proactive",
-        "proactive_sent_24h",
-        "fresh_items_24h",
-        "delivery_key",
-        "is_delivery_duplicate",
-        "is_message_duplicate",
-        "delivery_attempted",
-        "delivery_result",
-        "reasoning_preview",
-        "reasoning",
-        "evidence_item_ids",
-        "source_refs_json",
-        "fetched_urls",
-        "sent_message",
-        "candidates_json",
-        "research_status",
-        "research_rounds_used",
-        "research_tools_called",
-        "research_evidence_count",
-        "research_reason",
-        "fact_claims_count",
-        "gate_result_json",
-        "sense_result_json",
-        "pre_score_result_json",
-        "fetch_filter_result_json",
-        "score_result_json",
-        "decide_result_json",
-        "act_result_json",
-        "decision_signals_json",
-        "error",
-    ]
-    updates = []
-    for col in update_columns:
-        if col == "session_key":
-            updates.append(
-                "session_key = CASE WHEN excluded.session_key <> '' "
-                "THEN excluded.session_key ELSE proactive_decisions.session_key END"
-            )
-        elif col in {"updated_ts", "stage"}:
-            updates.append(f"{col} = excluded.{col}")
-        else:
-            updates.append(f"{col} = COALESCE(excluded.{col}, proactive_decisions.{col})")
-    with conn:
-        conn.execute(
-            f"""
-            INSERT INTO proactive_decisions ({insert_columns})
-            VALUES ({placeholders})
-            ON CONFLICT(tick_id) DO UPDATE SET
-                {", ".join(updates)}
-            """,
-            values,
         )
 
 

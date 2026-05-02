@@ -94,9 +94,9 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
             self.events: list[object] = []
 
         def emit(self, event: object) -> None:
-            order.append("observe")
             self.events.append(event)
 
+    writer = _Writer()
     presence = SimpleNamespace(record_proactive_sent=lambda _key: order.append("presence"))
     session_manager = SimpleNamespace(
         get_or_create=lambda _key: session,
@@ -105,7 +105,7 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=SessionServices(session_manager=cast(Any, session_manager), presence=cast(Any, presence)),
-            trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
+            trace=ObservabilityServices(workspace=Path("."), observe_writer=writer),
             outbound=_Outbound(),
         )
     )
@@ -135,4 +135,5 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     assert sent is True
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
-    assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect", "observe"]
+    assert writer.events == []
+    assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect"]
