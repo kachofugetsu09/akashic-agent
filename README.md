@@ -1,18 +1,39 @@
+[![欢迎加入交流群](https://img.shields.io/badge/QQ%E4%BA%A4%E6%B5%81%E7%BE%A4-%E6%AC%A2%E8%BF%8E%E5%8A%A0%E5%85%A5-2ea44f?style=for-the-badge)](./COMMUNICATION.md)
+
 # akashic Agent
 
 ---
 
 ## Quickstart
 
-**1. 初始化**
+**1. 安装依赖**
+
+需要 Python 3.12。推荐用 `uv` 管理虚拟环境：
 
 ```bash
 git clone <this-repo>
 cd akashic-agent
-python main.py init
+uv venv                              # 创建 .venv
+uv pip install -r requirements.txt  # 安装依赖
 ```
 
-`init` 会做两件事：把 `config.example.toml` 复制为 `config.toml`，并在 `~/.akashic/workspace/` 下创建运行时所需的全部文件和数据库：
+没有 uv？先装：`python -m pip install uv`
+
+**2. 初始化（推荐用交互向导）**
+
+```bash
+uv run python main.py setup
+```
+
+向导会逐步引导你配置主模型、频道、记忆，自动生成 `config.toml` 并初始化工作区。Telegram 配置完成后会实时获取你的 `chat_id`，proactive 一步到位。
+
+如果是自动化/CI 场景，用非交互模式：
+
+```bash
+uv run python main.py init   # 复制 config.example.toml，手动编辑后启动
+```
+
+`init` 创建的工作区结构：
 
 ```
 ~/.akashic/workspace/
@@ -38,10 +59,9 @@ python main.py init
   proactive_quota.json # proactive 配额
 ```
 
-**2. 填写配置**
+**3. 填写配置**
 
-编辑 `config.toml`，至少要改 API key 和频道 token。推荐配置（DeepSeek 主模型 + Qwen 轻量/视觉）：
-推荐如果非多模态模型可以用deepseek-v4-flash,他的agent能力是nextlevel的
+编辑 `config.toml`，至少填写主模型 API key 和一个频道（Telegram 或 QQ 选一个）。推荐配置（DeepSeek 主模型 + Qwen 轻量/视觉）：
 ```toml
 [llm]
 provider = "deepseek"
@@ -80,15 +100,15 @@ allow_from = ["your_username"]  # 你的 Telegram 用户名（不带 @）
 
 路线 B 是推荐方案：主模型用 DeepSeek 这类纯文本强模型，图片理解交给专门的 VL 模型，性价比最高。
 
-**3. 启动并发消息**
+**4. 启动**
 
 ```bash
-python main.py
+uv run python main.py
 ```
 
 打开 Telegram，找到你的 bot，发一条消息，就可以开始对话。
 
-**4. 配置 Proactive**
+**5. 配置 Proactive（可选）**
 
 `config.example.toml` 默认 `proactive.enabled = true`。填上你的 Telegram chat_id（可以向 bot 发一条消息后从日志里拿到），agent 就会在订阅的信息源有内容时主动推送消息。如果不需要主动推送，设为 `enabled = false`。
 
@@ -98,7 +118,7 @@ channel = "telegram"
 chat_id = "123456789"   # 你的 Telegram user id
 ```
 
-**5. 打开 Drift**
+**6. 打开 Drift**
 
 ```toml
 [proactive.drift]
@@ -107,6 +127,47 @@ min_interval_hours = 3  # 每次 drift 最小间隔
 ```
 
 Drift 打开后，没有可推送内容时，agent 会利用空闲时间自主执行 `drift/skills/` 下定义的任务。本轮不打扰用户时用 `finish_drift(message_result="silent")` 静默收尾；如果已经主动发消息，则必须用 `finish_drift(message_result="sent")` 收尾。
+
+**7. 打开 Dashboard（可选）**
+
+Dashboard 用来查看会话、消息、记忆、proactive 记录和插件面板：
+
+```bash
+uv run python main.py dashboard
+```
+
+默认监听 `0.0.0.0:2236`。如需改地址：
+
+```bash
+uv run python main.py dashboard --host 127.0.0.1 --port 2236
+```
+
+**8. 配置 MCP servers（可选）**
+
+MCP server 注册表在工作区的 `mcp_servers.json`。也可以在对话里让 agent 调用 `mcp_add` 添加，手动配置格式如下：
+
+```json
+{
+  "servers": {
+    "calendar": {
+      "command": ["python", "/path/to/run_server.py"],
+      "env": {
+        "GOOGLE_CLIENT_ID": "..."
+      },
+      "cwd": "/path/to"
+    }
+  }
+}
+```
+
+启动时会读取这个文件并把 MCP 工具注册进工具列表。
+
+**Troubleshooting**
+
+- `chat_id` 不知道怎么拿：优先跑 `uv run python main.py setup`，向导会在 Telegram 配好后自动获取；手动配置时，先给 bot 发一条消息，再从日志里的 Telegram update 里取 user id。
+- `uv` 装不上：先升级 pip，执行 `python -m pip install --upgrade pip`，再执行 `python -m pip install uv`。
+- Dashboard 打不开：确认主程序没有占用同一端口，或用 `--port` 换一个端口。
+- MCP server 没工具：先确认 `mcp_servers.json` 里的 `command` 能在终端单独启动，且需要的环境变量都在 `env` 里。
 
 ---
 
@@ -238,7 +299,7 @@ Drift 的核心约束：
 ## 其他命令
 
 ```bash
-python main.py cli      # 连接运行中的 agent（TUI / 纯文本 CLI）
+uv run python main.py cli      # 连接运行中的 agent（TUI / 纯文本 CLI）
 
 pytest tests/           # 单元测试
 akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/  # 场景测试（真实 LLM）

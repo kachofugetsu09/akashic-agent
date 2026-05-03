@@ -1152,13 +1152,7 @@ history_entries.emotional_weight 规则：
             # 3. 调主模型把这段旧对话提炼成结构化结果。
             event_started_at = time.perf_counter()
             response = await self._provider.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是记忆提取代理，只返回合法 JSON。",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
                 max_tokens=1024,

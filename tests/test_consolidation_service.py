@@ -90,14 +90,14 @@ def test_consolidation_service_archive_all_and_profile_extract():
         for call in provider.chat.await_args_list
     )
     event_prompt = next(
-        call.kwargs["messages"][1]["content"]
+        _message_text(call.kwargs)
         for call in provider.chat.await_args_list
-        if "记忆提取代理" in call.kwargs["messages"][0]["content"]
+        if "记忆提取代理" in _message_text(call.kwargs)
     )
     implicit_prompt = next(
-        call.kwargs["messages"][0]["content"]
+        _message_text(call.kwargs)
         for call in provider.chat.await_args_list
-        if "长期记忆提取专家" in call.kwargs["messages"][0]["content"]
+        if "长期记忆提取专家" in _message_text(call.kwargs)
     )
     assert "## 最近三次 consolidation event" in event_prompt
     assert "用户准备下单 Zigbee 网关" in event_prompt
@@ -195,16 +195,15 @@ def test_consolidation_event_failure_does_not_write_implicit_long_term():
     implicit_done = asyncio.Event()
 
     async def _chat_side_effect(**kwargs):
-        messages = kwargs.get("messages", [])
-        content = (messages[0].get("content") or "") if messages else ""
-        if "procedure" in content or "preference" in content or "profile" in content:
+        content = _message_text(kwargs)
+        if "长期记忆提取专家" in content:
             # implicit 调用：立即返回合法结果
             implicit_done.set()
             return _Resp('{"profile":[{"summary":"用户买了 Zigbee 网关","category":"purchase","happened_at":"2026-03-15"}],"preference":[],"procedure":[]}')
-        else:
-            # event 调用：等 implicit 完成后再返回空响应，确保竞态场景
-            await implicit_done.wait()
-            return _Resp("")
+
+        # event 调用：等 implicit 完成后再返回空响应，确保竞态场景
+        await implicit_done.wait()
+        return _Resp("")
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
