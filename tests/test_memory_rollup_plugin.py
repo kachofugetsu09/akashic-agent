@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from fastapi.testclient import TestClient
 
@@ -55,7 +56,9 @@ def test_memory_rollup_generates_and_commits_pending(tmp_path: Path):
         for source_id in candidate["source_ids"]:
             item = marked_store.get_item_for_dashboard(source_id)
             assert item is not None
-            assert item["extra_json"]["_rollup"]["candidate_id"] == candidate["id"]
+            extra = cast(dict[str, object], item["extra_json"])
+            rollup = cast(dict[str, object], extra["_rollup"])
+            assert rollup["candidate_id"] == candidate["id"]
     finally:
         marked_store.close()
 
@@ -194,7 +197,9 @@ def test_memory_rollup_ignore_marks_sources_without_pending(tmp_path: Path):
     try:
         item = marked_store.get_item_for_dashboard(candidate["source_ids"][0])
         assert item is not None
-        assert item["extra_json"]["_rollup"]["action"] == "ignored"
+        extra = cast(dict[str, object], item["extra_json"])
+        rollup = cast(dict[str, object], extra["_rollup"])
+        assert rollup["action"] == "ignored"
     finally:
         marked_store.close()
 
