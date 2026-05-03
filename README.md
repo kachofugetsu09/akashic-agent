@@ -9,17 +9,27 @@
 ```bash
 git clone <this-repo>
 cd akashic-agent
-uv sync          # 推荐，使用 uv.lock 锁定版本
-# 或者：pip install -r requirements.txt
+uv venv                              # 创建 .venv
+uv pip install -r requirements.txt  # 安装依赖
 ```
 
-**2. 初始化工作区**
+没有 uv？先装：`pip install uv`
+
+**2. 初始化（推荐用交互向导）**
 
 ```bash
-python main.py init
+uv run python main.py setup
 ```
 
-`init` 会把 `config.example.toml` 复制为 `config.toml`，并在 `~/.akashic/workspace/` 下创建运行时所需的全部文件和数据库：
+向导会逐步引导你配置主模型、频道、记忆，自动生成 `config.toml` 并初始化工作区。Telegram 配置完成后会实时获取你的 `chat_id`，proactive 一步到位。
+
+如果是自动化/CI 场景，用非交互模式：
+
+```bash
+uv run python main.py init   # 复制 config.example.toml，手动编辑后启动
+```
+
+`init` 创建的工作区结构：
 
 ```
 ~/.akashic/workspace/
@@ -89,7 +99,7 @@ allow_from = ["your_username"]  # 你的 Telegram 用户名（不带 @）
 **4. 启动**
 
 ```bash
-python main.py
+uv run python main.py
 ```
 
 打开 Telegram，找到你的 bot，发一条消息，就可以开始对话。
@@ -244,7 +254,7 @@ Drift 的核心约束：
 ## 其他命令
 
 ```bash
-python main.py cli      # 连接运行中的 agent（TUI / 纯文本 CLI）
+uv run python main.py cli      # 连接运行中的 agent（TUI / 纯文本 CLI）
 
 pytest tests/           # 单元测试
 akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/  # 场景测试（真实 LLM）

@@ -133,6 +133,14 @@ if __name__ == "__main__":
     if port_value is not None:
         dashboard_port = int(port_value)
 
+    if args and args[0] == "setup":
+        from bootstrap.setup_wizard import run_setup_wizard
+        run_setup_wizard(
+            config_path=Path(config_path),
+            workspace=workspace or _default_workspace(),
+        )
+        sys.exit(0)
+
     if args and args[0] == "init":
         summary = init_workspace(
             config_path=config_path,

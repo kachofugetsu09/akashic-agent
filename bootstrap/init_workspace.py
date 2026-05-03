@@ -218,7 +218,7 @@ def init_workspace(
         "     [llm.main]  api_key = \"sk-...\"",
         "     [channels.telegram]  token = \"...\"   （或配置 QQ 频道）",
         "     [memory.embedding]   api_key = \"sk-...\"  （通常和 llm.fast 同一个 key）",
-        "2. 运行 python main.py 启动。",
+        "2. 运行 uv run python main.py 启动。",
         "3. 向 bot 发一条消息，确认对话正常后，可在 config.toml 开启 proactive。",
     ]
     return summary
