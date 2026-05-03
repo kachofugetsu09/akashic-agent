@@ -6,6 +6,8 @@
 
 **1. 安装依赖**
 
+需要 Python 3.12。推荐用 `uv` 管理虚拟环境：
+
 ```bash
 git clone <this-repo>
 cd akashic-agent
@@ -13,7 +15,7 @@ uv venv                              # 创建 .venv
 uv pip install -r requirements.txt  # 安装依赖
 ```
 
-没有 uv？先装：`pip install uv`
+没有 uv？先装：`python -m pip install uv`
 
 **2. 初始化（推荐用交互向导）**
 
@@ -114,7 +116,7 @@ channel = "telegram"
 chat_id = "123456789"   # 你的 Telegram user id
 ```
 
-**5. 打开 Drift**
+**6. 打开 Drift**
 
 ```toml
 [proactive.drift]
@@ -123,6 +125,47 @@ min_interval_hours = 3  # 每次 drift 最小间隔
 ```
 
 Drift 打开后，没有可推送内容时，agent 会利用空闲时间自主执行 `drift/skills/` 下定义的任务。本轮不打扰用户时用 `finish_drift(message_result="silent")` 静默收尾；如果已经主动发消息，则必须用 `finish_drift(message_result="sent")` 收尾。
+
+**7. 打开 Dashboard（可选）**
+
+Dashboard 用来查看会话、消息、记忆、proactive 记录和插件面板：
+
+```bash
+uv run python main.py dashboard
+```
+
+默认监听 `0.0.0.0:2236`。如需改地址：
+
+```bash
+uv run python main.py dashboard --host 127.0.0.1 --port 2236
+```
+
+**8. 配置 MCP servers（可选）**
+
+MCP server 注册表在工作区的 `mcp_servers.json`。也可以在对话里让 agent 调用 `mcp_add` 添加，手动配置格式如下：
+
+```json
+{
+  "servers": {
+    "calendar": {
+      "command": ["python", "/path/to/run_server.py"],
+      "env": {
+        "GOOGLE_CLIENT_ID": "..."
+      },
+      "cwd": "/path/to"
+    }
+  }
+}
+```
+
+启动时会读取这个文件并把 MCP 工具注册进工具列表。
+
+**Troubleshooting**
+
+- `chat_id` 不知道怎么拿：优先跑 `uv run python main.py setup`，向导会在 Telegram 配好后自动获取；手动配置时，先给 bot 发一条消息，再从日志里的 Telegram update 里取 user id。
+- `uv` 装不上：先升级 pip，执行 `python -m pip install --upgrade pip`，再执行 `python -m pip install uv`。
+- Dashboard 打不开：确认主程序没有占用同一端口，或用 `--port` 换一个端口。
+- MCP server 没工具：先确认 `mcp_servers.json` 里的 `command` 能在终端单独启动，且需要的环境变量都在 `env` 里。
 
 ---
 
