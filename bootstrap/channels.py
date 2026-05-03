@@ -63,6 +63,7 @@ async def start_channels(
             session_manager=session_manager,
             allow_from=qq.allow_from,
             groups=qq.groups,
+            websocket_open_timeout_seconds=qq.websocket_open_timeout_seconds,
             http_requester=http_resources.external_default,
             interrupt_controller=interrupt_controller,
         )

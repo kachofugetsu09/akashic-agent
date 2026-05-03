@@ -196,6 +196,9 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                     for u in qq_data.get("allow_from", qq_data.get("allowFrom", []))
                 ],
                 groups=groups,
+                websocket_open_timeout_seconds=float(
+                    qq_data.get("websocket_open_timeout_seconds", 5.0)
+                ),
             )
 
     channels = ChannelsConfig(

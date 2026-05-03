@@ -38,6 +38,7 @@ allow_from = ["your_username"]
 [channels.qq]
 bot_uin = ""
 allow_from = ["987654321"]
+websocket_open_timeout_seconds = 5.0
 
 [[channels.qq.groups]]
 group_id = "111111111"
