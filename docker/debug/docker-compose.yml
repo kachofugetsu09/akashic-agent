@@ -1,0 +1,24 @@
+services:
+  akashic-debug:
+    build:
+      context: ../..
+      dockerfile: docker/debug/Dockerfile
+    image: akashic-agent-debug:latest
+    working_dir: /app
+    environment:
+      AKASHIC_DEBUG_CONFIG: /sandbox/config.toml
+      AKASHIC_DEBUG_WORKSPACE: /sandbox/workspace
+      AKASHIC_DASHBOARD_HOST: 0.0.0.0
+      AKASHIC_DASHBOARD_PORT: "2236"
+      AKASHIC_HOST_GID: "${GID:-1000}"
+      AKASHIC_HOST_UID: "${UID:-1000}"
+      AKASHIC_DEBUG_PROFILE: "${AKASHIC_DEBUG_PROFILE:-default}"
+      HOME: /sandbox/home
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../..:/app
+      - ./profiles/${AKASHIC_DEBUG_PROFILE:-default}:/sandbox
+    ports:
+      - "2237:2236"
+    stdin_open: true
+    tty: true
