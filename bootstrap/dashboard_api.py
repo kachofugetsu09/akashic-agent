@@ -517,6 +517,10 @@ class ProactiveDashboardReader:
         return value if isinstance(value, dict) else {}
 
 
+_pending_plugins: list[tuple[Path, Path]] = []
+_pending_plugins_lock = threading.Lock()
+
+
 def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
     ts_path = plugin_dir / "dashboard_panel.ts"
     js_path = plugin_dir / "dashboard_panel.js"
@@ -530,16 +534,18 @@ def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
 
     esbuild_bin = project_root / "node_modules" / ".bin" / "esbuild"
     if not esbuild_bin.exists():
-        logger.warning(
-            "esbuild 未找到 (%s)；请先运行 'npm install' 启用插件自动编译。如已有 .js 将继续使用。",
-            esbuild_bin,
-        )
+        with _pending_plugins_lock:
+            _pending_plugins.append((project_root, plugin_dir))
         return
 
+    _run_esbuild([str(esbuild_bin)], ts_path, js_path, plugin_dir.name)
+
+
+def _run_esbuild(cmd: list[str], ts_path: Path, js_path: Path, name: str) -> None:
     try:
         result = subprocess.run(
             [
-                str(esbuild_bin),
+                *cmd,
                 str(ts_path),
                 f"--outfile={js_path}",
                 "--bundle=false",
@@ -552,11 +558,40 @@ def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
             timeout=30,
         )
         if result.returncode == 0:
-            logger.info("插件面板已编译: %s", plugin_dir.name)
+            logger.info("插件面板已编译: %s", name)
         else:
-            logger.warning("插件面板编译失败 (%s):\n%s", plugin_dir.name, result.stderr)
+            logger.warning("插件面板编译失败 (%s):\n%s", name, result.stderr)
     except Exception as exc:
-        logger.warning("插件面板编译异常 (%s): %s", plugin_dir.name, exc)
+        logger.warning("插件面板编译异常 (%s): %s", name, exc)
+
+
+async def _compile_pending_plugins_async() -> None:
+    with _pending_plugins_lock:
+        if not _pending_plugins:
+            return
+        pending = _pending_plugins.copy()
+        _pending_plugins.clear()
+    first_root = pending[0][0]
+
+    logger.info("正在安装前端构建工具 (npx esbuild)...")
+    proc = await asyncio.create_subprocess_exec(
+        "npx", "--yes", "esbuild", "--version",
+        cwd=str(first_root),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning(
+            "npx esbuild 不可用 (%d)，插件面板未编译:\n%s",
+            proc.returncode,
+            stderr.decode("utf-8", errors="replace")[:500],
+        )
+        return
+    version = stdout.decode("utf-8", errors="replace").strip()
+    logger.info("npx esbuild 就绪 (%s)，开始编译插件面板...", version)
+    for root, pdir in pending:
+        _run_esbuild(["npx", "--yes", "esbuild"], pdir / "dashboard_panel.ts", pdir / "dashboard_panel.js", pdir.name)
 
 
 def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
@@ -615,9 +650,15 @@ def create_dashboard_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        compile_task = asyncio.create_task(_compile_pending_plugins_async())
         try:
             yield
         finally:
+            compile_task.cancel()
+            try:
+                await compile_task
+            except asyncio.CancelledError:
+                pass
             store.close()
             if memory_store is not None:
                 get_memory_store().close()
