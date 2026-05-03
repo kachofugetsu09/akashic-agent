@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import importlib.util
@@ -20,6 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
 from core.common.timekit import utcnow
 from session.store import SessionStore
@@ -121,6 +123,13 @@ class ManualConsolidator(Protocol):
         archive_all: bool = False,
         force: bool = False,
     ) -> bool: ...
+
+
+class ManualMemoryOptimizer(Protocol):
+    @property
+    def is_running(self) -> bool: ...
+
+    async def optimize(self) -> None: ...
 
 
 class ProactiveDashboardReader:
@@ -578,11 +587,15 @@ def create_dashboard_app(
     workspace: Path,
     *,
     manual_consolidator: ManualConsolidator | None = None,
+    manual_memory_optimizer: ManualMemoryOptimizer | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
     memory_store: MemoryStore2 | None = None
     proactive_reader: ProactiveDashboardReader | None = None
+    optimizer_task: asyncio.Task[None] | None = None
+    optimizer_last_status = "idle"
+    optimizer_last_error: str | None = None
     project_root = Path(__file__).resolve().parent.parent
     plugins_root = project_root / "plugins"
     static_dir = project_root / "static" / "dashboard"
@@ -634,7 +647,15 @@ def create_dashboard_app(
         result = []
         for plugin_dir in sorted(plugins_root.iterdir()):
             if plugin_dir.is_dir() and (plugin_dir / "dashboard_panel.js").exists():
-                result.append({"id": plugin_dir.name})
+                js_path = plugin_dir / "dashboard_panel.js"
+                css_path = plugin_dir / "dashboard_panel.css"
+                asset_mtime = js_path.stat().st_mtime_ns
+                if css_path.exists():
+                    asset_mtime = max(asset_mtime, css_path.stat().st_mtime_ns)
+                result.append({
+                    "id": plugin_dir.name,
+                    "asset_version": str(asset_mtime),
+                })
         return result
 
     @app.get("/plugins/{plugin_id}/panel.js")
@@ -754,6 +775,61 @@ def create_dashboard_app(
             "triggered": triggered,
             "session": meta,
         }
+
+    async def _run_memory_optimizer() -> None:
+        nonlocal optimizer_last_error, optimizer_last_status
+        assert manual_memory_optimizer is not None
+        optimizer_last_status = "running"
+        optimizer_last_error = None
+        try:
+            await manual_memory_optimizer.optimize()
+            optimizer_last_status = "succeeded"
+        except MemoryOptimizerBusy:
+            optimizer_last_status = "skipped"
+            logger.info("manual memory optimizer skipped because it is already running")
+        except asyncio.CancelledError:
+            optimizer_last_status = "failed"
+            optimizer_last_error = "memory optimizer 已取消"
+            raise
+        except Exception as exc:
+            optimizer_last_status = "failed"
+            optimizer_last_error = str(exc)
+            logger.exception("manual memory optimizer failed: %s", exc)
+
+    @app.get("/api/dashboard/memory/optimizer")
+    async def get_memory_optimizer_status() -> dict[str, Any]:
+        running = bool(
+            manual_memory_optimizer is not None
+            and (
+                (optimizer_task is not None and not optimizer_task.done())
+                or manual_memory_optimizer.is_running
+            )
+        )
+        return {
+            "enabled": manual_memory_optimizer is not None,
+            "running": running,
+            "last_status": "running" if running else optimizer_last_status,
+            "last_error": optimizer_last_error,
+        }
+
+    @app.post("/api/dashboard/memory/optimize", status_code=202)
+    async def trigger_memory_optimizer() -> dict[str, Any]:
+        nonlocal optimizer_last_error, optimizer_last_status, optimizer_task
+        if manual_memory_optimizer is None:
+            raise HTTPException(status_code=503, detail="memory optimizer 未启用")
+        if (
+            optimizer_task is not None
+            and not optimizer_task.done()
+        ) or manual_memory_optimizer.is_running:
+            raise HTTPException(status_code=409, detail="memory optimizer 正在运行")
+        logger.info("Manual memory optimizer triggered via dashboard")
+        optimizer_last_status = "running"
+        optimizer_last_error = None
+        optimizer_task = asyncio.create_task(
+            _run_memory_optimizer(),
+            name="manual_memory_optimizer",
+        )
+        return {"status": "started", "message": "Memory optimizer started"}
 
     @app.post("/api/dashboard/sessions/batch-delete")
     def delete_sessions_batch(payload: SessionBatchDeletePayload) -> dict[str, Any]:
@@ -1138,6 +1214,7 @@ def run_dashboard_api(
     host: str = "0.0.0.0",
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
+    manual_memory_optimizer: ManualMemoryOptimizer | None = None,
 ) -> None:
     server = uvicorn.Server(
         _build_dashboard_uvicorn_config(
@@ -1145,6 +1222,7 @@ def run_dashboard_api(
             host=host,
             port=port,
             manual_consolidator=manual_consolidator,
+            manual_memory_optimizer=manual_memory_optimizer,
         )
     )
     server.run()
@@ -1156,11 +1234,13 @@ def _build_dashboard_uvicorn_config(
     host: str,
     port: int,
     manual_consolidator: ManualConsolidator | None,
+    manual_memory_optimizer: ManualMemoryOptimizer | None = None,
 ) -> uvicorn.Config:
     config = uvicorn.Config(
         create_dashboard_app(
             workspace,
             manual_consolidator=manual_consolidator,
+            manual_memory_optimizer=manual_memory_optimizer,
         ),
         host=host,
         port=port,
@@ -1176,11 +1256,13 @@ def build_dashboard_server(
     host: str = "0.0.0.0",
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
+    manual_memory_optimizer: ManualMemoryOptimizer | None = None,
 ) -> uvicorn.Server:
     config = _build_dashboard_uvicorn_config(
         workspace=workspace,
         host=host,
         port=port,
         manual_consolidator=manual_consolidator,
+        manual_memory_optimizer=manual_memory_optimizer,
     )
     return uvicorn.Server(config)

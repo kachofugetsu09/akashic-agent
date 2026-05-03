@@ -36,6 +36,13 @@ import type {
 
 type NavOpen = Record<string, boolean>;
 type MemoryScope = { channel: string; chatId: string } | null;
+type MemoryOptimizerState = "idle" | "starting" | "running" | "succeeded" | "failed" | "skipped";
+type MemoryOptimizerStatus = {
+  enabled: boolean;
+  running: boolean;
+  last_status: Exclude<MemoryOptimizerState, "starting">;
+  last_error: string | null;
+};
 
 function App(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
@@ -82,6 +89,8 @@ function App(): React.ReactElement {
   const [activeProactiveDetail, setActiveProactiveDetail] = useState<ProactiveTick | null>(null);
   const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [memoryOptimizerState, setMemoryOptimizerState] = useState<MemoryOptimizerState>("idle");
+  const [memoryOptimizerEnabled, setMemoryOptimizerEnabled] = useState(false);
 
   const messagePageSize = 25;
   const memoryPageSize = 25;
@@ -89,6 +98,17 @@ function App(): React.ReactElement {
   const currentPluginId = viewMode.startsWith("plugin:") ? viewMode.slice(7) : "";
   const currentPlugin = plugins.find((plugin) => plugin.id === currentPluginId) ?? null;
   const currentPluginState = currentPluginId ? pluginState[currentPluginId] : null;
+  const memoryOptimizerButtonText = memoryOptimizerState === "starting"
+    ? "正在启动优化"
+    : memoryOptimizerState === "running"
+      ? "记忆优化中"
+      : memoryOptimizerState === "succeeded"
+        ? "优化已完成"
+        : memoryOptimizerState === "failed"
+          ? "优化失败"
+          : memoryOptimizerState === "skipped"
+            ? "已跳过"
+            : "记忆优化";
 
   const channels = useMemo(() => Array.from(new Set(sessions.map((session) => session.key.split(":")[0]).filter(Boolean))), [sessions]);
 
@@ -233,6 +253,36 @@ function App(): React.ReactElement {
   }, [loadMemories, loadMemorySidebar, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
 
   useEffect(() => {
+    const refresh = (): void => {
+      void run(refreshCurrentView);
+    };
+    window.addEventListener("akashic-dashboard-refresh", refresh);
+    return () => window.removeEventListener("akashic-dashboard-refresh", refresh);
+  }, [refreshCurrentView, run]);
+
+  const loadMemoryOptimizerStatus = useCallback(async (): Promise<MemoryOptimizerStatus> => {
+    const status = await api<MemoryOptimizerStatus>("/api/dashboard/memory/optimizer");
+    setMemoryOptimizerEnabled(status.enabled);
+    setMemoryOptimizerState(status.running ? "running" : status.last_status);
+    if (status.last_status === "failed" && status.last_error) {
+      setError(status.last_error);
+    }
+    return status;
+  }, []);
+
+  const triggerMemoryOptimizer = useCallback(async () => {
+    setError(null);
+    setMemoryOptimizerState("starting");
+    try {
+      await api("/api/dashboard/memory/optimize", { method: "POST" });
+      await loadMemoryOptimizerStatus();
+    } catch (exc) {
+      setMemoryOptimizerState("idle");
+      setError(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [loadMemoryOptimizerStatus]);
+
+  useEffect(() => {
     installDashboardGlobals((plugin) => {
       setPlugins((current) => current.some((item) => item.id === plugin.id) ? current : [...current, plugin]);
       setPluginState((current) => current[plugin.id] ? current : {
@@ -249,8 +299,22 @@ function App(): React.ReactElement {
       await loadMessages();
       await loadMemorySidebar();
       await loadProactiveOverview();
+      await loadMemoryOptimizerStatus();
     });
-  }, [loadMemorySidebar, loadMessages, loadProactiveOverview, loadSessions, run]);
+  }, [loadMemoryOptimizerStatus, loadMemorySidebar, loadMessages, loadProactiveOverview, loadSessions, run]);
+
+  useEffect(() => {
+    if (memoryOptimizerState !== "running" && memoryOptimizerState !== "starting") return;
+    const timer = window.setInterval(() => {
+      void run(async () => {
+        const status = await loadMemoryOptimizerStatus();
+        if (!status.running) {
+          await refreshCurrentView();
+        }
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [loadMemoryOptimizerStatus, memoryOptimizerState, refreshCurrentView, run]);
 
   useEffect(() => {
     for (const plugin of plugins) {
@@ -389,6 +453,16 @@ function App(): React.ReactElement {
         />
         <div className="topbar-view">
           <div className="view-chip"><span>{viewLabel(viewMode, currentPlugin)}</span></div>
+          {viewMode === "memory" && memoryOptimizerEnabled && (
+            <button
+              className="ghost"
+              type="button"
+              disabled={memoryOptimizerState === "starting" || memoryOptimizerState === "running"}
+              onClick={() => void triggerMemoryOptimizer()}
+            >
+              {memoryOptimizerButtonText}
+            </button>
+          )}
         </div>
       </header>
 

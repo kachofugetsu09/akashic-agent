@@ -6,9 +6,12 @@ import types
 from datetime import datetime
 from unittest.mock import AsyncMock
 
+import pytest
+
 from agent.memory import MemoryStore
 from core.memory.port import DefaultMemoryPort
 from proactive_v2.memory_optimizer import (
+    MemoryOptimizerBusy,
     MemoryOptimizer,
     MemoryOptimizerLoop,
 )
@@ -122,6 +125,33 @@ def test_request_text_response_uses_expected_chat_kwargs(tmp_path):
     assert kwargs["tools"] == []
     assert kwargs["model"] == "test-model"
     assert kwargs["max_tokens"] == 123
+
+
+def test_optimize_reports_busy_instead_of_waiting(tmp_path):
+    async def run_case() -> None:
+        memory = DefaultMemoryPort(MemoryStore(tmp_path))
+        provider = types.SimpleNamespace()
+        provider.chat = AsyncMock()
+        optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_optimize() -> None:
+            started.set()
+            await release.wait()
+
+        optimizer._optimize = blocked_optimize  # type: ignore[method-assign]
+        running = asyncio.create_task(optimizer.optimize())
+        await started.wait()
+
+        assert optimizer.is_running
+        with pytest.raises(MemoryOptimizerBusy):
+            await optimizer.optimize()
+
+        release.set()
+        await running
+
+    asyncio.run(run_case())
 
 
 def test_seconds_until_next_tick_aligns_to_interval_boundary():

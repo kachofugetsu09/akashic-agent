@@ -28,6 +28,10 @@ dev_mode = false
 [agent.context]
 memory_window = 24
 
+[agent.maintenance]
+memory_optimizer_enabled = true
+memory_optimizer_interval_seconds = 10800
+
 [agent.tools]
 search_enabled = true
 

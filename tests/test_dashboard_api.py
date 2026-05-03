@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+import threading
 from datetime import datetime
 
 from fastapi.testclient import TestClient
@@ -29,6 +31,42 @@ class _ManualConsolidator:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class _ManualMemoryOptimizer:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        block: bool = False,
+    ) -> None:
+        self.error = error
+        self.block = block
+        self.calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self._running = False
+        self.raise_busy = False
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    async def optimize(self) -> None:
+        if self.raise_busy:
+            from proactive_v2.memory_optimizer import MemoryOptimizerBusy
+
+            raise MemoryOptimizerBusy("busy")
+        self._running = True
+        self.calls += 1
+        self.started.set()
+        try:
+            if self.block:
+                await asyncio.to_thread(self.release.wait, 1.0)
+            if self.error is not None:
+                raise self.error
+        finally:
+            self._running = False
 
 
 def _seed_workspace(tmp_path) -> None:
@@ -357,6 +395,66 @@ def test_manual_consolidate_session_reports_concurrency_timeout(tmp_path) -> Non
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == "busy"
+
+
+def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:
+    optimizer = _ManualMemoryOptimizer()
+    with TestClient(
+        create_dashboard_app(tmp_path, manual_memory_optimizer=optimizer)
+    ) as client:
+        resp = client.post("/api/dashboard/memory/optimize")
+
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "started"
+    assert optimizer.started.wait(1.0)
+    assert optimizer.calls == 1
+
+
+def test_manual_memory_optimizer_reports_unavailable_runtime(tmp_path) -> None:
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    status_resp = client.get("/api/dashboard/memory/optimizer")
+    resp = client.post("/api/dashboard/memory/optimize")
+
+    assert status_resp.status_code == 200
+    assert status_resp.json()["enabled"] is False
+    assert resp.status_code == 503
+
+
+def test_manual_memory_optimizer_reports_busy_runtime(tmp_path) -> None:
+    optimizer = _ManualMemoryOptimizer(block=True)
+    with TestClient(
+        create_dashboard_app(tmp_path, manual_memory_optimizer=optimizer)
+    ) as client:
+        first_resp = client.post("/api/dashboard/memory/optimize")
+        assert first_resp.status_code == 202
+        assert optimizer.started.wait(1.0)
+        status_resp = client.get("/api/dashboard/memory/optimizer")
+
+        busy_resp = client.post("/api/dashboard/memory/optimize")
+        optimizer.release.set()
+
+    assert status_resp.status_code == 200
+    assert status_resp.json()["enabled"] is True
+    assert status_resp.json()["running"] is True
+    assert status_resp.json()["last_status"] == "running"
+    assert busy_resp.status_code == 409
+    assert optimizer.calls == 1
+
+
+def test_manual_memory_optimizer_skips_when_backend_reports_busy(tmp_path) -> None:
+    optimizer = _ManualMemoryOptimizer()
+    optimizer.raise_busy = True
+    with TestClient(
+        create_dashboard_app(tmp_path, manual_memory_optimizer=optimizer)
+    ) as client:
+        start_resp = client.post("/api/dashboard/memory/optimize")
+        status_resp = client.get("/api/dashboard/memory/optimizer")
+
+    assert start_resp.status_code == 202
+    assert status_resp.status_code == 200
+    assert status_resp.json()["running"] is False
+    assert status_resp.json()["last_status"] == "skipped"
 
 
 def test_list_update_and_batch_delete_messages(tmp_path) -> None:
