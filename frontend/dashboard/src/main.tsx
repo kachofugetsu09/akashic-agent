@@ -252,6 +252,14 @@ function App(): React.ReactElement {
     }
   }, [loadMemories, loadMemorySidebar, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
 
+  useEffect(() => {
+    const refresh = (): void => {
+      void run(refreshCurrentView);
+    };
+    window.addEventListener("akashic-dashboard-refresh", refresh);
+    return () => window.removeEventListener("akashic-dashboard-refresh", refresh);
+  }, [refreshCurrentView, run]);
+
   const loadMemoryOptimizerStatus = useCallback(async (): Promise<MemoryOptimizerStatus> => {
     const status = await api<MemoryOptimizerStatus>("/api/dashboard/memory/optimizer");
     setMemoryOptimizerEnabled(status.enabled);

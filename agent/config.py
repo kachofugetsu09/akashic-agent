@@ -115,7 +115,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         memory_optimizer_interval_seconds=int(
             agent_maintenance.get(
                 "memory_optimizer_interval_seconds",
-                data.get("memory_optimizer_interval_seconds", 3600),
+                data.get("memory_optimizer_interval_seconds", 10800),
             )
         ),
         light_model=str(llm_fast.get("model") or data.get("light_model", "")),

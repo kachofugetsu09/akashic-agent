@@ -108,7 +108,7 @@ class Config:
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
-    memory_optimizer_interval_seconds: int = 3600
+    memory_optimizer_interval_seconds: int = 10800
     light_model: str = ""
     light_api_key: str = ""
     light_base_url: str = ""

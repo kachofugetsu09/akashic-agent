@@ -647,7 +647,15 @@ def create_dashboard_app(
         result = []
         for plugin_dir in sorted(plugins_root.iterdir()):
             if plugin_dir.is_dir() and (plugin_dir / "dashboard_panel.js").exists():
-                result.append({"id": plugin_dir.name})
+                js_path = plugin_dir / "dashboard_panel.js"
+                css_path = plugin_dir / "dashboard_panel.css"
+                asset_mtime = js_path.stat().st_mtime_ns
+                if css_path.exists():
+                    asset_mtime = max(asset_mtime, css_path.stat().st_mtime_ns)
+                result.append({
+                    "id": plugin_dir.name,
+                    "asset_version": str(asset_mtime),
+                })
         return result
 
     @app.get("/plugins/{plugin_id}/panel.js")
