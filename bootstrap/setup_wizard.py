@@ -5,6 +5,8 @@ python main.py setup
 """
 from __future__ import annotations
 
+import sys
+import select
 import threading
 import time
 from dataclasses import dataclass, field
@@ -67,6 +69,114 @@ def _divider() -> None:
     click.echo(click.style("─" * 40, dim=True))
 
 
+def _read_escape_sequence(fd: int) -> str:
+    ready, _, _ = select.select([fd], [], [], 0.01)
+    if not ready:
+        return ""
+
+    first = sys.stdin.read(1)
+    if first == "[":
+        seq = [first]
+        while len(seq) < 5:
+            ready, _, _ = select.select([fd], [], [], 0.01)
+            if not ready:
+                break
+            ch = sys.stdin.read(1)
+            seq.append(ch)
+            if ch == "~" or ch.isalpha():
+                break
+        return "".join(seq)
+
+    if first == "O":
+        ready, _, _ = select.select([fd], [], [], 0.01)
+        if ready:
+            return first + sys.stdin.read(1)
+    return first
+
+
+def _secret_prompt(
+    text: str,
+    *,
+    default: str | None = None,
+    show_default: bool = True,
+) -> str:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        if default is None:
+            return _strip_paste_markers(click.prompt(text, hide_input=True))
+        return _strip_paste_markers(
+            click.prompt(
+                text,
+                default=default,
+                hide_input=True,
+                show_default=show_default,
+            )
+        )
+
+    try:
+        import termios
+        import tty
+    except Exception:
+        if default is None:
+            return _strip_paste_markers(click.prompt(text, hide_input=True))
+        return _strip_paste_markers(
+            click.prompt(
+                text,
+                default=default,
+                hide_input=True,
+                show_default=show_default,
+            )
+        )
+
+    suffix = ""
+    if show_default and default not in (None, ""):
+        suffix = f" [{default}]"
+    click.echo(f"{text}{suffix}: ", nl=False)
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    chars: list[str] = []
+    try:
+        _ = tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":
+                seq = _read_escape_sequence(fd)
+                if seq in ("[200~", "[201~"):
+                    continue
+                if seq.startswith("[") or seq.startswith("O"):
+                    continue
+                chars.extend(["\x1b", *seq])
+                click.echo("*" * (len(seq) + 1), nl=False)
+                continue
+            if ch in ("\r", "\n"):
+                click.echo()
+                break
+            if ch == "\x03":
+                raise KeyboardInterrupt()
+            if ch == "\x04":
+                raise EOFError()
+            if ch in ("\x7f", "\b"):
+                if chars:
+                    _ = chars.pop()
+                    click.echo("\b \b", nl=False)
+                continue
+            if ch < " ":
+                continue
+            chars.append(ch)
+            click.echo("*", nl=False)
+    finally:
+        _ = termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    value = "".join(chars)
+    if value or default is None:
+        return _strip_paste_markers(value)
+    return default
+
+
+def _strip_paste_markers(value: str) -> str:
+    return value.replace("\x1b[200~", "").replace("\x1b[201~", "")
+
+
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
@@ -74,7 +184,7 @@ def _divider() -> None:
 def run_setup_wizard(config_path: Path, workspace: Path) -> None:
     click.echo(click.style("\n══ akashic 初始化向导 ══\n", bold=True))
     _hint("全程按回车使用括号内的默认值")
-    _hint("API key 输入时不会显示字符，正常输入后回车即可")
+    _hint("API key / token 输入时会显示为 *，正常输入后回车即可")
 
     if config_path.exists():
         click.echo(f"\n已存在配置文件 {config_path}")
@@ -118,7 +228,7 @@ def _phase_main_llm(a: WizardAnswers) -> None:
 
     a.model = click.prompt("模型名")
     a.base_url = click.prompt("base_url（OpenAI 兼容格式）")
-    a.api_key = click.prompt("API key", hide_input=True)
+    a.api_key = _secret_prompt("API key")
     a.provider = "openai"
     a.enable_thinking = click.confirm("开启 thinking 模式？", default=False)
     a.multimodal = click.confirm("主模型原生支持图片输入？", default=False)
@@ -131,7 +241,7 @@ def _phase_main_llm(a: WizardAnswers) -> None:
                 default="",
                 show_default=False,
             ) or a.base_url
-            a.vl_api_key = click.prompt(
+            a.vl_api_key = _secret_prompt(
                 "API key（回车 = 复用主模型 key）",
                 default="",
                 show_default=False,
@@ -151,7 +261,7 @@ def _phase_fast_model(a: WizardAnswers) -> None:
         default="",
         show_default=False,
     ) or a.base_url
-    a.fast_api_key = click.prompt(
+    a.fast_api_key = _secret_prompt(
         "API key（回车 = 复用主模型 key）",
         default="",
         show_default=False,
@@ -175,7 +285,7 @@ def _phase_channels(a: WizardAnswers) -> None:
     click.echo()
 
     while True:
-        token = click.prompt("Bot token")
+        token = _secret_prompt("Bot token")
         err = _validate_tg_token(token)
         if err is None:
             a.tg_token = token
@@ -218,7 +328,7 @@ def _phase_memory(a: WizardAnswers) -> None:
     click.echo()
 
     a.embed_model = click.prompt("Embedding 模型名")
-    a.embed_api_key = click.prompt("Embedding API key", hide_input=True)
+    a.embed_api_key = _secret_prompt("Embedding API key")
     a.embed_base_url = click.prompt("Embedding base_url")
 
 
