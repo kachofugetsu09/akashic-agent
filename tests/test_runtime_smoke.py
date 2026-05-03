@@ -18,6 +18,7 @@ from agent.config import (
     QQGroupConfig,
     TelegramChannelConfig,
 )
+from agent.memory import DEFAULT_SELF_MD
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
 
@@ -233,7 +234,7 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
         workspace=workspace,
         force=True,
     )
-    assert self_path.read_text(encoding="utf-8") == ""
+    assert self_path.read_text(encoding="utf-8") == DEFAULT_SELF_MD
     assert any(path == self_path for path in summary_force.overwritten)
 
 

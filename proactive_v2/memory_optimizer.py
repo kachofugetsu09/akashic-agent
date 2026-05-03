@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from core.memory.profile import MemoryOptimizerStore
 
+from agent.memory import DEFAULT_SELF_MD
 from agent.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -279,7 +280,7 @@ class MemoryOptimizer:
 
     async def _update_self(self, pending: str) -> None:
         """只更新 SELF.md 现有保留的三段，不新增 section。"""
-        self_content = self._memory.read_self().strip()
+        self_content = self._memory.read_self().strip() or DEFAULT_SELF_MD.strip()
         if not self_content:
             logger.info("[memory_optimizer] SELF.md 不存在或为空，跳过更新")
             return
