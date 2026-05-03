@@ -291,7 +291,15 @@ def _fetch_chat_id(token: str, username: str, timeout_s: int, stop: threading.Ev
                         continue
                     from_user = msg.get("from", {})
                     if from_user.get("username", "").lower() == username.lower():
-                        return str(msg["chat"]["id"])
+                        chat_id = str(msg["chat"]["id"])
+                        try:
+                            _ = client.get(
+                                url,
+                                params={"offset": offset, "limit": 1, "timeout": 0},
+                            )
+                        except Exception as e:
+                            _warn(f"chat_id 已获取，但确认 Telegram update 失败：{e}")
+                        return chat_id
     except Exception as e:
         _err(f"获取 chat_id 失败：{e}")
     return None
