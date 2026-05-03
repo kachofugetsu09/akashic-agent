@@ -96,6 +96,115 @@ docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug reset-w
 
 这个命令只删除并重建当前 profile 下的 `workspace`，会保留当前 profile 下的 `config.toml`。
 
+## 上下文连续性探针
+
+`context_probe.py` 用于复现一段固定纯聊天场景，自动记录用户输入、LLM 回复、工具调用、`RECENT_CONTEXT.md` 和 `memory2.db` 写入结果。
+
+```
+context probe
+  |
+  +-- profile
+  |     |
+  |     +-- config.toml
+  |     +-- workspace
+  |
+  +-- phase1 chat
+  |
+  +-- manual consolidate
+  |
+  +-- phase2 chat
+  |
+  +-- final question
+        |
+        +-- markdown report
+        +-- json report
+```
+
+从已启动的沙盒运行：
+
+```bash
+python docker/debug/context_probe.py \
+  --profile default \
+  --messages docker/debug/scenarios/sleepy_study_plan.json
+```
+
+自动重置、启动、运行并停止：
+
+```bash
+python docker/debug/context_probe.py \
+  --profile v4flash-memory-window \
+  --messages docker/debug/scenarios/sleepy_study_plan.json \
+  --reset-workspace \
+  --start-agent \
+  --stop-agent \
+  --quiet-agent \
+  --disable-qq
+```
+
+`--disable-qq` 会在运行期间临时给当前 profile 的 `[channels.qq]` 加 `enabled = false`，结束后恢复原配置，适合只测 CLI 但该 profile 配了 QQ 的情况。
+
+默认报告写到：
+
+```text
+docker/debug/profiles/<profile>/workspace/context-probe-<profile>.md
+docker/debug/profiles/<profile>/workspace/context-probe-<profile>.json
+```
+
+自定义场景 JSON 格式：
+
+```json
+{
+  "name": "sleepy_study_plan",
+  "turns": [
+    {
+      "role": "user",
+      "content": "前置闲聊"
+    },
+    {
+      "action": "consolidate",
+      "label": "after_signal",
+      "force": false,
+      "archive_all": false
+    },
+    {
+      "role": "user",
+      "content": "consolidate 后的杂音"
+    },
+    {
+      "role": "user",
+      "content": "最后问题",
+      "final": true
+    }
+  ]
+}
+```
+
+场景 JSON 只描述输入和流程，不写结果要求。报告只记录 observe 结果，不判定通过/失败。
+
+内置样例在：
+
+```text
+docker/debug/scenarios/sleepy_study_plan.json
+```
+
+公开场景和 schema 都放在：
+
+```text
+docker/debug/scenarios/
+```
+
+这里的文件是稳定输入，可以提交；`docker/debug/profiles/<profile>/workspace/` 里的报告 JSON / Markdown 是运行产物，默认不提交。
+
+兼容旧格式：
+
+```json
+{
+  "phase1": ["第一段闲聊"],
+  "phase2": ["consolidate 后的杂音"],
+  "final_question": "最后问题"
+}
+```
+
 ## 完全清理
 
 ```bash

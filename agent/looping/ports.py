@@ -64,8 +64,9 @@ class MemoryConfig:
 
     @property
     def keep_count(self) -> int:
-        """上下文携带条数，也是 consolidation 后 session 保留条数。= window / 2。"""
-        return max(1, self.window // 2)
+        """上下文携带条数，也是 consolidation 后 session 保留条数。"""
+        aligned_window = max(6, ((max(1, self.window) + 5) // 6) * 6)
+        return aligned_window // 2
 
     @property
     def consolidation_min_new_messages(self) -> int:
