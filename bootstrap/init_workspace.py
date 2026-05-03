@@ -46,6 +46,7 @@ class InitSummary:
     overwritten: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    next_steps: list[str] = field(default_factory=list)
 
 
 def _write_text_file(path: Path, content: str, *, force: bool, summary: InitSummary) -> None:
@@ -211,6 +212,13 @@ def init_workspace(
     if with_fitbit:
         _ensure_fitbit_assets(force=force, summary=summary)
 
-    summary.notes.append(f"请检查并填写配置文件: {config_path}")
     summary.notes.append(f"工作区已初始化: {workspace}")
+    summary.next_steps = [
+        f"1. 编辑 {config_path}，填写以下必填项：",
+        "     [llm.main]  api_key = \"sk-...\"",
+        "     [channels.telegram]  token = \"...\"   （或配置 QQ 频道）",
+        "     [memory.embedding]   api_key = \"sk-...\"  （通常和 llm.fast 同一个 key）",
+        "2. 运行 python main.py 启动。",
+        "3. 向 bot 发一条消息，确认对话正常后，可在 config.toml 开启 proactive。",
+    ]
     return summary

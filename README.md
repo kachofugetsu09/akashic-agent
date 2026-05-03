@@ -4,15 +4,22 @@
 
 ## Quickstart
 
-**1. 初始化**
+**1. 安装依赖**
 
 ```bash
 git clone <this-repo>
 cd akashic-agent
+uv sync          # 推荐，使用 uv.lock 锁定版本
+# 或者：pip install -r requirements.txt
+```
+
+**2. 初始化工作区**
+
+```bash
 python main.py init
 ```
 
-`init` 会做两件事：把 `config.example.toml` 复制为 `config.toml`，并在 `~/.akashic/workspace/` 下创建运行时所需的全部文件和数据库：
+`init` 会把 `config.example.toml` 复制为 `config.toml`，并在 `~/.akashic/workspace/` 下创建运行时所需的全部文件和数据库：
 
 ```
 ~/.akashic/workspace/
@@ -38,10 +45,9 @@ python main.py init
   proactive_quota.json # proactive 配额
 ```
 
-**2. 填写配置**
+**3. 填写配置**
 
-编辑 `config.toml`，至少要改 API key 和频道 token。推荐配置（DeepSeek 主模型 + Qwen 轻量/视觉）：
-推荐如果非多模态模型可以用deepseek-v4-flash,他的agent能力是nextlevel的
+编辑 `config.toml`，至少填写主模型 API key 和一个频道（Telegram 或 QQ 选一个）。推荐配置（DeepSeek 主模型 + Qwen 轻量/视觉）：
 ```toml
 [llm]
 provider = "deepseek"
@@ -80,7 +86,7 @@ allow_from = ["your_username"]  # 你的 Telegram 用户名（不带 @）
 
 路线 B 是推荐方案：主模型用 DeepSeek 这类纯文本强模型，图片理解交给专门的 VL 模型，性价比最高。
 
-**3. 启动并发消息**
+**4. 启动**
 
 ```bash
 python main.py
@@ -88,7 +94,7 @@ python main.py
 
 打开 Telegram，找到你的 bot，发一条消息，就可以开始对话。
 
-**4. 配置 Proactive**
+**5. 配置 Proactive（可选）**
 
 `config.example.toml` 默认 `proactive.enabled = true`。填上你的 Telegram chat_id（可以向 bot 发一条消息后从日志里拿到），agent 就会在订阅的信息源有内容时主动推送消息。如果不需要主动推送，设为 `enabled = false`。
 
