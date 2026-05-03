@@ -39,7 +39,7 @@ max_iterations = 40
 dev_mode = false
 
 [agent.context]
-memory_window = 24
+memory_window = 40
 
 [agent.tools]
 search_enabled = true
