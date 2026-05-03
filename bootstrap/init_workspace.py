@@ -37,6 +37,7 @@ _DIRECTORIES: tuple[str, ...] = (
     "observe",
     "skills",
     "drift/skills",
+    "mcp",
 )
 
 
