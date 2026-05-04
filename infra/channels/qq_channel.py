@@ -17,6 +17,7 @@ chat_id 约定：
 import asyncio
 import base64
 import html
+import importlib
 import logging
 import re
 from collections.abc import Coroutine
@@ -46,6 +47,39 @@ _GROUP_PREFIX = "gqq:"
 
 # 匹配 CQ:image 码中的 url 字段
 _CQ_IMAGE_RE = re.compile(r"\[CQ:image[^\]]*?(?:,|\b)url=([^,\]]+)[^\]]*\]")
+
+
+def _patch_ncatbot_ws_open_timeout(timeout_seconds: float) -> None:
+    """覆盖 ncatbot 进程内写死的 1 秒 WebSocket 握手超时。"""
+    if timeout_seconds <= 0:
+        return
+
+    try:
+        adapter_mod = importlib.import_module("ncatbot.core.adapter.adapter")
+        original_connect = getattr(
+            adapter_mod,
+            "_akashic_original_websockets_connect",
+            None,
+        )
+        if original_connect is None:
+            original_connect = adapter_mod.websockets.connect
+            adapter_mod._akashic_original_websockets_connect = original_connect
+
+            def _patched_connect(*args, **kwargs):
+                configured_timeout = getattr(
+                    adapter_mod,
+                    "_akashic_websocket_open_timeout_seconds",
+                    None,
+                )
+                if configured_timeout is not None:
+                    kwargs["open_timeout"] = configured_timeout
+                return adapter_mod._akashic_original_websockets_connect(*args, **kwargs)
+
+            adapter_mod.websockets.connect = _patched_connect
+
+        adapter_mod._akashic_websocket_open_timeout_seconds = timeout_seconds
+    except Exception as e:
+        logger.warning("[qq] patch ncatbot WebSocket open_timeout 失败，沿用 SDK 默认值: %s", e)
 
 
 def _extract_cq_images(raw: str) -> tuple[str, list[str]]:
@@ -103,6 +137,7 @@ class QQChannel:
         session_manager: SessionManager,
         allow_from: list[str] | None = None,
         groups: list[QQGroupConfig] | None = None,
+        websocket_open_timeout_seconds: float = 5.0,
         group_filter: GroupMessageFilter | None = None,
         http_requester: HttpRequester | None = None,
         interrupt_controller: InterruptController | None = None,
@@ -113,7 +148,9 @@ class QQChannel:
         self._bus = bus
         self._session_manager = session_manager
         self._bot_uin = bot_uin
-        self._allow_from: set[str] = set(allow_from) if allow_from else set()
+        allowed_users = [str(user_id) for user_id in (allow_from or [])]
+        self._allow_from: set[str] = set(allowed_users)
+        self._websocket_open_timeout_seconds = float(websocket_open_timeout_seconds)
         self._interrupt_controller = interrupt_controller
         ws = getattr(session_manager, "workspace", None)
         self._attachments = AttachmentStore(Path(ws) / "uploads" if ws else None)
@@ -139,11 +176,15 @@ class QQChannel:
         self._main_loop: asyncio.AbstractEventLoop | None = None
         self._bot_loop: asyncio.AbstractEventLoop | None = None
 
+        _patch_ncatbot_ws_open_timeout(self._websocket_open_timeout_seconds)
         ncatbot_config.bt_uin = bot_uin
+        ncatbot_config.root = allowed_users[0] if allowed_users else bot_uin
         # NapCat 由 Docker 容器管理，NcatBot 只负责连接 WebSocket
         ncatbot_config.check_ncatbot_update = False
         ncatbot_config.skip_ncatbot_install_check = True
         ncatbot_config.napcat.remote_mode = True
+        # Akashic 只需要 NapCat 的 OneBot WebSocket，禁用 WebUI 避免启动时卡交互 token。
+        ncatbot_config.napcat.enable_webui = False
         ncatbot_config.enable_webui_interaction = False
         # 运行时产物重定向到 ~/.akashic/ncatbot/，不污染项目目录
         _NCATBOT_DIR.mkdir(parents=True, exist_ok=True)

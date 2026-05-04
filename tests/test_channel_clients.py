@@ -302,7 +302,10 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
 
 def _import_qq_channel(monkeypatch: pytest.MonkeyPatch):
     ncatbot_core = types.ModuleType("ncatbot.core")
+    ncatbot_core_adapter = types.ModuleType("ncatbot.core.adapter")
+    ncatbot_core_adapter_adapter = types.ModuleType("ncatbot.core.adapter.adapter")
     ncatbot_utils = types.ModuleType("ncatbot.utils")
+    captured_connect_calls = []
 
     class _Api:
         def __init__(self):
@@ -360,19 +363,41 @@ def _import_qq_channel(monkeypatch: pytest.MonkeyPatch):
         def exit(self):
             return None
 
+    def _fake_connect(*args, **kwargs):
+        captured_connect_calls.append(kwargs.copy())
+        return ("connect", args, kwargs)
+
     ncatbot_core.BotClient = BotClient
+    ncatbot_core_adapter_adapter.websockets = SimpleNamespace(connect=_fake_connect)
+    ncatbot_core_adapter_adapter._captured_connect_calls = captured_connect_calls
     ncatbot_utils.ncatbot_config = SimpleNamespace(
         bt_uin="",
+        root="",
         check_ncatbot_update=True,
         skip_ncatbot_install_check=False,
-        napcat=SimpleNamespace(remote_mode=False),
+        napcat=SimpleNamespace(remote_mode=False, enable_webui=True),
         enable_webui_interaction=True,
         plugin=SimpleNamespace(plugins_dir=""),
     )
     monkeypatch.setitem(sys.modules, "ncatbot.core", ncatbot_core)
+    monkeypatch.setitem(sys.modules, "ncatbot.core.adapter", ncatbot_core_adapter)
+    monkeypatch.setitem(
+        sys.modules,
+        "ncatbot.core.adapter.adapter",
+        ncatbot_core_adapter_adapter,
+    )
     monkeypatch.setitem(sys.modules, "ncatbot.utils", ncatbot_utils)
     sys.modules.pop("infra.channels.qq_channel", None)
     return importlib.import_module("infra.channels.qq_channel")
+
+
+def test_qq_channel_ws_timeout_patch_is_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _import_qq_channel(monkeypatch)
+    monkeypatch.delitem(sys.modules, "ncatbot.core.adapter.adapter", raising=False)
+
+    mod._patch_ncatbot_ws_open_timeout(7.5)
 
 
 @pytest.mark.asyncio
@@ -885,6 +910,7 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
         session_manager,
         allow_from=["1"],
         groups=[group_cfg],
+        websocket_open_timeout_seconds=7.5,
         group_filter=group_filter,
         http_requester=requester,
         interrupt_controller=SimpleNamespace(
@@ -897,6 +923,10 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             )
         ),
     )
+    adapter_mod = sys.modules["ncatbot.core.adapter.adapter"]
+    adapter_mod.websockets.connect("ws://example.invalid", open_timeout=1)
+    assert adapter_mod._captured_connect_calls[-1]["open_timeout"] == 7.5
+    assert sys.modules["ncatbot.utils"].ncatbot_config.root == "1"
     assert channel._is_allowed("1") is True
     assert channel._is_allowed("2") is False
     assert mod._extract_cq_images("hello [CQ:image,url=http://x/a.jpg]") == ("hello", ["http://x/a.jpg"])

@@ -68,6 +68,7 @@ allow_from = ["your_username"]
 # 填 QQ 号启用 QQ 频道，留空跳过。
 bot_uin = ""
 allow_from = ["your_qq_number"]
+websocket_open_timeout_seconds = 5.0
 
 # 可选：允许在群组中使用（@bot 触发）
 # [[channels.qq.groups]]

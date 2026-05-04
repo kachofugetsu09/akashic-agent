@@ -299,6 +299,37 @@ enabled = true
     assert cfg.fitbit.enabled is True
 
 
+def test_config_load_reads_qq_websocket_timeout(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {
+                "system_prompt": "s",
+            },
+            "channels": {
+                "qq": {
+                    "bot_uin": "10001",
+                    "allow_from": ["42"],
+                    "websocket_open_timeout_seconds": 9.5,
+                },
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.channels.qq is not None
+    assert cfg.channels.qq.websocket_open_timeout_seconds == 9.5
+
+
 def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, tmp_path: Path):
     calls: list[str] = []
 

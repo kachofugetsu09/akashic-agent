@@ -24,6 +24,7 @@ class QQChannelConfig:
     bot_uin: str
     allow_from: list[str] = field(default_factory=list)
     groups: list[QQGroupConfig] = field(default_factory=list)
+    websocket_open_timeout_seconds: float = 5.0
 
 
 @dataclass
