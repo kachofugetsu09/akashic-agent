@@ -684,7 +684,7 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
     )
     monkeypatch.setattr(
         "bootstrap.app.start_channels",
-        AsyncMock(return_value=(MagicMock(), None, None)),
+        AsyncMock(return_value=(MagicMock(), None, None, None)),
     )
     build_proactive_runtime = MagicMock(return_value=([], None))
     monkeypatch.setattr(

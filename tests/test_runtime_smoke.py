@@ -14,6 +14,8 @@ from bootstrap.channels import start_channels
 from agent.config import (
     ChannelsConfig,
     Config,
+    QQBotChannelConfig,
+    QQBotGroupConfig,
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
@@ -241,11 +243,12 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
 @pytest.mark.asyncio
 async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     starts: list[str] = []
-    registrations: list[str] = []
+    registrations: list[tuple[str, list[str]]] = []
 
     fake_ipc_server = types.ModuleType("infra.channels.ipc_server")
     fake_telegram_channel = types.ModuleType("infra.channels.telegram_channel")
     fake_qq_channel = types.ModuleType("infra.channels.qq_channel")
+    fake_qqbot_channel = types.ModuleType("infra.channels.qqbot_channel")
 
     class _IPCServerChannel:
         def __init__(self, bus, socket):
@@ -299,16 +302,34 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
         async def send_image(self, *args, **kwargs):
             return None
 
+    class _QQBotChannel:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def start(self) -> None:
+            starts.append("qqbot")
+
+        async def stop(self) -> None:
+            starts.append("qqbot.stop")
+
+        async def send_proactive(self, *args, **kwargs):
+            return None
+
+        async def send_stream(self, *args, **kwargs):
+            return None
+
     fake_ipc_server.IPCServerChannel = _IPCServerChannel  # type: ignore[attr-defined]
     fake_telegram_channel.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
     fake_qq_channel.QQChannel = _QQChannel  # type: ignore[attr-defined]
+    fake_qqbot_channel.QQBotChannel = _QQBotChannel  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "infra.channels.ipc_server", fake_ipc_server)
     monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram_channel)
     monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq_channel)
+    monkeypatch.setitem(sys.modules, "infra.channels.qqbot_channel", fake_qqbot_channel)
 
     class _PushTool:
         def register_channel(self, name: str, **kwargs) -> None:
-            registrations.append(name)
+            registrations.append((name, sorted(kwargs)))
 
     config = Config(
         provider="openai",
@@ -322,6 +343,12 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
                 allow_from=["2"],
                 groups=[QQGroupConfig(group_id="3")],
             ),
+            qqbot=QQBotChannelConfig(
+                app_id="app",
+                client_secret="secret",
+                allow_from=["user-openid"],
+                groups=[QQBotGroupConfig(group_openid="group-openid")],
+            ),
             socket=str(tmp_path / "sock"),
         ),
     )
@@ -329,7 +356,7 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     event_bus = EventBus()
     try:
         controller = object()
-        ipc, tg, qq = await start_channels(
+        ipc, tg, qq, qqbot = await start_channels(
             config,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
@@ -344,11 +371,18 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     assert ipc is not None
     assert tg is not None
     assert qq is not None
-    assert starts == ["ipc", "telegram", "qq"]
-    assert registrations == ["telegram", "qq"]
+    assert qqbot is not None
+    assert starts == ["ipc", "telegram", "qq", "qqbot"]
+    assert registrations == [
+        ("telegram", ["file", "image", "stream_text", "text"]),
+        ("qq", ["file", "image", "text"]),
+        ("qqbot", ["stream_text", "text"]),
+    ]
     assert tg.kwargs["event_bus"] is event_bus
     assert tg.kwargs["interrupt_controller"] is controller
     assert qq.kwargs["interrupt_controller"] is controller
+    assert qqbot.kwargs["event_bus"] is event_bus
+    assert qqbot.kwargs["interrupt_controller"] is controller
 
 
 @pytest.mark.asyncio
@@ -402,7 +436,7 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     )
     resources = SharedHttpResources()
     try:
-        ipc, tg, qq = await start_channels(
+        ipc, tg, qq, qqbot = await start_channels(
             config,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
@@ -416,4 +450,5 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     assert ipc is not None
     assert tg is None
     assert qq is None
+    assert qqbot is None
     assert starts == ["ipc"]

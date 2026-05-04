@@ -60,6 +60,7 @@ class AppRuntime:
         self.ipc = None
         self.tg_channel = None
         self.qq_channel = None
+        self.qqbot_channel = None
         self.core: CoreRuntime | None = None
         self.agent_loop = None
         self.bus = None
@@ -111,7 +112,7 @@ class AppRuntime:
             await self.core.start()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
-            self.ipc, self.tg_channel, self.qq_channel = await start_channels(
+            self.ipc, self.tg_channel, self.qq_channel, self.qqbot_channel = await start_channels(
                 self.config,
                 bus=self.bus,
                 session_manager=self.session_manager,
@@ -196,6 +197,10 @@ class AppRuntime:
                     self.tg_channel.stop if self.tg_channel else _noop_async,
                 ),
                 ("qq.stop", self.qq_channel.stop if self.qq_channel else _noop_async),
+                (
+                    "qqbot.stop",
+                    self.qqbot_channel.stop if self.qqbot_channel else _noop_async,
+                ),
                 (
                     "memory_runtime.aclose",
                     self.memory_runtime.aclose if self.memory_runtime else _noop_async,

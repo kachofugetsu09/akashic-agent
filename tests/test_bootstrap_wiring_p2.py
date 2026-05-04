@@ -176,7 +176,7 @@ def test_config_load_accepts_dev_model_alias(tmp_path: Path):
     assert cfg.dev_mode is True
 
 
-def test_config_load_skips_unfilled_channels(tmp_path: Path):
+def test_config_load_skips_unfilled_channels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
         cfg_path,
@@ -200,14 +200,36 @@ def test_config_load_skips_unfilled_channels(tmp_path: Path):
                     "bot_uin": "",
                     "allow_from": ["42"],
                 },
+                "qqbot": {
+                    "app_id": "app",
+                    "client_secret": "${QQBOT_SECRET}",
+                    "allow_from": ["user-openid"],
+                    "groups": [
+                        {
+                            "group_openid": "group-openid",
+                            "allow_from": ["member-openid"],
+                            "require_at": True,
+                            "allow_proactive": True,
+                        }
+                    ],
+                },
             },
         },
     )
 
+    monkeypatch.setenv("QQBOT_SECRET", "secret")
     cfg = Config.load(cfg_path)
 
     assert cfg.channels.telegram is None
     assert cfg.channels.qq is None
+    assert cfg.channels.qqbot is not None
+    assert cfg.channels.qqbot.app_id == "app"
+    assert cfg.channels.qqbot.client_secret == "secret"
+    assert cfg.channels.qqbot.allow_from == ["user-openid"]
+    assert cfg.channels.qqbot.groups[0].group_openid == "group-openid"
+    assert cfg.channels.qqbot.groups[0].allow_from == ["member-openid"]
+    assert cfg.channels.qqbot.groups[0].require_at is True
+    assert cfg.channels.qqbot.groups[0].allow_proactive is True
     assert cfg.channels.socket == "/tmp/akashic.sock"
 
 
