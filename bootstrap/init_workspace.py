@@ -5,8 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.config import Config
-from agent.memory import MemoryStore
-from core.observe.db import open_db as open_observe_db
+from agent.memory import DEFAULT_SELF_MD, MemoryStore
 from infra.persistence.json_store import save_json
 from memory2.store import MemoryStore2
 from proactive_v2.anyaction import QuotaStore
@@ -16,7 +15,6 @@ from session.store import SessionStore
 
 _EMPTY_FILES: dict[str, str] = {
     "memory/MEMORY.md": "",
-    "memory/SELF.md": "",
     "memory/HISTORY.md": "",
     "memory/RECENT_CONTEXT.md": "",
     "memory/PENDING.md": "",
@@ -24,6 +22,7 @@ _EMPTY_FILES: dict[str, str] = {
 
 _TEXT_FILES: dict[str, str] = {
     **_EMPTY_FILES,
+    "memory/SELF.md": DEFAULT_SELF_MD,
     "PROACTIVE_CONTEXT.md": ProactiveLoop._PROACTIVE_CONTEXT_TEMPLATE,
 }
 
@@ -35,8 +34,10 @@ _JSON_FILES: dict[str, object] = {
 }
 
 _DIRECTORIES: tuple[str, ...] = (
+    "observe",
     "skills",
     "drift/skills",
+    "mcp",
 )
 
 
@@ -46,6 +47,7 @@ class InitSummary:
     overwritten: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    next_steps: list[str] = field(default_factory=list)
 
 
 def _write_text_file(path: Path, content: str, *, force: bool, summary: InitSummary) -> None:
@@ -137,14 +139,6 @@ def _ensure_workspace_db_assets(
     else:
         summary.skipped.append(sessions_db)
 
-    observe_db = workspace / "observe" / "observe.db"
-    observe_exists = observe_db.exists()
-    open_observe_db(observe_db).close()
-    if not observe_exists:
-        summary.created.append(observe_db)
-    else:
-        summary.skipped.append(observe_db)
-
     consolidation_db = workspace / "memory" / "consolidation_writes.db"
     consolidation_exists = consolidation_db.exists()
     MemoryStore(workspace)
@@ -219,6 +213,13 @@ def init_workspace(
     if with_fitbit:
         _ensure_fitbit_assets(force=force, summary=summary)
 
-    summary.notes.append(f"请检查并填写配置文件: {config_path}")
     summary.notes.append(f"工作区已初始化: {workspace}")
+    summary.next_steps = [
+        f"1. 编辑 {config_path}，填写以下必填项：",
+        "     [llm.main]  api_key = \"sk-...\"",
+        "     [channels.telegram]  token = \"...\"   （或配置 QQ 频道）",
+        "     [memory.embedding]   api_key = \"sk-...\"  （通常和 llm.fast 同一个 key）",
+        "2. 运行 uv run python main.py 启动。",
+        "3. 向 bot 发一条消息，确认对话正常后，可在 config.toml 开启 proactive。",
+    ]
     return summary

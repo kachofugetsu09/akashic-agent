@@ -64,8 +64,9 @@ class MemoryConfig:
 
     @property
     def keep_count(self) -> int:
-        """上下文携带条数，也是 consolidation 后 session 保留条数。= window / 2。"""
-        return max(1, self.window // 2)
+        """上下文携带条数，也是 consolidation 后 session 保留条数。"""
+        aligned_window = max(6, ((max(1, self.window) + 5) // 6) * 6)
+        return aligned_window // 2
 
     @property
     def consolidation_min_new_messages(self) -> int:
@@ -100,12 +101,6 @@ class SessionServices:
 
 
 @dataclass
-class ObservabilityServices:
-    workspace: Path
-    observe_writer: object | None = None
-
-
-@dataclass
 class AgentLoopDeps:
     bus: "MessageBus"
     provider: "LLMProvider"
@@ -118,7 +113,6 @@ class AgentLoopDeps:
     processing_state: "ProcessingState | None" = None
     memory_runtime: "MemoryRuntime | None" = None
     memory_port: "MemoryPort | None" = None
-    observe_writer: object | None = None
     query_rewriter: "QueryRewriter | None" = None
     sufficiency_checker: "SufficiencyChecker | None" = None
     profile_extractor: "ProfileFactExtractor | None" = None
@@ -127,7 +121,6 @@ class AgentLoopDeps:
     llm_services: LLMServices | None = None
     memory_services: MemoryServices | None = None
     session_services: SessionServices | None = None
-    observability_services: ObservabilityServices | None = None
     hyde_enhancer: "HyDEEnhancer | None" = None
     tool_discovery: "ToolDiscoveryState | None" = None
     reasoner: "Reasoner | None" = None

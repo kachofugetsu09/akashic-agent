@@ -18,8 +18,6 @@ from agent.tool_hooks.base import ToolHook
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_state import DriftStateStore, SkillMeta
 from proactive_v2.drift_tools import (
-    FORCED_FINISH_PROMPT,
-    FORCED_WRITE_PROMPT,
     DriftToolDeps,
     build_drift_tool_registry,
 )
@@ -83,7 +81,6 @@ class DriftRunner:
             self._build_runtime_context_message(skills, connected_servers),
         ]
         steps = 0
-        warned = False
 
         while steps < self.max_steps and not ctx.drift_finished:
             tool_choice: str | dict = "required"
@@ -91,34 +88,6 @@ class DriftRunner:
             # 拼接已挂载 MCP 工具的 schema
             if mounted_tool_names and shared:
                 schemas += shared.get_schemas(names=mounted_tool_names)
-
-            if steps == self.max_steps - 3 and not warned:
-                warned = True
-                logger.info("[drift] forced-landing warning at step=%d", steps)
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "你还剩 3 步。请整理本次执行结果，"
-                            "下一步必须写入 working files，最后一步调用 finish_drift。"
-                        ),
-                    }
-                )
-            elif steps == self.max_steps - 2:
-                logger.info("[drift] forced write at step=%d", steps)
-                messages[0] = {"role": "system", "content": FORCED_WRITE_PROMPT}
-                schemas = [
-                    s for s in schemas
-                    if s["function"]["name"] in {"write_file", "edit_file"}
-                ]
-                tool_choice = "required"
-            elif steps == self.max_steps - 1:
-                logger.info("[drift] forced finish at step=%d", steps)
-                messages[0] = {"role": "system", "content": FORCED_FINISH_PROMPT}
-                tool_choice = {
-                    "type": "function",
-                    "function": {"name": "finish_drift"},
-                }
 
             if ctx.drift_message_sent:
                 allowed_after_send = {"write_file", "edit_file", "finish_drift"}
@@ -257,7 +226,9 @@ class DriftRunner:
             except Exception:
                 time_text = run_at[:16]
             recent_rows.append(
-                f"- {time_text}  {row.get('skill', '')}   {str(row.get('one_line', ''))[:150]}"
+                f"- {time_text}  {row.get('skill', '')}   "
+                f"[{row.get('message_result', 'silent')}] "
+                f"{str(row.get('one_line', ''))[:150]}"
             )
         recent_block = "\n".join(recent_rows) if recent_rows else "- (none)"
 
@@ -350,7 +321,8 @@ class DriftRunner:
             "8. 单次 run 最多只能 message_push 一次。\n"
             "9. message_push 成功后不要再调用 recall_memory / web_fetch / web_search / fetch_messages / search_messages / shell，"
             "后续只允许 write_file、edit_file 和 finish_drift 收尾。\n"
-            "10. 执行结束前必须调用 finish_drift 保存状态。\n\n"
+            "10. 执行结束前必须调用 finish_drift 保存状态，并用 message_result 标注本轮是 sent 还是 silent。\n"
+            "    如果本轮已经成功 message_push，message_result 必须是 sent；否则必须是 silent。\n\n"
             "【可用工具】\n"
             "read_file, write_file, edit_file, recall_memory, web_fetch, web_search, "
             "fetch_messages, search_messages, shell, message_push, finish_drift；"

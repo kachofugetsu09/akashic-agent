@@ -39,7 +39,7 @@ def _print_init_summary(summary: InitSummary) -> None:
             return
         print(title)
         for path in paths:
-            print(f"- {path}")
+            print(f"  {path}")
 
     _print_group("已创建：", summary.created)
     _print_group("已覆盖：", summary.overwritten)
@@ -47,7 +47,11 @@ def _print_init_summary(summary: InitSummary) -> None:
     if summary.notes:
         print("说明：")
         for note in summary.notes:
-            print(f"- {note}")
+            print(f"  {note}")
+    if summary.next_steps:
+        print("\n下一步：")
+        for step in summary.next_steps:
+            print(f"  {step}")
 
 
 def connect_cli(config_path: str = "config.toml") -> None:
@@ -128,6 +132,14 @@ if __name__ == "__main__":
         dashboard_host = host_value
     if port_value is not None:
         dashboard_port = int(port_value)
+
+    if args and args[0] == "setup":
+        from bootstrap.setup_wizard import run_setup_wizard
+        run_setup_wizard(
+            config_path=Path(config_path),
+            workspace=workspace or _default_workspace(),
+        )
+        sys.exit(0)
 
     if args and args[0] == "init":
         summary = init_workspace(

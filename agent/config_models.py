@@ -28,9 +28,26 @@ class QQChannelConfig:
 
 
 @dataclass
+class QQBotGroupConfig:
+    group_openid: str
+    allow_from: list[str] = field(default_factory=list)
+    require_at: bool = True
+    allow_proactive: bool = False
+
+
+@dataclass
+class QQBotChannelConfig:
+    app_id: str
+    client_secret: str
+    allow_from: list[str] = field(default_factory=list)
+    groups: list[QQBotGroupConfig] = field(default_factory=list)
+
+
+@dataclass
 class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
+    qqbot: QQBotChannelConfig | None = None
     socket: str = "/tmp/akashic.sock"
 
 
@@ -109,7 +126,7 @@ class Config:
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
-    memory_optimizer_interval_seconds: int = 3600
+    memory_optimizer_interval_seconds: int = 10800
     light_model: str = ""
     light_api_key: str = ""
     light_base_url: str = ""
@@ -142,6 +159,8 @@ __all__ = [
     "MemoryV2Config",
     "PeerAgentConfig",
     "QQChannelConfig",
+    "QQBotChannelConfig",
+    "QQBotGroupConfig",
     "QQGroupConfig",
     "TelegramChannelConfig",
     "WiringConfig",

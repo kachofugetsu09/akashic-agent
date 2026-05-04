@@ -18,7 +18,6 @@ from agent.core.types import ContextBundle
 from agent.lifecycle.facade import TurnLifecycle
 from agent.lifecycle.types import AfterReasoningCtx
 from agent.looping.lifecycle_consumers import (
-    register_observe_trace_consumers,
     register_turn_committed_consumers,
 )
 from bootstrap.wiring import wire_turn_lifecycle
@@ -65,27 +64,15 @@ class _DummySession:
 
 
 @pytest.mark.asyncio
-async def test_commit_fanout_enqueues_observe_and_recent_before_return():
+async def test_commit_fanout_enqueues_recent_before_return():
     session = _DummySession("telegram:trace")
     session_manager = SimpleNamespace(get_or_create=MagicMock(return_value=session))
     event_bus = EventBus()
     release_recent = asyncio.Event()
 
-    class _Writer:
-        def __init__(self) -> None:
-            self.events: list[object] = []
-
-        def emit(self, event: object) -> None:
-            self.events.append(event)
-
     async def _refresh_recent_turns(*, session) -> None:
         await release_recent.wait()
 
-    writer = _Writer()
-    register_observe_trace_consumers(
-        event_bus=event_bus,
-        trace=cast(Any, SimpleNamespace(workspace=None, observe_writer=writer)),
-    )
     register_turn_committed_consumers(
         event_bus=event_bus,
         consolidation=cast(Any, SimpleNamespace(refresh_recent_turns=AsyncMock(side_effect=_refresh_recent_turns))),
@@ -109,7 +96,6 @@ async def test_commit_fanout_enqueues_observe_and_recent_before_return():
             meme_media_count=0,
             tool_chain_raw=[],
             tool_call_groups=[],
-            retrieval_raw=None,
             post_reply_budget={
                 "history_window": 500,
                 "history_messages": 1,
@@ -127,7 +113,6 @@ async def test_commit_fanout_enqueues_observe_and_recent_before_return():
         for task in asyncio.all_tasks()
         if task.get_name() == "recent_context:telegram:trace"
     ]
-    assert writer.events
     assert recent_tasks
     release_recent.set()
     await asyncio.gather(*recent_tasks)
@@ -143,7 +128,6 @@ async def test_context_store_commit_persists_commits_and_dispatches():
         get_or_create=MagicMock(return_value=session),
         append_messages=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("persist")),
     )
-    writer = SimpleNamespace(events=[], emit=lambda event: order.append("observe") or writer.events.append(event))
     outbound = SimpleNamespace(dispatch=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("dispatch") or True))
     event_bus = EventBus()
     committed_events: list[TurnCommitted] = []
@@ -151,10 +135,6 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     event_bus.on(
         TurnCommitted,
         lambda event: order.append("committed") or committed_events.append(event),
-    )
-    register_observe_trace_consumers(
-        event_bus=event_bus,
-        trace=cast(Any, SimpleNamespace(workspace=None, observe_writer=writer)),
     )
     register_turn_committed_consumers(
         event_bus=event_bus,
@@ -237,8 +217,7 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     assert out.metadata["req_id"] == "r1"
     assert out.metadata["tools_used"] == ["noop"]
     assert out.metadata["streamed_reply"] is True
-    assert writer.events
-    assert order == ["persist", "committed", "observe", "dispatch"]
+    assert order == ["persist", "committed", "dispatch"]
     presence.record_user_message.assert_called_once_with("telegram:123")
     session_manager.append_messages.assert_awaited_once()
     assert session.messages[-1]["content"] == "整理好了"
@@ -248,7 +227,6 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     tc = committed_events[0]
     assert tc.persisted_user_message == "你好"
     assert tc.assistant_response == "整理好了"
-    assert tc.retrieval_raw is None
     assert tc.meme_media_count == 0
     assert tc.raw_reply == "整理好了"
     assert tc.post_reply_budget["history_window"] == 500
@@ -496,7 +474,6 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
     assert tc.raw_reply == "原始回复 <meme:shy>\n§cited:[mem_1]§"
     assert tc.meme_tag == "shy"
     assert tc.meme_media_count == 1
-    assert tc.retrieval_raw is None
     assert tc.post_reply_budget["history_window"] == 100
     assert tc.post_reply_budget["history_messages"] == 2
     assert tc.react_stats["iteration_count"] == 2

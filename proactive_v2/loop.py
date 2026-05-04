@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from core.memory.runtime_facade import MemoryRuntimeFacade
 
-from agent.looping.ports import ObservabilityServices, SessionServices
+from agent.looping.ports import SessionServices
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
@@ -75,7 +75,6 @@ class ProactiveLoop:
         light_provider: LLMProvider | None = None,
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
-        observe_writer=None,
         shared_tools: ToolRegistry | None = None,
         fitbit_enabled: bool = False,
         fitbit_url: str = "http://127.0.0.1:18765",
@@ -94,7 +93,6 @@ class ProactiveLoop:
         self._rng = rng
         self._light_provider = light_provider or provider
         self._light_model = light_model or (config.model or model)
-        self._observe_writer = observe_writer
         self._passive_busy_fn = passive_busy_fn
         self._shared_tools = shared_tools
         self._tool_hooks = tool_hooks or []
@@ -140,10 +138,6 @@ class ProactiveLoop:
                     session_manager=self._sessions,
                     presence=self._presence,
                 ),
-                trace=ObservabilityServices(
-                    workspace=self._sessions.workspace,
-                    observe_writer=self._observe_writer,
-                ),
                 outbound=PushToolOutboundPort(self._push),
             )
         )
@@ -188,7 +182,6 @@ class ProactiveLoop:
                 deduper=self._message_deduper,
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
-                observe_writer=self._observe_writer,
                 shared_tools=self._shared_tools,
                 pool=self._mcp_pool,
                 tool_hooks=self._tool_hooks,

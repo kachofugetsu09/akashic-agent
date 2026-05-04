@@ -1,0 +1,4 @@
+**
+!requirements.txt
+!requirements-dev.txt
+!docker/debug/entrypoint.sh

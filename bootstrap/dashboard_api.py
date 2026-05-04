@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import importlib.util
@@ -20,9 +21,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
 from core.common.timekit import utcnow
-from core.observe.db import open_db
 from session.store import SessionStore
 from memory2.store import MemoryStore2
 
@@ -122,6 +123,13 @@ class ManualConsolidator(Protocol):
         archive_all: bool = False,
         force: bool = False,
     ) -> bool: ...
+
+
+class ManualMemoryOptimizer(Protocol):
+    @property
+    def is_running(self) -> bool: ...
+
+    async def optimize(self) -> None: ...
 
 
 class ProactiveDashboardReader:
@@ -509,80 +517,8 @@ class ProactiveDashboardReader:
         return value if isinstance(value, dict) else {}
 
 
-class ObserveDashboardReader:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = Path(db_path)
-        self._lock = threading.RLock()
-        self._db = open_db(self.db_path)
-        self._db.row_factory = sqlite3.Row
-
-    def close(self) -> None:
-        with self._lock:
-            self._db.close()
-
-    def get_cache_summary(self) -> dict[str, Any]:
-        with self._lock:
-            row = self._db.execute(
-                """
-                SELECT
-                    COUNT(*) AS turn_count,
-                    SUM(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS tracked_turn_count,
-                    COALESCE(SUM(react_cache_prompt_tokens), 0) AS prompt_tokens,
-                    COALESCE(SUM(react_cache_hit_tokens), 0) AS hit_tokens,
-                    MAX(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN ts ELSE NULL END) AS last_tracked_at
-                FROM turns
-                """
-            ).fetchone()
-            turn_rows = self._db.execute(
-                """
-                SELECT
-                    id,
-                    ts,
-                    source,
-                    session_key,
-                    user_msg,
-                    react_cache_prompt_tokens AS prompt_tokens,
-                    react_cache_hit_tokens AS hit_tokens
-                FROM turns
-                WHERE react_cache_prompt_tokens IS NOT NULL
-                ORDER BY ts DESC, id DESC
-                LIMIT 30
-                """
-            ).fetchall()
-        prompt_tokens = int(row["prompt_tokens"] or 0) if row is not None else 0
-        hit_tokens = int(row["hit_tokens"] or 0) if row is not None else 0
-        miss_tokens = max(0, prompt_tokens - hit_tokens)
-        hit_rate = (hit_tokens / prompt_tokens) if prompt_tokens > 0 else None
-        recent_turns = [self._row_to_cache_turn(item) for item in turn_rows]
-        return {
-            "turn_count": int(row["turn_count"] or 0) if row is not None else 0,
-            "tracked_turn_count": (
-                int(row["tracked_turn_count"] or 0) if row is not None else 0
-            ),
-            "prompt_tokens": prompt_tokens,
-            "hit_tokens": hit_tokens,
-            "miss_tokens": miss_tokens,
-            "hit_rate": hit_rate,
-            "last_tracked_at": row["last_tracked_at"] if row is not None else None,
-            "recent_turns": recent_turns,
-        }
-
-    @staticmethod
-    def _row_to_cache_turn(row: sqlite3.Row) -> dict[str, Any]:
-        prompt_tokens = int(row["prompt_tokens"] or 0)
-        hit_tokens = int(row["hit_tokens"] or 0)
-        miss_tokens = max(0, prompt_tokens - hit_tokens)
-        return {
-            "id": int(row["id"]),
-            "ts": row["ts"],
-            "source": row["source"],
-            "session_key": row["session_key"],
-            "user_preview": _preview_text(row["user_msg"], 90),
-            "prompt_tokens": prompt_tokens,
-            "hit_tokens": hit_tokens,
-            "miss_tokens": miss_tokens,
-            "hit_rate": (hit_tokens / prompt_tokens) if prompt_tokens > 0 else None,
-        }
+_pending_plugins: list[tuple[Path, Path]] = []
+_pending_plugins_lock = threading.Lock()
 
 
 def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
@@ -598,16 +534,18 @@ def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
 
     esbuild_bin = project_root / "node_modules" / ".bin" / "esbuild"
     if not esbuild_bin.exists():
-        logger.warning(
-            "esbuild 未找到 (%s)；请先运行 'npm install' 启用插件自动编译。如已有 .js 将继续使用。",
-            esbuild_bin,
-        )
+        with _pending_plugins_lock:
+            _pending_plugins.append((project_root, plugin_dir))
         return
 
+    _run_esbuild([str(esbuild_bin)], ts_path, js_path, plugin_dir.name)
+
+
+def _run_esbuild(cmd: list[str], ts_path: Path, js_path: Path, name: str) -> None:
     try:
         result = subprocess.run(
             [
-                str(esbuild_bin),
+                *cmd,
                 str(ts_path),
                 f"--outfile={js_path}",
                 "--bundle=false",
@@ -620,11 +558,40 @@ def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
             timeout=30,
         )
         if result.returncode == 0:
-            logger.info("插件面板已编译: %s", plugin_dir.name)
+            logger.info("插件面板已编译: %s", name)
         else:
-            logger.warning("插件面板编译失败 (%s):\n%s", plugin_dir.name, result.stderr)
+            logger.warning("插件面板编译失败 (%s):\n%s", name, result.stderr)
     except Exception as exc:
-        logger.warning("插件面板编译异常 (%s): %s", plugin_dir.name, exc)
+        logger.warning("插件面板编译异常 (%s): %s", name, exc)
+
+
+async def _compile_pending_plugins_async() -> None:
+    with _pending_plugins_lock:
+        if not _pending_plugins:
+            return
+        pending = _pending_plugins.copy()
+        _pending_plugins.clear()
+    first_root = pending[0][0]
+
+    logger.info("正在安装前端构建工具 (npx esbuild)...")
+    proc = await asyncio.create_subprocess_exec(
+        "npx", "--yes", "esbuild", "--version",
+        cwd=str(first_root),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning(
+            "npx esbuild 不可用 (%d)，插件面板未编译:\n%s",
+            proc.returncode,
+            stderr.decode("utf-8", errors="replace")[:500],
+        )
+        return
+    version = stdout.decode("utf-8", errors="replace").strip()
+    logger.info("npx esbuild 就绪 (%s)，开始编译插件面板...", version)
+    for root, pdir in pending:
+        _run_esbuild(["npx", "--yes", "esbuild"], pdir / "dashboard_panel.ts", pdir / "dashboard_panel.js", pdir.name)
 
 
 def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
@@ -655,12 +622,15 @@ def create_dashboard_app(
     workspace: Path,
     *,
     manual_consolidator: ManualConsolidator | None = None,
+    manual_memory_optimizer: ManualMemoryOptimizer | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
     memory_store: MemoryStore2 | None = None
     proactive_reader: ProactiveDashboardReader | None = None
-    observe_reader: ObserveDashboardReader | None = None
+    optimizer_task: asyncio.Task[None] | None = None
+    optimizer_last_status = "idle"
+    optimizer_last_error: str | None = None
     project_root = Path(__file__).resolve().parent.parent
     plugins_root = project_root / "plugins"
     static_dir = project_root / "static" / "dashboard"
@@ -678,24 +648,22 @@ def create_dashboard_app(
             proactive_reader = ProactiveDashboardReader(workspace / "proactive.db")
         return proactive_reader
 
-    def get_observe_reader() -> ObserveDashboardReader:
-        nonlocal observe_reader
-        if observe_reader is None:
-            observe_reader = ObserveDashboardReader(workspace / "observe" / "observe.db")
-        return observe_reader
-
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        compile_task = asyncio.create_task(_compile_pending_plugins_async())
         try:
             yield
         finally:
+            compile_task.cancel()
+            try:
+                await compile_task
+            except asyncio.CancelledError:
+                pass
             store.close()
             if memory_store is not None:
                 get_memory_store().close()
             if proactive_reader is not None:
                 get_proactive_reader().close()
-            if observe_reader is not None:
-                get_observe_reader().close()
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.mount("/assets", StaticFiles(directory=static_dir), name="dashboard-assets")
@@ -720,7 +688,15 @@ def create_dashboard_app(
         result = []
         for plugin_dir in sorted(plugins_root.iterdir()):
             if plugin_dir.is_dir() and (plugin_dir / "dashboard_panel.js").exists():
-                result.append({"id": plugin_dir.name})
+                js_path = plugin_dir / "dashboard_panel.js"
+                css_path = plugin_dir / "dashboard_panel.css"
+                asset_mtime = js_path.stat().st_mtime_ns
+                if css_path.exists():
+                    asset_mtime = max(asset_mtime, css_path.stat().st_mtime_ns)
+                result.append({
+                    "id": plugin_dir.name,
+                    "asset_version": str(asset_mtime),
+                })
         return result
 
     @app.get("/plugins/{plugin_id}/panel.js")
@@ -840,6 +816,61 @@ def create_dashboard_app(
             "triggered": triggered,
             "session": meta,
         }
+
+    async def _run_memory_optimizer() -> None:
+        nonlocal optimizer_last_error, optimizer_last_status
+        assert manual_memory_optimizer is not None
+        optimizer_last_status = "running"
+        optimizer_last_error = None
+        try:
+            await manual_memory_optimizer.optimize()
+            optimizer_last_status = "succeeded"
+        except MemoryOptimizerBusy:
+            optimizer_last_status = "skipped"
+            logger.info("manual memory optimizer skipped because it is already running")
+        except asyncio.CancelledError:
+            optimizer_last_status = "failed"
+            optimizer_last_error = "memory optimizer 已取消"
+            raise
+        except Exception as exc:
+            optimizer_last_status = "failed"
+            optimizer_last_error = str(exc)
+            logger.exception("manual memory optimizer failed: %s", exc)
+
+    @app.get("/api/dashboard/memory/optimizer")
+    async def get_memory_optimizer_status() -> dict[str, Any]:
+        running = bool(
+            manual_memory_optimizer is not None
+            and (
+                (optimizer_task is not None and not optimizer_task.done())
+                or manual_memory_optimizer.is_running
+            )
+        )
+        return {
+            "enabled": manual_memory_optimizer is not None,
+            "running": running,
+            "last_status": "running" if running else optimizer_last_status,
+            "last_error": optimizer_last_error,
+        }
+
+    @app.post("/api/dashboard/memory/optimize", status_code=202)
+    async def trigger_memory_optimizer() -> dict[str, Any]:
+        nonlocal optimizer_last_error, optimizer_last_status, optimizer_task
+        if manual_memory_optimizer is None:
+            raise HTTPException(status_code=503, detail="memory optimizer 未启用")
+        if (
+            optimizer_task is not None
+            and not optimizer_task.done()
+        ) or manual_memory_optimizer.is_running:
+            raise HTTPException(status_code=409, detail="memory optimizer 正在运行")
+        logger.info("Manual memory optimizer triggered via dashboard")
+        optimizer_last_status = "running"
+        optimizer_last_error = None
+        optimizer_task = asyncio.create_task(
+            _run_memory_optimizer(),
+            name="manual_memory_optimizer",
+        )
+        return {"status": "started", "message": "Memory optimizer started"}
 
     @app.post("/api/dashboard/sessions/batch-delete")
     def delete_sessions_batch(payload: SessionBatchDeletePayload) -> dict[str, Any]:
@@ -1063,10 +1094,6 @@ def create_dashboard_app(
     def get_proactive_overview() -> dict[str, Any]:
         return get_proactive_reader().get_overview()
 
-    @app.get("/api/dashboard/cache/summary")
-    def get_cache_summary() -> dict[str, Any]:
-        return get_observe_reader().get_cache_summary()
-
     @app.get("/api/dashboard/proactive/deliveries")
     def list_proactive_deliveries(
         session_key: str = "",
@@ -1228,6 +1255,7 @@ def run_dashboard_api(
     host: str = "0.0.0.0",
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
+    manual_memory_optimizer: ManualMemoryOptimizer | None = None,
 ) -> None:
     server = uvicorn.Server(
         _build_dashboard_uvicorn_config(
@@ -1235,6 +1263,7 @@ def run_dashboard_api(
             host=host,
             port=port,
             manual_consolidator=manual_consolidator,
+            manual_memory_optimizer=manual_memory_optimizer,
         )
     )
     server.run()
@@ -1246,11 +1275,13 @@ def _build_dashboard_uvicorn_config(
     host: str,
     port: int,
     manual_consolidator: ManualConsolidator | None,
+    manual_memory_optimizer: ManualMemoryOptimizer | None = None,
 ) -> uvicorn.Config:
     config = uvicorn.Config(
         create_dashboard_app(
             workspace,
             manual_consolidator=manual_consolidator,
+            manual_memory_optimizer=manual_memory_optimizer,
         ),
         host=host,
         port=port,
@@ -1266,11 +1297,13 @@ def build_dashboard_server(
     host: str = "0.0.0.0",
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
+    manual_memory_optimizer: ManualMemoryOptimizer | None = None,
 ) -> uvicorn.Server:
     config = _build_dashboard_uvicorn_config(
         workspace=workspace,
         host=host,
         port=port,
         manual_consolidator=manual_consolidator,
+        manual_memory_optimizer=manual_memory_optimizer,
     )
     return uvicorn.Server(config)

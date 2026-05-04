@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+import threading
 from datetime import datetime
 
 from fastapi.testclient import TestClient
 
 from bootstrap.dashboard_api import create_dashboard_app
-from core.observe.db import open_db
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
@@ -30,6 +31,42 @@ class _ManualConsolidator:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class _ManualMemoryOptimizer:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        block: bool = False,
+    ) -> None:
+        self.error = error
+        self.block = block
+        self.calls = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self._running = False
+        self.raise_busy = False
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    async def optimize(self) -> None:
+        if self.raise_busy:
+            from proactive_v2.memory_optimizer import MemoryOptimizerBusy
+
+            raise MemoryOptimizerBusy("busy")
+        self._running = True
+        self.calls += 1
+        self.started.set()
+        try:
+            if self.block:
+                await asyncio.to_thread(self.release.wait, 1.0)
+            if self.error is not None:
+                raise self.error
+        finally:
+            self._running = False
 
 
 def _seed_workspace(tmp_path) -> None:
@@ -360,6 +397,66 @@ def test_manual_consolidate_session_reports_concurrency_timeout(tmp_path) -> Non
     assert resp.json()["detail"] == "busy"
 
 
+def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:
+    optimizer = _ManualMemoryOptimizer()
+    with TestClient(
+        create_dashboard_app(tmp_path, manual_memory_optimizer=optimizer)
+    ) as client:
+        resp = client.post("/api/dashboard/memory/optimize")
+
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "started"
+    assert optimizer.started.wait(1.0)
+    assert optimizer.calls == 1
+
+
+def test_manual_memory_optimizer_reports_unavailable_runtime(tmp_path) -> None:
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    status_resp = client.get("/api/dashboard/memory/optimizer")
+    resp = client.post("/api/dashboard/memory/optimize")
+
+    assert status_resp.status_code == 200
+    assert status_resp.json()["enabled"] is False
+    assert resp.status_code == 503
+
+
+def test_manual_memory_optimizer_reports_busy_runtime(tmp_path) -> None:
+    optimizer = _ManualMemoryOptimizer(block=True)
+    with TestClient(
+        create_dashboard_app(tmp_path, manual_memory_optimizer=optimizer)
+    ) as client:
+        first_resp = client.post("/api/dashboard/memory/optimize")
+        assert first_resp.status_code == 202
+        assert optimizer.started.wait(1.0)
+        status_resp = client.get("/api/dashboard/memory/optimizer")
+
+        busy_resp = client.post("/api/dashboard/memory/optimize")
+        optimizer.release.set()
+
+    assert status_resp.status_code == 200
+    assert status_resp.json()["enabled"] is True
+    assert status_resp.json()["running"] is True
+    assert status_resp.json()["last_status"] == "running"
+    assert busy_resp.status_code == 409
+    assert optimizer.calls == 1
+
+
+def test_manual_memory_optimizer_skips_when_backend_reports_busy(tmp_path) -> None:
+    optimizer = _ManualMemoryOptimizer()
+    optimizer.raise_busy = True
+    with TestClient(
+        create_dashboard_app(tmp_path, manual_memory_optimizer=optimizer)
+    ) as client:
+        start_resp = client.post("/api/dashboard/memory/optimize")
+        status_resp = client.get("/api/dashboard/memory/optimizer")
+
+    assert start_resp.status_code == 202
+    assert status_resp.status_code == 200
+    assert status_resp.json()["running"] is False
+    assert status_resp.json()["last_status"] == "skipped"
+
+
 def test_list_update_and_batch_delete_messages(tmp_path) -> None:
     _seed_workspace(tmp_path)
     client = TestClient(create_dashboard_app(tmp_path))
@@ -657,72 +754,26 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
     assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
 
 
-def test_cache_dashboard_summary_uses_observe_turns(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    conn = open_db(tmp_path / "observe" / "observe.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO turns(
-                ts, source, session_key, user_msg, llm_output,
-                react_cache_prompt_tokens, react_cache_hit_tokens
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "2026-04-19T03:10:00+00:00",
-                "agent",
-                "telegram:100",
-                "hi",
-                "ok",
-                100,
-                40,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO turns(
-                ts, source, session_key, user_msg, llm_output,
-                react_cache_prompt_tokens, react_cache_hit_tokens
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "2026-04-19T03:20:00+00:00",
-                "agent",
-                "telegram:100",
-                "again",
-                "ok",
-                300,
-                260,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    client = TestClient(create_dashboard_app(tmp_path))
-
-    resp = client.get("/api/dashboard/cache/summary")
-
-    assert resp.status_code == 200
-    payload = resp.json()
-    assert payload["turn_count"] == 2
-    assert payload["tracked_turn_count"] == 2
-    assert payload["prompt_tokens"] == 400
-    assert payload["hit_tokens"] == 300
-    assert payload["miss_tokens"] == 100
-    assert payload["hit_rate"] == 0.75
-    assert payload["last_tracked_at"] == "2026-04-19T03:20:00+00:00"
-    assert payload["recent_turns"][0]["ts"] == "2026-04-19T03:20:00+00:00"
-    assert payload["recent_turns"][0]["hit_rate"] == 260 / 300
-    assert payload["recent_turns"][0]["hit_tokens"] == 260
-    assert payload["recent_turns"][0]["miss_tokens"] == 40
-    assert payload["recent_turns"][0]["user_preview"] == "again"
-    assert payload["recent_turns"][1]["hit_rate"] == 0.4
-
-
 def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    conn = open_db(tmp_path / "observe" / "observe.db")
+    observe_dir = tmp_path / "observe"
+    observe_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(observe_dir / "observe.db")
     try:
+        conn.execute(
+            """
+            CREATE TABLE turns(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                source TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                user_msg TEXT,
+                llm_output TEXT NOT NULL DEFAULT '',
+                react_cache_prompt_tokens INTEGER,
+                react_cache_hit_tokens INTEGER
+            )
+            """
+        )
         conn.execute(
             """
             INSERT INTO turns(

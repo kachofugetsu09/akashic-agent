@@ -50,7 +50,7 @@ _CQ_IMAGE_RE = re.compile(r"\[CQ:image[^\]]*?(?:,|\b)url=([^,\]]+)[^\]]*\]")
 
 
 def _patch_ncatbot_ws_open_timeout(timeout_seconds: float) -> None:
-    """Override ncatbot's hardcoded 1s handshake timeout inside this process."""
+    """覆盖 ncatbot 进程内写死的 1 秒 WebSocket 握手超时。"""
     if timeout_seconds <= 0:
         return
 
@@ -145,7 +145,8 @@ class QQChannel:
         self._bus = bus
         self._session_manager = session_manager
         self._bot_uin = bot_uin
-        self._allow_from: set[str] = set(allow_from) if allow_from else set()
+        allowed_users = [str(user_id) for user_id in (allow_from or [])]
+        self._allow_from: set[str] = set(allowed_users)
         self._websocket_open_timeout_seconds = float(websocket_open_timeout_seconds)
         self._interrupt_controller = interrupt_controller
         ws = getattr(session_manager, "workspace", None)
@@ -174,13 +175,12 @@ class QQChannel:
 
         _patch_ncatbot_ws_open_timeout(self._websocket_open_timeout_seconds)
         ncatbot_config.bt_uin = bot_uin
-        ncatbot_config.root = next(iter(self._allow_from), bot_uin)
+        ncatbot_config.root = allowed_users[0] if allowed_users else bot_uin
         # NapCat 由 Docker 容器管理，NcatBot 只负责连接 WebSocket
         ncatbot_config.check_ncatbot_update = False
         ncatbot_config.skip_ncatbot_install_check = True
         ncatbot_config.napcat.remote_mode = True
-        # Akashic only needs NapCat's OneBot WebSocket in remote mode.
-        # Disable WebUI so ncatbot won't block startup on interactive token checks.
+        # Akashic 只需要 NapCat 的 OneBot WebSocket，禁用 WebUI 避免启动时卡交互 token。
         ncatbot_config.napcat.enable_webui = False
         ncatbot_config.enable_webui_interaction = False
         # 运行时产物重定向到 ~/.akashic/ncatbot/，不污染项目目录

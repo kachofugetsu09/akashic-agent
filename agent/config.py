@@ -19,6 +19,8 @@ from agent.config_models import (
     FitbitIntegrationConfig,
     MemoryV2Config,
     PeerAgentConfig,
+    QQBotChannelConfig,
+    QQBotGroupConfig,
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
@@ -115,7 +117,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         memory_optimizer_interval_seconds=int(
             agent_maintenance.get(
                 "memory_optimizer_interval_seconds",
-                data.get("memory_optimizer_interval_seconds", 3600),
+                data.get("memory_optimizer_interval_seconds", 10800),
             )
         ),
         light_model=str(llm_fast.get("model") or data.get("light_model", "")),
@@ -201,9 +203,45 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 ),
             )
 
+    qqbot = None
+    if qqbot_data := channels_data.get("qqbot"):
+        app_id = _normalize_optional_config_text(
+            _resolve(str(qqbot_data.get("app_id", qqbot_data.get("appId", ""))))
+        )
+        client_secret = _normalize_optional_config_text(
+            _resolve(str(qqbot_data.get("client_secret", qqbot_data.get("clientSecret", ""))))
+        )
+        if bool(qqbot_data.get("enabled", True)) and app_id and client_secret:
+            groups = [
+                QQBotGroupConfig(
+                    group_openid=str(
+                        g["group_openid"] if "group_openid" in g else g["groupOpenid"]
+                    ),
+                    allow_from=[
+                        str(u)
+                        for u in g.get("allow_from", g.get("allowFrom", []))
+                    ],
+                    require_at=g.get("require_at", g.get("requireAt", True)),
+                    allow_proactive=bool(
+                        g.get("allow_proactive", g.get("allowProactive", False))
+                    ),
+                )
+                for g in qqbot_data.get("groups", [])
+            ]
+            qqbot = QQBotChannelConfig(
+                app_id=app_id,
+                client_secret=client_secret,
+                allow_from=[
+                    str(u)
+                    for u in qqbot_data.get("allow_from", qqbot_data.get("allowFrom", []))
+                ],
+                groups=groups,
+            )
+
     channels = ChannelsConfig(
         telegram=telegram,
         qq=qq,
+        qqbot=qqbot,
         socket=channels_data.get("socket")
         or channels_data.get("cli", {}).get("socket", DEFAULT_SOCKET),
     )

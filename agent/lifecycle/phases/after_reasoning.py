@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from agent.core.passive_support import update_session_runtime_metadata
 from agent.core.response_parser import parse_response
-from agent.lifecycle.phase import PhaseFrame, PhaseModule
+from agent.lifecycle.phase import (
+    PhaseFrame,
+    PhaseModule,
+    append_string_exports,
+    collect_prefixed_slots,
+)
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterReasoningInput,
@@ -32,8 +37,12 @@ AfterReasoningModules: TypeAlias = list[PhaseModule[AfterReasoningFrame]]
 
 _CTX_SLOT = "reasoning:ctx"
 _OUTBOUND_SLOT = "reasoning:outbound"
+_PERSIST_USER_PREFIX = "persist:user:"
 _PERSIST_ASSISTANT_PREFIX = "persist:assistant:"
+_OUTBOUND_METADATA_PREFIX = "outbound:metadata:"
+_OUTBOUND_MEDIA_PREFIX = "outbound:media:"
 _ASSISTANT_FIXED_FIELDS = {"tools_used", "tool_chain", "reasoning_content"}
+_USER_FIXED_FIELDS = {"media"}
 
 
 class _BuildAfterReasoningCtxModule:
@@ -61,6 +70,7 @@ class _BuildAfterReasoningCtxModule:
             context_retry=dict(turn_result.context_retry),
             outbound_metadata={
                 **(msg.metadata or {}),
+                **input.state.extra_metadata,
                 "tools_used": list(turn_result.tools_used),
                 "tool_chain": list(tool_chain),
                 "context_retry": dict(turn_result.context_retry),
@@ -109,6 +119,7 @@ class _PersistUserMessageModule:
         llm_context_frame = ctx.context_retry.get("llm_context_frame")
         if isinstance(llm_context_frame, str) and llm_context_frame.strip():
             user_kwargs["llm_context_frame"] = llm_context_frame
+        user_kwargs.update(_collect_persist_user_slots(frame.slots))
         session.add_message(
             "user",
             msg.content,
@@ -179,13 +190,17 @@ class _BuildOutboundMessageModule:
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
+        metadata = dict(ctx.outbound_metadata)
+        metadata.update(collect_prefixed_slots(frame.slots, _OUTBOUND_METADATA_PREFIX))
+        media = list(ctx.media)
+        _append_media(media, collect_prefixed_slots(frame.slots, _OUTBOUND_MEDIA_PREFIX))
         frame.slots[_OUTBOUND_SLOT] = OutboundMessage(
             channel=ctx.channel,
             chat_id=ctx.chat_id,
             content=ctx.reply,
             thinking=ctx.thinking,
-            media=list(ctx.media),
-            metadata=dict(ctx.outbound_metadata),
+            media=media,
+            metadata=metadata,
         )
         return frame
 
@@ -224,12 +239,20 @@ def default_after_reasoning_modules(
 
 
 def _collect_persist_assistant_slots(slots: dict[str, object]) -> dict[str, object]:
-    values: dict[str, object] = {}
-    for key, value in slots.items():
-        if not key.startswith(_PERSIST_ASSISTANT_PREFIX):
-            continue
-        field = key.removeprefix(_PERSIST_ASSISTANT_PREFIX)
-        if not field or field in _ASSISTANT_FIXED_FIELDS:
-            continue
-        values[field] = value
-    return values
+    return collect_prefixed_slots(
+        slots,
+        _PERSIST_ASSISTANT_PREFIX,
+        reserved=_ASSISTANT_FIXED_FIELDS,
+    )
+
+
+def _collect_persist_user_slots(slots: dict[str, object]) -> dict[str, object]:
+    return collect_prefixed_slots(
+        slots,
+        _PERSIST_USER_PREFIX,
+        reserved=_USER_FIXED_FIELDS,
+    )
+
+
+def _append_media(target: list[str], exports: dict[str, object]) -> None:
+    append_string_exports(target, exports)

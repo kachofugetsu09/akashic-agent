@@ -8,14 +8,15 @@
 4. [注册工具 (`@tool`)](#注册工具-tool)
 5. [拦截工具调用 (`@on_tool_pre`)](#拦截工具调用-on_tool_pre)
 6. [生命周期事件钩子 (`@on_*`)](#生命周期事件钩子-on_)
-7. [Before-Turn 管道模块 (`PhaseModule`)](#before-turn-管道模块-phasemodule)
-8. [插件配置 (`_conf_schema.json`)](#插件配置-_conf_schemajson)
-9. [持久化存储 (`PluginKVStore`)](#持久化存储-pluginkvstore)
-10. [元数据 (`manifest.yaml`)](#元数据-manifestyaml)
-11. [初始化与清理](#初始化与清理)
-12. [多插件协作](#多插件协作)
-13. [完整示例：留言板插件](#完整示例留言板插件)
-14. [参考](#参考)
+7. [生命周期管道模块 (`PhaseModule`)](#生命周期管道模块-phasemodule)
+8. [Slot Export 机制](#slot-export-机制)
+9. [插件配置 (`_conf_schema.json`)](#插件配置-_conf_schemajson)
+10. [持久化存储 (`PluginKVStore`)](#持久化存储-pluginkvstore)
+11. [元数据 (`manifest.yaml`)](#元数据-manifestyaml)
+12. [初始化与清理](#初始化与清理)
+13. [多插件协作](#多插件协作)
+14. [完整示例：留言板插件](#完整示例留言板插件)
+15. [参考](#参考)
 
 ---
 
@@ -30,7 +31,8 @@
 | 注册新工具 | `@tool(name="...")` | LLM 调用工具时 |
 | 拦截工具调用 | `@on_tool_pre(tool_name="...")` | 工具执行前 |
 | 钩入生命周期事件 | `@on_before_turn` 等 | 对应生命周期阶段 |
-| 插入 before-turn 管道模块 | `before_turn_modules_early()` / `late()` | 每轮 turn 开始 |
+| 插入生命周期管道模块 | `before/reasoning/step/after_*_modules_*()` 共 12 个注入点 | 对应阶段 |
+| 通过 slot 导出数据 | `frame.slots["<phase>:<category>:<key>"] = value` | PhaseModule 内 |
 | 读取配置 | `self.context.config` | 任意时机 |
 | 持久化键值存储 | `self.context.kv_store` | 任意时机 |
 | 初始化 / 清理 | `initialize()` / `terminate()` | 加载 / 停机 |
@@ -82,7 +84,7 @@ class PluginContext:
     plugin_dir: Path            # 插件目录
     kv_store: PluginKVStore     # 基于文件的键值存储
     config: PluginConfig | None # 解析后的配置
-    observe_db_path: Path | None # observe.db 路径
+    workspace: Path | None      # 工作区路径
 ```
 
 ---
@@ -226,15 +228,15 @@ class PreToolCtx:
 每个事件对应一个上下文类型：
 
 | 事件 | 上下文类型 | 关键字段 |
-|---|---|---|
-| `before_turn` | `BeforeTurnCtx` | `content`, `skill_names`, `retrieved_memory_block`, `history_messages`, `abort`, `abort_reply` |
-| `before_reasoning` | `BeforeReasoningCtx` | `messages`, `system_prompt`, `tool_schemas` |
-| `before_step` | `BeforeStepCtx` | `messages`, `step_index` |
-| `after_step` | `AfterStepCtx` | `tool_calls`, `assistant_content` |
-| `after_reasoning` | `AfterReasoningCtx` | `tool_calls`, `final_text` |
-| `after_turn` | `AfterTurnCtx` | `outbound_content`, `session_key` |
-| `before_tool_call` | `BeforeToolCallCtx` | `tool_name`, `tool_args`, `tool_call_id` |
-| `after_tool_result` | `AfterToolResultCtx` | `tool_name`, `result_text`, `error` |
+|---|---|---|---|
+| `before_turn` | `BeforeTurnCtx` | `content`, `skill_names`, `retrieved_memory_block`, `history_messages`, `extra_hints`, `extra_metadata`, `abort`, `abort_reply` |
+| `before_reasoning` | `BeforeReasoningCtx` | `content`, `skill_names`, `retrieved_memory_block`, `extra_hints`, `abort`, `abort_reply` |
+| `before_step` | `BeforeStepCtx` | `iteration`, `input_tokens_estimate`, `visible_tool_names`, `extra_hints`, `early_stop`, `early_stop_reply` |
+| `after_step` | `AfterStepCtx` | `iteration`, `tools_called`, `partial_reply`, `extra_metadata` |
+| `after_reasoning` | `AfterReasoningCtx` | `reply`, `thinking`, `tools_used`, `tool_chain`, `media`, `meme_tag`, `outbound_metadata` |
+| `after_turn` | `AfterTurnCtx` | `reply`, `tools_used`, `thinking`, `will_dispatch`, `extra_metadata` |
+| `before_tool_call` | `BeforeToolCallCtx` | `tool_name`, `arguments` |
+| `after_tool_result` | `AfterToolResultCtx` | `tool_name`, `arguments`, `result`, `status` |
 
 完整定义见 `agent/lifecycle/types.py`。
 
@@ -257,7 +259,7 @@ class Audit(Plugin):
     @on_after_turn()
     async def log_finish(self, event: AfterTurnCtx) -> None:
         """每轮 turn 结束后记录。"""
-        print(f"[audit] turn 结束: outbound={event.outbound_content[:50]}")
+        print(f"[audit] turn 结束: reply={event.reply[:50]}")
 
     @on_before_turn(priority=100)   # 高优先级先执行
     async def content_filter(self, event: BeforeTurnCtx) -> BeforeTurnCtx | None:
@@ -270,7 +272,9 @@ class Audit(Plugin):
 
 ### GATE 阻断机制
 
-在 `BeforeTurnCtx` 中设置 `abort=True` + `abort_reply` 可以阻断整个 turn：
+GATE 阶段支持两种阻断方式：
+
+**方式 1：直接修改 ctx（适用 before_emit 插件）**
 
 ```python
 @on_before_turn()
@@ -281,7 +285,20 @@ async def gate(self, event: BeforeTurnCtx) -> BeforeTurnCtx:
     return event
 ```
 
-`BeforeTurnCtx.abort` 被设置后，`PassiveTurnPipeline.run()` 会直接返回 `abort_reply`，跳过推理和执行。
+**方式 2：Slot export（适用 after_emit 插件）**
+
+在 after_emit 位置不能直接改 ctx（GATE emit 已经发生），应通过 slot 触发 abort：
+
+```python
+class MyAfterEmitModule:
+    async def run(self, frame):
+        frame.slots["session:abort_reply"] = "由插件阻断"
+        return frame
+```
+
+各阶段的 abort slot：`session:abort_reply`、`reasoning:abort_reply`、`step:abort_reply`。
+
+`BeforeTurnCtx.abort` / `BeforeReasoningCtx.abort` 被设置后，`PassiveTurnPipeline.run()` 会直接返回 `abort_reply`，跳过推理和执行。`step:abort_reply` 映射为 `BeforeStepCtx.early_stop_reply`，只终止当前 tool loop。
 
 ### priority 参数
 
@@ -297,98 +314,341 @@ async def last(self, event): ...
 
 ---
 
-## Before-Turn 管道模块 (`PhaseModule`)
+## 生命周期管道模块 (`PhaseModule`)
 
-Before-turn 管道是 `default_before_turn_modules()` 返回的模块链，按顺序执行。
+每个生命周期阶段都是一条 `PhaseModule` 链，按顺序执行。插件通过定义特定方法返回模块列表来注入到各阶段的特定位置。
 
-### 管道顺序
+### 全阶段注入点一览
+
+| 阶段 | 注入方法 | 插入位置 | 典型用途 |
+|---|---|---|---|
+| `before_turn` | `before_turn_modules_early()` | 记忆检索 + EventBus 之前 | 命令拦截、早期 abort |
+| `before_turn` | `before_turn_modules_late()` | EventBus 之后、返回之前 | 补充 hints / metadata |
+| `before_reasoning` | `before_reasoning_modules_before_emit()` | EventBus emit 之前 | 修改 ctx 字段（GATE 链） |
+| `before_reasoning` | `before_reasoning_modules_after_emit()` | EventBus emit 之后、prompt warmup 之前 | 设置 slot export（hints、abort） |
+| `prompt_render` | `prompt_render_modules_top()` | system sections top 拼装前 | 插入 system prompt 顶部 section |
+| `prompt_render` | `prompt_render_modules_bottom()` | system sections bottom 拼装后 | 插入 system prompt 底部 section 或 extra_hints |
+| `before_step` | `before_step_modules_before_emit()` | EventBus emit 之前 | 修改 BeforeStepCtx（GATE 链） |
+| `before_step` | `before_step_modules_after_emit()` | EventBus emit 之后 | 设置 slot export（hints、early_stop） |
+| `after_step` | `after_step_modules_before_fanout()` | fanout 之前 | 设置 telemetry slot（进入 fanout handler） |
+| `after_step` | `after_step_modules_after_fanout()` | fanout 之后 | 补充 telemetry（不覆盖 fanout handler 已看到的） |
+| `after_reasoning` | `after_reasoning_modules_before_emit()` | EventBus emit 之前 | 修改 ctx 字段（reply、media、outbound_metadata） |
+| `after_reasoning` | `after_reasoning_modules_before_persist()` | persist 之前、emit 之后 | 设置 persist / outbound slot export |
+| `after_turn` | `after_turn_modules_before_commit()` | TurnCommitted 构建之前 | 设置 `turn:extra:*` slot |
+| `after_turn` | `after_turn_modules_before_fanout()` | AfterTurnCtx fanout 之前 | 设置 `turn:telemetry:*` slot |
+
+### 阶段详解
+
+#### before_turn 管道
 
 ```
-1. _AcquireSessionModule         ← 加载 session，产出 SESSION_SLOT
-2. ★ plugin_modules_early        ← 你的早于检索的模块
-3. _PrepareContextModule         ← 记忆检索，产出 CONTEXT_BUNDLE_SLOT
-4. _BuildBeforeTurnCtxModule     ← 构建 BeforeTurnCtx，产出 CTX_SLOT
-5. _EmitBeforeTurnCtxModule      ← EventBus 触发 on_before_turn GATE
-6. ★ plugin_modules_late         ← 你的晚于 EventBus 的模块
-7. _ReturnBeforeTurnCtxModule    ← 产出最终 output
+1. _AcquireSessionModule              ← 加载 session
+2. ★ plugin_modules_early             ← 适合做命令拦截（abort 跳过后续）
+3. _PrepareContextModule              ← 记忆检索
+4. _BuildBeforeTurnCtxModule          ← 构建 BeforeTurnCtx
+5. _EmitBeforeTurnCtxModule           ← EventBus GATE 链（@on_before_turn）
+6. ★ plugin_modules_late              ← 在 GATE 之后补充处理
+7. _CollectBeforeTurnExportSlotsModule ← 收集 session:extra_hint:* / session:abort_reply
+8. _ReturnBeforeTurnCtxModule         ← 产出最终 output
 ```
 
-### 早于 vs 晚于
+#### before_reasoning 管道
 
-- **`early`**：在记忆检索和 EventBus 之前运行。适合做**命令拦截**（如 `/memory_status`），因为可以 abort 并跳过后面的检索/推理。
-- **`late`**：在 EventBus 之后运行。适合在 GATE handler 处理完后做**补充处理**。
+```
+1. _SyncToolContextModule             ← 设置 tool context
+2. _BuildBeforeReasoningCtxModule     ← 构建 ctx（继承 before_turn 字段）
+3. ★ plugin_modules_before_emit        ← GATE 链：直接修改 ctx
+4. _EmitBeforeReasoningCtxModule      ← EventBus GATE 链（@on_before_reasoning）
+5. ★ plugin_modules_after_emit         ← 设置 reasoning:extra_hint:* / reasoning:abort_reply
+6. _CollectBeforeReasoningExportSlotsModule ← 收集 slot 到 ctx
+7. _PromptWarmupModule                ← 预热 prompt（ctx.abort 时跳过）
+8. _ReturnBeforeReasoningCtxModule    ← 产出 ctx
+```
+
+#### prompt_render 管道
+
+```
+1. _BuildPromptRenderCtxModule        ← 构建 ctx
+2. _EmitPromptRenderCtxModule         ← EventBus emit
+3. ★ plugin_modules_top               ← 通过 system_sections_top / prompt:section_top:* 插入
+4. ★ plugin_modules_bottom            ← 通过 system_sections_bottom / prompt:section_bottom:* 或 extra_hints
+5. _CollectPromptExportSlotsModule    ← 收集 prompt:section_*:*/ prompt:extra_hint:*
+6. _RenderPromptModule                ← ContextBuilder.render()
+7. _ReturnPromptRenderResultModule    ← 产出 PromptRenderResult
+```
+
+#### before_step 管道（每轮 tool loop iteration）
+
+```
+1. _BuildBeforeStepCtxModule          ← 构建 ctx
+2. ★ plugin_modules_before_emit        ← GATE 链：直接修改 ctx
+3. _EmitBeforeStepCtxModule           ← EventBus GATE 链（@on_before_step）
+4. ★ plugin_modules_after_emit         ← 设置 step:extra_hint:* / step:abort_reply
+5. _CollectBeforeStepExportSlotsModule ← 收集 slot 到 ctx（early_stop、extra_hints）
+6. _InjectHintsModule                 ← 将 extra_hints 注入 messages
+7. _ReturnBeforeStepCtxModule         ← 产出 ctx
+```
+
+#### after_step 管道（每轮 tool loop iteration 后）
+
+```
+1. _CopyInputToCtxModule              ← 输入快照复制为 ctx
+2. ★ plugin_modules_before_fanout      ← 设置 step:telemetry:*
+3. _CollectAfterStepExportSlotsModule  ← 第 1 次收集：记入 extra_metadata + tracked keys
+4. _FanoutAfterStepCtxModule          ← TAP fanout（handler 看到 collected telemetry）
+5. ★ plugin_modules_after_fanout       ← 补充新的 telemetry key
+6. _CollectAfterStepExportSlotsModule  ← 第 2 次收集：只补充未被 collected 的 key
+7. _ReturnAfterStepCtxModule          ← 产出 ctx
+```
+
+> **注意**：after_step 的 telemetry 收集分两次。fanout 前的 telemetry 会被 handler 看到并锁定；fanout 后的补充只能新增 key，不能覆盖已看过的同名 key。
+
+#### after_reasoning 管道
+
+```
+1. _BuildAfterReasoningCtxModule      ← 构建 ctx（含 outbound_metadata 初始值）
+2. ★ plugin_modules_before_emit        ← GATE 链：修改 ctx 字段
+3. _EmitAfterReasoningCtxModule       ← EventBus GATE 链（@on_after_reasoning）
+4. ★ plugin_modules_before_persist     ← 设置 persist:user:*/ persist:assistant:*/ outbound:metadata:*/ outbound:media:*
+5. _PersistUserMessageModule          ← 持久化 user 消息（读取 persist:user:*）
+6. _PersistAssistantMessageModule     ← 持久化 assistant 消息（读取 persist:assistant:*）
+7. _UpdateSessionMetadataModule       ← 更新 session 运行时 metadata
+8. _AppendMessagesModule              ← 追加到 session 存储
+9. _BuildOutboundMessageModule        ← 构建出站消息（读取 outbound:metadata:* / outbound:media:*）
+10. _ReturnAfterReasoningResultModule ← 产出 AfterReasoningResult
+```
+
+#### after_turn 管道
+
+```
+1. _BuildTurnWorkModule               ← 构建 budget、react_stats、extra 等
+2. ★ plugin_modules_before_commit      ← 设置 turn:extra:*
+3. _CollectAfterTurnExtraSlotsModule   ← 收集 turn:extra:* → extra dict
+4. _BuildTurnCommittedModule           ← 构建 TurnCommitted 事件（依赖 extra_collected）
+5. _FanoutTurnCommittedModule          ← fanout TurnCommitted
+6. _LogBudgetModule                    ← 日志记录 budget
+7. _BuildAfterTurnCtxModule            ← 构建 AfterTurnCtx
+8. ★ plugin_modules_before_fanout      ← 设置 turn:telemetry:*
+9. _CollectAfterTurnTelemetrySlotsModule ← 收集 turn:telemetry:* → extra_metadata
+10. _FanoutAfterTurnCtxModule          ← TAP fanout（@on_after_turn）
+11. _DispatchOutboundModule            ← 派发出站消息
+12. _ReturnOutboundMessageModule       ← 返回 OutboundMessage
+```
+
+> **注意**：after_turn 的 `_BuildTurnCommittedModule` 依赖 `_EXTRA_COLLECTED_SLOT`，保证 `_CollectAfterTurnExtraSlotsModule` 一定先于它执行。这通过模块的 `requires` / `produces` 契约实现。
 
 ### 编写 PhaseModule
 
-一个 `PhaseModule` 必须符合协议：
+`PhaseModule` 协议：
 
 ```python
 class MyModule:
-    requires = ("session:session",)     # 依赖哪些 slot
-    produces = ("session:ctx",)         # 产出哪些 slot
+    requires = ("phase:slot_name",)   # 可选：依赖哪些 slot（用于顺序校验）
+    produces = ("phase:slot_name",)   # 可选：产出哪些 slot
 
-    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
-        state = frame.input                    # TurnState (含 msg, session_key 等)
-        session = frame.slots["session:session"]
-        # ... 处理逻辑 ...
-        if should_abort:
-            frame.slots["session:ctx"] = BeforeTurnCtx(
-                session_key=state.session_key,
-                channel=state.msg.channel,
-                chat_id=state.msg.chat_id,
-                content=state.msg.content,
-                timestamp=state.msg.timestamp,
-                skill_names=[],
-                retrieved_memory_block="",
-                retrieval_trace_raw=None,
-                history_messages=(),
-                abort=True,
-                abort_reply="回复文本",
-            )
+    async def run(self, frame: PhaseFrame) -> PhaseFrame:
+        # 通过 frame.slots 读写中间状态
+        # 通过 frame.input / frame.output 读写输入输出
         return frame
 ```
 
-### 关键 Slot 名
-
-| Slot | 内容 | 由谁产出 |
-|---|---|---|
-| `session:session` | `Session` 对象 | `_AcquireSessionModule` |
-| `session:context_bundle` | `ContextBundle`（记忆、skill 等） | `_PrepareContextModule` |
-| `session:ctx` | `BeforeTurnCtx`（最终输出） | `_BuildBeforeTurnCtxModule` |
-
-### 模块间通信：slot 依赖与跳过
-
-如果前面的模块已经设置了 `session:ctx`（abort），后面的模块应该检查并跳过：
+完整的 GATE 链 ctx 修改示例（before_reasoning）：
 
 ```python
-class MyLateModule:
-    requires = ("session:ctx",)
-    produces = ("session:ctx",)
+class MyBeforeReasoningModule:
+    requires = ("reasoning:ctx",)
+    produces = ("reasoning:ctx",)
 
     async def run(self, frame):
-        ctx = frame.slots.get("session:ctx")
-        if ctx and ctx.abort:
-            return frame  # 已 abort，跳过
-        # 正常处理...
+        from typing import cast
+        from agent.lifecycle.types import BeforeReasoningCtx
+        ctx = cast(BeforeReasoningCtx, frame.slots["reasoning:ctx"])
+        # 直接修改 ctx 字段（GATE 链允许）
+        ctx.extra_hints.append("hint from my plugin")
+        ctx.abort = True
+        ctx.abort_reply = "由我的插件阻断"
+        frame.slots["reasoning:ctx"] = ctx
         return frame
 ```
+
+### 关键 Slot 名速查
+
+| 阶段 | Slot | 内容 |
+|---|---|---|
+| before_turn | `session:session` | `Session` 对象 |
+| before_turn | `session:context_bundle` | `ContextBundle` |
+| before_turn | `session:ctx` | `BeforeTurnCtx` |
+| before_reasoning | `reasoning:ctx` | `BeforeReasoningCtx` |
+| prompt_render | `prompt:ctx` | `PromptRenderCtx` |
+| prompt_render | `prompt:result` | `PromptRenderResult` |
+| before_step | `step:ctx` | `BeforeStepCtx` |
+| after_step | `step:ctx` | `AfterStepCtx` |
+| after_step | `step:telemetry_collected` | `set[str]` — 已收集过的 telemetry key |
+| after_reasoning | `reasoning:ctx` | `AfterReasoningCtx` |
+| after_reasoning | `reasoning:outbound` | `OutboundMessage` |
+| after_turn | `turn:budget` | `dict` — post-reply context budget |
+| after_turn | `turn:extra` | `dict` — TurnCommitted extra |
+| after_turn | `turn:extra_collected` | `True` — 标记 extra 已收集 |
+| after_turn | `turn:committed` | `TurnCommitted` 事件 |
+| after_turn | `turn:ctx` | `AfterTurnCtx` |
 
 ### 从插件暴露 PhaseModule
 
-在 Plugin 子类上定义 `before_turn_modules_early()` 和/或 `before_turn_modules_late()`：
+在 Plugin 子类上定义对应的方法，返回模块列表。全部可用方法：
 
 ```python
-class StatusCommands(Plugin):
-    name = "status_commands"
+class MyPlugin(Plugin):
+    name = "my_plugin"
 
     def before_turn_modules_early(self) -> list[object]:
-        return [
-            MemoryStatusCommandModule(),
-            KVCacheCommandModule(self.context.observe_db_path),
-        ]
+        return [MyCommandModule()]
+
+    def before_turn_modules_late(self) -> list[object]:
+        return [MyHintModule()]
+
+    def before_reasoning_modules_before_emit(self) -> list[object]:
+        return [MyReasoningGateModule()]
+
+    def before_reasoning_modules_after_emit(self) -> list[object]:
+        return [MyReasoningSlotModule()]
+
+    def prompt_render_modules_top(self) -> list[object]:
+        return [MyTopSectionModule()]
+
+    def prompt_render_modules_bottom(self) -> list[object]:
+        return [MyBottomSectionModule()]
+
+    def before_step_modules_before_emit(self) -> list[object]:
+        return [MyStepGateModule()]
+
+    def before_step_modules_after_emit(self) -> list[object]:
+        return [MyStepSlotModule()]
+
+    def after_step_modules_before_fanout(self) -> list[object]:
+        return [MyStepTelemetryModule()]
+
+    def after_step_modules_after_fanout(self) -> list[object]:
+        return [MyStepLateTelemetryModule()]
+
+    def after_reasoning_modules_before_emit(self) -> list[object]:
+        return [MyAfterReasoningGateModule()]
+
+    def after_reasoning_modules_before_persist(self) -> list[object]:
+        return [MyPersistModule()]
+
+    def after_turn_modules_before_commit(self) -> list[object]:
+        return [MyTurnExtraModule()]
+
+    def after_turn_modules_before_fanout(self) -> list[object]:
+        return [MyTurnTelemetryModule()]
 ```
 
-这些方法在 `PluginManager._load_one()` 中被调用，返回的模块列表被合并到管理器的 `_before_turn_modules_early` / `_late` 列表中。
+仅定义你需要的方法即可，管理器只收集已定义的方法返回的模块。
+
+---
+
+---
+
+## Slot Export 机制
+
+Slot export 是 PhaseModule 间传递数据的标准方式。插件通过向 `frame.slots` 写入带前缀的 key，由 collection 模块自动合并到下游 ctx 或持久化数据中。
+
+### 核心 Helper
+
+```python
+from agent.lifecycle.phase import collect_prefixed_slots, append_string_exports
+```
+
+- `collect_prefixed_slots(slots, prefix, *, reserved=())` — 收集所有以 `prefix` 开头的 slot，返回 `dict[str, object]`。`reserved` 集合中的 key 会被排除（用于保护内置字段不被覆盖）。
+- `append_string_exports(target, exports)` — 将 exports 中的字符串（或字符串列表）追加到 `target` 列表中。
+
+### 可用 Slot 前缀
+
+| 前缀 | 阶段 | 语义 | 目标 |
+|---|---|---|---|
+| `session:extra_hint:*` | before_turn (late) | 注入额外提示 | `BeforeTurnCtx.extra_hints` → reasoning |
+| `session:abort_reply` | before_turn (late) | 阻断 turn 并返回此文本 | `BeforeTurnCtx.abort_reply` |
+| `reasoning:extra_hint:*` | before_reasoning | 注入额外提示 | `BeforeReasoningCtx.extra_hints` → prompt |
+| `reasoning:abort_reply` | before_reasoning | 阻断 reasoning 并返回此文本 | `BeforeReasoningCtx.abort_reply` |
+| `prompt:section_top:*` | prompt_render | 插入 system prompt 顶部 | `system_sections_top` → rendered |
+| `prompt:section_bottom:*` | prompt_render | 插入 system prompt 底部 | `system_sections_bottom` → rendered |
+| `prompt:extra_hint:*` | prompt_render | 注入 context hint | `PromptRenderCtx.extra_hints` |
+| `step:extra_hint:*` | before_step | 注入额外提示到 messages | `BeforeStepCtx.extra_hints` → `_InjectHintsModule` |
+| `step:abort_reply` | before_step | 提前终止当前 tool loop | `BeforeStepCtx.early_stop_reply` |
+| `step:telemetry:*` | after_step | 注入 telemetry 到 extra_metadata | `AfterStepCtx.extra_metadata` |
+| `persist:user:*` | after_reasoning | 持久化到 user 消息的额外字段 | user message kwargs |
+| `persist:assistant:*` | after_reasoning | 持久化到 assistant 消息的额外字段 | assistant message kwargs |
+| `outbound:metadata:*` | after_reasoning | 注入出站消息 metadata | `OutboundMessage.metadata` |
+| `outbound:media:*` | after_reasoning | 追加出站媒体 URL | `OutboundMessage.media` |
+| `turn:extra:*` | after_turn | 注入 TurnCommitted extra 字段 | `TurnCommitted.extra` |
+| `turn:telemetry:*` | after_turn | 注入 AfterTurnCtx telemetry | `AfterTurnCtx.extra_metadata` |
+
+### 示例：在 before_reasoning 中注入 extra_hints
+
+```python
+from agent.lifecycle.phase import collect_prefixed_slots, append_string_exports
+from agent.lifecycle.types import BeforeReasoningCtx
+
+class MyHintModule:
+    requires = ("reasoning:ctx",)
+    produces = ("reasoning:ctx",)
+
+    async def run(self, frame):
+        # 方式 1：直接写入 slot，collection 模块会自动处理
+        frame.slots["reasoning:extra_hint:weather"] = "今天北京有暴雨，建议提醒用户带伞"
+        return frame
+```
+
+### 示例：在 prompt_render 中插入 system section
+
+```python
+from agent.prompting import PromptSectionRender
+
+class MySectionModule:
+    async def run(self, frame):
+        # 可以用字符串
+        frame.slots["prompt:section_bottom:custom"] = "## 自定义规则\n请用中文回答。"
+        # 也可以用 PromptSectionRender（控制 is_static 等属性）
+        frame.slots["prompt:section_bottom:rules"] = PromptSectionRender(
+            name="rules",
+            content="你是一个严肃、准确的助手，不可编造事实。",
+            is_static=False,
+        )
+        return frame
+```
+
+### 示例：在 after_reasoning 中注入 persist / outbound
+
+```python
+class MyPersistModule:
+    async def run(self, frame):
+        # 给 user 消息添加自定义字段
+        frame.slots["persist:user:plugin_tag"] = "my_plugin_v1"
+        # 给 assistant 消息添加自定义字段
+        frame.slots["persist:assistant:confidence"] = 0.95
+        # 给出站消息添加 metadata
+        frame.slots["outbound:metadata:source_plugin"] = "my_plugin"
+        # 给出站消息追加媒体文件
+        frame.slots["outbound:media:chart"] = "/tmp/output.png"
+        return frame
+```
+
+### Slot Export 的执行顺序
+
+每个阶段的 collection 模块在 pipeline 中的位置是固定的（见上一节各阶段管道图）。一般模式：
+
+- **after_emit 插件** 写入 slot → **collection 模块** 读取并合并
+- **after_step** 特殊：分两次 collect（fanout 前锁定 + fanout 后补充）
+- **after_turn** 特殊：`turn:extra:*` 在 `_CollectAfterTurnExtraSlotsModule` 收集，`turn:telemetry:*` 在 `_CollectAfterTurnTelemetrySlotsModule` 收集
+
+### Slot vs 直接修改 ctx
+
+| 方式 | 适用场景 | 示例 |
+|---|---|---|
+| 直接修改 ctx（GATE 链） | before_emit 位置，需要 EventBus handler 也能看到变化 | `ctx.reply = "new reply"` |
+| Slot export | after_emit / before_fanout / before_persist 位置，多个插件各自产出独立数据 | `frame.slots["persist:user:tag"] = "v1"` |
+
+选择原则：如果需要 EventBus handler（`@on_*`）能看到变化 → 直接改 ctx。如果只是向下游模块传递数据 → slot export。
 
 ---
 
@@ -640,7 +900,7 @@ class MessageBoard(Plugin):
     @on_after_turn()
     async def log_outbound(self, event: AfterTurnCtx) -> None:
         """记录每次发送的内容长度。"""
-        content_len = len(event.outbound_content or "")
+        content_len = len(event.reply or "")
         self.context.kv_store.set("last_content_length", content_len)
         self.context.kv_store.increment("total_turns")
 ```
@@ -659,15 +919,15 @@ class MessageBoard(Plugin):
 class PluginA(Plugin):
     @on_before_reasoning(priority=100)
     async def a_early(self, event: BeforeReasoningCtx) -> BeforeReasoningCtx:
-        """先执行：高优先级修改 system prompt"""
-        event.system_prompt += "\n附加规则 A"
+        """先执行：高优先级追加 extra_hints"""
+        event.extra_hints.append("\n附加规则 A")
         return event
 
 class PluginB(Plugin):
     @on_before_reasoning(priority=-10)
     async def b_late(self, event: BeforeReasoningCtx) -> BeforeReasoningCtx:
-        """后执行：看到的是 A 改过的 prompt"""
-        print(f"当前 prompt: {event.system_prompt}")
+        """后执行：看到的是 A 追加过的 hints"""
+        print(f"当前 hints: {event.extra_hints}")
         return event
 ```
 

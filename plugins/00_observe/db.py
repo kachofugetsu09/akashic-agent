@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-# schema 与 schema/observe.sql 保持同步，在代码里内嵌一份避免运行时文件依赖
+# schema 与 observe.sql 保持同步，在代码里内嵌一份避免运行时文件依赖
 _SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = NORMAL;
@@ -73,87 +73,8 @@ CREATE TABLE IF NOT EXISTS memory_writes (
 CREATE INDEX IF NOT EXISTS ix_mw_sk_ts ON memory_writes (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_mw_action ON memory_writes (action, ts);
 
-CREATE TABLE IF NOT EXISTS proactive_decisions (
-    id                                INTEGER PRIMARY KEY AUTOINCREMENT,
-    tick_id                           TEXT    UNIQUE,
-    ts                                TEXT    NOT NULL,
-    updated_ts                        TEXT    NOT NULL,
-    session_key                       TEXT    NOT NULL,
-    stage                             TEXT    NOT NULL,
-    reason_code                       TEXT,
-    should_send                       INTEGER,
-    action                            TEXT,
-    gate_reason                       TEXT,
-    pre_score                         REAL,
-    base_score                        REAL,
-    draw_score                        REAL,
-    decision_score                    REAL,
-    send_threshold                    REAL,
-    interruptibility                  REAL,
-    candidate_count                   INTEGER,
-    candidate_item_ids                TEXT,
-    sleep_state                       TEXT,
-    sleep_prob                        REAL,
-    sleep_available                   INTEGER,
-    sleep_data_lag_min                INTEGER,
-    user_replied_after_last_proactive INTEGER,
-    proactive_sent_24h                INTEGER,
-    fresh_items_24h                   INTEGER,
-    delivery_key                      TEXT,
-    is_delivery_duplicate             INTEGER,
-    is_message_duplicate              INTEGER,
-    delivery_attempted                INTEGER,
-    delivery_result                   TEXT,
-    reasoning_preview                 TEXT,
-    reasoning                         TEXT,       -- LLM 完整推理过程
-    evidence_item_ids                 TEXT,       -- LLM 实际引用的条目 IDs（JSON 数组）
-    source_refs_json                  TEXT,       -- 引用条目元数据 JSON
-    fetched_urls                      TEXT,       -- reflect 阶段 web_fetch 调用的 URL（JSON 数组）
-    gate_result_json                  TEXT,
-    sense_result_json                 TEXT,
-    pre_score_result_json             TEXT,
-    fetch_filter_result_json          TEXT,
-    score_result_json                 TEXT,
-    decide_result_json                TEXT,
-    act_result_json                   TEXT,
-    decision_signals_json             TEXT,
-    sent_message                      TEXT,       -- 实际发送的消息正文（act 阶段填充）
-    candidates_json                   TEXT,       -- 候选内容 JSON（fetch_filter/decide 阶段填充）
-    error                             TEXT
-);
-CREATE INDEX IF NOT EXISTS ix_pd_sk_ts ON proactive_decisions (session_key, ts);
-CREATE INDEX IF NOT EXISTS ix_pd_stage ON proactive_decisions (stage, ts);
 """
 
-
-_PROACTIVE_DECISION_COLUMNS: dict[str, str] = {
-    "tick_id": "TEXT",
-    "updated_ts": "TEXT NOT NULL DEFAULT ''",
-    "sleep_state": "TEXT",
-    "sleep_prob": "REAL",
-    "sleep_available": "INTEGER",
-    "sleep_data_lag_min": "INTEGER",
-    "gate_result_json": "TEXT",
-    "sense_result_json": "TEXT",
-    "pre_score_result_json": "TEXT",
-    "fetch_filter_result_json": "TEXT",
-    "score_result_json": "TEXT",
-    "decide_result_json": "TEXT",
-    "act_result_json": "TEXT",
-    "decision_signals_json": "TEXT",
-    "sent_message": "TEXT",
-    "candidates_json": "TEXT",
-    "reasoning": "TEXT",
-    "evidence_item_ids": "TEXT",
-    "source_refs_json": "TEXT",
-    "fetched_urls": "TEXT",
-    "research_status": "TEXT",
-    "research_rounds_used": "INTEGER",
-    "research_tools_called": "TEXT",
-    "research_evidence_count": "INTEGER",
-    "research_reason": "TEXT",
-    "fact_claims_count": "INTEGER",
-}
 
 _TURNS_COLUMNS: dict[str, str] = {
     "tool_chain_json": "TEXT",
@@ -185,20 +106,9 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
         _ = conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {ddl}")
 
 
-def _ensure_proactive_decision_columns(conn: sqlite3.Connection) -> None:
-    cols = {
-        row[1] for row in conn.execute("PRAGMA table_info(proactive_decisions)").fetchall()
-    }
-    for col, ddl in _PROACTIVE_DECISION_COLUMNS.items():
-        if col in cols:
-            continue
-        _ = conn.execute(f"ALTER TABLE proactive_decisions ADD COLUMN {col} {ddl}")
-    _ = conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_pd_tick_id ON proactive_decisions (tick_id)"
-    )
-    _ = conn.execute(
-        "UPDATE proactive_decisions SET updated_ts = ts WHERE updated_ts IS NULL OR updated_ts = ''"
-    )
+def _migrate_removed_proactive_observe(conn: sqlite3.Connection) -> None:
+    _ = conn.execute("DELETE FROM turns WHERE source = 'proactive'")
+    _ = conn.execute("DROP TABLE IF EXISTS proactive_decisions")
 
 
 def open_db(db_path: Path) -> sqlite3.Connection:
@@ -206,7 +116,7 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     _ = conn.executescript(_SCHEMA_SQL)
-    _ensure_proactive_decision_columns(conn)
     _ensure_turns_columns(conn)
+    _migrate_removed_proactive_observe(conn)
     conn.commit()
     return conn

@@ -426,7 +426,6 @@ def test_phase0_loop_wiring_keeps_split_memory_entrypoints(tmp_path: Path):
         processing_state=MagicMock(),
         event_bus=EventBus(),
         memory_runtime=runtime,
-        observe_writer=None,
     )
 
     assert deps.memory_services.engine is memory_engine
@@ -460,7 +459,6 @@ def test_phase0_proactive_runtime_keeps_memory_port_entrypoint(tmp_path: Path):
         memory_store=facade,
         presence=MagicMock(),
         agent_loop=cast(Any, agent_loop),
-        observe_writer=None,
     )
 
     assert len(tasks) == 1

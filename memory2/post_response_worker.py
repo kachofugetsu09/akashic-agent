@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import json_repair
 
 from agent.provider import LLMProvider
+from core.memory.events import MemoryWritten
 from memory2.memorizer import Memorizer
 from memory2.retriever import Retriever
+
+if TYPE_CHECKING:
+    from bus.publisher import EventPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +39,16 @@ class PostResponseMemoryWorker:
         retriever: Retriever,
         light_provider: LLMProvider,
         light_model: str,
-        observe_writer=None,
+        event_publisher: "EventPublisher | None" = None,
     ) -> None:
         self._memorizer = memorizer
         self._retriever = retriever
         self._provider = light_provider
         self._model = light_model
-        self._observe_writer = observe_writer
+        self._event_publisher = event_publisher
         self._current_run_session_key = ""
+        self._current_run_channel = ""
+        self._current_run_chat_id = ""
 
     async def run(
         self,
@@ -50,9 +57,13 @@ class PostResponseMemoryWorker:
         tool_chain: list[dict],
         source_ref: str,
         session_key: str = "",
+        channel: str = "",
+        chat_id: str = "",
     ) -> None:
         # 1. 初始化本轮异步提炼的上下文和 token 预算。
         self._current_run_session_key = session_key
+        self._current_run_channel = channel
+        self._current_run_chat_id = chat_id
         token_budget = self.TOKEN_BUDGET_PER_RUN
         logger.debug(
             "post_response_memorize start session=%s source_ref=%s user_len=%d resp_len=%d tool_steps=%d",
@@ -201,17 +212,17 @@ class PostResponseMemoryWorker:
                     supersede_ids,
                     topic,
                 )
-                if self._observe_writer is not None and self._current_run_session_key:
-                    try:
-                        from core.observe.events import MemoryWriteTrace
-                        self._observe_writer.emit(MemoryWriteTrace(
+                if self._event_publisher is not None and self._current_run_session_key:
+                    await self._event_publisher.fanout(
+                        MemoryWritten(
                             session_key=self._current_run_session_key,
+                            channel=self._current_run_channel,
+                            chat_id=self._current_run_chat_id,
                             source_ref=source_ref,
                             action="supersede",
                             superseded_ids=supersede_ids,
-                        ))
-                    except Exception:
-                        pass
+                        )
+                    )
         return token_budget
 
     async def _extract_invalidation_topics(

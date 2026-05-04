@@ -24,7 +24,6 @@ from agent.looping.ports import (
     LLMServices,
     MemoryConfig,
     MemoryServices,
-    ObservabilityServices,
     SessionServices,
     TurnScheduler,
 )
@@ -117,13 +116,29 @@ class CoreRuntime:
                 self.plugin_manager.before_turn_modules_early,
                 self.plugin_manager.before_turn_modules_late,
             )
+            self.loop.add_before_reasoning_plugin_modules(
+                self.plugin_manager.before_reasoning_modules_before_emit,
+                self.plugin_manager.before_reasoning_modules_after_emit,
+            )
             self.loop.add_prompt_render_plugin_modules(
                 self.plugin_manager.prompt_render_modules_top,
                 self.plugin_manager.prompt_render_modules_bottom,
             )
+            self.loop.add_before_step_plugin_modules(
+                self.plugin_manager.before_step_modules_before_emit,
+                self.plugin_manager.before_step_modules_after_emit,
+            )
+            self.loop.add_after_step_plugin_modules(
+                self.plugin_manager.after_step_modules_before_fanout,
+                self.plugin_manager.after_step_modules_after_fanout,
+            )
             self.loop.add_after_reasoning_plugin_modules(
                 self.plugin_manager.after_reasoning_modules_before_emit,
                 self.plugin_manager.after_reasoning_modules_before_persist,
+            )
+            self.loop.add_after_turn_plugin_modules(
+                self.plugin_manager.after_turn_modules_before_commit,
+                self.plugin_manager.after_turn_modules_before_fanout,
             )
             if self.plugin_manager.tool_hooks:
                 self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
@@ -153,7 +168,7 @@ def build_registered_tools(
     vl_provider=None,
     session_store=None,
     tools: ToolRegistry | None = None,
-    observe_writer=None,
+    event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
 ) -> tuple[
     ToolRegistry,
@@ -184,7 +199,7 @@ def build_registered_tools(
             provider=provider,
             light_provider=light_provider,
             http_resources=http_resources,
-            observe_writer=observe_writer,
+            event_publisher=event_publisher,
         ),
     )
     memory_runtime = memory_result.extras["memory_runtime"]
@@ -219,7 +234,7 @@ def build_registered_tools(
                 bus=bus,
                 memory_port=memory_runtime.port,
                 scheduler=scheduler,
-                observe_writer=observe_writer,
+                event_publisher=event_publisher,
             ),
         )
         maybe_mcp = result.extras.get("mcp_registry")
@@ -257,7 +272,6 @@ def _build_loop_deps(
     processing_state: ProcessingState,
     event_bus: EventBus,
     memory_runtime: MemoryRuntime,
-    observe_writer: object | None,
 ) -> AgentLoopDeps:
     wiring = getattr(config, "wiring", WiringConfig())
     llm_config = LLMConfig(
@@ -343,9 +357,6 @@ def _build_loop_deps(
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
     )
-    trace_services = ObservabilityServices(
-        workspace=workspace, observe_writer=observe_writer
-    )
     consolidation = ConsolidationService(
         memory_port=memory_runtime.port,
         profile_maint=getattr(memory_runtime, "profile_maint", None)
@@ -383,6 +394,7 @@ def _build_loop_deps(
         llm=llm_services,
         workspace=workspace,
         light_model=llm_config.light_model or llm_config.model,
+        event_publisher=event_bus,
     )
 
     return AgentLoopDeps(
@@ -396,7 +408,6 @@ def _build_loop_deps(
         light_provider=light_provider,
         processing_state=processing_state,
         memory_runtime=memory_runtime,
-        observe_writer=observe_writer,
         query_rewriter=query_rewriter,
         sufficiency_checker=sufficiency_checker,
         profile_extractor=profile_extractor,
@@ -405,7 +416,6 @@ def _build_loop_deps(
         llm_services=llm_services,
         memory_services=memory_services,
         session_services=session_services,
-        observability_services=trace_services,
         hyde_enhancer=hyde_enhancer,
         consolidation_service=consolidation,
         scheduler=turn_scheduler,
@@ -416,9 +426,9 @@ def build_core_runtime(
     config: Config,
     workspace: Path,
     http_resources: SharedHttpResources,
-    observe_writer=None,
 ) -> CoreRuntime:
     bus = MessageBus()
+    event_bus = EventBus()
     provider, light_provider, agent_provider = build_providers(config)
     vl_provider = build_vl_provider(config)
     # agent_provider is used for the AgentLoop (QA / tool calling).
@@ -437,13 +447,12 @@ def build_core_runtime(
             light_provider=light_provider,
             vl_provider=vl_provider,
             session_store=session_manager._store,
-            observe_writer=observe_writer,
+            event_publisher=event_bus,
             agent_loop_provider=lambda: loop_ref.get("loop"),
         )
     )
     presence = PresenceStore(session_manager._store)
     processing_state = ProcessingState()
-    event_bus = EventBus()
     loop_deps = _build_loop_deps(
         config=config,
         workspace=workspace,
@@ -456,7 +465,6 @@ def build_core_runtime(
         processing_state=processing_state,
         event_bus=event_bus,
         memory_runtime=memory_runtime,
-        observe_writer=observe_writer,
     )
     loop = AgentLoop(
         loop_deps,
@@ -495,7 +503,6 @@ def build_core_runtime(
         event_bus=event_bus,
         tool_registry=tools,
         workspace=workspace,
-        observe_db_path=workspace / "observe" / "observe.db",
     )
 
     return CoreRuntime(

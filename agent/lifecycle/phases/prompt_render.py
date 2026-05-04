@@ -5,8 +5,14 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 
 from agent.core.passive_support import build_context_hint_message
 from agent.core.types import ContextRequest
-from agent.lifecycle.phase import PhaseFrame, PhaseModule
+from agent.lifecycle.phase import (
+    PhaseFrame,
+    PhaseModule,
+    append_string_exports,
+    collect_prefixed_slots,
+)
 from agent.lifecycle.types import PromptRenderCtx, PromptRenderInput, PromptRenderResult
+from agent.prompting import PromptSectionRender
 from bus.event_bus import EventBus
 
 if TYPE_CHECKING:
@@ -23,6 +29,9 @@ PromptRenderModules: TypeAlias = list[PhaseModule[PromptRenderFrame]]
 
 _CTX_SLOT = "prompt:ctx"
 _RESULT_SLOT = "prompt:result"
+_SECTION_TOP_PREFIX = "prompt:section_top:"
+_SECTION_BOTTOM_PREFIX = "prompt:section_bottom:"
+_EXTRA_HINT_PREFIX = "prompt:extra_hint:"
 
 
 class _BuildPromptRenderCtxModule:
@@ -97,6 +106,27 @@ class _RenderPromptModule:
         return frame
 
 
+class _CollectPromptExportSlotsModule:
+    requires = (_CTX_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
+        ctx = cast(PromptRenderCtx, frame.slots[_CTX_SLOT])
+        _append_sections(
+            ctx.system_sections_top,
+            collect_prefixed_slots(frame.slots, _SECTION_TOP_PREFIX),
+        )
+        _append_sections(
+            ctx.system_sections_bottom,
+            collect_prefixed_slots(frame.slots, _SECTION_BOTTOM_PREFIX),
+        )
+        append_string_exports(
+            ctx.extra_hints,
+            collect_prefixed_slots(frame.slots, _EXTRA_HINT_PREFIX),
+        )
+        return frame
+
+
 class _ReturnPromptRenderResultModule:
     requires = (_RESULT_SLOT,)
 
@@ -118,6 +148,24 @@ def default_prompt_render_modules(
         _EmitPromptRenderCtxModule(bus),
         *top_modules,
         *bottom_modules,
+        _CollectPromptExportSlotsModule(),
         _RenderPromptModule(context),
         _ReturnPromptRenderResultModule(),
     ]
+
+
+def _append_sections(
+    target: list[PromptSectionRender],
+    exports: dict[str, object],
+) -> None:
+    for name, value in exports.items():
+        if isinstance(value, PromptSectionRender):
+            target.append(value)
+        elif isinstance(value, str) and value.strip():
+            target.append(
+                PromptSectionRender(
+                    name=name,
+                    content=value,
+                    is_static=False,
+                )
+            )

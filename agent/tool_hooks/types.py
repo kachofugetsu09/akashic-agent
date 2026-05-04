@@ -19,6 +19,8 @@ class ToolExecutionRequest:
     channel: str = ""
     chat_id: str = ""
     request_text: str = ""
+    tool_batch: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    tool_batch_index: int = 0
 
 
 @dataclass
@@ -48,11 +50,23 @@ class HookTraceItem:
     extra_message: str = ""
 
 
+def _empty_str_list() -> list[str]:
+    return []
+
+
+def _empty_pre_trace() -> list[HookTraceItem]:
+    return []
+
+
+def _empty_post_trace() -> list[HookTraceItem]:
+    return []
+
+
 @dataclass
 class ToolExecutionResult:
     status: ToolExecStatus
     output: Any
     final_arguments: dict[str, Any]
-    extra_messages: list[str] = field(default_factory=list)
-    pre_hook_trace: list[HookTraceItem] = field(default_factory=list)
-    post_hook_trace: list[HookTraceItem] = field(default_factory=list)
+    extra_messages: list[str] = field(default_factory=_empty_str_list)
+    pre_hook_trace: list[HookTraceItem] = field(default_factory=_empty_pre_trace)
+    post_hook_trace: list[HookTraceItem] = field(default_factory=_empty_post_trace)

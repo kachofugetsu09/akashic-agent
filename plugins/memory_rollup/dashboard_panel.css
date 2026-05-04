@@ -1,0 +1,96 @@
+.rollup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.rollup-editor {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 132px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 10px 12px;
+}
+
+.rollup-score-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.rollup-score-item {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+  padding: 10px;
+}
+
+.rollup-score-item span {
+  display: block;
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.rollup-score-item strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.rollup-source-list {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.rollup-source-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.rollup-source-item:last-child {
+  border-bottom: none;
+}
+
+.rollup-source-item code {
+  display: inline-block;
+  margin-bottom: 5px;
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.rollup-source-item div {
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.rollup-ascii {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@media (max-width: 900px) {
+  .rollup-score-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

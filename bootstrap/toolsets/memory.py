@@ -32,7 +32,7 @@ class MemoryToolsetProvider(ToolsetProvider):
             deps.provider,
             deps.light_provider,
             http_resources,
-            observe_writer=deps.observe_writer,
+            event_publisher=deps.event_publisher,
         )
         return build_registration_result(
             registry=registry,
@@ -50,7 +50,7 @@ def build_memory_toolset(
     light_provider,
     http_resources: SharedHttpResources,
     *,
-    observe_writer=None,
+    event_publisher=None,
 ) -> MemoryRuntime:
     result = MemoryToolsetProvider().register(
         tools,
@@ -60,7 +60,7 @@ def build_memory_toolset(
             provider=provider,
             light_provider=light_provider,
             http_resources=http_resources,
-            observe_writer=observe_writer,
+            event_publisher=event_publisher,
         ),
     )
     return result.extras["memory_runtime"]

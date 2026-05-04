@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent.core.types import RetrievalTrace
 from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
@@ -18,6 +19,9 @@ from core.memory.default_runtime_facade import (
 )
 from core.memory.runtime_facade import ContextRetrievalRequest, ContextRetrievalResult
 
+if TYPE_CHECKING:
+    from bus.publisher import EventPublisher
+
 logger = logging.getLogger("agent.retrieval")
 
 
@@ -29,6 +33,7 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
         llm: LLMServices,
         workspace: Path,
         light_model: str,
+        event_publisher: "EventPublisher | None" = None,
     ) -> None:
         self._memory = memory
         self._config = memory_config
@@ -41,6 +46,7 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
             llm=llm,
             workspace=workspace,
             light_model=light_model,
+            event_publisher=event_publisher,
         )
         _bind_facade_retrieval_semantics(
             memory=memory,
@@ -105,5 +111,5 @@ def _build_retrieval_trace(
         route_decision=str(context_result.trace.get("route_decision") or "") or None,
         rewritten_query=str(context_result.raw.get("rewritten_query") or "") or None,
         injected_count=len(context_result.injected_item_ids),
-        raw=context_result.raw.get("rag_trace"),
+        raw=context_result.raw.get("retrieval_event"),
     )

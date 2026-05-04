@@ -16,27 +16,42 @@ from typing import TYPE_CHECKING, Callable
 if TYPE_CHECKING:
     from core.memory.profile import MemoryOptimizerStore
 
+from agent.memory import DEFAULT_SELF_MD
 from agent.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
+
+class MemoryOptimizerBusy(RuntimeError):
+    pass
+
+
 # ── Prompts ──────────────────────────────────────────────────────
 
 _MERGE_SYSTEM = (
-    "你是一个用户长期记忆整理器，只根据现有 MEMORY.md 与 PENDING.md 合并长期记忆。"
+    "你是一个用户长期记忆整理器。"
+    "你的工作不是概括对话，而是从记忆中剔除噪音，"
+    "只保留对未来每次对话都产生底色影响的长期记忆。"
 )
 
 _MERGE_PROMPT = """\
 今日日期：{today}
 
 你的任务是将「现有用户档案」重新整理为一份精炼的长期记忆，同时合并「待合并事实」中的新内容。
+但更重要的是：**你必须剔除那些不应该存在于用户档案中的内容。**
 
-## 核心原则
+## 核心判断标准：缺席成本测试
 
-只保留三类内容：
-- 用户事实
-- 用户偏好
-- 用户明确要求长期记住的关键内容
+对每一条内容，问自己：
+> 在 6 个月后的一次全新对话中，如果这条信息没有被注入，agent 是否会在某个回复中出现方向性失误？
+
+是 → 保留。否 → 删除。
+
+## 三种应保留的内容
+
+- 「用户事实」：关于用户稳定身份的信息——他是谁、他有什么、他身上不可改变或长期稳定的事实
+- 「用户偏好」：用户在对话中持续的审美取向、交互禁忌和根本价值判断——不是具体的爱好列表，而是定义了他是什么样的人的方向性偏好
+- 「用户明确要求长期记住的关键内容」：用户亲口说"记住""写进长期记忆"的内容，保持原文连贯性，不删减
 
 待合并事实来自 PENDING.md，采用带 tag 的 bullet 格式：
 - [identity] ...
@@ -46,7 +61,7 @@ _MERGE_PROMPT = """\
 - [requested_memory] ...
 - [correction] ...
 
-tag 含义：
+tag 含义（与 consolidation 阶段一致）：
 - identity：基础信息、稳定背景、长期技术方向、经历、长期设备、长期维护项目
 - preference：稳定偏好、禁忌、审美、游戏口味、价值取向
 - key_info：允许长期保存的 key / token / id / 账号信息
@@ -54,18 +69,71 @@ tag 含义：
 - requested_memory：用户明确要求长期记住的关键内容；允许比普通事实更连贯、更完整
 - correction：对已有 MEMORY.md 内容的显式修正
 
-必须遵守：
-- 只能根据「现有用户档案」和「待合并事实」整理，不要根据近期历史自行推断新长期记忆
-- 不要生成 agent 执行规则、SOP、工具调用规范、流程说明
-- 不要保留短期状态、近期计划、课表、时效性事件
-- 不要保留动态健康数据、实时指标、最近状态
+## 什么必须剔除
+
+### 网络运维细节
+内网 IP、路由模式（如"CGNAT""桥接模式""NAT"）、运营商名称、MAC 地址等网络层配置。
+→ 这些是瞬时运维信息，不是用户画像。项目路径、配置文件名、环境变量名等与用户开发环境直接相关的信息可以保留。
+
+### 时效性数字和瞬时情绪
+具体数字的动态指标（如 Star 数、增长率）、版本变更叙事（"V4 发布后切换"）、瞬时情绪（"失落""失望"）。
+→ 保留背后的价值观（如"高度认可某模型"），删除数字和事件过程。
+
+### 临时状态描述
+描述当前正在进行、随时会结束的状态（如"最近加班频繁""这周在赶项目""目前在等 offer"）。
+→ 与规律性习惯区分：每周/每天持续的行为模式（如"每周去健身房""喜欢手冲咖啡"）可以保留；带"最近""这周""目前"等时间限定词的瞬时状态必须删除。
+
+### Agent 执行规则伪装成用户偏好
+以"偏好"开头但实际描述 agent 应如何执行（如检索维度划分策略、元数据标注规范等）。
+→ 这些是 procedure，不是用户身份，删除。
+
+
+## 示例
+
+<example id="drop_network_ops_not_project">
+输入：
+- 开发环境：项目位于 /home/user/project，配置文件 config.toml，需要设置 DB_PASSWORD
+- 家庭网络：电信宽带，桥接模式，内网 IP 192.168.1.x
+
+→ 保留开发环境信息（项目路径和配置是用户的开发画像），删除家庭网络（内网 IP 和路由模式是瞬时运维细节，对理解用户无贡献）。
+</example>
+
+<example id="drop_timed_metrics">
+输入：
+- GitHub 仓库截至 3 月已有 200 Star；用户对增长放缓感到焦虑
+
+→ 全部删除。Star 数会过期，情绪是瞬时的——三个月后这条就是谎言。
+</example>
+
+<example id="drop_transient_keep_habit">
+输入：
+- 用户每周去健身房，主要做力量训练
+- 用户最近加班频繁，每天靠咖啡撑着
+
+→ 保留"每周去健身房"（规律性习惯，是用户的长期生活方式）。删除"最近加班频繁，靠咖啡撑着"（带"最近"时间限定词的瞬时状态，随时会变）。
+</example>
+
+<example id="drop_meta_rule">
+输入：
+- 信息检索偏好：偏好按多维度分类搜索，能用标签组合过滤，拒绝单一关键词匹配
+
+→ 全部删除。语义上描述的是 agent 应怎么执行检索任务（procedure），不是用户自身的身份或偏好。即使以"偏好"开头，只要主题是系统运作方式，就不属于用户画像。
+</example>
+
+
+## 整理原则
+- 合并同类：把多条表达同一方向偏好的内容合并为一条方向性陈述
+- 上收方向：把多个具体知识点上收为一个审美方向
+- 同类重复只保留最终版本
+- correction 要直接反映到最终内容中，不要保留"旧值 → 新值"痕迹
+- 不要生成 agent 执行规则、SOP、工具调用规范
+- 不要保留短期状态、时效性事件
 - 普通事实保持简洁；requested_memory 允许保留更完整的连贯描述
-- 同类重复内容只保留最终版本
-- correction 要直接反映到最终内容中，而不是保留“旧值 -> 新值”痕迹
 
 ## 输出格式
-- 保持 Markdown 格式，分类清晰
-- 每个分类内用 bullet 列表
+- 标题 `# 用户长期记忆`
+- 三个大分类：`## 用户事实`、`## 用户偏好`、`## 用户明确要求长期记住的关键内容`
+- 每个分类内用 bullet 列表，每条 1-2 行
 - 直接输出完整档案，不要 JSON，不要代码块，不要任何解释
 
 ---
@@ -136,13 +204,23 @@ class MemoryOptimizer:
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
+        self._lock = asyncio.Lock()
 
     # 各步骤之间的间隔（秒），避免短时间内连续请求触发 limit_burst_rate
     _STEP_DELAY_SECONDS: int = 15
 
+    @property
+    def is_running(self) -> bool:
+        return self._lock.locked()
+
     async def optimize(self) -> None:
         """两步优化：合并 PENDING → MEMORY，更新 SELF。"""
+        if self._lock.locked():
+            raise MemoryOptimizerBusy("memory optimizer 正在运行")
+        async with self._lock:
+            await self._optimize()
 
+    async def _optimize(self) -> None:
         # ── Step 1: MEMORY.md 合并 ────────────────────────────────
         pending = self._memory.snapshot_pending()
         current_memory = self._memory.read_long_term().strip()
@@ -202,7 +280,7 @@ class MemoryOptimizer:
 
     async def _update_self(self, pending: str) -> None:
         """只更新 SELF.md 现有保留的三段，不新增 section。"""
-        self_content = self._memory.read_self().strip()
+        self_content = self._memory.read_self().strip() or DEFAULT_SELF_MD.strip()
         if not self_content:
             logger.info("[memory_optimizer] SELF.md 不存在或为空，跳过更新")
             return
@@ -243,7 +321,7 @@ class MemoryOptimizer:
 
 # ── MemoryOptimizerLoop ───────────────────────────────────────────
 
-_DEFAULT_INTERVAL_SECONDS = 3600  # 默认每小时整点
+_DEFAULT_INTERVAL_SECONDS = 10800  # 默认每 3 小时整点
 
 
 class MemoryOptimizerLoop:

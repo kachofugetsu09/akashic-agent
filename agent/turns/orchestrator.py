@@ -1,40 +1,29 @@
 from __future__ import annotations
 
 import inspect
-import json
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult
 
 if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike
-    from agent.looping.ports import (
-        SessionServices,
-        ObservabilityServices,
-    )
+    from agent.looping.ports import SessionServices
 
 logger = logging.getLogger("agent.turn_orchestrator")
-
-
-@runtime_checkable
-class _ObserveWriter(Protocol):
-    def emit(self, event: object) -> None: ...
 
 
 @dataclass
 class TurnOrchestratorDeps:
     session: SessionServices
-    trace: ObservabilityServices
     outbound: OutboundPort
 
 
 class TurnOrchestrator:
     def __init__(self, deps: TurnOrchestratorDeps) -> None:
         self._session = deps.session
-        self._trace = deps.trace
         self._outbound = deps.outbound
 
     async def handle_proactive_turn(
@@ -45,15 +34,8 @@ class TurnOrchestrator:
         channel: str,
         chat_id: str,
     ) -> bool:
-        # 1. proactive 先处理 skip：不发消息，只跑 skip 路径副作用并记 trace。
+        # 1. proactive 先处理 skip：不发消息，只跑 skip 路径副作用。
         if result.decision == "skip":
-            self._emit_proactive_observe(
-                key=session_key,
-                channel=channel,
-                chat_id=chat_id,
-                result=result,
-                sent=False,
-            )
             await self._run_side_effects(result)
             return False
 
@@ -93,13 +75,6 @@ class TurnOrchestrator:
         else:
             await self._run_effects(result.failure_side_effects)
 
-        self._emit_proactive_observe(
-            key=session_key,
-            channel=channel,
-            chat_id=chat_id,
-            result=result,
-            sent=sent,
-        )
         return sent
 
     async def _run_side_effects(self, result: TurnResult) -> None:
@@ -136,47 +111,4 @@ class TurnOrchestrator:
             evidence_item_ids=[str(item_id) for item_id in result.evidence],
             source_refs=source_refs,
             state_summary_tag=state_summary_tag,
-        )
-
-    def _emit_proactive_observe(
-        self,
-        *,
-        key: str,
-        channel: str,
-        chat_id: str,
-        result: TurnResult,
-        sent: bool,
-    ) -> None:
-        writer = self._trace.observe_writer
-        if not isinstance(writer, _ObserveWriter):
-            return
-        from core.observe.events import TurnTrace as TurnTraceEvent
-
-        trace = result.trace
-        extra = trace.extra if trace is not None and isinstance(trace.extra, dict) else {}
-        writer.emit(
-            TurnTraceEvent(
-                source="proactive",
-                session_key=key,
-                user_msg="",
-                llm_output=result.outbound.content if result.outbound else "",
-                tool_calls=[
-                    {
-                        "name": "proactive_turn",
-                        "args": json.dumps(
-                            {
-                                "channel": channel,
-                                "chat_id": chat_id,
-                                "decision": result.decision,
-                                "evidence": list(result.evidence),
-                                "sent": sent,
-                                "steps_taken": int(extra.get("steps_taken", 0) or 0),
-                                "skip_reason": str(extra.get("skip_reason", "")),
-                            },
-                            ensure_ascii=False,
-                        ),
-                        "result": "",
-                    }
-                ],
-            )
         )

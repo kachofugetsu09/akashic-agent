@@ -46,7 +46,6 @@ def _build_deps(*, with_pool: bool):
         deduper=None,
         rng=SimpleNamespace(),
         workspace_context_fn=lambda: "",
-        observe_writer=None,
         pool=McpClientPool() if with_pool else None,
     )
 

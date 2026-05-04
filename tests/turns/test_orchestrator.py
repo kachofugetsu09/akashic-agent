@@ -1,13 +1,12 @@
 from __future__ import annotations
 from typing import Any, cast
 
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.looping.ports import ObservabilityServices, SessionServices
+from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
@@ -50,7 +49,6 @@ async def test_orchestrator_skip_runs_side_effects_without_dispatch():
                 session_manager=cast(Any, SimpleNamespace(get_or_create=lambda _key: _DummySession("telegram:123"))),
                 presence=None,
             ),
-            trace=ObservabilityServices(workspace=Path("."), observe_writer=None),
             outbound=_Outbound(),
         )
     )
@@ -89,14 +87,6 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
             assert outbound.content == "hello"
             return True
 
-    class _Writer:
-        def __init__(self) -> None:
-            self.events: list[object] = []
-
-        def emit(self, event: object) -> None:
-            order.append("observe")
-            self.events.append(event)
-
     presence = SimpleNamespace(record_proactive_sent=lambda _key: order.append("presence"))
     session_manager = SimpleNamespace(
         get_or_create=lambda _key: session,
@@ -105,7 +95,6 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=SessionServices(session_manager=cast(Any, session_manager), presence=cast(Any, presence)),
-            trace=ObservabilityServices(workspace=Path("."), observe_writer=_Writer()),
             outbound=_Outbound(),
         )
     )
@@ -135,4 +124,4 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     assert sent is True
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
-    assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect", "observe"]
+    assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect"]

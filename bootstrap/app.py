@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import sys
 from pathlib import Path
@@ -20,8 +19,6 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
-from core.observe.writer import TraceWriter
-from core.observe.retention import run_retention_if_needed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,6 +60,7 @@ class AppRuntime:
         self.ipc = None
         self.tg_channel = None
         self.qq_channel = None
+        self.qqbot_channel = None
         self.core: CoreRuntime | None = None
         self.agent_loop = None
         self.bus = None
@@ -79,11 +77,10 @@ class AppRuntime:
         self.proactive_loop = None
         self.peer_process_manager = None
         self.peer_poller = None
-        self.observe_writer: TraceWriter | None = None
-        self.observe_task: asyncio.Task[None] | None = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
+        self._memory_optimizer = None
         self._shutdown = False
         self._started = False
 
@@ -92,21 +89,10 @@ class AppRuntime:
             return
         configure_default_shared_http_resources(self.http_resources)
         try:
-            # 初始化 observe writer
-            observe_db_path = self.workspace / "observe" / "observe.db"
-            self.observe_writer = TraceWriter(observe_db_path)
-            asyncio.create_task(
-                run_retention_if_needed(observe_db_path), name="observe_retention"
-            )
-
-            build_core_kwargs = {}
-            if "observe_writer" in inspect.signature(build_core_runtime).parameters:
-                build_core_kwargs["observe_writer"] = self.observe_writer
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
                 self.http_resources,
-                **build_core_kwargs,
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus
@@ -126,7 +112,7 @@ class AppRuntime:
             await self.core.start()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
-            self.ipc, self.tg_channel, self.qq_channel = await start_channels(
+            self.ipc, self.tg_channel, self.qq_channel, self.qqbot_channel = await start_channels(
                 self.config,
                 bus=self.bus,
                 session_manager=self.session_manager,
@@ -146,13 +132,18 @@ class AppRuntime:
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
-            if self.observe_writer is not None:
-                self.observe_task = asyncio.create_task(
-                    self.observe_writer.run(), name="observe_writer"
-                )
+            optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
+                self.config,
+                provider=self.provider,
+                memory_store=(
+                    self.memory_runtime.profile_maint or self.memory_runtime.port
+                ),
+            )
+            self.tasks.extend(optimizer_tasks)
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
                 manual_consolidator=self.agent_loop,
+                manual_memory_optimizer=self._memory_optimizer,
             )
             self.dashboard_task = asyncio.create_task(
                 self.dashboard_server.serve(),
@@ -168,22 +159,11 @@ class AppRuntime:
                 memory_store=self.memory_runtime.facade,
                 presence=self.presence,
                 agent_loop=self.agent_loop,
-                observe_writer=self.observe_writer,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
                 self.ipc.set_proactive_loop(self.proactive_loop)
-
-            self.tasks.extend(
-                build_memory_optimizer_task(
-                    self.config,
-                    provider=self.provider,
-                    memory_store=(
-                        self.memory_runtime.profile_maint or self.memory_runtime.port
-                    ),
-                )
-            )
 
             self._started = True
         except Exception:
@@ -218,17 +198,15 @@ class AppRuntime:
                 ),
                 ("qq.stop", self.qq_channel.stop if self.qq_channel else _noop_async),
                 (
+                    "qqbot.stop",
+                    self.qqbot_channel.stop if self.qqbot_channel else _noop_async,
+                ),
+                (
                     "memory_runtime.aclose",
                     self.memory_runtime.aclose if self.memory_runtime else _noop_async,
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
             )
-            if self.observe_task is not None:
-                _ = self.observe_task.cancel()
-                try:
-                    await self.observe_task
-                except asyncio.CancelledError:
-                    pass
         finally:
             clear_default_shared_http_resources(self.http_resources)
 

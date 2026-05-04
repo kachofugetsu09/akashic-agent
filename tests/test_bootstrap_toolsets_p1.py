@@ -11,6 +11,7 @@ from bootstrap.toolsets.protocol import (
 )
 from bootstrap.toolsets.schedule import SchedulerToolsetProvider
 from bootstrap.tools import build_registered_tools
+from bus.event_bus import EventBus
 
 
 def test_scheduler_toolset_provider_registers_expected_tools(tmp_path: Path):
@@ -107,7 +108,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
             light_provider=object(),
             session_store=object(),
             tools=ToolRegistry(),
-            observe_writer=None,
+            event_publisher=EventBus(),
             agent_loop_provider=lambda: None,
         )
     )

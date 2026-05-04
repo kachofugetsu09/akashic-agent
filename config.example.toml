@@ -1,23 +1,36 @@
+# =============================================================================
+# 必填：LLM 配置
+# api_key 可以直接填字符串，也可以用 ${ENV_VAR} 引用环境变量。
+# =============================================================================
+
 [llm]
 provider = "deepseek"
 
 [llm.main]
+# 主模型，必填。推荐 deepseek-v4-flash（agent 能力强、价格低）。
 model = "deepseek-v4-flash"
-api_key = "${DEEPSEEK_API_KEY}"
+api_key = "sk-..."
 base_url = "https://api.deepseek.com/v1"
 enable_thinking = true
 multimodal = false
 
 [llm.fast]
+# 轻量模型，用于 memory gate / query rewrite / HyDE。
+# 不填则退回主模型，但延迟会稍高。
 model = "qwen-flash"
-api_key = "${QWEN_API_KEY}"
+api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [llm.vl]
-# 当 llm.main.multimodal = false 时启用；model 为空表示不启用独立视觉模型。
+# 视觉模型，仅在 llm.main.multimodal = false 时需要。
+# model 留空则不启用，图片会作为路径传给主模型。
 model = "qwen-vl-plus"
-api_key = "${QWEN_API_KEY}"
+api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# =============================================================================
+# Agent 行为
+# =============================================================================
 
 [agent]
 system_prompt = "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses."
@@ -26,31 +39,68 @@ max_iterations = 40
 dev_mode = false
 
 [agent.context]
-memory_window = 24
+memory_window = 40
 
 [agent.tools]
 search_enabled = true
 
+# 可选：长期记忆整理任务（默认已启用，通常无需修改）
+# [agent.maintenance]
+# memory_optimizer_enabled = true
+# memory_optimizer_interval_seconds = 10800
+
+# 可选：控制加载哪些工具集（默认值适合大多数场景）
+# [agent.wiring]
+# toolsets = ["meta_common", "spawn", "schedule", "mcp"]
+
+# =============================================================================
+# 必填：至少配置一个频道（Telegram 或 QQ 选其一）
+# token / bot_uin 为空时该频道自动跳过，不会报错。
+# =============================================================================
+
 [channels.telegram]
+# BotFather 给的 bot token，格式：123456789:AAF...
 token = ""
+# 你的 Telegram 用户名（不带 @），只有白名单用户才能使用 bot。
 allow_from = ["your_username"]
 
 [channels.qq]
+# 填 QQ 号启用 QQ 频道，留空跳过。
 bot_uin = ""
-allow_from = ["987654321"]
+allow_from = ["your_qq_number"]
 websocket_open_timeout_seconds = 5.0
 
-[[channels.qq.groups]]
-group_id = "111111111"
-allow_from = ["987654321"]
-require_at = true
+# 可选：允许在群组中使用（@bot 触发）
+# [[channels.qq.groups]]
+# group_id = "123456789"
+# allow_from = ["your_qq_number"]
+# require_at = true
+
+[channels.qqbot]
+# 官方 QQBot，和 NapCat QQ 通道并存。留空跳过。
+app_id = ""
+client_secret = ""
+# 私聊白名单使用官方 user_openid。
+allow_from = []
+
+# 当前实现仅启用私聊；群配置先保留为后续扩展占位。
+# [[channels.qqbot.groups]]
+# group_openid = "GROUP_OPENID"
+# allow_from = ["MEMBER_OPENID"]
+# require_at = true
+# allow_proactive = false
+
+# =============================================================================
+# 语义记忆
+# embedding api_key 通常和 llm.fast 用同一个 key。
+# =============================================================================
 
 [memory]
 enabled = true
 
 [memory.embedding]
 model = "text-embedding-v3"
-api_key = "${QWEN_API_KEY}"
+api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [memory.retrieval]
@@ -78,12 +128,20 @@ max_tokens = 200
 enabled = true
 timeout_ms = 2000
 
+# =============================================================================
+# 主动推送（可选）
+# 先跑通基本对话再开启这部分。
+# =============================================================================
+
 [proactive]
-enabled = true
+# 开启后 agent 会主动向你推送消息。需要先填好下方 chat_id 再设为 true。
+enabled = false
 profile = "daily"
 
 [proactive.target]
 channel = "telegram"
+# 你的 Telegram user id（向 bot 发一条消息后从日志里可以拿到）。
+# 官方 QQBot 私聊可填：channel = "qqbot"，chat_id = "c2c:USER_OPENID"
 chat_id = ""
 
 [proactive.agent]
@@ -94,14 +152,19 @@ context_prob = 0.03
 delivery_cooldown_hours = 1
 
 [proactive.drift]
+# Drift：无可推送内容时 agent 自主做任务。建议先跑通 proactive 再开启。
 enabled = false
 max_steps = 20
 min_interval_hours = 3
 
+# =============================================================================
+# 其他集成（可选）
+# =============================================================================
+
 [integrations.fitbit]
 enabled = false
 
-# 可选：接入外部 Peer Agent。取消注释并改成自己的服务后才会启用。
+# 可选：接入外部 Peer Agent（如 DeepResearch）
 # [[integrations.peer_agents]]
 # name = "DeepResearch Agent"
 # base_url = "http://127.0.0.1:9404"

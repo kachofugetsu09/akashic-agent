@@ -21,7 +21,7 @@ async def start_channels(
     event_bus: EventBus,
     bot_commands: list[tuple[str, str]] | None = None,
     interrupt_controller: InterruptController | None = None,
-) -> tuple[Any, Any, Any]:
+) -> tuple[Any, Any, Any, Any]:
     from infra.channels.ipc_server import IPCServerChannel
 
     ipc = IPCServerChannel(bus, config.channels.socket)
@@ -76,4 +76,27 @@ async def start_channels(
         )
         print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
 
-    return ipc, tg_channel, qq_channel
+    qqbot_channel = None
+    if config.channels.qqbot and config.channels.qqbot.app_id:
+        from infra.channels.qqbot_channel import QQBotChannel
+
+        qqbot = config.channels.qqbot
+        qqbot_channel = QQBotChannel(
+            app_id=qqbot.app_id,
+            client_secret=qqbot.client_secret,
+            bus=bus,
+            session_manager=session_manager,
+            allow_from=qqbot.allow_from,
+            groups=qqbot.groups,
+            event_bus=event_bus,
+            interrupt_controller=interrupt_controller,
+        )
+        await qqbot_channel.start()
+        push_tool.register_channel(
+            "qqbot",
+            text=qqbot_channel.send_proactive,
+            stream_text=qqbot_channel.send_stream,
+        )
+        print(f"官方 QQBot 已启动  |  AppID: {qqbot.app_id}")
+
+    return ipc, tg_channel, qq_channel, qqbot_channel

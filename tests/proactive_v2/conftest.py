@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import random
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -14,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
-from agent.looping.ports import ObservabilityServices, SessionServices
+from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
 
@@ -265,8 +264,6 @@ def make_agent_tick(
         session_manager=cast(Any, session_manager),
         presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
     )
-    trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
-
     class _Outbound:
         async def dispatch(self, outbound: OutboundDispatch) -> bool:
             return await sender.send(outbound.content)
@@ -274,7 +271,6 @@ def make_agent_tick(
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=session_svc,
-            trace=trace_svc,
             outbound=_Outbound(),
         )
     )

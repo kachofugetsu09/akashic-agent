@@ -34,3 +34,4 @@ description: <一句话描述>
 - skill 文件必须写到工作区 `drift/skills/` 下，不要写到仓库内建目录
 - 不要为了一个一次性动作创建 skill
 - 如果只是当前 skill 的进展变化，优先更新它的 working files 或 state，而不是新建 skill
+- 结束流程必须写清 `finish_drift.message_result`：已成功推送写 `sent`，静默结束写 `silent`

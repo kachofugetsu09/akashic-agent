@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 from bus.event_bus import EventBus
 from agent.core.runtime_support import SessionLike
 from agent.core.types import ContextBundle
-from agent.lifecycle.phase import PhaseFrame, PhaseModule
+from agent.lifecycle.phase import (
+    PhaseFrame,
+    PhaseModule,
+    append_string_exports,
+    collect_prefixed_slots,
+)
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 
 if TYPE_CHECKING:
@@ -25,6 +30,8 @@ BeforeTurnModules: TypeAlias = list[PhaseModule[BeforeTurnFrame]]
 _SESSION_SLOT = "session:session"
 _CONTEXT_BUNDLE_SLOT = "session:context_bundle"
 _CTX_SLOT = "session:ctx"
+_EXTRA_HINT_PREFIX = "session:extra_hint:"
+_ABORT_REPLY_SLOT = "session:abort_reply"
 
 
 class _AcquireSessionModule:
@@ -37,7 +44,6 @@ class _AcquireSessionModule:
         state = frame.input
         session = self._session_manager.get_or_create(state.session_key)
         state.session = session
-        state.retrieval_raw = None
         frame.slots[_SESSION_SLOT] = session
         return frame
 
@@ -59,7 +65,6 @@ class _PrepareContextModule:
             session_key=state.session_key,
             session=session,
         )
-        state.retrieval_raw = bundle.retrieval_trace_raw
         frame.slots[_CONTEXT_BUNDLE_SLOT] = bundle
         return frame
 
@@ -108,6 +113,23 @@ class _ReturnBeforeTurnCtxModule:
         return frame
 
 
+class _CollectBeforeTurnExportSlotsModule:
+    requires = (_CTX_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        ctx = cast(BeforeTurnCtx, frame.slots[_CTX_SLOT])
+        append_string_exports(
+            ctx.extra_hints,
+            collect_prefixed_slots(frame.slots, _EXTRA_HINT_PREFIX),
+        )
+        abort_reply = frame.slots.get(_ABORT_REPLY_SLOT)
+        if isinstance(abort_reply, str) and abort_reply:
+            ctx.abort = True
+            ctx.abort_reply = abort_reply
+        return frame
+
+
 def default_before_turn_modules(
     bus: EventBus,
     session_manager: SessionManager,
@@ -124,5 +146,6 @@ def default_before_turn_modules(
         _BuildBeforeTurnCtxModule(),
         _EmitBeforeTurnCtxModule(bus),
         *late_modules,
+        _CollectBeforeTurnExportSlotsModule(),
         _ReturnBeforeTurnCtxModule(),
     ]

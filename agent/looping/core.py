@@ -22,7 +22,6 @@ from agent.looping.consolidation import (
     _select_consolidation_window,
 )
 from agent.looping.lifecycle_consumers import (
-    register_observe_trace_consumers,
     register_turn_committed_consumers,
 )
 from agent.looping.ports import (
@@ -32,7 +31,6 @@ from agent.looping.ports import (
     LLMServices,
     MemoryConfig,
     MemoryServices,
-    ObservabilityServices,
     SessionServices,
     TurnScheduler,
 )
@@ -309,16 +307,6 @@ class AgentLoop:
             sufficiency_checker=deps.sufficiency_checker,
         )
         session_svc = self._session_services
-        trace_svc = deps.observability_services or ObservabilityServices(
-            workspace=deps.workspace,
-            observe_writer=deps.observe_writer,
-        )
-
-        register_observe_trace_consumers(
-            event_bus=self._event_bus,
-            trace=trace_svc,
-        )
-
         # 2. 再准备 retrieval / scheduler 依赖配置。
         handler_memory_config = MemoryConfig(
             window=config.memory.window,
@@ -512,6 +500,13 @@ class AgentLoop:
     ) -> None:
         self._agent_core.add_before_turn_plugin_modules(early, late)
 
+    def add_before_reasoning_plugin_modules(
+        self,
+        before_emit: list[object],
+        after_emit: list[object],
+    ) -> None:
+        self._agent_core.add_before_reasoning_plugin_modules(before_emit, after_emit)
+
     def add_after_reasoning_plugin_modules(
         self,
         before_emit: list[object],
@@ -522,12 +517,33 @@ class AgentLoop:
             before_persist,
         )
 
+    def add_after_turn_plugin_modules(
+        self,
+        before_commit: list[object],
+        before_fanout: list[object],
+    ) -> None:
+        self._agent_core.add_after_turn_plugin_modules(before_commit, before_fanout)
+
     def add_prompt_render_plugin_modules(
         self,
         top: list[object],
         bottom: list[object],
     ) -> None:
         self._reasoner.add_prompt_render_plugin_modules(top, bottom)
+
+    def add_before_step_plugin_modules(
+        self,
+        before_emit: list[object],
+        after_emit: list[object],
+    ) -> None:
+        self._reasoner.add_before_step_plugin_modules(before_emit, after_emit)
+
+    def add_after_step_plugin_modules(
+        self,
+        before_fanout: list[object],
+        after_fanout: list[object],
+    ) -> None:
+        self._reasoner.add_after_step_plugin_modules(before_fanout, after_fanout)
 
     # ── 中断控制面 ────────────────────────────────────────────────
 

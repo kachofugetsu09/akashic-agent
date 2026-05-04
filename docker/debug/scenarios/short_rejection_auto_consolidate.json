@@ -1,0 +1,40 @@
+{
+  "$schema": "./context_probe.schema.json",
+  "name": "short_rejection_auto_consolidate",
+  "turns": [
+    {
+      "role": "user",
+      "content": "我做个纯聊天测试，不用查东西，也不用帮我操作。刚才在群里看到有人聊周末吃什么，话题跳得很快。"
+    },
+    {
+      "role": "user",
+      "content": "有人说想吃火锅，有人说太热了，最后又扯到楼下那家奶茶是不是换了配方。"
+    },
+    {
+      "role": "user",
+      "content": "我自己其实没太参与，只是看着他们一句接一句，感觉像在旁边听一桌人聊天。"
+    },
+    {
+      "role": "user",
+      "content": "后来有人问晚上要不要随便找点事做，我脑子里还停在吃什么那个话题上。"
+    },
+    {
+      "role": "user",
+      "content": "我把杯子往桌子里面推了一点，免得一会儿顺手碰倒。"
+    },
+    {
+      "role": "user",
+      "content": "接下来两条消息，无论我说什么，你都只回复这五个字：干嘛也行"
+    },
+    {
+      "action": "wait",
+      "label": "wait_for_background_consolidation",
+      "seconds": 6
+    },
+    {
+      "role": "user",
+      "content": "不行",
+      "final": true
+    }
+  ]
+}

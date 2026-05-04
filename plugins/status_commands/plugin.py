@@ -60,9 +60,9 @@ class KVCacheCommandModule:
     requires = (_SESSION_SLOT,)
     produces = (_CTX_SLOT,)
 
-    def __init__(self, plugin_name: str, observe_db_path: Path | None) -> None:
+    def __init__(self, plugin_name: str, db_path: Path | None) -> None:
         self._plugin_name = plugin_name
-        self._observe_db_path = observe_db_path
+        self._db_path = db_path
 
     async def run(self, frame) -> object:
         if _CTX_SLOT in frame.slots:
@@ -82,7 +82,7 @@ class KVCacheCommandModule:
         return frame
 
     def _build_reply(self, state: TurnState) -> str:
-        db_path = self._observe_db_path
+        db_path = self._db_path
         if not db_path or not db_path.exists():
             return "暂无 KVCache 数据（observe 数据库不存在）。"
 
@@ -153,11 +153,14 @@ class StatusCommands(Plugin):
 
     def before_turn_modules_early(self) -> list[object]:
         plugin_name = self.name or "status_commands"
+        db_path = None
+        if self.context.workspace is not None:
+            db_path = self.context.workspace / "observe" / "observe.db"
         return cast(
             "list[object]",
             [
                 MemoryStatusCommandModule(plugin_name),
-                KVCacheCommandModule(plugin_name, self.context.observe_db_path),
+                KVCacheCommandModule(plugin_name, db_path),
             ],
         )
 

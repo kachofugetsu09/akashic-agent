@@ -49,7 +49,6 @@ def build_proactive_runtime(
     memory_store: "MemoryRuntimeFacade | None",
     presence: PresenceStore,
     agent_loop: AgentLoop,
-    observe_writer=None,
     tool_hooks: list[ToolHook] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
@@ -80,7 +79,6 @@ def build_proactive_runtime(
         passive_busy_fn=(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
-        observe_writer=observe_writer,
         shared_tools=getattr(agent_loop, "tools", None),
         tool_hooks=tool_hooks,
     )
@@ -96,10 +94,10 @@ def build_memory_optimizer_task(
     *,
     provider: LLMProvider,
     memory_store: "MemoryOptimizerStore",
-) -> list:
+) -> tuple[list, "MemoryOptimizer | None"]:
     if not config.memory_optimizer_enabled:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
-        return []
+        return [], None
 
     mem_optimizer = MemoryOptimizer(
         memory=memory_store,
@@ -108,4 +106,4 @@ def build_memory_optimizer_task(
     )
     interval = config.memory_optimizer_interval_seconds
     print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
-    return [MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()]
+    return [MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run()], mem_optimizer
