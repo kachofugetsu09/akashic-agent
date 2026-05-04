@@ -1200,13 +1200,16 @@ def _build_retrieval_completed(
     )
 
 
+# 合并 procedure_queries 与 hyde hypothesis，去重保序后返回。
 def _merge_aux_queries(
     procedure_queries: list[str],
     hyde_hypothesis: str | None,
 ) -> list[str]:
+    # 1. 收集非空 query：procedure_queries 在前，hyde hypothesis 在后。
     queries = [str(item).strip() for item in procedure_queries if str(item).strip()]
     if hyde_hypothesis:
         queries.append(hyde_hypothesis.strip())
+    # 2. 去重保序。
     seen: set[str] = set()
     merged: list[str] = []
     for item in queries:

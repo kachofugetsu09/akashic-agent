@@ -94,12 +94,16 @@ class QueryRewriter:
         content = getattr(response, "content", response)
         return str(content or "")
 
+    # 用独立 LLM 调用把用户消息改写为 procedure/preference 库可命中的 summary 句式。
     async def _rewrite_procedure_query(self, user_msg: str) -> str:
+        # 1. 构造 procedure 改写专用 prompt。
         prompt = self._build_procedure_prompt(user_msg)
+        # 2. 调用 LLM；异常时返回空，不阻断 history 决策路径。
         try:
             raw_output = await self._call_llm(prompt)
         except Exception:
             return ""
+        # 3. 清洗输出：压缩空白、剔除哨兵占位符。
         return self._clean_procedure_query(raw_output)
 
     def _parse_output(self, raw_output: str) -> dict[str, Any] | None:
@@ -252,9 +256,12 @@ class QueryRewriter:
 输出：
 """
 
+    # 清洗 LLM 产出的 procedure query：压缩空白，剔除常见哨兵占位符。
     @staticmethod
     def _clean_procedure_query(raw_output: str) -> str:
+        # 1. 先压缩所有连续空白为单空格，再剔除首尾句号和空格。
         text = re.sub(r"\s+", " ", str(raw_output or "")).strip("。 .")
+        # 2. 若清洗后命中已知哨兵词，返回空，避免把占位符当 query 送入向量检索。
         if text.lower() in {"", "空", "无", "none", "null", "n/a", "not applicable", "(empty)"}:
             return ""
         return text
