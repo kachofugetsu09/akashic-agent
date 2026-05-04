@@ -54,29 +54,32 @@ def _patch_ncatbot_ws_open_timeout(timeout_seconds: float) -> None:
     if timeout_seconds <= 0:
         return
 
-    adapter_mod = importlib.import_module("ncatbot.core.adapter.adapter")
-    original_connect = getattr(
-        adapter_mod,
-        "_akashic_original_websockets_connect",
-        None,
-    )
-    if original_connect is None:
-        original_connect = adapter_mod.websockets.connect
-        adapter_mod._akashic_original_websockets_connect = original_connect
+    try:
+        adapter_mod = importlib.import_module("ncatbot.core.adapter.adapter")
+        original_connect = getattr(
+            adapter_mod,
+            "_akashic_original_websockets_connect",
+            None,
+        )
+        if original_connect is None:
+            original_connect = adapter_mod.websockets.connect
+            adapter_mod._akashic_original_websockets_connect = original_connect
 
-        def _patched_connect(*args, **kwargs):
-            configured_timeout = getattr(
-                adapter_mod,
-                "_akashic_websocket_open_timeout_seconds",
-                None,
-            )
-            if configured_timeout is not None:
-                kwargs["open_timeout"] = configured_timeout
-            return adapter_mod._akashic_original_websockets_connect(*args, **kwargs)
+            def _patched_connect(*args, **kwargs):
+                configured_timeout = getattr(
+                    adapter_mod,
+                    "_akashic_websocket_open_timeout_seconds",
+                    None,
+                )
+                if configured_timeout is not None:
+                    kwargs["open_timeout"] = configured_timeout
+                return adapter_mod._akashic_original_websockets_connect(*args, **kwargs)
 
-        adapter_mod.websockets.connect = _patched_connect
+            adapter_mod.websockets.connect = _patched_connect
 
-    adapter_mod._akashic_websocket_open_timeout_seconds = timeout_seconds
+        adapter_mod._akashic_websocket_open_timeout_seconds = timeout_seconds
+    except Exception as e:
+        logger.warning("[qq] patch ncatbot WebSocket open_timeout 失败，沿用 SDK 默认值: %s", e)
 
 
 def _extract_cq_images(raw: str) -> tuple[str, list[str]]:

@@ -391,6 +391,15 @@ def _import_qq_channel(monkeypatch: pytest.MonkeyPatch):
     return importlib.import_module("infra.channels.qq_channel")
 
 
+def test_qq_channel_ws_timeout_patch_is_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _import_qq_channel(monkeypatch)
+    monkeypatch.delitem(sys.modules, "ncatbot.core.adapter.adapter", raising=False)
+
+    mod._patch_ncatbot_ws_open_timeout(7.5)
+
+
 @pytest.mark.asyncio
 async def test_cli_tui_paths(monkeypatch: pytest.MonkeyPatch):
     mod = _import_cli_tui(monkeypatch)
