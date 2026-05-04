@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import types
 
 import pytest
@@ -57,6 +58,6 @@ async def test_qqbot_openid_fetch_times_out_without_ws_frames(
     monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
     monkeypatch.setitem(sys.modules, "websockets", fake_websockets)
 
-    result = await _async_fetch_qqbot_openid("app", "secret", 1, asyncio.Event())
+    result = await _async_fetch_qqbot_openid("app", "secret", 1, threading.Event())
 
     assert result is None
