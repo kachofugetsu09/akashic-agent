@@ -17,7 +17,7 @@ class ChatIdCommandModule:
         if _normalize_command(state.msg.content) not in {"/chatid", "/myid"}:
             return frame
         chat_id = state.msg.chat_id or "（未知）"
-        reply = _format_reply(chat_id)
+        reply = _format_reply(chat_id, channel=state.msg.channel)
         frame.slots["session:ctx"] = _abort_ctx(state, reply)  # type: ignore[attr-defined]
         return frame
 
@@ -43,8 +43,8 @@ def _normalize_command(content: str) -> str:
     return head
 
 
-def _format_reply(chat_id: str) -> str:
-    return "\n".join([
+def _format_reply(chat_id: str, channel: str = "telegram") -> str:
+    lines = [
         f"你的 chat_id 是：`{chat_id}`",
         "",
         "将它填入 config.toml 即可开启主动推送：",
@@ -54,10 +54,23 @@ def _format_reply(chat_id: str) -> str:
         "enabled = true",
         "",
         "[proactive.target]",
-        "channel = \"telegram\"",
-        f"chat_id = \"{chat_id}\"",
+        f'channel = "{channel}"',
+        f'chat_id = "{chat_id}"',
         "```",
-    ])
+    ]
+    if channel == "qqbot":
+        # user_openid 也需要加入 allow_from 白名单
+        raw_openid = chat_id.removeprefix("c2c:")
+        lines += [
+            "",
+            "同时确认 allow_from 已包含你的 user_openid：",
+            "",
+            "```toml",
+            "[channels.qqbot]",
+            f'allow_from = ["{raw_openid}"]',
+            "```",
+        ]
+    return "\n".join(lines)
 
 
 def _abort_ctx(state: TurnState, reply: str) -> BeforeTurnCtx:

@@ -75,6 +75,20 @@ allow_from = ["your_qq_number"]
 # allow_from = ["your_qq_number"]
 # require_at = true
 
+[channels.qqbot]
+# 官方 QQBot，和 NapCat QQ 通道并存。留空跳过。
+app_id = ""
+client_secret = ""
+# 私聊白名单使用官方 user_openid。
+allow_from = []
+
+# 当前实现仅启用私聊；群配置先保留为后续扩展占位。
+# [[channels.qqbot.groups]]
+# group_openid = "GROUP_OPENID"
+# allow_from = ["MEMBER_OPENID"]
+# require_at = true
+# allow_proactive = false
+
 # =============================================================================
 # 语义记忆
 # embedding api_key 通常和 llm.fast 用同一个 key。
@@ -126,6 +140,7 @@ profile = "daily"
 [proactive.target]
 channel = "telegram"
 # 你的 Telegram user id（向 bot 发一条消息后从日志里可以拿到）。
+# 官方 QQBot 私聊可填：channel = "qqbot"，chat_id = "c2c:USER_OPENID"
 chat_id = ""
 
 [proactive.agent]
