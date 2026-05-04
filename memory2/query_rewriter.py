@@ -12,6 +12,7 @@ class GateDecision:
     needs_episodic: bool
     episodic_query: str
     latency_ms: int
+    procedure_query: str = ""
 
 
 class QueryRewriter:
@@ -37,21 +38,49 @@ class QueryRewriter:
             needs_episodic=True,
             episodic_query=user_msg,
         )
-        prompt = self._build_prompt(user_msg=user_msg, recent_history=recent_history)
 
-        # 2. 再调用 LLM；异常或超时都直接 fail-open。
-        try:
-            raw_output = await asyncio.wait_for(
-                self._call_llm(prompt),
-                timeout=self._timeout_s,
+        # 2. 分开改写 history 和 procedure，避免任一路失败吞掉另一路结果。
+        raw_output = ""
+        procedure_query = ""
+        main_task = asyncio.create_task(
+            self._call_llm(
+                self._build_prompt(
+                    user_msg=user_msg,
+                    recent_history=recent_history,
+                )
             )
-        except Exception:
+        )
+        procedure_task = asyncio.create_task(self._rewrite_procedure_query(user_msg))
+        done, pending = await asyncio.wait(
+            {main_task, procedure_task},
+            timeout=self._timeout_s,
+        )
+        for task in pending:
+            _ = task.cancel()
+        if not done:
             return fallback
+        if main_task in done:
+            try:
+                raw_output = main_task.result()
+            except Exception:
+                raw_output = ""
+        if procedure_task in done:
+            try:
+                procedure_query = procedure_task.result()
+            except Exception:
+                procedure_query = ""
 
-        # 3. 最后解析 XML；结构无效则继续回退原始消息。
+        # 3. 最后解析；history 结构无效则回退原始消息，但保留 procedure 改写。
         decision = self._parse_output(raw_output)
         if decision is None:
-            return fallback
+            return self._build_decision(
+                started=started,
+                user_msg=user_msg,
+                needs_episodic=True,
+                episodic_query=user_msg,
+                procedure_query=procedure_query,
+            )
+        decision["procedure_query"] = procedure_query
         return self._build_decision(started=started, user_msg=user_msg, **decision)
 
     async def _call_llm(self, prompt: str) -> str:
@@ -60,9 +89,22 @@ class QueryRewriter:
             tools=[],
             model=self._model,
             max_tokens=self._max_tokens,
+            disable_thinking=True,
         )
         content = getattr(response, "content", response)
         return str(content or "")
+
+    # 用独立 LLM 调用把用户消息改写为 procedure/preference 库可命中的 summary 句式。
+    async def _rewrite_procedure_query(self, user_msg: str) -> str:
+        # 1. 构造 procedure 改写专用 prompt。
+        prompt = self._build_procedure_prompt(user_msg)
+        # 2. 调用 LLM；异常时返回空，不阻断 history 决策路径。
+        try:
+            raw_output = await self._call_llm(prompt)
+        except Exception:
+            return ""
+        # 3. 清洗输出：压缩空白、剔除哨兵占位符。
+        return self._clean_procedure_query(raw_output)
 
     def _parse_output(self, raw_output: str) -> dict[str, Any] | None:
         decision_text = self._extract_tag(raw_output, "decision").upper()
@@ -80,6 +122,7 @@ class QueryRewriter:
         user_msg: str,
         needs_episodic: bool,
         episodic_query: str,
+        procedure_query: str = "",
     ) -> GateDecision:
         fallback_query = user_msg.strip()
         latency_ms = max(0, int((time.perf_counter() - started) * 1000))
@@ -87,6 +130,7 @@ class QueryRewriter:
             needs_episodic=needs_episodic,
             episodic_query=episodic_query.strip() or fallback_query,
             latency_ms=latency_ms,
+            procedure_query=procedure_query.strip(),
         )
 
     @staticmethod
@@ -101,7 +145,7 @@ class QueryRewriter:
     @staticmethod
     def _build_prompt(*, user_msg: str, recent_history: str) -> str:
         history_block = recent_history.strip() or "（无）"
-        return f"""你是记忆检索决策器。根据近期对话和当前用户消息，判断是否需要检索 episodic memory，并输出一个查询。
+        return f"""你是记忆检索决策器。根据近期对话和当前用户消息，判断是否需要检索用户个人事实或历史事件，并输出查询。
 
 近期对话：
 {history_block}
@@ -110,41 +154,114 @@ class QueryRewriter:
 {user_msg}
 
 规则：
-- NO_RETRIEVE：打招呼、闲聊、确认当前轮内容、通用知识问答、简单回应”好/嗯/继续”
-- RETRIEVE：询问过去发生的事、用户偏好、个人信息，或要求执行某类操作时需要查 memory
+- NO_RETRIEVE：打招呼、闲聊、确认当前轮内容、通用知识问答、简单回应“好/嗯/继续”、用户提出新的服务偏好或执行规则
+- RETRIEVE：询问过去发生的事、用户个人信息、用户是否告诉过某事
+- 用户提出新的偏好或规则时，decision 仍是 NO_RETRIEVE；这类内容只交给 procedure/preference 检索 query 处理
+- 出现“都有哪些/列举/所有/一共/总共/历史上”这类聚合问题 → RETRIEVE，并改写成覆盖主题的宽泛 query
+- 出现“他/她/它/这个/那个/这东西/这玩意”这类指示词时，优先用近期对话消解为实际实体
+- “你还记得吗/你知道我的/你记不记得/我跟你说过”等元问题是在查事实本身，history_query 要贴近记忆 summary
+- 提到快递、物流、包裹、到货时，若语境指向用户最近购买行为，应查购买历史；纯工具查询可以不查
+- 提到身体症状、药、复查时，若语境指向用户健康状态，应查健康档案或历史记录
 
-聚合类问题处理（包含”都有哪些/列举/所有/一共/总共/历史上”等词）：
-- 判断为 RETRIEVE
-- history_query 改写为宽泛的语义 query，覆盖该主题下所有可能的记录
-  例：用户问”我买过哪些键盘” → history_query: “购买 键盘 外设”
-  例：用户问”我们讨论过哪些游戏” → history_query: “游戏 推荐 讨论”
+<example id="new_service_rule_not_history">
+用户消息：以后讲复杂问题先给我一个能贯穿始终的例子
+输出：
+<decision>NO_RETRIEVE</decision>
+<history_query></history_query>
+</example>
 
-代词消解（优先执行，再做其他推断）：
-- 消息中出现”他 / 她 / 它 / 这个 / 那个 / 这玩意 / 这东西 / 这 / 那”等指示词时，必须根据近期对话将其替换为实际指代的实体名称
-- 例：近期讨论了 “recursive language model”，用户说”他会经常返回奇怪的 repl 字符” → history_query: “recursive language model repl 字符 输出异常”
-- 例：近期讨论了 MCP 协议，用户说”这玩意为啥突然又火了” → history_query: “MCP 协议 突然流行 原因”
-- 若实在无法确定指代，保留原词并追加近期对话中最相关的实体词
+<example id="external_resource_not_history">
+用户消息：【视频标题-示例站点】 https://short.example/item
+输出：
+<decision>NO_RETRIEVE</decision>
+<history_query></history_query>
+</example>
 
-隐式意图推断（先想再决策）：
-- 在输出 XML 之前，先用 <thinking>...</thinking> 推断用户消息的隐含背景
-- 提到快递 / 物流 / 单号 / 包裹 / 到货：隐含意图通常是查用户最近的购买行为
-- 提到身体症状 / 药 / 复查：隐含意图通常是查用户健康档案
-- 提到那个任务 / 项目 / 上次说的”：隐含意图通常是查用户正在进行的事项
-- 如果隐含意图指向历史记录，则应 RETRIEVE，history_query 应面向隐含意图，而不是表面词
-- <thinking> 只用于内部推理，不要把它混入最终 XML 字段
+<example id="memory_question_history">
+用户消息：你还记得我用的是哪个 Fitbit 吗
+输出：
+<decision>RETRIEVE</decision>
+<history_query>用户使用的 Fitbit 设备型号</history_query>
+</example>
 
-元问题处理（用户在问 agent 是否记得某件事）：
-- 识别标志：”你忘了吗””你还记得吗””你知道我的...””你记不记得””我跟你说过”等
-- 隐含意图是查询该事实本身，history_query 应提取目标事实的语义，而非保留问句形式
-- 记忆库中 profile 条目是纯事实陈述（如”用户佩戴 Fitbit Inspire 3”），event 条目带时间戳；query 需贴近这种陈述语义才能命中
-- 例：”你忘记我用的是哪个 Fitbit 了吗” → history_query: “用户佩戴的 Fitbit 设备型号”
-- 例：”你还记得我喜欢哪个游戏吗” → history_query: “用户喜欢的游戏 偏好”
-- 例：”我跟你说过我的 Steam ID 吧” → history_query: “用户 Steam ID”
-
-输出要求：
-- history_query：面向 event/profile 的完整语义 query，可以包含上下文
-
-只输出 XML：
+只输出 XML，不要解释：
 <decision>RETRIEVE|NO_RETRIEVE</decision>
 <history_query>...</history_query>
 """
+
+
+    @staticmethod
+    def _build_procedure_prompt(user_msg: str) -> str:
+        return f"""只输出一行检索 query，不要解释。
+
+把用户消息改写成 preference/procedure 库能命中的 summary 风格查询：
+- 用户希望 agent 怎样服务、讲解、推荐
+- agent 在某类请求下必须怎么做、用什么工具
+- 用户发来某类外部资源、文件、图片、链接时 agent 应如何处理
+不要抽一次性标题词，要写可复用场景。
+丢弃一次性标题、情绪词、短链路径；保留可复用类别词，如平台、资源类型、输入形态、用户动作、agent 应执行的对象。
+如果用户消息里出现了具体平台名或资源类型，要保留这些可复用类别词；不要输出“某平台”“某资源”这类占位词。
+
+<example id="procedure_explicit_command">
+用户消息：把这个资源下载下来
+输出：用户要求 agent 下载外部资源
+</example>
+
+<example id="procedure_direct_action">
+用户消息：帮我把这个内容整理成表格
+输出：用户要求 agent 整理内容
+</example>
+
+<example id="procedure_resource_share">
+用户消息：【视频标题-哔哩哔哩】 https://short.example/item
+输出：用户发送哔哩哔哩视频链接时 agent 应如何处理
+</example>
+
+<example id="procedure_document_link">
+用户消息：这个文档链接你看一下 https://docs.example.com/item
+输出：用户发送文档链接时 agent 应如何处理
+</example>
+
+<example id="procedure_attachment">
+用户消息：这是文件，帮我处理一下
+输出：用户发送文件并要求 agent 处理
+</example>
+
+<example id="procedure_media">
+用户消息：帮我看看这张图
+输出：用户发送图片并要求 agent 分析
+</example>
+
+<example id="preference_service_style">
+用户消息：以后讲复杂问题先给我一个能贯穿始终的例子
+输出：用户希望 agent 讲解复杂问题时先给贯穿始终的例子
+</example>
+
+<example id="preference_future_rule">
+用户消息：以后遇到这种问题先给结论再解释
+输出：用户希望 agent 回答时先给结论再解释
+</example>
+
+<example id="memory_answer_rule">
+用户消息：你还记得我之前告诉你的设备型号吗
+输出：用户询问记忆内容时 agent 应如何查找依据
+</example>
+
+<example id="answer_style_rule">
+用户消息：解释一下这两个协议有什么区别
+输出：用户询问知识问题时 agent 应如何组织回答
+</example>
+
+用户消息：{user_msg}
+输出：
+"""
+
+    # 清洗 LLM 产出的 procedure query：压缩空白，剔除常见哨兵占位符。
+    @staticmethod
+    def _clean_procedure_query(raw_output: str) -> str:
+        # 1. 先压缩所有连续空白为单空格，再剔除首尾句号和空格。
+        text = re.sub(r"\s+", " ", str(raw_output or "")).strip("。 .")
+        # 2. 若清洗后命中已知哨兵词，返回空，避免把占位符当 query 送入向量检索。
+        if text.lower() in {"", "空", "无", "none", "null", "n/a", "not applicable", "(empty)"}:
+            return ""
+        return text

@@ -20,9 +20,9 @@ def test_no_hardcoded_caozuoguifan_suffix():
 
 
 def test_returns_at_least_two_queries():
-    """Refactor 后保守退化为单 query。"""
-    queries = build_procedure_queries("把这个B站视频下载下来")
-    assert queries == ["把这个B站视频下载下来"]
+    """保留原始 query，并追加 LLM 产出的改写 query。"""
+    queries = build_procedure_queries("把这个B站视频下载下来", "B站视频 下载 SOP")
+    assert queries == ["把这个B站视频下载下来", "B站视频 下载 SOP"]
 
 
 def test_all_queries_are_non_empty_strings():
@@ -44,16 +44,13 @@ def test_short_message_still_works():
 
 
 def test_generic_message_with_no_keywords_returns_original_only():
-    """对于没有命中领域关键词的普通消息，只返回原始消息本身。
-
-    Refactor 后所有消息都统一走这个保守行为。
-    """
+    """对于没有命中领域语境的普通消息，只返回原始消息本身。"""
     queries = build_procedure_queries("帮我创建一个新技能")
     assert queries == ["帮我创建一个新技能"]
 
 
-def test_context_hint_no_longer_expands_query():
-    """context_hint 保留签名兼容，但不再触发额外 query 扩展。"""
+def test_no_rewritten_query_returns_original_only():
+    """没有 LLM 改写时，不额外扩展 query。"""
     msg = "把这个视频发给我"
-    queries = build_procedure_queries(msg, context_hint="bilibili.com")
+    queries = build_procedure_queries(msg)
     assert queries == [msg]

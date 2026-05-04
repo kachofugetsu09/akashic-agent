@@ -17,10 +17,12 @@ def test_gate_decision_is_dataclass_with_required_fields():
         needs_episodic=True,
         episodic_query="用户关于B站下载的历史偏好",
         latency_ms=42,
+        procedure_query="B站视频下载 SOP",
     )
     assert d.needs_episodic is True
     assert d.episodic_query == "用户关于B站下载的历史偏好"
     assert d.latency_ms == 42
+    assert d.procedure_query == "B站视频下载 SOP"
 
 
 @pytest.mark.asyncio
@@ -66,6 +68,54 @@ async def test_decide_fails_open_on_llm_exception():
     result = await rewriter.decide(user_msg="帮我搜代码", recent_history="")
     assert result.needs_episodic is True
     assert result.episodic_query == "帮我搜代码"
+    assert result.procedure_query == ""
+
+
+@pytest.mark.asyncio
+async def test_decide_preserves_procedure_query_when_history_call_fails():
+    client = MagicMock()
+    calls = 0
+
+    async def _chat(*, messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("history failed")
+        return "用户发送哔哩哔哩视频链接时 agent 应如何处理"
+
+    client.chat = AsyncMock(side_effect=_chat)
+    rewriter = QueryRewriter(llm_client=client)
+
+    result = await rewriter.decide(
+        user_msg="【视频-哔哩哔哩】 https://example.test/item",
+        recent_history="",
+    )
+
+    assert result.needs_episodic is True
+    assert result.episodic_query.startswith("【视频")
+    assert result.procedure_query == "用户发送哔哩哔哩视频链接时 agent 应如何处理"
+
+
+@pytest.mark.asyncio
+async def test_decide_cleans_empty_procedure_query_sentinels():
+    client = MagicMock()
+
+    async def _chat(*, messages, **kwargs):
+        prompt = messages[0]["content"]
+        if "只输出一行检索 query" in prompt:
+            return "None."
+        return """
+<decision>NO_RETRIEVE</decision>
+<history_query></history_query>
+"""
+
+    client.chat = AsyncMock(side_effect=_chat)
+    rewriter = QueryRewriter(llm_client=client)
+
+    result = await rewriter.decide(user_msg="你好", recent_history="")
+
+    assert result.needs_episodic is False
+    assert result.procedure_query == ""
 
 
 @pytest.mark.asyncio

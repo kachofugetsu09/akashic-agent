@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 
-def build_procedure_queries(user_msg: str, context_hint: str = "") -> list[str]:
-    """为 procedure 检索生成 query 列表。
-
-    Refactor 后只保留保守策略：直接使用原始消息，不再做领域关键词扩展。
-    """
+def build_procedure_queries(user_msg: str, rewritten_query: str = "") -> list[str]:
+    """为 procedure/preference 检索生成原始 query 和改写 query。"""
     msg = _normalize_text(user_msg)
-    hint = _normalize_text(context_hint)
-    if not msg:
-        return [hint] if hint else []
-    return [msg]
+    rewritten = _normalize_text(rewritten_query)
+    queries = [item for item in (msg, rewritten) if item]
+    if not queries:
+        return []
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in queries:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 def _normalize_text(text: str) -> str:
