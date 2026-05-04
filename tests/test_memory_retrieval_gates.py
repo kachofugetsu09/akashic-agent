@@ -357,7 +357,7 @@ def test_retrieve_memory_block_prefers_query_rewriter_primary_path():
     retrieval._memory.query_rewriter.decide.assert_awaited_once()
 
 
-def test_retrieve_memory_block_query_rewriter_path_uses_raw_msg_for_procedure_lane():
+def test_retrieve_memory_block_query_rewriter_path_uses_dual_query_for_procedure_lane():
     loop = _make_loop(_Provider())
     session = _DummySession("cli:1")
     retrieval = _make_retrieval(loop)
@@ -367,6 +367,7 @@ def test_retrieve_memory_block_query_rewriter_path_uses_raw_msg_for_procedure_la
             needs_episodic=True,
             episodic_query="用户的B站下载偏好历史",
             latency_ms=8,
+            procedure_query="B站视频下载 SOP",
         )
     )
     memory_port = MagicMock()
@@ -396,6 +397,10 @@ def test_retrieve_memory_block_query_rewriter_path_uses_raw_msg_for_procedure_la
     procedure_calls = [call for call in engine_calls if call["mode"] == "procedure"]
     assert len(procedure_calls) == 1
     assert procedure_calls[0]["query"] == "把这个B站视频下载下来"
+    assert procedure_calls[0]["queries"] == [
+        "把这个B站视频下载下来",
+        "B站视频下载 SOP",
+    ]
 
 
 def test_process_inner_schedules_consolidation_only_after_append_messages():

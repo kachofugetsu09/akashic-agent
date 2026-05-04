@@ -32,6 +32,7 @@ from core.memory.runtime_facade import (
     InterestRetrievalRequest,
     InterestRetrievalResult,
 )
+from memory2.query_builder import build_procedure_queries
 
 if TYPE_CHECKING:
     from agent.core.types import HistoryMessage
@@ -49,6 +50,7 @@ InterestRetriever = Callable[[InterestRetrievalRequest], Awaitable[InterestRetri
 class _GateResult(TypedDict):
     gate_type: str | None
     episodic_query: str
+    procedure_queries: list[str]
     route_decision: str
     route_latency_ms: int
     fallback_reason: str
@@ -272,6 +274,7 @@ class DefaultRetrievalSemantics:
         h_scope_mode = "disabled"
         hyde_hypothesis: str | None = None
         injected_item_ids: list[str] = []
+        procedure_queries: list[str] = []
         route_decision = "NO_RETRIEVE"
         rewritten_query = request.message
         try:
@@ -292,6 +295,7 @@ class DefaultRetrievalSemantics:
             resolved_gate = cast(_GateResult, gate_result)
             gate_type = str(resolved_gate["gate_type"])
             rewritten_query = str(resolved_gate["episodic_query"])
+            procedure_queries = list(resolved_gate["procedure_queries"])
             route_decision = str(resolved_gate["route_decision"])
             route_ms = resolved_gate["route_latency_ms"]
             fallback_reason = str(resolved_gate["fallback_reason"])
@@ -326,6 +330,7 @@ class DefaultRetrievalSemantics:
                 h_items=h_items,
                 hyde_hypothesis=hyde_hypothesis,
                 injected_item_ids=injected_item_ids,
+                procedure_queries=procedure_queries,
                 rewritten_query=rewritten_query,
                 route_decision=route_decision,
                 config=self._config,
@@ -497,6 +502,7 @@ class _MemoryRetrievalFinalizer:
         h_items: list[dict],
         hyde_hypothesis: str | None,
         injected_item_ids: list[str],
+        procedure_queries: list[str],
         rewritten_query: str,
         route_decision: str,
         config: "MemoryConfig",
@@ -510,6 +516,7 @@ class _MemoryRetrievalFinalizer:
             h_items=h_items,
             hyde_hypothesis=hyde_hypothesis,
             injected_item_ids=injected_item_ids,
+            procedure_queries=procedure_queries,
             rewritten_query=rewritten_query,
             route_decision=route_decision,
             config=config,
@@ -536,6 +543,7 @@ class _MemoryRetrievalFinalizer:
             h_items=[],
             hyde_hypothesis=None,
             injected_id_set=set(),
+            procedure_queries=[],
             error=str(error),
         )
 
@@ -600,26 +608,24 @@ async def _resolve_memory_gate(
     light_model: str,
 ) -> tuple[_GateResult, list[dict], MemoryEngineRetrieveResult | None]:
     if memory.query_rewriter is not None:
-        decision_task = asyncio.create_task(
-            memory.query_rewriter.decide(
-                user_msg=message,
-                recent_history=recent_turns,
-            )
+        decision = await memory.query_rewriter.decide(
+            user_msg=message,
+            recent_history=recent_turns,
         )
-        procedure_task = asyncio.create_task(
-            _retrieve_engine_items(
-                memory=memory,
-                query=message,
-                scope=MemoryScope(),
-                mode="procedure",
-                memory_types=["procedure", "preference"],
-                top_k=config.top_k_procedure,
-            )
+        procedure_queries = build_procedure_queries(message, decision.procedure_query)
+        p_result = await _retrieve_engine_items(
+            memory=memory,
+            query=message,
+            scope=MemoryScope(),
+            mode="procedure",
+            memory_types=["procedure", "preference"],
+            queries=procedure_queries,
+            top_k=config.top_k_procedure,
         )
-        decision, p_result = await asyncio.gather(decision_task, procedure_task)
         return {
             "gate_type": "query_rewriter",
             "episodic_query": decision.episodic_query,
+            "procedure_queries": procedure_queries,
             "route_decision": "RETRIEVE" if decision.needs_episodic else "NO_RETRIEVE",
             "route_latency_ms": decision.latency_ms,
             "fallback_reason": "",
@@ -646,6 +652,7 @@ async def _resolve_fallback_memory_gate(
     llm: "LLMServices",
     light_model: str,
 ) -> tuple[_GateResult, list[dict], MemoryEngineRetrieveResult | None]:
+    procedure_queries = build_procedure_queries(message)
     p_task = asyncio.create_task(
         _retrieve_engine_items(
             memory=memory,
@@ -653,6 +660,7 @@ async def _resolve_fallback_memory_gate(
             scope=MemoryScope(),
             mode="procedure",
             memory_types=["procedure", "preference"],
+            queries=procedure_queries,
             top_k=config.top_k_procedure,
         )
     )
@@ -673,6 +681,7 @@ async def _resolve_fallback_memory_gate(
     return {
         "gate_type": "history_route",
         "episodic_query": route_decision_obj.rewritten_query,
+        "procedure_queries": procedure_queries,
         "route_decision": "RETRIEVE" if route_decision_obj.needs_history else "NO_RETRIEVE",
         "route_latency_ms": route_decision_obj.latency_ms,
         "fallback_reason": "" if route_reason == "ok" else route_reason,
@@ -872,6 +881,7 @@ async def _retrieve_engine_items(
     mode: str,
     memory_types: list[str],
     top_k: int,
+    queries: list[str] | None = None,
     recent_turns: str = "",
     require_scope_match: bool = False,
 ) -> MemoryEngineRetrieveResult:
@@ -886,6 +896,7 @@ async def _retrieve_engine_items(
             hints={
                 "memory_types": memory_types,
                 "require_scope_match": require_scope_match,
+                "queries": queries or [],
             },
             top_k=top_k,
         )
@@ -1088,6 +1099,7 @@ def _finalize_memory_retrieval(
     h_items: list[dict],
     hyde_hypothesis: str | None,
     injected_item_ids: list[str],
+    procedure_queries: list[str],
     rewritten_query: str,
     route_decision: str,
     config: "MemoryConfig",
@@ -1102,6 +1114,7 @@ def _finalize_memory_retrieval(
         p_items=p_items,
         h_items=h_items,
         hyde_hypothesis=hyde_hypothesis,
+        procedure_queries=procedure_queries,
         injected_id_set=set(injected_item_ids),
         route_decision=route_decision,
     )
@@ -1156,6 +1169,7 @@ def _build_retrieval_completed(
     h_items: list[dict],
     hyde_hypothesis: str | None,
     injected_id_set: set[str],
+    procedure_queries: list[str] | None = None,
     route_decision: str | None = None,
     error: str | None = None,
 ) -> RetrievalCompleted:
@@ -1178,12 +1192,29 @@ def _build_retrieval_completed(
         chat_id=chat_id,
         query=rewritten_query,
         orig_query=user_msg if user_msg != rewritten_query else None,
-        aux_queries=[hyde_hypothesis] if hyde_hypothesis else [],
+        aux_queries=_merge_aux_queries(procedure_queries or [], hyde_hypothesis),
         hits=hits,
         injected_count=sum(1 for h in hits if h.injected),
         route_decision=route_decision,
         error=error,
     )
+
+
+def _merge_aux_queries(
+    procedure_queries: list[str],
+    hyde_hypothesis: str | None,
+) -> list[str]:
+    queries = [str(item).strip() for item in procedure_queries if str(item).strip()]
+    if hyde_hypothesis:
+        queries.append(hyde_hypothesis.strip())
+    seen: set[str] = set()
+    merged: list[str] = []
+    for item in queries:
+        if item in seen:
+            continue
+        seen.add(item)
+        merged.append(item)
+    return merged
 
 
 def _memory_hit_to_item(hit) -> dict[str, Any]:
