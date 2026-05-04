@@ -295,7 +295,7 @@ class DefaultRetrievalSemantics:
             resolved_gate = cast(_GateResult, gate_result)
             gate_type = str(resolved_gate["gate_type"])
             rewritten_query = str(resolved_gate["episodic_query"])
-            procedure_queries = list(resolved_gate["procedure_queries"])
+            procedure_queries = list(resolved_gate.get("procedure_queries") or [])
             route_decision = str(resolved_gate["route_decision"])
             route_ms = resolved_gate["route_latency_ms"]
             fallback_reason = str(resolved_gate["fallback_reason"])
