@@ -1,6 +1,6 @@
 # Docker 调试沙盒
 
-这个目录用于临时调试真实入口，例如 Telegram 图片、多模态链路、独立 bot 配置。沙盒不会挂载宿主机 `HOME`，也不会挂载正式 `~/.akashic/workspace`。
+这个目录用于临时调试真实入口，例如 Telegram 图片、多模态链路、独立 bot 配置。调试容器基于 Arch Linux，沙盒不会挂载宿主机 `HOME`，也不会挂载正式 `~/.akashic/workspace`。
 
 ```
 host

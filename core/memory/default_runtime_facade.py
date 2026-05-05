@@ -718,7 +718,7 @@ async def _retrieve_episodic_items(
             memory_types=history_memory_types,
             top_k=config.top_k_history,
             recent_turns=hyde_context,
-            require_scope_match=True,
+            require_scope_match=False,
         )
         return (
             _map_engine_result_to_history_items(engine_result),
@@ -921,7 +921,7 @@ async def _retrieve_episodic_with_hyde(
             memory_types=memory_types,
             top_k=top_k,
             recent_turns=hyde_context,
-            require_scope_match=True,
+            require_scope_match=False,
         ), None
 
     raw_task = asyncio.create_task(
@@ -933,7 +933,7 @@ async def _retrieve_episodic_with_hyde(
             memory_types=memory_types,
             top_k=top_k,
             recent_turns=hyde_context,
-            require_scope_match=True,
+            require_scope_match=False,
         )
     )
     hyp_task = asyncio.create_task(
@@ -952,7 +952,7 @@ async def _retrieve_episodic_with_hyde(
         memory_types=memory_types,
         top_k=top_k,
         recent_turns=hyde_context,
-        require_scope_match=True,
+        require_scope_match=False,
     )
     hyde_result = _annotate_engine_result_path(hyde_result, "history_hyde")
     merged_items = _max_pool_history_items(

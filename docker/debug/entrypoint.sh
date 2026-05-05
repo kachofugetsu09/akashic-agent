@@ -9,6 +9,14 @@ DASHBOARD_PORT="${AKASHIC_DASHBOARD_PORT:-2236}"
 HOST_UID="${AKASHIC_HOST_UID:-1000}"
 HOST_GID="${AKASHIC_HOST_GID:-1000}"
 
+as_host() {
+    setpriv --reuid "$HOST_UID" --regid "$HOST_GID" --clear-groups "$@"
+}
+
+exec_as_host() {
+    exec setpriv --reuid "$HOST_UID" --regid "$HOST_GID" --clear-groups "$@"
+}
+
 ensure_sandbox_path() {
     local path="$1"
     case "$path" in
@@ -24,7 +32,7 @@ ensure_socket_config() {
     if [ ! -f "$CONFIG" ]; then
         return
     fi
-    gosu "$HOST_UID:$HOST_GID" python - "$CONFIG" "$SOCKET" <<'PY'
+    as_host python - "$CONFIG" "$SOCKET" <<'PY'
 from pathlib import Path
 import sys
 import toml
@@ -53,16 +61,16 @@ shift || true
 
 case "$cmd" in
     setup)
-        gosu "$HOST_UID:$HOST_GID" python main.py setup --config "$CONFIG" --workspace "$WORKSPACE" "$@"
+        as_host python main.py setup --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ensure_socket_config
         ;;
     init)
-        gosu "$HOST_UID:$HOST_GID" python main.py init --config "$CONFIG" --workspace "$WORKSPACE" "$@"
+        as_host python main.py init --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ensure_socket_config
         ;;
     reset-workspace)
-        gosu "$HOST_UID:$HOST_GID" rm -rf "$WORKSPACE"
-        gosu "$HOST_UID:$HOST_GID" python main.py init --config "$CONFIG" --workspace "$WORKSPACE" "$@"
+        as_host rm -rf "$WORKSPACE"
+        as_host python main.py init --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ensure_socket_config
         ;;
     run|gateway|serve)
@@ -71,7 +79,7 @@ case "$cmd" in
             exit 2
         fi
         ensure_socket_config
-        exec gosu "$HOST_UID:$HOST_GID" python main.py --config "$CONFIG" --workspace "$WORKSPACE" "$@"
+        exec_as_host python main.py --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ;;
     cli)
         if [ ! -f "$CONFIG" ]; then
@@ -79,16 +87,16 @@ case "$cmd" in
             exit 2
         fi
         ensure_socket_config
-        exec gosu "$HOST_UID:$HOST_GID" python main.py cli --config "$CONFIG" "$@"
+        exec_as_host python main.py cli --config "$CONFIG" "$@"
         ;;
     dashboard)
-        exec gosu "$HOST_UID:$HOST_GID" python main.py dashboard \
+        exec_as_host python main.py dashboard \
             --workspace "$WORKSPACE" \
             --host "$DASHBOARD_HOST" \
             --port "$DASHBOARD_PORT" \
             "$@"
         ;;
     *)
-        exec gosu "$HOST_UID:$HOST_GID" "$cmd" "$@"
+        exec_as_host "$cmd" "$@"
         ;;
 esac

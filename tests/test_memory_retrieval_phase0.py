@@ -752,7 +752,7 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
     assert engine_result is not None
     request = engine.retrieve.await_args.args[0]
     assert request.scope.session_key == "telegram:test_user"
-    assert request.hints["require_scope_match"] is True
+    assert request.hints["require_scope_match"] is False
     assert request.hints["memory_types"] == ["event", "profile"]
 
 
