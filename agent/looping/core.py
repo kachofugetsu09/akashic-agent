@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from agent.tool_hooks.base import ToolHook
 
 logger = logging.getLogger("agent.loop")
+_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS = 30.0
 
 StreamDelta: TypeAlias = dict[str, str] | str
 StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
@@ -678,13 +679,19 @@ class AgentLoop:
         if self._markdown_memory is None:
             raise RuntimeError("markdown memory runtime unavailable")
         maintenance = self._markdown_memory.maintenance
-        result = await maintenance.consolidate(
-            ConsolidateRequest(
-                session=session,
-                archive_all=archive_all,
-                force=force,
+        try:
+            result = await asyncio.wait_for(
+                maintenance.consolidate(
+                    ConsolidateRequest(
+                        session=session,
+                        archive_all=archive_all,
+                        force=force,
+                    )
+                ),
+                timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
             )
-        )
+        except TimeoutError as exc:
+            raise TimeoutError("memory consolidation busy") from exc
         if result.trace.get("mode") != "skipped":
             await self.session_manager.save_async(session)
             return True

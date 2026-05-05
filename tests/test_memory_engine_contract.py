@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import asyncio
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -27,6 +28,8 @@ from core.memory.events import ConsolidationCommitted, TurnIngested
 from core.memory.markdown import (
     ConsolidateRequest,
     ConsolidateResult,
+    _ConsolidationDraft,
+    _ConsolidationWindow,
     MarkdownMemoryMaintenance,
     MarkdownMemoryStore,
     MemoryLifecycleBindRequest,
@@ -365,6 +368,51 @@ async def test_default_memory_engine_consolidates_ready_session_from_lifecycle()
     await event_bus.aclose()
 
 
+async def test_markdown_consolidation_keeps_window_when_consumer_fails(tmp_path: Path):
+    event_bus = EventBus()
+
+    async def _fail_consolidation(_event):
+        raise RuntimeError("vector write failed")
+
+    event_bus.on(ConsolidationCommitted, _fail_consolidation)
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}] * 12,
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=6,
+        event_bus=event_bus,
+    )
+    draft = _ConsolidationDraft(
+        window=_ConsolidationWindow(
+            old_messages=list(session.messages[:6]),
+            keep_count=6,
+            consolidate_up_to=6,
+        ),
+        source_ref='["cli:1:0"]',
+        history_entry_payloads=[("[2026-05-05 13:00] 用户测试记忆", 0)],
+        pending_items="",
+        conversation="USER: 测试记忆",
+        recent_context_text="# Recent Context\n",
+        scope_channel="cli",
+        scope_chat_id="1",
+    )
+    maintenance._worker.prepare_consolidation = AsyncMock(return_value=draft)
+
+    with pytest.raises(RuntimeError, match="vector write failed"):
+        await maintenance.consolidate(ConsolidateRequest(session=session))
+
+    assert session.last_consolidated == 0
+    assert "用户测试记忆" in (tmp_path / "memory" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    await event_bus.aclose()
+
+
 async def test_default_memory_engine_serializes_lifecycle_maintenance():
     event_bus = EventBus()
     session = SimpleNamespace(
@@ -507,6 +555,34 @@ async def test_default_memory_engine_consumes_markdown_consolidation_event():
 
     memorizer.save_from_consolidation.assert_awaited_once()
     memorizer.save_item_with_supersede.assert_awaited_once()
+
+
+async def test_default_memory_engine_reports_implicit_extraction_failure():
+    memorizer = SimpleNamespace(
+        save_from_consolidation=AsyncMock(),
+        save_item_with_supersede=AsyncMock(return_value="new:memu-1"),
+    )
+    provider = SimpleNamespace(
+        chat=AsyncMock(return_value=SimpleNamespace(content="not json"))
+    )
+    engine = _make_default_engine(
+        provider=cast(Any, provider),
+        memorizer=cast(Any, memorizer),
+    )
+
+    with pytest.raises(RuntimeError, match="long_term extraction failed"):
+        await engine._on_consolidation_committed(
+            ConsolidationCommitted(
+                history_entry_payloads=[("[2026-03-15 10:00] 用户聊了 Zigbee", 6)],
+                source_ref='["m1"]',
+                scope_channel="cli",
+                scope_chat_id="1",
+                conversation="USER: 我买了 Zigbee 网关",
+            )
+        )
+
+    memorizer.save_from_consolidation.assert_awaited_once()
+    memorizer.save_item_with_supersede.assert_not_awaited()
 
 
 async def test_default_memory_engine_ingest_accepts_conversation_batch_messages():

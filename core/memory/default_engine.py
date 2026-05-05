@@ -495,11 +495,11 @@ class DefaultMemoryEngine:
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = json_repair.loads(text)
             if not isinstance(result, dict):
-                return None
+                raise RuntimeError("long_term extraction returned non-object JSON")
             return result
         except Exception as e:
             logger.warning("consolidation long_term extraction failed: %s", e)
-            return None
+            raise RuntimeError("consolidation long_term extraction failed") from e
 
     async def retrieve(
         self,

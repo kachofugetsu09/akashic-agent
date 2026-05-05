@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 from agent.core.passive_support import collect_skill_mentions
 from agent.core.passive_turn import DefaultReasoner
 from prompts.agent import build_current_message_time_envelope
+import agent.looping.core as loop_core
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from core.memory.markdown import ConsolidateResult
@@ -127,4 +129,31 @@ async def test_trigger_memory_consolidation_returns_false_when_not_needed(tmp_pa
 
     assert triggered is False
     loop._memory_engine.consolidate.assert_awaited_once()
+    loop.session_manager.save_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trigger_memory_consolidation_times_out_when_busy(
+    tmp_path: Path,
+    monkeypatch,
+):
+    loop = _make_loop(tmp_path)
+    session = SimpleNamespace(
+        key="cli:test",
+        messages=[{"role": "user", "content": "u"}] * 50,
+        last_consolidated=0,
+    )
+    loop.session_manager.get_or_create = MagicMock(return_value=session)
+    loop.session_manager.save_async = AsyncMock()
+
+    async def _slow_consolidate(_request):
+        await asyncio.sleep(1)
+        return ConsolidateResult()
+
+    loop._memory_engine.consolidate = AsyncMock(side_effect=_slow_consolidate)
+    monkeypatch.setattr(loop_core, "_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(TimeoutError, match="memory consolidation busy"):
+        await loop.trigger_memory_consolidation("cli:test")
+
     loop.session_manager.save_async.assert_not_awaited()
