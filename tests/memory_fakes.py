@@ -6,8 +6,6 @@ from typing import Any
 
 from agent.memory import MemoryStore
 from core.memory.engine import (
-    ConsolidateRequest,
-    ConsolidateResult,
     EngineProfile,
     ExplicitRetrievalRequest,
     ExplicitRetrievalResult,
@@ -24,6 +22,7 @@ from core.memory.engine import (
     RememberRequest,
     RememberResult,
 )
+from core.memory.markdown import ConsolidateRequest, ConsolidateResult
 
 
 class FakeMemoryEngine:

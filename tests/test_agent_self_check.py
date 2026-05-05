@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,11 +9,13 @@ from agent.core.passive_support import collect_skill_mentions
 from agent.core.passive_turn import DefaultReasoner
 from prompts.agent import build_current_message_time_envelope
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, MemoryServices
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
+from core.memory.markdown import ConsolidateResult
 from tests.memory_fakes import FakeMemoryEngine
 
 
 def _make_loop(tmp_path: Path) -> AgentLoop:
+    memory = FakeMemoryEngine(tmp_path)
     return AgentLoop(
         AgentLoopDeps(
             bus=MagicMock(),
@@ -22,7 +23,10 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
             tools=MagicMock(),
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+            memory_runtime=SimpleNamespace(
+                engine=memory,
+                markdown=SimpleNamespace(store=memory, maintenance=memory),
+            ),
         ),
         AgentLoopConfig(),
     )
@@ -75,16 +79,13 @@ async def test_trigger_memory_consolidation_uses_real_entrypoint(tmp_path: Path)
     )
     loop.session_manager.get_or_create = MagicMock(return_value=session)
     loop.session_manager.save_async = AsyncMock()
-    loop._consolidate_memory = AsyncMock()
 
     triggered = await loop.trigger_memory_consolidation("cli:test")
 
     assert triggered is True
-    loop._consolidate_memory.assert_awaited_once_with(
-        session,
-        archive_all=False,
-        force=False,
-    )
+    assert loop._memory_engine.consolidate_calls[0].session is session
+    assert loop._memory_engine.consolidate_calls[0].archive_all is False
+    assert loop._memory_engine.consolidate_calls[0].force is False
     loop.session_manager.save_async.assert_awaited_once_with(session)
 
 
@@ -98,16 +99,13 @@ async def test_trigger_memory_consolidation_force_runs_below_threshold(tmp_path:
     )
     loop.session_manager.get_or_create = MagicMock(return_value=session)
     loop.session_manager.save_async = AsyncMock()
-    loop._consolidate_memory = AsyncMock()
 
     triggered = await loop.trigger_memory_consolidation("cli:test", force=True)
 
     assert triggered is True
-    loop._consolidate_memory.assert_awaited_once_with(
-        session,
-        archive_all=False,
-        force=True,
-    )
+    assert loop._memory_engine.consolidate_calls[0].session is session
+    assert loop._memory_engine.consolidate_calls[0].archive_all is False
+    assert loop._memory_engine.consolidate_calls[0].force is True
     loop.session_manager.save_async.assert_awaited_once_with(session)
 
 
@@ -121,39 +119,12 @@ async def test_trigger_memory_consolidation_returns_false_when_not_needed(tmp_pa
     )
     loop.session_manager.get_or_create = MagicMock(return_value=session)
     loop.session_manager.save_async = AsyncMock()
-    loop._consolidate_memory = AsyncMock()
+    loop._memory_engine.consolidate = AsyncMock(
+        return_value=ConsolidateResult(trace={"mode": "skipped"})
+    )
 
     triggered = await loop.trigger_memory_consolidation("cli:test")
 
     assert triggered is False
-    loop._consolidate_memory.assert_not_awaited()
-    loop.session_manager.save_async.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_trigger_memory_consolidation_waits_for_inflight_task(tmp_path: Path):
-    loop = _make_loop(tmp_path)
-    session = SimpleNamespace(
-        key="cli:test",
-        messages=[{"role": "user", "content": "u"}] * 50,
-        last_consolidated=0,
-    )
-    loop.session_manager.get_or_create = MagicMock(return_value=session)
-    loop.session_manager.save_async = AsyncMock()
-    loop._consolidate_memory = AsyncMock()
-    loop._scheduler.mark_manual_start("cli:test")
-
-    async def finish_existing_consolidation() -> None:
-        await asyncio.sleep(0.01)
-        session.last_consolidated = 30
-        loop._scheduler.mark_manual_end("cli:test")
-
-    waiter = asyncio.create_task(finish_existing_consolidation())
-    try:
-        triggered = await loop.trigger_memory_consolidation("cli:test")
-    finally:
-        await waiter
-
-    assert triggered is True
-    loop._consolidate_memory.assert_not_awaited()
+    loop._memory_engine.consolidate.assert_awaited_once()
     loop.session_manager.save_async.assert_not_awaited()

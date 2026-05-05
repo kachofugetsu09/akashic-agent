@@ -11,16 +11,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.looping.consolidation import (
-    ConsolidationService,
+from core.memory.markdown import (
+    _MarkdownConsolidationWorker as ConsolidationWorker,
     _build_consolidation_source_ref,
     _format_conversation_for_consolidation,
     _format_pending_items,
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
-from agent.looping.ports import TurnScheduler
-from memory2.profile_extractor import ProfileFactExtractor
 from memory2.post_response_worker import PostResponseMemoryWorker
 from proactive_v2.fitbit_sleep import (
     FitbitSleepProvider,
@@ -38,31 +36,19 @@ class _ConsolidationHarness:
     def __init__(self, payload: str) -> None:
         self._memory_port = SimpleNamespace(
             read_long_term=MagicMock(return_value="MEM"),
+            read_history=MagicMock(return_value=""),
+            read_recent_context=MagicMock(return_value=""),
             append_history_once=MagicMock(return_value=True),
             append_pending_once=MagicMock(return_value=True),
             save_from_consolidation=AsyncMock(),
         )
+        self.last_draft = None
         self.provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp(payload)))
-        self.session_manager = SimpleNamespace(save_async=AsyncMock())
-        self._consolidation = ConsolidationService(
-            memory=cast(Any, self._memory_port),
+        self._consolidation = ConsolidationWorker(
+            profile_maint=cast(Any, self._memory_port),
             provider=cast(Any, self.provider),
             model="lm",
             keep_count=2,
-            profile_extractor=None,
-        )
-        self._scheduler = TurnScheduler(
-            consolidation_runner=self._consolidate_and_save,
-            keep_count=2,
-        )
-
-    def set_profile_extractor(self, extractor) -> None:
-        self._consolidation = ConsolidationService(
-            memory=cast(Any, self._memory_port),
-            provider=cast(Any, self.provider),
-            model="lm",
-            keep_count=2,
-            profile_extractor=extractor,
         )
 
     async def _consolidate_memory(
@@ -70,15 +56,10 @@ class _ConsolidationHarness:
         session,
         archive_all: bool = False,
     ) -> None:
-        await self._consolidation.consolidate(
+        self.last_draft = await self._consolidation.prepare_consolidation(
             session,
             archive_all=archive_all,
         )
-
-    async def _consolidate_and_save(self, session: object) -> None:
-        await self._consolidate_memory(session)
-        await self.session_manager.save_async(session)
-
 
 @pytest.mark.asyncio
 async def test_consolidation_helpers(
@@ -174,9 +155,12 @@ async def test_consolidation_helpers(
     await harness._consolidate_memory(session, archive_all=True)
     if scheduled:
         await asyncio.gather(*scheduled)
-    harness._memory_port.append_history_once.assert_called_once()
-    harness._memory_port.append_pending_once.assert_called_once()
-    assert harness._memory_port.save_from_consolidation.await_count == 2
+    assert harness.last_draft is not None
+    assert harness.last_draft.history_entry_payloads == [
+        ("[2025-01-01 10:00] 主题A", 0),
+        ("[2025-01-01 10:02] 主题B", 0),
+    ]
+    assert harness.last_draft.pending_items == "- [preference] 喜欢 A"
     assert session.last_consolidated == 0
 
     scheduled.clear()
@@ -194,68 +178,16 @@ async def test_consolidation_helpers(
         awaited_session,
         archive_all=True,
     )
-    assert awaited._memory_port.save_from_consolidation.await_count == 1
-    assert scheduled and all(task.done() for task in scheduled)
+    assert awaited.last_draft is not None
+    assert awaited.last_draft.history_entry_payloads == [
+        ("[2025-01-01 10:00] 主题A", 0)
+    ]
+    assert scheduled == []
 
     empty = _ConsolidationHarness("")
     short_session = SimpleNamespace(key="s", messages=[{"role": "user", "content": "u"}], last_consolidated=0)
     await empty._consolidate_memory(short_session)
-    assert empty._memory_port.append_history_once.call_count == 0
-
-
-@pytest.mark.asyncio
-async def test_consolidation_background_and_error_accounting(monkeypatch: pytest.MonkeyPatch):
-    harness = _ConsolidationHarness('{"history_entry":"[2025-01-01 10:00] old"}')
-    harness._scheduler.mark_manual_start("telegram:1")
-    session = SimpleNamespace(
-        key="telegram:1",
-        messages=[{"role": "user", "content": "u1", "timestamp": "2025-01-01T10:00:00"}] * 5,
-        last_consolidated=0,
-    )
-    await harness._scheduler._run_consolidation_bg(cast(Any, session), "telegram:1")
-    assert harness._scheduler.is_consolidating("telegram:1") is False
-    harness.session_manager.save_async.assert_awaited_once()
-
-@pytest.mark.asyncio
-async def test_turn_scheduler_requires_min_ready_messages_before_consolidation():
-    runner = AsyncMock()
-    scheduler = TurnScheduler(
-        consolidation_runner=runner,
-        keep_count=20,
-    )
-    session = SimpleNamespace(
-        messages=[{"role": "user", "content": "u"}] * 29,
-        last_consolidated=0,
-    )
-
-    scheduler.schedule_consolidation(cast(Any, session), "telegram:1")
-    assert scheduler.is_consolidating("telegram:1") is False
-
-    session.messages.extend([{"role": "assistant", "content": "a"}] * 2)
-    scheduler.schedule_consolidation(cast(Any, session), "telegram:1")
-    assert scheduler.is_consolidating("telegram:1") is True
-    await asyncio.sleep(0)
-
-
-@pytest.mark.asyncio
-async def test_turn_scheduler_honors_session_consolidation_request():
-    runner = AsyncMock()
-    scheduler = TurnScheduler(
-        consolidation_runner=runner,
-        keep_count=20,
-    )
-    session = SimpleNamespace(
-        messages=[{"role": "user", "content": "u"}] * 21,
-        last_consolidated=0,
-        consolidation_requested=True,
-    )
-
-    scheduler.schedule_consolidation(cast(Any, session), "telegram:1")
-
-    assert session.consolidation_requested is False
-    assert scheduler.is_consolidating("telegram:1") is True
-    await asyncio.sleep(0)
-    runner.assert_awaited_once_with(session)
+    assert empty.last_draft is None
 
 
 @pytest.mark.asyncio
@@ -349,12 +281,8 @@ async def test_consolidation_long_term_prompt_contains_conversation():
         archive_all=True,
     )
 
-    # 两次 LLM 调用都发生了：event 提取 + 合并长期记忆提取
-    assert len(captured_prompts) == 2
-    # 合并长期记忆提取的 prompt 包含了对话原文
-    long_term_prompt = captured_prompts[1]
-    assert "fitbit" in long_term_prompt.lower()
-    # 由于 LLM 返回的是 event JSON 而非 profile/preference/procedure 格式，save_item 不会被调用
+    assert len(captured_prompts) == 1
+    assert "fitbit" in captured_prompts[0].lower()
     harness._memory_port.save_item.assert_not_awaited()
 
 @pytest.mark.asyncio

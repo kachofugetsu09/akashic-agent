@@ -1,9 +1,10 @@
 from __future__ import annotations
 from typing import Any, cast
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
@@ -22,11 +23,20 @@ from core.memory.engine import (
     RememberRequest,
     RememberResult,
 )
-from core.memory.events import TurnIngested
+from core.memory.events import ConsolidationCommitted, TurnIngested
+from core.memory.markdown import (
+    ConsolidateRequest,
+    ConsolidateResult,
+    MarkdownMemoryMaintenance,
+    MarkdownMemoryStore,
+    MemoryLifecycleBindRequest,
+)
 
 
 def _make_default_engine(
     *,
+    config=None,
+    provider=None,
     retriever=None,
     memorizer=None,
     tagger=None,
@@ -34,12 +44,11 @@ def _make_default_engine(
     event_publisher=None,
 ):
     engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
-    engine._config = None
+    engine._config = config or SimpleNamespace(model="lm")
     engine._workspace = Path(".")
-    engine._provider = None
+    engine._provider = provider
     engine._light_provider = None
     engine._light_model = ""
-    engine._v1_store = None
     engine._v2_store = None
     engine._embedder = None
     engine._memorizer = memorizer
@@ -47,10 +56,18 @@ def _make_default_engine(
     engine._tagger = tagger
     engine._post_response_worker = post_response_worker
     engine._event_bus = event_publisher
-    engine._consolidation = None
     engine.closeables = []
-    engine._wire_post_response_events()
+    engine._wire_memory2_events()
     return engine
+
+
+async def _drain_maintenance(maintenance: object) -> None:
+    for _ in range(5):
+        tasks = list(getattr(maintenance, "_maintenance_tasks").values())
+        if not tasks:
+            return
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
 
 
 async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
@@ -262,6 +279,161 @@ async def test_default_memory_engine_respects_skip_post_memory_event_flag():
     await event_bus.aclose()
 
 
+async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
+    event_bus = EventBus()
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}],
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(Path(".")),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=20,
+        event_bus=event_bus,
+    )
+    maintenance.refresh_recent_turns = AsyncMock()
+    save_session = AsyncMock()
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=save_session,
+        )
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="hi",
+            persisted_user_message="hi",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    await _drain_maintenance(maintenance)
+
+    maintenance.refresh_recent_turns.assert_awaited_once()
+    save_session.assert_not_awaited()
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_consolidates_ready_session_from_lifecycle():
+    event_bus = EventBus()
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}] * 31,
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(Path(".")),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=20,
+        event_bus=event_bus,
+    )
+    maintenance._consolidate_unlocked = AsyncMock(
+        return_value=ConsolidateResult(trace={"mode": "markdown"})
+    )
+    save_session = AsyncMock()
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=save_session,
+        )
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="hi",
+            persisted_user_message="hi",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    await _drain_maintenance(maintenance)
+
+    maintenance._consolidate_unlocked.assert_awaited_once()
+    save_session.assert_awaited_once_with(session)
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_serializes_lifecycle_maintenance():
+    event_bus = EventBus()
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}],
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(Path(".")),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=20,
+        event_bus=event_bus,
+    )
+    active = 0
+    max_active = 0
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _refresh_recent_turns(_request) -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if max_active == 1:
+            first_started.set()
+            await release_first.wait()
+        active -= 1
+
+    maintenance.refresh_recent_turns = AsyncMock(side_effect=_refresh_recent_turns)
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=AsyncMock(),
+        )
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="a",
+            persisted_user_message="a",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    await first_started.wait()
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="b",
+            persisted_user_message="b",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    release_first.set()
+    await _drain_maintenance(maintenance)
+
+    assert max_active == 1
+    assert maintenance.refresh_recent_turns.await_count == 2
+    await event_bus.aclose()
+
+
 async def test_default_memory_engine_remember_uses_memorizer():
     memorizer = SimpleNamespace(
         save_item_with_supersede=AsyncMock(return_value="new:memu-1")
@@ -304,6 +476,37 @@ async def test_default_memory_engine_remember_merged_keeps_target_id_alive():
     assert result.item_id == "memu-1"
     assert result.write_status == "merged"
     assert result.superseded_ids == []
+
+
+async def test_default_memory_engine_consumes_markdown_consolidation_event():
+    memorizer = SimpleNamespace(
+        save_from_consolidation=AsyncMock(),
+        save_item_with_supersede=AsyncMock(return_value="new:memu-1"),
+    )
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=SimpleNamespace(
+                content='{"profile":[{"summary":"用户买了 Zigbee 网关","category":"purchase","emotional_weight":4}],"preference":[],"procedure":[]}'
+            )
+        )
+    )
+    engine = _make_default_engine(
+        provider=cast(Any, provider),
+        memorizer=cast(Any, memorizer),
+    )
+
+    await engine._on_consolidation_committed(
+        ConsolidationCommitted(
+            history_entry_payloads=[("[2026-03-15 10:00] 用户聊了 Zigbee", 6)],
+            source_ref='["m1"]',
+            scope_channel="cli",
+            scope_chat_id="1",
+            conversation="USER: 我买了 Zigbee 网关",
+        )
+    )
+
+    memorizer.save_from_consolidation.assert_awaited_once()
+    memorizer.save_item_with_supersede.assert_awaited_once()
 
 
 async def test_default_memory_engine_ingest_accepts_conversation_batch_messages():
@@ -543,10 +746,6 @@ def test_build_memory_runtime_exposes_default_memory_engine(
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    class _ProfileFactExtractor:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
     class _PostResponseMemoryWorker:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -561,10 +760,6 @@ def test_build_memory_runtime_exposes_default_memory_engine(
     monkeypatch.setattr("memory2.memorizer.Memorizer", _Memorizer)
     monkeypatch.setattr("memory2.retriever.Retriever", _Retriever)
     monkeypatch.setattr("memory2.procedure_tagger.ProcedureTagger", _ProcedureTagger)
-    monkeypatch.setattr(
-        "memory2.profile_extractor.ProfileFactExtractor",
-        _ProfileFactExtractor,
-    )
 
     runtime = build_memory_runtime(
         config=Config(

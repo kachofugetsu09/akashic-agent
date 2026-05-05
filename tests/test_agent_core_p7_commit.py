@@ -17,9 +17,6 @@ from agent.core.runtime_support import TurnRunResult
 from agent.core.types import ContextBundle
 from agent.lifecycle.facade import TurnLifecycle
 from agent.lifecycle.types import AfterReasoningCtx
-from agent.looping.lifecycle_consumers import (
-    register_turn_committed_consumers,
-)
 from bootstrap.wiring import wire_turn_lifecycle
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
@@ -64,71 +61,6 @@ class _DummySession:
 
 
 @pytest.mark.asyncio
-async def test_commit_fanout_enqueues_recent_before_return():
-    session = _DummySession("telegram:trace")
-    session_manager = SimpleNamespace(get_or_create=MagicMock(return_value=session))
-    event_bus = EventBus()
-    release_recent = asyncio.Event()
-
-    async def _refresh_recent_turns(*, session) -> None:
-        await release_recent.wait()
-
-    async def _engine_refresh_recent_turns(request) -> None:
-        await _refresh_recent_turns(session=request.session)
-
-    register_turn_committed_consumers(
-        event_bus=event_bus,
-        session_manager=cast(Any, session_manager),
-        scheduler=cast(Any, SimpleNamespace(schedule_consolidation=MagicMock())),
-        memory_engine=cast(
-            Any,
-            SimpleNamespace(
-                refresh_recent_turns=AsyncMock(
-                    side_effect=_engine_refresh_recent_turns
-                )
-            ),
-        ),
-    )
-
-    await event_bus.emit(
-        TurnCommitted(
-            session_key="telegram:trace",
-            channel="telegram",
-            chat_id="trace",
-            input_message="你好",
-            persisted_user_message="你好",
-            assistant_response="收到",
-            tools_used=[],
-            thinking=None,
-            raw_reply="收到",
-            meme_tag=None,
-            meme_media_count=0,
-            tool_chain_raw=[],
-            tool_call_groups=[],
-            post_reply_budget={
-                "history_window": 500,
-                "history_messages": 1,
-                "history_chars": 12,
-                "history_tokens": 4,
-                "prompt_tokens": 3,
-                "next_turn_baseline_tokens": 1,
-            },
-            react_stats={},
-        )
-    )
-
-    recent_tasks = [
-        task
-        for task in asyncio.all_tasks()
-        if task.get_name() == "recent_context:telegram:trace"
-    ]
-    assert recent_tasks
-    release_recent.set()
-    await asyncio.gather(*recent_tasks)
-    await event_bus.aclose()
-
-
-@pytest.mark.asyncio
 async def test_context_store_commit_persists_commits_and_dispatches():
     order: list[str] = []
     session = _DummySession("telegram:123")
@@ -144,15 +76,6 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     event_bus.on(
         TurnCommitted,
         lambda event: order.append("committed") or committed_events.append(event),
-    )
-    register_turn_committed_consumers(
-        event_bus=event_bus,
-        session_manager=cast(Any, session_manager),
-        scheduler=cast(Any, SimpleNamespace(schedule_consolidation=MagicMock())),
-        memory_engine=cast(
-            Any,
-            SimpleNamespace(refresh_recent_turns=AsyncMock()),
-        ),
     )
 
     context_store = SimpleNamespace(

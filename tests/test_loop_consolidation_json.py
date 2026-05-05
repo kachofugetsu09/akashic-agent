@@ -2,7 +2,7 @@ from typing import Any, cast
 import json
 from types import SimpleNamespace
 
-from agent.looping.consolidation import (
+from core.memory.markdown import (
     _build_consolidation_source_ref,
     _format_conversation_for_consolidation,
     _format_conversation_for_recent_context,

@@ -61,9 +61,8 @@ def test_agent_core_runtime_support_skips_always_on_and_tool_search():
 def test_agent_core_runtime_support_service_types_hold_objects():
     llm = LLMServices(provider=object(), light_provider=object())
     memory = MemoryServices(engine=object())
-    config = MemoryConfig(window=12, top_k_history=3)
+    config = MemoryConfig(window=12)
 
     assert llm.provider is not None
     assert memory.engine is not None
     assert config.window == 12
-    assert config.top_k_history == 3

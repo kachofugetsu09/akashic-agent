@@ -392,12 +392,14 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
 def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     observed: dict[str, object] = {}
     fake_context = object()
+    markdown_store = object()
+    markdown_maintenance = SimpleNamespace(bind_lifecycle=lambda request: None)
 
     monkeypatch.setattr(
         "bootstrap.tools.resolve_context_factory",
         lambda name: (
-            lambda workspace, memory_engine: observed.update(
-                {"name": name, "workspace": workspace, "memory_engine": memory_engine}
+            lambda workspace, memory_store: observed.update(
+                {"name": name, "workspace": workspace, "memory_store": memory_store}
             )
             or fake_context
         ),
@@ -417,15 +419,31 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         provider=cast(Any, object()),
         light_provider=None,
         tools=ToolRegistry(),
-        session_manager=cast(Any, SimpleNamespace()),
+        session_manager=cast(
+            Any,
+            SimpleNamespace(
+                get_or_create=lambda key: None,
+                save_async=lambda session: None,
+            ),
+        ),
         presence=cast(Any, None),
         processing_state=cast(Any, SimpleNamespace()),
         event_bus=EventBus(),
-        memory_runtime=cast(Any, SimpleNamespace(engine=object())),
-    )
+        memory_runtime=cast(
+            Any,
+                SimpleNamespace(
+                    engine=object(),
+                    markdown=SimpleNamespace(
+                        store=markdown_store,
+                        maintenance=markdown_maintenance,
+                    ),
+                ),
+            ),
+        )
 
     assert observed["name"] == "default"
     assert observed["workspace"] == tmp_path
+    assert observed["memory_store"] is markdown_store
     assert deps.context is fake_context
 
 
