@@ -119,24 +119,6 @@ class ForgetResult:
 
 
 @dataclass(frozen=True)
-class ConsolidateRequest:
-    session: object
-    archive_all: bool = False
-    force: bool = False
-
-
-@dataclass
-class ConsolidateResult:
-    consolidated_count: int = 0
-    trace: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class RefreshRecentTurnsRequest:
-    session: object
-
-
-@dataclass(frozen=True)
 class InterestRetrievalRequest:
     query: str
     scope: MemoryScope = field(default_factory=MemoryScope)
@@ -170,26 +152,8 @@ class ExplicitRetrievalResult:
 
 
 @runtime_checkable
-class MemoryProfileApi(Protocol):
-    def read_long_term(self) -> str: ...
-
-    def write_long_term(self, content: str) -> None: ...
-
-    def read_self(self) -> str: ...
-
-    def write_self(self, content: str) -> None: ...
-
-    def read_recent_history(self, *, max_chars: int = 0) -> str: ...
-
-    def read_recent_context(self) -> str: ...
-
-    def write_recent_context(self, content: str) -> None: ...
-
-    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None: ...
-
-    def get_memory_context(self) -> str: ...
-
-    def has_long_term_memory(self) -> bool: ...
+class MemoryIngestApi(Protocol):
+    async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult: ...
 
 
 @runtime_checkable
@@ -214,52 +178,6 @@ class MemoryWriteApi(Protocol):
     async def forget(self, request: ForgetRequest) -> ForgetResult: ...
 
     def reinforce_items_batch(self, ids: list[str]) -> None: ...
-
-
-@runtime_checkable
-class MemoryMaintenanceApi(Protocol):
-    async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult: ...
-
-    async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult: ...
-
-    async def refresh_recent_turns(
-        self, request: RefreshRecentTurnsRequest
-    ) -> None: ...
-
-    def read_pending(self) -> str: ...
-
-    def append_pending(self, facts: str) -> None: ...
-
-    def append_pending_once(
-        self,
-        facts: str,
-        source_ref: str,
-        kind: str = "pending",
-    ) -> bool: ...
-
-    def snapshot_pending(self) -> str: ...
-
-    def commit_pending_snapshot(self) -> None: ...
-
-    def rollback_pending_snapshot(self) -> None: ...
-
-    def append_history(self, entry: str) -> None: ...
-
-    def append_history_once(
-        self,
-        entry: str,
-        source_ref: str,
-        kind: str = "history_entry",
-    ) -> bool: ...
-
-    def append_journal(
-        self,
-        date_str: str,
-        entry: str,
-        *,
-        source_ref: str = "",
-        kind: str = "journal",
-    ) -> bool: ...
 
 
 @runtime_checkable
@@ -329,10 +247,9 @@ class MemoryAdminApi(Protocol):
 
 @runtime_checkable
 class MemoryEngine(
-    MemoryProfileApi,
+    MemoryIngestApi,
     MemoryRetrievalApi,
     MemoryWriteApi,
-    MemoryMaintenanceApi,
     MemoryAdminApi,
     Protocol,
 ):

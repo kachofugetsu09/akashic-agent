@@ -52,3 +52,12 @@ class TurnIngested:
     assistant_response: str
     tool_chain: list[dict[str, object]]
     source_ref: str
+
+
+@dataclass(frozen=True)
+class ConsolidationCommitted:
+    history_entry_payloads: list[tuple[str, int]]
+    source_ref: str
+    scope_channel: str
+    scope_chat_id: str
+    conversation: str
