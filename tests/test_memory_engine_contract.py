@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
-from agent.config_models import Config, MemoryV2Config
+from agent.config_models import Config, MemoryConfig
 from agent.tools.registry import ToolRegistry
 from bootstrap.memory import build_memory_runtime
-from core.memory.default_engine import DefaultMemoryEngine
+from plugins.default_memory.engine import DefaultMemoryEngine
 from core.memory.engine import (
     EngineProfile,
     MemoryCapability,
@@ -34,6 +34,7 @@ from core.memory.markdown import (
     MarkdownMemoryStore,
     MemoryLifecycleBindRequest,
 )
+from core.memory.plugin import MemoryPluginRuntime
 
 
 def _make_default_engine(
@@ -688,7 +689,7 @@ def test_default_memory_engine_descriptor_keeps_messages_capability_only():
     assert MemoryCapability.INGEST_TEXT not in descriptor.capabilities
 
 
-def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: Path):
+def test_build_memory_runtime_uses_memory_plugin(monkeypatch, tmp_path: Path):
     import bootstrap.memory as memory_module
 
     monkeypatch.setattr(
@@ -697,44 +698,22 @@ def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: 
         lambda *args, **kwargs: None,
     )
 
-    class _MemoryStore:
-        def __init__(self, workspace):
-            self.workspace = workspace
-
-    class _SkillsLoader:
-        def __init__(self, workspace):
-            self.workspace = workspace
-
-        def list_skills(self, filter_unavailable=False):
-            return [{"name": "demo"}]
-
-    class _WriteFileTool:
-        pass
-
-    class _EditFileTool:
-        pass
-
-    class _MemorizeTool:
-        def __init__(self, engine):
-            self.engine = engine
-
     captured: dict[str, object] = {}
 
     class _CustomEngine:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
         def describe(self):
             return SimpleNamespace(name="custom")
 
-    monkeypatch.setattr("agent.memory.MemoryStore", _MemoryStore)
-    monkeypatch.setattr("agent.skills.SkillsLoader", _SkillsLoader)
-    monkeypatch.setattr("agent.tools.memorize.MemorizeTool", _MemorizeTool)
-    monkeypatch.setattr("agent.tools.filesystem.WriteFileTool", _WriteFileTool)
-    monkeypatch.setattr("agent.tools.filesystem.EditFileTool", _EditFileTool)
+    class _CustomPlugin:
+        plugin_id = "custom"
+
+        def build(self, deps):
+            captured["deps"] = deps
+            return MemoryPluginRuntime(engine=cast(Any, _CustomEngine()))
+
     monkeypatch.setattr(
-        "bootstrap.wiring.resolve_memory_engine_builder",
-        lambda name: (lambda deps: _CustomEngine(deps=deps)),
+        "bootstrap.wiring.resolve_memory_plugin",
+        lambda name: _CustomPlugin(),
     )
 
     runtime = build_memory_runtime(
@@ -743,7 +722,7 @@ def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: 
             model="gpt-test",
             api_key="k",
             system_prompt="hi",
-            memory_v2=MemoryV2Config(enabled=True),
+            memory=MemoryConfig(enabled=True, engine="custom"),
         ),
         workspace=tmp_path,
         tools=ToolRegistry(),
@@ -843,7 +822,7 @@ def test_build_memory_runtime_exposes_default_memory_engine(
             model="gpt-test",
             api_key="k",
             system_prompt="hi",
-            memory_v2=MemoryV2Config(enabled=True),
+            memory=MemoryConfig(enabled=True),
         ),
         workspace=tmp_path,
         tools=ToolRegistry(),

@@ -1,0 +1,20 @@
+db_path = ""
+
+[retrieval]
+top_k_history = 8
+score_threshold = 0.45
+relative_delta = 0.2
+procedure_guard_enabled = true
+
+[retrieval.thresholds]
+procedure = 0.66
+preference = 0.5
+event = 0.5
+profile = 0.5
+
+[retrieval.inject]
+max_chars = 6000
+forced = 3
+procedure_preference = 4
+event_profile = 4
+line_max = 600

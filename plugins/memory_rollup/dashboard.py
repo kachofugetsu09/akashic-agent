@@ -11,7 +11,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryEngine
+    from agent.memory import MemoryStore
+    from core.memory.engine import MemoryAdminApi
 
 CandidateTag = Literal["identity", "preference"]
 
@@ -49,11 +50,13 @@ class MemoryRollupReader:
         self,
         plugin_dir: Path,
         workspace: Path,
-        memory: "MemoryEngine",
+        memory_admin: "MemoryAdminApi",
+        markdown_store: "MemoryStore",
     ) -> None:
         self.plugin_dir = plugin_dir
         self.workspace = workspace
-        self._memory = memory
+        self._memory = memory_admin
+        self._markdown = markdown_store
         self.cache_path = workspace / "memory" / "memory_rollup_candidates.json"
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -83,7 +86,7 @@ class MemoryRollupReader:
         # 1. 加载未被处理的 source items。
         source_items = self._load_source_items(limit=max(1, min(limit, 400)))
         # 2. 读当前 MEMORY.md 用于 overlap 检测。
-        memory_text = self._memory.read_long_term()
+        memory_text = self._markdown.read_long_term()
         # 3. 按 memory_type + 原文分组。
         groups = _group_items(source_items)
         # 4. 每组构建一个候选对象。
@@ -139,7 +142,7 @@ class MemoryRollupReader:
                 continue
             # 3. 写入 PENDING.md（去重追加）。
             line = f"- [{tag}] {content}"
-            ok = self._memory.append_pending_once(
+            ok = self._markdown.append_pending_once(
                 line,
                 source_ref=f"memory_rollup:{raw_item.id}",
                 kind="candidate",
@@ -157,7 +160,7 @@ class MemoryRollupReader:
             "appended_count": appended,
             "skipped_count": skipped,
             "committed": committed,
-            "pending_preview": self._memory.read_pending()[-4000:],
+            "pending_preview": self._markdown.read_pending()[-4000:],
         }
 
     def ignore(self, candidate_id: str) -> dict[str, Any]:
@@ -181,7 +184,7 @@ class MemoryRollupReader:
 
     def pending_preview(self) -> str:
         """返回 PENDING.md 末尾 4000 字符预览。"""
-        return self._memory.read_pending()[-4000:]
+        return self._markdown.read_pending()[-4000:]
 
     # ── Internal helpers ───────────────────────────────────────────
 
@@ -278,7 +281,10 @@ def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
     memory = getattr(app.state, "memory_admin", None)
     if memory is None:
         raise RuntimeError("memory engine unavailable")
-    reader = MemoryRollupReader(plugin_dir, workspace, memory)
+    markdown = getattr(app.state, "memory_store", None)
+    if markdown is None:
+        raise RuntimeError("markdown memory unavailable")
+    reader = MemoryRollupReader(plugin_dir, workspace, memory, markdown)
 
     @app.get("/api/dashboard/memory-rollup/overview")
     def get_overview() -> dict[str, Any]:

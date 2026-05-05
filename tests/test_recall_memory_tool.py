@@ -14,7 +14,7 @@ import agent.tools.recall_memory as recall_memory_module
 import memory2.retriever as retriever_module
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
-from core.memory.default_engine import DefaultMemoryEngine
+from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
 from memory2.store import MemoryStore2

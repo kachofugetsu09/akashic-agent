@@ -5,6 +5,7 @@ import json
 import re
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, cast
 
 from agent.lifecycle.types import AfterToolResultCtx, BeforeTurnCtx
@@ -34,7 +35,10 @@ class RecallInspector(Plugin):
     async def initialize(self) -> None:
         self._lock = threading.RLock()
         self._active_turns: dict[str, str] = {}
-        self._data_path = self.context.plugin_dir / ".data" / "recall_turns.jsonl"
+        self._data_path = _data_path(
+            plugin_dir=self.context.plugin_dir,
+            workspace=self.context.workspace,
+        )
         self._data_path.parent.mkdir(parents=True, exist_ok=True)
 
     def before_turn_modules_late(self) -> list[object]:
@@ -111,6 +115,12 @@ class RecallInspector(Plugin):
 def _turn_id(session_key: str, timestamp: str, content: str) -> str:
     raw = f"{session_key}\n{timestamp}\n{content}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _data_path(*, plugin_dir: Path, workspace: Path | None) -> Path:
+    if workspace is not None:
+        return workspace / "observe" / "recall_inspector.jsonl"
+    return plugin_dir / ".data" / "recall_turns.jsonl"
 
 
 def _now_iso() -> str:

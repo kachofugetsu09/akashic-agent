@@ -74,6 +74,46 @@ async def test_recall_inspector_records_context_and_recall(tmp_path: Path) -> No
     assert items[0]["recall_memory_calls"][0]["items"][0]["id"] == "m3"
 
 
+@pytest.mark.asyncio
+async def test_recall_inspector_uses_workspace_data_path(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins" / "recall_inspector"
+    workspace = tmp_path / "workspace"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.py").write_text("", encoding="utf-8")
+
+    plugin = RecallInspector()
+    plugin.context = PluginContext(
+        event_bus=None,
+        tool_registry=None,
+        plugin_id="recall_inspector",
+        plugin_dir=plugin_dir,
+        kv_store=PluginKVStore(plugin_dir / ".kv.json"),
+        workspace=workspace,
+    )
+    await plugin.initialize()
+
+    plugin.record_context_prepare(
+        BeforeTurnCtx(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            content="测试召回记录隔离",
+            timestamp=datetime(2026, 5, 1, tzinfo=timezone.utc),
+            skill_names=[],
+            retrieved_memory_block="",
+            retrieval_trace_raw=None,
+            history_messages=(),
+        )
+    )
+
+    reader = RecallInspectorDashboardReader(plugin_dir, workspace)
+    _, total = reader.list_turns()
+
+    assert total == 1
+    assert (workspace / "observe" / "recall_inspector.jsonl").exists()
+    assert not (plugin_dir / ".data" / "recall_turns.jsonl").exists()
+
+
 def test_recall_inspector_reader_reports_unavailable(tmp_path: Path) -> None:
     reader = RecallInspectorDashboardReader(tmp_path)
 

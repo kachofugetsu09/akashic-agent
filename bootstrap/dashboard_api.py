@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from agent.memory import MemoryStore
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
 from core.common.timekit import utcnow
@@ -623,6 +624,7 @@ def create_dashboard_app(
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
+    memory_store: MemoryStore | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
@@ -658,6 +660,7 @@ def create_dashboard_app(
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
+    app.state.memory_store = memory_store or MemoryStore(workspace)
     app.mount("/assets", StaticFiles(directory=static_dir), name="dashboard-assets")
 
     # Compile TypeScript plugin panels and mount plugin routes
@@ -1249,6 +1252,7 @@ def run_dashboard_api(
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
+    memory_store: MemoryStore | None = None,
 ) -> None:
     server = uvicorn.Server(
         _build_dashboard_uvicorn_config(
@@ -1258,6 +1262,7 @@ def run_dashboard_api(
             manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
+            memory_store=memory_store,
         )
     )
     server.run()
@@ -1271,6 +1276,7 @@ def _build_dashboard_uvicorn_config(
     manual_consolidator: ManualConsolidator | None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
+    memory_store: MemoryStore | None = None,
 ) -> uvicorn.Config:
     config = uvicorn.Config(
         create_dashboard_app(
@@ -1278,6 +1284,7 @@ def _build_dashboard_uvicorn_config(
             manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
+            memory_store=memory_store,
         ),
         host=host,
         port=port,
@@ -1295,6 +1302,7 @@ def build_dashboard_server(
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
+    memory_store: MemoryStore | None = None,
 ) -> uvicorn.Server:
     config = _build_dashboard_uvicorn_config(
         workspace=workspace,
@@ -1303,5 +1311,6 @@ def build_dashboard_server(
         manual_consolidator=manual_consolidator,
         manual_memory_optimizer=manual_memory_optimizer,
         memory_admin=memory_admin,
+        memory_store=memory_store,
     )
     return uvicorn.Server(config)

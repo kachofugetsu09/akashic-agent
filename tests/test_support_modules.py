@@ -22,7 +22,7 @@ from agent.tools.web_search import WebSearchTool
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from core.common import timekit
-from core.memory.default_engine import DefaultMemoryEngine
+from plugins.default_memory.engine import DefaultMemoryEngine
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
 from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2

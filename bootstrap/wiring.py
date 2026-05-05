@@ -1,61 +1,42 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import importlib.util
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from agent.context import ContextBuilder
-from agent.config_models import Config
 from agent.lifecycle.facade import TurnLifecycle
-from agent.provider import LLMProvider
 from agent.tools.base import Tool
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider, SpawnToolsetProvider
 from bootstrap.toolsets.protocol import ToolsetProvider
 from bootstrap.toolsets.schedule import SchedulerToolsetProvider
-from core.memory.default_engine import DefaultMemoryEngine
-from core.net.http import SharedHttpResources
+from core.memory.plugin import MemoryPlugin
 
 if TYPE_CHECKING:
     from agent.looping.interrupt import TurnInterruptState
-    from bus.event_bus import EventBus
 
 
 ContextFactory = Callable[[Path, Any], Any]
 ToolsetProviderFactory = Callable[[], ToolsetProvider]
-
-
-@dataclass(frozen=True)
-class MemoryEngineBuildDeps:
-    config: Config
-    workspace: Path
-    provider: LLMProvider
-    light_provider: LLMProvider | None
-    http_resources: SharedHttpResources
-    event_publisher: "EventBus | None" = None
-
-
-MemoryEngineBuilder = Callable[[MemoryEngineBuildDeps], object]
+MemoryPluginFactory = Callable[[], MemoryPlugin]
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 _MEMORY_WIRING: dict[str, ToolsetProviderFactory] = {
     "default": MemoryToolsetProvider,
 }
 
 
-def _build_default_memory_engine(deps: MemoryEngineBuildDeps) -> DefaultMemoryEngine:
-    return DefaultMemoryEngine(
-        config=deps.config,
-        workspace=deps.workspace,
-        provider=deps.provider,
-        light_provider=deps.light_provider,
-        http_resources=deps.http_resources,
-        event_publisher=deps.event_publisher,
-    )
+def _build_default_memory_plugin() -> MemoryPlugin:
+    from plugins.default_memory.memory_plugin import MemoryPlugin as DefaultMemoryPlugin
+
+    return DefaultMemoryPlugin()
 
 
-_MEMORY_ENGINE_WIRING: dict[str, MemoryEngineBuilder] = {
-    "default": _build_default_memory_engine,
+_MEMORY_PLUGIN_WIRING: dict[str, MemoryPluginFactory] = {
+    "default": _build_default_memory_plugin,
 }
 _CONTEXT_WIRING: dict[str, ContextFactory] = {
     "default": lambda workspace, memory: ContextBuilder(workspace, memory=memory),
@@ -95,11 +76,49 @@ def resolve_memory_toolset_provider(name: str) -> ToolsetProvider:
     return _MEMORY_WIRING[name]()
 
 
-def resolve_memory_engine_builder(name: str) -> MemoryEngineBuilder:
-    if name not in _MEMORY_ENGINE_WIRING:
-        choices = ", ".join(sorted(_MEMORY_ENGINE_WIRING))
-        raise ValueError(f"未知 memory_engine wiring: {name}；可选值: {choices}")
-    return _MEMORY_ENGINE_WIRING[name]
+def resolve_memory_plugin(name: str) -> MemoryPlugin:
+    normalized = (name or "default").strip() or "default"
+    if normalized in _MEMORY_PLUGIN_WIRING:
+        return _MEMORY_PLUGIN_WIRING[normalized]()
+    plugin = _load_memory_plugin_from_dir(normalized)
+    if plugin is None:
+        choices = ", ".join(sorted(_MEMORY_PLUGIN_WIRING))
+        raise ValueError(f"未知 memory engine: {normalized}；可选值: {choices}")
+    return plugin
+
+
+def register_memory_plugin(
+    name: str,
+    factory: MemoryPluginFactory,
+) -> None:
+    normalized = name.strip()
+    if not normalized:
+        raise ValueError("memory engine 名称不能为空")
+    _MEMORY_PLUGIN_WIRING[normalized] = factory
+
+
+def _load_memory_plugin_from_dir(name: str) -> MemoryPlugin | None:
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError(f"memory engine 名称非法: {name}")
+    plugin_path = _PROJECT_ROOT / "plugins" / name / "memory_plugin.py"
+    if not plugin_path.exists():
+        return None
+    module_name = f"akasic_memory_plugin_{name}"
+    spec = importlib.util.spec_from_file_location(module_name, plugin_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {plugin_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    if hasattr(module, "create_memory_plugin"):
+        plugin = module.create_memory_plugin()
+    elif hasattr(module, "MemoryPlugin"):
+        plugin = module.MemoryPlugin()
+    else:
+        raise ValueError(f"{plugin_path} 缺少 create_memory_plugin 或 MemoryPlugin")
+    if not isinstance(plugin, MemoryPlugin):
+        raise TypeError(f"{plugin_path} 未返回 MemoryPlugin")
+    return plugin
 
 
 def resolve_context_factory(name: str) -> ContextFactory:

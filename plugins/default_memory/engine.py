@@ -43,11 +43,12 @@ from memory2.query_builder import build_procedure_queries
 from memory2.retriever import Retriever
 from memory2.rule_schema import build_procedure_rule_schema
 from memory2.store import MemoryStore2
+from plugins.default_memory.config import DefaultMemoryConfig, resolve_memory_db_path
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
 
-logger = logging.getLogger("memory.default_engine")
+logger = logging.getLogger("plugins.default_memory.engine")
 
 _HYPOTHESIS_MAX_TOKENS = 80
 _HYPOTHESIS_TIMEOUT_S = 3.0
@@ -309,13 +310,14 @@ class DefaultMemoryEngine:
                 MemoryCapability.SEMANTICS_RICH_MEMORY,
             }
         ),
-        notes={"owner": "core.memory.default_engine"},
+        notes={"owner": "plugins.default_memory.engine"},
     )
 
     def __init__(
         self,
         *,
         config: Config,
+        default_config: DefaultMemoryConfig,
         workspace: Path,
         provider: LLMProvider,
         light_provider: LLMProvider | None = None,
@@ -323,6 +325,7 @@ class DefaultMemoryEngine:
         event_publisher: "EventBus | None" = None,
     ) -> None:
         self._config = config
+        self._default_config = default_config
         self._workspace = workspace
         self._provider = provider
         self._light_provider = light_provider or provider
@@ -336,45 +339,43 @@ class DefaultMemoryEngine:
         self._event_bus = event_publisher
         self.closeables: list[object] = []
 
-        if not config.memory_v2.enabled:
-            return
-
-        db_path = (
-            Path(config.memory_v2.db_path)
-            if config.memory_v2.db_path
-            else workspace / "memory" / "memory2.db"
+        db_path = resolve_memory_db_path(
+            workspace=workspace,
+            default_config=default_config,
         )
+        embedding = config.memory.embedding
+        retrieval = default_config.retrieval
         self._v2_store = MemoryStore2(db_path)
         self._embedder = Embedder(
-            base_url=config.memory_v2.base_url
+            base_url=embedding.base_url
             or config.light_base_url
             or config.base_url
             or "",
-            api_key=config.memory_v2.api_key
+            api_key=embedding.api_key
             or config.light_api_key
             or config.api_key,
-            model=config.memory_v2.embed_model,
+            model=embedding.model,
             requester=http_resources.external_default,
         )
         self._memorizer = Memorizer(self._v2_store, self._embedder)
         self._retriever = Retriever(
             self._v2_store,
             self._embedder,
-            top_k=config.memory_v2.retrieve_top_k,
-            score_threshold=config.memory_v2.score_threshold,
+            top_k=retrieval.top_k_history,
+            score_threshold=retrieval.score_threshold,
             score_thresholds={
-                "procedure": config.memory_v2.score_threshold_procedure,
-                "preference": config.memory_v2.score_threshold_preference,
-                "event": config.memory_v2.score_threshold_event,
-                "profile": config.memory_v2.score_threshold_profile,
+                "procedure": retrieval.thresholds.procedure,
+                "preference": retrieval.thresholds.preference,
+                "event": retrieval.thresholds.event,
+                "profile": retrieval.thresholds.profile,
             },
-            relative_delta=config.memory_v2.relative_delta,
-            inject_max_chars=config.memory_v2.inject_max_chars,
-            inject_max_forced=config.memory_v2.inject_max_forced,
-            inject_max_procedure_preference=config.memory_v2.inject_max_procedure_preference,
-            inject_max_event_profile=config.memory_v2.inject_max_event_profile,
-            inject_line_max=config.memory_v2.inject_line_max,
-            procedure_guard_enabled=config.memory_v2.procedure_guard_enabled,
+            relative_delta=retrieval.relative_delta,
+            inject_max_chars=retrieval.inject.max_chars,
+            inject_max_forced=retrieval.inject.forced,
+            inject_max_procedure_preference=retrieval.inject.procedure_preference,
+            inject_max_event_profile=retrieval.inject.event_profile,
+            inject_line_max=retrieval.inject.line_max,
+            procedure_guard_enabled=retrieval.procedure_guard_enabled,
             hotness_alpha=0.20,
         )
         skills_loader = SkillsLoader(workspace)
@@ -396,13 +397,15 @@ class DefaultMemoryEngine:
         self.closeables = [self._v2_store, self._embedder]
 
     @classmethod
-    def ensure_workspace_storage(cls, *, config: Config, workspace: Path) -> None:
-        if not config.memory_v2.enabled:
-            return
-        db_path = (
-            Path(config.memory_v2.db_path)
-            if config.memory_v2.db_path
-            else workspace / "memory" / "memory2.db"
+    def ensure_workspace_storage(
+        cls,
+        *,
+        default_config: DefaultMemoryConfig,
+        workspace: Path,
+    ) -> None:
+        db_path = resolve_memory_db_path(
+            workspace=workspace,
+            default_config=default_config,
         )
         store = MemoryStore2(db_path)
         store.close()

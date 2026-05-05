@@ -16,8 +16,9 @@ from agent.tools.registry import ToolRegistry
 from bootstrap.tools import _build_loop_deps, build_registered_tools
 from bootstrap.wiring import (
     wire_turn_lifecycle,
+    register_memory_plugin,
     resolve_context_factory,
-    resolve_memory_engine_builder,
+    resolve_memory_plugin,
     resolve_memory_toolset_provider,
     resolve_toolset_provider,
 )
@@ -95,8 +96,126 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
 
     assert cfg.wiring.context == "default"
     assert cfg.wiring.memory == "default"
-    assert cfg.wiring.memory_engine == "default"
     assert cfg.wiring.toolsets == ["schedule", "mcp"]
+
+
+def test_config_load_reads_memory_engine_selector(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {"system_prompt": "s"},
+            "memory": {
+                "enabled": True,
+                "engine": "memu",
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.memory.enabled is True
+    assert cfg.memory.engine == "memu"
+
+
+def test_config_load_ignores_wiring_memory_engine(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {
+                "system_prompt": "s",
+                "wiring": {
+                    "memory_engine": "memu",
+                },
+            },
+            "memory": {
+                "enabled": True,
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.memory.enabled is True
+    assert cfg.memory.engine == ""
+
+
+def test_config_load_ignores_legacy_memory_v2_enabled(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {"system_prompt": "s"},
+            "memory_v2": {
+                "enabled": True,
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert not hasattr(cfg, "memory_v2")
+    assert cfg.memory.enabled is False
+    assert cfg.memory.engine == ""
+
+
+def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {"system_prompt": "s"},
+            "memory": {
+                "enabled": True,
+                "engine": "",
+                "embedding": {
+                    "model": "legacy-embedding",
+                    "api_key": "legacy-key",
+                },
+                "retrieval": {
+                    "score_threshold": 0.99,
+                    "thresholds": {"event": 0.99},
+                },
+                "hyde": {"enabled": True},
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.memory.enabled is True
+    assert cfg.memory.engine == ""
+    assert cfg.memory.embedding.model == "legacy-embedding"
+    assert cfg.memory.embedding.api_key == "legacy-key"
 
 
 def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
@@ -465,12 +584,12 @@ def test_wiring_error_messages_list_available_choices():
         raise AssertionError("resolve_memory_toolset_provider should fail for bad name")
 
     try:
-        resolve_memory_engine_builder("bad")
+        resolve_memory_plugin("bad")
     except ValueError as exc:
         assert "可选值" in str(exc)
         assert "default" in str(exc)
     else:
-        raise AssertionError("resolve_memory_engine_builder should fail for bad name")
+        raise AssertionError("resolve_memory_plugin should fail for bad name")
 
     try:
         resolve_toolset_provider("bad")
@@ -479,6 +598,41 @@ def test_wiring_error_messages_list_available_choices():
         assert "meta_common" in str(exc)
     else:
         raise AssertionError("resolve_toolset_provider should fail for bad name")
+
+
+def test_memory_plugin_registry_accepts_custom_engine(monkeypatch):
+    class _Plugin:
+        plugin_id = "custom"
+
+        def build(self, deps):
+            raise AssertionError("not used")
+
+    register_memory_plugin("custom", lambda: _Plugin())
+
+    assert resolve_memory_plugin("custom").plugin_id == "custom"
+
+
+def test_memory_plugin_resolver_loads_plugin_directory(monkeypatch, tmp_path: Path):
+    plugin_dir = tmp_path / "plugins" / "demo_memory"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "memory_plugin.py").write_text(
+        "\n".join(
+            [
+                "from core.memory.plugin import MemoryPluginRuntime",
+                "",
+                "class MemoryPlugin:",
+                "    plugin_id = 'demo_memory'",
+                "    def build(self, deps):",
+                "        raise AssertionError('not used')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    import bootstrap.wiring as wiring
+
+    monkeypatch.setattr(wiring, "_PROJECT_ROOT", tmp_path)
+
+    assert resolve_memory_plugin("demo_memory").plugin_id == "demo_memory"
 
 
 @pytest.mark.asyncio

@@ -143,6 +143,7 @@ class AppRuntime:
                 manual_consolidator=self.agent_loop,
                 manual_memory_optimizer=self._memory_optimizer,
                 memory_admin=self.memory_runtime.engine,
+                memory_store=self.memory_runtime.markdown.store,
             )
             self.dashboard_task = asyncio.create_task(
                 self.dashboard_server.serve(),

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import cast
 
 import click
+from plugins.default_memory.config import render_default_memory_config
 
 
 def _empty_str_list() -> list[str]:
@@ -212,6 +213,13 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
     toml_str = _render_config(answers)
     _ = config_path.write_text(toml_str, encoding="utf-8")
     _ok(f"{config_path} 已生成")
+    memory_config_path = _default_memory_local_config_path()
+    memory_config_path.parent.mkdir(parents=True, exist_ok=True)
+    _ = memory_config_path.write_text(
+        _render_default_memory_config(),
+        encoding="utf-8",
+    )
+    _ok(f"{memory_config_path} 已生成")
 
     _validate_config(config_path)
 
@@ -741,38 +749,22 @@ def _render_memory(a: WizardAnswers) -> str:
     return "\n".join([
         "[memory]",
         "enabled = true",
+        'engine = ""',
         "",
         "[memory.embedding]",
         f'model = "{a.embed_model}"',
         f'api_key = "{a.embed_api_key}"',
         f'base_url = "{a.embed_base_url}"',
         "",
-        "[memory.retrieval]",
-        "top_k_history = 8",
-        "score_threshold = 0.45",
-        "relative_delta = 0.2",
-        "route_intention = true",
-        "",
-        "[memory.retrieval.thresholds]",
-        "procedure = 0.66",
-        "preference = 0.5",
-        "event = 0.5",
-        "profile = 0.5",
-        "",
-        "[memory.retrieval.inject]",
-        "max_chars = 6000",
-        "line_max = 600",
-        "event_profile = 4",
-        "",
-        "[memory.gate]",
-        "llm_timeout_ms = 1600",
-        "max_tokens = 200",
-        "",
-        "[memory.hyde]",
-        "enabled = true",
-        "timeout_ms = 2000",
-        "",
     ])
+
+
+def _render_default_memory_config() -> str:
+    return render_default_memory_config()
+
+
+def _default_memory_local_config_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "plugins" / "default_memory" / "config.local.toml"
 
 
 def _render_proactive(a: WizardAnswers) -> str:

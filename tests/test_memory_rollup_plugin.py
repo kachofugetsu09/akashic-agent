@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from agent.memory import MemoryStore
 from bootstrap.dashboard_api import create_dashboard_app as _create_dashboard_app
-from core.memory.default_engine import DefaultMemoryEngine
+from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
 
 

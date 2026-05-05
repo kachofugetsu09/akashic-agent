@@ -1,6 +1,7 @@
 from typing import Any, cast
+import pytest
 from agent.tools.base import Tool
-from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from agent.tools.filesystem import ListDirTool, ReadFileTool
 from agent.tools.meta import (
     META_TOOLBOX_NAMES,
     build_meta_toolbox_prompt,
@@ -59,10 +60,18 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
         tools,
         forget_tool=cast(Any, _ForgetMemoryToolStub()),
         recall_tool=cast(Any, _RecallMemoryToolStub()),
-        write_file_tool=WriteFileTool(),
-        edit_file_tool=EditFileTool(),
     )
 
     always_on = tools.get_always_on_names()
     assert isinstance(push_tool, MessagePushTool)
     assert set(META_TOOLBOX_NAMES) - {"memorize"} <= always_on
+
+
+def test_register_memory_meta_tools_rejects_duplicate_names():
+    tools = ToolRegistry()
+    recall_tool = cast(Any, _RecallMemoryToolStub())
+
+    register_memory_meta_tools(tools, recall_tool=recall_tool)
+
+    with pytest.raises(ValueError, match="重复注册"):
+        register_memory_meta_tools(tools, recall_tool=cast(Any, _RecallMemoryToolStub()))

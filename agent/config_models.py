@@ -52,32 +52,17 @@ class ChannelsConfig:
 
 
 @dataclass
-class MemoryV2Config:
-    enabled: bool = False
-    db_path: str = ""
-    embed_model: str = "text-embedding-v3"
+class MemoryEmbeddingConfig:
+    model: str = "text-embedding-v3"
     api_key: str = ""
     base_url: str = ""
-    retrieve_top_k: int = 4
-    top_k_history: int = 4
-    top_k_procedure: int = 4
-    score_threshold: float = 0.45
-    score_threshold_procedure: float = 0.60
-    score_threshold_preference: float = 0.60
-    score_threshold_event: float = 0.62
-    score_threshold_profile: float = 0.62
-    relative_delta: float = 0.06
-    inject_max_chars: int = 1200
-    inject_max_forced: int = 3
-    inject_max_procedure_preference: int = 4
-    inject_max_event_profile: int = 2
-    inject_line_max: int = 180
-    route_intention_enabled: bool = False
-    procedure_guard_enabled: bool = True
-    gate_llm_timeout_ms: int = 800
-    gate_max_tokens: int = 96
-    hyde_enabled: bool = False
-    hyde_timeout_ms: int = 2000
+
+
+@dataclass
+class MemoryConfig:
+    enabled: bool = False
+    engine: str = ""
+    embedding: MemoryEmbeddingConfig = field(default_factory=MemoryEmbeddingConfig)
 
 
 @dataclass
@@ -101,7 +86,6 @@ class PeerAgentConfig:
 class WiringConfig:
     context: str = "default"
     memory: str = "default"
-    memory_engine: str = "default"
     toolsets: list[str] = field(
         default_factory=lambda: [
             "meta_common",
@@ -133,7 +117,7 @@ class Config:
     agent_model: str = ""
     agent_api_key: str = ""
     agent_base_url: str = ""
-    memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     fitbit: FitbitIntegrationConfig = field(default_factory=FitbitIntegrationConfig)
     multimodal: bool = True
     vl_model: str = ""
@@ -156,7 +140,8 @@ __all__ = [
     "ChannelsConfig",
     "Config",
     "FitbitIntegrationConfig",
-    "MemoryV2Config",
+    "MemoryConfig",
+    "MemoryEmbeddingConfig",
     "PeerAgentConfig",
     "QQChannelConfig",
     "QQBotChannelConfig",

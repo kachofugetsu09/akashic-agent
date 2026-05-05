@@ -6,7 +6,7 @@ from pathlib import Path
 
 from agent.config import Config
 from agent.memory import DEFAULT_SELF_MD, MemoryStore
-from core.memory.default_engine import DefaultMemoryEngine
+from bootstrap.memory import ensure_memory_plugin_storage
 from infra.persistence.json_store import save_json
 from proactive_v2.anyaction import QuotaStore
 from proactive_v2.loop import ProactiveLoop
@@ -128,7 +128,7 @@ def _ensure_workspace_directories(
 def _ensure_workspace_db_assets(
     workspace: Path,
     *,
-    memory_enabled: bool,
+    config: Config,
     summary: InitSummary,
 ) -> None:
     sessions_db = workspace / "sessions.db"
@@ -165,18 +165,18 @@ def _ensure_workspace_db_assets(
     else:
         summary.skipped.append(quota_path)
 
-    if memory_enabled:
-        memory2_db = workspace / "memory" / "memory2.db"
-        memory2_exists = memory2_db.exists()
-        config = Config(provider="", model="", api_key="", system_prompt="")
-        config.memory_v2.enabled = True
-        DefaultMemoryEngine.ensure_workspace_storage(config=config, workspace=workspace)
-        if not memory2_exists:
-            summary.created.append(memory2_db)
+    if config.memory.enabled:
+        storage_results = ensure_memory_plugin_storage(config, workspace)
+        if storage_results:
+            for path, existed in storage_results:
+                if existed:
+                    summary.skipped.append(path)
+                else:
+                    summary.created.append(path)
         else:
-            summary.skipped.append(memory2_db)
+            summary.notes.append("当前 memory engine 未声明 init 预创建逻辑，跳过语义记忆库。")
     else:
-        summary.notes.append("memory.enabled = false，未预创建 memory/memory2.db。")
+        summary.notes.append("memory.enabled = false，未预创建语义记忆库。")
 
 
 def _ensure_fitbit_assets(*, force: bool, summary: InitSummary) -> None:
@@ -208,7 +208,7 @@ def init_workspace(
     _ensure_workspace_directories(workspace, summary=summary)
     _ensure_workspace_db_assets(
         workspace,
-        memory_enabled=bool(config.memory_v2.enabled),
+        config=config,
         summary=summary,
     )
 
@@ -220,7 +220,7 @@ def init_workspace(
         f"1. 编辑 {config_path}，填写以下必填项：",
         "     [llm.main]  api_key = \"sk-...\"",
         "     [channels.telegram]  token = \"...\"   （或配置 QQ 频道）",
-        "     [memory.embedding]   api_key = \"sk-...\"  （通常和 llm.fast 同一个 key）",
+        "     [memory.embedding]  api_key = \"sk-...\"",
         "2. 运行 uv run python main.py 启动。",
         "3. 向 bot 发一条消息，确认对话正常后，可在 config.toml 开启 proactive。",
     ]

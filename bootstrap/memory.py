@@ -9,44 +9,77 @@ from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
 from core.memory.engine import MemoryEngine
 from core.memory.markdown import build_markdown_memory_runtime
+from core.memory.plugin import (
+    DisabledMemoryEngine,
+    MemoryPluginBuildDeps,
+    MemoryPluginRuntime,
+)
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
+    from core.memory.markdown import MarkdownMemoryRuntime
 
 
-# 统一 engine 构造入口，正常 runtime 和 dashboard 复用同一套 wiring。
-def _build_memory_engine(
+# 统一插件构造入口，正常 runtime 和 dashboard 复用同一套路由。
+def _build_memory_plugin_runtime(
     *,
     config: Config,
     workspace: Path,
     provider: LLMProvider,
     light_provider: LLMProvider | None,
     http_resources: SharedHttpResources,
+    markdown: "MarkdownMemoryRuntime",
     event_publisher: "EventBus | None" = None,
-) -> MemoryEngine:
-    from bootstrap.wiring import MemoryEngineBuildDeps, resolve_memory_engine_builder
+) -> MemoryPluginRuntime:
+    from bootstrap.wiring import resolve_memory_plugin
 
-    # 1. 根据配置选择 engine builder。
-    engine_builder = resolve_memory_engine_builder(
-        getattr(getattr(config, "wiring", None), "memory_engine", "default")
+    engine_name = (config.memory.engine or "").strip() or "default"
+    plugin = resolve_memory_plugin(engine_name)
+    return plugin.build(
+        MemoryPluginBuildDeps(
+            config=config,
+            workspace=workspace,
+            provider=provider,
+            light_provider=light_provider,
+            http_resources=http_resources,
+            event_publisher=event_publisher,
+            markdown=markdown,
+        )
     )
 
-    # 2. builder 只接收 engine 自建依赖需要的基础资源。
-    return cast(
-        MemoryEngine,
-        engine_builder(
-            MemoryEngineBuildDeps(
-                config=config,
-                workspace=workspace,
-                provider=provider,
-                light_provider=light_provider,
-                http_resources=http_resources,
-                event_publisher=event_publisher,
-            )
-        ),
-    )
+
+def _memory_plugin_enabled(config: Config) -> bool:
+    return bool(config.memory.enabled)
+
+
+def ensure_memory_plugin_storage(
+    config: Config,
+    workspace: Path,
+) -> list[tuple[Path, bool]]:
+    if not _memory_plugin_enabled(config):
+        return []
+    engine_name = (config.memory.engine or "").strip() or "default"
+    from bootstrap.wiring import resolve_memory_plugin
+
+    plugin = resolve_memory_plugin(engine_name)
+    initializer = getattr(plugin, "ensure_workspace_storage", None)
+    if not callable(initializer):
+        return []
+    result = initializer(config=config, workspace=workspace)
+    if isinstance(result, list):
+        normalized: list[tuple[Path, bool]] = []
+        for item in result:
+            if isinstance(item, tuple) and len(item) == 2:
+                raw_path, raw_existed = item
+                path = Path(str(raw_path))
+                normalized.append((path, bool(raw_existed)))
+            elif isinstance(item, str | Path):
+                path = Path(item)
+                normalized.append((path, path.exists()))
+        return normalized
+    return []
 
 
 def build_memory_runtime(
@@ -58,11 +91,6 @@ def build_memory_runtime(
     http_resources: SharedHttpResources,
     event_publisher: "EventBus | None" = None,
 ) -> MemoryRuntime:
-    from agent.tools.filesystem import EditFileTool, WriteFileTool
-    from agent.tools.forget_memory import ForgetMemoryTool
-    from agent.tools.memorize import MemorizeTool
-    from agent.tools.recall_memory import RecallMemoryTool
-
     # 1. markdown 是默认记忆层，任何 engine 都共用。
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
@@ -74,38 +102,32 @@ def build_memory_runtime(
         recent_context_model=config.light_model or config.model,
     )
 
-    # 2. 再构造 engine，工具层只拿协议对象。
-    engine = _build_memory_engine(
-        config=config,
-        workspace=workspace,
-        provider=provider,
-        light_provider=light_provider,
-        http_resources=http_resources,
-        event_publisher=event_publisher,
-    )
+    closeables: list[object] = []
+    if _memory_plugin_enabled(config):
+        plugin_runtime = _build_memory_plugin_runtime(
+            config=config,
+            workspace=workspace,
+            provider=provider,
+            light_provider=light_provider,
+            http_resources=http_resources,
+            markdown=markdown,
+            event_publisher=event_publisher,
+        )
+        engine = plugin_runtime.engine
+        closeables.extend(plugin_runtime.closeables)
+        register_memory_meta_tools(
+            tools,
+            memorize_tool=plugin_runtime.tools.memorize,
+            forget_tool=plugin_runtime.tools.forget_memory,
+            recall_tool=plugin_runtime.tools.recall_memory,
+        )
+    else:
+        engine = cast(MemoryEngine, DisabledMemoryEngine())
 
-    # 3. memory_v2 关闭时仍注册文件工具，但不暴露记忆读写工具。
-    memorize_tool: MemorizeTool | None = None
-    forget_tool: ForgetMemoryTool | None = None
-    recall_tool: RecallMemoryTool | None = None
-    if config.memory_v2.enabled:
-        memorize_tool = MemorizeTool(engine)
-        forget_tool = ForgetMemoryTool(engine)
-        recall_tool = RecallMemoryTool(facade=engine)
-
-    # 4. 工具执行时再通过 engine API 读写向量记忆。
-    register_memory_meta_tools(
-        tools,
-        memorize_tool=memorize_tool,
-        forget_tool=forget_tool,
-        recall_tool=recall_tool,
-        write_file_tool=WriteFileTool(),
-        edit_file_tool=EditFileTool(),
-    )
     return MemoryRuntime(
         markdown=markdown,
         engine=engine,
-        closeables=list(getattr(engine, "closeables", [])),
+        closeables=closeables,
     )
 
 
@@ -127,18 +149,25 @@ def build_memory_admin_runtime(
         recent_context_provider=light_provider or provider,
         recent_context_model=config.light_model or config.model,
     )
-    engine = _build_memory_engine(
-        config=config,
-        workspace=workspace,
-        provider=provider,
-        light_provider=light_provider,
-        http_resources=http_resources,
-        event_publisher=event_publisher,
-    )
+    closeables: list[object] = [http_resources]
+    if _memory_plugin_enabled(config):
+        plugin_runtime = _build_memory_plugin_runtime(
+            config=config,
+            workspace=workspace,
+            provider=provider,
+            light_provider=light_provider,
+            http_resources=http_resources,
+            markdown=markdown,
+            event_publisher=event_publisher,
+        )
+        engine = plugin_runtime.engine
+        closeables[:0] = plugin_runtime.closeables
+    else:
+        engine = cast(MemoryEngine, DisabledMemoryEngine())
     return MemoryRuntime(
         markdown=markdown,
         engine=engine,
-        closeables=[*list(getattr(engine, "closeables", [])), http_resources],
+        closeables=closeables,
     )
 
 
