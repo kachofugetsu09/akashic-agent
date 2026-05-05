@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from bus.event_bus import EventBus
+from bus.events_lifecycle import TurnCommitted
 from agent.config_models import Config, MemoryV2Config
 from agent.tools.registry import ToolRegistry
 from bootstrap.memory import build_memory_runtime
@@ -20,6 +22,7 @@ from core.memory.engine import (
     RememberRequest,
     RememberResult,
 )
+from core.memory.events import TurnIngested
 
 
 async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
@@ -190,6 +193,64 @@ async def test_default_memory_engine_ingest_delegates_to_post_worker():
     assert result.accepted is True
     assert result.raw["engine"] == "default"
     worker.run.assert_awaited_once()
+
+
+async def test_default_memory_engine_handles_turn_committed_via_event_bus():
+    event_bus = EventBus()
+    worker = SimpleNamespace(run=AsyncMock(), handle=AsyncMock())
+    _ = DefaultMemoryEngine(
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
+        event_publisher=event_bus,
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="以后用中文",
+            persisted_user_message="以后用中文",
+            assistant_response="好的",
+            tools_used=[],
+            tool_chain_raw=[{"text": "memo", "calls": []}],
+        )
+    )
+    await event_bus.drain()
+
+    worker.handle.assert_awaited_once()
+    event = worker.handle.await_args.args[0]
+    assert isinstance(event, TurnIngested)
+    assert event.session_key == "cli:1"
+    assert event.tool_chain == [{"text": "memo", "calls": []}]
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_respects_skip_post_memory_event_flag():
+    event_bus = EventBus()
+    worker = SimpleNamespace(run=AsyncMock(), handle=AsyncMock())
+    _ = DefaultMemoryEngine(
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
+        event_publisher=event_bus,
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="以后用中文",
+            persisted_user_message="以后用中文",
+            assistant_response="好的",
+            tools_used=[],
+            extra={"skip_post_memory": True},
+        )
+    )
+    await event_bus.drain()
+
+    worker.handle.assert_not_awaited()
+    await event_bus.aclose()
 
 
 async def test_default_memory_engine_remember_uses_memorizer():

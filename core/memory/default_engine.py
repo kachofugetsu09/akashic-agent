@@ -13,6 +13,7 @@ from agent.config_models import Config
 from agent.memory import MemoryStore
 from agent.provider import LLMProvider, LLMResponse
 from agent.skills import SkillsLoader
+from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import (
     ConsolidateRequest,
     ConsolidateResult,
@@ -34,6 +35,7 @@ from core.memory.engine import (
     RememberRequest,
     RememberResult,
 )
+from core.memory.events import TurnIngested
 from core.net.http import SharedHttpResources
 from memory2.embedder import Embedder
 from memory2.memorizer import Memorizer
@@ -45,7 +47,7 @@ from memory2.rule_schema import build_procedure_rule_schema
 from memory2.store import MemoryStore2
 
 if TYPE_CHECKING:
-    from bus.publisher import EventPublisher
+    from bus.event_bus import EventBus
 
 logger = logging.getLogger("memory.default_engine")
 
@@ -83,7 +85,7 @@ class DefaultMemoryEngine:
         provider: LLMProvider | None = None,
         light_provider: LLMProvider | None = None,
         http_resources: SharedHttpResources | None = None,
-        event_publisher: "EventPublisher | None" = None,
+        event_publisher: "EventBus | None" = None,
         retriever: Any | None = None,
         memorizer: Any | None = None,
         tagger: Any | None = None,
@@ -106,6 +108,8 @@ class DefaultMemoryEngine:
                 PostResponseMemoryWorker | None,
                 post_response_worker,
             )
+            self._event_bus = event_publisher
+            self._wire_post_response_events()
             self._consolidation = None
             self.closeables = []
             return
@@ -125,6 +129,7 @@ class DefaultMemoryEngine:
         self._retriever: Retriever | None = None
         self._tagger: ProcedureTagger | None = None
         self._post_response_worker: PostResponseMemoryWorker | None = None
+        self._event_bus = event_publisher
         self._consolidation = None
         self.closeables: list[object] = []
 
@@ -184,6 +189,7 @@ class DefaultMemoryEngine:
             light_model=self._light_model,
             event_publisher=event_publisher,
         )
+        self._wire_post_response_events()
         self.closeables = [self._v2_store, self._embedder]
 
         from agent.looping.consolidation import ConsolidationService
@@ -231,6 +237,7 @@ class DefaultMemoryEngine:
         engine._retriever = None
         engine._tagger = None
         engine._post_response_worker = None
+        engine._event_bus = None
         engine._consolidation = None
         engine.closeables = [engine._v2_store]
         return engine
@@ -310,6 +317,30 @@ class DefaultMemoryEngine:
             accepted=True,
             summary="delegated to post_response_worker",
             raw={"engine": self.DESCRIPTOR.name},
+        )
+
+    def _wire_post_response_events(self) -> None:
+        if self._event_bus is None or self._post_response_worker is None:
+            return
+        self._event_bus.on(TurnCommitted, self._on_turn_committed)
+        self._event_bus.on(TurnIngested, self._post_response_worker.handle)
+
+    def _on_turn_committed(self, event: TurnCommitted) -> None:
+        if bool((event.extra or {}).get("skip_post_memory")):
+            return
+        if self._event_bus is None:
+            return
+        source_ref = f"{event.session_key}@post_response"
+        self._event_bus.enqueue(
+            TurnIngested(
+                session_key=event.session_key,
+                channel=event.channel,
+                chat_id=event.chat_id,
+                user_message=event.input_message,
+                assistant_response=event.assistant_response,
+                tool_chain=cast(list[dict[str, object]], event.tool_chain_raw),
+                source_ref=source_ref,
+            )
         )
 
     async def remember(self, request: RememberRequest) -> RememberResult:

@@ -41,3 +41,14 @@ class MemoryWritten:
     summary: str | None = None
     superseded_ids: list[str] = field(default_factory=list)
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class TurnIngested:
+    session_key: str
+    channel: str
+    chat_id: str
+    user_message: str
+    assistant_response: str
+    tool_chain: list[dict[str, object]]
+    source_ref: str

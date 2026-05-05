@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import json_repair
 
 from agent.provider import LLMProvider
-from core.memory.events import MemoryWritten
+from core.memory.events import MemoryWritten, TurnIngested
 from memory2.memorizer import Memorizer
 from memory2.retriever import Retriever
 
@@ -49,6 +49,17 @@ class PostResponseMemoryWorker:
         self._current_run_session_key = ""
         self._current_run_channel = ""
         self._current_run_chat_id = ""
+
+    async def handle(self, event: TurnIngested) -> None:
+        await self.run(
+            user_msg=event.user_message,
+            agent_response=event.assistant_response,
+            tool_chain=list(event.tool_chain),
+            source_ref=event.source_ref,
+            session_key=event.session_key,
+            channel=event.channel,
+            chat_id=event.chat_id,
+        )
 
     async def run(
         self,
