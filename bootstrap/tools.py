@@ -58,7 +58,7 @@ from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
-from core.memory.engine import ConsolidateRequest, MemoryEngine
+from core.memory.engine import ConsolidateRequest
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
 from session.manager import SessionManager
@@ -154,14 +154,6 @@ class CoreRuntime:
             await self.peer_process_manager.shutdown_all()
 
 
-def _runtime_memory_engine(memory_runtime: MemoryRuntime) -> MemoryEngine:
-    # TODO(memory-engine-cleanup): 旧测试桩迁到 MemoryRuntime.engine 后删除 port 兼容读取。
-    engine = getattr(memory_runtime, "engine", None)
-    if engine is not None:
-        return engine
-    return getattr(memory_runtime, "port")
-
-
 def build_registered_tools(
     config: Config,
     workspace: Path,
@@ -237,7 +229,7 @@ def build_registered_tools(
                 vl_provider=vl_provider,
                 vl_model=getattr(config, "vl_model", ""),
                 bus=bus,
-                memory_engine=_runtime_memory_engine(memory_runtime),
+                memory_engine=memory_runtime.engine,
                 scheduler=scheduler,
                 event_publisher=event_publisher,
             ),
@@ -313,14 +305,14 @@ def _build_loop_deps(
 
     context = resolve_context_factory(wiring.context)(
         workspace,
-        _runtime_memory_engine(memory_runtime),
+        memory_runtime.engine,
     )
     if isinstance(context, ContextBuilder):
         context.set_media_capabilities(
             multimodal=bool(getattr(config, "multimodal", True)),
             vl_available=bool(getattr(config, "vl_model", "")),
         )
-    memory_engine = _runtime_memory_engine(memory_runtime)
+    memory_engine = memory_runtime.engine
     light = light_provider or provider
     llm_services = LLMServices(provider=provider, light_provider=light)
     memory_services = MemoryServices(engine=memory_engine)

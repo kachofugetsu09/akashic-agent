@@ -8,8 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
-from agent.memory import MemoryStore
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
 from agent.plugins.manager import PluginManager
 from agent.provider import LLMResponse, ToolCall
 from agent.subagent import SubAgent
@@ -22,7 +21,7 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
-from core.memory.port import DefaultMemoryPort
+from tests.memory_fakes import FakeMemoryEngine
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -146,7 +145,7 @@ def _make_agent_loop_with_tools(
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
         ),
         AgentLoopConfig(
             llm=LLMConfig(
@@ -620,7 +619,7 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=10)),
     )

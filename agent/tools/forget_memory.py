@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import Any
 
 from agent.tools.base import Tool
 from core.memory.engine import ForgetRequest, MemoryWriteApi
@@ -52,40 +52,14 @@ class ForgetMemoryTool(Tool):
                 ensure_ascii=False,
             )
 
-        if isinstance(self._memory, MemoryWriteApi):
-            result = await self._memory.forget(ForgetRequest(ids=clean_ids))
-            return json.dumps(
-                {
-                    "requested_ids": clean_ids,
-                    "superseded_ids": result.superseded_ids,
-                    "missing_ids": result.missing_ids,
-                    "count": len(result.superseded_ids),
-                    "items": result.items,
-                },
-                ensure_ascii=False,
-            )
-
-        # TODO(memory-engine-cleanup): 测试和旧插件改传 MemoryWriteApi 后删除直连 store 兼容壳。
-        store = cast(Any, self._memory)
-        items = store.get_items_by_ids(clean_ids)
-        found_ids = [str(item.get("id") or "") for item in items if item.get("id")]
-        if found_ids:
-            store.mark_superseded_batch(found_ids)
-        missing_ids = [item_id for item_id in clean_ids if item_id not in set(found_ids)]
+        result = await self._memory.forget(ForgetRequest(ids=clean_ids))
         return json.dumps(
             {
                 "requested_ids": clean_ids,
-                "superseded_ids": found_ids,
-                "missing_ids": missing_ids,
-                "count": len(found_ids),
-                "items": [
-                    {
-                        "id": item.get("id"),
-                        "memory_type": item.get("memory_type"),
-                        "summary": item.get("summary"),
-                    }
-                    for item in items
-                ],
+                "superseded_ids": result.superseded_ids,
+                "missing_ids": result.missing_ids,
+                "count": len(result.superseded_ids),
+                "items": result.items,
             },
             ensure_ascii=False,
         )

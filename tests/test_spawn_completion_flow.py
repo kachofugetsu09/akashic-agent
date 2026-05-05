@@ -4,13 +4,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
-from agent.memory import MemoryStore
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
 from agent.provider import LLMResponse
 from agent.tools.registry import ToolRegistry
 from bus.events import SpawnCompletionItem
 from bus.internal_events import SpawnCompletionEvent
-from core.memory.port import DefaultMemoryPort
+from tests.memory_fakes import FakeMemoryEngine
 from session.manager import SessionManager
 
 
@@ -35,7 +34,7 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
             tools=tools,
             session_manager=session_manager,
             workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
@@ -86,7 +85,7 @@ async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path
             tools=tools,
             session_manager=session_manager,
             workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )

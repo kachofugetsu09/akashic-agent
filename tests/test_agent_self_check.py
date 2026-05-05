@@ -10,9 +10,8 @@ from agent.core.passive_support import collect_skill_mentions
 from agent.core.passive_turn import DefaultReasoner
 from prompts.agent import build_current_message_time_envelope
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
-from agent.memory import MemoryStore
-from core.memory.port import DefaultMemoryPort
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, MemoryServices
+from tests.memory_fakes import FakeMemoryEngine
 
 
 def _make_loop(tmp_path: Path) -> AgentLoop:
@@ -23,7 +22,7 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
             tools=MagicMock(),
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
         ),
         AgentLoopConfig(),
     )

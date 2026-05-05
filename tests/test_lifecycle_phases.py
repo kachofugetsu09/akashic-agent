@@ -897,6 +897,7 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
         read_self=lambda: "",
         read_profile=lambda: "",
         read_recent_context=lambda: "",
+        get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))
     phase = Phase(
@@ -941,6 +942,7 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
         read_self=lambda: "",
         read_profile=lambda: "",
         read_recent_context=lambda: "",
+        get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))
     phase = Phase(
@@ -988,6 +990,7 @@ async def test_prompt_render_collects_export_slots(tmp_path):
         read_self=lambda: "",
         read_profile=lambda: "",
         read_recent_context=lambda: "",
+        get_memory_context=lambda: "",
     )
     context = ContextBuilder(tmp_path, memory=cast(Any, memory))
     phase = Phase(

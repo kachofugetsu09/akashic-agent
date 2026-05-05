@@ -336,7 +336,7 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
     class _MemoryProvider:
         def register(self, registry, deps):
             calls.append("memory")
-            runtime = SimpleNamespace(port=object())
+            runtime = SimpleNamespace(engine=object())
             return SimpleNamespace(extras={"memory_runtime": runtime})
 
     class _ToolsetProvider:
@@ -396,8 +396,8 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         "bootstrap.tools.resolve_context_factory",
         lambda name: (
-            lambda workspace, memory_port: observed.update(
-                {"name": name, "workspace": workspace, "memory_port": memory_port}
+            lambda workspace, memory_engine: observed.update(
+                {"name": name, "workspace": workspace, "memory_engine": memory_engine}
             )
             or fake_context
         ),
@@ -421,7 +421,7 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         presence=cast(Any, None),
         processing_state=cast(Any, SimpleNamespace()),
         event_bus=EventBus(),
-        memory_runtime=cast(Any, SimpleNamespace(port=object(), post_response_worker=None)),
+        memory_runtime=cast(Any, SimpleNamespace(engine=object())),
     )
 
     assert observed["name"] == "default"
@@ -508,7 +508,7 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         "bootstrap.tools.resolve_memory_toolset_provider",
         lambda name: SimpleNamespace(
             register=lambda registry, deps: SimpleNamespace(
-                extras={"memory_runtime": SimpleNamespace(port=object())}
+                extras={"memory_runtime": SimpleNamespace(engine=object())}
             )
         ),
     )

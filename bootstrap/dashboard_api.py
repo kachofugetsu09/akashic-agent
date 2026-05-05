@@ -6,12 +6,11 @@ from pathlib import Path
 import importlib.util
 import logging
 import json
-import re
 import sqlite3
 import sys
 import threading
 from datetime import timedelta
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 import subprocess
 
@@ -24,7 +23,6 @@ from pydantic import BaseModel
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
 from core.common.timekit import utcnow
-from core.memory.default_engine import DefaultMemoryEngine
 from core.memory.engine import MemoryAdminApi
 from session.store import SessionStore
 
@@ -624,15 +622,10 @@ def create_dashboard_app(
     *,
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
-    memory_admin: MemoryAdminApi | None = None,
+    memory_admin: MemoryAdminApi,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
-    owned_memory_admin = False
-    # TODO(memory-engine-cleanup): 测试和独立 dashboard 启动补齐 engine 注入后删除这个兼容壳。
-    if memory_admin is None:
-        memory_admin = DefaultMemoryEngine.for_dashboard_workspace(workspace)
-        owned_memory_admin = True
     proactive_reader: ProactiveDashboardReader | None = None
     optimizer_task: asyncio.Task[None] | None = None
     optimizer_last_status = "idle"
@@ -660,10 +653,6 @@ def create_dashboard_app(
             except asyncio.CancelledError:
                 pass
             store.close()
-            if owned_memory_admin:
-                for closeable in getattr(memory_admin, "closeables", []):
-                    if hasattr(closeable, "close"):
-                        closeable.close()
             if proactive_reader is not None:
                 get_proactive_reader().close()
 
@@ -1000,8 +989,6 @@ def create_dashboard_app(
         sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
-        if memory_admin is None:
-            raise HTTPException(status_code=503, detail="memory engine 未启用")
         items, total = memory_admin.list_items_for_dashboard(
             q=q,
             memory_type=memory_type,
@@ -1032,8 +1019,6 @@ def create_dashboard_app(
         score_threshold: float = 0.0,
         include_superseded: bool = False,
     ) -> dict[str, Any]:
-        if memory_admin is None:
-            raise HTTPException(status_code=503, detail="memory engine 未启用")
         try:
             items = memory_admin.find_similar_items_for_dashboard(
                 memory_id,
@@ -1057,8 +1042,6 @@ def create_dashboard_app(
         memory_id: str,
         include_embedding: bool = False,
     ) -> dict[str, Any]:
-        if memory_admin is None:
-            raise HTTPException(status_code=503, detail="memory engine 未启用")
         item = memory_admin.get_item_for_dashboard(
             memory_id,
             include_embedding=include_embedding,
@@ -1072,8 +1055,6 @@ def create_dashboard_app(
         memory_id: str,
         payload: MemoryUpdatePayload,
     ) -> dict[str, Any]:
-        if memory_admin is None:
-            raise HTTPException(status_code=503, detail="memory engine 未启用")
         try:
             item = memory_admin.update_item_for_dashboard(
                 memory_id,
@@ -1091,8 +1072,6 @@ def create_dashboard_app(
 
     @app.delete("/api/dashboard/memories/{memory_id:path}")
     def delete_memory(memory_id: str) -> dict[str, Any]:
-        if memory_admin is None:
-            raise HTTPException(status_code=503, detail="memory engine 未启用")
         deleted = memory_admin.delete_item(memory_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="memory 不存在")
@@ -1100,8 +1079,6 @@ def create_dashboard_app(
 
     @app.post("/api/dashboard/memories/batch-delete")
     def delete_memories_batch(payload: MemoryBatchDeletePayload) -> dict[str, Any]:
-        if memory_admin is None:
-            raise HTTPException(status_code=503, detail="memory engine 未启用")
         deleted_count = memory_admin.delete_items_batch(payload.ids)
         return {"deleted_count": deleted_count}
 
@@ -1271,7 +1248,7 @@ def run_dashboard_api(
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
-    memory_admin: MemoryAdminApi | None = None,
+    memory_admin: MemoryAdminApi,
 ) -> None:
     server = uvicorn.Server(
         _build_dashboard_uvicorn_config(
@@ -1293,7 +1270,7 @@ def _build_dashboard_uvicorn_config(
     port: int,
     manual_consolidator: ManualConsolidator | None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
-    memory_admin: MemoryAdminApi | None = None,
+    memory_admin: MemoryAdminApi,
 ) -> uvicorn.Config:
     config = uvicorn.Config(
         create_dashboard_app(
@@ -1317,7 +1294,7 @@ def build_dashboard_server(
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
-    memory_admin: MemoryAdminApi | None = None,
+    memory_admin: MemoryAdminApi,
 ) -> uvicorn.Server:
     config = _build_dashboard_uvicorn_config(
         workspace=workspace,

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent.config_models import Config
+from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
 from bootstrap.memory import build_memory_runtime
 from bootstrap.toolsets.protocol import (
@@ -12,6 +14,9 @@ from bootstrap.toolsets.protocol import (
 )
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
+
+if TYPE_CHECKING:
+    from bus.event_bus import EventBus
 
 
 class MemoryToolsetProvider(ToolsetProvider):
@@ -46,11 +51,11 @@ def build_memory_toolset(
     config: Config,
     workspace: Path,
     tools: ToolRegistry,
-    provider,
-    light_provider,
+    provider: LLMProvider,
+    light_provider: LLMProvider | None,
     http_resources: SharedHttpResources,
     *,
-    event_publisher=None,
+    event_publisher: "EventBus | None" = None,
 ) -> MemoryRuntime:
     result = MemoryToolsetProvider().register(
         tools,

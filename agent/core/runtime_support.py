@@ -35,10 +35,7 @@ class LLMServices:
 
 @dataclass
 class MemoryServices:
-    port: object
-    query_rewriter: object | None = None
-    hyde_enhancer: object | None = None
-    sufficiency_checker: object | None = None
+    engine: object
 
 
 @dataclass

@@ -2,29 +2,20 @@
 HyDE 检索增强单元测试。
 
 覆盖：
-  1. HyDE 关闭时 AgentLoop 不构建 enhancer
-  2. light_model 未配置时即使 hyde_enabled=True 也禁用（不回退主模型）
-  3. hypothesis 生成超时 → 降级返回 raw 结果，无异常
-  4. raw 结果完整保留（union_dedup：id 不丢，score 不改）
-  5. used_hyde / scope_mode 标记只在 HyDE 实际追加条目时才加 +hyde 后缀
-  6. retrieve_history_items 在 hyde_enhancer=None 时走原有路径
+  1. hypothesis 生成超时 → 降级返回 raw 结果，无异常
+  2. raw 结果完整保留（union_dedup：id 不丢，score 不改）
+  3. used_hyde / scope_mode 标记只在 HyDE 实际追加条目时才加 +hyde 后缀
+  4. retrieve_history_items 在 hyde_enhancer=None 时走原有路径
 """
 
 import asyncio
-import tempfile
-from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
-from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
-from agent.tools.registry import ToolRegistry
-from core.memory.port import DefaultMemoryPort
 from memory2.hyde_enhancer import HyDEEnhancer, _union_dedup
 from memory2.injection_planner import retrieve_history_items
 
@@ -54,61 +45,6 @@ class _FakeProvider:
 
     async def chat(self, **kwargs):
         return LLMResponse(content=self._response, tool_calls=[])
-
-
-def _make_loop(
-    light_model: str = "qwen-flash",
-    *,
-    memory_hyde_enabled: bool = False,
-    memory_hyde_timeout_ms: int = 2000,
-    **_unused: Any,
-) -> AgentLoop:
-    tools = ToolRegistry()
-    tools.register(_NoopTool())
-    workspace = Path(tempfile.mkdtemp(prefix="hyde-test-"))
-    provider = cast(Any, _FakeProvider())
-    light_provider = cast(Any, _FakeProvider())
-    return AgentLoop(
-        AgentLoopDeps(
-            bus=MagicMock(),
-            provider=provider,
-            light_provider=light_provider,
-            tools=tools,
-            session_manager=MagicMock(),
-            workspace=workspace,
-            memory_port=DefaultMemoryPort(MemoryStore(workspace)),
-        ),
-        AgentLoopConfig(
-            llm=LLMConfig(light_model=light_model),
-            memory=MemoryConfig(
-                hyde_enabled=memory_hyde_enabled,
-                hyde_timeout_ms=memory_hyde_timeout_ms,
-            ),
-        ),
-    )
-
-
-# ── 1. HyDE 关闭时不构建 enhancer ─────────────────────────────────────────────
-
-
-def test_hyde_disabled_no_enhancer():
-    loop = _make_loop(memory_hyde_enabled=False)
-    assert loop._hyde_enhancer is None
-
-
-# ── 2. 无 light_model 时 hyde_enabled=True 自动禁用（不回退主模型）─────────────
-
-
-def test_hyde_enabled_without_light_model_is_disabled(caplog):
-    import logging
-
-    with caplog.at_level(logging.WARNING, logger="agent.loop"):
-        loop = _make_loop(light_model="", memory_hyde_enabled=True)
-    assert loop._hyde_enhancer is None
-    assert "HyDE 已自动禁用" in caplog.text
-
-
-# ── 3. hypothesis 超时 → 降级返回 raw 结果，无异常 ────────────────────────────
 
 
 def test_hypothesis_timeout_falls_back_to_raw():
@@ -349,12 +285,3 @@ def test_scope_mode_global_fallback_without_hyde_suffix_in_scoped_fast_path():
     assert scope_mode == "global-fallback"
     assert items == [{"id": "g1", "score": 0.8}]
     provider.chat.assert_not_called()
-
-
-def test_scope_mode_no_hyde_suffix_when_hyde_disabled_by_config():
-    """hyde_enabled=False 时 AgentLoop._hyde_enhancer 为 None。"""
-    loop = _make_loop(
-        light_model="qwen-flash",
-        memory_hyde_enabled=False,
-    )
-    assert loop._hyde_enhancer is None

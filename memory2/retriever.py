@@ -79,6 +79,7 @@ class Retriever:
         self._hotness_alpha = max(0.0, min(1.0, float(hotness_alpha)))
         self._hotness_half_life_days = max(1.0, float(hotness_half_life_days))
 
+    # 统一检索入口：recall_memory 和被动预检索都复用这条查库路径。
     async def retrieve(
         self,
         query: str,
@@ -93,7 +94,7 @@ class Retriever:
         time_end: datetime | None = None,
         keyword_enabled: bool = True,
     ) -> list[dict]:
-        """embed query → vector/keyword search → RRF 融合返回命中条目列表"""
+        # 1. query 与辅助 query 一起进入向量 lane，避免多入口语义漂移。
         actual_top_k = self._top_k if top_k is None else max(1, int(top_k))
         actual_threshold = (
             self._score_threshold if score_threshold is None else float(score_threshold)
@@ -110,6 +111,8 @@ class Retriever:
             time_start=time_start,
             time_end=time_end,
         )
+
+        # 2. 关键词 lane 只用原始 query，保留用户字面命中的召回能力。
         keyword_items: list[dict] = []
         if keyword_enabled:
             keyword_items = self._retrieve_keyword_lane(
@@ -122,6 +125,8 @@ class Retriever:
                 time_start=time_start,
                 time_end=time_end,
             )
+
+        # 3. 最终只在这里做 RRF 融合，调用方不再各自拼召回列表。
         items = _rrf_merge(vector_items, keyword_items, top_n=actual_top_k)
         logger.debug(
             "memory2 retrieve: query=%r vector=%d keyword=%d fused=%d",

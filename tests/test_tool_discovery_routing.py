@@ -21,13 +21,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
-from agent.memory import MemoryStore
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
-from core.memory.port import DefaultMemoryPort
+from tests.memory_fakes import FakeMemoryEngine
 
 
 # ── 工具桩 ────────────────────────────────────────────────────────────────────
@@ -80,7 +79,7 @@ def _make_loop(
             tools=registry,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=10, tool_search_enabled=True)),
     )

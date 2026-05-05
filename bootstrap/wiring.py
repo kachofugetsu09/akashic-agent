@@ -12,15 +12,18 @@ from agent.tools.base import Tool
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
 from bootstrap.toolsets.meta import CommonMetaToolsetProvider, SpawnToolsetProvider
+from bootstrap.toolsets.protocol import ToolsetProvider
 from bootstrap.toolsets.schedule import SchedulerToolsetProvider
 from core.memory.default_engine import DefaultMemoryEngine
 from core.net.http import SharedHttpResources
 
 if TYPE_CHECKING:
     from agent.looping.interrupt import TurnInterruptState
+    from bus.event_bus import EventBus
 
 
 ContextFactory = Callable[[Path, Any], Any]
+ToolsetProviderFactory = Callable[[], ToolsetProvider]
 
 
 @dataclass(frozen=True)
@@ -30,34 +33,17 @@ class MemoryEngineBuildDeps:
     provider: LLMProvider
     light_provider: LLMProvider | None
     http_resources: SharedHttpResources
-    event_publisher: Any | None = None
-
-    # TODO(memory-engine-cleanup): 旧 builder 测试迁移到 engine 自建依赖后删除这些过渡属性。
-    @property
-    def retriever(self) -> None:
-        return None
-
-    @property
-    def memorizer(self) -> None:
-        return None
-
-    @property
-    def tagger(self) -> None:
-        return None
-
-    @property
-    def post_response_worker(self) -> None:
-        return None
+    event_publisher: "EventBus | None" = None
 
 
 MemoryEngineBuilder = Callable[[MemoryEngineBuildDeps], object]
 
-_MEMORY_WIRING = {
+_MEMORY_WIRING: dict[str, ToolsetProviderFactory] = {
     "default": MemoryToolsetProvider,
 }
 
 
-def _build_default_memory_engine(deps: MemoryEngineBuildDeps):
+def _build_default_memory_engine(deps: MemoryEngineBuildDeps) -> DefaultMemoryEngine:
     return DefaultMemoryEngine(
         config=deps.config,
         workspace=deps.workspace,
@@ -74,7 +60,7 @@ _MEMORY_ENGINE_WIRING: dict[str, MemoryEngineBuilder] = {
 _CONTEXT_WIRING: dict[str, ContextFactory] = {
     "default": lambda workspace, memory: ContextBuilder(workspace, memory=memory),
 }
-_TOOLSET_WIRING = {
+_TOOLSET_WIRING: dict[str, ToolsetProviderFactory] = {
     "spawn": SpawnToolsetProvider,
     "schedule": SchedulerToolsetProvider,
     "mcp": McpToolsetProvider,
@@ -102,7 +88,7 @@ def wire_turn_lifecycle(
     lifecycle.on_after_step(_progress_reporter)
 
 
-def resolve_memory_toolset_provider(name: str):
+def resolve_memory_toolset_provider(name: str) -> ToolsetProvider:
     if name not in _MEMORY_WIRING:
         choices = ", ".join(sorted(_MEMORY_WIRING))
         raise ValueError(f"未知 memory wiring: {name}；可选值: {choices}")
@@ -125,7 +111,7 @@ def resolve_context_factory(name: str) -> ContextFactory:
 
 def resolve_toolset_provider(
     name: str, *, readonly_tools: dict[str, Tool] | None = None
-):
+) -> ToolsetProvider:
     if name == "meta_common":
         return CommonMetaToolsetProvider(readonly_tools or {})
     if name not in _TOOLSET_WIRING:

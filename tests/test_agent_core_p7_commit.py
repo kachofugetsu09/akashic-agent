@@ -73,12 +73,21 @@ async def test_commit_fanout_enqueues_recent_before_return():
     async def _refresh_recent_turns(*, session) -> None:
         await release_recent.wait()
 
+    async def _engine_refresh_recent_turns(request) -> None:
+        await _refresh_recent_turns(session=request.session)
+
     register_turn_committed_consumers(
         event_bus=event_bus,
-        consolidation=cast(Any, SimpleNamespace(refresh_recent_turns=AsyncMock(side_effect=_refresh_recent_turns))),
         session_manager=cast(Any, session_manager),
         scheduler=cast(Any, SimpleNamespace(schedule_consolidation=MagicMock())),
-        memory_engine=None,
+        memory_engine=cast(
+            Any,
+            SimpleNamespace(
+                refresh_recent_turns=AsyncMock(
+                    side_effect=_engine_refresh_recent_turns
+                )
+            ),
+        ),
     )
 
     await event_bus.emit(
@@ -138,10 +147,12 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     )
     register_turn_committed_consumers(
         event_bus=event_bus,
-        consolidation=cast(Any, SimpleNamespace(refresh_recent_turns=AsyncMock())),
         session_manager=cast(Any, session_manager),
         scheduler=cast(Any, SimpleNamespace(schedule_consolidation=MagicMock())),
-        memory_engine=None,
+        memory_engine=cast(
+            Any,
+            SimpleNamespace(refresh_recent_turns=AsyncMock()),
+        ),
     )
 
     context_store = SimpleNamespace(

@@ -8,18 +8,16 @@ import pytest
 
 from agent.looping.consolidation import ConsolidationRuntime
 from agent.looping.ports import TurnScheduler
-from core.memory.default_runtime_facade import DefaultMemoryRuntimeFacade
+from tests.memory_fakes import FakeMemoryEngine
 
 
 @pytest.mark.asyncio
-async def test_consolidation_runtime_prefers_facade_run_consolidation():
-    facade = MagicMock()
-    facade.run_consolidation = AsyncMock()
+async def test_consolidation_runtime_delegates_to_memory_engine():
+    memory = FakeMemoryEngine()
     runtime = ConsolidationRuntime(
         session_manager=MagicMock(),
         scheduler=MagicMock(),
-        consolidation=MagicMock(),
-        facade=facade,
+        memory=memory,
         keep_count=20,
         wait_timeout_s=1.0,
     )
@@ -30,34 +28,21 @@ async def test_consolidation_runtime_prefers_facade_run_consolidation():
         archive_all=True,
     )
 
-    facade.run_consolidation.assert_awaited_once_with(
-        session,
-        archive_all=True,
-    )
-
-
-def test_default_runtime_facade_binds_consolidation_runner():
-    facade = DefaultMemoryRuntimeFacade(
-        port=MagicMock(),
-        engine=None,
-        profile_maint=MagicMock(),
-    )
-    runner = AsyncMock()
-
-    facade.bind_consolidation_runner(runner)
-
-    assert facade._consolidation_runner is runner
+    assert memory.consolidate_calls
+    assert memory.consolidate_calls[0].session is session
+    assert memory.consolidate_calls[0].archive_all is True
 
 
 @pytest.mark.asyncio
-async def test_turn_scheduler_runner_can_go_through_facade():
-    facade = MagicMock()
-    facade.run_consolidation = AsyncMock()
+async def test_turn_scheduler_runner_can_go_through_memory_engine():
+    memory = FakeMemoryEngine()
     save_async = AsyncMock()
     session = SimpleNamespace(messages=[{"role": "user", "content": "u"}] * 30, last_consolidated=0)
 
     async def runner(session_obj):
-        await facade.run_consolidation(session_obj)
+        from core.memory.engine import ConsolidateRequest
+
+        await memory.consolidate(ConsolidateRequest(session=session_obj))
         await save_async(session_obj)
 
     scheduler = TurnScheduler(
@@ -67,5 +52,5 @@ async def test_turn_scheduler_runner_can_go_through_facade():
 
     await scheduler._run_consolidation_bg(cast(Any, session), "telegram:1")
 
-    facade.run_consolidation.assert_awaited_once_with(session)
+    assert memory.consolidate_calls[0].session is session
     save_async.assert_awaited_once_with(session)

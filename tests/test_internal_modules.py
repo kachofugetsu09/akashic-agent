@@ -45,7 +45,7 @@ class _ConsolidationHarness:
         self.provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp(payload)))
         self.session_manager = SimpleNamespace(save_async=AsyncMock())
         self._consolidation = ConsolidationService(
-            memory_port=cast(Any, self._memory_port),
+            memory=cast(Any, self._memory_port),
             provider=cast(Any, self.provider),
             model="lm",
             keep_count=2,
@@ -58,7 +58,7 @@ class _ConsolidationHarness:
 
     def set_profile_extractor(self, extractor) -> None:
         self._consolidation = ConsolidationService(
-            memory_port=cast(Any, self._memory_port),
+            memory=cast(Any, self._memory_port),
             provider=cast(Any, self.provider),
             model="lm",
             keep_count=2,

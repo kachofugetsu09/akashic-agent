@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
-from typing import Any
 
 from agent.config_models import Config
 from agent.memory import MemoryStore
@@ -80,43 +79,13 @@ class DefaultMemoryEngine:
     def __init__(
         self,
         *,
-        config: Config | None = None,
-        workspace: Path | None = None,
-        provider: LLMProvider | None = None,
+        config: Config,
+        workspace: Path,
+        provider: LLMProvider,
         light_provider: LLMProvider | None = None,
-        http_resources: SharedHttpResources | None = None,
+        http_resources: SharedHttpResources,
         event_publisher: "EventBus | None" = None,
-        retriever: Any | None = None,
-        memorizer: Any | None = None,
-        tagger: Any | None = None,
-        post_response_worker: Any | None = None,
     ) -> None:
-        if retriever is not None or config is None:
-            # TODO(memory-engine-cleanup): 旧单元测试和外部构造器迁移到 config 构造后删除注入兼容壳。
-            self._config = config
-            self._workspace = workspace or Path(".")
-            self._provider = provider
-            self._light_provider = light_provider or provider
-            self._light_model = ""
-            self._v1_store = cast(MemoryStore, None)
-            self._v2_store = None
-            self._embedder = None
-            self._memorizer = cast(Memorizer | None, memorizer)
-            self._retriever = cast(Retriever | None, retriever)
-            self._tagger = cast(ProcedureTagger | None, tagger)
-            self._post_response_worker = cast(
-                PostResponseMemoryWorker | None,
-                post_response_worker,
-            )
-            self._event_bus = event_publisher
-            self._wire_post_response_events()
-            self._consolidation = None
-            self.closeables = []
-            return
-
-        assert workspace is not None
-        assert provider is not None
-        assert http_resources is not None
         self._config = config
         self._workspace = workspace
         self._provider = provider
@@ -195,7 +164,6 @@ class DefaultMemoryEngine:
         from agent.looping.consolidation import ConsolidationService
         from memory2.profile_extractor import ProfileFactExtractor
 
-        # TODO(memory-engine-cleanup): 旧归档服务仍是兼容壳，后续把实现搬入 engine 后删除。
         self._consolidation = ConsolidationService(
             memory=self,
             profile_maint=self,
@@ -222,36 +190,20 @@ class DefaultMemoryEngine:
         store = MemoryStore2(db_path)
         store.close()
 
-    @classmethod
-    def for_dashboard_workspace(cls, workspace: Path) -> "DefaultMemoryEngine":
-        engine = cls.__new__(cls)
-        engine._config = None
-        engine._workspace = workspace
-        engine._provider = None
-        engine._light_provider = None
-        engine._light_model = ""
-        engine._v1_store = MemoryStore(workspace)
-        engine._v2_store = MemoryStore2(workspace / "memory" / "memory2.db")
-        engine._embedder = None
-        engine._memorizer = None
-        engine._retriever = None
-        engine._tagger = None
-        engine._post_response_worker = None
-        engine._event_bus = None
-        engine._consolidation = None
-        engine.closeables = [engine._v2_store]
-        return engine
-
     async def retrieve(
         self,
         request: MemoryEngineRetrieveRequest,
     ) -> MemoryEngineRetrieveResult:
+        # 1. memory_v2 未启用时保持空召回，不阻断主回复。
         if self._retriever is None:
             return MemoryEngineRetrieveResult(text_block="", hits=[], raw={"items": []})
 
+        # 2. 统一解析 scope、query 变体和 memory type。
         scope = self._resolve_scope(request.scope)
         queries = self._resolve_queries(request)
         memory_types = self._resolve_memory_types(request)
+
+        # 3. 复用底层 Retriever 的关键词、向量和 RRF 融合逻辑。
         items = await self._retrieve_related(
             request.query,
             memory_types=memory_types,
@@ -261,6 +213,8 @@ class DefaultMemoryEngine:
             require_scope_match=bool(request.hints.get("require_scope_match", False)),
             aux_queries=queries[1:],
         )
+
+        # 4. 由 Retriever 决定最终注入文本，trace 保留全部命中。
         text_block, injected_ids = self._retriever.build_injection_block(items)
         hits = [
             self._build_hit(item, injected_ids=injected_ids)
@@ -278,7 +232,9 @@ class DefaultMemoryEngine:
             raw={"items": items},
         )
 
+    # post-response 摄入入口：外部只提交对话内容，失效判断仍在 engine 内部完成。
     async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:
+        # 1. 先做轻量请求归一化，非对话来源不进入 post-response worker。
         scope = self._resolve_scope(request.scope)
         if self._post_response_worker is None:
             return MemoryIngestResult(
@@ -300,6 +256,7 @@ class DefaultMemoryEngine:
                 raw={"reason": "invalid_content"},
             )
 
+        # 2. worker 只作为 engine 内部组件使用，不再暴露给 bootstrap 或 agent loop。
         await self._post_response_worker.run(
             user_msg=normalized["user_message"],
             agent_response=normalized["assistant_response"],
@@ -319,12 +276,14 @@ class DefaultMemoryEngine:
             raw={"engine": self.DESCRIPTOR.name},
         )
 
+    # 把 TurnCommitted 转成 engine 内部 ingest 事件。
     def _wire_post_response_events(self) -> None:
         if self._event_bus is None or self._post_response_worker is None:
             return
         self._event_bus.on(TurnCommitted, self._on_turn_committed)
         self._event_bus.on(TurnIngested, self._post_response_worker.handle)
 
+    # 对话提交后只入队，不在主回复链路里等待记忆后处理。
     def _on_turn_committed(self, event: TurnCommitted) -> None:
         if bool((event.extra or {}).get("skip_post_memory")):
             return
@@ -343,7 +302,9 @@ class DefaultMemoryEngine:
             )
         )
 
+    # 显式记忆写入入口，供 memorize 工具和内部迁移代码复用。
     async def remember(self, request: RememberRequest) -> RememberResult:
+        # 1. procedure 必须有执行条件，否则降级为 preference。
         if self._memorizer is None:
             raise RuntimeError("memorizer unavailable")
 
@@ -366,6 +327,7 @@ class DefaultMemoryEngine:
             )
             await self._attach_trigger_tags(extra=extra, summary=request.summary)
 
+        # 2. 写入时顺带执行相似记忆 supersede，避免同类偏好堆积。
         result = await self._memorizer.save_item_with_supersede(
             summary=request.summary,
             memory_type=memory_type,
@@ -380,11 +342,15 @@ class DefaultMemoryEngine:
             superseded_ids=[],
         )
 
+    # 显式遗忘入口：只把条目标成 superseded，不物理删除。
     async def forget(self, request: ForgetRequest) -> ForgetResult:
+        # 1. 先按 id 去重并读取现存条目。
         store = self._require_v2_store()
         clean_ids = _dedupe_ids(request.ids)
         items = store.get_items_by_ids(clean_ids)
         found_ids = [str(item.get("id") or "") for item in items if item.get("id")]
+
+        # 2. 只失效能确认存在的条目，缺失 id 返回给调用方展示。
         if found_ids:
             store.mark_superseded_batch(found_ids)
         return ForgetResult(
@@ -400,9 +366,13 @@ class DefaultMemoryEngine:
             ],
         )
 
+    # 自然压缩入口：具体窗口选择和 LLM 提取仍由 ConsolidationService 负责。
     async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
+        # 1. memory_v2 关闭时直接返回 disabled trace。
         if self._consolidation is None:
             return ConsolidateResult(trace={"mode": "disabled"})
+
+        # 2. engine 只转发稳定 request，不让外部直接依赖 consolidation service。
         await self._consolidation.consolidate(
             request.session,
             archive_all=request.archive_all,
@@ -410,6 +380,7 @@ class DefaultMemoryEngine:
         )
         return ConsolidateResult(trace={"mode": "legacy_service"})
 
+    # 每轮回复后的短期上下文刷新，不推进 last_consolidated。
     async def refresh_recent_turns(
         self,
         request: RefreshRecentTurnsRequest,
@@ -418,6 +389,7 @@ class DefaultMemoryEngine:
             return
         await self._consolidation.refresh_recent_turns(session=request.session)
 
+    # recall_memory 的显式检索入口，按 search_mode 选择语义检索或时间线 grep。
     async def retrieve_explicit(
         self,
         request: ExplicitRetrievalRequest,
@@ -426,6 +398,7 @@ class DefaultMemoryEngine:
             return self._retrieve_explicit_grep(request)
         return await self._retrieve_explicit_semantic(request)
 
+    # proactive 专用兴趣召回，只查 preference/profile，避免 event 噪声影响候选判断。
     async def retrieve_interest_block(
         self,
         request: InterestRetrievalRequest,

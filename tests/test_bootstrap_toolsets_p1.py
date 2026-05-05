@@ -42,7 +42,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
     class _MemoryProvider:
         def register(self, registry, deps):
             calls.append("memory")
-            runtime = SimpleNamespace(port=object())
+            runtime = SimpleNamespace(engine=object())
             return ToolsetRegistrationResult(
                 source_name="memory",
                 tool_names=[],
@@ -117,7 +117,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
     assert push_tool is not None
     assert scheduler is not None
     assert mcp_registry is not None
-    assert memory_runtime.port is not None
+    assert memory_runtime.engine is not None
     assert peer_pm is None
     assert peer_poller is None
 

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("agent.loop.lifecycle")
 
 
+# 注册 TurnCommitted 后的后台消费者：自然压缩和 recent context 刷新。
 def register_turn_committed_consumers(
     *,
     event_bus: "EventBus",
@@ -27,13 +28,17 @@ def register_turn_committed_consumers(
     recent_queues: dict[str, deque[str]] = {}
     recent_tasks: dict[str, asyncio.Task[None]] = {}
 
+    # 自然压缩只交给 scheduler 判断阈值，consumer 不直接跑 LLM。
     def _schedule_consolidation(event: TurnCommitted) -> None:
         session = session_manager.get_or_create(event.session_key)
         scheduler.schedule_consolidation(session, event.session_key)
 
+    # recent context 每轮都刷新 recent turns，但按 session 串行。
     def _enqueue_recent_context(event: TurnCommitted) -> None:
         if memory_engine is None:
             return
+
+        # 1. 同一个 session 的刷新合并进队列，避免并发覆盖 RECENT_CONTEXT.md。
         queue = recent_queues.setdefault(event.session_key, deque())
         queue.append(event.session_key)
         running = event.session_key in recent_tasks
@@ -45,6 +50,8 @@ def register_turn_committed_consumers(
         )
         if running:
             return
+
+        # 2. 当前没有运行任务时，启动后台队列消费者。
         task = asyncio.create_task(
             _run_recent_context_queue(event.session_key),
             name=f"recent_context:{event.session_key}",
@@ -57,6 +64,7 @@ def register_turn_committed_consumers(
         if engine is None:
             return
         try:
+            # 1. 串行消费同 session 的 recent context 刷新请求。
             while True:
                 queue = recent_queues.get(session_key)
                 if not queue:
@@ -77,6 +85,7 @@ def register_turn_committed_consumers(
                     len(queue),
                 )
         finally:
+            # 2. 任务结束后若队列又有新请求，重新拉起消费者。
             _ = recent_tasks.pop(session_key, None)
             queue = recent_queues.get(session_key)
             if queue:

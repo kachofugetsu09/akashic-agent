@@ -28,9 +28,13 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
     ) -> None:
         self._memory = memory
 
+    # 被动预检索入口：只转换请求形状，检索语义统一交给 MemoryEngine。
     async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        # 1. 没有启用记忆引擎时，主链继续无记忆回复。
         if self._memory.engine is None:
             return RetrievalResult(block="", trace=None)
+
+        # 2. 把 agent loop 的上下文转成 engine 的稳定请求协议。
         result = await self._memory.engine.retrieve(
             MemoryEngineRetrieveRequest(
                 query=request.message,
@@ -46,12 +50,15 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
                 hints=dict(request.extra or {}),
             )
         )
+
+        # 3. 只返回主链需要注入的文本块和可观测 trace。
         return RetrievalResult(
             block=result.text_block,
             trace=_build_retrieval_trace(result),
         )
 
 
+# 把 engine trace 收窄成 agent loop 认识的检索 trace。
 def _build_retrieval_trace(
     result: MemoryEngineRetrieveResult,
 ) -> RetrievalTrace | None:
@@ -64,45 +71,3 @@ def _build_retrieval_trace(
         injected_count=sum(1 for hit in result.hits if hit.injected),
         raw=result.raw.get("retrieval_event"),
     )
-
-
-def _build_injection_payload(
-    *,
-    procedure_items: list[dict],
-    procedure_result: MemoryEngineRetrieveResult | None,
-    history_items: list[dict],
-    history_result: MemoryEngineRetrieveResult | None,
-) -> tuple[list[dict], str, list[str]]:
-    # TODO(memory-engine-cleanup): 旧测试改查 MemoryEngineRetrieveResult 后删除这个兼容 helper。
-    procedure_ids = _engine_injected_ids(procedure_result)
-    history_ids = _engine_injected_ids(history_result)
-    selected = [
-        item
-        for item in [*procedure_items, *history_items]
-        if str(item.get("id", "")) in set(procedure_ids + history_ids)
-    ]
-    block = "\n\n".join(
-        value
-        for value in [
-            procedure_result.text_block if procedure_result is not None else "",
-            history_result.text_block if history_result is not None else "",
-        ]
-        if value
-    )
-    return selected, block, _dedupe_ids(procedure_ids + history_ids)
-
-
-def _engine_injected_ids(result: MemoryEngineRetrieveResult | None) -> list[str]:
-    if result is None:
-        return []
-    return [hit.id for hit in result.hits if hit.injected and hit.id]
-
-
-def _dedupe_ids(ids: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item_id in ids:
-        if item_id and item_id not in seen:
-            seen.add(item_id)
-            out.append(item_id)
-    return out

@@ -606,22 +606,22 @@ USER: 那就直接写个脚本绕过去吧
   ]
 }}"""
 
+    # 从归档窗口提取 profile / preference / procedure，先不写库。
     async def _extract_implicit_long_term(
         self,
         *,
         conversation: str,
         existing_profile: str = "",
     ) -> dict | None:
-        """窗口级隐式长期记忆 LLM 提取（只提取，不写库），与 event 并行运行。
-        返回原始 dict（含 profile/preference/procedure），失败返回 None。
-        写库由调用方在 event 路径确认成功后统一执行，确保幂等。
-        """
         try:
+            # 1. 用当前窗口和已有画像构造长期记忆提取 prompt。
             started_at = time.perf_counter()
             prompt = self._build_long_term_prompt(
                 conversation=conversation,
                 existing_profile=existing_profile,
             )
+
+            # 2. 这里只做 LLM 提取，写库要等 event 路径确认 JSON 合法后统一提交。
             resp = await self._provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
@@ -639,6 +639,8 @@ USER: 那就直接写个脚本绕过去吧
             )
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+            # 3. 返回原始 dict，调用方负责幂等写入。
             result = json_repair.loads(text)
             if not isinstance(result, dict):
                 return None
@@ -647,6 +649,7 @@ USER: 那就直接写个脚本绕过去吧
             logger.warning("consolidation long_term extraction failed: %s", e)
             return None
 
+    # 将隐式长期记忆写入向量库；调用方保证 event 路径已经成功。
     async def _save_implicit_long_term(
         self,
         result: dict,
@@ -655,13 +658,13 @@ USER: 那就直接写个脚本绕过去吧
         scope_channel: str,
         scope_chat_id: str,
     ) -> dict[str, int]:
-        """将已提取的隐式长期记忆写入向量库。仅在 event 路径确认成功后调用。"""
         saved_counts = {
             "profile": 0,
             "preference": 0,
             "procedure": 0,
         }
-        # profile
+
+        # 1. profile 写入用户画像类事实。
         for item in (result.get("profile") or []):
             if not isinstance(item, dict):
                 continue
@@ -686,7 +689,7 @@ USER: 那就直接写个脚本绕过去吧
             saved_counts["profile"] += 1
             logger.info("consolidation long_term saved: type=profile %r", summary[:60])
 
-        # preference + procedure
+        # 2. preference / procedure 写入行为偏好和执行规则。
         for mtype in ("preference", "procedure"):
             for item in (result.get(mtype) or []):
                 if not isinstance(item, dict):
