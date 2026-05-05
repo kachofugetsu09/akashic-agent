@@ -1,8 +1,7 @@
 """
 recall_memory 工具：主动检索记忆数据库。
 
-工具层只负责参数校验和引用协议输出；检索策略走 memory facade，
-真正查库融合在 memory2.Retriever。
+工具层只负责参数校验和引用协议输出；检索策略走 memory engine。
 """
 
 from __future__ import annotations

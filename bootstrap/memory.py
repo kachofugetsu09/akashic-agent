@@ -8,6 +8,7 @@ from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
 from core.memory.engine import MemoryEngine
+from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 
@@ -62,7 +63,18 @@ def build_memory_runtime(
     from agent.tools.memorize import MemorizeTool
     from agent.tools.recall_memory import RecallMemoryTool
 
-    # 1. 先构造 engine，工具层只拿协议对象。
+    # 1. markdown 是默认记忆层，任何 engine 都共用。
+    markdown = build_markdown_memory_runtime(
+        workspace=workspace,
+        provider=provider,
+        model=config.model,
+        keep_count=_memory_keep_count(config.memory_window),
+        event_bus=event_publisher,
+        recent_context_provider=light_provider or provider,
+        recent_context_model=config.light_model or config.model,
+    )
+
+    # 2. 再构造 engine，工具层只拿协议对象。
     engine = _build_memory_engine(
         config=config,
         workspace=workspace,
@@ -72,7 +84,7 @@ def build_memory_runtime(
         event_publisher=event_publisher,
     )
 
-    # 2. memory_v2 关闭时仍注册文件工具，但不暴露记忆读写工具。
+    # 3. memory_v2 关闭时仍注册文件工具，但不暴露记忆读写工具。
     memorize_tool: MemorizeTool | None = None
     forget_tool: ForgetMemoryTool | None = None
     recall_tool: RecallMemoryTool | None = None
@@ -81,7 +93,7 @@ def build_memory_runtime(
         forget_tool = ForgetMemoryTool(engine)
         recall_tool = RecallMemoryTool(facade=engine)
 
-    # 3. 工具执行时再通过 engine API 读写记忆。
+    # 4. 工具执行时再通过 engine API 读写向量记忆。
     register_memory_meta_tools(
         tools,
         memorize_tool=memorize_tool,
@@ -91,6 +103,7 @@ def build_memory_runtime(
         edit_file_tool=EditFileTool(),
     )
     return MemoryRuntime(
+        markdown=markdown,
         engine=engine,
         closeables=list(getattr(engine, "closeables", [])),
     )
@@ -105,6 +118,15 @@ def build_memory_admin_runtime(
     event_publisher: "EventBus | None" = None,
 ) -> MemoryRuntime:
     # dashboard 不注册工具，只需要同一套 engine admin 能力和关闭生命周期。
+    markdown = build_markdown_memory_runtime(
+        workspace=workspace,
+        provider=provider,
+        model=config.model,
+        keep_count=_memory_keep_count(config.memory_window),
+        event_bus=event_publisher,
+        recent_context_provider=light_provider or provider,
+        recent_context_model=config.light_model or config.model,
+    )
     engine = _build_memory_engine(
         config=config,
         workspace=workspace,
@@ -114,6 +136,12 @@ def build_memory_admin_runtime(
         event_publisher=event_publisher,
     )
     return MemoryRuntime(
+        markdown=markdown,
         engine=engine,
         closeables=[*list(getattr(engine, "closeables", [])), http_resources],
     )
+
+
+def _memory_keep_count(window: int) -> int:
+    aligned_window = max(6, ((max(1, window) + 5) // 6) * 6)
+    return aligned_window // 2

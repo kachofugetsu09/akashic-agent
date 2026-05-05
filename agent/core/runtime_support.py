@@ -5,7 +5,7 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Awaitable, Callable, Protocol
+from typing import Protocol
 
 from agent.lifecycle.types import PromptRenderInput, PromptRenderResult
 
@@ -17,14 +17,6 @@ from bus.events import InboundMessage
 @dataclass
 class MemoryConfig:
     window: int = 40
-    top_k_procedure: int = 4
-    top_k_history: int = 8
-    route_intention_enabled: bool = False
-    procedure_guard_enabled: bool = True
-    gate_llm_timeout_ms: int = 800
-    gate_max_tokens: int = 96
-    hyde_enabled: bool = False
-    hyde_timeout_ms: int = 2000
 
 
 @dataclass
@@ -103,10 +95,6 @@ class SessionLike(Protocol):
         start_index: int | None = None,
     ) -> list[dict]: ...
     def add_message(self, role: str, content: str, media=None, **kwargs) -> None: ...
-
-
-ConsolidationRunner = Callable[[SessionLike], Awaitable[None]]
-
 
 @dataclass
 class TurnRunResult:

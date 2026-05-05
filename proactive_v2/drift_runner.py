@@ -23,7 +23,7 @@ from proactive_v2.drift_tools import (
 )
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryProfileApi
+    from core.memory.markdown import MemoryProfileApi
 
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]

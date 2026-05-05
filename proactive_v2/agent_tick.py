@@ -26,7 +26,7 @@ from agent.prompting import (
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from core.memory.engine import MemoryProfileApi
+from core.memory.markdown import MemoryProfileApi
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.contracts import (
     normalize_alert,

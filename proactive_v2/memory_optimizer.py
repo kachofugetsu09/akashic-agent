@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryEngine
+    from core.memory.markdown import MarkdownMemoryStore
 
 from agent.memory import DEFAULT_SELF_MD
 from agent.provider import LLMProvider
@@ -195,7 +195,7 @@ _SELF_PROMPT = """\
 class MemoryOptimizer:
     def __init__(
         self,
-        memory: "MemoryEngine",
+        memory: "MarkdownMemoryStore",
         provider: LLMProvider,
         model: str,
         max_tokens: int = 16384,

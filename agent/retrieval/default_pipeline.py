@@ -1,30 +1,23 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING
-
 from agent.core.types import RetrievalTrace
-from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
+from agent.looping.ports import MemoryServices
 from agent.retrieval.protocol import (
     MemoryRetrievalPipeline,
     RetrievalRequest,
     RetrievalResult,
 )
-from core.memory.engine import MemoryEngineRetrieveRequest, MemoryEngineRetrieveResult, MemoryScope
-
-if TYPE_CHECKING:
-    from bus.publisher import EventPublisher
+from core.memory.engine import (
+    MemoryEngineRetrieveRequest,
+    MemoryEngineRetrieveResult,
+    MemoryScope,
+)
 
 
 class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
     def __init__(
         self,
         memory: MemoryServices,
-        memory_config: MemoryConfig,
-        llm: LLMServices,
-        workspace: Path,
-        light_model: str,
-        event_publisher: "EventPublisher | None" = None,
     ) -> None:
         self._memory = memory
 

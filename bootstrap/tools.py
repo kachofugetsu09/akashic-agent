@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
@@ -24,7 +24,6 @@ from agent.looping.ports import (
     MemoryConfig,
     MemoryServices,
     SessionServices,
-    TurnScheduler,
 )
 from agent.mcp.registry import McpServerRegistry
 from agent.provider import LLMProvider
@@ -57,11 +56,11 @@ from bootstrap.providers import build_providers, build_vl_provider
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
+from core.memory.markdown import MemoryLifecycleBindRequest, MarkdownMemoryMaintenance
 from core.memory.runtime import MemoryRuntime
-from core.memory.engine import ConsolidateRequest
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
-from session.manager import SessionManager
+from session.manager import Session, SessionManager
 
 
 @dataclass
@@ -271,41 +270,9 @@ def _build_loop_deps(
     memory_runtime: MemoryRuntime,
 ) -> AgentLoopDeps:
     wiring = getattr(config, "wiring", WiringConfig())
-    llm_config = LLMConfig(
-        model=config.model,
-        light_model=config.light_model,
-        max_iterations=config.max_iterations,
-        max_tokens=config.max_tokens,
-        tool_search_enabled=config.tool_search_enabled,
-        multimodal=bool(getattr(config, "multimodal", True)),
-        vl_available=bool(getattr(config, "vl_model", "")),
-    )
-    memory_config = MemoryConfig(
-        window=config.memory_window,
-        top_k_procedure=config.memory_v2.top_k_procedure,
-        top_k_history=config.memory_v2.top_k_history,
-        route_intention_enabled=config.memory_v2.route_intention_enabled,
-        procedure_guard_enabled=config.memory_v2.procedure_guard_enabled,
-        gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-        gate_max_tokens=config.memory_v2.gate_max_tokens,
-        hyde_enabled=config.memory_v2.hyde_enabled,
-        hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
-    )
-    resolved_memory_config = MemoryConfig(
-        window=memory_config.window,
-        top_k_procedure=min(3, max(1, int(memory_config.top_k_procedure))),
-        top_k_history=max(1, int(memory_config.top_k_history)),
-        route_intention_enabled=memory_config.route_intention_enabled,
-        procedure_guard_enabled=memory_config.procedure_guard_enabled,
-        gate_llm_timeout_ms=max(100, int(memory_config.gate_llm_timeout_ms)),
-        gate_max_tokens=max(32, int(memory_config.gate_max_tokens)),
-        hyde_enabled=memory_config.hyde_enabled,
-        hyde_timeout_ms=memory_config.hyde_timeout_ms,
-    )
-
     context = resolve_context_factory(wiring.context)(
         workspace,
-        memory_runtime.engine,
+        memory_runtime.markdown.store,
     )
     if isinstance(context, ContextBuilder):
         context.set_media_capabilities(
@@ -319,22 +286,12 @@ def _build_loop_deps(
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
     )
-    async def _consolidate_and_save(session: object) -> None:
-        # scheduler 只负责起后台任务；真正的工作是“consolidate + save session”这两步。
-        await memory_engine.consolidate(ConsolidateRequest(session=session))
-        await session_manager.save_async(session)  # type: ignore[arg-type]
-
-    turn_scheduler = TurnScheduler(
-        consolidation_runner=_consolidate_and_save,
-        keep_count=memory_config.keep_count,
+    _bind_memory_lifecycle_if_supported(
+        markdown=memory_runtime.markdown.maintenance,
+        session_manager=session_manager,
     )
     retrieval_pipeline = DefaultMemoryRetrievalPipeline(
         memory=memory_services,
-        memory_config=resolved_memory_config,
-        llm=llm_services,
-        workspace=workspace,
-        light_model=llm_config.light_model or llm_config.model,
-        event_publisher=event_bus,
     )
 
     return AgentLoopDeps(
@@ -353,8 +310,22 @@ def _build_loop_deps(
         llm_services=llm_services,
         memory_services=memory_services,
         session_services=session_services,
-        memory_maintenance=memory_engine,
-        scheduler=turn_scheduler,
+    )
+
+
+def _bind_memory_lifecycle_if_supported(
+    *,
+    markdown: MarkdownMemoryMaintenance,
+    session_manager: SessionManager,
+) -> None:
+    async def _save_session(session: object) -> None:
+        await session_manager.save_async(cast(Session, session))
+
+    markdown.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=session_manager.get_or_create,
+            save_session=_save_session,
+        )
     )
 
 
@@ -416,14 +387,6 @@ def build_core_runtime(
             ),
             memory=MemoryConfig(
                 window=config.memory_window,
-                top_k_procedure=config.memory_v2.top_k_procedure,
-                top_k_history=config.memory_v2.top_k_history,
-                route_intention_enabled=config.memory_v2.route_intention_enabled,
-                procedure_guard_enabled=config.memory_v2.procedure_guard_enabled,
-                gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-                gate_max_tokens=config.memory_v2.gate_max_tokens,
-                hyde_enabled=config.memory_v2.hyde_enabled,
-                hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
             ),
         ),
     )

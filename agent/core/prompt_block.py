@@ -15,7 +15,7 @@ from prompts.agent import (
 
 if TYPE_CHECKING:
     from agent.skills import SkillsLoader
-    from core.memory.engine import MemoryProfileApi
+    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger("agent.core.prompt_block")
 

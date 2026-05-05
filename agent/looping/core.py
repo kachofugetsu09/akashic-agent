@@ -4,7 +4,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from agent.context import ContextBuilder
 from agent.core.passive_turn import (
@@ -16,13 +16,6 @@ from agent.core.passive_turn import (
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.looping.consolidation import (
-    ConsolidationRuntime,
-    _select_consolidation_window,
-)
-from agent.looping.lifecycle_consumers import (
-    register_turn_committed_consumers,
-)
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
@@ -31,7 +24,6 @@ from agent.looping.ports import (
     MemoryConfig,
     MemoryServices,
     SessionServices,
-    TurnScheduler,
 )
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
@@ -56,11 +48,11 @@ from session.manager import SessionManager
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
+    from core.memory.markdown import MemoryProfileApi
     from core.memory.runtime import MemoryRuntime
     from agent.tool_hooks.base import ToolHook
 
 logger = logging.getLogger("agent.loop")
-_MAX_PROCEDURE_RETRIEVE_K = 3
 
 StreamDelta: TypeAlias = dict[str, str] | str
 StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
@@ -98,8 +90,6 @@ class AgentLoop:
     对话历史按 session_key 独立维护，格式为 OpenAI messages。
     """
 
-    _CONSOLIDATION_WAIT_S: float = 30.0
-
     def __init__(
         self,
         deps: AgentLoopDeps,
@@ -121,11 +111,18 @@ class AgentLoop:
 
         # 2. 再解析 memory runtime 入口。
         memory_engine = self._resolve_memory_runtime(deps)
+        markdown_memory = self._resolve_markdown_runtime(deps)
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
         self._memory_engine = memory_engine
+        self._markdown_memory = markdown_memory
+        memory_profile = (
+            markdown_memory.store
+            if markdown_memory is not None
+            else cast("MemoryProfileApi", self._memory_engine)
+        )
         self._context = deps.context or ContextBuilder(
             deps.workspace,
-            memory=self._memory_engine,
+            memory=memory_profile,
             multimodal=config.llm.multimodal,
             vl_available=config.llm.vl_available,
         )
@@ -239,6 +236,14 @@ class AgentLoop:
             return deps.memory_services.engine
         raise ValueError("AgentLoop requires memory_runtime.engine")
 
+    def _resolve_markdown_runtime(
+        self,
+        deps: AgentLoopDeps,
+    ):
+        if deps.memory_runtime is not None:
+            return deps.memory_runtime.markdown
+        return None
+
     def _assemble_passive_runtime(
         self,
         *,
@@ -251,22 +256,7 @@ class AgentLoop:
             engine=getattr(deps.memory_runtime, "engine", None),
         )
         session_svc = self._session_services
-        # 2. 再准备 retrieval / scheduler 依赖配置。
-        handler_memory_config = MemoryConfig(
-            window=config.memory.window,
-            top_k_procedure=min(
-                _MAX_PROCEDURE_RETRIEVE_K, max(1, int(config.memory.top_k_procedure))
-            ),
-            top_k_history=max(1, int(config.memory.top_k_history)),
-            route_intention_enabled=config.memory.route_intention_enabled,
-            procedure_guard_enabled=config.memory.procedure_guard_enabled,
-            gate_llm_timeout_ms=max(100, int(config.memory.gate_llm_timeout_ms)),
-            gate_max_tokens=max(32, int(config.memory.gate_max_tokens)),
-            hyde_enabled=config.memory.hyde_enabled,
-            hyde_timeout_ms=config.memory.hyde_timeout_ms,
-        )
-
-        # 3. 组执行层和 consolidation 相关组件。
+        # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
             llm=llm_svc,
@@ -279,33 +269,12 @@ class AgentLoop:
             session_manager=self.session_manager,
             event_bus=self._event_bus,
         )
-        self._scheduler = deps.scheduler or TurnScheduler(
-            consolidation_runner=self._consolidate_and_save,
-            keep_count=config.memory.keep_count,
-        )
-        self._consolidation_runtime = ConsolidationRuntime(
-            session_manager=self.session_manager,
-            scheduler=self._scheduler,
-            memory=memory_svc.engine,
-            keep_count=config.memory.keep_count,
-            wait_timeout_s=self._CONSOLIDATION_WAIT_S,
-        )
 
-        # 4. 最后串 passive prepare / execute / commit 主链。
+        # 3. 最后串 passive prepare / execute / commit 主链。
         retrieval_pipeline = deps.retrieval_pipeline or DefaultMemoryRetrievalPipeline(
             memory=memory_svc,
-            memory_config=handler_memory_config,
-            llm=llm_svc,
-            workspace=deps.workspace,
-            light_model=self.light_model,
         )
         self._retrieval_pipeline = retrieval_pipeline
-        register_turn_committed_consumers(
-            event_bus=self._event_bus,
-            session_manager=self.session_manager,
-            scheduler=self._scheduler,
-            memory_engine=memory_svc.engine,
-        )
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
             context=self._context,
@@ -696,18 +665,6 @@ class AgentLoop:
         visible_names = result.metadata.get("visible_names")
         return result.reply, tools_used, tool_chain, visible_names, result.thinking
 
-    async def _consolidate_memory(
-        self,
-        session,
-        archive_all: bool = False,
-        force: bool = False,
-    ) -> None:
-        await self._consolidation_runtime.consolidate_memory(
-            session,
-            archive_all=archive_all,
-            force=force,
-        )
-
     async def trigger_memory_consolidation(
         self,
         session_key: str,
@@ -715,18 +672,23 @@ class AgentLoop:
         archive_all: bool = False,
         force: bool = False,
     ) -> bool:
-        return await self._consolidation_runtime.trigger_memory_consolidation(
-            session_key,
-            archive_all=archive_all,
-            force=force,
-            consolidate_fn=self._consolidate_memory,
+        from core.memory.markdown import ConsolidateRequest
+
+        session = self.session_manager.get_or_create(session_key)
+        if self._markdown_memory is None:
+            raise RuntimeError("markdown memory runtime unavailable")
+        maintenance = self._markdown_memory.maintenance
+        result = await maintenance.consolidate(
+            ConsolidateRequest(
+                session=session,
+                archive_all=archive_all,
+                force=force,
+            )
         )
-
-    async def _wait_for_consolidation_idle(self, session_key: str) -> None:
-        await self._consolidation_runtime.wait_for_consolidation_idle(session_key)
-
-    async def _consolidate_and_save(self, session: object) -> None:
-        await self._consolidation_runtime.consolidate_and_save(session)
+        if result.trace.get("mode") != "skipped":
+            await self.session_manager.save_async(session)
+            return True
+        return False
 
 
 # ── 模块级辅助 ────────────────────────────────────────────────────

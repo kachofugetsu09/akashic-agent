@@ -36,7 +36,7 @@ from prompts.agent import (
 )
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryProfileApi
+    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger("agent.context")
 

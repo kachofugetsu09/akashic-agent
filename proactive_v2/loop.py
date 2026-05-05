@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryProfileApi, MemoryRetrievalApi
+    from core.memory.engine import MemoryRetrievalApi
+    from core.memory.markdown import MemoryProfileApi
 
 from agent.looping.ports import SessionServices
 from agent.provider import LLMProvider

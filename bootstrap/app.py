@@ -135,7 +135,7 @@ class AppRuntime:
             optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
                 self.config,
                 provider=self.provider,
-                memory_store=self.memory_runtime.engine,
+                memory_store=self.memory_runtime.markdown.store,
             )
             self.tasks.extend(optimizer_tasks)
             self.dashboard_server = build_dashboard_server(
@@ -155,7 +155,7 @@ class AppRuntime:
                 provider=self.provider,
                 light_provider=self.light_provider,
                 push_tool=self.push_tool,
-                memory_store=self.memory_runtime.engine,
+                memory_store=self.memory_runtime,
                 presence=self.presence,
                 agent_loop=self.agent_loop,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,

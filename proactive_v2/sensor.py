@@ -14,7 +14,7 @@ from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryProfileApi
+    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger(__name__)
 
