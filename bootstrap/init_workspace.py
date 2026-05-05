@@ -6,8 +6,8 @@ from pathlib import Path
 
 from agent.config import Config
 from agent.memory import DEFAULT_SELF_MD, MemoryStore
+from core.memory.default_engine import DefaultMemoryEngine
 from infra.persistence.json_store import save_json
-from memory2.store import MemoryStore2
 from proactive_v2.anyaction import QuotaStore
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.state import ProactiveStateStore
@@ -168,7 +168,9 @@ def _ensure_workspace_db_assets(
     if memory_enabled:
         memory2_db = workspace / "memory" / "memory2.db"
         memory2_exists = memory2_db.exists()
-        MemoryStore2(memory2_db).close()
+        config = Config(provider="", model="", api_key="", system_prompt="")
+        config.memory_v2.enabled = True
+        DefaultMemoryEngine.ensure_workspace_storage(config=config, workspace=workspace)
         if not memory2_exists:
             summary.created.append(memory2_db)
         else:

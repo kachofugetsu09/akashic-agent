@@ -18,7 +18,6 @@ from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.consolidation import (
     ConsolidationRuntime,
-    ConsolidationService,
     _select_consolidation_window,
 )
 from agent.looping.lifecycle_consumers import (
@@ -50,18 +49,14 @@ from bus.events_lifecycle import (
 )
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from memory2.profile_extractor import ProfileFactExtractor
-from memory2.query_rewriter import QueryRewriter
-from memory2.sufficiency_checker import SufficiencyChecker
 from proactive_v2.presence import PresenceStore
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
+    from core.memory.engine import MemoryEngine
     from core.memory.runtime import MemoryRuntime
-    from memory2.hyde_enhancer import HyDEEnhancer
     from agent.tool_hooks.base import ToolHook
 
 logger = logging.getLogger("agent.loop")
@@ -125,15 +120,12 @@ class AgentLoop:
         self._interrupt_states: dict[str, TurnInterruptState] = {}
 
         # 2. 再解析 memory runtime 入口。
-        memory_port = self._resolve_memory_runtime(deps)
+        memory_engine = self._resolve_memory_runtime(deps)
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
-        self._memory_port = memory_port
+        self._memory_engine = memory_engine
         self._context = deps.context or ContextBuilder(
             deps.workspace,
-            memory=(
-                getattr(deps.memory_runtime, "profile_reader", None)
-                or self._memory_port
-            ),
+            memory=self._memory_engine,
             multimodal=config.llm.multimodal,
             vl_available=config.llm.vl_available,
         )
@@ -146,16 +138,10 @@ class AgentLoop:
             presence=deps.presence,
         )
 
-        # 3. 然后组装 retrieval 需要的轻量能力。
-        hyde_enhancer = self._build_hyde_enhancer(deps, config)
-        self._hyde_enhancer = hyde_enhancer
-
-        # 4. 最后把 passive chain 装起来。
+        # 3. 最后把 passive chain 装起来。
         self._assemble_passive_runtime(
             deps=deps,
             config=config,
-            memory_port=memory_port,
-            hyde_enhancer=hyde_enhancer,
         )
         self._configure_stream_events()
 
@@ -246,65 +232,23 @@ class AgentLoop:
     def _resolve_memory_runtime(
         self,
         deps: AgentLoopDeps,
-    ) -> "MemoryPort":
-        # 1. 先取显式注入的 memory 对象。
-        memory_port = deps.memory_port
-
-        # 2. 如果给了 memory_runtime，就优先使用 runtime 里的实现。
+    ) -> "MemoryEngine":
         if deps.memory_runtime is not None:
-            memory_port = deps.memory_runtime.port
-
-        # 3. 当前主链必须拿到 memory_port。
-        if memory_port is None:
-            raise ValueError("AgentLoop requires memory_port or memory_runtime")
-        return memory_port
-
-    def _build_hyde_enhancer(
-        self,
-        deps: AgentLoopDeps,
-        config: AgentLoopConfig,
-    ) -> "HyDEEnhancer | None":
-        # 1. 先尊重外部显式注入。
-        hyde_enhancer = deps.hyde_enhancer
-
-        # 2. 没开 HyDE 或已经注入时，直接返回。
-        if hyde_enhancer is not None or not config.memory.hyde_enabled:
-            return hyde_enhancer
-
-        # 3. 没配独立 light_model 时，不启用 HyDE。
-        if not config.llm.light_model:
-            logger.warning(
-                "hyde_enabled=True 但未配置独立 light_model，"
-                "为避免主模型被额外调用，HyDE 已自动禁用。"
-                "请在配置中设置 light_model 后重启。"
-            )
-            return None
-
-        # 4. 需要时再构造默认 HyDE 能力。
-        from memory2.hyde_enhancer import HyDEEnhancer
-
-        return HyDEEnhancer(
-            light_provider=self.light_provider,
-            light_model=self.light_model,
-            timeout_s=config.memory.hyde_timeout_ms / 1000.0,
-        )
+            return deps.memory_runtime.engine
+        if deps.memory_services is not None and deps.memory_services.engine is not None:
+            return deps.memory_services.engine
+        raise ValueError("AgentLoop requires memory_runtime.engine")
 
     def _assemble_passive_runtime(
         self,
         *,
         deps: AgentLoopDeps,
         config: AgentLoopConfig,
-        memory_port: "MemoryPort",
-        hyde_enhancer: "HyDEEnhancer | None",
     ) -> None:
         # 1. 先组基础 service ports。
         llm_svc = self._llm_services
         memory_svc = deps.memory_services or MemoryServices(
             engine=getattr(deps.memory_runtime, "engine", None),
-            facade=getattr(deps.memory_runtime, "facade", None),
-            query_rewriter=deps.query_rewriter,
-            hyde_enhancer=hyde_enhancer,
-            sufficiency_checker=deps.sufficiency_checker,
         )
         session_svc = self._session_services
         # 2. 再准备 retrieval / scheduler 依赖配置。
@@ -335,25 +279,6 @@ class AgentLoop:
             session_manager=self.session_manager,
             event_bus=self._event_bus,
         )
-        consolidation_service = deps.consolidation_service or ConsolidationService(
-            memory_port=self._memory_port,
-            profile_maint=(
-                getattr(deps.memory_runtime, "profile_maint", None) or self._memory_port
-            ),
-            provider=deps.provider,
-            model=config.llm.model,
-            keep_count=config.memory.keep_count,
-            profile_extractor=deps.profile_extractor,
-            recent_context_provider=deps.light_provider or deps.provider,
-            recent_context_model=config.llm.light_model or config.llm.model,
-        )
-        if memory_svc.facade is not None:
-            memory_svc.facade.bind_consolidation_runner(
-                lambda session, archive_all: consolidation_service.consolidate(
-                    session,
-                    archive_all=archive_all,
-                )
-            )
         self._scheduler = deps.scheduler or TurnScheduler(
             consolidation_runner=self._consolidate_and_save,
             keep_count=config.memory.keep_count,
@@ -361,8 +286,7 @@ class AgentLoop:
         self._consolidation_runtime = ConsolidationRuntime(
             session_manager=self.session_manager,
             scheduler=self._scheduler,
-            consolidation=consolidation_service,
-            facade=memory_svc.facade,
+            memory=memory_svc.engine,
             keep_count=config.memory.keep_count,
             wait_timeout_s=self._CONSOLIDATION_WAIT_S,
         )
@@ -378,7 +302,6 @@ class AgentLoop:
         self._retrieval_pipeline = retrieval_pipeline
         register_turn_committed_consumers(
             event_bus=self._event_bus,
-            consolidation=consolidation_service,
             session_manager=self.session_manager,
             scheduler=self._scheduler,
             memory_engine=memory_svc.engine,

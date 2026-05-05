@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from agent.tools.base import Tool
 from core.memory.engine import ForgetRequest, MemoryWriteApi
-
-if TYPE_CHECKING:
-    from memory2.store import MemoryStore2
 
 
 class ForgetMemoryTool(Tool):
@@ -32,7 +29,7 @@ class ForgetMemoryTool(Tool):
         "required": ["ids"],
     }
 
-    def __init__(self, memory: "MemoryWriteApi | MemoryStore2") -> None:
+    def __init__(self, memory: MemoryWriteApi) -> None:
         self._memory = memory
 
     async def execute(self, ids: list[str], **_: Any) -> str:
@@ -68,10 +65,10 @@ class ForgetMemoryTool(Tool):
                 ensure_ascii=False,
             )
 
-        # TODO(memory-engine-phase3): bootstrap 改传 MemoryWriteApi 后删除 MemoryStore2 分支。
-        store = cast("MemoryStore2", self._memory)
+        # TODO(memory-engine-cleanup): 测试和旧插件改传 MemoryWriteApi 后删除直连 store 兼容壳。
+        store = cast(Any, self._memory)
         items = store.get_items_by_ids(clean_ids)
-        found_ids = [str(item.get("id") or "") for item in items if str(item.get("id") or "")]
+        found_ids = [str(item.get("id") or "") for item in items if item.get("id")]
         if found_ids:
             store.mark_superseded_batch(found_ids)
         missing_ids = [item_id for item_id in clean_ids if item_id not in set(found_ids)]

@@ -15,21 +15,14 @@ if TYPE_CHECKING:
         SessionLike,
         ToolDiscoveryState,
     )
-    from agent.looping.consolidation import ConsolidationService
     from agent.provider import LLMProvider
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tools.registry import ToolRegistry
     from bus.event_bus import EventBus
     from bus.processing import ProcessingState
     from bus.queue import MessageBus
-    from core.memory.engine import MemoryEngine
-    from core.memory.port import MemoryPort
+    from core.memory.engine import MemoryEngine, MemoryMaintenanceApi
     from core.memory.runtime import MemoryRuntime
-    from core.memory.runtime_facade import MemoryRuntimeFacade
-    from memory2.hyde_enhancer import HyDEEnhancer
-    from memory2.profile_extractor import ProfileFactExtractor
-    from memory2.query_rewriter import QueryRewriter
-    from memory2.sufficiency_checker import SufficiencyChecker
     from proactive_v2.presence import PresenceStore
     from session.manager import SessionManager
 
@@ -88,10 +81,6 @@ class LLMServices:
 @dataclass
 class MemoryServices:
     engine: MemoryEngine | None = None
-    facade: MemoryRuntimeFacade | None = None
-    query_rewriter: QueryRewriter | None = None
-    hyde_enhancer: HyDEEnhancer | None = None
-    sufficiency_checker: SufficiencyChecker | None = None
 
 
 @dataclass
@@ -112,19 +101,14 @@ class AgentLoopDeps:
     light_provider: "LLMProvider | None" = None
     processing_state: "ProcessingState | None" = None
     memory_runtime: "MemoryRuntime | None" = None
-    memory_port: "MemoryPort | None" = None
-    query_rewriter: "QueryRewriter | None" = None
-    sufficiency_checker: "SufficiencyChecker | None" = None
-    profile_extractor: "ProfileFactExtractor | None" = None
     retrieval_pipeline: "MemoryRetrievalPipeline | None" = None
     context: "ContextBuilder | None" = None
     llm_services: LLMServices | None = None
     memory_services: MemoryServices | None = None
     session_services: SessionServices | None = None
-    hyde_enhancer: "HyDEEnhancer | None" = None
     tool_discovery: "ToolDiscoveryState | None" = None
     reasoner: "Reasoner | None" = None
-    consolidation_service: "ConsolidationService | None" = None
+    memory_maintenance: "MemoryMaintenanceApi | None" = None
     scheduler: "TurnScheduler | None" = None
     core_runner: "CoreRunner | None" = None
 

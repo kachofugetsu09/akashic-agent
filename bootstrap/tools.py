@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 from agent.config_models import Config, WiringConfig
 from agent.context import ContextBuilder
-from agent.looping.consolidation import ConsolidationService
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
@@ -59,10 +58,8 @@ from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
+from core.memory.engine import ConsolidateRequest, MemoryEngine
 from core.net.http import SharedHttpResources
-from memory2.profile_extractor import ProfileFactExtractor
-from memory2.query_rewriter import QueryRewriter
-from memory2.sufficiency_checker import SufficiencyChecker
 from proactive_v2.presence import PresenceStore
 from session.manager import SessionManager
 
@@ -157,6 +154,14 @@ class CoreRuntime:
             await self.peer_process_manager.shutdown_all()
 
 
+def _runtime_memory_engine(memory_runtime: MemoryRuntime) -> MemoryEngine:
+    # TODO(memory-engine-cleanup): 旧测试桩迁到 MemoryRuntime.engine 后删除 port 兼容读取。
+    engine = getattr(memory_runtime, "engine", None)
+    if engine is not None:
+        return engine
+    return getattr(memory_runtime, "port")
+
+
 def build_registered_tools(
     config: Config,
     workspace: Path,
@@ -232,7 +237,7 @@ def build_registered_tools(
                 vl_provider=vl_provider,
                 vl_model=getattr(config, "vl_model", ""),
                 bus=bus,
-                memory_port=memory_runtime.port,
+                memory_engine=_runtime_memory_engine(memory_runtime),
                 scheduler=scheduler,
                 event_publisher=event_publisher,
             ),
@@ -306,82 +311,25 @@ def _build_loop_deps(
         hyde_timeout_ms=memory_config.hyde_timeout_ms,
     )
 
-    light = light_provider or provider
-    query_rewriter = (
-        QueryRewriter(
-            llm_client=light,
-            model=config.light_model or config.model,
-            max_tokens=config.memory_v2.gate_max_tokens,
-            timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-        )
-        if config.memory_v2.route_intention_enabled
-        else None
-    )
-    sufficiency_checker = SufficiencyChecker(
-        llm_client=light,
-        model=config.light_model or config.model,
-    )
-    profile_extractor = ProfileFactExtractor(
-        llm_client=light,
-        model=config.light_model or config.model,
-    )
-    hyde_enhancer = None
-    if memory_config.hyde_enabled and llm_config.light_model:
-        from memory2.hyde_enhancer import HyDEEnhancer
-
-        hyde_enhancer = HyDEEnhancer(
-            light_provider=light,
-            light_model=llm_config.light_model,
-            timeout_s=memory_config.hyde_timeout_ms / 1000.0,
-        )
-
     context = resolve_context_factory(wiring.context)(
         workspace,
-        getattr(memory_runtime, "profile_reader", None) or memory_runtime.port,
+        _runtime_memory_engine(memory_runtime),
     )
     if isinstance(context, ContextBuilder):
         context.set_media_capabilities(
             multimodal=bool(getattr(config, "multimodal", True)),
             vl_available=bool(getattr(config, "vl_model", "")),
         )
-    memory_engine = memory_runtime.engine
-    memory_facade = memory_runtime.facade
+    memory_engine = _runtime_memory_engine(memory_runtime)
+    light = light_provider or provider
     llm_services = LLMServices(provider=provider, light_provider=light)
-    memory_services = MemoryServices(
-        engine=memory_engine,
-        facade=memory_facade,
-        query_rewriter=query_rewriter,
-        hyde_enhancer=hyde_enhancer,
-        sufficiency_checker=sufficiency_checker,
-    )
+    memory_services = MemoryServices(engine=memory_engine)
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
     )
-    consolidation = ConsolidationService(
-        memory_port=memory_runtime.port,
-        profile_maint=getattr(memory_runtime, "profile_maint", None)
-        or memory_runtime.port,
-        provider=provider,
-        model=config.model,
-        keep_count=memory_config.keep_count,
-        profile_extractor=profile_extractor,
-        recent_context_provider=light or provider,
-        recent_context_model=config.light_model or config.model,
-    )
-    if memory_facade is not None:
-        memory_facade.bind_consolidation_runner(
-            lambda session, archive_all: consolidation.consolidate(
-                session,
-                archive_all=archive_all,
-            )
-        )
-
     async def _consolidate_and_save(session: object) -> None:
         # scheduler 只负责起后台任务；真正的工作是“consolidate + save session”这两步。
-        if memory_facade is not None:
-            await memory_facade.run_consolidation(session)
-        else:
-            await consolidation.consolidate(session)  # type: ignore[arg-type]
+        await memory_engine.consolidate(ConsolidateRequest(session=session))
         await session_manager.save_async(session)  # type: ignore[arg-type]
 
     turn_scheduler = TurnScheduler(
@@ -408,16 +356,12 @@ def _build_loop_deps(
         light_provider=light_provider,
         processing_state=processing_state,
         memory_runtime=memory_runtime,
-        query_rewriter=query_rewriter,
-        sufficiency_checker=sufficiency_checker,
-        profile_extractor=profile_extractor,
         retrieval_pipeline=retrieval_pipeline,
         context=context,
         llm_services=llm_services,
         memory_services=memory_services,
         session_services=session_services,
-        hyde_enhancer=hyde_enhancer,
-        consolidation_service=consolidation,
+        memory_maintenance=memory_engine,
         scheduler=turn_scheduler,
     )
 

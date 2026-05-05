@@ -5,32 +5,35 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from memory2.post_response_worker import PostResponseMemoryWorker
-
 if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
-    from core.memory.port import MemoryPort
-    from core.memory.profile import ProfileMaintenanceStore, ProfileReader
-    from core.memory.runtime_facade import MemoryRuntimeFacade
-
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class MemoryRuntime:
-    """Runtime holder for all memory-related dependencies."""
-
-    port: "MemoryPort"
-    engine: "MemoryEngine | None" = None
-    facade: "MemoryRuntimeFacade | None" = None
-    profile_reader: "ProfileReader | None" = None
-    profile_maint: "ProfileMaintenanceStore | None" = None
-    post_response_worker: PostResponseMemoryWorker | None = None
+    engine: "MemoryEngine"
     closeables: list[Any] = field(default_factory=list)
 
+    # TODO(memory-engine-cleanup): 旧调用方完成迁移后删除这些 MemoryRuntime 兼容属性。
+    @property
+    def port(self) -> "MemoryEngine":
+        return self.engine
+
+    @property
+    def facade(self) -> "MemoryEngine":
+        return self.engine
+
+    @property
+    def profile_reader(self) -> "MemoryEngine":
+        return self.engine
+
+    @property
+    def profile_maint(self) -> "MemoryEngine":
+        return self.engine
+
     async def aclose(self) -> None:
-        """Close owned resources in reverse creation order."""
         first_error: Exception | None = None
         for closeable in reversed(self.closeables):
             try:

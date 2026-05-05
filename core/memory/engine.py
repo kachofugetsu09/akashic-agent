@@ -173,11 +173,19 @@ class ExplicitRetrievalResult:
 class MemoryProfileApi(Protocol):
     def read_long_term(self) -> str: ...
 
+    def write_long_term(self, content: str) -> None: ...
+
     def read_self(self) -> str: ...
+
+    def write_self(self, content: str) -> None: ...
 
     def read_recent_history(self, *, max_chars: int = 0) -> str: ...
 
     def read_recent_context(self) -> str: ...
+
+    def write_recent_context(self, content: str) -> None: ...
+
+    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None: ...
 
     def get_memory_context(self) -> str: ...
 
@@ -268,6 +276,54 @@ class MemoryAdminApi(Protocol):
         time_end: datetime,
         *,
         limit: int = 200,
+    ) -> list[dict[str, object]]: ...
+
+    def list_items_for_dashboard(
+        self,
+        *,
+        q: str = "",
+        memory_type: str = "",
+        status: str = "",
+        source_ref: str = "",
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+        has_embedding: bool | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list[dict[str, object]], int]: ...
+
+    def get_item_for_dashboard(
+        self,
+        item_id: str,
+        *,
+        include_embedding: bool = False,
+    ) -> dict[str, object] | None: ...
+
+    def update_item_for_dashboard(
+        self,
+        item_id: str,
+        *,
+        status: str | None = None,
+        extra_json: dict[str, object] | None = None,
+        source_ref: str | None = None,
+        happened_at: str | None = None,
+        emotional_weight: int | None = None,
+    ) -> dict[str, object] | None: ...
+
+    def delete_item(self, item_id: str) -> bool: ...
+
+    def delete_items_batch(self, ids: list[str]) -> int: ...
+
+    def find_similar_items_for_dashboard(
+        self,
+        item_id: str,
+        *,
+        top_k: int = 8,
+        memory_type: str = "",
+        score_threshold: float = 0.0,
+        include_superseded: bool = False,
     ) -> list[dict[str, object]]: ...
 
 

@@ -451,7 +451,6 @@ def test_wiring_error_messages_list_available_choices():
     except ValueError as exc:
         assert "可选值" in str(exc)
         assert "default" in str(exc)
-        assert "memu" in str(exc)
     else:
         raise AssertionError("resolve_memory_engine_builder should fail for bad name")
 
@@ -462,12 +461,6 @@ def test_wiring_error_messages_list_available_choices():
         assert "meta_common" in str(exc)
     else:
         raise AssertionError("resolve_toolset_provider should fail for bad name")
-
-
-def test_resolve_memory_engine_builder_supports_memu():
-    builder = resolve_memory_engine_builder("memu")
-
-    assert callable(builder)
 
 
 @pytest.mark.asyncio

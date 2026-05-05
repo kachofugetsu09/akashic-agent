@@ -17,7 +17,7 @@ from bootstrap.toolsets.protocol import (
     ToolsetProvider,
     build_registration_result,
 )
-from core.memory.port import MemoryPort
+from core.memory.engine import MemoryEngine
 from core.net.http import SharedHttpResources
 
 
@@ -136,7 +136,7 @@ def register_spawn_tool(
     bus: MessageBus,
     provider,
     http_resources: SharedHttpResources,
-    memory_port: MemoryPort | None = None,
+    memory_engine: MemoryEngine | None = None,
 ) -> SubagentManager:
     result = SpawnToolsetProvider().register(
         tools,
@@ -146,7 +146,7 @@ def register_spawn_tool(
             provider=provider,
             http_resources=http_resources,
             bus=bus,
-            memory_port=memory_port,
+            memory_engine=memory_engine,
         ),
     )
     return result.extras["subagent_manager"]

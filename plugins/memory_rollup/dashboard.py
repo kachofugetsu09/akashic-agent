@@ -5,13 +5,13 @@ import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from agent.memory import MemoryStore
-from memory2.store import MemoryStore2
+if TYPE_CHECKING:
+    from core.memory.engine import MemoryEngine
 
 CandidateTag = Literal["identity", "preference"]
 
@@ -43,11 +43,17 @@ class GeneratePayload(BaseModel):
 
 
 class MemoryRollupReader:
-    """从 memory2 的 profile/preference 中生成人类可确认的长期记忆候选。"""
+    """从 profile/preference 记忆中生成人类可确认的长期记忆候选。"""
 
-    def __init__(self, plugin_dir: Path, workspace: Path) -> None:
+    def __init__(
+        self,
+        plugin_dir: Path,
+        workspace: Path,
+        memory: "MemoryEngine",
+    ) -> None:
         self.plugin_dir = plugin_dir
         self.workspace = workspace
+        self._memory = memory
         self.cache_path = workspace / "memory" / "memory_rollup_candidates.json"
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -55,20 +61,15 @@ class MemoryRollupReader:
 
     def overview(self) -> dict[str, Any]:
         """侧栏概览：各类型 active 数 + 候选数 + pending 预览。"""
-        memory = self._memory2()
-        try:
-            # 1. 统计各 memory_type 的 active 条目数。
-            counts = {
-                item_type: memory.list_items_for_dashboard(
-                    memory_type=item_type,
-                    status="active",
-                    page=1,
-                    page_size=1,
-                )[1]
-                for item_type in ("profile", "preference")
-            }
-        finally:
-            memory.close()
+        counts = {
+            item_type: self._memory.list_items_for_dashboard(
+                memory_type=item_type,
+                status="active",
+                page=1,
+                page_size=1,
+            )[1]
+            for item_type in ("profile", "preference")
+        }
         # 2. 读取当前缓存候选数。
         cached = self._read_cached()
         return {
@@ -82,7 +83,7 @@ class MemoryRollupReader:
         # 1. 加载未被处理的 source items。
         source_items = self._load_source_items(limit=max(1, min(limit, 400)))
         # 2. 读当前 MEMORY.md 用于 overlap 检测。
-        memory_text = MemoryStore(self.workspace).read_long_term()
+        memory_text = self._memory.read_long_term()
         # 3. 按 memory_type + 原文分组。
         groups = _group_items(source_items)
         # 4. 每组构建一个候选对象。
@@ -117,7 +118,6 @@ class MemoryRollupReader:
     def commit(self, items: list[CommitItem]) -> dict[str, Any]:
         """将用户确认的候选写入 PENDING.md（带 - [tag] 格式）。"""
         cached = {str(item.get("id")): item for item in self.candidates()}
-        pending_store = MemoryStore(self.workspace)
         appended = 0
         skipped = 0
         committed: list[dict[str, str]] = []
@@ -139,7 +139,7 @@ class MemoryRollupReader:
                 continue
             # 3. 写入 PENDING.md（去重追加）。
             line = f"- [{tag}] {content}"
-            ok = pending_store.append_pending_once(
+            ok = self._memory.append_pending_once(
                 line,
                 source_ref=f"memory_rollup:{raw_item.id}",
                 kind="candidate",
@@ -157,7 +157,7 @@ class MemoryRollupReader:
             "appended_count": appended,
             "skipped_count": skipped,
             "committed": committed,
-            "pending_preview": pending_store.read_pending()[-4000:],
+            "pending_preview": self._memory.read_pending()[-4000:],
         }
 
     def ignore(self, candidate_id: str) -> dict[str, Any]:
@@ -175,52 +175,39 @@ class MemoryRollupReader:
         if candidate is None:
             raise KeyError(candidate_id)
         source_ids = _candidate_source_ids(candidate)
-        memory = self._memory2()
-        try:
-            deleted_count = memory.delete_items_batch(source_ids)
-        finally:
-            memory.close()
+        deleted_count = self._memory.delete_items_batch(source_ids)
         self._remove_cached_candidate(candidate_id)
         return {"deleted_count": deleted_count, "id": candidate_id}
 
     def pending_preview(self) -> str:
         """返回 PENDING.md 末尾 4000 字符预览。"""
-        return MemoryStore(self.workspace).read_pending()[-4000:]
+        return self._memory.read_pending()[-4000:]
 
     # ── Internal helpers ───────────────────────────────────────────
 
-    def _memory2(self) -> MemoryStore2:
-        return MemoryStore2(self.workspace / "memory" / "memory2.db")
-
     def _load_source_items(self, *, limit: int) -> list[dict[str, Any]]:
-        """从 memory2 拉取未被 _rollup 标记的 active profile/preference。"""
-        memory = self._memory2()
-        try:
-            items: list[dict[str, Any]] = []
-            per_type = max(1, limit // 2)
-            for item_type in ("preference", "profile"):
-                # 1. 按 reinforcement 降序分页拉取。
-                rows, _ = memory.list_items_for_dashboard(
-                    memory_type=item_type,
-                    status="active",
-                    page=1,
-                    page_size=per_type,
-                    sort_by="reinforcement",
-                    sort_order="desc",
-                )
-                for row in cast(list[dict[str, Any]], rows):
-                    # 2. 取详情，跳过已带 _rollup 标记的。
-                    detail = memory.get_item_for_dashboard(str(row.get("id") or ""))
-                    if detail is None:
-                        continue
-                    extra_raw = detail.get("extra_json")
-                    extra = cast(dict[str, object], extra_raw) if isinstance(extra_raw, dict) else {}
-                    if extra.get("_rollup"):
-                        continue
-                    items.append({**row, "extra_json": extra})
-            return items
-        finally:
-            memory.close()
+        """拉取未被 _rollup 标记的 active profile/preference。"""
+        items: list[dict[str, Any]] = []
+        per_type = max(1, limit // 2)
+        for item_type in ("preference", "profile"):
+            rows, _ = self._memory.list_items_for_dashboard(
+                memory_type=item_type,
+                status="active",
+                page=1,
+                page_size=per_type,
+                sort_by="reinforcement",
+                sort_order="desc",
+            )
+            for row in cast(list[dict[str, Any]], rows):
+                detail = self._memory.get_item_for_dashboard(str(row.get("id") or ""))
+                if detail is None:
+                    continue
+                extra_raw = detail.get("extra_json")
+                extra = cast(dict[str, object], extra_raw) if isinstance(extra_raw, dict) else {}
+                if extra.get("_rollup"):
+                    continue
+                items.append({**row, "extra_json": extra})
+        return items
 
     def _read_cached(self) -> list[dict[str, Any]]:
         """读取缓存 JSON，容错解析异常。"""
@@ -256,24 +243,20 @@ class MemoryRollupReader:
         source_ids = _candidate_source_ids(candidate)
         if not source_ids:
             return
-        memory = self._memory2()
         acted_at = datetime.now(timezone.utc).isoformat()
-        try:
-            for source_id in source_ids:
-                detail = memory.get_item_for_dashboard(source_id)
-                if detail is None:
-                    continue
-                extra_raw = detail.get("extra_json")
-                extra = dict(cast(dict[str, object], extra_raw)) if isinstance(extra_raw, dict) else {}
-                extra["_rollup"] = {
-                    "candidate_id": candidate_id,
-                    "action": action,
-                    "acted_at": acted_at,
-                    "pending_source_ref": f"memory_rollup:{candidate_id}",
-                }
-                _ = memory.update_item_for_dashboard(source_id, extra_json=extra)
-        finally:
-            memory.close()
+        for source_id in source_ids:
+            detail = self._memory.get_item_for_dashboard(source_id)
+            if detail is None:
+                continue
+            extra_raw = detail.get("extra_json")
+            extra = dict(cast(dict[str, object], extra_raw)) if isinstance(extra_raw, dict) else {}
+            extra["_rollup"] = {
+                "candidate_id": candidate_id,
+                "action": action,
+                "acted_at": acted_at,
+                "pending_source_ref": f"memory_rollup:{candidate_id}",
+            }
+            _ = self._memory.update_item_for_dashboard(source_id, extra_json=extra)
 
     def _remove_cached_candidate(self, candidate_id: str) -> None:
         """从缓存 JSON 中移除指定候选。"""
@@ -292,7 +275,10 @@ class MemoryRollupReader:
 
 
 def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
-    reader = MemoryRollupReader(plugin_dir, workspace)
+    memory = getattr(app.state, "memory_admin", None)
+    if memory is None:
+        raise RuntimeError("memory engine unavailable")
+    reader = MemoryRollupReader(plugin_dir, workspace, memory)
 
     @app.get("/api/dashboard/memory-rollup/overview")
     def get_overview() -> dict[str, Any]:

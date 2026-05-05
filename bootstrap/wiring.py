@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from importlib import import_module
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from agent.context import ContextBuilder
 from agent.config_models import Config
@@ -18,10 +17,6 @@ from core.memory.default_engine import DefaultMemoryEngine
 from core.net.http import SharedHttpResources
 
 if TYPE_CHECKING:
-    from memory2.memorizer import Memorizer
-    from memory2.post_response_worker import PostResponseMemoryWorker
-    from memory2.procedure_tagger import ProcedureTagger
-    from memory2.retriever import Retriever
     from agent.looping.interrupt import TurnInterruptState
 
 
@@ -35,10 +30,24 @@ class MemoryEngineBuildDeps:
     provider: LLMProvider
     light_provider: LLMProvider | None
     http_resources: SharedHttpResources
-    retriever: "Retriever"
-    memorizer: "Memorizer | None"
-    tagger: "ProcedureTagger | None"
-    post_response_worker: "PostResponseMemoryWorker | None"
+    event_publisher: Any | None = None
+
+    # TODO(memory-engine-cleanup): 旧 builder 测试迁移到 engine 自建依赖后删除这些过渡属性。
+    @property
+    def retriever(self) -> None:
+        return None
+
+    @property
+    def memorizer(self) -> None:
+        return None
+
+    @property
+    def tagger(self) -> None:
+        return None
+
+    @property
+    def post_response_worker(self) -> None:
+        return None
 
 
 MemoryEngineBuilder = Callable[[MemoryEngineBuildDeps], object]
@@ -50,71 +59,20 @@ _MEMORY_WIRING = {
 
 def _build_default_memory_engine(deps: MemoryEngineBuildDeps):
     return DefaultMemoryEngine(
-        retriever=deps.retriever,
-        memorizer=deps.memorizer,
-        tagger=deps.tagger,
-        post_response_worker=deps.post_response_worker,
-    )
-
-
-def _build_memu_memory_engine(deps: MemoryEngineBuildDeps):
-    from core.memory.memu_engine import MemUMemoryEngine, MemUScopeModel
-    MemoryService = cast(Any, import_module("memu.app.service").MemoryService)
-
-    base_url = (
-        deps.config.light_base_url or deps.config.base_url or "https://api.openai.com/v1"
-    )
-    api_key = deps.config.light_api_key or deps.config.api_key
-    embed_base_url = deps.config.memory_v2.base_url or base_url
-    embed_api_key = deps.config.memory_v2.api_key or api_key
-    chat_model = deps.config.light_model or deps.config.model
-    service = MemoryService(
-        llm_profiles={
-            "default": {
-                "provider": "openai",
-                "base_url": base_url,
-                "api_key": api_key,
-                "chat_model": chat_model,
-                "client_backend": "sdk",
-            },
-            "embedding": {
-                "provider": "openai",
-                "base_url": embed_base_url,
-                "api_key": embed_api_key,
-                "embed_model": deps.config.memory_v2.embed_model,
-                "client_backend": "sdk",
-            },
-        },
-        blob_config={
-            "provider": "local",
-            "resources_dir": str(deps.workspace / "memu" / "resources"),
-        },
-        database_config={
-            "metadata_store": {
-                "provider": "inmemory",
-            },
-        },
-        retrieve_config={
-            "method": "rag",
-            "route_intention": False,
-            "sufficiency_check": False,
-        },
-        user_config={"model": MemUScopeModel},
-    )
-    return MemUMemoryEngine(
-        service=service,
-        input_dir=deps.workspace / "memu" / "input",
+        config=deps.config,
+        workspace=deps.workspace,
+        provider=deps.provider,
+        light_provider=deps.light_provider,
+        http_resources=deps.http_resources,
+        event_publisher=deps.event_publisher,
     )
 
 
 _MEMORY_ENGINE_WIRING: dict[str, MemoryEngineBuilder] = {
     "default": _build_default_memory_engine,
-    "memu": _build_memu_memory_engine,
 }
 _CONTEXT_WIRING: dict[str, ContextFactory] = {
-    "default": lambda workspace, memory_port: ContextBuilder(
-        workspace, memory=memory_port
-    ),
+    "default": lambda workspace, memory: ContextBuilder(workspace, memory=memory),
 }
 _TOOLSET_WIRING = {
     "spawn": SpawnToolsetProvider,

@@ -6,11 +6,10 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 from bus.events_lifecycle import TurnCommitted
-from core.memory.engine import MemoryIngestRequest, MemoryScope
+from core.memory.engine import MemoryIngestRequest, MemoryScope, RefreshRecentTurnsRequest
 
 if TYPE_CHECKING:
     from agent.core.types import ToolCallGroup
-    from agent.looping.consolidation import ConsolidationService
     from agent.looping.ports import TurnScheduler
     from bus.event_bus import EventBus
     from core.memory.engine import MemoryEngine
@@ -22,7 +21,6 @@ logger = logging.getLogger("agent.loop.lifecycle")
 def register_turn_committed_consumers(
     *,
     event_bus: "EventBus",
-    consolidation: "ConsolidationService",
     session_manager: "SessionManager",
     scheduler: "TurnScheduler",
     memory_engine: "MemoryEngine | None",
@@ -134,6 +132,8 @@ def register_turn_committed_consumers(
             )
 
     def _enqueue_recent_context(event: TurnCommitted) -> None:
+        if memory_engine is None:
+            return
         queue = recent_queues.setdefault(event.session_key, deque())
         queue.append(event.session_key)
         running = event.session_key in recent_tasks
@@ -165,7 +165,9 @@ def register_turn_committed_consumers(
                     len(queue),
                 )
                 session = session_manager.get_or_create(session_key)
-                await consolidation.refresh_recent_turns(session=session)
+                await memory_engine.refresh_recent_turns(
+                    RefreshRecentTurnsRequest(session=session)
+                )
                 logger.info(
                     "[_run_recent_context_queue] recent_context 刷新完成 session=%s remaining=%d",
                     session_key,

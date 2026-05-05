@@ -36,7 +36,7 @@ from prompts.agent import (
 )
 
 if TYPE_CHECKING:
-    from core.memory.profile import ProfileReader
+    from core.memory.engine import MemoryProfileApi
 
 logger = logging.getLogger("agent.context")
 
@@ -204,7 +204,7 @@ class ContextBuilder:
     def __init__(
         self,
         workspace: Path,
-        memory: "ProfileReader",
+        memory: "MemoryProfileApi",
         *,
         multimodal: bool = True,
         vl_available: bool = False,

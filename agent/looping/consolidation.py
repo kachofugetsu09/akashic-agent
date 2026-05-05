@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import json_repair
 
@@ -17,10 +17,7 @@ logger = logging.getLogger("agent.loop")
 if TYPE_CHECKING:
     from agent.looping.ports import TurnScheduler
     from agent.provider import LLMProvider
-    from core.memory.port import MemoryPort
-    from core.memory.profile import ProfileMaintenanceStore
-    from core.memory.runtime_facade import MemoryRuntimeFacade
-    from memory2.profile_extractor import ProfileFactExtractor
+    from core.memory.engine import MemoryEngine
     from session.manager import SessionManager
 
 _ALLOWED_PENDING_TAGS = frozenset(
@@ -157,7 +154,7 @@ _DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})")
 
 
 def _append_entries_to_journal(
-    profile_maint: "ProfileMaintenanceStore",
+    profile_maint: "MemoryEngine",
     entries: list[str],
     source_ref: str,
 ) -> None:
@@ -329,17 +326,17 @@ class ConsolidationService:
     def __init__(
         self,
         *,
-        memory_port: "MemoryPort",
-        profile_maint: "ProfileMaintenanceStore | None" = None,
+        memory: "MemoryEngine",
+        profile_maint: "MemoryEngine | None" = None,
         provider: "LLMProvider",
         model: str,
         keep_count: int,
-        profile_extractor: "ProfileFactExtractor | None" = None,
+        profile_extractor: Any | None = None,
         recent_context_provider: "LLMProvider | None" = None,
         recent_context_model: str | None = None,
     ) -> None:
-        self._memory_port = memory_port
-        self._profile_maint = profile_maint or memory_port
+        self._memory_engine = memory
+        self._profile_maint = profile_maint or memory
         self._provider = provider
         self._model = model
         self._recent_context_provider = recent_context_provider or provider
@@ -369,7 +366,7 @@ class ConsolidationService:
                 return
 
             for fact in facts:
-                await self._memory_port.save_item(
+                await self._memory_engine.save_item(
                     summary=fact.summary,
                     memory_type="profile",
                     extra={
@@ -674,7 +671,7 @@ USER: 那就直接写个脚本绕过去吧
             category = (item.get("category") or "personal_fact").strip()
             happened_at = item.get("happened_at") or None
             emotional_weight = _coerce_emotional_weight(item.get("emotional_weight"))
-            await self._memory_port.save_item_with_supersede(
+            await self._memory_engine.save_item_with_supersede(
                 summary=summary,
                 memory_type="profile",
                 extra={
@@ -710,7 +707,7 @@ USER: 那就直接写个脚本绕过去吧
                     rule_schema = item.get("rule_schema")
                     if rule_schema and isinstance(rule_schema, dict):
                         extra["rule_schema"] = rule_schema
-                await self._memory_port.save_item_with_supersede(
+                await self._memory_engine.save_item_with_supersede(
                     summary=summary,
                     memory_type=mtype,
                     extra=extra,
@@ -967,7 +964,7 @@ ongoing_threads 严格限制：
         archive_all: bool = False,
         force: bool = False,
     ) -> None:
-        memory = self._memory_port
+        memory = self._memory_engine
         profile_maint = self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
         window = _select_consolidation_window(
@@ -1217,7 +1214,7 @@ history_entries.emotional_weight 规则：
             # 5. 再把 history_entries 写入向量记忆，供后续 retrieval 使用。
             # 必须等所有写库完成后再推进 last_consolidated，防止进程崩溃导致丢数。
             save_coros = [
-                self._memory_port.save_from_consolidation(
+                self._memory_engine.save_from_consolidation(
                     history_entry=entry,
                     behavior_updates=[],
                     source_ref=_build_entry_source_ref(source_ref, entry),
@@ -1323,7 +1320,7 @@ class ConsolidationRuntime:
     ├──────────────────────────────────────┤
     │ 1. 暴露手动 consolidation 入口       │
     │ 2. 等待后台 consolidation 空闲       │
-    │ 3. 复用 service 做 consolidate/save  │
+    │ 3. 通过 MemoryEngine 做归档和保存    │
     └──────────────────────────────────────┘
     """
 
@@ -1332,15 +1329,13 @@ class ConsolidationRuntime:
         *,
         session_manager: "SessionManager",
         scheduler: "TurnScheduler",
-        consolidation: ConsolidationService,
-        facade: "MemoryRuntimeFacade | None" = None,
+        memory: "MemoryEngine | None",
         keep_count: int,
         wait_timeout_s: float,
     ) -> None:
         self._session_manager = session_manager
         self._scheduler = scheduler
-        self._consolidation = consolidation
-        self._facade = facade
+        self._memory = memory
         self._keep_count = keep_count
         self._consolidation_min_new_messages = max(5, keep_count // 2)
         self._wait_timeout_s = wait_timeout_s
@@ -1352,16 +1347,16 @@ class ConsolidationRuntime:
         archive_all: bool = False,
         force: bool = False,
     ) -> None:
-        if self._facade is not None and not force:
-            await self._facade.run_consolidation(
-                session,
-                archive_all=archive_all,
-            )
+        if self._memory is None:
             return
-        await self._consolidation.consolidate(
-            session,
-            archive_all=archive_all,
-            force=force,
+        from core.memory.engine import ConsolidateRequest
+
+        await self._memory.consolidate(
+            ConsolidateRequest(
+                session=session,
+                archive_all=archive_all,
+                force=force,
+            )
         )
 
     async def trigger_memory_consolidation(
