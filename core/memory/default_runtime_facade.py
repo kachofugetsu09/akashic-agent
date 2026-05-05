@@ -13,6 +13,8 @@ from agent.looping.memory_gate import (
     _trace_route_reason,
 )
 from core.memory.engine import (
+    MemoryProfileApi,
+    MemoryRetrievalApi,
     MemoryHit,
     MemoryEngineRetrieveResult,
     MemoryEngineRetrieveRequest,
@@ -68,7 +70,7 @@ class _HitLike(Protocol):
     metadata: dict[str, object]
 
 
-class DefaultMemoryRuntimeFacade:
+class DefaultMemoryRuntimeFacade(MemoryProfileApi, MemoryRetrievalApi):
     def __init__(
         self,
         *,
@@ -98,6 +100,32 @@ class DefaultMemoryRuntimeFacade:
 
     def bind_consolidation_runner(self, runner: ConsolidationRunner) -> None:
         self._consolidation_runner = runner
+
+    async def retrieve(
+        self,
+        request: MemoryEngineRetrieveRequest,
+    ) -> MemoryEngineRetrieveResult:
+        raw_history = request.context.get("history")
+        raw_metadata = request.context.get("session_metadata")
+        history = cast("list[HistoryMessage]", raw_history) if isinstance(raw_history, list) else []
+        session_metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        context_result = await self.retrieve_context(
+            ContextRetrievalRequest(
+                message=request.query,
+                session_key=request.scope.session_key,
+                channel=request.scope.channel,
+                chat_id=request.scope.chat_id,
+                history=history,
+                session_metadata=session_metadata,
+                extra=dict(request.hints),
+            )
+        )
+        return MemoryEngineRetrieveResult(
+            text_block=context_result.text_block,
+            hits=[],
+            trace=dict(context_result.trace),
+            raw=dict(context_result.raw),
+        )
 
     async def _reinforce_context_result(
         self,
@@ -129,7 +157,6 @@ class DefaultMemoryRuntimeFacade:
             result = await self._retrieval_semantics(request)
             return await self._reinforce_context_result(result)
 
-        # 3. 没切主链前，提供一个极薄 fallback，保证 facade 可单独 contract test。
         if self._engine is None:
             result = ContextRetrievalResult(
                 trace={"source": "default_runtime_facade", "mode": "disabled"},
@@ -137,7 +164,6 @@ class DefaultMemoryRuntimeFacade:
             )
             return await self._reinforce_context_result(result)
 
-        # 4. fallback 只做单次 engine.retrieve，不假装拥有旧 pipeline 全部语义。
         engine_result = await self._engine.retrieve(
             MemoryEngineRetrieveRequest(
                 query=request.message,
@@ -174,7 +200,7 @@ class DefaultMemoryRuntimeFacade:
         *,
         archive_all: bool = False,
     ) -> None:
-        # 1. consolidation 在 phase 1 还不迁 owner，只提供统一入口。
+        # TODO(memory-engine-phase3): consolidation 迁入 engine 后删除 runner 入口。
         if self._consolidation_runner is None:
             raise RuntimeError("consolidation_runner unavailable")
         await self._consolidation_runner(session, archive_all)
@@ -182,11 +208,10 @@ class DefaultMemoryRuntimeFacade:
     async def retrieve_interest_block(
         self, request: InterestRetrievalRequest
     ) -> InterestRetrievalResult:
-        # TODO: 兼容壳；proactive 还保留旧的 preference/profile block 形状。
+        # TODO(memory-engine-phase3): proactive 改调 engine.retrieve 后删除该兼容入口。
         if self._interest_retriever is not None:
             return await self._interest_retriever(request)
 
-        # 2. 默认 fallback 直接转调 port.retrieve_related。
         hits = self._port.retrieve_related(
             request.query,
             memory_types=["preference", "profile"],
@@ -213,27 +238,38 @@ class DefaultMemoryRuntimeFacade:
         return await self._explicit_retriever(request)
 
     async def remember_explicit(self, request: RememberRequest) -> RememberResult:
-        # 1. 显式记忆仍然以 engine 为 owner，facade 只做统一入口。
         if self._engine is None:
             raise RuntimeError("memory engine unavailable")
         return await self._engine.remember(request)
 
     def read_long_term_context(self) -> str:
-        # 1. 文件侧长期上下文读取先继续走 profile_maint/port。
         return str(self._profile_maint.read_long_term() or "")
 
+    def read_long_term(self) -> str:
+        return self.read_long_term_context()
+
     def read_self(self) -> str:
-        # 1. proactive prompt 仍需要自我认知块，这里保持 file-side 读取入口。
         return str(self._profile_maint.read_self() or "")
 
     def read_recent_history(self, *, max_chars: int = 0) -> str:
-        # 1. consolidation 侧仍依赖 history 文件，这里只是收一个稳定入口。
         return str(self._profile_maint.read_history(max_chars=max_chars) or "")
 
     def read_recent_context(self) -> str:
+        # TODO(memory-engine-phase3): profile_maint 收口到 MemoryProfileApi 后直接调用。
         if hasattr(self._profile_maint, "read_recent_context"):
             return str(self._profile_maint.read_recent_context() or "")
         return ""
+
+    def get_memory_context(self) -> str:
+        # TODO(memory-engine-phase3): profile_maint 收口到 MemoryProfileApi 后直接调用。
+        reader = getattr(self._profile_maint, "get_memory_context", None)
+        if callable(reader):
+            return str(reader() or "")
+        long_term = self.read_long_term().strip()
+        return f"## Long-term Memory\n{long_term}" if long_term else ""
+
+    def has_long_term_memory(self) -> bool:
+        return bool(self.read_long_term().strip())
 
 
 class DefaultRetrievalSemantics:

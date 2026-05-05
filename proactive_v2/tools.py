@@ -9,15 +9,18 @@ proactive_v2/tools.py — Tool schemas + execute dispatcher
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
+from core.memory.engine import InterestRetrievalRequest
 from agent.prompting import is_context_frame
 from proactive_v2.context import AgentTickContext
 from proactive_v2.outbound_text import normalize_outbound_text
+
+if TYPE_CHECKING:
+    from core.memory.engine import MemoryProfileApi, MemoryRetrievalApi
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,7 @@ class ToolDeps:
     """所有工具的外部依赖，通过构造注入。"""
     web_fetch_tool: Any = None          # WebFetchTool（降级用）
     web_search_tool: Any = None         # WebSearchTool（可选）
-    memory: Any = None                  # MemoryRuntimeFacade instance
+    memory: "MemoryProfileApi | MemoryRetrievalApi | None" = None
     recent_chat_fn: Any = None          # async (n) -> list[dict]
     ack_fn: Any = None                  # async (compound_key: str, ttl_hours: int) -> None
     alert_ack_fn: Any = None            # async (compound_key: str) -> None
@@ -212,17 +215,14 @@ async def _retrieve_interest_hits(*, memory, query: str) -> list[dict]:
     if memory is None:
         return []
 
-    from core.memory.runtime_facade import InterestRetrievalRequest
-
-    result = memory.retrieve_interest_block(
+    retrieval_memory = cast("MemoryRetrievalApi", memory)
+    result = await retrieval_memory.retrieve_interest_block(
         InterestRetrievalRequest(
             query=query,
             top_k=2,
         )
     )
-    if asyncio.iscoroutine(result):
-        result = await result
-    return list(getattr(result, "hits", None) or [])
+    return list(result.hits)
 
 
 def _valid_content_ids(ctx: AgentTickContext) -> set[str]:

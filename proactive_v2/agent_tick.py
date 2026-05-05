@@ -15,7 +15,7 @@ import random as _random_module
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from agent.prompting import (
@@ -26,7 +26,7 @@ from agent.prompting import (
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from core.memory.runtime_facade import MemoryRuntimeFacade
+from core.memory.engine import MemoryProfileApi
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.contracts import (
     normalize_alert,
@@ -48,13 +48,13 @@ _POST_GUARD_ACK_TTL = 24   # delivery/message dedupe hit → 24h
 _DISCARDED_ACK_TTL = 720   # mark_not_interesting → 720h
 
 
-def _read_long_term_text(memory: MemoryRuntimeFacade | None) -> str:
+def _read_long_term_text(memory: MemoryProfileApi | None) -> str:
     if memory is not None:
-        return str(memory.read_long_term_context() or "")
+        return str(memory.read_long_term() or "")
     return ""
 
 
-def _read_self_text(memory: MemoryRuntimeFacade | None) -> str:
+def _read_self_text(memory: MemoryProfileApi | None) -> str:
     if memory is not None:
         return str(memory.read_self() or "")
     return ""
@@ -531,17 +531,18 @@ class AgentTick:
         memory_block = ""
         recent_context_block = ""
         if self._tool_deps.memory is not None:
+            profile_memory = cast(MemoryProfileApi, self._tool_deps.memory)
             try:
-                self_content = _read_self_text(self._tool_deps.memory).strip()
+                self_content = _read_self_text(profile_memory).strip()
             except Exception:
                 self_content = ""
             try:
-                memory_block = _read_long_term_text(self._tool_deps.memory).strip()
+                memory_block = _read_long_term_text(profile_memory).strip()
             except Exception:
                 memory_block = ""
             try:
                 recent_context_block = str(
-                    self._tool_deps.memory.read_recent_context() or ""
+                    profile_memory.read_recent_context() or ""
                 ).strip()
             except Exception:
                 recent_context_block = ""

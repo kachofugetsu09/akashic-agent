@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -95,7 +94,7 @@ async def _retrieve_context_with_facade(
     request: ContextRetrievalRequest,
     legacy_retriever,
 ) -> ContextRetrievalResult:
-    facade = getattr(memory, "facade", None)
+    facade = memory.facade
     if facade is None:
         return await legacy_retriever(request)
     return await facade.retrieve_context(request)

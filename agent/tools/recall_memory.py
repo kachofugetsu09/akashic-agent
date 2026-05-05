@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 from agent.tools.base import Tool
-from core.memory.runtime_facade import ExplicitRetrievalRequest
+from core.memory.engine import ExplicitRetrievalRequest
 
 if TYPE_CHECKING:
-    from core.memory.runtime_facade import MemoryRuntimeFacade
+    from core.memory.engine import MemoryRetrievalApi
 
 _LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 _MemoryHit = dict[str, object]
@@ -103,7 +103,7 @@ class RecallMemoryTool(Tool):
 
     def __init__(
         self,
-        facade: "MemoryRuntimeFacade",
+        facade: "MemoryRetrievalApi",
     ) -> None:
         self._facade = facade
 

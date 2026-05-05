@@ -15,8 +15,8 @@ from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.profile import MemoryOptimizerStore, ProfileMaintenanceStore
-    from core.memory.runtime_facade import MemoryRuntimeFacade
+    from core.memory.engine import MemoryProfileApi, MemoryRetrievalApi
+    from core.memory.profile import MemoryOptimizerStore
 
 
 def _build_proactive_provider(config: Config, provider: LLMProvider) -> LLMProvider:
@@ -46,7 +46,7 @@ def build_proactive_runtime(
     provider: LLMProvider,
     light_provider: LLMProvider | None,
     push_tool: MessagePushTool,
-    memory_store: "MemoryRuntimeFacade | None",
+    memory_store: "MemoryProfileApi | MemoryRetrievalApi | None",
     presence: PresenceStore,
     agent_loop: AgentLoop,
     tool_hooks: list[ToolHook] | None = None,

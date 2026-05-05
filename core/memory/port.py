@@ -8,6 +8,16 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from core.memory.engine import (
+    ConsolidateRequest,
+    ConsolidateResult,
+    MemoryIngestRequest,
+    MemoryIngestResult,
+    MemoryMaintenanceApi,
+    MemoryProfileApi,
+    RefreshRecentTurnsRequest,
+)
+
 if TYPE_CHECKING:
     from agent.memory import MemoryStore
     from memory2.memorizer import Memorizer
@@ -164,7 +174,7 @@ class MemoryPort(Protocol):
 # ── Adapter ───────────────────────────────────────────────────────────────────
 
 
-class DefaultMemoryPort:
+class DefaultMemoryPort(MemoryProfileApi, MemoryMaintenanceApi):
     """Adapts MemoryStore (v1) + optional Memorizer/Retriever (v2).
 
     `memorizer` / `retriever` 可选；未接入时仅提供文件层能力。
@@ -282,6 +292,21 @@ class DefaultMemoryPort:
             return text
         except Exception:
             return ""
+
+    def read_recent_history(self, *, max_chars: int = 0) -> str:
+        return self.read_history(max_chars=max_chars)
+
+    # TODO(memory-engine-phase3): maintenance 迁入 engine 后删除这些占位入口。
+    async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:
+        raise NotImplementedError("ingest")
+
+    async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
+        raise NotImplementedError("consolidate")
+
+    async def refresh_recent_turns(
+        self, request: RefreshRecentTurnsRequest
+    ) -> None:
+        raise NotImplementedError("refresh_recent_turns")
 
     def append_journal(
         self, date_str: str, entry: str, *, source_ref: str = "", kind: str = "journal"

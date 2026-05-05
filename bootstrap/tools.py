@@ -344,8 +344,8 @@ def _build_loop_deps(
             multimodal=bool(getattr(config, "multimodal", True)),
             vl_available=bool(getattr(config, "vl_model", "")),
         )
-    memory_engine = getattr(memory_runtime, "engine", None)
-    memory_facade = getattr(memory_runtime, "facade", None)
+    memory_engine = memory_runtime.engine
+    memory_facade = memory_runtime.facade
     llm_services = LLMServices(provider=provider, light_provider=light)
     memory_services = MemoryServices(
         engine=memory_engine,
@@ -379,7 +379,7 @@ def _build_loop_deps(
     async def _consolidate_and_save(session: object) -> None:
         # scheduler 只负责起后台任务；真正的工作是“consolidate + save session”这两步。
         if memory_facade is not None:
-            await memory_facade.run_consolidation(session)  # type: ignore[arg-type]
+            await memory_facade.run_consolidation(session)
         else:
             await consolidation.consolidate(session)  # type: ignore[arg-type]
         await session_manager.save_async(session)  # type: ignore[arg-type]

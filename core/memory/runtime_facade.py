@@ -5,7 +5,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol, runtime_checkable
 
 from core.memory.engine import (
-    MemoryScope,
+    ExplicitRetrievalRequest,
+    ExplicitRetrievalResult,
+    InterestRetrievalRequest,
+    InterestRetrievalResult,
     RememberRequest,
     RememberResult,
 )
@@ -36,39 +39,6 @@ class ContextRetrievalResult:
     hyde_hypothesis: str | None = None
     scope_mode: str = ""
     sufficiency_trace: dict[str, object] = field(default_factory=dict)
-    raw: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class InterestRetrievalRequest:
-    query: str
-    scope: MemoryScope = field(default_factory=MemoryScope)
-    top_k: int = 2
-
-
-@dataclass
-class InterestRetrievalResult:
-    text_block: str = ""
-    hits: list[dict] = field(default_factory=list)
-    trace: dict[str, object] = field(default_factory=dict)
-    raw: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ExplicitRetrievalRequest:
-    query: str
-    memory_type: str = ""
-    search_mode: str = "semantic"
-    limit: int = 8
-    time_start: datetime | None = None
-    time_end: datetime | None = None
-    scope: MemoryScope = field(default_factory=MemoryScope)
-
-
-@dataclass
-class ExplicitRetrievalResult:
-    hits: list[dict] = field(default_factory=list)
-    trace: dict[str, object] = field(default_factory=dict)
     raw: dict[str, object] = field(default_factory=dict)
 
 

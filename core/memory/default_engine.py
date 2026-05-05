@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from core.memory.engine import (
+    ConsolidateRequest,
+    ConsolidateResult,
+    ExplicitRetrievalRequest,
+    ExplicitRetrievalResult,
+    ForgetRequest,
+    ForgetResult,
+    InterestRetrievalRequest,
+    InterestRetrievalResult,
     EngineProfile,
     MemoryCapability,
     MemoryEngineDescriptor,
@@ -12,6 +21,7 @@ from core.memory.engine import (
     MemoryHit,
     MemoryIngestRequest,
     MemoryIngestResult,
+    RefreshRecentTurnsRequest,
     RememberRequest,
     RememberResult,
 )
@@ -170,6 +180,109 @@ class DefaultMemoryEngine:
 
     def describe(self) -> MemoryEngineDescriptor:
         return self.DESCRIPTOR
+
+    # TODO(memory-engine-phase3): 这些协议入口迁入 engine 后删除占位实现。
+    async def forget(self, request: ForgetRequest) -> ForgetResult:
+        raise NotImplementedError("forget")
+
+    async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
+        raise NotImplementedError("consolidate")
+
+    async def refresh_recent_turns(
+        self, request: RefreshRecentTurnsRequest
+    ) -> None:
+        raise NotImplementedError("refresh_recent_turns")
+
+    async def retrieve_explicit(
+        self, request: ExplicitRetrievalRequest
+    ) -> ExplicitRetrievalResult:
+        raise NotImplementedError("retrieve_explicit")
+
+    async def retrieve_interest_block(
+        self, request: InterestRetrievalRequest
+    ) -> InterestRetrievalResult:
+        raise NotImplementedError("retrieve_interest_block")
+
+    def read_long_term(self) -> str:
+        raise NotImplementedError("read_long_term")
+
+    def read_self(self) -> str:
+        raise NotImplementedError("read_self")
+
+    def read_recent_history(self, *, max_chars: int = 0) -> str:
+        raise NotImplementedError("read_recent_history")
+
+    def read_recent_context(self) -> str:
+        raise NotImplementedError("read_recent_context")
+
+    def get_memory_context(self) -> str:
+        raise NotImplementedError("get_memory_context")
+
+    def has_long_term_memory(self) -> bool:
+        raise NotImplementedError("has_long_term_memory")
+
+    def read_pending(self) -> str:
+        raise NotImplementedError("read_pending")
+
+    def append_pending(self, facts: str) -> None:
+        raise NotImplementedError("append_pending")
+
+    def append_pending_once(
+        self,
+        facts: str,
+        source_ref: str,
+        kind: str = "pending",
+    ) -> bool:
+        raise NotImplementedError("append_pending_once")
+
+    def snapshot_pending(self) -> str:
+        raise NotImplementedError("snapshot_pending")
+
+    def commit_pending_snapshot(self) -> None:
+        raise NotImplementedError("commit_pending_snapshot")
+
+    def rollback_pending_snapshot(self) -> None:
+        raise NotImplementedError("rollback_pending_snapshot")
+
+    def append_history(self, entry: str) -> None:
+        raise NotImplementedError("append_history")
+
+    def append_history_once(
+        self,
+        entry: str,
+        source_ref: str,
+        kind: str = "history_entry",
+    ) -> bool:
+        raise NotImplementedError("append_history_once")
+
+    def append_journal(
+        self,
+        date_str: str,
+        entry: str,
+        *,
+        source_ref: str = "",
+        kind: str = "journal",
+    ) -> bool:
+        raise NotImplementedError("append_journal")
+
+    def reinforce_items_batch(self, ids: list[str]) -> None:
+        if self._memorizer is None:
+            return
+        self._memorizer.reinforce_items_batch(ids)
+
+    def keyword_match_procedures(
+        self, action_tokens: list[str]
+    ) -> list[dict[str, object]]:
+        raise NotImplementedError("keyword_match_procedures")
+
+    def list_events_by_time_range(
+        self,
+        time_start: datetime,
+        time_end: datetime,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        raise NotImplementedError("list_events_by_time_range")
 
     @classmethod
     def _build_hit(cls, item: dict, *, injected_ids: list[str] | None = None) -> MemoryHit:
