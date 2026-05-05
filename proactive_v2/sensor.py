@@ -14,7 +14,7 @@ from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.runtime_facade import MemoryRuntimeFacade
+    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class Sensor:
         cfg: Any,
         sessions: SessionManager,
         state: ProactiveStateStore,
-        memory: "MemoryRuntimeFacade | None",
+        memory: "MemoryProfileApi | None",
         presence: PresenceStore | None,
         rng: Any,
         fitbit: Any | None = None,
@@ -72,7 +72,7 @@ class Sensor:
         if not self._memory:
             return ""
         try:
-            return str(self._memory.read_long_term_context() or "").strip()
+            return str(self._memory.read_long_term() or "").strip()
         except Exception:
             return ""
 

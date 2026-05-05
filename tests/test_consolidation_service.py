@@ -3,8 +3,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from agent.looping.consolidation import (
-    ConsolidationService,
+from core.memory.markdown import (
+    _MarkdownConsolidationWorker as ConsolidationWorker,
     _select_recent_history_entries,
     _replace_recent_turns_block,
 )
@@ -20,8 +20,23 @@ def _message_text(kwargs) -> str:
     return "\n".join(str(msg.get("content") or "") for msg in messages)
 
 
+def _prepare(
+    service: ConsolidationWorker,
+    session: object,
+    *,
+    archive_all: bool = False,
+    force: bool = False,
+):
+    return asyncio.run(
+        service.prepare_consolidation(
+            session,
+            archive_all=archive_all,
+            force=force,
+        )
+    )
+
+
 def test_consolidation_service_archive_all_and_profile_extract():
-    """consolidation 触发两次并行 LLM 调用：一次提取 event，一次提取 profile/preference/procedure。"""
     memory = SimpleNamespace(
         read_long_term=MagicMock(return_value="MEM"),
         read_history=MagicMock(
@@ -56,8 +71,8 @@ def test_consolidation_service_archive_all_and_profile_extract():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
-    service = ConsolidationService(
-        memory_port=cast(Any, memory),
+    service = ConsolidationWorker(
+        profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
@@ -73,18 +88,14 @@ def test_consolidation_service_archive_all_and_profile_extract():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session, archive_all=True))
+    draft = _prepare(service, session, archive_all=True)
 
-    memory.append_history_once.assert_called_once()
-    memory.save_from_consolidation.assert_awaited_once()
-    memory.append_journal.assert_called_once_with(
-        "2026-03-15",
-        "[2026-03-15 10:00] 用户聊了 Zigbee 方案",
-        source_ref="[]",
-        kind="journal:2026-03-15",
-    )
-    # 当前 tail 太短，没有 compression 源段，因此只会调用 event + 长期记忆
-    assert provider.chat.await_count == 2
+    assert draft is not None
+    assert draft.history_entry_payloads == [
+        ("[2026-03-15 10:00] 用户聊了 Zigbee 方案", 6)
+    ]
+    assert draft.conversation
+    assert provider.chat.await_count == 1
     assert all(
         call.kwargs.get("disable_thinking") is True
         for call in provider.chat.await_args_list
@@ -94,25 +105,14 @@ def test_consolidation_service_archive_all_and_profile_extract():
         for call in provider.chat.await_args_list
         if "记忆提取代理" in _message_text(call.kwargs)
     )
-    implicit_prompt = next(
-        _message_text(call.kwargs)
-        for call in provider.chat.await_args_list
-        if "长期记忆提取专家" in _message_text(call.kwargs)
-    )
     assert "## 最近三次 consolidation event" in event_prompt
     assert "用户准备下单 Zigbee 网关" in event_prompt
     assert "不能作为人物身份、说话人归属、关系判断或具体事实归属的直接证据" in event_prompt
     assert "emotional_weight" in event_prompt
-    assert "emotional_weight" in implicit_prompt
-    # 长期记忆 call 保存了 profile（走 save_item_with_supersede）
-    memory.save_item_with_supersede.assert_awaited_once()
-    assert memory.save_from_consolidation.await_args.kwargs["emotional_weight"] == 6
-    assert memory.save_item_with_supersede.await_args.kwargs["emotional_weight"] == 4
-    memory.write_recent_context.assert_called_once()
     assert session.last_consolidated == 0
 
 
-def test_consolidation_service_uses_profile_maint_for_file_side_io():
+def test_consolidation_service_uses_profile_maint_for_reads():
     memory_port = SimpleNamespace(
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
@@ -139,13 +139,11 @@ def test_consolidation_service_uses_profile_maint_for_file_side_io():
         )
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
-    service = ConsolidationService(
-        memory_port=cast(Any, memory_port),
+    service = ConsolidationWorker(
         profile_maint=cast(Any, profile_maint),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
-        profile_extractor=None,
     )
     session = SimpleNamespace(
         key="cli:1",
@@ -158,25 +156,16 @@ def test_consolidation_service_uses_profile_maint_for_file_side_io():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session, archive_all=True))
+    draft = _prepare(service, session, archive_all=True)
 
+    assert draft is not None
     profile_maint.read_long_term.assert_called_once()
-    profile_maint.append_history_once.assert_called_once()
-    profile_maint.append_journal.assert_called_once_with(
-        "2026-03-15",
-        "[2026-03-15 10:00] 用户聊了 Zigbee 方案",
-        source_ref="[]",
-        kind="journal:2026-03-15",
-    )
-    profile_maint.write_recent_context.assert_called_once()
-    memory_port.save_from_consolidation.assert_awaited_once()
+    assert draft.history_entry_payloads == [
+        ("[2026-03-15 10:00] 用户聊了 Zigbee 方案", 0)
+    ]
 
 
-def test_consolidation_event_failure_does_not_write_implicit_long_term():
-    """当 event 提取返回空响应时，隐式长期记忆（profile/preference/procedure）不应写库。
-    验证 Issue-1 修复：即使 implicit_task 已先于 event 完成，也不会在 event 失败时写入，
-    从而保留同窗口重跑的幂等语义。
-    """
+def test_consolidation_event_failure_does_not_write_markdown():
     memory = SimpleNamespace(
         read_long_term=MagicMock(return_value="MEM"),
         read_history=MagicMock(return_value=""),
@@ -190,25 +179,13 @@ def test_consolidation_event_failure_does_not_write_implicit_long_term():
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
     )
 
-    # implicit LLM 调用返回合法 profile，event LLM 调用返回空（失败路径）。
-    # 用 asyncio.Event 强制让 implicit 调用比 event 调用更早完成，模拟竞态。
-    implicit_done = asyncio.Event()
-
     async def _chat_side_effect(**kwargs):
-        content = _message_text(kwargs)
-        if "长期记忆提取专家" in content:
-            # implicit 调用：立即返回合法结果
-            implicit_done.set()
-            return _Resp('{"profile":[{"summary":"用户买了 Zigbee 网关","category":"purchase","happened_at":"2026-03-15"}],"preference":[],"procedure":[]}')
-
-        # event 调用：等 implicit 完成后再返回空响应，确保竞态场景
-        await implicit_done.wait()
         return _Resp("")
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
-    service = ConsolidationService(
-        memory_port=cast(Any, memory),
+    service = ConsolidationWorker(
+        profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
@@ -224,11 +201,11 @@ def test_consolidation_event_failure_does_not_write_implicit_long_term():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session, archive_all=True))
+    draft = _prepare(service, session, archive_all=True)
 
     # event 失败 → last_consolidated 不推进，隐式结果不写库
+    assert draft is None
     assert session.last_consolidated == 0
-    memory.save_item_with_supersede.assert_not_awaited()
     memory.append_history_once.assert_not_called()
     memory.append_journal.assert_not_called()
     memory.write_recent_context.assert_not_called()
@@ -260,8 +237,8 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
         )
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
-    service = ConsolidationService(
-        memory_port=cast(Any, memory),
+    service = ConsolidationWorker(
+        profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -287,9 +264,10 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session, archive_all=True))
+    draft = _prepare(service, session, archive_all=True)
 
-    written = memory.write_recent_context.call_args.args[0]
+    assert draft is not None
+    written = draft.recent_context_text
     assert "# Recent Context" in written
     assert "until: 2026-03-15T09:59:00" in written
     assert "用户最近在讨论 recent context 设计" in written
@@ -343,8 +321,8 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
         )
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
-    service = ConsolidationService(
-        memory_port=cast(Any, memory),
+    service = ConsolidationWorker(
+        profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -371,10 +349,11 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session))
+    draft = _prepare(service, session)
 
     assert "【较早窗口（本次待压缩）】\nUSER: 第五条\nASSISTANT: 第六条\nUSER: 第七条\nASSISTANT: 第八条\nUSER: 第九条" in captured_prompt["text"]
-    written = memory.write_recent_context.call_args.args[0]
+    assert draft is not None
+    written = draft.recent_context_text
     assert "until: 2026-03-15T10:08:00" in written
     assert "[user] 第十三条" in written
 
@@ -429,8 +408,8 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
         )
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
-    service = ConsolidationService(
-        memory_port=cast(Any, memory),
+    service = ConsolidationWorker(
+        profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -457,7 +436,7 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session, archive_all=True))
+    draft = _prepare(service, session, archive_all=True)
 
     assert all(
         call.kwargs.get("disable_thinking") is True
@@ -473,7 +452,8 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
     assert "ASSISTANT: 第十条" in prompt_before_recent
     assert "USER: 第十一条" in prompt_before_recent
     assert "ASSISTANT: 第十二条" not in prompt_before_recent
-    written = memory.write_recent_context.call_args.args[0]
+    assert draft is not None
+    written = draft.recent_context_text
     assert "until: 2026-03-15T10:10:00" in written
     assert "[user] 第十三条" in written
 
@@ -514,8 +494,8 @@ def test_consolidation_recent_context_invalid_json_keeps_old_compression():
         )
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
-    service = ConsolidationService(
-        memory_port=cast(Any, memory),
+    service = ConsolidationWorker(
+        profile_maint=cast(Any, memory),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -542,9 +522,10 @@ def test_consolidation_recent_context_invalid_json_keeps_old_compression():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session))
+    draft = _prepare(service, session)
 
-    written = memory.write_recent_context.call_args.args[0]
+    assert draft is not None
+    written = draft.recent_context_text
     assert "until: 2026-03-15T10:08:00" in written
     assert "旧话题" in written
     assert "重要线程" in written

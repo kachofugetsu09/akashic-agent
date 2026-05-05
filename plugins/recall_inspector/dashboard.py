@@ -17,9 +17,9 @@ _MEMORY_META_RE = re.compile(r"（(?P<meta>[^（）]*(?:证据|src|有印象|不
 
 
 class RecallInspectorDashboardReader:
-    def __init__(self, plugin_dir: Path) -> None:
+    def __init__(self, plugin_dir: Path, workspace: Path | None = None) -> None:
         self.plugin_dir = plugin_dir
-        self.data_path = plugin_dir / ".data" / "recall_turns.jsonl"
+        self.data_path = _data_path(plugin_dir=plugin_dir, workspace=workspace)
         self._lock = threading.RLock()
 
     @property
@@ -136,7 +136,7 @@ class RecallInspectorDashboardReader:
 
 
 def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
-    reader = RecallInspectorDashboardReader(plugin_dir)
+    reader = RecallInspectorDashboardReader(plugin_dir, workspace)
 
     @app.get("/api/dashboard/recall-inspector/overview")
     def get_recall_inspector_overview() -> dict[str, Any]:
@@ -193,6 +193,12 @@ def _matches_recall_turn(
         ]
     ).lower()
     return q in haystack
+
+
+def _data_path(*, plugin_dir: Path, workspace: Path | None) -> Path:
+    if workspace is not None:
+        return workspace / "observe" / "recall_inspector.jsonl"
+    return plugin_dir / ".data" / "recall_turns.jsonl"
 
 
 def _normalize_context_prepare(value: object) -> dict[str, Any]:

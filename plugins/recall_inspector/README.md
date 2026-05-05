@@ -17,7 +17,7 @@
 
 ### 1. 初始化（initialize）
 
-创建 `plugins/recall_inspector/.data/recall_turns.jsonl` 文件及目录，初始化写入锁（`threading.RLock`）和 `_active_turns` 字典（用于将同一轮 turn 的多条记录关联到同一个 `turn_id`）。
+创建当前 workspace 下的 `observe/recall_inspector.jsonl` 文件及目录，初始化写入锁（`threading.RLock`）和 `_active_turns` 字典（用于将同一轮 turn 的多条记录关联到同一个 `turn_id`）。没有 workspace 的测试环境会退回到 `plugins/recall_inspector/.data/recall_turns.jsonl`。
 
 ### 2. 记录上下文准备（ContextPrepareRecordModule）
 

@@ -92,41 +92,18 @@ allow_from = []
 
 # =============================================================================
 # 语义记忆
-# embedding api_key 通常和 llm.fast 用同一个 key。
+# default memory 的检索阈值在 plugins/default_memory/config.local.toml。
 # =============================================================================
 
 [memory]
 enabled = true
+# 语义记忆 engine 选择。留空等同 default。
+engine = ""
 
 [memory.embedding]
 model = "text-embedding-v3"
 api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-[memory.retrieval]
-top_k_history = 8
-score_threshold = 0.45
-relative_delta = 0.2
-route_intention = true
-
-[memory.retrieval.thresholds]
-procedure = 0.66
-preference = 0.5
-event = 0.5
-profile = 0.5
-
-[memory.retrieval.inject]
-max_chars = 6000
-line_max = 600
-event_profile = 4
-
-[memory.gate]
-llm_timeout_ms = 1600
-max_tokens = 200
-
-[memory.hyde]
-enabled = true
-timeout_ms = 2000
 
 # =============================================================================
 # 主动推送（可选）

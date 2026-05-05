@@ -650,15 +650,14 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
+async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    profile_maint = MagicMock(name="profile_maint")
-    port = MagicMock(name="port")
+    engine = MagicMock(name="engine")
+    markdown_store = MagicMock(name="markdown_store")
     memory_runtime = SimpleNamespace(
-        facade=MagicMock(),
-        profile_maint=profile_maint,
-        port=port,
+        engine=engine,
+        markdown=SimpleNamespace(store=markdown_store),
         aclose=AsyncMock(),
     )
     core = SimpleNamespace(
@@ -711,7 +710,7 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
     await app.start()
 
     build_memory_optimizer_task.assert_called_once()
-    assert build_memory_optimizer_task.call_args.kwargs["memory_store"] is profile_maint
+    assert build_memory_optimizer_task.call_args.kwargs["memory_store"] is markdown_store
     assert app.dashboard_server.manual_memory_optimizer is memory_optimizer
 
 

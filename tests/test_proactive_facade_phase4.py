@@ -65,7 +65,7 @@ def test_build_proactive_provider_strips_enable_thinking():
 
 
 def test_sensor_reads_long_term_from_facade():
-    facade = SimpleNamespace(read_long_term_context=lambda: "MEMORY")
+    facade = SimpleNamespace(read_long_term=lambda: "MEMORY")
     sensor = Sensor(
         cfg=SimpleNamespace(default_channel="telegram", default_chat_id="1"),
         sessions=cast(Any, SimpleNamespace()),

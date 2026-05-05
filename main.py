@@ -18,6 +18,9 @@ from agent.config import Config
 from bootstrap.app import build_app_runtime
 from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
+from bootstrap.memory import build_memory_admin_runtime
+from bootstrap.providers import build_providers
+from core.net.http import SharedHttpResources
 
 
 def _default_workspace() -> Path:
@@ -156,11 +159,26 @@ if __name__ == "__main__":
         sys.exit(0)
 
     if args and args[0] == "dashboard":
-        run_dashboard_api(
-            workspace=workspace or _default_workspace(),
-            host=dashboard_host,
-            port=dashboard_port,
+        config = Config.load(config_path)
+        dashboard_workspace = workspace or _default_workspace()
+        http_resources = SharedHttpResources()
+        provider, light_provider, _ = build_providers(config)
+        memory_runtime = build_memory_admin_runtime(
+            config=config,
+            workspace=dashboard_workspace,
+            provider=provider,
+            light_provider=light_provider,
+            http_resources=http_resources,
         )
+        try:
+            run_dashboard_api(
+                workspace=dashboard_workspace,
+                host=dashboard_host,
+                port=dashboard_port,
+                memory_admin=memory_runtime.engine,
+            )
+        finally:
+            asyncio.run(memory_runtime.aclose())
         sys.exit(0)
 
     if not Path(config_path).exists():

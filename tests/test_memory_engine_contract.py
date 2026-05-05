@@ -1,14 +1,18 @@
 from __future__ import annotations
 from typing import Any, cast
 
+import asyncio
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
-from agent.config_models import Config, MemoryV2Config
+from bus.event_bus import EventBus
+from bus.events_lifecycle import TurnCommitted
+from agent.config_models import Config, MemoryConfig
 from agent.tools.registry import ToolRegistry
 from bootstrap.memory import build_memory_runtime
-from core.memory.default_engine import DefaultMemoryEngine
+from plugins.default_memory.engine import DefaultMemoryEngine
 from core.memory.engine import (
     EngineProfile,
     MemoryCapability,
@@ -20,6 +24,54 @@ from core.memory.engine import (
     RememberRequest,
     RememberResult,
 )
+from core.memory.events import ConsolidationCommitted, TurnIngested
+from core.memory.markdown import (
+    ConsolidateRequest,
+    ConsolidateResult,
+    _ConsolidationDraft,
+    _ConsolidationWindow,
+    MarkdownMemoryMaintenance,
+    MarkdownMemoryStore,
+    MemoryLifecycleBindRequest,
+)
+from core.memory.plugin import MemoryPluginRuntime
+
+
+def _make_default_engine(
+    *,
+    config=None,
+    provider=None,
+    retriever=None,
+    memorizer=None,
+    tagger=None,
+    post_response_worker=None,
+    event_publisher=None,
+):
+    engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
+    engine._config = config or SimpleNamespace(model="lm")
+    engine._workspace = Path(".")
+    engine._provider = provider
+    engine._light_provider = None
+    engine._light_model = ""
+    engine._v2_store = None
+    engine._embedder = None
+    engine._memorizer = memorizer
+    engine._retriever = retriever
+    engine._tagger = tagger
+    engine._post_response_worker = post_response_worker
+    engine._event_bus = event_publisher
+    engine.closeables = []
+    engine._wire_memory2_events()
+    return engine
+
+
+async def _drain_maintenance(maintenance: object) -> None:
+    for _ in range(5):
+        tasks = list(getattr(maintenance, "_maintenance_tasks").values())
+        if not tasks:
+            return
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
 
 
 async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
@@ -38,7 +90,7 @@ async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
         ),
         build_injection_block=lambda items: ("注入块", ["m1"]),
     )
-    engine = DefaultMemoryEngine(retriever=cast(Any, retriever))
+    engine = _make_default_engine(retriever=cast(Any, retriever))
 
     result = await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -74,7 +126,7 @@ async def test_default_memory_engine_retrieve_keeps_raw_items_and_mode_trace():
         ),
         build_injection_block=lambda items: ("历史块", ["e1"]),
     )
-    engine = DefaultMemoryEngine(retriever=cast(Any, retriever))
+    engine = _make_default_engine(retriever=cast(Any, retriever))
 
     result = await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -100,7 +152,7 @@ async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
         retrieve=AsyncMock(return_value=[]),
         build_injection_block=lambda items: ("", []),
     )
-    engine = DefaultMemoryEngine(retriever=cast(Any, retriever))
+    engine = _make_default_engine(retriever=cast(Any, retriever))
 
     await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -118,8 +170,6 @@ async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
 
 
 async def test_default_engine_keeps_history_injected_ids():
-    from agent.retrieval.default_pipeline import _build_injection_payload
-
     retriever = SimpleNamespace(
         retrieve=AsyncMock(
             return_value=[
@@ -135,7 +185,7 @@ async def test_default_engine_keeps_history_injected_ids():
         ),
         build_injection_block=lambda items: ("## 【相关历史】\n- 用户昨天提过 FitBit", ["e1"]),
     )
-    engine = DefaultMemoryEngine(retriever=cast(Any, retriever))
+    engine = _make_default_engine(retriever=cast(Any, retriever))
 
     history_result = await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -147,30 +197,13 @@ async def test_default_engine_keeps_history_injected_ids():
         )
     )
 
-    selected_items, block, injected_ids = _build_injection_payload(
-        procedure_items=[],
-        procedure_result=None,
-        history_items=[
-            {
-                "id": "e1",
-                "memory_type": "event",
-                "summary": "用户昨天提过 FitBit",
-                "score": 0.81,
-                "source_ref": "telegram:1@seed",
-                "extra_json": {"origin": "engine"},
-            }
-        ],
-        history_result=history_result,
-    )
-
-    assert "用户昨天提过 FitBit" in block
-    assert [item["id"] for item in selected_items] == ["e1"]
-    assert injected_ids == ["e1"]
+    assert "用户昨天提过 FitBit" in history_result.text_block
+    assert [hit.id for hit in history_result.hits if hit.injected] == ["e1"]
 
 
 async def test_default_memory_engine_ingest_delegates_to_post_worker():
     worker = SimpleNamespace(run=AsyncMock())
-    engine = DefaultMemoryEngine(
+    engine = _make_default_engine(
         retriever=cast(Any, SimpleNamespace()),
         post_response_worker=cast(Any, worker),
     )
@@ -192,11 +225,269 @@ async def test_default_memory_engine_ingest_delegates_to_post_worker():
     worker.run.assert_awaited_once()
 
 
+async def test_default_memory_engine_handles_turn_committed_via_event_bus():
+    event_bus = EventBus()
+    worker = SimpleNamespace(run=AsyncMock(), handle=AsyncMock())
+    _ = _make_default_engine(
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
+        event_publisher=event_bus,
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="以后用中文",
+            persisted_user_message="以后用中文",
+            assistant_response="好的",
+            tools_used=[],
+            tool_chain_raw=[{"text": "memo", "calls": []}],
+        )
+    )
+    await event_bus.drain()
+
+    worker.handle.assert_awaited_once()
+    event = worker.handle.await_args.args[0]
+    assert isinstance(event, TurnIngested)
+    assert event.session_key == "cli:1"
+    assert event.tool_chain == [{"text": "memo", "calls": []}]
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_respects_skip_post_memory_event_flag():
+    event_bus = EventBus()
+    worker = SimpleNamespace(run=AsyncMock(), handle=AsyncMock())
+    _ = _make_default_engine(
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
+        event_publisher=event_bus,
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="以后用中文",
+            persisted_user_message="以后用中文",
+            assistant_response="好的",
+            tools_used=[],
+            extra={"skip_post_memory": True},
+        )
+    )
+    await event_bus.drain()
+
+    worker.handle.assert_not_awaited()
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
+    event_bus = EventBus()
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}],
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(Path(".")),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=20,
+        event_bus=event_bus,
+    )
+    maintenance.refresh_recent_turns = AsyncMock()
+    save_session = AsyncMock()
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=save_session,
+        )
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="hi",
+            persisted_user_message="hi",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    await _drain_maintenance(maintenance)
+
+    maintenance.refresh_recent_turns.assert_awaited_once()
+    save_session.assert_not_awaited()
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_consolidates_ready_session_from_lifecycle():
+    event_bus = EventBus()
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}] * 31,
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(Path(".")),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=20,
+        event_bus=event_bus,
+    )
+    maintenance._consolidate_unlocked = AsyncMock(
+        return_value=ConsolidateResult(trace={"mode": "markdown"})
+    )
+    save_session = AsyncMock()
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=save_session,
+        )
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="hi",
+            persisted_user_message="hi",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    await _drain_maintenance(maintenance)
+
+    maintenance._consolidate_unlocked.assert_awaited_once()
+    save_session.assert_awaited_once_with(session)
+    await event_bus.aclose()
+
+
+async def test_markdown_consolidation_keeps_window_when_consumer_fails(tmp_path: Path):
+    event_bus = EventBus()
+
+    async def _fail_consolidation(_event):
+        raise RuntimeError("vector write failed")
+
+    event_bus.on(ConsolidationCommitted, _fail_consolidation)
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}] * 12,
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=6,
+        event_bus=event_bus,
+    )
+    draft = _ConsolidationDraft(
+        window=_ConsolidationWindow(
+            old_messages=list(session.messages[:6]),
+            keep_count=6,
+            consolidate_up_to=6,
+        ),
+        source_ref='["cli:1:0"]',
+        history_entry_payloads=[("[2026-05-05 13:00] 用户测试记忆", 0)],
+        pending_items="",
+        conversation="USER: 测试记忆",
+        recent_context_text="# Recent Context\n",
+        scope_channel="cli",
+        scope_chat_id="1",
+    )
+    maintenance._worker.prepare_consolidation = AsyncMock(return_value=draft)
+
+    with pytest.raises(RuntimeError, match="vector write failed"):
+        await maintenance.consolidate(ConsolidateRequest(session=session))
+
+    assert session.last_consolidated == 0
+    assert "用户测试记忆" in (tmp_path / "memory" / "HISTORY.md").read_text(
+        encoding="utf-8"
+    )
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_serializes_lifecycle_maintenance():
+    event_bus = EventBus()
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": "u"}],
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(Path(".")),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=20,
+        event_bus=event_bus,
+    )
+    active = 0
+    max_active = 0
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _refresh_recent_turns(_request) -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if max_active == 1:
+            first_started.set()
+            await release_first.wait()
+        active -= 1
+
+    maintenance.refresh_recent_turns = AsyncMock(side_effect=_refresh_recent_turns)
+    maintenance.bind_lifecycle(
+        MemoryLifecycleBindRequest(
+            get_session=lambda _key: session,
+            save_session=AsyncMock(),
+        )
+    )
+
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="a",
+            persisted_user_message="a",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    await first_started.wait()
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:1",
+            channel="cli",
+            chat_id="1",
+            input_message="b",
+            persisted_user_message="b",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await event_bus.drain()
+    release_first.set()
+    await _drain_maintenance(maintenance)
+
+    assert max_active == 1
+    assert maintenance.refresh_recent_turns.await_count == 2
+    await event_bus.aclose()
+
+
 async def test_default_memory_engine_remember_uses_memorizer():
     memorizer = SimpleNamespace(
         save_item_with_supersede=AsyncMock(return_value="new:memu-1")
     )
-    engine = DefaultMemoryEngine(
+    engine = _make_default_engine(
         retriever=cast(Any, SimpleNamespace()),
         memorizer=cast(Any, memorizer),
     )
@@ -218,7 +509,7 @@ async def test_default_memory_engine_remember_merged_keeps_target_id_alive():
     memorizer = SimpleNamespace(
         save_item_with_supersede=AsyncMock(return_value="merged:memu-1")
     )
-    engine = DefaultMemoryEngine(
+    engine = _make_default_engine(
         retriever=cast(Any, SimpleNamespace()),
         memorizer=cast(Any, memorizer),
     )
@@ -236,9 +527,68 @@ async def test_default_memory_engine_remember_merged_keeps_target_id_alive():
     assert result.superseded_ids == []
 
 
+async def test_default_memory_engine_consumes_markdown_consolidation_event():
+    memorizer = SimpleNamespace(
+        save_from_consolidation=AsyncMock(),
+        save_item_with_supersede=AsyncMock(return_value="new:memu-1"),
+    )
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=SimpleNamespace(
+                content='{"profile":[{"summary":"用户买了 Zigbee 网关","category":"purchase","emotional_weight":4}],"preference":[],"procedure":[]}'
+            )
+        )
+    )
+    engine = _make_default_engine(
+        provider=cast(Any, provider),
+        memorizer=cast(Any, memorizer),
+    )
+
+    await engine._on_consolidation_committed(
+        ConsolidationCommitted(
+            history_entry_payloads=[("[2026-03-15 10:00] 用户聊了 Zigbee", 6)],
+            source_ref='["m1"]',
+            scope_channel="cli",
+            scope_chat_id="1",
+            conversation="USER: 我买了 Zigbee 网关",
+        )
+    )
+
+    memorizer.save_from_consolidation.assert_awaited_once()
+    memorizer.save_item_with_supersede.assert_awaited_once()
+
+
+async def test_default_memory_engine_reports_implicit_extraction_failure():
+    memorizer = SimpleNamespace(
+        save_from_consolidation=AsyncMock(),
+        save_item_with_supersede=AsyncMock(return_value="new:memu-1"),
+    )
+    provider = SimpleNamespace(
+        chat=AsyncMock(return_value=SimpleNamespace(content="not json"))
+    )
+    engine = _make_default_engine(
+        provider=cast(Any, provider),
+        memorizer=cast(Any, memorizer),
+    )
+
+    with pytest.raises(RuntimeError, match="long_term extraction failed"):
+        await engine._on_consolidation_committed(
+            ConsolidationCommitted(
+                history_entry_payloads=[("[2026-03-15 10:00] 用户聊了 Zigbee", 6)],
+                source_ref='["m1"]',
+                scope_channel="cli",
+                scope_chat_id="1",
+                conversation="USER: 我买了 Zigbee 网关",
+            )
+        )
+
+    memorizer.save_from_consolidation.assert_awaited_once()
+    memorizer.save_item_with_supersede.assert_not_awaited()
+
+
 async def test_default_memory_engine_ingest_accepts_conversation_batch_messages():
     worker = SimpleNamespace(run=AsyncMock())
-    engine = DefaultMemoryEngine(
+    engine = _make_default_engine(
         retriever=cast(Any, SimpleNamespace()),
         post_response_worker=cast(Any, worker),
     )
@@ -268,7 +618,7 @@ async def test_default_memory_engine_ingest_accepts_conversation_batch_messages(
 
 async def test_default_memory_engine_ingest_falls_back_to_post_response_source_ref():
     worker = SimpleNamespace(run=AsyncMock())
-    engine = DefaultMemoryEngine(
+    engine = _make_default_engine(
         retriever=cast(Any, SimpleNamespace()),
         post_response_worker=cast(Any, worker),
     )
@@ -292,7 +642,7 @@ async def test_default_memory_engine_ingest_falls_back_to_post_response_source_r
 
 async def test_default_memory_engine_ingest_rejects_unsupported_source_kind():
     worker = SimpleNamespace(run=AsyncMock())
-    engine = DefaultMemoryEngine(
+    engine = _make_default_engine(
         retriever=cast(Any, SimpleNamespace()),
         post_response_worker=cast(Any, worker),
     )
@@ -311,7 +661,7 @@ async def test_default_memory_engine_ingest_rejects_unsupported_source_kind():
 
 
 async def test_default_memory_engine_ingest_rejects_when_worker_missing():
-    engine = DefaultMemoryEngine(
+    engine = _make_default_engine(
         retriever=cast(Any, SimpleNamespace()),
         post_response_worker=None,
     )
@@ -339,7 +689,7 @@ def test_default_memory_engine_descriptor_keeps_messages_capability_only():
     assert MemoryCapability.INGEST_TEXT not in descriptor.capabilities
 
 
-def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: Path):
+def test_build_memory_runtime_uses_memory_plugin(monkeypatch, tmp_path: Path):
     import bootstrap.memory as memory_module
 
     monkeypatch.setattr(
@@ -348,107 +698,22 @@ def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: 
         lambda *args, **kwargs: None,
     )
 
-    class _MemoryStore:
-        def __init__(self, workspace):
-            self.workspace = workspace
-
-    class _SkillsLoader:
-        def __init__(self, workspace):
-            self.workspace = workspace
-
-        def list_skills(self, filter_unavailable=False):
-            return [{"name": "demo"}]
-
-    class _WriteFileTool:
-        pass
-
-    class _EditFileTool:
-        pass
-
-    class _MemorizeTool:
-        def __init__(self, engine):
-            self.engine = engine
-
-    class _DefaultMemoryPort:
-        def __init__(self, store, memorizer=None, retriever=None):
-            self.store = store
-            self.memorizer = memorizer
-            self.retriever = retriever
-
-    class _Store2:
-        def __init__(self, db_path):
-            self.db_path = db_path
-
-        def close(self):
-            return None
-
-    class _Embedder:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def close(self):
-            return None
-
-    class _Memorizer:
-        def __init__(self, store, embedder):
-            self.store = store
-            self.embedder = embedder
-
-    class _Retriever:
-        def __init__(self, store, embedder, **kwargs):
-            self.store = store
-            self.embedder = embedder
-            self.kwargs = kwargs
-
-    class _ProcedureTagger:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class _ProfileFactExtractor:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class _PostResponseMemoryWorker:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
     captured: dict[str, object] = {}
 
     class _CustomEngine:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
         def describe(self):
             return SimpleNamespace(name="custom")
 
-    monkeypatch.setattr("agent.memory.MemoryStore", _MemoryStore)
-    monkeypatch.setattr("agent.skills.SkillsLoader", _SkillsLoader)
-    monkeypatch.setattr("agent.tools.memorize.MemorizeTool", _MemorizeTool)
-    monkeypatch.setattr("agent.tools.filesystem.WriteFileTool", _WriteFileTool)
-    monkeypatch.setattr("agent.tools.filesystem.EditFileTool", _EditFileTool)
-    monkeypatch.setattr("core.memory.port.DefaultMemoryPort", _DefaultMemoryPort)
-    monkeypatch.setattr("memory2.store.MemoryStore2", _Store2)
-    monkeypatch.setattr("memory2.embedder.Embedder", _Embedder)
-    monkeypatch.setattr("memory2.memorizer.Memorizer", _Memorizer)
-    monkeypatch.setattr("memory2.retriever.Retriever", _Retriever)
-    monkeypatch.setattr("memory2.procedure_tagger.ProcedureTagger", _ProcedureTagger)
+    class _CustomPlugin:
+        plugin_id = "custom"
+
+        def build(self, deps):
+            captured["deps"] = deps
+            return MemoryPluginRuntime(engine=cast(Any, _CustomEngine()))
+
     monkeypatch.setattr(
-        "memory2.profile_extractor.ProfileFactExtractor",
-        _ProfileFactExtractor,
-    )
-    monkeypatch.setattr(
-        memory_module,
-        "PostResponseMemoryWorker",
-        _PostResponseMemoryWorker,
-    )
-    monkeypatch.setattr(
-        "bootstrap.wiring.resolve_memory_engine_builder",
-        lambda name: (lambda deps: _CustomEngine(
-            retriever=deps.retriever,
-            memorizer=deps.memorizer,
-            tagger=deps.tagger,
-            post_response_worker=deps.post_response_worker,
-        )),
+        "bootstrap.wiring.resolve_memory_plugin",
+        lambda name: _CustomPlugin(),
     )
 
     runtime = build_memory_runtime(
@@ -457,7 +722,7 @@ def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: 
             model="gpt-test",
             api_key="k",
             system_prompt="hi",
-            memory_v2=MemoryV2Config(enabled=True),
+            memory=MemoryConfig(enabled=True, engine="custom"),
         ),
         workspace=tmp_path,
         tools=ToolRegistry(),
@@ -467,12 +732,11 @@ def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: 
     )
 
     assert runtime.engine is not None
-    assert runtime.facade is not None
     assert runtime.engine.describe().name == "custom"
-    assert "retriever" in captured
-    assert "memorizer" in captured
-    assert "tagger" in captured
-    assert "post_response_worker" in captured
+    deps = captured["deps"]
+    assert deps.config.model == "gpt-test"
+    assert deps.workspace == tmp_path
+    assert deps.http_resources is not None
 
 
 def test_build_memory_runtime_exposes_default_memory_engine(
@@ -508,12 +772,6 @@ def test_build_memory_runtime_exposes_default_memory_engine(
         def __init__(self, engine):
             self.engine = engine
 
-    class _DefaultMemoryPort:
-        def __init__(self, store, memorizer=None, retriever=None):
-            self.store = store
-            self.memorizer = memorizer
-            self.retriever = retriever
-
     class _Store2:
         def __init__(self, db_path):
             self.db_path = db_path
@@ -543,10 +801,6 @@ def test_build_memory_runtime_exposes_default_memory_engine(
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    class _ProfileFactExtractor:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
     class _PostResponseMemoryWorker:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -556,21 +810,11 @@ def test_build_memory_runtime_exposes_default_memory_engine(
     monkeypatch.setattr("agent.tools.memorize.MemorizeTool", _MemorizeTool)
     monkeypatch.setattr("agent.tools.filesystem.WriteFileTool", _WriteFileTool)
     monkeypatch.setattr("agent.tools.filesystem.EditFileTool", _EditFileTool)
-    monkeypatch.setattr("core.memory.port.DefaultMemoryPort", _DefaultMemoryPort)
     monkeypatch.setattr("memory2.store.MemoryStore2", _Store2)
     monkeypatch.setattr("memory2.embedder.Embedder", _Embedder)
     monkeypatch.setattr("memory2.memorizer.Memorizer", _Memorizer)
     monkeypatch.setattr("memory2.retriever.Retriever", _Retriever)
     monkeypatch.setattr("memory2.procedure_tagger.ProcedureTagger", _ProcedureTagger)
-    monkeypatch.setattr(
-        "memory2.profile_extractor.ProfileFactExtractor",
-        _ProfileFactExtractor,
-    )
-    monkeypatch.setattr(
-        memory_module,
-        "PostResponseMemoryWorker",
-        _PostResponseMemoryWorker,
-    )
 
     runtime = build_memory_runtime(
         config=Config(
@@ -578,7 +822,7 @@ def test_build_memory_runtime_exposes_default_memory_engine(
             model="gpt-test",
             api_key="k",
             system_prompt="hi",
-            memory_v2=MemoryV2Config(enabled=True),
+            memory=MemoryConfig(enabled=True),
         ),
         workspace=tmp_path,
         tools=ToolRegistry(),

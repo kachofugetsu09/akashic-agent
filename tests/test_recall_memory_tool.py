@@ -14,9 +14,7 @@ import agent.tools.recall_memory as recall_memory_module
 import memory2.retriever as retriever_module
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
-from core.memory.default_runtime_facade import DefaultMemoryRuntimeFacade
-from core.memory.explicit_retriever import DefaultExplicitRetriever
-from core.memory.port import DefaultMemoryPort
+from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
 from memory2.store import MemoryStore2
@@ -35,18 +33,24 @@ _EmbeddingRow: TypeAlias = tuple[
 
 def _recall_tool(store: object, embedder: object, provider: object) -> RecallMemoryTool:
     retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, embedder))
-    port = DefaultMemoryPort(cast(Any, store), retriever=retriever)
-    explicit_retriever = DefaultExplicitRetriever(
-        port=port,
-        provider=cast(LLMProvider, provider),
-        model="test-model",
-    )
-    facade = DefaultMemoryRuntimeFacade(
-        port=port,
-        explicit_retriever=explicit_retriever,
-    )
+    facade = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
+    facade._config = None
+    facade._workspace = Path(".")
+    facade._provider = cast(LLMProvider, provider)
+    facade._light_provider = cast(LLMProvider, provider)
+    facade._light_model = "test-model"
+    facade._v1_store = None
+    facade._v2_store = store
+    facade._embedder = embedder
+    facade._memorizer = None
+    facade._retriever = retriever
+    facade._tagger = None
+    facade._post_response_worker = None
+    facade._event_bus = None
+    facade._consolidation = None
+    facade.closeables = []
     return RecallMemoryTool(
-        facade=facade,
+        facade=cast(Any, facade),
     )
 
 

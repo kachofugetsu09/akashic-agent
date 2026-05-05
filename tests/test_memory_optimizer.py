@@ -8,13 +8,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.memory import MemoryStore
-from core.memory.port import DefaultMemoryPort
 from proactive_v2.memory_optimizer import (
     MemoryOptimizerBusy,
     MemoryOptimizer,
     MemoryOptimizerLoop,
 )
+from core.memory.markdown import MarkdownMemoryStore
 
 
 class _Resp:
@@ -29,7 +28,7 @@ def _provider_with_responses(*responses: str) -> object:
 
 
 def test_optimize_skips_when_memory_pending_history_all_empty(tmp_path):
-    memory = DefaultMemoryPort(MemoryStore(tmp_path))
+    memory = MarkdownMemoryStore(tmp_path)
     provider = types.SimpleNamespace()
     provider.chat = AsyncMock()
 
@@ -41,7 +40,7 @@ def test_optimize_skips_when_memory_pending_history_all_empty(tmp_path):
 
 
 def test_optimize_rewrites_memory_from_first_llm_call(tmp_path):
-    memory = DefaultMemoryPort(MemoryStore(tmp_path))
+    memory = MarkdownMemoryStore(tmp_path)
     memory.write_long_term("old profile")
 
     provider = _provider_with_responses("## 用户画像\n- 新版本\n")
@@ -53,7 +52,7 @@ def test_optimize_rewrites_memory_from_first_llm_call(tmp_path):
 
 
 def test_optimize_rolls_back_snapshot_when_merge_returns_empty(tmp_path):
-    memory = DefaultMemoryPort(MemoryStore(tmp_path))
+    memory = MarkdownMemoryStore(tmp_path)
     memory.write_long_term("old profile")
     memory.append_pending("- pending fact")
 
@@ -63,11 +62,11 @@ def test_optimize_rolls_back_snapshot_when_merge_returns_empty(tmp_path):
     asyncio.run(optimizer.optimize())
 
     assert "pending fact" in memory.read_pending()
-    assert not memory._store._snapshot_path.exists()
+    assert not memory._snapshot_path.exists()
 
 
 def test_optimize_updates_self_using_pending_only(tmp_path):
-    memory = DefaultMemoryPort(MemoryStore(tmp_path))
+    memory = MarkdownMemoryStore(tmp_path)
     memory.write_long_term("old")
     memory.write_self("## 原 SELF")
     memory.append_pending("- [preference] 回复保持简洁。")
@@ -90,7 +89,7 @@ def test_optimize_updates_self_using_pending_only(tmp_path):
 
 
 def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path):
-    memory = DefaultMemoryPort(MemoryStore(tmp_path))
+    memory = MarkdownMemoryStore(tmp_path)
     memory.write_long_term("old profile")
     memory.append_pending("- [identity] 新身份")
     memory.append_history("[2026-03-03 10:00] USER: 这段历史不该进入长期记忆")
@@ -108,7 +107,7 @@ def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path):
 
 
 def test_request_text_response_uses_expected_chat_kwargs(tmp_path):
-    memory = DefaultMemoryPort(MemoryStore(tmp_path))
+    memory = MarkdownMemoryStore(tmp_path)
     provider = _provider_with_responses("merged")
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
 
@@ -129,7 +128,7 @@ def test_request_text_response_uses_expected_chat_kwargs(tmp_path):
 
 def test_optimize_reports_busy_instead_of_waiting(tmp_path):
     async def run_case() -> None:
-        memory = DefaultMemoryPort(MemoryStore(tmp_path))
+        memory = MarkdownMemoryStore(tmp_path)
         provider = types.SimpleNamespace()
         provider.chat = AsyncMock()
         optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")

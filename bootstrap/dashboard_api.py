@@ -6,12 +6,11 @@ from pathlib import Path
 import importlib.util
 import logging
 import json
-import re
 import sqlite3
 import sys
 import threading
 from datetime import timedelta
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 import subprocess
 
@@ -21,11 +20,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from agent.memory import MemoryStore
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
 from core.common.timekit import utcnow
+from core.memory.engine import MemoryAdminApi
 from session.store import SessionStore
-from memory2.store import MemoryStore2
 
 logger = logging.getLogger(__name__)
 
@@ -623,10 +623,11 @@ def create_dashboard_app(
     *,
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
+    memory_admin: MemoryAdminApi,
+    memory_store: MemoryStore | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
-    memory_store: MemoryStore2 | None = None
     proactive_reader: ProactiveDashboardReader | None = None
     optimizer_task: asyncio.Task[None] | None = None
     optimizer_last_status = "idle"
@@ -634,12 +635,6 @@ def create_dashboard_app(
     project_root = Path(__file__).resolve().parent.parent
     plugins_root = project_root / "plugins"
     static_dir = project_root / "static" / "dashboard"
-
-    def get_memory_store() -> MemoryStore2:
-        nonlocal memory_store
-        if memory_store is None:
-            memory_store = MemoryStore2(workspace / "memory" / "memory2.db")
-        return memory_store
 
     def get_proactive_reader() -> ProactiveDashboardReader:
         nonlocal proactive_reader
@@ -660,12 +655,12 @@ def create_dashboard_app(
             except asyncio.CancelledError:
                 pass
             store.close()
-            if memory_store is not None:
-                get_memory_store().close()
             if proactive_reader is not None:
                 get_proactive_reader().close()
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
+    app.state.memory_admin = memory_admin
+    app.state.memory_store = memory_store or MemoryStore(workspace)
     app.mount("/assets", StaticFiles(directory=static_dir), name="dashboard-assets")
 
     # Compile TypeScript plugin panels and mount plugin routes
@@ -997,7 +992,7 @@ def create_dashboard_app(
         sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
-        items, total = get_memory_store().list_items_for_dashboard(
+        items, total = memory_admin.list_items_for_dashboard(
             q=q,
             memory_type=memory_type,
             status=status,
@@ -1015,8 +1010,8 @@ def create_dashboard_app(
             "total": total,
             "page": max(1, page),
             "page_size": max(1, min(page_size, 200)),
-            "vec_enabled": get_memory_store()._vec_enabled,
-            "vec_dim": get_memory_store()._vec_dim,
+            "vec_enabled": True,
+            "vec_dim": 0,
         }
 
     @app.get("/api/dashboard/memories/{memory_id:path}/similar")
@@ -1028,7 +1023,7 @@ def create_dashboard_app(
         include_superseded: bool = False,
     ) -> dict[str, Any]:
         try:
-            items = get_memory_store().find_similar_items_for_dashboard(
+            items = memory_admin.find_similar_items_for_dashboard(
                 memory_id,
                 top_k=top_k,
                 memory_type=memory_type,
@@ -1050,7 +1045,7 @@ def create_dashboard_app(
         memory_id: str,
         include_embedding: bool = False,
     ) -> dict[str, Any]:
-        item = get_memory_store().get_item_for_dashboard(
+        item = memory_admin.get_item_for_dashboard(
             memory_id,
             include_embedding=include_embedding,
         )
@@ -1064,7 +1059,7 @@ def create_dashboard_app(
         payload: MemoryUpdatePayload,
     ) -> dict[str, Any]:
         try:
-            item = get_memory_store().update_item_for_dashboard(
+            item = memory_admin.update_item_for_dashboard(
                 memory_id,
                 status=payload.status,
                 extra_json=payload.extra_json,
@@ -1080,14 +1075,14 @@ def create_dashboard_app(
 
     @app.delete("/api/dashboard/memories/{memory_id:path}")
     def delete_memory(memory_id: str) -> dict[str, Any]:
-        deleted = get_memory_store().delete_item(memory_id)
+        deleted = memory_admin.delete_item(memory_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="memory 不存在")
         return {"deleted": True, "id": memory_id}
 
     @app.post("/api/dashboard/memories/batch-delete")
     def delete_memories_batch(payload: MemoryBatchDeletePayload) -> dict[str, Any]:
-        deleted_count = get_memory_store().delete_items_batch(payload.ids)
+        deleted_count = memory_admin.delete_items_batch(payload.ids)
         return {"deleted_count": deleted_count}
 
     @app.get("/api/dashboard/proactive/overview")
@@ -1256,6 +1251,8 @@ def run_dashboard_api(
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
+    memory_admin: MemoryAdminApi,
+    memory_store: MemoryStore | None = None,
 ) -> None:
     server = uvicorn.Server(
         _build_dashboard_uvicorn_config(
@@ -1264,6 +1261,8 @@ def run_dashboard_api(
             port=port,
             manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
+            memory_admin=memory_admin,
+            memory_store=memory_store,
         )
     )
     server.run()
@@ -1276,12 +1275,16 @@ def _build_dashboard_uvicorn_config(
     port: int,
     manual_consolidator: ManualConsolidator | None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
+    memory_admin: MemoryAdminApi,
+    memory_store: MemoryStore | None = None,
 ) -> uvicorn.Config:
     config = uvicorn.Config(
         create_dashboard_app(
             workspace,
             manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
+            memory_admin=memory_admin,
+            memory_store=memory_store,
         ),
         host=host,
         port=port,
@@ -1298,6 +1301,8 @@ def build_dashboard_server(
     port: int = 2236,
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
+    memory_admin: MemoryAdminApi,
+    memory_store: MemoryStore | None = None,
 ) -> uvicorn.Server:
     config = _build_dashboard_uvicorn_config(
         workspace=workspace,
@@ -1305,5 +1310,7 @@ def build_dashboard_server(
         port=port,
         manual_consolidator=manual_consolidator,
         manual_memory_optimizer=manual_memory_optimizer,
+        memory_admin=memory_admin,
+        memory_store=memory_store,
     )
     return uvicorn.Server(config)

@@ -5,13 +5,10 @@ memorize 工具：用户主动写记忆
 from __future__ import annotations
 
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 from agent.tools.base import Tool
-from core.memory.engine import MemoryScope, RememberRequest
-
-if TYPE_CHECKING:
-    from core.memory.engine import MemoryEngine
+from core.memory.engine import MemoryScope, MemoryWriteApi, RememberRequest
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +54,7 @@ class MemorizeTool(Tool):
         "required": ["summary", "memory_type"],
     }
 
-    def __init__(self, engine: "MemoryEngine") -> None:
+    def __init__(self, engine: MemoryWriteApi) -> None:
         self._engine = engine
 
     async def execute(

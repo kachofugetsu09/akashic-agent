@@ -13,6 +13,8 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
 
+_MEMORY_TOOL_NAMES = {"recall_memory", "memorize", "forget_memory"}
+
 
 def register_common_meta_tools(
     tools: ToolRegistry,
@@ -80,46 +82,61 @@ def register_common_meta_tools(
         always_on=True,
         risk="external-side-effect",
     )
+    tools.register(
+        WriteFileTool(),
+        always_on=True,
+        risk="write",
+    )
+    tools.register(
+        EditFileTool(),
+        always_on=True,
+        risk="write",
+    )
     return resolved_push_tool
+
+
+def _register_memory_tool(
+    tools: ToolRegistry,
+    tool: Tool,
+    *,
+    risk: str,
+    search_hint: str | None = None,
+) -> None:
+    if tool.name not in _MEMORY_TOOL_NAMES:
+        raise ValueError(f"未知 memory 工具: {tool.name}")
+    if tools.has_tool(tool.name):
+        raise ValueError(f"memory 工具重复注册: {tool.name}")
+    tools.register(
+        tool,
+        always_on=True,
+        risk=risk,
+        search_hint=search_hint,
+    )
 
 
 def register_memory_meta_tools(
     tools: ToolRegistry,
-    memorize_tool: MemorizeTool | None = None,
-    forget_tool: ForgetMemoryTool | None = None,
-    recall_tool: RecallMemoryTool | None = None,
-    write_file_tool: WriteFileTool | None = None,
-    edit_file_tool: EditFileTool | None = None,
+    memorize_tool: MemorizeTool | Tool | None = None,
+    forget_tool: ForgetMemoryTool | Tool | None = None,
+    recall_tool: RecallMemoryTool | Tool | None = None,
 ) -> None:
     if memorize_tool is not None:
-        tools.register(
+        _register_memory_tool(
+            tools,
             memorize_tool,
-            always_on=True,
             risk="write",
         )
     if forget_tool is not None:
-        tools.register(
+        _register_memory_tool(
+            tools,
             forget_tool,
-            always_on=True,
             risk="write",
             search_hint="记错了 删除记忆 撤销错误记忆 失效记忆",
         )
     if recall_tool is not None:
-        tools.register(
+        _register_memory_tool(
+            tools,
             recall_tool,
-            always_on=True,
             risk="read-only",
             search_hint="记得 以前 历史 做过什么 有没有 重构 记忆查询",
-        )
-    if write_file_tool is not None:
-        tools.register(
-            write_file_tool,
-            always_on=True,
-            risk="write",
-        )
-    if edit_file_tool is not None:
-        tools.register(
-            edit_file_tool,
-            always_on=True,
-            risk="write",
         )

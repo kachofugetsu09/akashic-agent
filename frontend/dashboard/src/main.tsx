@@ -719,13 +719,15 @@ function Chip(props: { label: string; value: string; onClear(): void }): React.R
 
 function NavGroup(props: { label: string; count: number; active: boolean; open: boolean; onToggle(): void; children: React.ReactNode }): React.ReactElement {
   return (
-    <section className={`nav-group ${props.active ? "active" : ""}`}>
+    <section className={`nav-group${props.active ? " active" : ""}${props.open ? " open" : ""}`}>
       <button className="nav-group-toggle" type="button" onClick={props.onToggle}>
-        <span className="nav-group-caret">{props.open ? "▾" : "▸"}</span>
+        <span className="nav-group-caret">▸</span>
         <span className="nav-group-label">{props.label}</span>
         <span className="nav-group-count">{props.count}</span>
       </button>
-      <div className={`nav-group-body ${props.open ? "" : "hidden"}`}>{props.children}</div>
+      <div className={`nav-group-body${props.open ? " open" : ""}`}>
+        <div className="nav-group-body-inner">{props.children}</div>
+      </div>
     </section>
   );
 }

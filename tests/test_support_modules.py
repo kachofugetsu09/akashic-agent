@@ -22,10 +22,35 @@ from agent.tools.web_search import WebSearchTool
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from core.common import timekit
-from core.memory.default_engine import DefaultMemoryEngine
+from plugins.default_memory.engine import DefaultMemoryEngine
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
 from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2
+
+
+def _make_default_engine(
+    *,
+    retriever=None,
+    memorizer=None,
+    tagger=None,
+):
+    engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
+    engine._config = None
+    engine._workspace = Path(".")
+    engine._provider = None
+    engine._light_provider = None
+    engine._light_model = ""
+    engine._v1_store = None
+    engine._v2_store = None
+    engine._embedder = None
+    engine._memorizer = memorizer
+    engine._retriever = retriever
+    engine._tagger = tagger
+    engine._post_response_worker = None
+    engine._event_bus = None
+    engine._consolidation = None
+    engine.closeables = []
+    return engine
 
 
 class _DummyTool(Tool):
@@ -126,7 +151,7 @@ async def test_memorize_tool_cover_branches(
             return {"scope": "task"}
 
     tool = MemorizeTool(
-        DefaultMemoryEngine(
+        _make_default_engine(
             retriever=MagicMock(),
             memorizer=memorizer,
             tagger=cast(Any, _Tagger()),
@@ -150,7 +175,7 @@ async def test_memorize_tool_cover_branches(
             raise RuntimeError("bad")
 
     bad = MemorizeTool(
-        DefaultMemoryEngine(
+        _make_default_engine(
             retriever=MagicMock(),
             memorizer=memorizer,
             tagger=cast(Any, _BadTagger()),
@@ -169,7 +194,7 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
     store = MemoryStore2(":memory:")
     memorizer = Memorizer(store, cast(Any, _Embedder()))
     tool = MemorizeTool(
-        DefaultMemoryEngine(
+        _make_default_engine(
             retriever=MagicMock(),
             memorizer=memorizer,
         )
@@ -274,7 +299,7 @@ async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
     memorizer = MagicMock()
     memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
     tool = MemorizeTool(
-        DefaultMemoryEngine(
+        _make_default_engine(
             retriever=MagicMock(),
             memorizer=memorizer,
         )
@@ -449,6 +474,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         def read_recent_context(self) -> str:
             return ""
 
+        def get_memory_context(self) -> str:
+            return "memory block"
+
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(
         "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
@@ -609,6 +637,9 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
             return ""
 
         def read_recent_context(self) -> str:
+            return ""
+
+        def get_memory_context(self) -> str:
             return ""
 
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)

@@ -7,14 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.types import ToolCall, ToolCallGroup
 from agent.core.runtime_support import SessionLike, TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
 from agent.lifecycle.facade import TurnLifecycle
-from agent.looping.lifecycle_consumers import register_turn_committed_consumers
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
-from agent.memory import MemoryStore
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, MemoryServices
 from agent.provider import LLMResponse
 from agent.retrieval.protocol import (
     MemoryRetrievalPipeline,
@@ -26,8 +23,7 @@ from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
-from core.memory.engine import MemoryIngestRequest
-from core.memory.port import DefaultMemoryPort
+from core.memory.engine import MemoryEngineRetrieveResult
 from bootstrap.wiring import wire_turn_lifecycle
 
 
@@ -74,6 +70,29 @@ class _CustomRetrieval(MemoryRetrievalPipeline):
         return RetrievalResult(block=self._block)
 
 
+class _FakeMemoryEngine:
+    def read_self(self) -> str:
+        return ""
+
+    def read_recent_context(self) -> str:
+        return ""
+
+    def get_memory_context(self) -> str:
+        return ""
+
+    def has_long_term_memory(self) -> bool:
+        return False
+
+    async def retrieve(self, request) -> MemoryEngineRetrieveResult:
+        return MemoryEngineRetrieveResult(text_block="", hits=[], raw={})
+
+    async def refresh_recent_turns(self, request) -> None:
+        return None
+
+    async def consolidate(self, request) -> None:
+        return None
+
+
 def test_stream_events_only_support_telegram_private_chat():
     assert _supports_stream_events("telegram", "123")
     assert not _supports_stream_events("telegram", "-1001")
@@ -97,331 +116,11 @@ def _make_loop(
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+            memory_services=MemoryServices(engine=cast(Any, _FakeMemoryEngine())),
             retrieval_pipeline=retrieval_pipeline,
         ),
         AgentLoopConfig(),
     )
-
-
-@pytest.mark.asyncio
-async def test_turn_committed_recent_context_consumer_serializes_same_session():
-    event_bus = EventBus()
-    session = MagicMock()
-    session_manager = SimpleNamespace(get_or_create=MagicMock(return_value=session))
-    active = 0
-    max_active = 0
-    first_started = asyncio.Event()
-    release_first = asyncio.Event()
-    finished: list[str] = []
-
-    async def _refresh_recent_turns(*, session) -> None:
-        nonlocal active, max_active
-        active += 1
-        max_active = max(max_active, active)
-        if len(finished) == 0:
-            first_started.set()
-            await release_first.wait()
-        finished.append(str(session.key))
-        active -= 1
-
-    session.key = "cli:1"
-    consolidation = SimpleNamespace(
-        refresh_recent_turns=AsyncMock(side_effect=_refresh_recent_turns)
-    )
-    scheduler = SimpleNamespace(schedule_consolidation=MagicMock())
-    register_turn_committed_consumers(
-        event_bus=event_bus,
-        consolidation=cast(Any, consolidation),
-        session_manager=cast(Any, session_manager),
-        scheduler=cast(Any, scheduler),
-        memory_engine=None,
-    )
-    event_a = TurnCommitted(
-        session_key="cli:1",
-        channel="cli",
-        chat_id="1",
-        input_message="a",
-        persisted_user_message="a",
-        assistant_response="ok-a",
-        tools_used=[],
-        timestamp=datetime.now(),
-    )
-    event_b = TurnCommitted(
-        session_key="cli:1",
-        channel="cli",
-        chat_id="1",
-        input_message="b",
-        persisted_user_message="b",
-        assistant_response="ok-b",
-        tools_used=[],
-        timestamp=datetime.now(),
-    )
-
-    event_bus.enqueue(event_a)
-    await event_bus.drain()
-    await first_started.wait()
-    event_bus.enqueue(event_b)
-    await event_bus.drain()
-    await asyncio.sleep(0)
-
-    assert max_active == 1
-
-    release_first.set()
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-
-    assert max_active == 1
-    assert consolidation.refresh_recent_turns.await_count == 2
-    await event_bus.aclose()
-
-
-@pytest.mark.asyncio
-async def test_turn_committed_consumers_schedule_consolidation_and_ingest_memory():
-    event_bus = EventBus()
-    session = MagicMock()
-    session.key = "cli:1"
-    session_manager = SimpleNamespace(get_or_create=MagicMock(return_value=session))
-    scheduler = SimpleNamespace(schedule_consolidation=MagicMock())
-    consolidation = SimpleNamespace(refresh_recent_turns=AsyncMock())
-    engine = MagicMock()
-    engine.ingest = AsyncMock(return_value=MagicMock())
-    register_turn_committed_consumers(
-        event_bus=event_bus,
-        consolidation=cast(Any, consolidation),
-        session_manager=cast(Any, session_manager),
-        scheduler=cast(Any, scheduler),
-        memory_engine=cast(Any, engine),
-    )
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="hello",
-            persisted_user_message="hello",
-            assistant_response="ok",
-            tools_used=["tool_a"],
-            tool_call_groups=[
-                ToolCallGroup(
-                    text="t",
-                    calls=[
-                        ToolCall(
-                            call_id="c1",
-                            name="tool_a",
-                            arguments={"x": 1},
-                            result="done",
-                        )
-                    ],
-                )
-            ],
-            timestamp=datetime.now(),
-        )
-    )
-    await event_bus.drain()
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-
-    scheduler.schedule_consolidation.assert_called_once_with(session, "cli:1")
-    engine.ingest.assert_awaited_once()
-    request = engine.ingest.await_args.args[0]
-    assert isinstance(request, MemoryIngestRequest)
-    assert request.source_kind == "conversation_turn"
-    assert request.scope.session_key == "cli:1"
-    assert request.metadata["source_ref"] == "cli:1@post_response"
-    content = cast(dict[str, object], request.content)
-    tool_chain = cast(list[dict[str, object]], content["tool_chain"])
-    calls = cast(list[dict[str, object]], tool_chain[0]["calls"])
-    assert calls[0]["name"] == "tool_a"
-    await event_bus.aclose()
-
-
-@pytest.mark.asyncio
-async def test_turn_committed_consumers_skip_post_memory():
-    event_bus = EventBus()
-    session = MagicMock()
-    session.key = "cli:1"
-    session_manager = SimpleNamespace(get_or_create=MagicMock(return_value=session))
-    scheduler = SimpleNamespace(schedule_consolidation=MagicMock())
-    consolidation = SimpleNamespace(refresh_recent_turns=AsyncMock())
-    engine = MagicMock()
-    engine.ingest = AsyncMock(return_value=MagicMock())
-    register_turn_committed_consumers(
-        event_bus=event_bus,
-        consolidation=cast(Any, consolidation),
-        session_manager=cast(Any, session_manager),
-        scheduler=cast(Any, scheduler),
-        memory_engine=cast(Any, engine),
-    )
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="hello",
-            persisted_user_message="hello",
-            assistant_response="ok",
-            tools_used=[],
-            timestamp=datetime.now(),
-            extra={"skip_post_memory": True},
-        )
-    )
-    await event_bus.drain()
-    await asyncio.sleep(0)
-
-    engine.ingest.assert_not_awaited()
-    scheduler.schedule_consolidation.assert_called_once()
-    await event_bus.aclose()
-
-
-@pytest.mark.asyncio
-async def test_turn_committed_consumers_serializes_same_session_post_mem():
-    started: list[str] = []
-    finished: list[str] = []
-    active = 0
-    max_active = 0
-    first_started = asyncio.Event()
-    release_first = asyncio.Event()
-
-    async def _ingest(request: MemoryIngestRequest):
-        nonlocal active, max_active
-        content = cast(dict[str, object], request.content)
-        label = str(content["user_message"])
-        started.append(label)
-        active += 1
-        max_active = max(max_active, active)
-        if label == "a":
-            first_started.set()
-            await release_first.wait()
-        finished.append(label)
-        active -= 1
-        return MagicMock()
-
-    engine = MagicMock()
-    engine.ingest = AsyncMock(side_effect=_ingest)
-    session = MagicMock()
-    session.key = "cli:1"
-    session_manager = SimpleNamespace(get_or_create=MagicMock(return_value=session))
-    scheduler = SimpleNamespace(schedule_consolidation=MagicMock())
-    consolidation = SimpleNamespace(refresh_recent_turns=AsyncMock())
-    event_bus = EventBus()
-    register_turn_committed_consumers(
-        event_bus=event_bus,
-        consolidation=cast(Any, consolidation),
-        session_manager=cast(Any, session_manager),
-        scheduler=cast(Any, scheduler),
-        memory_engine=cast(Any, engine),
-    )
-    event_a = TurnCommitted(
-        session_key="cli:1",
-        channel="cli",
-        chat_id="1",
-        input_message="a",
-        persisted_user_message="a",
-        assistant_response="ok-a",
-        tools_used=[],
-        timestamp=datetime.now(),
-    )
-    event_b = TurnCommitted(
-        session_key="cli:1",
-        channel="cli",
-        chat_id="1",
-        input_message="b",
-        persisted_user_message="b",
-        assistant_response="ok-b",
-        tools_used=[],
-        timestamp=datetime.now(),
-    )
-
-    event_bus.enqueue(event_a)
-    await event_bus.drain()
-    await first_started.wait()
-    event_bus.enqueue(event_b)
-    await event_bus.drain()
-    await asyncio.sleep(0)
-
-    assert started == ["a"]
-    assert finished == []
-    assert max_active == 1
-
-    release_first.set()
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-
-    assert started == ["a", "b"]
-    assert finished == ["a", "b"]
-    assert max_active == 1
-    await event_bus.aclose()
-
-
-@pytest.mark.asyncio
-async def test_turn_committed_consumers_keep_cross_session_parallelism():
-    active = 0
-    max_active = 0
-    ready = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _ingest(request: MemoryIngestRequest):
-        nonlocal active, max_active
-        active += 1
-        max_active = max(max_active, active)
-        if max_active >= 2:
-            ready.set()
-        await release.wait()
-        active -= 1
-        return MagicMock()
-
-    engine = MagicMock()
-    engine.ingest = AsyncMock(side_effect=_ingest)
-    session_manager = SimpleNamespace(
-        get_or_create=MagicMock(side_effect=lambda key: SimpleNamespace(key=key))
-    )
-    scheduler = SimpleNamespace(schedule_consolidation=MagicMock())
-    consolidation = SimpleNamespace(refresh_recent_turns=AsyncMock())
-    event_bus = EventBus()
-    register_turn_committed_consumers(
-        event_bus=event_bus,
-        consolidation=cast(Any, consolidation),
-        session_manager=cast(Any, session_manager),
-        scheduler=cast(Any, scheduler),
-        memory_engine=cast(Any, engine),
-    )
-
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:1",
-            channel="cli",
-            chat_id="1",
-            input_message="a",
-            persisted_user_message="a",
-            assistant_response="ok-a",
-            tools_used=[],
-            timestamp=datetime.now(),
-        )
-    )
-    event_bus.enqueue(
-        TurnCommitted(
-            session_key="cli:2",
-            channel="cli",
-            chat_id="2",
-            input_message="b",
-            persisted_user_message="b",
-            assistant_response="ok-b",
-            tools_used=[],
-            timestamp=datetime.now(),
-        )
-    )
-    await event_bus.drain()
-
-    await ready.wait()
-    assert max_active >= 2
-
-    release.set()
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    await event_bus.aclose()
 
 
 def test_agent_loop_uses_custom_retrieval_pipeline(tmp_path: Path):

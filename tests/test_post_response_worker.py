@@ -1,6 +1,8 @@
 import asyncio
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
+from core.memory.events import TurnIngested
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.rule_schema import build_procedure_rule_schema
@@ -73,6 +75,40 @@ def test_post_worker_run_only_handles_invalidations_no_implicit_save():
     memorizer.save_item.assert_not_called()
     # 但 invalidation 检查仍然运行
     worker._handle_invalidations.assert_awaited_once()
+
+
+def test_post_worker_handle_delegates_turn_ingested_event():
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+    worker.run = AsyncMock()
+
+    asyncio.run(
+        worker.handle(
+            TurnIngested(
+                session_key="cli:1",
+                channel="cli",
+                chat_id="1",
+                user_message="以后用中文",
+                assistant_response="好的",
+                tool_chain=[{"text": "memo", "calls": []}],
+                source_ref="cli:1@post_response",
+            )
+        )
+    )
+
+    worker.run.assert_awaited_once_with(
+        user_msg="以后用中文",
+        agent_response="好的",
+        tool_chain=[{"text": "memo", "calls": []}],
+        source_ref="cli:1@post_response",
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+    )
 
 
 def test_build_procedure_rule_schema_prefers_explicit_rule_schema():

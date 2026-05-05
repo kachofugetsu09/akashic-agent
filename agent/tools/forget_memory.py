@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from agent.tools.base import Tool
-
-if TYPE_CHECKING:
-    from memory2.store import MemoryStore2
+from core.memory.engine import ForgetRequest, MemoryWriteApi
 
 
 class ForgetMemoryTool(Tool):
@@ -31,8 +29,8 @@ class ForgetMemoryTool(Tool):
         "required": ["ids"],
     }
 
-    def __init__(self, store: "MemoryStore2") -> None:
-        self._store = store
+    def __init__(self, memory: MemoryWriteApi) -> None:
+        self._memory = memory
 
     async def execute(self, ids: list[str], **_: Any) -> str:
         clean_ids: list[str] = []
@@ -54,25 +52,14 @@ class ForgetMemoryTool(Tool):
                 ensure_ascii=False,
             )
 
-        items = self._store.get_items_by_ids(clean_ids)
-        found_ids = [str(item.get("id") or "") for item in items if str(item.get("id") or "")]
-        if found_ids:
-            self._store.mark_superseded_batch(found_ids)
-        missing_ids = [item_id for item_id in clean_ids if item_id not in set(found_ids)]
+        result = await self._memory.forget(ForgetRequest(ids=clean_ids))
         return json.dumps(
             {
                 "requested_ids": clean_ids,
-                "superseded_ids": found_ids,
-                "missing_ids": missing_ids,
-                "count": len(found_ids),
-                "items": [
-                    {
-                        "id": item.get("id"),
-                        "memory_type": item.get("memory_type"),
-                        "summary": item.get("summary"),
-                    }
-                    for item in items
-                ],
+                "superseded_ids": result.superseded_ids,
+                "missing_ids": result.missing_ids,
+                "count": len(result.superseded_ids),
+                "items": result.items,
             },
             ensure_ascii=False,
         )

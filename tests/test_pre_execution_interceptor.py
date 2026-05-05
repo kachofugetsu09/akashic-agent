@@ -4,12 +4,11 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
-from agent.memory import MemoryStore
+from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
-from core.memory.port import DefaultMemoryPort
+from tests.memory_fakes import FakeMemoryEngine
 
 
 class _DummyTool(Tool):
@@ -62,7 +61,7 @@ def _make_loop(
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
+            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
     )

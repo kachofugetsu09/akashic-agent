@@ -4,7 +4,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from agent.context import ContextBuilder
 from agent.core.passive_turn import (
@@ -16,14 +16,6 @@ from agent.core.passive_turn import (
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.looping.consolidation import (
-    ConsolidationRuntime,
-    ConsolidationService,
-    _select_consolidation_window,
-)
-from agent.looping.lifecycle_consumers import (
-    register_turn_committed_consumers,
-)
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
@@ -32,7 +24,6 @@ from agent.looping.ports import (
     MemoryConfig,
     MemoryServices,
     SessionServices,
-    TurnScheduler,
 )
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
@@ -50,22 +41,19 @@ from bus.events_lifecycle import (
 )
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from memory2.profile_extractor import ProfileFactExtractor
-from memory2.query_rewriter import QueryRewriter
-from memory2.sufficiency_checker import SufficiencyChecker
 from proactive_v2.presence import PresenceStore
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
+    from core.memory.engine import MemoryEngine
+    from core.memory.markdown import MemoryProfileApi
     from core.memory.runtime import MemoryRuntime
-    from memory2.hyde_enhancer import HyDEEnhancer
     from agent.tool_hooks.base import ToolHook
 
 logger = logging.getLogger("agent.loop")
-_MAX_PROCEDURE_RETRIEVE_K = 3
+_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS = 30.0
 
 StreamDelta: TypeAlias = dict[str, str] | str
 StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
@@ -103,8 +91,6 @@ class AgentLoop:
     对话历史按 session_key 独立维护，格式为 OpenAI messages。
     """
 
-    _CONSOLIDATION_WAIT_S: float = 30.0
-
     def __init__(
         self,
         deps: AgentLoopDeps,
@@ -125,15 +111,19 @@ class AgentLoop:
         self._interrupt_states: dict[str, TurnInterruptState] = {}
 
         # 2. 再解析 memory runtime 入口。
-        memory_port = self._resolve_memory_runtime(deps)
+        memory_engine = self._resolve_memory_runtime(deps)
+        markdown_memory = self._resolve_markdown_runtime(deps)
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
-        self._memory_port = memory_port
+        self._memory_engine = memory_engine
+        self._markdown_memory = markdown_memory
+        memory_profile = (
+            markdown_memory.store
+            if markdown_memory is not None
+            else cast("MemoryProfileApi", self._memory_engine)
+        )
         self._context = deps.context or ContextBuilder(
             deps.workspace,
-            memory=(
-                getattr(deps.memory_runtime, "profile_reader", None)
-                or self._memory_port
-            ),
+            memory=memory_profile,
             multimodal=config.llm.multimodal,
             vl_available=config.llm.vl_available,
         )
@@ -146,16 +136,10 @@ class AgentLoop:
             presence=deps.presence,
         )
 
-        # 3. 然后组装 retrieval 需要的轻量能力。
-        hyde_enhancer = self._build_hyde_enhancer(deps, config)
-        self._hyde_enhancer = hyde_enhancer
-
-        # 4. 最后把 passive chain 装起来。
+        # 3. 最后把 passive chain 装起来。
         self._assemble_passive_runtime(
             deps=deps,
             config=config,
-            memory_port=memory_port,
-            hyde_enhancer=hyde_enhancer,
         )
         self._configure_stream_events()
 
@@ -246,83 +230,34 @@ class AgentLoop:
     def _resolve_memory_runtime(
         self,
         deps: AgentLoopDeps,
-    ) -> "MemoryPort":
-        # 1. 先取显式注入的 memory 对象。
-        memory_port = deps.memory_port
-
-        # 2. 如果给了 memory_runtime，就优先使用 runtime 里的实现。
+    ) -> "MemoryEngine":
         if deps.memory_runtime is not None:
-            memory_port = deps.memory_runtime.port
+            return deps.memory_runtime.engine
+        if deps.memory_services is not None and deps.memory_services.engine is not None:
+            return deps.memory_services.engine
+        raise ValueError("AgentLoop requires memory_runtime.engine")
 
-        # 3. 当前主链必须拿到 memory_port。
-        if memory_port is None:
-            raise ValueError("AgentLoop requires memory_port or memory_runtime")
-        return memory_port
-
-    def _build_hyde_enhancer(
+    def _resolve_markdown_runtime(
         self,
         deps: AgentLoopDeps,
-        config: AgentLoopConfig,
-    ) -> "HyDEEnhancer | None":
-        # 1. 先尊重外部显式注入。
-        hyde_enhancer = deps.hyde_enhancer
-
-        # 2. 没开 HyDE 或已经注入时，直接返回。
-        if hyde_enhancer is not None or not config.memory.hyde_enabled:
-            return hyde_enhancer
-
-        # 3. 没配独立 light_model 时，不启用 HyDE。
-        if not config.llm.light_model:
-            logger.warning(
-                "hyde_enabled=True 但未配置独立 light_model，"
-                "为避免主模型被额外调用，HyDE 已自动禁用。"
-                "请在配置中设置 light_model 后重启。"
-            )
-            return None
-
-        # 4. 需要时再构造默认 HyDE 能力。
-        from memory2.hyde_enhancer import HyDEEnhancer
-
-        return HyDEEnhancer(
-            light_provider=self.light_provider,
-            light_model=self.light_model,
-            timeout_s=config.memory.hyde_timeout_ms / 1000.0,
-        )
+    ):
+        if deps.memory_runtime is not None:
+            return deps.memory_runtime.markdown
+        return None
 
     def _assemble_passive_runtime(
         self,
         *,
         deps: AgentLoopDeps,
         config: AgentLoopConfig,
-        memory_port: "MemoryPort",
-        hyde_enhancer: "HyDEEnhancer | None",
     ) -> None:
         # 1. 先组基础 service ports。
         llm_svc = self._llm_services
         memory_svc = deps.memory_services or MemoryServices(
             engine=getattr(deps.memory_runtime, "engine", None),
-            facade=getattr(deps.memory_runtime, "facade", None),
-            query_rewriter=deps.query_rewriter,
-            hyde_enhancer=hyde_enhancer,
-            sufficiency_checker=deps.sufficiency_checker,
         )
         session_svc = self._session_services
-        # 2. 再准备 retrieval / scheduler 依赖配置。
-        handler_memory_config = MemoryConfig(
-            window=config.memory.window,
-            top_k_procedure=min(
-                _MAX_PROCEDURE_RETRIEVE_K, max(1, int(config.memory.top_k_procedure))
-            ),
-            top_k_history=max(1, int(config.memory.top_k_history)),
-            route_intention_enabled=config.memory.route_intention_enabled,
-            procedure_guard_enabled=config.memory.procedure_guard_enabled,
-            gate_llm_timeout_ms=max(100, int(config.memory.gate_llm_timeout_ms)),
-            gate_max_tokens=max(32, int(config.memory.gate_max_tokens)),
-            hyde_enabled=config.memory.hyde_enabled,
-            hyde_timeout_ms=config.memory.hyde_timeout_ms,
-        )
-
-        # 3. 组执行层和 consolidation 相关组件。
+        # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
         self._reasoner = deps.reasoner or DefaultReasoner(
             llm=llm_svc,
@@ -335,54 +270,12 @@ class AgentLoop:
             session_manager=self.session_manager,
             event_bus=self._event_bus,
         )
-        consolidation_service = deps.consolidation_service or ConsolidationService(
-            memory_port=self._memory_port,
-            profile_maint=(
-                getattr(deps.memory_runtime, "profile_maint", None) or self._memory_port
-            ),
-            provider=deps.provider,
-            model=config.llm.model,
-            keep_count=config.memory.keep_count,
-            profile_extractor=deps.profile_extractor,
-            recent_context_provider=deps.light_provider or deps.provider,
-            recent_context_model=config.llm.light_model or config.llm.model,
-        )
-        if memory_svc.facade is not None:
-            memory_svc.facade.bind_consolidation_runner(
-                lambda session, archive_all: consolidation_service.consolidate(
-                    session,
-                    archive_all=archive_all,
-                )
-            )
-        self._scheduler = deps.scheduler or TurnScheduler(
-            consolidation_runner=self._consolidate_and_save,
-            keep_count=config.memory.keep_count,
-        )
-        self._consolidation_runtime = ConsolidationRuntime(
-            session_manager=self.session_manager,
-            scheduler=self._scheduler,
-            consolidation=consolidation_service,
-            facade=memory_svc.facade,
-            keep_count=config.memory.keep_count,
-            wait_timeout_s=self._CONSOLIDATION_WAIT_S,
-        )
 
-        # 4. 最后串 passive prepare / execute / commit 主链。
+        # 3. 最后串 passive prepare / execute / commit 主链。
         retrieval_pipeline = deps.retrieval_pipeline or DefaultMemoryRetrievalPipeline(
             memory=memory_svc,
-            memory_config=handler_memory_config,
-            llm=llm_svc,
-            workspace=deps.workspace,
-            light_model=self.light_model,
         )
         self._retrieval_pipeline = retrieval_pipeline
-        register_turn_committed_consumers(
-            event_bus=self._event_bus,
-            consolidation=consolidation_service,
-            session_manager=self.session_manager,
-            scheduler=self._scheduler,
-            memory_engine=memory_svc.engine,
-        )
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
             context=self._context,
@@ -773,18 +666,6 @@ class AgentLoop:
         visible_names = result.metadata.get("visible_names")
         return result.reply, tools_used, tool_chain, visible_names, result.thinking
 
-    async def _consolidate_memory(
-        self,
-        session,
-        archive_all: bool = False,
-        force: bool = False,
-    ) -> None:
-        await self._consolidation_runtime.consolidate_memory(
-            session,
-            archive_all=archive_all,
-            force=force,
-        )
-
     async def trigger_memory_consolidation(
         self,
         session_key: str,
@@ -792,18 +673,29 @@ class AgentLoop:
         archive_all: bool = False,
         force: bool = False,
     ) -> bool:
-        return await self._consolidation_runtime.trigger_memory_consolidation(
-            session_key,
-            archive_all=archive_all,
-            force=force,
-            consolidate_fn=self._consolidate_memory,
-        )
+        from core.memory.markdown import ConsolidateRequest
 
-    async def _wait_for_consolidation_idle(self, session_key: str) -> None:
-        await self._consolidation_runtime.wait_for_consolidation_idle(session_key)
-
-    async def _consolidate_and_save(self, session: object) -> None:
-        await self._consolidation_runtime.consolidate_and_save(session)
+        session = self.session_manager.get_or_create(session_key)
+        if self._markdown_memory is None:
+            raise RuntimeError("markdown memory runtime unavailable")
+        maintenance = self._markdown_memory.maintenance
+        try:
+            result = await asyncio.wait_for(
+                maintenance.consolidate(
+                    ConsolidateRequest(
+                        session=session,
+                        archive_all=archive_all,
+                        force=force,
+                    )
+                ),
+                timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise TimeoutError("memory consolidation busy") from exc
+        if result.trace.get("mode") != "skipped":
+            await self.session_manager.save_async(session)
+            return True
+        return False
 
 
 # ── 模块级辅助 ────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from core.memory.profile import MemoryOptimizerStore
+    from core.memory.markdown import MarkdownMemoryStore
 
 from agent.memory import DEFAULT_SELF_MD
 from agent.provider import LLMProvider
@@ -195,7 +195,7 @@ _SELF_PROMPT = """\
 class MemoryOptimizer:
     def __init__(
         self,
-        memory: "MemoryOptimizerStore",
+        memory: "MarkdownMemoryStore",
         provider: LLMProvider,
         model: str,
         max_tokens: int = 16384,
@@ -232,13 +232,7 @@ class MemoryOptimizer:
         merged_memory = await self._merge_memory(current_memory, pending)
         if merged_memory:
             if current_memory:
-                # Back up MEMORY.md via the underlying v1 store's file path
-                v1 = getattr(self._memory, "_v1_store", self._memory)
-                memory_file = getattr(v1, "memory_file", None)
-                if memory_file is not None:
-                    memory_file.with_suffix(".md.bak").write_text(
-                        current_memory, encoding="utf-8"
-                    )
+                self._memory.backup_long_term()
             self._memory.write_long_term(merged_memory)
             logger.info(
                 "[memory_optimizer] 记忆已合并 before=%d after=%d chars",

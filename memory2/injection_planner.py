@@ -5,11 +5,10 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
     from memory2.hyde_enhancer import HyDEAugmentResult, HyDEEnhancer
 
 async def retrieve_procedure_items(
-    memory: "MemoryPort",
+    memory: Any,
     query: str = "",
     queries: list[str] | None = None,
     *,
@@ -42,7 +41,7 @@ async def retrieve_procedure_items(
 
 
 async def retrieve_history_items(
-    memory: "MemoryPort",
+    memory: Any,
     query: str,
     *,
     memory_types: list[str],

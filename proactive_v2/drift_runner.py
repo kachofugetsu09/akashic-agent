@@ -5,7 +5,7 @@ import logging
 import inspect
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from agent.prompting import (
     PromptSectionRender,
@@ -21,6 +21,9 @@ from proactive_v2.drift_tools import (
     DriftToolDeps,
     build_drift_tool_registry,
 )
+
+if TYPE_CHECKING:
+    from core.memory.markdown import MemoryProfileApi
 
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
@@ -191,14 +194,15 @@ class DriftRunner:
         memory_text = ""
         recent_context_text = ""
         if self.tool_deps.memory is not None:
+            memory = cast("MemoryProfileApi", self.tool_deps.memory)
             try:
-                raw = str(self.tool_deps.memory.read_long_term_context() or "").strip()
+                raw = str(memory.read_long_term() or "").strip()
                 if raw:
                     memory_text = raw
             except Exception:
                 memory_text = ""
             try:
-                rc = str(self.tool_deps.memory.read_recent_context() or "").strip()
+                rc = str(memory.read_recent_context() or "").strip()
                 if rc:
                     recent_context_text = rc
             except Exception:

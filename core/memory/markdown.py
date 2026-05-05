@@ -1,27 +1,76 @@
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
 import logging
 import re
+import shutil
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Awaitable, Callable
-
-import json_repair
+from collections import deque
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agent.llm_json import load_json_object_loose
+from agent.memory import MemoryStore
 from agent.prompting import is_context_frame
-
-logger = logging.getLogger("agent.loop")
+from agent.provider import LLMProvider
+from bus.events_lifecycle import TurnCommitted
+from core.memory.events import ConsolidationCommitted
 
 if TYPE_CHECKING:
-    from agent.looping.ports import TurnScheduler
-    from agent.provider import LLMProvider
-    from core.memory.port import MemoryPort
-    from core.memory.profile import ProfileMaintenanceStore
-    from core.memory.runtime_facade import MemoryRuntimeFacade
-    from memory2.profile_extractor import ProfileFactExtractor
-    from session.manager import SessionManager
+    from bus.event_bus import EventBus
+
+logger = logging.getLogger("memory.markdown")
+
+
+@dataclass(frozen=True)
+class ConsolidateRequest:
+    session: object
+    archive_all: bool = False
+    force: bool = False
+
+
+@dataclass
+class ConsolidateResult:
+    consolidated_count: int = 0
+    trace: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RefreshRecentTurnsRequest:
+    session: object
+
+
+@dataclass(frozen=True)
+class MemoryLifecycleBindRequest:
+    get_session: Callable[[str], object]
+    save_session: Callable[[object], Awaitable[None]]
+
+
+@runtime_checkable
+class MemoryProfileApi(Protocol):
+    def read_long_term(self) -> str: ...
+
+    def write_long_term(self, content: str) -> None: ...
+
+    def read_self(self) -> str: ...
+
+    def write_self(self, content: str) -> None: ...
+
+    def read_recent_history(self, *, max_chars: int = 0) -> str: ...
+
+    def read_recent_context(self) -> str: ...
+
+    def write_recent_context(self, content: str) -> None: ...
+
+    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None: ...
+
+    def get_memory_context(self) -> str: ...
+
+    def has_long_term_memory(self) -> bool: ...
 
 _ALLOWED_PENDING_TAGS = frozenset(
     {
@@ -62,10 +111,23 @@ def _parse_consolidation_payload(text: str) -> dict | None:
 
 
 @dataclass(frozen=True)
-class ConsolidationWindow:
+class _ConsolidationWindow:
     old_messages: list[dict]
     keep_count: int
     consolidate_up_to: int
+
+
+@dataclass(frozen=True)
+class _ConsolidationDraft:
+    window: _ConsolidationWindow
+    source_ref: str
+    history_entry_payloads: list[tuple[str, int]]
+    pending_items: str
+    conversation: str
+    recent_context_text: str
+    scope_channel: str
+    scope_chat_id: str
+    archive_all: bool = False
 
 
 def _select_consolidation_window(
@@ -75,10 +137,10 @@ def _select_consolidation_window(
     consolidation_min_new_messages: int,
     archive_all: bool,
     force: bool = False,
-) -> ConsolidationWindow | None:
+) -> _ConsolidationWindow | None:
     total_messages = len(session.messages)
     if archive_all:
-        return ConsolidationWindow(
+        return _ConsolidationWindow(
             old_messages=list(session.messages),
             keep_count=0,
             consolidate_up_to=total_messages,
@@ -98,14 +160,14 @@ def _select_consolidation_window(
         return None
     if not force and len(old_messages) < max(1, int(consolidation_min_new_messages)):
         return None
-    return ConsolidationWindow(
+    return _ConsolidationWindow(
         old_messages=old_messages,
         keep_count=0 if force else keep_count,
         consolidate_up_to=consolidate_up_to,
     )
 
 
-def _build_consolidation_source_ref(window: ConsolidationWindow) -> str:
+def _build_consolidation_source_ref(window: _ConsolidationWindow) -> str:
     """返回本次 consolidation 窗口内所有消息 ID 的 JSON 列表。
     缺失 id 的消息（迁移前的历史脏数据）直接跳过。
     """
@@ -157,7 +219,7 @@ _DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})")
 
 
 def _append_entries_to_journal(
-    profile_maint: "ProfileMaintenanceStore",
+    profile_maint: "MarkdownMemoryStore",
     entries: list[str],
     source_ref: str,
 ) -> None:
@@ -325,21 +387,18 @@ def _render_recent_context(
     return "\n".join(lines).rstrip() + "\n"
 
 
-class ConsolidationService:
+class _MarkdownConsolidationWorker:
     def __init__(
         self,
         *,
-        memory_port: "MemoryPort",
-        profile_maint: "ProfileMaintenanceStore | None" = None,
+        profile_maint: "MarkdownMemoryStore",
         provider: "LLMProvider",
         model: str,
         keep_count: int,
-        profile_extractor: "ProfileFactExtractor | None" = None,
         recent_context_provider: "LLMProvider | None" = None,
         recent_context_model: str | None = None,
     ) -> None:
-        self._memory_port = memory_port
-        self._profile_maint = profile_maint or memory_port
+        self._profile_maint = profile_maint
         self._provider = provider
         self._model = model
         self._recent_context_provider = recent_context_provider or provider
@@ -348,380 +407,6 @@ class ConsolidationService:
         )
         self._keep_count = keep_count
         self._consolidation_min_new_messages = max(5, keep_count // 2)
-        self._profile_extractor = profile_extractor
-
-    async def _extract_and_save_profile_facts(
-        self,
-        *,
-        extractor,
-        conversation: str,
-        existing_profile: str,
-        source_ref: str,
-        scope_channel: str,
-        scope_chat_id: str,
-    ) -> None:
-        try:
-            facts = await extractor.extract(
-                conversation,
-                existing_profile=existing_profile,
-            )
-            if not facts:
-                return
-
-            for fact in facts:
-                await self._memory_port.save_item(
-                    summary=fact.summary,
-                    memory_type="profile",
-                    extra={
-                        "category": fact.category,
-                        "scope_channel": scope_channel,
-                        "scope_chat_id": scope_chat_id,
-                    },
-                    source_ref=f"{source_ref}#profile",
-                    happened_at=fact.happened_at,
-                )
-                logger.info(
-                    "memory2 profile fact saved: category=%s %r",
-                    fact.category,
-                    fact.summary[:60],
-                )
-        except Exception as e:
-            logger.warning("profile fact extraction failed: %s", e)
-
-    @staticmethod
-    def _build_long_term_prompt(*, conversation: str, existing_profile: str) -> str:
-        return f"""你是长期记忆提取专家。从对话窗口中一次性提取三类长期记忆，返回 JSON。
-
-默认答案是所有数组为空。提取门槛要高，宁可不提取，也不要把临时信息写进长期记忆。
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【核心判断标准】
-把这条信息放进 6 个月后的一次全新对话，它还有用吗？
-→ 是 → 可能是长期记忆，继续检查
-→ 否 → 不是长期记忆，留空
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【三类记忆的语义】
-
-profile — 关于用户本人或其客观处境的事实
-  语义：身份背景、持有物、爱好、健康事实、长期状态、重要决定
-  允许 category：personal_fact / purchase / decision / status
-  要求：只有 USER 在对话中直接陈述自身的事实，才允许提取
-  禁止：用户提问、追问、反问、记忆测试句一律不算事实披露，绝对禁止反推
-    · "你还记得我什么时候开始戴 fitbit 手环的吗" → 返回空
-    · "你记得我住哪里吗" → 返回空
-    · "我之前是不是买过这个" → 返回空
-
-preference — 用户希望怎样被服务、怎样被讲解、怎样被推荐
-  语义：跨 session 稳定成立的偏好/厌恶/倾向，而非硬约束
-  来自 USER 明确表达
-
-procedure — agent 在未来类似场景下应遵守的长期执行规则
-  语义：面向 agent 的行为规则，跨任务可复用
-  来自 USER 的长期要求，或被 USER 明确确认过的非显然做法
-
-绝对不输出：event（有时间性的具体事件）
-
-每条记忆都必须额外输出 emotional_weight（0-10）：
-- 纯技术讨论、普通事实陈述、工具步骤、没有明显情绪色彩 → 0
-- 有明确喜欢/厌恶、明显情绪波动、关系张力、受挫或强烈在意 → 3-9
-- 不确定时保守输出 0
-
-区分三类：
-- "用户是什么/拥有什么/处在什么客观背景里" → profile
-- "用户希望 agent 怎么服务他、怎么讲解、怎么推荐" → preference
-- "agent 在某类请求下必须怎么做/用什么工具" → procedure（有明确执行步骤/工具要求）
-- 只是方向性偏好 → preference（优先选 preference）
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【preference / procedure 提取前四项检查，顺序执行，任一不通过即不提取】
-
-▸ 检查 0 — 元讨论/举例说明
-先判断 USER 是在提供长期规则，还是在讨论"什么该记、怎么记、你是否理解、请举例说明"。
-  - 元讨论场景：只允许提取 USER 自己明确说出的长期规则/筛选标准
-  - ASSISTANT 为说明概念而举出的任何例子、类比、假设场景一律不得提取
-  - 即使 ASSISTANT 的示例内容本身合理、未来有用，也不能因"看起来像长期规则"就入库
-
-▸ 检查 A — USER 原话锚点
-在 USER 消息里找到支撑这条记忆的直接原句（逐字存在，不是推断）。
-  - 找不到 USER 的直接原句 → 不提取
-  - ASSISTANT 的解释、建议、工具返回的数据，不算 USER 原句
-  - USER 没有反驳 ASSISTANT ≠ USER 认同且希望长期记忆
-  - USER 消息是纯状态汇报（"复习中"/"在看书"/"工作中"等）→ 不提取
-
-▸ 检查 B — 时效性
-  - 涉及当前任务、当前时间段、当前情境（本次/今天/这个项目） → 不提取
-  - 只有明确跨 session 稳定成立，才继续
-
-▸ 检查 C — 来源方向
-  - 核心内容来自 ASSISTANT（解释/建议/工具结果） → 不提取
-  - ASSISTANT 主动给出建议，USER 没有明确说"以后都这样"/"记住这个" → 不提取
-  - "USER 没有反驳"不等于"USER 授权 AGENT 长期执行这条规则"
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【profile 专用规则】
-
-仅允许以下 4 类 category：
-- purchase：用户购买 / 下单了什么
-- decision：用户明确拍板了什么方案 / 计划
-- status：用户某件事的状态变化（等待/完成/放弃/里程碑达成）
-- personal_fact：用户关于自身的事实性披露（身份/背景/持有物/爱好/习惯/经验背景）
-
-必须遵守：
-- 纯技术讨论、闲聊、打招呼不输出
-- 若 existing_profile 已有相同事实，不重复输出
-- summary 简洁、可独立检索；personal_fact 默认不填 happened_at
-- 每一件具体的事单独一条，绝对不合并
-  ✗ 错误："用户购买了多件商品"
-  ✓ 正确：每件商品单独一条，写出具体名称/型号
-- ASSISTANT 的回复只作背景参考，不作提取证据
-  即使 ASSISTANT 说"你之前买了 X""你是 XX 方向的学生"，也不得作为事实来源
-
-额外禁止：
-- 工程操作（安装/更新/配置工具/依赖）→ 这些是工程 event，不是 profile
-- 项目内讨论（架构决策/重构方案/代码评审）
-- 用户表达的观点/意见 → 必须是客观事实
-- 纯 event：例如"这周日去徒步""昨晚去了超市""明天要开会"
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【示例】
-
-<example id="keep_profile_personal_fact">
-USER: 我在互联网公司做产品经理，今年30岁，住在上海，有一块 Fitbit 手表，爱好是弹钢琴。
-→ profile: [
-  {{"summary": "用户在互联网公司做产品经理", "category": "personal_fact"}},
-  {{"summary": "用户今年30岁", "category": "personal_fact"}},
-  {{"summary": "用户住在上海", "category": "personal_fact"}},
-  {{"summary": "用户有一块 Fitbit 手表", "category": "personal_fact"}},
-  {{"summary": "用户的爱好是弹钢琴", "category": "personal_fact"}}
-]
-</example>
-
-<example id="drop_profile_memory_test">
-USER: 你还记得我什么时候开始戴 fitbit 手环的吗
-→ profile: []（提问不是事实披露，绝对不反推）
-</example>
-
-<example id="profile_event_split">
-USER: 这周日朋友约我去徒步，我其实不常徒步，不知道该买什么装备。
-→ profile: [
-  {{"summary": "用户不常徒步", "category": "personal_fact"}},
-  {{"summary": "用户目前缺少徒步相关装备准备", "category": "personal_fact"}}
-]
-不提取："这周日去徒步"（是 event）
-</example>
-
-<example id="profile_not_preference">
-USER: 我家有 10 套房，我平时爱弹钢琴，而且我有一块 Fitbit 手表
-→ profile: [以上三条 personal_fact]
-→ preference/procedure: []
-（这些是用户身份事实，不是"用户希望被怎样服务"）
-</example>
-
-<example id="keep_explicit_rule">
-USER: 以后帮我查菜谱只给 20 分钟以内能做完的，我没时间搞复杂的
-检查A: "以后帮我查菜谱只给20分钟以内能做完的" ✓
-检查B: "以后"明确跨 session ✓
-检查C: 来自 USER 主动要求 ✓
-→ procedure: [{{"summary": "查询菜谱时只推荐 20 分钟内可完成的菜式"}}]
-</example>
-
-<example id="keep_multi_source_research">
-USER: 以后帮我查耳机先看 B 站评测和 Reddit 讨论，别只看官网参数
-→ procedure: [{{"summary": "查询耳机时先看 B 站评测和 Reddit 讨论，不只依赖官网参数"}}]
-</example>
-
-<example id="keep_preference_trimmed">
-USER: 我不喜欢这种悬疑风格的游戏，太压抑了
-ASSISTANT: 明白！你是偏好轻松明快风格的玩家，喜欢治愈系或休闲类游戏……
-→ preference: [{{"summary": "不喜欢悬疑压抑风格的游戏"}}]
-✗ 不能写："偏好治愈系或休闲类游戏"（USER 没说过，来自 ASSISTANT 延伸）
-</example>
-
-<example id="keep_preference_service_style">
-USER: 你给我讲内容的时候最好附带一个很棒的例子，并且最好贯穿始终
-→ preference: [{{"summary": "讲解内容时最好附带贯穿始终的例子"}}]
-（这是"希望被怎样讲解"，是 preference 不是 profile）
-</example>
-
-<example id="drop_situational">
-USER: 今晚几个同学来，想找个气氛好的日料店
-→ 全部为空（"今晚"是当前情境，不跨 session）
-✗ 不能提取："用户喜欢日料"（推断）
-</example>
-
-<example id="drop_knowledge">
-USER: TCP 和 UDP 的区别是什么
-ASSISTANT: TCP 是可靠传输协议，有拥塞控制和重传机制……
-→ 全部为空（USER 在提问，知识内容来自 ASSISTANT）
-✗ 不能提取："TCP 是可靠传输协议"
-</example>
-
-<example id="drop_assistant_proactive_advice">
-USER: 在赶代码
-ASSISTANT: 别忘了每隔一段时间起来活动下，喝点水，久坐对颈椎不好……
-→ 全部为空
-✗ 不能提取："每隔45分钟应起身活动并补水"（来自 ASSISTANT，USER 没有授权）
-关键判断：ASSISTANT 建议得再具体再合理，只要 USER 没有明确授权，就不是长期记忆
-</example>
-
-<example id="drop_meta_discussion_example">
-USER: 我希望只有每轮对话里真正重要的参考信息才值得存入 memory.md，你举个例子我看看你理解没有
-ASSISTANT: 明白。比如智能家居架构应坚持纯本地化部署，拒绝云端依赖……
-检查0: USER 在讨论记忆标准并要求举例，是元讨论
-可提取：USER 自己说出的筛选标准
-ASSISTANT 的智能家居举例只是教学示范，不是 USER 新提供的规则
-→ procedure: [{{"summary": "每轮对话中真正重要的参考信息才值得存入 memory.md"}}]
-✗ 不能提取："智能家居架构坚持纯本地化部署"
-</example>
-
-<example id="drop_workaround">
-USER: 那就直接写个脚本绕过去吧
-→ 全部为空（当前任务临时策略，不跨 session）
-✗ 不能提取："遇到此类问题应优先用 Python 脚本绕过"
-</example>
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【summary 写法约束】
-- 只包含 USER 原话中直接出现的内容，不能加推断或延伸
-- summary 语气不得强于 USER 原话（"不太喜欢" ≠ "强烈反感且要求永久避免"）
-- summary 脱离对话也能独立成立，不含"这次""今天""当前"等时间锚
-- 不能只是原话碎片，必须是完整句
-- profile：每条 summary 只表达一条完整事实，绝对不合并
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【当前已有 profile（用于 profile 查重）】
-{existing_profile or "（空）"}
-
-【待处理对话】
-{conversation}
-
-只返回合法 JSON，不要 markdown 代码块：
-{{
-  "profile": [
-    {{"summary": "...", "category": "personal_fact|purchase|decision|status", "happened_at": null, "emotional_weight": 0}}
-  ],
-  "preference": [
-    {{"summary": "...", "emotional_weight": 0}}
-  ],
-  "procedure": [
-    {{"summary": "...", "emotional_weight": 0, "tool_requirement": null, "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
-  ]
-}}"""
-
-    async def _extract_implicit_long_term(
-        self,
-        *,
-        conversation: str,
-        existing_profile: str = "",
-    ) -> dict | None:
-        """窗口级隐式长期记忆 LLM 提取（只提取，不写库），与 event 并行运行。
-        返回原始 dict（含 profile/preference/procedure），失败返回 None。
-        写库由调用方在 event 路径确认成功后统一执行，确保幂等。
-        """
-        try:
-            started_at = time.perf_counter()
-            prompt = self._build_long_term_prompt(
-                conversation=conversation,
-                existing_profile=existing_profile,
-            )
-            resp = await self._provider.chat(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                model=self._model,
-                max_tokens=600,
-                disable_thinking=True,
-            )
-            text = (resp.content or "").strip()
-            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-            logger.info(
-                "Memory consolidation implicit llm raw: elapsed_ms=%d chars=%d preview=%r",
-                elapsed_ms,
-                len(text),
-                text[:300],
-            )
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = json_repair.loads(text)
-            if not isinstance(result, dict):
-                return None
-            return result
-        except Exception as e:
-            logger.warning("consolidation long_term extraction failed: %s", e)
-            return None
-
-    async def _save_implicit_long_term(
-        self,
-        result: dict,
-        *,
-        source_ref: str,
-        scope_channel: str,
-        scope_chat_id: str,
-    ) -> dict[str, int]:
-        """将已提取的隐式长期记忆写入向量库。仅在 event 路径确认成功后调用。"""
-        saved_counts = {
-            "profile": 0,
-            "preference": 0,
-            "procedure": 0,
-        }
-        # profile
-        for item in (result.get("profile") or []):
-            if not isinstance(item, dict):
-                continue
-            summary = (item.get("summary") or "").strip()
-            if not summary:
-                continue
-            category = (item.get("category") or "personal_fact").strip()
-            happened_at = item.get("happened_at") or None
-            emotional_weight = _coerce_emotional_weight(item.get("emotional_weight"))
-            await self._memory_port.save_item_with_supersede(
-                summary=summary,
-                memory_type="profile",
-                extra={
-                    "category": category,
-                    "scope_channel": scope_channel,
-                    "scope_chat_id": scope_chat_id,
-                },
-                source_ref=f"{source_ref}#profile",
-                happened_at=happened_at,
-                emotional_weight=emotional_weight,
-            )
-            saved_counts["profile"] += 1
-            logger.info("consolidation long_term saved: type=profile %r", summary[:60])
-
-        # preference + procedure
-        for mtype in ("preference", "procedure"):
-            for item in (result.get(mtype) or []):
-                if not isinstance(item, dict):
-                    continue
-                summary = (item.get("summary") or "").strip()
-                if not summary:
-                    continue
-                emotional_weight = _coerce_emotional_weight(
-                    item.get("emotional_weight")
-                )
-                extra: dict = {
-                    "tool_requirement": item.get("tool_requirement"),
-                    "steps": item.get("steps") or [],
-                    "scope_channel": scope_channel,
-                    "scope_chat_id": scope_chat_id,
-                }
-                if mtype == "procedure":
-                    rule_schema = item.get("rule_schema")
-                    if rule_schema and isinstance(rule_schema, dict):
-                        extra["rule_schema"] = rule_schema
-                await self._memory_port.save_item_with_supersede(
-                    summary=summary,
-                    memory_type=mtype,
-                    extra=extra,
-                    source_ref=f"{source_ref}#implicit",
-                    emotional_weight=emotional_weight,
-                )
-                saved_counts[mtype] += 1
-                logger.info(
-                    "consolidation long_term saved: type=%s %r", mtype, summary[:60]
-                )
-        return saved_counts
 
     @staticmethod
     def _build_recent_context_prompt(
@@ -871,7 +556,7 @@ ongoing_threads 严格限制：
         *,
         session,
         profile_maint,
-        window: ConsolidationWindow | None,
+        window: _ConsolidationWindow | None,
         archive_all: bool,
     ) -> str:
         tail = list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
@@ -961,13 +646,13 @@ ongoing_threads 严格限制：
         if hasattr(profile, "write_recent_context"):
             await asyncio.to_thread(profile.write_recent_context, updated)
 
-    async def consolidate(
+    # 只做窗口选择和 LLM 提取，写入由 MemoryEngine 统一提交。
+    async def prepare_consolidation(
         self,
         session,
         archive_all: bool = False,
         force: bool = False,
-    ) -> None:
-        memory = self._memory_port
+    ) -> _ConsolidationDraft | None:
         profile_maint = self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
         window = _select_consolidation_window(
@@ -1032,18 +717,8 @@ ongoing_threads 严格限制：
             f"- {entry}" for entry in recent_history_entries
         )
 
-        # scope 信息提前取出，隐式提取任务需要用
         scope_channel = getattr(session, "_channel", "")
         scope_chat_id = getattr(session, "_chat_id", "")
-
-        # 隐式长期记忆提取（procedure/preference/profile）与 event 提取并行启动。
-        # 只并行提取（不写库），等 event 路径确认 JSON 合法后再统一写库，确保幂等。
-        implicit_task: asyncio.Task[dict | None] = asyncio.create_task(
-            self._extract_implicit_long_term(
-                conversation=conversation,
-                existing_profile=current_memory or "",
-            )
-        )
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
 
@@ -1171,8 +846,6 @@ history_entries.emotional_weight 规则：
                 logger.warning(
                     "Memory consolidation: LLM returned empty response, skipping"
                 )
-                implicit_task.cancel()
-                await asyncio.gather(implicit_task, return_exceptions=True)
                 return
             result = _parse_consolidation_payload(text)
             if result is None:
@@ -1180,288 +853,270 @@ history_entries.emotional_weight 规则：
                     "Memory consolidation: unexpected response type, skipping. Response: %r",
                     text[:200],
                 )
-                implicit_task.cancel()
-                await asyncio.gather(implicit_task, return_exceptions=True)
                 return
 
-            # 4. 先处理 history_entries / pending_items 这两类文本产物。
+            # 4. 归一化文本产物，并把后续写入所需信息交给 engine。
             history_entry_payloads = _normalize_history_entries(
                 result.get("history_entries"),
                 result.get("history_entry"),
             )
-            history_entries = [entry for entry, _ in history_entry_payloads]
-
-            if history_entries:
-                combined = "\n".join(history_entries)
-                await asyncio.to_thread(
-                    profile_maint.append_history_once,
-                    combined,
-                    source_ref=source_ref,
-                    kind="history_entry",
-                )
-
             pending_items = _format_pending_items(result.get("pending_items", []))
-            if pending_items:
-                appended = await asyncio.to_thread(
-                    profile_maint.append_pending_once,
-                    pending_items,
-                    source_ref=source_ref,
-                    kind="pending_items",
-                )
-                if appended:
-                    logger.info(
-                        "Memory consolidation: appended %d pending_items to PENDING",
-                        len(pending_items.splitlines()),
-                    )
-
-            # 5. 再把 history_entries 写入向量记忆，供后续 retrieval 使用。
-            # 必须等所有写库完成后再推进 last_consolidated，防止进程崩溃导致丢数。
-            save_coros = [
-                self._memory_port.save_from_consolidation(
-                    history_entry=entry,
-                    behavior_updates=[],
-                    source_ref=_build_entry_source_ref(source_ref, entry),
-                    scope_channel=scope_channel,
-                    scope_chat_id=scope_chat_id,
-                    emotional_weight=emotional_weight,
-                )
-                for entry, emotional_weight in history_entry_payloads
-            ]
-            if save_coros:
-                await asyncio.gather(*save_coros)
-            if history_entries:
-                logger.info(
-                    "Memory consolidation: saved %d history entries to vector store",
-                    len(history_entries),
-                )
-
-            # 6. 等待隐式提取完成（仅 LLM 调用，无写库），然后统一写库。
-            # event 路径走到这里说明 JSON 合法，两侧提取均已成功后才提交，保证幂等。
-            # 进程在此之前崩溃，last_consolidated 不更新，下次重跑同窗口。
-            implicit_result = await implicit_task
-            if implicit_result:
-                extracted_profile = [
-                    (item.get("summary") or "").strip()
-                    for item in (implicit_result.get("profile") or [])
-                    if isinstance(item, dict) and (item.get("summary") or "").strip()
-                ]
-                extracted_preference = [
-                    (item.get("summary") or "").strip()
-                    for item in (implicit_result.get("preference") or [])
-                    if isinstance(item, dict) and (item.get("summary") or "").strip()
-                ]
-                extracted_procedure = [
-                    (item.get("summary") or "").strip()
-                    for item in (implicit_result.get("procedure") or [])
-                    if isinstance(item, dict) and (item.get("summary") or "").strip()
-                ]
-                logger.info(
-                    "Memory consolidation implicit extracted: profile=%d preference=%d procedure=%d profile_items=%s preference_items=%s procedure_items=%s",
-                    len(extracted_profile),
-                    len(extracted_preference),
-                    len(extracted_procedure),
-                    [s[:60] for s in extracted_profile],
-                    [s[:60] for s in extracted_preference],
-                    [s[:60] for s in extracted_procedure],
-                )
-                saved_counts = await self._save_implicit_long_term(
-                    implicit_result,
-                    source_ref=source_ref,
-                    scope_channel=scope_channel,
-                    scope_chat_id=scope_chat_id,
-                )
-                logger.info(
-                    "Memory consolidation implicit saved: profile=%d preference=%d procedure=%d",
-                    saved_counts["profile"],
-                    saved_counts["preference"],
-                    saved_counts["procedure"],
-                )
-            else:
-                logger.info(
-                    "Memory consolidation implicit extracted: no result"
-                )
-
+            # 4. 归一化 markdown 产物，向量写入由 engine 订阅提交事件完成。
             recent_context_text = await self._build_recent_context_snapshot(
                 session=session,
                 profile_maint=profile_maint,
                 window=window,
                 archive_all=archive_all,
             )
-            if hasattr(profile_maint, "write_recent_context"):
-                await asyncio.to_thread(
-                    profile_maint.write_recent_context,
-                    recent_context_text,
-                )
-
-            # 7. 把 event 按日期写入 journal/YYYY-MM-DD.md。
-            if history_entries:
-                await asyncio.to_thread(
-                    _append_entries_to_journal,
-                    profile_maint,
-                    history_entries,
-                    source_ref,
-                )
-
-            # 8. 更新 session.last_consolidated，表示这批旧消息已经被归档过。
-            if archive_all:
-                session.last_consolidated = 0
-            else:
-                session.last_consolidated = window.consolidate_up_to
-            logger.info(
-                "Memory consolidation done: %d messages, last_consolidated=%d",
-                len(session.messages),
-                session.last_consolidated,
+            return _ConsolidationDraft(
+                window=window,
+                source_ref=source_ref,
+                history_entry_payloads=history_entry_payloads,
+                pending_items=pending_items,
+                conversation=conversation,
+                recent_context_text=recent_context_text,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                archive_all=archive_all,
             )
         except Exception as e:
             logger.error("Memory consolidation failed: %s", e)
+            return None
 
 
-class ConsolidationRuntime:
-    """
-    ┌──────────────────────────────────────┐
-    │ ConsolidationRuntime                 │
-    ├──────────────────────────────────────┤
-    │ 1. 暴露手动 consolidation 入口       │
-    │ 2. 等待后台 consolidation 空闲       │
-    │ 3. 复用 service 做 consolidate/save  │
-    └──────────────────────────────────────┘
-    """
 
+
+class MarkdownMemoryStore(MemoryStore):
+    def read_recent_history(self, *, max_chars: int = 0) -> str:
+        return self.read_history(max_chars=max_chars)
+
+    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
+        if self.memory_file.exists():
+            shutil.copyfile(
+                self.memory_file,
+                self.memory_file.with_name(backup_name),
+            )
+
+    def has_long_term_memory(self) -> bool:
+        return bool(self.read_long_term().strip())
+
+
+@dataclass
+class MarkdownMemoryRuntime:
+    store: MarkdownMemoryStore
+    maintenance: "MarkdownMemoryMaintenance"
+
+
+class MarkdownMemoryMaintenance:
     def __init__(
         self,
         *,
-        session_manager: "SessionManager",
-        scheduler: "TurnScheduler",
-        consolidation: ConsolidationService,
-        facade: "MemoryRuntimeFacade | None" = None,
+        store: MarkdownMemoryStore,
+        provider: "LLMProvider",
+        model: str,
         keep_count: int,
-        wait_timeout_s: float,
+        event_bus: "EventBus | None" = None,
+        recent_context_provider: "LLMProvider | None" = None,
+        recent_context_model: str | None = None,
     ) -> None:
-        self._session_manager = session_manager
-        self._scheduler = scheduler
-        self._consolidation = consolidation
-        self._facade = facade
+        self._store = store
+        self._event_bus = event_bus
+        self._worker = _MarkdownConsolidationWorker(
+            profile_maint=store,
+            provider=provider,
+            model=model,
+            keep_count=keep_count,
+            recent_context_provider=recent_context_provider,
+            recent_context_model=recent_context_model,
+        )
         self._keep_count = keep_count
         self._consolidation_min_new_messages = max(5, keep_count // 2)
-        self._wait_timeout_s = wait_timeout_s
+        self._get_session: Callable[[str], object] | None = None
+        self._save_session: Callable[[object], Awaitable[None]] | None = None
+        self._maintenance_queues: dict[str, deque[str]] = {}
+        self._maintenance_tasks: dict[str, asyncio.Task[None]] = {}
+        self._maintenance_locks: dict[str, asyncio.Lock] = {}
+        if event_bus is not None:
+            event_bus.on(TurnCommitted, self.on_turn_committed)
 
-    async def consolidate_memory(
-        self,
-        session,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-    ) -> None:
-        if self._facade is not None and not force:
-            await self._facade.run_consolidation(
-                session,
-                archive_all=archive_all,
-            )
+    def bind_lifecycle(self, request: MemoryLifecycleBindRequest) -> None:
+        self._get_session = request.get_session
+        self._save_session = request.save_session
+
+    def on_turn_committed(self, event: TurnCommitted) -> None:
+        self._enqueue_maintenance(event.session_key)
+
+    def _enqueue_maintenance(self, session_key: str) -> None:
+        if self._get_session is None or self._save_session is None:
             return
-        await self._consolidation.consolidate(
-            session,
-            archive_all=archive_all,
-            force=force,
+        queue = self._maintenance_queues.setdefault(session_key, deque())
+        queue.append(session_key)
+        if session_key in self._maintenance_tasks:
+            return
+        task = asyncio.create_task(
+            self._run_maintenance_queue(session_key),
+            name=f"markdown-memory-maintenance:{session_key}",
         )
+        self._maintenance_tasks[session_key] = task
+        task.add_done_callback(lambda t: self._on_maintenance_done(t, session_key))
 
-    async def trigger_memory_consolidation(
+    async def _run_maintenance_queue(self, session_key: str) -> None:
+        lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
+        async with lock:
+            while True:
+                queue = self._maintenance_queues.get(session_key)
+                if not queue:
+                    return
+                _ = queue.popleft()
+                session = self._get_session(session_key) if self._get_session else None
+                if session is None:
+                    return
+                if self._should_consolidate_session(session):
+                    result = await self._consolidate_unlocked(
+                        ConsolidateRequest(session=session)
+                    )
+                    if result.trace.get("mode") != "skipped" and self._save_session:
+                        await self._save_session(session)
+                else:
+                    await self.refresh_recent_turns(
+                        RefreshRecentTurnsRequest(session=session)
+                    )
+
+    def _on_maintenance_done(
         self,
+        task: asyncio.Task[None],
         session_key: str,
-        *,
-        archive_all: bool = False,
-        force: bool = False,
-        consolidate_fn: Callable[..., Awaitable[None]] | None = None,
-    ) -> bool:
-        # 1. 先读取真实 session，并判断当前是否真的需要 consolidation。
-        session = self._session_manager.get_or_create(session_key)
-        window = _select_consolidation_window(
-            session,
-            keep_count=self._keep_count,
-            consolidation_min_new_messages=self._consolidation_min_new_messages,
-            archive_all=archive_all,
-            force=force,
-        )
-        if window is None:
-            total_messages = len(session.messages)
-            last_consolidated = int(getattr(session, "last_consolidated", 0))
-            boundary = total_messages if force else total_messages - self._keep_count
-            ready_count = max(0, boundary - last_consolidated)
-            logger.info(
-                "Manual memory consolidation skipped: session=%s total=%d keep=%d last_consolidated=%d ready=%d min=%d archive_all=%s force=%s",
-                session_key,
-                total_messages,
-                self._keep_count,
-                last_consolidated,
-                ready_count,
-                self._consolidation_min_new_messages,
-                archive_all,
-                force,
+    ) -> None:
+        if self._maintenance_tasks.get(session_key) is task:
+            _ = self._maintenance_tasks.pop(session_key, None)
+        queue = self._maintenance_queues.get(session_key)
+        if queue:
+            next_task = asyncio.create_task(
+                self._run_maintenance_queue(session_key),
+                name=f"markdown-memory-maintenance:{session_key}",
             )
-            return False
+            self._maintenance_tasks[session_key] = next_task
+            next_task.add_done_callback(lambda t: self._on_maintenance_done(t, session_key))
+        else:
+            _ = self._maintenance_queues.pop(session_key, None)
+        if task.cancelled():
+            logger.info("markdown memory maintenance cancelled: %s", session_key)
+            return
+        try:
+            exc = task.exception()
+        except Exception as e:
+            logger.warning("markdown memory maintenance inspect failed: session=%s err=%s", session_key, e)
+            return
+        if exc is not None:
+            logger.warning("markdown memory maintenance failed: session=%s err=%s", session_key, exc)
 
-        # 2. 若后台已在跑，同步等待那次 consolidation 完成，避免返回语义含糊的 False。
-        if self._scheduler.is_consolidating(session_key):
-            logger.info(
-                "Manual memory consolidation waits for inflight task: session=%s",
-                session_key,
-            )
-            await self.wait_for_consolidation_idle(session_key)
-            session = self._session_manager.get_or_create(session_key)
-            window = _select_consolidation_window(
+    def _should_consolidate_session(self, session: object) -> bool:
+        return (
+            _select_consolidation_window(
                 session,
                 keep_count=self._keep_count,
                 consolidation_min_new_messages=self._consolidation_min_new_messages,
-                archive_all=archive_all,
-                force=force,
+                archive_all=False,
+                force=False,
             )
-            if window is None:
+            is not None
+        )
+
+    async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
+        session_key = str(getattr(request.session, "key", "") or "")
+        if not session_key:
+            return await self._consolidate_unlocked(request)
+        lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
+        async with lock:
+            return await self._consolidate_unlocked(request)
+
+    async def _consolidate_unlocked(self, request: ConsolidateRequest) -> ConsolidateResult:
+        draft = await self._worker.prepare_consolidation(
+            request.session,
+            archive_all=request.archive_all,
+            force=request.force,
+        )
+        if draft is None:
+            return ConsolidateResult(trace={"mode": "skipped"})
+        await self._commit_markdown_draft(request.session, draft)
+        return ConsolidateResult(
+            consolidated_count=len(draft.window.old_messages),
+            trace={"mode": "markdown", "source_ref": draft.source_ref},
+        )
+
+    async def _commit_markdown_draft(
+        self,
+        session: object,
+        draft: "_ConsolidationDraft",
+    ) -> None:
+        history_entries = [entry for entry, _ in draft.history_entry_payloads]
+        if history_entries:
+            await asyncio.to_thread(
+                self._store.append_history_once,
+                "\n".join(history_entries),
+                source_ref=draft.source_ref,
+                kind="history_entry",
+            )
+        if draft.pending_items:
+            appended = await asyncio.to_thread(
+                self._store.append_pending_once,
+                draft.pending_items,
+                source_ref=draft.source_ref,
+                kind="pending_items",
+            )
+            if appended:
                 logger.info(
-                    "Manual memory consolidation already covered by inflight task: session=%s",
-                    session_key,
+                    "Markdown memory: appended %d pending_items",
+                    len(draft.pending_items.splitlines()),
                 )
-                return True
-
-        # 3. 再复用现有真实 consolidation 逻辑执行一次，避免测试绕过主实现。
-        if not self._scheduler.mark_manual_start(session_key):
-            logger.info(
-                "Manual memory consolidation skipped because session is locked: session=%s",
-                session_key,
+        self._store.write_recent_context(draft.recent_context_text)
+        if history_entries:
+            await asyncio.to_thread(
+                _append_entries_to_journal,
+                self._store,
+                history_entries,
+                draft.source_ref,
             )
-            return False
-        try:
-            runner = consolidate_fn or self.consolidate_memory
-            logger.info(
-                "Manual memory consolidation started: session=%s messages=%d last_consolidated=%d archive_all=%s force=%s",
-                session_key,
-                len(session.messages),
-                int(getattr(session, "last_consolidated", 0)),
-                archive_all,
-                force,
-            )
-            await runner(
-                session,
-                archive_all=archive_all,
-                force=force,
-            )
-            await self._session_manager.save_async(session)
-            logger.info(
-                "Manual memory consolidation done: session=%s last_consolidated=%d",
-                session_key,
-                int(getattr(session, "last_consolidated", 0)),
-            )
-            return True
-        finally:
-            self._scheduler.mark_manual_end(session_key)
-
-    async def wait_for_consolidation_idle(self, session_key: str) -> None:
-        deadline = time.perf_counter() + self._wait_timeout_s
-        while self._scheduler.is_consolidating(session_key):
-            if time.perf_counter() >= deadline:
-                raise TimeoutError(
-                    f"等待 consolidation 完成超时: session_key={session_key}"
+        if self._event_bus is not None:
+            await self._event_bus.emit(
+                ConsolidationCommitted(
+                    history_entry_payloads=list(draft.history_entry_payloads),
+                    source_ref=draft.source_ref,
+                    scope_channel=draft.scope_channel,
+                    scope_chat_id=draft.scope_chat_id,
+                    conversation=draft.conversation,
                 )
-            await asyncio.sleep(0.05)
+            )
+        if draft.archive_all:
+            session.last_consolidated = 0
+        else:
+            session.last_consolidated = draft.window.consolidate_up_to
 
-    async def consolidate_and_save(self, session: object) -> None:
-        await self.consolidate_memory(session)  # type: ignore[arg-type]
-        await self._session_manager.save_async(session)  # type: ignore[arg-type]
+    async def refresh_recent_turns(
+        self,
+        request: RefreshRecentTurnsRequest,
+    ) -> None:
+        await self._worker.refresh_recent_turns(session=request.session)
+
+
+def build_markdown_memory_runtime(
+    *,
+    workspace: Path,
+    provider: "LLMProvider",
+    model: str,
+    keep_count: int,
+    event_bus: "EventBus | None" = None,
+    recent_context_provider: "LLMProvider | None" = None,
+    recent_context_model: str | None = None,
+) -> MarkdownMemoryRuntime:
+    store = MarkdownMemoryStore(workspace)
+    maintenance = MarkdownMemoryMaintenance(
+        store=store,
+        provider=provider,
+        model=model,
+        keep_count=keep_count,
+        event_bus=event_bus,
+        recent_context_provider=recent_context_provider,
+        recent_context_model=recent_context_model,
+    )
+    return MarkdownMemoryRuntime(store=store, maintenance=maintenance)

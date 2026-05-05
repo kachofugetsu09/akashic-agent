@@ -8,13 +8,78 @@ from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
 from core.memory.engine import MemoryEngine
-from core.memory.default_runtime_facade import DefaultMemoryRuntimeFacade
+from core.memory.markdown import build_markdown_memory_runtime
+from core.memory.plugin import (
+    DisabledMemoryEngine,
+    MemoryPluginBuildDeps,
+    MemoryPluginRuntime,
+)
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
-from memory2.post_response_worker import PostResponseMemoryWorker
 
 if TYPE_CHECKING:
-    from bus.publisher import EventPublisher
+    from bus.event_bus import EventBus
+    from core.memory.markdown import MarkdownMemoryRuntime
+
+
+# 统一插件构造入口，正常 runtime 和 dashboard 复用同一套路由。
+def _build_memory_plugin_runtime(
+    *,
+    config: Config,
+    workspace: Path,
+    provider: LLMProvider,
+    light_provider: LLMProvider | None,
+    http_resources: SharedHttpResources,
+    markdown: "MarkdownMemoryRuntime",
+    event_publisher: "EventBus | None" = None,
+) -> MemoryPluginRuntime:
+    from bootstrap.wiring import resolve_memory_plugin
+
+    engine_name = (config.memory.engine or "").strip() or "default"
+    plugin = resolve_memory_plugin(engine_name)
+    return plugin.build(
+        MemoryPluginBuildDeps(
+            config=config,
+            workspace=workspace,
+            provider=provider,
+            light_provider=light_provider,
+            http_resources=http_resources,
+            event_publisher=event_publisher,
+            markdown=markdown,
+        )
+    )
+
+
+def _memory_plugin_enabled(config: Config) -> bool:
+    return bool(config.memory.enabled)
+
+
+def ensure_memory_plugin_storage(
+    config: Config,
+    workspace: Path,
+) -> list[tuple[Path, bool]]:
+    if not _memory_plugin_enabled(config):
+        return []
+    engine_name = (config.memory.engine or "").strip() or "default"
+    from bootstrap.wiring import resolve_memory_plugin
+
+    plugin = resolve_memory_plugin(engine_name)
+    initializer = getattr(plugin, "ensure_workspace_storage", None)
+    if not callable(initializer):
+        return []
+    result = initializer(config=config, workspace=workspace)
+    if isinstance(result, list):
+        normalized: list[tuple[Path, bool]] = []
+        for item in result:
+            if isinstance(item, tuple) and len(item) == 2:
+                raw_path, raw_existed = item
+                path = Path(str(raw_path))
+                normalized.append((path, bool(raw_existed)))
+            elif isinstance(item, str | Path):
+                path = Path(item)
+                normalized.append((path, path.exists()))
+        return normalized
+    return []
 
 
 def build_memory_runtime(
@@ -24,151 +89,88 @@ def build_memory_runtime(
     provider: LLMProvider,
     light_provider: LLMProvider | None,
     http_resources: SharedHttpResources,
-    event_publisher: "EventPublisher | None" = None,
+    event_publisher: "EventBus | None" = None,
 ) -> MemoryRuntime:
-    from agent.memory import MemoryStore
-    from agent.skills import SkillsLoader
-    from agent.tools.memorize import MemorizeTool
-    from agent.tools.forget_memory import ForgetMemoryTool
-    from agent.tools.filesystem import EditFileTool, WriteFileTool
-    from core.memory.port import DefaultMemoryPort
-    from memory2.embedder import Embedder
-    from memory2.memorizer import Memorizer
-    from memory2.procedure_tagger import ProcedureTagger
-    from memory2.retriever import Retriever
-    from memory2.store import MemoryStore2
-
-    store = MemoryStore(workspace)
-    if not config.memory_v2.enabled:
-        register_memory_meta_tools(
-            tools,
-            write_file_tool=WriteFileTool(),
-            edit_file_tool=EditFileTool(),
-        )
-        port = DefaultMemoryPort(store)
-        facade = DefaultMemoryRuntimeFacade(
-            port=port,
-            profile_maint=port,
-        )
-        return MemoryRuntime(
-            port=port,
-            facade=facade,
-            profile_reader=port,
-            profile_maint=port,
-        )
-
-    db_path = (
-        Path(config.memory_v2.db_path)
-        if config.memory_v2.db_path
-        else workspace / "memory" / "memory2.db"
-    )
-    mem2_store = MemoryStore2(db_path)
-    embedder = Embedder(
-        base_url=(
-            config.memory_v2.base_url
-            or config.light_base_url
-            or config.base_url
-            or ""
-        ),
-        api_key=(
-            config.memory_v2.api_key
-            or config.light_api_key
-            or config.api_key
-        ),
-        model=config.memory_v2.embed_model,
-        requester=http_resources.external_default,
-    )
-    memorizer = Memorizer(mem2_store, embedder)
-    retriever = Retriever(
-        mem2_store,
-        embedder,
-        top_k=config.memory_v2.retrieve_top_k,
-        score_threshold=config.memory_v2.score_threshold,
-        score_thresholds={
-            "procedure": config.memory_v2.score_threshold_procedure,
-            "preference": config.memory_v2.score_threshold_preference,
-            "event": config.memory_v2.score_threshold_event,
-            "profile": config.memory_v2.score_threshold_profile,
-        },
-        relative_delta=config.memory_v2.relative_delta,
-        inject_max_chars=config.memory_v2.inject_max_chars,
-        inject_max_forced=config.memory_v2.inject_max_forced,
-        inject_max_procedure_preference=config.memory_v2.inject_max_procedure_preference,
-        inject_max_event_profile=config.memory_v2.inject_max_event_profile,
-        inject_line_max=config.memory_v2.inject_line_max,
-        procedure_guard_enabled=config.memory_v2.procedure_guard_enabled,
-        hotness_alpha=0.20,
+    # 1. markdown 是默认记忆层，任何 engine 都共用。
+    markdown = build_markdown_memory_runtime(
+        workspace=workspace,
+        provider=provider,
+        model=config.model,
+        keep_count=_memory_keep_count(config.memory_window),
+        event_bus=event_publisher,
+        recent_context_provider=light_provider or provider,
+        recent_context_model=config.light_model or config.model,
     )
 
-    port = DefaultMemoryPort(store, memorizer=memorizer, retriever=retriever)
-
-    _skills_loader = SkillsLoader(workspace)
-    tagger = ProcedureTagger(
-        provider=light_provider or provider,
-        model=config.light_model or config.model,
-        skills_fn=lambda: [
-            s["name"] for s in _skills_loader.list_skills(filter_unavailable=False)
-        ],
-    )
-
-    post_mem_worker = PostResponseMemoryWorker(
-        memorizer=memorizer,
-        retriever=retriever,
-        light_provider=light_provider or provider,
-        light_model=config.light_model or config.model,
-        event_publisher=event_publisher,
-    )
-    from bootstrap.wiring import MemoryEngineBuildDeps, resolve_memory_engine_builder
-
-    engine_builder = resolve_memory_engine_builder(
-        getattr(getattr(config, "wiring", None), "memory_engine", "default")
-    )
-    engine = engine_builder(
-        MemoryEngineBuildDeps(
+    closeables: list[object] = []
+    if _memory_plugin_enabled(config):
+        plugin_runtime = _build_memory_plugin_runtime(
             config=config,
             workspace=workspace,
             provider=provider,
             light_provider=light_provider,
             http_resources=http_resources,
-            retriever=retriever,
-            memorizer=memorizer,
-            tagger=tagger,
-            post_response_worker=post_mem_worker,
+            markdown=markdown,
+            event_publisher=event_publisher,
         )
-    )
-    memory_engine = cast(MemoryEngine, engine)
-    from agent.tools.recall_memory import RecallMemoryTool
-    from core.memory.explicit_retriever import DefaultExplicitRetriever
-
-    memorize_tool = MemorizeTool(memory_engine)
-    forget_tool = ForgetMemoryTool(mem2_store)
-    explicit_retriever = DefaultExplicitRetriever(
-        port=port,
-        provider=light_provider or provider,
-        model=config.light_model or config.model,
-    )
-    facade = DefaultMemoryRuntimeFacade(
-        port=port,
-        engine=memory_engine,
-        profile_maint=port,
-        explicit_retriever=explicit_retriever,
-    )
-    recall_tool = RecallMemoryTool(facade=facade)
-    register_memory_meta_tools(
-        tools,
-        memorize_tool=memorize_tool,
-        forget_tool=forget_tool,
-        recall_tool=recall_tool,
-        write_file_tool=WriteFileTool(),
-        edit_file_tool=EditFileTool(),
-    )
+        engine = plugin_runtime.engine
+        closeables.extend(plugin_runtime.closeables)
+        register_memory_meta_tools(
+            tools,
+            memorize_tool=plugin_runtime.tools.memorize,
+            forget_tool=plugin_runtime.tools.forget_memory,
+            recall_tool=plugin_runtime.tools.recall_memory,
+        )
+    else:
+        engine = cast(MemoryEngine, DisabledMemoryEngine())
 
     return MemoryRuntime(
-        port=port,
-        engine=memory_engine,
-        facade=facade,
-        profile_reader=port,
-        profile_maint=port,
-        post_response_worker=post_mem_worker,
-        closeables=[mem2_store, embedder],
+        markdown=markdown,
+        engine=engine,
+        closeables=closeables,
     )
+
+
+def build_memory_admin_runtime(
+    config: Config,
+    workspace: Path,
+    provider: LLMProvider,
+    light_provider: LLMProvider | None,
+    http_resources: SharedHttpResources,
+    event_publisher: "EventBus | None" = None,
+) -> MemoryRuntime:
+    # dashboard 不注册工具，只需要同一套 engine admin 能力和关闭生命周期。
+    markdown = build_markdown_memory_runtime(
+        workspace=workspace,
+        provider=provider,
+        model=config.model,
+        keep_count=_memory_keep_count(config.memory_window),
+        event_bus=event_publisher,
+        recent_context_provider=light_provider or provider,
+        recent_context_model=config.light_model or config.model,
+    )
+    closeables: list[object] = [http_resources]
+    if _memory_plugin_enabled(config):
+        plugin_runtime = _build_memory_plugin_runtime(
+            config=config,
+            workspace=workspace,
+            provider=provider,
+            light_provider=light_provider,
+            http_resources=http_resources,
+            markdown=markdown,
+            event_publisher=event_publisher,
+        )
+        engine = plugin_runtime.engine
+        closeables[:0] = plugin_runtime.closeables
+    else:
+        engine = cast(MemoryEngine, DisabledMemoryEngine())
+    return MemoryRuntime(
+        markdown=markdown,
+        engine=engine,
+        closeables=closeables,
+    )
+
+
+def _memory_keep_count(window: int) -> int:
+    aligned_window = max(6, ((max(1, window) + 5) // 6) * 6)
+    return aligned_window // 2

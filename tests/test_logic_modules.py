@@ -11,7 +11,6 @@ import pytest
 
 from agent.prompting import is_context_frame
 from agent.provider import LLMResponse
-from core.memory.port import DefaultMemoryPort
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
@@ -54,85 +53,6 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     loop = MemoryOptimizerLoop(opt, interval_seconds=10, _now_fn=lambda: datetime(2025, 1, 1, 0, 0, 1))
     assert loop._seconds_until_next_tick() >= 1.0
     loop.stop()
-
-    store = SimpleNamespace(
-        read_long_term=lambda: " mem ",
-        write_long_term=lambda content: None,
-        read_self=lambda: "self",
-        write_self=lambda content: None,
-        read_pending=lambda: "pending",
-        append_pending=lambda facts: None,
-        snapshot_pending=lambda: "snapshot",
-        commit_pending_snapshot=lambda: None,
-        rollback_pending_snapshot=lambda: None,
-        append_history=lambda entry: None,
-        get_memory_context=lambda: "ctx",
-        history_file=tmp_path / "history.md",
-    )
-    store.history_file.write_text("abcdef", encoding="utf-8")
-    memorizer = SimpleNamespace(
-        save_item=AsyncMock(return_value="id"),
-        save_from_consolidation=AsyncMock(),
-        reinforce_items_batch=MagicMock(),
-    )
-    retriever = SimpleNamespace(
-        retrieve=AsyncMock(return_value=[{"id": "1"}]),
-        embed=AsyncMock(return_value=[1.0]),
-        retrieve_with_vec=AsyncMock(return_value=[{"id": "2"}]),
-        build_injection_block=lambda items: ("block", ["1"]),
-        _store=SimpleNamespace(keyword_match_procedures=lambda action_tokens: [{"id": "p1"}]),
-    )
-    port = DefaultMemoryPort(cast(Any, store), cast(Any, memorizer), cast(Any, retriever))
-    assert port.read_history(3) == "def"
-    assert port.has_long_term_memory() is True
-    assert await port.retrieve_related("q") == [{"id": "1"}]
-    assert await port.embed_query("q") == [1.0]
-    assert await port.retrieve_related_vec([1.0]) == [{"id": "2"}]
-    assert port.build_injection_block([]) == ("block", ["1"])
-    assert await port.save_item("s", "procedure", {}, "src") == "id"
-    await port.save_from_consolidation("h", [], "src", "c", "id")
-    port.reinforce_items_batch(["1"])
-    memorizer.reinforce_items_batch.assert_called_once_with(["1"])
-    assert port.keyword_match_procedures(["shell"]) == [{"id": "p1"}]
-
-    broken = DefaultMemoryPort(
-        cast(Any, SimpleNamespace(
-            read_long_term=lambda: (_ for _ in ()).throw(RuntimeError("x")),
-            write_long_term=lambda content: None,
-            read_self=lambda: "",
-            write_self=lambda content: None,
-            read_pending=lambda: "",
-            append_pending=lambda facts: None,
-            snapshot_pending=lambda: "",
-            commit_pending_snapshot=lambda: None,
-            rollback_pending_snapshot=lambda: None,
-            append_history=lambda entry: None,
-            get_memory_context=lambda: "",
-            history_file=tmp_path / "missing.txt",
-        ),
-        ),
-        memorizer=cast(Any, SimpleNamespace(
-            save_item=AsyncMock(side_effect=RuntimeError("x")),
-            save_from_consolidation=AsyncMock(side_effect=RuntimeError("x")),
-            reinforce_items_batch=MagicMock(side_effect=RuntimeError("x")),
-        )),
-        retriever=cast(Any, SimpleNamespace(
-            retrieve=AsyncMock(side_effect=RuntimeError("x")),
-            embed=AsyncMock(side_effect=RuntimeError("x")),
-            retrieve_with_vec=AsyncMock(side_effect=RuntimeError("x")),
-            build_injection_block=lambda items: (_ for _ in ()).throw(RuntimeError("x")),
-            _store=SimpleNamespace(keyword_match_procedures=lambda action_tokens: (_ for _ in ()).throw(RuntimeError("x"))),
-        )),
-    )
-    assert broken.has_long_term_memory() is False
-    assert await broken.retrieve_related("q") == []
-    assert await broken.embed_query("q") == []
-    assert await broken.retrieve_related_vec([1.0]) == []
-    assert broken.build_injection_block([]) == ("", [])
-    assert await broken.save_item("s", "procedure", {}, "src") == ""
-    await broken.save_from_consolidation("h", [], "src", "c", "id")
-    broken.reinforce_items_batch(["1"])
-    assert broken.keyword_match_procedures(["shell"]) == []
 
 
 @pytest.mark.asyncio
@@ -190,7 +110,10 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
         compute_interruptibility=lambda **kwargs: (0.5, {"x": 1}),
     )
     loop._rng = None
-    loop._memory = SimpleNamespace(read_long_term_context=lambda: "remember", get_memory_context=lambda: "ctx")
+    loop._memory = SimpleNamespace(
+        read_long_term=lambda: "remember",
+        get_memory_context=lambda: "ctx",
+    )
     loop._sessions = SimpleNamespace(workspace=tmp_path)
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))

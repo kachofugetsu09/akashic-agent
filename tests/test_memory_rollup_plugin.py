@@ -6,8 +6,67 @@ from typing import cast
 from fastapi.testclient import TestClient
 
 from agent.memory import MemoryStore
-from bootstrap.dashboard_api import create_dashboard_app
+from bootstrap.dashboard_api import create_dashboard_app as _create_dashboard_app
+from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
+
+
+class _DashboardMemoryAdmin:
+    def __init__(self, workspace: Path) -> None:
+        self._memory = MemoryStore(workspace)
+        self._store = MemoryStore2(workspace / "memory" / "memory2.db")
+
+    def describe(self):
+        return DefaultMemoryEngine.DESCRIPTOR
+
+    def keyword_match_procedures(self, action_tokens: list[str]):
+        return self._store.keyword_match_procedures(action_tokens)
+
+    def list_events_by_time_range(self, time_start, time_end, *, limit: int = 200):
+        return self._store.list_events_by_time_range(time_start, time_end, limit=limit)
+
+    def list_items_for_dashboard(self, **kwargs):
+        return self._store.list_items_for_dashboard(**kwargs)
+
+    def get_item_for_dashboard(self, item_id: str, *, include_embedding: bool = False):
+        return self._store.get_item_for_dashboard(item_id, include_embedding=include_embedding)
+
+    def update_item_for_dashboard(self, item_id: str, **kwargs):
+        return self._store.update_item_for_dashboard(item_id, **kwargs)
+
+    def delete_item(self, item_id: str) -> bool:
+        return self._store.delete_item(item_id)
+
+    def delete_items_batch(self, ids: list[str]) -> int:
+        return self._store.delete_items_batch(ids)
+
+    def find_similar_items_for_dashboard(self, item_id: str, **kwargs):
+        return self._store.find_similar_items_for_dashboard(item_id, **kwargs)
+
+    def read_long_term(self) -> str:
+        return self._memory.read_long_term()
+
+    def read_pending(self) -> str:
+        return self._memory.read_pending()
+
+    def append_pending_once(
+        self,
+        facts: str,
+        source_ref: str,
+        kind: str = "pending",
+    ) -> bool:
+        return self._memory.append_pending_once(
+            facts,
+            source_ref=source_ref,
+            kind=kind,
+        )
+
+
+def create_dashboard_app(tmp_path: Path):
+    return _create_dashboard_app(
+        tmp_path,
+        memory_admin=_DashboardMemoryAdmin(tmp_path),
+    )
 
 
 def test_memory_rollup_generates_and_commits_pending(tmp_path: Path):

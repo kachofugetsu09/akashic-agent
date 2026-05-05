@@ -16,10 +16,11 @@ import logging
 import random as _random_module
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
-    from core.memory.runtime_facade import MemoryRuntimeFacade
+    from core.memory.engine import MemoryRetrievalApi
+    from core.memory.markdown import MemoryProfileApi
 
 from agent.looping.ports import SessionServices
 from agent.provider import LLMProvider
@@ -69,7 +70,7 @@ class ProactiveLoop:
         max_tokens: int = 1024,
         state_store: ProactiveStateStore | None = None,
         state_path: Path | None = None,
-        memory_store: "MemoryRuntimeFacade | None" = None,
+        memory_store: "MemoryProfileApi | MemoryRetrievalApi | None" = None,
         presence: PresenceStore | None = None,
         rng: _random_module.Random | None = None,
         light_provider: LLMProvider | None = None,
@@ -155,7 +156,7 @@ class ProactiveLoop:
             cfg=self._cfg,
             sessions=self._sessions,
             state=self._state,
-            memory=self._memory,
+            memory=cast("MemoryProfileApi | None", self._memory),
             presence=self._presence,
             rng=self._rng,
             fitbit=fitbit_provider,
@@ -408,7 +409,8 @@ class ProactiveLoop:
         if not self._memory:
             return []
         try:
-            raw = str(self._memory.read_long_term_context() or "").strip()
+            memory = cast("MemoryProfileApi", self._memory)
+            raw = str(memory.read_long_term() or "").strip()
             return sample_memory_chunks(raw, n=n)
         except Exception as e:
             logger.warning("[proactive] 随机记忆抽取失败: %s", e)

@@ -16,8 +16,9 @@ from agent.tools.registry import ToolRegistry
 from bootstrap.tools import _build_loop_deps, build_registered_tools
 from bootstrap.wiring import (
     wire_turn_lifecycle,
+    register_memory_plugin,
     resolve_context_factory,
-    resolve_memory_engine_builder,
+    resolve_memory_plugin,
     resolve_memory_toolset_provider,
     resolve_toolset_provider,
 )
@@ -95,8 +96,126 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
 
     assert cfg.wiring.context == "default"
     assert cfg.wiring.memory == "default"
-    assert cfg.wiring.memory_engine == "default"
     assert cfg.wiring.toolsets == ["schedule", "mcp"]
+
+
+def test_config_load_reads_memory_engine_selector(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {"system_prompt": "s"},
+            "memory": {
+                "enabled": True,
+                "engine": "memu",
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.memory.enabled is True
+    assert cfg.memory.engine == "memu"
+
+
+def test_config_load_ignores_wiring_memory_engine(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {
+                "system_prompt": "s",
+                "wiring": {
+                    "memory_engine": "memu",
+                },
+            },
+            "memory": {
+                "enabled": True,
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.memory.enabled is True
+    assert cfg.memory.engine == ""
+
+
+def test_config_load_ignores_legacy_memory_v2_enabled(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {"system_prompt": "s"},
+            "memory_v2": {
+                "enabled": True,
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert not hasattr(cfg, "memory_v2")
+    assert cfg.memory.enabled is False
+    assert cfg.memory.engine == ""
+
+
+def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {"system_prompt": "s"},
+            "memory": {
+                "enabled": True,
+                "engine": "",
+                "embedding": {
+                    "model": "legacy-embedding",
+                    "api_key": "legacy-key",
+                },
+                "retrieval": {
+                    "score_threshold": 0.99,
+                    "thresholds": {"event": 0.99},
+                },
+                "hyde": {"enabled": True},
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.memory.enabled is True
+    assert cfg.memory.engine == ""
+    assert cfg.memory.embedding.model == "legacy-embedding"
+    assert cfg.memory.embedding.api_key == "legacy-key"
 
 
 def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
@@ -336,7 +455,7 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
     class _MemoryProvider:
         def register(self, registry, deps):
             calls.append("memory")
-            runtime = SimpleNamespace(port=object())
+            runtime = SimpleNamespace(engine=object())
             return SimpleNamespace(extras={"memory_runtime": runtime})
 
     class _ToolsetProvider:
@@ -392,12 +511,14 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
 def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     observed: dict[str, object] = {}
     fake_context = object()
+    markdown_store = object()
+    markdown_maintenance = SimpleNamespace(bind_lifecycle=lambda request: None)
 
     monkeypatch.setattr(
         "bootstrap.tools.resolve_context_factory",
         lambda name: (
-            lambda workspace, memory_port: observed.update(
-                {"name": name, "workspace": workspace, "memory_port": memory_port}
+            lambda workspace, memory_store: observed.update(
+                {"name": name, "workspace": workspace, "memory_store": memory_store}
             )
             or fake_context
         ),
@@ -417,15 +538,31 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         provider=cast(Any, object()),
         light_provider=None,
         tools=ToolRegistry(),
-        session_manager=cast(Any, SimpleNamespace()),
+        session_manager=cast(
+            Any,
+            SimpleNamespace(
+                get_or_create=lambda key: None,
+                save_async=lambda session: None,
+            ),
+        ),
         presence=cast(Any, None),
         processing_state=cast(Any, SimpleNamespace()),
         event_bus=EventBus(),
-        memory_runtime=cast(Any, SimpleNamespace(port=object(), post_response_worker=None)),
-    )
+        memory_runtime=cast(
+            Any,
+                SimpleNamespace(
+                    engine=object(),
+                    markdown=SimpleNamespace(
+                        store=markdown_store,
+                        maintenance=markdown_maintenance,
+                    ),
+                ),
+            ),
+        )
 
     assert observed["name"] == "default"
     assert observed["workspace"] == tmp_path
+    assert observed["memory_store"] is markdown_store
     assert deps.context is fake_context
 
 
@@ -447,13 +584,12 @@ def test_wiring_error_messages_list_available_choices():
         raise AssertionError("resolve_memory_toolset_provider should fail for bad name")
 
     try:
-        resolve_memory_engine_builder("bad")
+        resolve_memory_plugin("bad")
     except ValueError as exc:
         assert "可选值" in str(exc)
         assert "default" in str(exc)
-        assert "memu" in str(exc)
     else:
-        raise AssertionError("resolve_memory_engine_builder should fail for bad name")
+        raise AssertionError("resolve_memory_plugin should fail for bad name")
 
     try:
         resolve_toolset_provider("bad")
@@ -464,10 +600,39 @@ def test_wiring_error_messages_list_available_choices():
         raise AssertionError("resolve_toolset_provider should fail for bad name")
 
 
-def test_resolve_memory_engine_builder_supports_memu():
-    builder = resolve_memory_engine_builder("memu")
+def test_memory_plugin_registry_accepts_custom_engine(monkeypatch):
+    class _Plugin:
+        plugin_id = "custom"
 
-    assert callable(builder)
+        def build(self, deps):
+            raise AssertionError("not used")
+
+    register_memory_plugin("custom", lambda: _Plugin())
+
+    assert resolve_memory_plugin("custom").plugin_id == "custom"
+
+
+def test_memory_plugin_resolver_loads_plugin_directory(monkeypatch, tmp_path: Path):
+    plugin_dir = tmp_path / "plugins" / "demo_memory"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "memory_plugin.py").write_text(
+        "\n".join(
+            [
+                "from core.memory.plugin import MemoryPluginRuntime",
+                "",
+                "class MemoryPlugin:",
+                "    plugin_id = 'demo_memory'",
+                "    def build(self, deps):",
+                "        raise AssertionError('not used')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    import bootstrap.wiring as wiring
+
+    monkeypatch.setattr(wiring, "_PROJECT_ROOT", tmp_path)
+
+    assert resolve_memory_plugin("demo_memory").plugin_id == "demo_memory"
 
 
 @pytest.mark.asyncio
@@ -515,7 +680,7 @@ def test_build_registered_tools_without_mcp_toolset_still_returns_empty_registry
         "bootstrap.tools.resolve_memory_toolset_provider",
         lambda name: SimpleNamespace(
             register=lambda registry, deps: SimpleNamespace(
-                extras={"memory_runtime": SimpleNamespace(port=object())}
+                extras={"memory_runtime": SimpleNamespace(engine=object())}
             )
         ),
     )
