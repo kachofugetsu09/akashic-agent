@@ -38,9 +38,16 @@
   --shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
 
   /* ── Border radius — Claude hierarchical scale ── */
-  --radius:    8px;     /* md — buttons / inputs / nav items */
+  --radius:    6px;     /* md — buttons / inputs / nav items */
   --radius-lg: 12px;    /* lg — content cards */
-  --radius-xl: 16px;    /* xl — large containers */
+  --radius-xl: 20px;    /* xl — large containers / modals */
+
+  /* ── Transition system ── */
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --t-fast:  140ms;
+  --t-base:  220ms;
+  --t-slow:  320ms;
 
   /* ── Fonts — editorial serif + humanist sans + monospace ── */
   --display: "Cormorant Garamond", "EB Garamond", "Times New Roman", serif;
@@ -62,8 +69,12 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "ss01", "cv11", "kern";
 }
 
 button,
@@ -91,7 +102,7 @@ button {
 }
 
 .topbar {
-  height: 48px;
+  height: 52px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -102,7 +113,7 @@ button {
 }
 
 .brand {
-  width: 212px;
+  width: 256px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -189,7 +200,7 @@ select {
   font-family: var(--sans);
   font-size: 12.5px;
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
 }
 
 .search input {
@@ -210,7 +221,7 @@ input:focus,
 select:focus,
 textarea:focus {
   border-color: var(--line-strong);
-  box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.1);
+  box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.18);
   background: var(--paper-strong);
 }
 
@@ -243,7 +254,7 @@ textarea:focus {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236c6a64' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+  transition: border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out), background-color var(--t-fast) var(--ease-out);
 }
 
 .sessions-pane .cs-trigger {
@@ -257,7 +268,7 @@ textarea:focus {
 
 .custom-select.open .cs-trigger {
   border-color: var(--line-strong);
-  box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.1);
+  box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.18);
 }
 
 .cs-dropdown {
@@ -271,18 +282,19 @@ textarea:focus {
   box-shadow: var(--shadow);
   z-index: 200;
   overflow: hidden;
-  animation: cs-drop-in 0.1s ease;
+  animation: cs-drop-in var(--t-base) var(--ease-out);
+  transform-origin: top left;
 }
 
 @keyframes cs-drop-in {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(-6px) scale(0.98);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -365,7 +377,7 @@ textarea:focus {
 /* ── Sessions pane (left sidebar) ── */
 
 .sessions-pane {
-  width: 256px;
+  width: clamp(240px, 18vw, 300px);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -384,7 +396,7 @@ textarea:focus {
 }
 
 .detail-pane {
-  width: 400px;
+  width: clamp(360px, 26vw, 460px);
   flex-shrink: 0;
   min-height: 0;
   overflow-y: auto;
@@ -469,7 +481,7 @@ textarea:focus {
   background: transparent;
   color: var(--text);
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
 }
 
 .nav-group-toggle:hover {
@@ -485,6 +497,12 @@ textarea:focus {
   width: 12px;
   color: var(--text-soft);
   font-size: 10px;
+  display: inline-block;
+  transition: transform var(--t-base) var(--ease-out);
+}
+
+.nav-group.open .nav-group-caret {
+  transform: rotate(90deg);
 }
 
 .nav-group-label {
@@ -508,9 +526,22 @@ textarea:focus {
 }
 
 .nav-group-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  overflow: hidden;
+  transition: grid-template-rows var(--t-base) var(--ease-out);
+}
+
+.nav-group-body.open {
+  grid-template-rows: 1fr;
+}
+
+.nav-group-body-inner {
+  min-height: 0;
+  overflow: hidden;
   padding-top: 2px;
-  margin-left: 16px;
-  padding-left: 6px;
+  margin-left: 10px;
+  padding-left: 8px;
   border-left: 1px solid var(--line);
 }
 
@@ -527,7 +558,25 @@ textarea:focus {
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition: background 0.1s ease, border-color 0.1s ease;
+  position: relative;
+  transition: background var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
+}
+
+.all-messages-row::before,
+.session-item::before,
+.memory-quick-item::before,
+.proactive-quick-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform var(--t-base) var(--ease-out);
 }
 
 .all-messages-row:hover,
@@ -543,7 +592,13 @@ textarea:focus {
 .proactive-quick-item.active {
   background: var(--accent-soft);
   border-color: rgba(204, 120, 92, 0.2);
-  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.all-messages-row.active::before,
+.session-item.active::before,
+.memory-quick-item.active::before,
+.proactive-quick-item.active::before {
+  transform: scaleY(1);
 }
 
 .all-messages-row {
@@ -623,11 +678,13 @@ textarea:focus {
   opacity: 0;
   display: flex;
   gap: 4px;
-  transition: opacity 0.12s ease;
+  transform: translateX(-4px);
+  transition: opacity var(--t-fast) var(--ease-out), transform var(--t-fast) var(--ease-out);
 }
 
 .session-item:hover .session-actions {
   opacity: 1;
+  transform: translateX(0);
 }
 
 .session-count {
@@ -651,7 +708,7 @@ textarea:focus {
 .status-pill {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  padding: 3px 8px;
   border-radius: 999px;
   font-size: 10.5px;
   font-weight: 500;
@@ -749,6 +806,19 @@ textarea:focus {
   gap: 12px;
   background: var(--accent-soft);
   border-bottom: 1px solid rgba(204, 120, 92, 0.2);
+  overflow: hidden;
+  max-height: 40px;
+  transition: max-height var(--t-base) var(--ease-out), opacity var(--t-base) var(--ease-out);
+}
+
+.batch-bar.hidden {
+  display: flex !important;
+  max-height: 0;
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  border-bottom-width: 0;
 }
 
 .batch-bar span {
@@ -792,7 +862,7 @@ textarea:focus {
 }
 
 .table-head {
-  min-height: 36px;
+  min-height: 34px;
   padding: 0 14px;
   position: sticky;
   top: 0;
@@ -839,20 +909,40 @@ textarea:focus {
 }
 
 .table-row {
-  min-height: 44px;
+  min-height: 38px;
   padding: 0 14px;
   border-bottom: 1px solid var(--line-soft);
   cursor: pointer;
-  transition: background 0.1s ease;
+  position: relative;
+  transition: background var(--t-fast) var(--ease-out),
+              box-shadow var(--t-fast) var(--ease-out);
+}
+
+.table-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform var(--t-base) var(--ease-out);
 }
 
 .table-row:hover {
   background: var(--bg-soft);
+  box-shadow: inset 3px 0 0 var(--line-strong);
 }
 
 .table-row.active {
   background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: none;
+}
+
+.table-row.active::before {
+  transform: scaleY(1);
 }
 
 .table-row.selected {
@@ -861,12 +951,13 @@ textarea:focus {
 
 .table-row.active:hover {
   background: var(--accent-soft);
+  box-shadow: none;
 }
 
 /* ── Table foot ── */
 
 .table-foot {
-  min-height: 40px;
+  min-height: 38px;
   padding: 0 14px;
   display: flex;
   align-items: center;
@@ -949,7 +1040,7 @@ textarea:focus {
   font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  transition: opacity var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
 }
 
 .icon-btn {
@@ -1034,17 +1125,19 @@ textarea:focus {
 
 .detail-empty-title {
   font-family: var(--display);
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 400;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
   color: var(--text);
 }
 
 .detail-title {
   font-family: var(--display);
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 400;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
 }
 
 .detail-empty-text,
@@ -1343,7 +1436,7 @@ textarea:focus {
   border-radius: var(--radius);
   background: var(--paper-strong);
   cursor: pointer;
-  transition: background 0.1s ease, border-color 0.1s ease;
+  transition: background var(--t-fast) var(--ease-out), border-color var(--t-fast) var(--ease-out);
 }
 
 .similar-item:hover {
@@ -1398,9 +1491,10 @@ textarea:focus {
 
 .modal-title {
   font-family: var(--display);
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 400;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
   color: var(--text);
 }
 
@@ -1481,6 +1575,8 @@ textarea:focus {
 .modal {
   scrollbar-width: thin;
   scrollbar-color: rgba(205, 184, 157, 0.4) transparent;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
 }
 
 /* ── Responsive ── */
@@ -1540,5 +1636,17 @@ textarea:focus {
   .table-head.mode-memory,
   .table-row.mode-memory {
     grid-template-columns: 34px 72px minmax(140px, 1.25fr) 48px 52px 64px 76px 76px 70px 56px;
+  }
+}
+
+/* ── Reduced motion ── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
