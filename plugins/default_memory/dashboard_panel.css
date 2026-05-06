@@ -1,0 +1,20 @@
+.row-delete-cell {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.table-row:hover .row-delete-cell {
+  opacity: 1;
+}
+
+.row-delete-btn {
+  color: var(--danger) !important;
+}
+
+.row-delete-btn:hover {
+  background: var(--red-soft);
+}
