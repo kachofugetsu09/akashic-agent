@@ -1007,6 +1007,10 @@ textarea:focus {
   text-align: center;
 }
 
+.align-right {
+  text-align: right;
+}
+
 .cell-source {
   color: var(--text-soft);
   font-size: 11px;

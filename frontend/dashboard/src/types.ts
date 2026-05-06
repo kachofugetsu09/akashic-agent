@@ -1,5 +1,5 @@
 export type SortOrder = "asc" | "desc";
-export type BuiltinView = "sessions" | "memory" | "proactive";
+export type BuiltinView = "sessions" | "proactive";
 export type ViewMode = BuiltinView | `plugin:${string}`;
 
 export interface PageResult<T> {
@@ -29,29 +29,6 @@ export interface MessageRow {
   tool_chain: unknown;
   extra: Record<string, unknown>;
   ts: string;
-}
-
-export interface MemoryRow {
-  id: string;
-  memory_type: string;
-  summary: string;
-  source_ref: string;
-  happened_at: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-  reinforcement: number;
-  emotional_weight: number;
-  has_embedding: boolean;
-  scope_channel: string;
-  scope_chat_id: string;
-}
-
-export interface MemoryDetail extends MemoryRow {
-  content_hash?: string;
-  extra_json: Record<string, unknown>;
-  embedding_dim: number;
-  embedding?: number[] | null;
 }
 
 export interface ProactiveOverview {
@@ -107,16 +84,41 @@ export interface DashboardColumn {
   align?: "left" | "right";
   cellClass?: string;
   rawTitle?: boolean;
+  sortable?: boolean;
+  renderCell?(value: unknown, item: Record<string, unknown>): string;
 }
 
 export interface FetchPageOpts {
   page: number;
   pageSize: number;
+  filters?: Record<string, string>;
+  sortBy?: string;
+  sortOrder?: SortOrder;
 }
 
 export interface FetchPageResult {
   items: Record<string, unknown>[];
   total: number;
+}
+
+// Dispatch context passed to all plugin render slots
+export interface PluginDispatch {
+  readonly filters: Readonly<Record<string, string>>;
+  setFilter(key: string, value: string): void;
+  clearFilter(key: string): void;
+  setFilters(next: Record<string, string>): void;
+  clearFilters(keys: string[]): void;
+  readonly sortBy: string;
+  readonly sortOrder: SortOrder;
+  setSort(key: string): void;
+  refresh(): void;
+  activate(): void;
+}
+
+export interface PluginBatchAction {
+  label: string;
+  className: string;
+  run(ids: string[]): Promise<void>;
 }
 
 export interface PluginConfig {
@@ -127,12 +129,18 @@ export interface PluginConfig {
   countTitle?: (n: number) => string;
   rowKey: string;
   columns: DashboardColumn[];
+  defaultSortBy?: string;
+  defaultSortOrder?: SortOrder;
   getCount(): Promise<number | null>;
   fetchPage(opts: FetchPageOpts): Promise<FetchPageResult>;
   fetchDetail?: (item: Record<string, unknown>) => Promise<Record<string, unknown>>;
   rowClass?: (item: Record<string, unknown>) => string;
   emptyMessage?: string;
-  renderDetail(item: Record<string, unknown> | null, container: HTMLElement): void;
+  renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: PluginDispatch): void;
+  renderNavBody?(container: HTMLElement, dispatch: PluginDispatch): void;
+  renderFilters?(container: HTMLElement, dispatch: PluginDispatch): void;
+  renderTopbarAction?(container: HTMLElement, dispatch: PluginDispatch): void;
+  batchActions?: PluginBatchAction[];
   formatters?: Record<string, (value: unknown, item: Record<string, unknown>) => string>;
 }
 
@@ -143,6 +151,10 @@ export interface PluginState {
   items: Record<string, unknown>[];
   activeRowKey: string | null;
   activeDetail: Record<string, unknown> | null;
+  filters: Record<string, string>;
+  sortBy: string;
+  sortOrder: SortOrder;
+  selectedIds: Set<string>;
 }
 
 export interface DashboardGlobal {

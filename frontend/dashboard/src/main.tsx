@@ -1,11 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, asPageResult, pageCount } from "./api";
 import {
   encodePath,
   formatSessionKeyForTable,
-  jsonText,
-  memoryTypeClass,
   proactiveFlowLabel,
   proactiveResultLabel,
   proactiveSectionLabel,
@@ -16,15 +14,15 @@ import {
   shortTs,
   stripMarkdown,
 } from "./format";
-import { installDashboardGlobals, loadPluginAssets } from "./pluginRuntime";
+import { attachJsonViewers, installDashboardGlobals, jvPlaceholder, loadPluginAssets } from "./pluginRuntime";
 import { PluginDetail } from "./PluginDetail";
 import type {
   DashboardColumn,
-  MemoryDetail,
-  MemoryRow,
   MessageRow,
   PageResult,
+  PluginBatchAction,
   PluginConfig,
+  PluginDispatch,
   PluginState,
   ProactiveOverview,
   ProactiveStep,
@@ -35,18 +33,83 @@ import type {
 } from "./types";
 
 type NavOpen = Record<string, boolean>;
-type MemoryScope = { channel: string; chatId: string } | null;
-type MemoryOptimizerState = "idle" | "starting" | "running" | "succeeded" | "failed" | "skipped";
-type MemoryOptimizerStatus = {
-  enabled: boolean;
-  running: boolean;
-  last_status: Exclude<MemoryOptimizerState, "starting">;
-  last_error: string | null;
-};
+
+// Creates a PluginDispatch bound to the given plugin + latest state getter.
+function makeDispatch(
+  plugin: PluginConfig,
+  getState: () => PluginState | null,
+  onSetState: (updater: (s: PluginState) => PluginState) => void,
+  onActivate?: () => void,
+): PluginDispatch {
+  const fetchAndApply = async (
+    nextFilters: Record<string, string>,
+    nextSortBy: string,
+    nextSortOrder: SortOrder,
+  ): Promise<void> => {
+    const state = getState();
+    if (!state) return;
+    const result = await plugin.fetchPage({ page: 1, pageSize: state.pageSize, filters: nextFilters, sortBy: nextSortBy, sortOrder: nextSortOrder });
+    onSetState((s) => ({
+      ...s,
+      page: 1,
+      total: result.total || 0,
+      items: result.items || [],
+      activeRowKey: null,
+      activeDetail: null,
+      filters: nextFilters,
+      sortBy: nextSortBy,
+      sortOrder: nextSortOrder,
+    }));
+  };
+
+  const updateFilters = (updater: (filters: Record<string, string>) => Record<string, string>): void => {
+    const state = getState();
+    if (!state) return;
+    void fetchAndApply(updater({ ...state.filters }), state.sortBy, state.sortOrder);
+  };
+
+  return {
+    get filters() { return getState()?.filters ?? {}; },
+    setFilter(key: string, value: string): void {
+      updateFilters((filters) => ({ ...filters, [key]: value }));
+    },
+    clearFilter(key: string): void {
+      updateFilters((filters) => {
+        delete filters[key];
+        return filters;
+      });
+    },
+    setFilters(next: Record<string, string>): void {
+      updateFilters((filters) => ({ ...filters, ...next }));
+    },
+    clearFilters(keys: string[]): void {
+      updateFilters((filters) => {
+        for (const key of keys) delete filters[key];
+        return filters;
+      });
+    },
+    get sortBy() { return getState()?.sortBy ?? ""; },
+    get sortOrder() { return getState()?.sortOrder ?? "desc"; },
+    setSort(key: string): void {
+      const state = getState();
+      if (!state) return;
+      const nextOrder: SortOrder = state.sortBy === key && state.sortOrder === "desc" ? "asc" : "desc";
+      void fetchAndApply(state.filters, key, nextOrder);
+    },
+    refresh(): void {
+      const state = getState();
+      if (!state) return;
+      void fetchAndApply(state.filters, state.sortBy, state.sortOrder);
+    },
+    activate(): void {
+      onActivate?.();
+    },
+  };
+}
 
 function App(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
-  const [navOpen, setNavOpen] = useState<NavOpen>({ sessions: false, memory: false, proactive: false });
+  const [navOpen, setNavOpen] = useState<NavOpen>({ sessions: false, proactive: false });
   const [plugins, setPlugins] = useState<PluginConfig[]>([]);
   const [pluginState, setPluginState] = useState<Record<string, PluginState>>({});
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -63,20 +126,6 @@ function App(): React.ReactElement {
   const [totalMessages, setTotalMessages] = useState(0);
   const [activeMessage, setActiveMessage] = useState<MessageRow | null>(null);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
-  const [memories, setMemories] = useState<MemoryRow[]>([]);
-  const [memoryTypeCounts, setMemoryTypeCounts] = useState<{ memory_type: string; total: number }[]>([]);
-  const [memorySearch, setMemorySearch] = useState("");
-  const [memoryType, setMemoryType] = useState("");
-  const [memoryStatus, setMemoryStatus] = useState("");
-  const [memoryScope, setMemoryScope] = useState<MemoryScope>(null);
-  const [memoryPage, setMemoryPage] = useState(1);
-  const [memorySortBy, setMemorySortBy] = useState("created_at");
-  const [memorySortOrder, setMemorySortOrder] = useState<SortOrder>("desc");
-  const [totalMemories, setTotalMemories] = useState(0);
-  const [activeMemoryId, setActiveMemoryId] = useState<string | null>(null);
-  const [activeMemoryDetail, setActiveMemoryDetail] = useState<MemoryDetail | null>(null);
-  const [activeMemorySimilar, setActiveMemorySimilar] = useState<MemoryRow[]>([]);
-  const [selectedMemoryIds, setSelectedMemoryIds] = useState<Set<string>>(new Set());
   const [proactiveOverview, setProactiveOverview] = useState<ProactiveOverview | null>(null);
   const [proactiveSection, setProactiveSection] = useState("all");
   const [proactiveItems, setProactiveItems] = useState<ProactiveTick[]>([]);
@@ -89,26 +138,12 @@ function App(): React.ReactElement {
   const [activeProactiveDetail, setActiveProactiveDetail] = useState<ProactiveTick | null>(null);
   const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [memoryOptimizerState, setMemoryOptimizerState] = useState<MemoryOptimizerState>("idle");
-  const [memoryOptimizerEnabled, setMemoryOptimizerEnabled] = useState(false);
 
   const messagePageSize = 25;
-  const memoryPageSize = 25;
   const proactivePageSize = 25;
   const currentPluginId = viewMode.startsWith("plugin:") ? viewMode.slice(7) : "";
   const currentPlugin = plugins.find((plugin) => plugin.id === currentPluginId) ?? null;
   const currentPluginState = currentPluginId ? pluginState[currentPluginId] : null;
-  const memoryOptimizerButtonText = memoryOptimizerState === "starting"
-    ? "正在启动优化"
-    : memoryOptimizerState === "running"
-      ? "记忆优化中"
-      : memoryOptimizerState === "succeeded"
-        ? "优化已完成"
-        : memoryOptimizerState === "failed"
-          ? "优化失败"
-          : memoryOptimizerState === "skipped"
-            ? "已跳过"
-            : "记忆优化";
 
   const channels = useMemo(() => Array.from(new Set(sessions.map((session) => session.key.split(":")[0]).filter(Boolean))), [sessions]);
 
@@ -149,53 +184,6 @@ function App(): React.ReactElement {
     setActiveMessage((current) => current && payload.items.some((item) => item.id === current.id) ? current : null);
   }, [activeSessionKey, messagePage, messageRole, messageSearch, messageSortBy, messageSortOrder]);
 
-  const loadMemorySidebar = useCallback(async () => {
-    const memoryTypes = ["procedure", "preference", "event", "profile"];
-    const result: { memory_type: string; total: number }[] = [];
-    for (const itemType of memoryTypes) {
-      const params = memoryParams({
-        search: memorySearch,
-        type: itemType,
-        status: memoryStatus,
-        scope: memoryScope,
-        page: 1,
-        pageSize: 1,
-        sortBy: "updated_at",
-        sortOrder: "desc",
-      });
-      const payload = asPageResult(await api<PageResult<MemoryRow>>(`/api/dashboard/memories?${params.toString()}`));
-      if (payload.total > 0) result.push({ memory_type: itemType, total: payload.total });
-    }
-    setMemoryTypeCounts(result);
-    setTotalMemories(result.reduce((sum, item) => sum + item.total, 0));
-  }, [memoryScope, memorySearch, memoryStatus]);
-
-  const loadMemories = useCallback(async () => {
-    const params = memoryParams({
-      search: memorySearch,
-      type: memoryType,
-      status: memoryStatus,
-      scope: memoryScope,
-      page: memoryPage,
-      pageSize: memoryPageSize,
-      sortBy: memorySortBy,
-      sortOrder: memorySortOrder,
-    });
-    const payload = asPageResult(await api<PageResult<MemoryRow>>(`/api/dashboard/memories?${params.toString()}`));
-    setMemories(payload.items);
-    setTotalMemories(payload.total);
-    setActiveMemoryId((current) => current && payload.items.some((item) => item.id === current) ? current : null);
-  }, [memoryPage, memoryScope, memorySearch, memorySortBy, memorySortOrder, memoryStatus, memoryType]);
-
-  const loadMemoryDetail = useCallback(async (memoryId: string) => {
-    const [detail, similar] = await Promise.all([
-      api<MemoryDetail>(`/api/dashboard/memories/${encodePath(memoryId)}`),
-      api<PageResult<MemoryRow>>(`/api/dashboard/memories/${encodePath(memoryId)}/similar?top_k=6`).catch(() => ({ items: [], total: 0 })),
-    ]);
-    setActiveMemoryDetail(detail);
-    setActiveMemorySimilar(similar.items ?? []);
-  }, []);
-
   const loadProactiveOverview = useCallback(async () => {
     setProactiveOverview(await api<ProactiveOverview>("/api/dashboard/proactive/overview"));
   }, []);
@@ -220,7 +208,7 @@ function App(): React.ReactElement {
     const plugin = plugins.find((item) => item.id === pluginId);
     const state = pluginState[pluginId];
     if (!plugin || !state) return;
-    const result = await plugin.fetchPage({ page: state.page, pageSize: state.pageSize });
+    const result = await plugin.fetchPage({ page: state.page, pageSize: state.pageSize, filters: state.filters, sortBy: state.sortBy, sortOrder: state.sortOrder });
     setPluginState((current) => ({
       ...current,
       [pluginId]: {
@@ -239,10 +227,7 @@ function App(): React.ReactElement {
 
   const refreshCurrentView = useCallback(async () => {
     await loadSessions();
-    if (viewMode === "memory") {
-      await loadMemories();
-      await loadMemorySidebar();
-    } else if (viewMode === "proactive") {
+    if (viewMode === "proactive") {
       await loadProactiveOverview();
       await loadProactivePanel();
     } else if (viewMode.startsWith("plugin:")) {
@@ -250,7 +235,7 @@ function App(): React.ReactElement {
     } else {
       await loadMessages();
     }
-  }, [loadMemories, loadMemorySidebar, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
+  }, [loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
 
   useEffect(() => {
     const refresh = (): void => {
@@ -260,34 +245,23 @@ function App(): React.ReactElement {
     return () => window.removeEventListener("akashic-dashboard-refresh", refresh);
   }, [refreshCurrentView, run]);
 
-  const loadMemoryOptimizerStatus = useCallback(async (): Promise<MemoryOptimizerStatus> => {
-    const status = await api<MemoryOptimizerStatus>("/api/dashboard/memory/optimizer");
-    setMemoryOptimizerEnabled(status.enabled);
-    setMemoryOptimizerState(status.running ? "running" : status.last_status);
-    if (status.last_status === "failed" && status.last_error) {
-      setError(status.last_error);
-    }
-    return status;
-  }, []);
-
-  const triggerMemoryOptimizer = useCallback(async () => {
-    setError(null);
-    setMemoryOptimizerState("starting");
-    try {
-      await api("/api/dashboard/memory/optimize", { method: "POST" });
-      await loadMemoryOptimizerStatus();
-    } catch (exc) {
-      setMemoryOptimizerState("idle");
-      setError(exc instanceof Error ? exc.message : String(exc));
-    }
-  }, [loadMemoryOptimizerStatus]);
-
   useEffect(() => {
     installDashboardGlobals((plugin) => {
       setPlugins((current) => current.some((item) => item.id === plugin.id) ? current : [...current, plugin]);
       setPluginState((current) => current[plugin.id] ? current : {
         ...current,
-        [plugin.id]: { page: 1, pageSize: plugin.pageSize || 25, total: 0, items: [], activeRowKey: null, activeDetail: null },
+        [plugin.id]: {
+          page: 1,
+          pageSize: plugin.pageSize || 25,
+          total: 0,
+          items: [],
+          activeRowKey: null,
+          activeDetail: null,
+          filters: {},
+          sortBy: plugin.defaultSortBy ?? "",
+          sortOrder: plugin.defaultSortOrder ?? "desc",
+          selectedIds: new Set(),
+        },
       });
     });
     void loadPluginAssets();
@@ -297,24 +271,9 @@ function App(): React.ReactElement {
     void run(async () => {
       await loadSessions();
       await loadMessages();
-      await loadMemorySidebar();
       await loadProactiveOverview();
-      await loadMemoryOptimizerStatus();
     });
-  }, [loadMemoryOptimizerStatus, loadMemorySidebar, loadMessages, loadProactiveOverview, loadSessions, run]);
-
-  useEffect(() => {
-    if (memoryOptimizerState !== "running" && memoryOptimizerState !== "starting") return;
-    const timer = window.setInterval(() => {
-      void run(async () => {
-        const status = await loadMemoryOptimizerStatus();
-        if (!status.running) {
-          await refreshCurrentView();
-        }
-      });
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [loadMemoryOptimizerStatus, memoryOptimizerState, refreshCurrentView, run]);
+  }, [loadMessages, loadProactiveOverview, loadSessions, run]);
 
   useEffect(() => {
     for (const plugin of plugins) {
@@ -328,15 +287,16 @@ function App(): React.ReactElement {
     }
   }, [plugins, run]);
 
-  const selectView = (next: ViewMode): void => {
+  const focusView = useCallback((next: ViewMode): void => {
     setViewMode(next);
     setNavOpen((current) => ({ ...current, [next]: true }));
+  }, []);
+
+  const selectView = (next: ViewMode): void => {
+    focusView(next);
     void run(async () => {
       if (next === "sessions") await loadMessages();
-      else if (next === "memory") {
-        await loadMemories();
-        await loadMemorySidebar();
-      } else if (next === "proactive") {
+      else if (next === "proactive") {
         await loadProactiveOverview();
         await loadProactivePanel();
       } else await loadPluginPanel(next.slice(7));
@@ -351,16 +311,12 @@ function App(): React.ReactElement {
     setNavOpen((current) => ({ ...current, [kind]: !current[kind] }));
   };
 
-  const sort = (scope: "messages" | "memory" | "proactive", key: string): void => {
+  const sort = (scope: "messages" | "proactive", key: string): void => {
     const flip = (currentKey: string, currentOrder: SortOrder): SortOrder => currentKey === key && currentOrder === "desc" ? "asc" : "desc";
     if (scope === "messages") {
       setMessageSortOrder(flip(messageSortBy, messageSortOrder));
       setMessageSortBy(key);
       setMessagePage(1);
-    } else if (scope === "memory") {
-      setMemorySortOrder(flip(memorySortBy, memorySortOrder));
-      setMemorySortBy(key);
-      setMemoryPage(1);
     } else {
       setProactiveSortOrder(flip(proactiveSortBy, proactiveSortOrder));
       setProactiveSortBy(key);
@@ -373,25 +329,16 @@ function App(): React.ReactElement {
   }, [loadMessages, run, viewMode]);
 
   useEffect(() => {
-    if (viewMode === "memory") void run(async () => {
-      await loadMemories();
-      await loadMemorySidebar();
-    });
-  }, [loadMemories, loadMemorySidebar, run, viewMode]);
-
-  useEffect(() => {
     if (viewMode === "proactive") void run(loadProactivePanel);
   }, [loadProactivePanel, run, viewMode]);
 
   const currentPageCount = currentPluginState
     ? pageCount(currentPluginState.total, currentPluginState.pageSize)
-    : viewMode === "memory"
-      ? pageCount(totalMemories, memoryPageSize)
-      : viewMode === "proactive"
-        ? pageCount(proactiveTotal, proactivePageSize)
-        : pageCount(totalMessages, messagePageSize);
+    : viewMode === "proactive"
+      ? pageCount(proactiveTotal, proactivePageSize)
+      : pageCount(totalMessages, messagePageSize);
 
-  const currentPage = currentPluginState?.page ?? (viewMode === "memory" ? memoryPage : viewMode === "proactive" ? proactivePage : messagePage);
+  const currentPage = currentPluginState?.page ?? (viewMode === "proactive" ? proactivePage : messagePage);
 
   const changePage = (delta: number): void => {
     if (currentPage + delta < 1 || currentPage + delta > currentPageCount) return;
@@ -401,7 +348,7 @@ function App(): React.ReactElement {
         const state = pluginState[currentPluginId];
         if (!plugin || !state) return;
         const nextPage = state.page + delta;
-        const result = await plugin.fetchPage({ page: nextPage, pageSize: state.pageSize });
+        const result = await plugin.fetchPage({ page: nextPage, pageSize: state.pageSize, filters: state.filters, sortBy: state.sortBy, sortOrder: state.sortOrder });
         setPluginState((current) => ({
           ...current,
           [currentPluginId]: {
@@ -414,12 +361,23 @@ function App(): React.ReactElement {
           },
         }));
       });
-    } else if (viewMode === "memory") setMemoryPage((page) => page + delta);
-    else if (viewMode === "proactive") setProactivePage((page) => page + delta);
+    } else if (viewMode === "proactive") setProactivePage((page) => page + delta);
     else setMessagePage((page) => page + delta);
   };
 
-  const batchCount = viewMode === "memory" ? selectedMemoryIds.size : selectedMessageIds.size;
+  // Batch count: messages or plugin selectedIds
+  const pluginBatchCount = currentPluginState?.selectedIds.size ?? 0;
+  const batchCount = viewMode.startsWith("plugin:") ? pluginBatchCount : selectedMessageIds.size;
+
+  // dispatch for current plugin (used in DetailPane and batch bar)
+  const currentDispatch = currentPlugin && currentPluginState
+    ? makeDispatch(
+        currentPlugin,
+        () => pluginState[currentPlugin.id] ?? null,
+        (updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) })),
+        () => focusView(`plugin:${currentPlugin.id}`),
+      )
+    : undefined;
 
   return (
     <div className="shell">
@@ -439,29 +397,23 @@ function App(): React.ReactElement {
           setMessageRole={(value) => { setMessageRole(value); setMessagePage(1); }}
           activeSessionKey={activeSessionKey}
           clearSession={() => { setActiveSessionKey(null); setActiveSession(null); setActiveMessage(null); setMessagePage(1); }}
-          memorySearch={memorySearch}
-          setMemorySearch={(value) => { setMemorySearch(value); setMemoryPage(1); }}
-          memoryType={memoryType}
-          setMemoryType={(value) => { setMemoryType(value); setMemoryPage(1); }}
-          memoryStatus={memoryStatus}
-          setMemoryStatus={(value) => { setMemoryStatus(value); setMemoryPage(1); }}
-          memoryScope={memoryScope}
-          clearMemoryScope={() => { setMemoryScope(null); setMemoryPage(1); }}
           proactiveSection={proactiveSection}
           proactiveSessionFilter={proactiveSessionFilter}
           clearProactiveSession={() => { setProactiveSessionFilter(""); setProactivePage(1); }}
+          currentPlugin={currentPlugin}
+          currentPluginState={currentPluginState}
+          onSetPluginState={currentPlugin ? (updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) })) : undefined}
         />
         <div className="topbar-view">
           <div className="view-chip"><span>{viewLabel(viewMode, currentPlugin)}</span></div>
-          {viewMode === "memory" && memoryOptimizerEnabled && (
-            <button
-              className="ghost"
-              type="button"
-              disabled={memoryOptimizerState === "starting" || memoryOptimizerState === "running"}
-              onClick={() => void triggerMemoryOptimizer()}
-            >
-              {memoryOptimizerButtonText}
-            </button>
+          {viewMode.startsWith("plugin:") && currentPlugin?.renderTopbarAction && currentPluginState && currentDispatch && (
+            <PluginTopbarAction
+              plugin={currentPlugin}
+              pluginId={currentPlugin.id}
+              state={currentPluginState}
+              onSetState={(updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) }))}
+              onActivate={() => focusView(`plugin:${currentPlugin.id}`)}
+            />
           )}
         </div>
       </header>
@@ -470,7 +422,11 @@ function App(): React.ReactElement {
         <aside className="sessions-pane">
           <div className="pane-head">
             <div className="pane-kicker">Explorer</div>
-            <div className="pane-title">{viewMode === "memory" ? `${totalMemories} 条记忆` : `${sessions.length} 个会话`}</div>
+            <div className="pane-title">
+              {currentPlugin && currentPluginState
+                ? (currentPlugin.countTitle ? currentPlugin.countTitle(currentPluginState.total) : `${currentPluginState.total} 条记录`)
+                : `${sessions.length} 个会话`}
+            </div>
           </div>
           <div className="filters-stack">
             <label className="search search-small">
@@ -512,33 +468,6 @@ function App(): React.ReactElement {
                 ))}
               </div>
             </NavGroup>
-            <NavGroup label="Memory" count={totalMemories} active={viewMode === "memory"} open={!!navOpen.memory} onToggle={() => toggleNav("memory")}>
-              <button className={`all-messages-row ${viewMode === "memory" && !memoryType ? "active" : ""}`} type="button" onClick={() => {
-                setMemoryType("");
-                setActiveMemoryId(null);
-                setActiveMemoryDetail(null);
-                setSelectedMemoryIds(new Set());
-                setMemoryPage(1);
-                selectView("memory");
-              }}>
-                <span>全部记忆</span><strong>{totalMemories}</strong>
-              </button>
-              <div className="memory-quick-list">
-                {memoryTypeCounts.map((item) => (
-                  <button key={item.memory_type} className={`memory-quick-item ${memoryType === item.memory_type ? "active" : ""}`} type="button" onClick={() => {
-                    setMemoryType(item.memory_type);
-                    setMemoryPage(1);
-                    selectView("memory");
-                  }}>
-                    <div className="nav-item-row">
-                      <span className={`nav-type-dot ${memoryTypeClass(item.memory_type)}`} />
-                      <span className="nav-item-name">{item.memory_type}</span>
-                      <span className="nav-item-count">{item.total}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </NavGroup>
             <NavGroup label="Proactive" count={proactiveOverview?.counts.tick_logs ?? proactiveTotal} active={viewMode === "proactive"} open={!!navOpen.proactive} onToggle={() => toggleNav("proactive")}>
               <button className={`all-messages-row ${proactiveSection === "all" && viewMode === "proactive" ? "active" : ""}`} type="button" onClick={() => { setProactiveSection("all"); setProactivePage(1); selectView("proactive"); }}>
                 <span>{proactiveSectionLabel("all")}</span><strong>{proactiveSectionCount("all", proactiveOverview)}</strong>
@@ -563,13 +492,34 @@ function App(): React.ReactElement {
                 <span>Plugins</span>
               </div>
             )}
-            {plugins.map((plugin) => (
-              <NavGroup key={plugin.id} label={plugin.label} count={pluginState[plugin.id]?.total ?? 0} active={viewMode === `plugin:${plugin.id}`} open={!!navOpen[`plugin:${plugin.id}`]} onToggle={() => toggleNav(`plugin:${plugin.id}`)}>
-                <button className={`all-messages-row ${viewMode === `plugin:${plugin.id}` ? "active" : ""}`} type="button" onClick={() => selectView(`plugin:${plugin.id}`)}>
-                  <span>{plugin.label}</span><strong>{pluginState[plugin.id]?.total ?? 0}</strong>
-                </button>
-              </NavGroup>
-            ))}
+            {plugins.map((plugin) => {
+              const pState = pluginState[plugin.id];
+              const pDispatch = pState
+                ? makeDispatch(
+                    plugin,
+                    () => pluginState[plugin.id] ?? null,
+                    (updater) => setPluginState((c) => ({ ...c, [plugin.id]: updater(c[plugin.id]) })),
+                    () => selectView(`plugin:${plugin.id}`),
+                  )
+                : undefined;
+              const isActive = viewMode === `plugin:${plugin.id}`;
+              return (
+                <NavGroup key={plugin.id} label={plugin.label} count={pState?.total ?? 0} active={isActive} open={!!navOpen[`plugin:${plugin.id}`]} onToggle={() => toggleNav(`plugin:${plugin.id}`)}>
+                  {plugin.renderNavBody && pState && pDispatch
+                    ? <PluginNavBody
+                        plugin={plugin}
+                        pluginId={plugin.id}
+                        state={pState}
+                        onSetState={(updater) => setPluginState((c) => ({ ...c, [plugin.id]: updater(c[plugin.id]) }))}
+                        onActivate={() => focusView(`plugin:${plugin.id}`)}
+                      />
+                    : <button className={`all-messages-row ${isActive ? "active" : ""}`} type="button" onClick={() => selectView(`plugin:${plugin.id}`)}>
+                        <span>{plugin.label}</span><strong>{pState?.total ?? 0}</strong>
+                      </button>
+                  }
+                </NavGroup>
+              );
+            })}
           </nav>
         </aside>
 
@@ -577,39 +527,42 @@ function App(): React.ReactElement {
           {batchCount > 0 && (
             <div className="batch-bar">
               <span>已选 {batchCount} 条</span>
-              <button className="danger-ghost" type="button" onClick={() => void run(async () => {
-                if (viewMode === "memory") {
-                  await api("/api/dashboard/memories/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...selectedMemoryIds] }) });
-                  setSelectedMemoryIds(new Set());
+              {viewMode.startsWith("plugin:") && currentPlugin?.batchActions && currentPluginState
+                ? currentPlugin.batchActions.map((action: PluginBatchAction) => (
+                    <button key={action.label} className={action.className} type="button" onClick={() => void run(async () => {
+                      const ids = [...currentPluginState.selectedIds];
+                      await action.run(ids);
+                      setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], selectedIds: new Set() } }));
+                      await loadPluginPanel(currentPlugin.id);
+                    })}>{action.label}</button>
+                  ))
+                : <button className="danger-ghost" type="button" onClick={() => void run(async () => {
+                    await api("/api/dashboard/messages/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...selectedMessageIds] }) });
+                    setSelectedMessageIds(new Set());
+                    await refreshCurrentView();
+                  })}>批量删除</button>
+              }
+              <button className="ghost" type="button" onClick={() => {
+                if (viewMode.startsWith("plugin:") && currentPlugin) {
+                  setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], selectedIds: new Set() } }));
                 } else {
-                  await api("/api/dashboard/messages/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...selectedMessageIds] }) });
                   setSelectedMessageIds(new Set());
                 }
-                await refreshCurrentView();
-              })}>批量删除</button>
-              <button className="ghost" type="button" onClick={() => viewMode === "memory" ? setSelectedMemoryIds(new Set()) : setSelectedMessageIds(new Set())}>取消选择</button>
+              }}>取消选择</button>
             </div>
           )}
-          <TableHead viewMode={viewMode} plugin={currentPlugin} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} memorySortBy={memorySortBy} memorySortOrder={memorySortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} />
+          <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
           <div className="table-body">
             <Rows
               viewMode={viewMode}
               messages={messages}
-              memories={memories}
               proactiveItems={proactiveItems}
               plugin={currentPlugin}
               pluginState={currentPluginState}
               selectedMessageIds={selectedMessageIds}
-              selectedMemoryIds={selectedMemoryIds}
               activeMessage={activeMessage}
-              activeMemoryId={activeMemoryId}
               activeProactiveKey={activeProactiveKey}
               onSelectMessage={setActiveMessage}
-              onSelectMemory={(item) => void run(async () => {
-                setActiveMemoryId(item.id);
-                setSelectedMemoryIds(new Set());
-                await loadMemoryDetail(item.id);
-              })}
               onSelectProactive={(item) => void run(async () => {
                 setActiveProactiveKey(item.tick_id);
                 const [detail, steps] = await Promise.all([
@@ -627,12 +580,22 @@ function App(): React.ReactElement {
                   setPluginState((current) => ({ ...current, [currentPlugin.id]: { ...current[currentPlugin.id], activeRowKey: key, activeDetail: detail } }));
                 });
               }}
+              onTogglePluginRow={(id) => {
+                if (!currentPlugin) return;
+                setPluginState((c) => {
+                  const ps = c[currentPlugin.id];
+                  if (!ps) return c;
+                  const next = new Set(ps.selectedIds);
+                  if (next.has(id)) next.delete(id);
+                  else next.add(id);
+                  return { ...c, [currentPlugin.id]: { ...ps, selectedIds: next } };
+                });
+              }}
               setSelectedMessageIds={setSelectedMessageIds}
-              setSelectedMemoryIds={setSelectedMemoryIds}
             />
           </div>
           <footer className="table-foot">
-            <div>{tableMeta(viewMode, totalMessages, totalMemories, proactiveTotal, currentPlugin, currentPluginState, memoryScope, proactiveSessionFilter)}</div>
+            <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
             <div className="pager">
               <button className="ghost" type="button" disabled={currentPage <= 1} onClick={() => changePage(-1)}>‹</button>
               <span>{currentPage} / {currentPageCount}</span>
@@ -646,13 +609,11 @@ function App(): React.ReactElement {
             viewMode={viewMode}
             activeSession={activeSession}
             activeMessage={activeMessage}
-            activeMemoryDetail={activeMemoryDetail}
-            activeMemorySimilar={activeMemorySimilar}
             activeProactiveDetail={activeProactiveDetail}
             activeProactiveSteps={activeProactiveSteps}
             plugin={currentPlugin}
             pluginState={currentPluginState}
-            setMemoryScope={(scope) => { setMemoryScope(scope); setMemoryPage(1); selectView("memory"); }}
+            dispatch={currentDispatch}
             setProactiveSessionFilter={(key) => { setProactiveSessionFilter(key); setProactivePage(1); selectView("proactive"); }}
           />
         </aside>
@@ -660,6 +621,75 @@ function App(): React.ReactElement {
       {error && <div className="modal-backdrop" onClick={() => setError(null)}><div className="modal"><div className="modal-title">请求失败</div><p>{error}</p><div className="modal-actions"><button className="primary" type="button" onClick={() => setError(null)}>关闭</button></div></div></div>}
     </div>
   );
+}
+
+function PluginNavBody(props: {
+  plugin: PluginConfig;
+  pluginId: string;
+  state: PluginState;
+  onSetState: (updater: (s: PluginState) => PluginState) => void;
+  onActivate(): void;
+}): React.ReactElement {
+  const ref = useRef<HTMLDivElement>(null);
+  const stateRef = useRef(props.state);
+  const filtersKey = JSON.stringify(props.state.filters);
+  stateRef.current = props.state;
+
+  useEffect(() => {
+    if (ref.current && props.plugin.renderNavBody) {
+      const dispatch = makeDispatch(props.plugin, () => stateRef.current, props.onSetState, props.onActivate);
+      props.plugin.renderNavBody(ref.current, dispatch);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersKey, props.onActivate, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder, props.state.total]);
+
+  return <div ref={ref} />;
+}
+
+function PluginFilters(props: {
+  plugin: PluginConfig;
+  pluginId: string;
+  state: PluginState;
+  onSetState: (updater: (s: PluginState) => PluginState) => void;
+  onActivate(): void;
+}): React.ReactElement {
+  const ref = useRef<HTMLDivElement>(null);
+  const stateRef = useRef(props.state);
+  const filtersKey = JSON.stringify(props.state.filters);
+  stateRef.current = props.state;
+
+  useEffect(() => {
+    if (ref.current && props.plugin.renderFilters) {
+      const dispatch = makeDispatch(props.plugin, () => stateRef.current, props.onSetState, props.onActivate);
+      props.plugin.renderFilters(ref.current, dispatch);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersKey, props.onActivate, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder]);
+
+  return <div ref={ref} />;
+}
+
+function PluginTopbarAction(props: {
+  plugin: PluginConfig;
+  pluginId: string;
+  state: PluginState;
+  onSetState: (updater: (s: PluginState) => PluginState) => void;
+  onActivate(): void;
+}): React.ReactElement {
+  const ref = useRef<HTMLDivElement>(null);
+  const stateRef = useRef(props.state);
+  const filtersKey = JSON.stringify(props.state.filters);
+  stateRef.current = props.state;
+
+  useEffect(() => {
+    if (ref.current && props.plugin.renderTopbarAction) {
+      const dispatch = makeDispatch(props.plugin, () => stateRef.current, props.onSetState, props.onActivate);
+      props.plugin.renderTopbarAction(ref.current, dispatch);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersKey, props.onActivate, props.plugin, props.pluginId, props.state.sortBy, props.state.sortOrder]);
+
+  return <div ref={ref} />;
 }
 
 function TopbarFilters(props: {
@@ -670,45 +700,38 @@ function TopbarFilters(props: {
   setMessageRole(value: string): void;
   activeSessionKey: string | null;
   clearSession(): void;
-  memorySearch: string;
-  setMemorySearch(value: string): void;
-  memoryType: string;
-  setMemoryType(value: string): void;
-  memoryStatus: string;
-  setMemoryStatus(value: string): void;
-  memoryScope: MemoryScope;
-  clearMemoryScope(): void;
   proactiveSection: string;
   proactiveSessionFilter: string;
   clearProactiveSession(): void;
+  currentPlugin: PluginConfig | null;
+  currentPluginState: PluginState | null;
+  onSetPluginState?: (updater: (s: PluginState) => PluginState) => void;
 }): React.ReactElement {
   return (
     <div className="topbar-filters">
-      {props.viewMode === "memory" ? (
-        <div className="filter-row">
-          <label className="search"><span>⌕</span><input type="text" placeholder="搜索 memory / source_ref" value={props.memorySearch} onChange={(event) => props.setMemorySearch(event.target.value.trim())} /></label>
-          <select value={props.memoryType} onChange={(event) => props.setMemoryType(event.target.value)}>
-            <option value="">全部 type</option><option value="procedure">procedure</option><option value="preference">preference</option><option value="event">event</option><option value="profile">profile</option>
-          </select>
-          <select value={props.memoryStatus} onChange={(event) => props.setMemoryStatus(event.target.value)}>
-            <option value="">全部 status</option><option value="active">active</option><option value="superseded">superseded</option>
-          </select>
-          {props.memoryScope && <Chip label="scope" value={`${props.memoryScope.channel}:${props.memoryScope.chatId}`} onClear={props.clearMemoryScope} />}
-        </div>
-      ) : props.viewMode === "proactive" ? (
-        <div className="filter-row">
-          <div className="active-session-chip"><span>result</span><code>{proactiveSectionLabel(props.proactiveSection)}</code></div>
-          {props.proactiveSessionFilter && <Chip label="session" value={props.proactiveSessionFilter} onClear={props.clearProactiveSession} />}
-        </div>
-      ) : (
-        <div className="filter-row">
-          <label className="search"><span>⌕</span><input type="text" placeholder="搜索消息内容" value={props.messageSearch} onChange={(event) => props.setMessageSearch(event.target.value.trim())} /></label>
-          <select value={props.messageRole} onChange={(event) => props.setMessageRole(event.target.value)}>
-            <option value="">全部 role</option><option value="user">user</option><option value="assistant">assistant</option><option value="system">system</option><option value="tool">tool</option>
-          </select>
-          {props.activeSessionKey && <Chip label="session" value={props.activeSessionKey} onClear={props.clearSession} />}
-        </div>
-      )}
+      {props.viewMode.startsWith("plugin:") && props.currentPlugin?.renderFilters && props.currentPluginState && props.onSetPluginState
+        ? <PluginFilters
+            plugin={props.currentPlugin}
+            pluginId={props.currentPlugin.id}
+            state={props.currentPluginState}
+            onSetState={props.onSetPluginState}
+            onActivate={() => {}}
+          />
+        : props.viewMode === "proactive" ? (
+          <div className="filter-row">
+            <div className="active-session-chip"><span>result</span><code>{proactiveSectionLabel(props.proactiveSection)}</code></div>
+            {props.proactiveSessionFilter && <Chip label="session" value={props.proactiveSessionFilter} onClear={props.clearProactiveSession} />}
+          </div>
+        ) : (
+          <div className="filter-row">
+            <label className="search"><span>⌕</span><input type="text" placeholder="搜索消息内容" value={props.messageSearch} onChange={(event) => props.setMessageSearch(event.target.value.trim())} /></label>
+            <select value={props.messageRole} onChange={(event) => props.setMessageRole(event.target.value)}>
+              <option value="">全部 role</option><option value="user">user</option><option value="assistant">assistant</option><option value="system">system</option><option value="tool">tool</option>
+            </select>
+            {props.activeSessionKey && <Chip label="session" value={props.activeSessionKey} onClear={props.clearSession} />}
+          </div>
+        )
+      }
     </div>
   );
 }
@@ -735,29 +758,28 @@ function NavGroup(props: { label: string; count: number; active: boolean; open: 
 function TableHead(props: {
   viewMode: ViewMode;
   plugin: PluginConfig | null;
+  pluginState: PluginState | null;
   messageSortBy: string;
   messageSortOrder: SortOrder;
-  memorySortBy: string;
-  memorySortOrder: SortOrder;
   proactiveSortBy: string;
   proactiveSortOrder: SortOrder;
-  onSort(scope: "messages" | "memory" | "proactive", key: string): void;
+  onSort(scope: "messages" | "proactive", key: string): void;
+  onPluginSort?: (key: string) => void;
 }): React.ReactElement {
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
-    return <div className="table-head" style={{ gridTemplateColumns: gridTemplate(props.plugin.columns) }}>{props.plugin.columns.map((col) => <div key={col.key}>{col.label}</div>)}</div>;
-  }
-  if (props.viewMode === "memory") {
-    return <div className="table-head mode-memory">
-      <div />
-      <SortHead label="Type" active={props.memorySortBy === "memory_type"} order={props.memorySortOrder} onClick={() => props.onSort("memory", "memory_type")} />
-      <div>Summary</div>
-      <SortHead label="Uses" active={props.memorySortBy === "reinforcement"} order={props.memorySortOrder} onClick={() => props.onSort("memory", "reinforcement")} />
-      <SortHead label="Weight" active={props.memorySortBy === "emotional_weight"} order={props.memorySortOrder} onClick={() => props.onSort("memory", "emotional_weight")} />
-      <div>Source</div>
-      <SortHead label="Created" active={props.memorySortBy === "created_at"} order={props.memorySortOrder} onClick={() => props.onSort("memory", "created_at")} />
-      <SortHead label="Updated" active={props.memorySortBy === "updated_at"} order={props.memorySortOrder} onClick={() => props.onSort("memory", "updated_at")} />
-      <div>Status</div><div />
-    </div>;
+    const hasBatch = Boolean(props.plugin.batchActions?.length);
+    const grid = (hasBatch ? "32px " : "") + gridTemplate(props.plugin.columns);
+    const sortBy = props.pluginState?.sortBy ?? "";
+    const sortOrder = props.pluginState?.sortOrder ?? "desc";
+    return (
+      <div className="table-head" style={{ gridTemplateColumns: grid }}>
+        {hasBatch && <div />}
+        {props.plugin.columns.map((col) => col.sortable && props.onPluginSort
+          ? <SortHead key={col.key} label={col.label} active={sortBy === col.key} order={sortOrder} onClick={() => props.onPluginSort!(col.key)} />
+          : <div key={col.key}>{col.label}</div>
+        )}
+      </div>
+    );
   }
   if (props.viewMode === "proactive") {
     return <div className="table-head mode-proactive-ticks">
@@ -785,44 +807,39 @@ function SortHead(props: { label: string; active: boolean; order: SortOrder; onC
 function Rows(props: {
   viewMode: ViewMode;
   messages: MessageRow[];
-  memories: MemoryRow[];
   proactiveItems: ProactiveTick[];
   plugin: PluginConfig | null;
   pluginState: PluginState | null;
   selectedMessageIds: Set<string>;
-  selectedMemoryIds: Set<string>;
   activeMessage: MessageRow | null;
-  activeMemoryId: string | null;
   activeProactiveKey: string | null;
   onSelectMessage(item: MessageRow): void;
-  onSelectMemory(item: MemoryRow): void;
   onSelectProactive(item: ProactiveTick): void;
   onSelectPluginRow(row: Record<string, unknown>): void;
+  onTogglePluginRow(id: string): void;
   setSelectedMessageIds(value: Set<string>): void;
-  setSelectedMemoryIds(value: Set<string>): void;
 }): React.ReactElement {
   if (props.viewMode.startsWith("plugin:") && props.plugin && props.pluginState) {
-    const grid = gridTemplate(props.plugin.columns);
+    const hasBatch = Boolean(props.plugin.batchActions?.length);
+    const grid = (hasBatch ? "32px " : "") + gridTemplate(props.plugin.columns);
     return <>{props.pluginState.items.length ? props.pluginState.items.map((item) => {
       const key = String(item[props.plugin!.rowKey] ?? "");
-      return <div key={key} className={`table-row ${props.pluginState!.activeRowKey === key ? "active" : ""} ${props.plugin!.rowClass?.(item) ?? ""}`} style={{ gridTemplateColumns: grid }} onClick={() => props.onSelectPluginRow(item)}>
-        {props.plugin!.columns.map((col) => <div key={col.key} className={col.cellClass ?? ""} title={col.rawTitle ? String(item[col.key] ?? "") : undefined}>{formatPluginCell(props.plugin!, col, item)}</div>)}
+      const isSelected = props.pluginState!.selectedIds.has(key);
+      return <div key={key} className={`table-row ${props.pluginState!.activeRowKey === key ? "active" : ""} ${isSelected ? "selected" : ""} ${props.plugin!.rowClass?.(item) ?? ""}`} style={{ gridTemplateColumns: grid }} onClick={() => props.onSelectPluginRow(item)}>
+        {hasBatch && (
+          <label className="checkbox-cell" onClick={(event) => event.stopPropagation()}>
+            <input type="checkbox" checked={isSelected} onChange={() => props.onTogglePluginRow(key)} />
+          </label>
+        )}
+        {props.plugin!.columns.map((col) => {
+          const cellClass = columnCellClass(col);
+          if (col.renderCell) {
+            return <div key={col.key} className={cellClass} title={col.rawTitle ? String(item[col.key] ?? "") : undefined} dangerouslySetInnerHTML={{ __html: col.renderCell(item[col.key], item) }} />;
+          }
+          return <div key={col.key} className={cellClass} title={col.rawTitle ? String(item[col.key] ?? "") : undefined}>{formatPluginCell(props.plugin!, col, item)}</div>;
+        })}
       </div>;
     }) : <div className="empty-state">{props.plugin.emptyMessage || "暂无记录。"}</div>}</>;
-  }
-  if (props.viewMode === "memory") {
-    return <>{props.memories.map((item) => <div key={item.id} className={`table-row mode-memory ${props.activeMemoryId === item.id ? "active" : ""} ${props.selectedMemoryIds.has(item.id) ? "selected" : ""}`} onClick={() => props.onSelectMemory(item)}>
-      <label className="checkbox-cell" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={props.selectedMemoryIds.has(item.id)} onChange={(event) => toggleSet(item.id, event.target.checked, props.selectedMemoryIds, props.setSelectedMemoryIds)} /></label>
-      <div className="cell-type"><span className={`type-pill ${memoryTypeClass(item.memory_type)}`}>{item.memory_type}</span></div>
-      <div className="content-preview">{item.summary}</div>
-      <div className="cell-metric">{item.reinforcement}</div>
-      <div className="cell-metric">{item.emotional_weight}</div>
-      <div className="cell-source">{item.source_ref || "-"}</div>
-      <div className="cell-time">{shortTs(item.created_at)}</div>
-      <div className="cell-time">{shortTs(item.updated_at)}</div>
-      <div className="cell-status"><span className={`status-pill memory-status-${item.status}`}>{item.status}</span></div>
-      <div />
-    </div>)}</>;
   }
   if (props.viewMode === "proactive") {
     return <>{props.proactiveItems.map((item) => <div key={item.tick_id} className={`table-row mode-proactive-ticks ${props.activeProactiveKey === item.tick_id ? "active" : ""}`} onClick={() => props.onSelectProactive(item)}>
@@ -848,34 +865,15 @@ function DetailPane(props: {
   viewMode: ViewMode;
   activeSession: SessionRow | null;
   activeMessage: MessageRow | null;
-  activeMemoryDetail: MemoryDetail | null;
-  activeMemorySimilar: MemoryRow[];
   activeProactiveDetail: ProactiveTick | null;
   activeProactiveSteps: ProactiveStep[];
   plugin: PluginConfig | null;
   pluginState: PluginState | null;
-  setMemoryScope(scope: MemoryScope): void;
+  dispatch?: PluginDispatch;
   setProactiveSessionFilter(key: string): void;
 }): React.ReactElement {
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
-    return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} />;
-  }
-  if (props.viewMode === "memory") {
-    const item = props.activeMemoryDetail;
-    if (!item) return <EmptyDetail text="点开 memory 后，这里会显示完整字段、JSON 和相似记忆。" />;
-    return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">记忆详情</div><div className="detail-subtext">{item.id}</div></div></div>
-      <div className="detail-block"><div className="detail-label">Summary</div><div className="detail-content">{item.summary}</div></div>
-      <div className="detail-grid">
-        {detailRow("type", <span className={`type-pill ${memoryTypeClass(item.memory_type)}`}>{item.memory_type}</span>)}
-        {detailRow("status", <span className={`status-pill memory-status-${item.status}`}>{item.status}</span>)}
-        {detailRow("source_ref", <code>{item.source_ref || "-"}</code>)}
-        {detailRow("embedding", <code>{item.has_embedding ? `${item.embedding_dim} dims` : "none"}</code>)}
-      </div>
-      {Boolean(item.extra_json.scope_channel || item.extra_json.scope_chat_id) && <button className="ghost" type="button" onClick={() => props.setMemoryScope({ channel: String(item.extra_json.scope_channel ?? ""), chatId: String(item.extra_json.scope_chat_id ?? "") })}>查看同 scope 记忆</button>}
-      <div className="detail-block"><div className="detail-label">Extra JSON</div><pre className="json-tree">{jsonText(item.extra_json)}</pre></div>
-      <div className="detail-block"><div className="detail-label">Similar</div><div className="detail-similar-list">{props.activeMemorySimilar.length ? props.activeMemorySimilar.map((similar) => <div key={similar.id} className="detail-callout"><code>{similar.id}</code><div>{similar.summary}</div></div>) : <div className="muted-text">没有相似记忆。</div>}</div></div>
-    </div>;
+    return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} dispatch={props.dispatch} />;
   }
   if (props.viewMode === "proactive") {
     const item = props.activeProactiveDetail;
@@ -890,7 +888,7 @@ function DetailPane(props: {
         {detailRow("flow", <span className={`type-pill proactive-flow-${proactiveFlowLabel(item).toLowerCase()}`}>{proactiveFlowLabel(item)}</span>)}
       </div>
       {item.final_message && <div className="detail-block"><div className="detail-label">Final Message</div><div className="detail-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.final_message) }} /></div>}
-      <div className="detail-block"><div className="detail-label">Steps</div>{props.activeProactiveSteps.length ? props.activeProactiveSteps.map((step) => <div key={`${step.phase}-${step.step_index}`} className="tool-step"><div className="tool-step-head"><div className="tool-step-title"><span className="status-pill">step {step.step_index}</span><span className="type-pill">{step.tool_name}</span></div></div><pre className="json-tree">{jsonText(step.tool_args)}</pre><div className="detail-content tool-result">{step.tool_result_text}</div></div>) : <div className="muted-text">没有记录到工具调用。</div>}</div>
+      <div className="detail-block"><div className="detail-label">Steps</div>{props.activeProactiveSteps.length ? props.activeProactiveSteps.map((step) => <div key={`${step.phase}-${step.step_index}`} className="tool-step"><div className="tool-step-head"><div className="tool-step-title"><span className="status-pill">step {step.step_index}</span><span className="type-pill">{step.tool_name}</span></div></div><JsonTreeBlock data={step.tool_args} /><div className="detail-content tool-result">{step.tool_result_text}</div></div>) : <div className="muted-text">没有记录到工具调用。</div>}</div>
     </div>;
   }
   if (props.activeMessage) {
@@ -903,8 +901,8 @@ function DetailPane(props: {
         {detailRow("id", <code>{message.id}</code>)}
       </div>
       <div className="detail-block"><div className="detail-label">Content</div><div className="detail-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} /></div>
-      <div className="detail-block"><div className="detail-label">Extra</div><pre className="json-tree">{jsonText(message.extra)}</pre></div>
-      <div className="detail-block"><div className="detail-label">Tool Chain</div><pre className="json-tree">{jsonText(message.tool_chain)}</pre></div>
+      <div className="detail-block"><div className="detail-label">Extra</div><JsonTreeBlock data={message.extra} /></div>
+      <div className="detail-block"><div className="detail-label">Tool Chain</div><JsonTreeBlock data={message.tool_chain} /></div>
     </div>;
   }
   if (props.activeSession) {
@@ -916,7 +914,7 @@ function DetailPane(props: {
         {detailRow("updated", <code>{session.updated_at}</code>)}
         {detailRow("last_consolidated", <code>{session.last_consolidated}</code>)}
       </div>
-      <div className="detail-block"><div className="detail-label">Metadata</div><pre className="json-tree">{jsonText(session.metadata)}</pre></div>
+      <div className="detail-block"><div className="detail-label">Metadata</div><JsonTreeBlock data={session.metadata} /></div>
     </div>;
   }
   return <EmptyDetail text="点开消息、session 或 memory 后，这里会显示完整内容、字段和 JSON 信息。" />;
@@ -930,27 +928,17 @@ function detailRow(label: string, value: React.ReactNode): React.ReactElement {
   return <div className="detail-row"><div className="detail-row-label">{label}</div><div className="detail-row-val">{value}</div></div>;
 }
 
-function memoryParams(args: {
-  search: string;
-  type: string;
-  status: string;
-  scope: MemoryScope;
-  page: number;
-  pageSize: number;
-  sortBy: string;
-  sortOrder: SortOrder;
-}): URLSearchParams {
-  const params = new URLSearchParams();
-  if (args.search) params.set("q", args.search);
-  if (args.type) params.set("memory_type", args.type);
-  if (args.status) params.set("status", args.status);
-  if (args.scope?.channel) params.set("scope_channel", args.scope.channel);
-  if (args.scope?.chatId) params.set("scope_chat_id", args.scope.chatId);
-  params.set("page", String(args.page));
-  params.set("page_size", String(args.pageSize));
-  params.set("sort_by", args.sortBy);
-  params.set("sort_order", args.sortOrder);
-  return params;
+function JsonTreeBlock(props: { data: unknown }): React.ReactElement {
+  const ref = useRef<HTMLDivElement>(null);
+  const payload = JSON.stringify(props.data ?? null);
+
+  useEffect(() => {
+    if (!ref.current) return;
+    ref.current.innerHTML = jvPlaceholder(props.data);
+    attachJsonViewers(ref.current);
+  }, [payload, props.data]);
+
+  return <div ref={ref} />;
 }
 
 function toggleSet(id: string, checked: boolean, source: Set<string>, update: (value: Set<string>) => void): void {
@@ -970,9 +958,14 @@ function formatPluginCell(plugin: PluginConfig, column: DashboardColumn, item: R
   return formatter ? formatter(value, item) : String(value ?? "");
 }
 
-function tableMeta(viewMode: ViewMode, totalMessages: number, totalMemories: number, proactiveTotal: number, plugin: PluginConfig | null, pluginState: PluginState | null, memoryScope: MemoryScope, proactiveSessionFilter: string): string {
+function columnCellClass(column: DashboardColumn): string {
+  const classes = [column.cellClass ?? ""];
+  if (column.align === "right") classes.push("align-right");
+  return classes.filter(Boolean).join(" ");
+}
+
+function tableMeta(viewMode: ViewMode, totalMessages: number, proactiveTotal: number, plugin: PluginConfig | null, pluginState: PluginState | null, proactiveSessionFilter: string): string {
   if (plugin && pluginState) return plugin.countTitle ? plugin.countTitle(pluginState.total) : `共 ${pluginState.total} 条`;
-  if (viewMode === "memory") return memoryScope ? `共 ${totalMemories} 条记忆 · scope: ${memoryScope.channel}:${memoryScope.chatId}` : `共 ${totalMemories} 条记忆`;
   if (viewMode === "proactive") return proactiveSessionFilter ? `共 ${proactiveTotal} 条 tick · session: ${proactiveSessionFilter}` : `共 ${proactiveTotal} 条 tick`;
   return `共 ${totalMessages} 条`;
 }
@@ -990,7 +983,6 @@ function proactiveSectionCount(section: string, overview: ProactiveOverview | nu
 
 function viewLabel(viewMode: ViewMode, plugin: PluginConfig | null): string {
   if (plugin) return plugin.viewLabel || plugin.label;
-  if (viewMode === "memory") return "memory";
   if (viewMode === "proactive") return "proactive";
   return "messages";
 }

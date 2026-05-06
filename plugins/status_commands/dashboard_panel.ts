@@ -43,25 +43,25 @@ function _cacheRateClass(rate: number | null): string {
   return `cache-rate-${bucket}`;
 }
 
-function _metricCard(label: string, value: unknown): string {
+function _renderSummary(summary: KVCacheSummary): string {
   return `
-    <div class="cache-metric-card">
-      <div class="cache-metric-label">${escapeHtml(label)}</div>
-      <div class="cache-metric-value">${escapeHtml(_formatNumber(value))}</div>
+    <div class="detail-grid">
+      ${_detailMetric("tracked_turn_count", _formatNumber(summary.tracked_turn_count))}
+      ${_detailMetric("prompt_tokens", _formatNumber(summary.prompt_tokens))}
+      ${_detailMetric("hit_tokens", _formatNumber(summary.hit_tokens))}
+      ${_detailMetric("miss_tokens", _formatNumber(summary.miss_tokens))}
+    </div>
+    <div class="cache-meter" aria-label="KVCache hit rate">
+      <div class="cache-meter-fill ${escapeHtml(_cacheRateClass(summary.hit_rate))}"></div>
     </div>
   `;
 }
 
-function _renderSummary(summary: KVCacheSummary): string {
+function _detailMetric(label: string, value: string): string {
   return `
-    <div class="cache-summary-grid">
-      ${_metricCard("tracked_turn_count", summary.tracked_turn_count)}
-      ${_metricCard("prompt_tokens", summary.prompt_tokens)}
-      ${_metricCard("hit_tokens", summary.hit_tokens)}
-      ${_metricCard("miss_tokens", summary.miss_tokens)}
-    </div>
-    <div class="cache-meter" aria-label="KVCache hit rate">
-      <div class="cache-meter-fill ${escapeHtml(_cacheRateClass(summary.hit_rate))}"></div>
+    <div class="detail-row">
+      <div class="detail-row-label">${escapeHtml(label)}</div>
+      <div class="detail-row-val"><code>${escapeHtml(value)}</code></div>
     </div>
   `;
 }

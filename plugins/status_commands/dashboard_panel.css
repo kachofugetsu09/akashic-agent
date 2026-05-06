@@ -1,37 +1,6 @@
-.cache-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin: 16px 0 12px;
-}
-
-.cache-metric-card {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--bg-soft);
-  padding: 12px;
-}
-
-.cache-metric-label {
-  color: var(--text-soft);
-  font-family: var(--sans);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.cache-metric-value {
-  margin-top: 8px;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 20px;
-  font-weight: 500;
-}
-
 .cache-meter {
   height: 8px;
-  margin: 0 0 16px;
+  margin: 16px 0 0;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 999px;
