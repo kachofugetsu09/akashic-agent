@@ -427,6 +427,11 @@ async function dmemFetchPage(opts: FetchPageOpts): Promise<FetchPageResult> {
   return { items: payload.items || [], total: payload.total || 0 };
 }
 
+function dmemRenderDeleteBtn(_value: unknown, item: Record<string, unknown>): string {
+  const id = escapeHtml(String(item.id ?? ""));
+  return `<button class="icon-btn row-delete-btn" type="button" onclick="event.stopPropagation();void(async()=>{try{await api('/api/dashboard/memories/batch-delete',{method:'POST',body:JSON.stringify({ids:['${id}']})});window.dispatchEvent(new CustomEvent('akashic-dashboard-refresh'))}catch(e){alert(e.message||String(e))}})()" title="删除此条">✕</button>`;
+}
+
 async function dmemGetCount(): Promise<number | null> {
   try {
     const payload = await api<{ items: unknown[]; total: number }>("/api/dashboard/memories?page=1&page_size=1&sort_by=created_at&sort_order=desc");
@@ -458,6 +463,7 @@ window.AkashicDashboard.registerPlugin({
     { key: "created_at", label: "Created", width: 96, fmt: "mono-time", cellClass: "mono cell-time", sortable: true },
     { key: "updated_at", label: "Updated", width: 96, fmt: "mono-time", cellClass: "mono cell-time", sortable: true },
     { key: "status", label: "Status", width: 88, cellClass: "cell-status", renderCell: (v) => dmemStatusPill(String(v ?? "")) },
+    { key: "_actions", label: "", width: 40, cellClass: "row-delete-cell", renderCell: dmemRenderDeleteBtn },
   ],
 
   batchActions: [
