@@ -14,6 +14,7 @@ from bootstrap.channels import start_channels
 from agent.config import (
     ChannelsConfig,
     Config,
+    DEFAULT_SOCKET,
     QQBotChannelConfig,
     QQBotGroupConfig,
     QQChannelConfig,
@@ -176,7 +177,11 @@ def test_connect_cli_uses_socket_from_config(monkeypatch, tmp_path):
 
     main.connect_cli(str(config_path))
 
-    assert observed["socket"] == str(socket_path)
+    if sys.platform == "win32":
+        assert observed["socket"] != str(socket_path)
+        assert observed["socket"].startswith("127.0.0.1:")
+    else:
+        assert observed["socket"] == str(socket_path)
 
 
 def test_init_workspace_creates_expected_assets(tmp_path):

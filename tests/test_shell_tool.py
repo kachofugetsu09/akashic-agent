@@ -14,8 +14,11 @@ from agent.tools.shell import (
     ShellTaskStopTool,
     _BG_REGISTRY,
     _MAX_OUTPUT,
+    _validate_command,
     _run,
 )
+
+_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 class _FakeProc:
@@ -292,6 +295,48 @@ async def test_restricted_shell_blocks_network_and_outside_paths(tmp_path: Path)
     assert "父级路径" in outside_result["error"]
 
 
+def test_restricted_shell_blocks_windows_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    import agent.tools.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "_IS_WINDOWS", True)
+
+    outside_err = _validate_command(
+        r'type "C:\Users\alice\secret.txt"',
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+    parent_err = _validate_command(
+        r"type logs\..\secret.txt",
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+    root_err = _validate_command(
+        r"type \Users\alice\secret.txt",
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+    inside_err = _validate_command(
+        r"type logs\out.txt",
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+
+    assert outside_err is not None
+    assert "任务目录外" in outside_err
+    assert parent_err is not None
+    assert "父级路径" in parent_err
+    assert root_err is not None
+    assert "任务目录外" in root_err
+    assert inside_err is None
+
+
 @pytest.mark.asyncio
 async def test_shell_tool_cancel_kills_process_group(monkeypatch):
     proc = _FakeProc(stdout="", stderr="")
@@ -313,17 +358,20 @@ async def test_shell_tool_cancel_kills_process_group(monkeypatch):
     monkeypatch.setattr("agent.tools.shell.asyncio.wait_for", _fake_wait_for)
     killpg_mock = []
 
-    def _fake_killpg(pid, sig):
-        killpg_mock.append((pid, sig))
+    def _fake_kill_process_tree(proc):
+        killpg_mock.append((proc.pid, _KILL_SIGNAL))
 
-    monkeypatch.setattr("agent.tools.shell.os.killpg", _fake_killpg)
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", _fake_kill_process_tree)
 
     with pytest.raises(asyncio.CancelledError):
         await __import__("agent.tools.shell", fromlist=["_run"])._run("sleep 10", 5)
 
     observed_kwargs = cast(dict[str, object], observed["kwargs"])
-    assert observed_kwargs["start_new_session"] is True
-    assert killpg_mock == [(proc.pid, signal.SIGKILL)]
+    if os.name == "nt":
+        assert "creationflags" in observed_kwargs
+    else:
+        assert observed_kwargs["start_new_session"] is True
+    assert killpg_mock == [(proc.pid, _KILL_SIGNAL)]
 
 
 @pytest.mark.asyncio
@@ -495,10 +543,10 @@ async def test_task_stop_kills_and_removes(monkeypatch):
 
     killed = []
 
-    def _fake_killpg(pid, sig):
-        killed.append((pid, sig))
+    def _fake_kill_process_tree(proc):
+        killed.append((proc.pid, _KILL_SIGNAL))
 
-    monkeypatch.setattr("agent.tools.shell.os.killpg", _fake_killpg)
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", _fake_kill_process_tree)
 
     fake_proc = _FakeProc(stdout="", stderr="", returncode=0)
     fake_proc.pid = 9999
@@ -518,7 +566,7 @@ async def test_task_stop_kills_and_removes(monkeypatch):
 
     assert result["status"] == "stopped"
     assert task_id not in shell_mod._BG_REGISTRY
-    assert killed == [(9999, signal.SIGKILL)]
+    assert killed == [(9999, _KILL_SIGNAL)]
     # cancel() 是异步的，等一个事件循环 tick 让取消生效
     await asyncio.sleep(0)
     assert pump.cancelled()
@@ -529,7 +577,7 @@ async def test_task_stop_deletes_log_file(monkeypatch, tmp_path):
     """task_stop 应立即删除日志文件，不依赖 done callback 的延迟清理。"""
     import agent.tools.shell as shell_mod
 
-    monkeypatch.setattr("agent.tools.shell.os.killpg", lambda *_: None)
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
 
     log_path = tmp_path / "bg_stop.log"
     log_path.write_text("some output", encoding="utf-8")
@@ -557,7 +605,7 @@ async def test_task_output_ttl_deletes_log_file(monkeypatch, tmp_path):
     """TTL 到期时 _bg_kill 应同时删除日志文件。"""
     import agent.tools.shell as shell_mod
 
-    monkeypatch.setattr("agent.tools.shell.os.killpg", lambda *_: None)
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
 
     log_path = tmp_path / "ttl.log"
     log_path.write_text("old output", encoding="utf-8")
@@ -594,7 +642,7 @@ async def test_task_output_ttl_expired(monkeypatch):
     """TTL 到期的任务在 task_output 时被自动终止并返回 error。"""
     import agent.tools.shell as shell_mod
 
-    monkeypatch.setattr("agent.tools.shell.os.killpg", lambda *_: None)
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
 
     fake_proc = _FakeProc(stdout="", stderr="", returncode=0)
     fake_proc.pid = 1234
@@ -696,7 +744,7 @@ async def test_shell_auto_promotes_to_background_after_fg_threshold(monkeypatch)
         "agent.tools.shell.asyncio.create_subprocess_shell",
         _fake_create_subprocess_shell,
     )
-    monkeypatch.setattr("agent.tools.shell.os.killpg", lambda *_: None)
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
 
     tool = ShellTool()
     result = json.loads(
@@ -789,14 +837,14 @@ async def test_shell_foreground_timeout_kills_instead_of_auto_promote(monkeypatc
 
     killed = []
 
-    def _fake_killpg(pid, sig):
-        killed.append((pid, sig))
+    def _fake_kill_process_tree(proc):
+        killed.append((proc.pid, _KILL_SIGNAL))
 
     monkeypatch.setattr(
         "agent.tools.shell.asyncio.create_subprocess_shell",
         _fake_create_subprocess_shell,
     )
-    monkeypatch.setattr("agent.tools.shell.os.killpg", _fake_killpg)
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", _fake_kill_process_tree)
     monkeypatch.setattr(shell_mod, "_FG_THRESHOLD", 15)
 
     tool = ShellTool()
@@ -808,14 +856,14 @@ async def test_shell_foreground_timeout_kills_instead_of_auto_promote(monkeypatc
     assert result["exit_code"] == -1
     assert "background_task_id" not in result
     assert "Command timed out" in result["output"]
-    assert killed == [(proc.pid, signal.SIGKILL)]
+    assert killed == [(proc.pid, _KILL_SIGNAL)]
 
 
 @pytest.mark.asyncio
 async def test_task_output_timeout_expired(monkeypatch, tmp_path):
     import agent.tools.shell as shell_mod
 
-    monkeypatch.setattr("agent.tools.shell.os.killpg", lambda *_: None)
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
 
     log_path = tmp_path / "timeout.log"
     log_path.write_text("old output", encoding="utf-8")

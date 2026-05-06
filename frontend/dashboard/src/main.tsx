@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, asPageResult, pageCount } from "./api";
 import {
@@ -631,13 +631,12 @@ function PluginNavBody(props: {
   onActivate(): void;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null);
-  const stateRef = useRef(props.state);
+  const getState = useEffectEvent(() => props.state);
   const filtersKey = JSON.stringify(props.state.filters);
-  stateRef.current = props.state;
 
   useEffect(() => {
     if (ref.current && props.plugin.renderNavBody) {
-      const dispatch = makeDispatch(props.plugin, () => stateRef.current, props.onSetState, props.onActivate);
+      const dispatch = makeDispatch(props.plugin, getState, props.onSetState, props.onActivate);
       props.plugin.renderNavBody(ref.current, dispatch);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -654,13 +653,12 @@ function PluginFilters(props: {
   onActivate(): void;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null);
-  const stateRef = useRef(props.state);
+  const getState = useEffectEvent(() => props.state);
   const filtersKey = JSON.stringify(props.state.filters);
-  stateRef.current = props.state;
 
   useEffect(() => {
     if (ref.current && props.plugin.renderFilters) {
-      const dispatch = makeDispatch(props.plugin, () => stateRef.current, props.onSetState, props.onActivate);
+      const dispatch = makeDispatch(props.plugin, getState, props.onSetState, props.onActivate);
       props.plugin.renderFilters(ref.current, dispatch);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -677,13 +675,12 @@ function PluginTopbarAction(props: {
   onActivate(): void;
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null);
-  const stateRef = useRef(props.state);
+  const getState = useEffectEvent(() => props.state);
   const filtersKey = JSON.stringify(props.state.filters);
-  stateRef.current = props.state;
 
   useEffect(() => {
     if (ref.current && props.plugin.renderTopbarAction) {
-      const dispatch = makeDispatch(props.plugin, () => stateRef.current, props.onSetState, props.onActivate);
+      const dispatch = makeDispatch(props.plugin, getState, props.onSetState, props.onActivate);
       props.plugin.renderTopbarAction(ref.current, dispatch);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps

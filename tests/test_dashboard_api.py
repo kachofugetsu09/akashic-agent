@@ -900,3 +900,17 @@ def test_proactive_dashboard_batch_delete_rejects_empty_payload(tmp_path) -> Non
     )
     assert cooldown_delete_resp.status_code == 400
     assert cooldown_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
+
+
+def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    for path in (
+        "/plugins/..%5Csecret/panel.js",
+        "/plugins/C:%5Csecret/panel.js",
+        "/plugins/%5C%5Cserver%5Cshare/panel.css",
+    ):
+        response = client.get(path)
+        assert response.status_code == 400
+
+    assert client.get("/plugins/missing/panel.js").status_code == 404

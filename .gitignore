@@ -38,19 +38,8 @@ plugins/**/.data/
 .vscode/
 /evals/
 /tests/regression/
-/scripts/fitbit-monitor/tokens.json
-/scripts/fitbit-monitor/sleep_labels.json
-/scripts/fitbit-monitor/sleep_log.jsonl
-/scripts/fitbit-monitor/fitbit-swagger.json
 /config.backup.20260301-063714.json
-/scripts/fitbit-monitor/monitor.config.toml
-/scripts/fitbit-monitor/monitor.config.local.toml
-/scripts/fitbit-monitor/monitor.config.json
-/scripts/fitbit-monitor/monitor.runtime.log
 /docs/
-/scripts/fitbit-monitor/backups/
-/scripts/fitbit-monitor/stat_events.
-/scripts/fitbit-monitor/static/sleep_diff_report.html
 /.pytest_artifacts/
 /rss/
 
@@ -61,11 +50,9 @@ qa_error_log_*.txt
 lme_error_log_*.txt
 /config.json.bak
 
-# Local AI assistant docs and fitbit event cache
+# Local AI assistant docs
 /CLAUDE.md
 /AGENTS.md
-/scripts/fitbit-monitor/stat_events.json
-/scripts/fitbit-monitor/stat_events_v2.json
 /memory_annotation_from_*.json
 .squad/
 /locks/reviewer.receive.lock

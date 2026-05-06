@@ -179,23 +179,11 @@ def _ensure_workspace_db_assets(
         summary.notes.append("memory.enabled = false，未预创建语义记忆库。")
 
 
-def _ensure_fitbit_assets(*, force: bool, summary: InitSummary) -> None:
-    base_dir = Path(__file__).resolve().parent.parent / "scripts" / "fitbit-monitor"
-    example = base_dir / "monitor.config.example.toml"
-    target = base_dir / "monitor.config.local.toml"
-    if not example.exists():
-        summary.notes.append("未找到 Fitbit 模板，跳过 with-fitbit。")
-        return
-    _write_text_file(target, example.read_text(encoding="utf-8"), force=force, summary=summary)
-    summary.notes.append("Fitbit 仅初始化本地配置模板，未创建 tokens.json 等运行期文件。")
-
-
 def init_workspace(
     *,
     config_path: str | Path = "config.toml",
     workspace: Path,
     force: bool = False,
-    with_fitbit: bool = False,
 ) -> InitSummary:
     summary = InitSummary()
     config_path = Path(config_path)
@@ -211,9 +199,6 @@ def init_workspace(
         config=config,
         summary=summary,
     )
-
-    if with_fitbit:
-        _ensure_fitbit_assets(force=force, summary=summary)
 
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [

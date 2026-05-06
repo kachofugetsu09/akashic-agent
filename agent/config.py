@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tomllib
+import zlib
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -36,7 +37,24 @@ _PRESETS: dict[str, str] = {
 }
 
 # CLI channel 默认 Unix socket 路径
-DEFAULT_SOCKET = "/tmp/akashic.sock"
+DEFAULT_SOCKET = "127.0.0.1:8765" if os.name == "nt" else "/tmp/akashic.sock"
+
+
+def _normalize_cli_socket_endpoint(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return DEFAULT_SOCKET
+    if os.name != "nt":
+        return text
+    host, sep, port = text.rpartition(":")
+    if sep and host:
+        try:
+            int(port)
+            return text
+        except ValueError:
+            pass
+    port_seed = zlib.crc32(text.encode("utf-8")) % 20000
+    return f"127.0.0.1:{20000 + port_seed}"
 
 def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
     """仅当 anyaction_enabled=True 时校验时区合法性，无效则启动时 fail-fast。"""
@@ -221,14 +239,16 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 groups=groups,
             )
 
+    socket_value = channels_data.get("socket") or channels_data.get("cli", {}).get(
+        "socket", DEFAULT_SOCKET
+    )
     channels = ChannelsConfig(
         telegram=telegram,
         qq=qq,
         qqbot=qqbot,
-        socket=channels_data.get("socket")
-        or channels_data.get("cli", {}).get("socket", DEFAULT_SOCKET),
+        socket=_normalize_cli_socket_endpoint(socket_value),
     )
-    channels.socket = channels.socket or DEFAULT_SOCKET
+    channels.socket = _normalize_cli_socket_endpoint(channels.socket)
     return channels
 
 

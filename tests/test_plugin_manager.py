@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import shlex
 import shutil
 import tempfile
 import sqlite3
@@ -762,7 +763,7 @@ async def test_on_tool_pre_rewrites_rm_to_mv():
         assert "command" in captured
         # shlex.join 产物：mv -- <targets>... <restore_dir>
         assert captured["command"].startswith("mv -- /tmp/a.txt ")
-        assert "/restore" in captured["command"]
+        assert Path(shlex.split(captured["command"])[-1]).name == "restore"
         # 确认 pre_hook trace 记录了匹配
         assert any(
             item.hook_name.startswith("plugin:") and item.matched
@@ -858,7 +859,7 @@ async def test_on_tool_pre_rewrites_rm_rf():
         )
         await executor.execute(req, fake_invoker)
         assert captured["command"].startswith("mv -- /tmp/a.txt ")
-        assert "/restore" in captured["command"]
+        assert Path(shlex.split(captured["command"])[-1]).name == "restore"
 
 
 @pytest.mark.asyncio
@@ -889,7 +890,7 @@ async def test_on_tool_pre_rewrites_sudo_rm():
         )
         await executor.execute(req, fake_invoker)
         assert captured["command"].startswith("sudo mv -- /tmp/b.txt ")
-        assert "/restore" in captured["command"]
+        assert Path(shlex.split(captured["command"])[-1]).name == "restore"
 
 
 @pytest.mark.asyncio
@@ -956,7 +957,7 @@ async def test_on_tool_pre_fires_through_real_reasoner():
 
         assert len(captured_commands) == 1
         assert captured_commands[0].startswith("mv -- /tmp/a.txt ")
-        assert "/restore" in captured_commands[0]
+        assert Path(shlex.split(captured_commands[0])[-1]).name == "restore"
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -355,11 +356,23 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     channel = IPCServerChannel(bus, str(tmp_path / "agent.sock"), None)
 
     server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
-    monkeypatch.setattr("infra.channels.ipc_server.asyncio.start_unix_server", AsyncMock(return_value=server))
     chmod = MagicMock()
     monkeypatch.setattr("infra.channels.ipc_server.os.chmod", chmod)
+    if sys.platform == "win32":
+        monkeypatch.setattr(
+            "infra.channels.ipc_server.asyncio.start_server",
+            AsyncMock(return_value=server),
+        )
+    else:
+        monkeypatch.setattr(
+            "infra.channels.ipc_server.asyncio.start_unix_server",
+            AsyncMock(return_value=server),
+        )
     await channel.start()
-    chmod.assert_called_once()
+    if sys.platform == "win32":
+        chmod.assert_not_called()
+    else:
+        chmod.assert_called_once()
     await channel.stop()
     server.close.assert_called_once()
 
@@ -380,6 +393,7 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
         write=lambda data: writes.append(data),
         drain=AsyncMock(),
         close=MagicMock(),
+        wait_closed=AsyncMock(),
         is_closing=lambda: False,
     )
     await channel._handle_connection(
@@ -388,14 +402,39 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     inbound = await bus.consume_inbound()
     assert inbound.content == "hello"
     assert any("command_result" in payload.decode() for payload in writes)
-
-    assert any("未知命令" in payload.decode() for payload in writes)
+    assert any('"ok": false' in payload.decode() for payload in writes)
+    assert any("unknown command" in payload.decode() for payload in writes)
 
     msg = OutboundMessage(channel="cli", chat_id="missing", content="hi")
     await channel._on_response(msg)
     chat_id = next(iter(channel._writers.keys()), None)
     if chat_id:
         await channel._on_response(OutboundMessage(channel="cli", chat_id=chat_id, content="hi"))
+
+
+@pytest.mark.asyncio
+async def test_ipc_server_uses_tcp_for_explicit_host_port_on_all_platforms(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+
+    server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    start_server = AsyncMock(return_value=server)
+    start_unix_server = AsyncMock(side_effect=AssertionError("explicit TCP endpoint should not use unix sockets"))
+    chmod = MagicMock()
+
+    monkeypatch.setattr("infra.channels.ipc_server.asyncio.start_server", start_server)
+    if hasattr(asyncio, "start_unix_server"):
+        monkeypatch.setattr("infra.channels.ipc_server.asyncio.start_unix_server", start_unix_server)
+    monkeypatch.setattr("infra.channels.ipc_server.os.chmod", chmod)
+
+    await channel.start()
+    start_server.assert_awaited_once()
+    start_unix_server.assert_not_called()
+    chmod.assert_not_called()
+    await channel.stop()
+    server.close.assert_called_once()
 
 
 @pytest.mark.asyncio
