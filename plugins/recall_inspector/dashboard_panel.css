@@ -68,14 +68,14 @@
   text-transform: lowercase;
 }
 
-.recall-type-profile   { background: var(--blue-soft);   color: #276489; border-color: #c2d5e8; }
-.recall-type-preference{ background: var(--accent-soft);  color: var(--accent); border-color: #e0c0b0; }
-.recall-type-event     { background: var(--green-soft);   color: var(--green); border-color: #b0d8c4; }
-.recall-type-procedure { background: var(--yellow-soft);  color: #8b6b09; border-color: #e0d090; }
+.recall-type-profile   { background: var(--blue-soft); color: var(--tool); border-color: var(--line-strong); }
+.recall-type-preference{ background: var(--accent-soft); color: var(--accent); border-color: var(--line-strong); }
+.recall-type-event     { background: var(--green-soft); color: var(--green); border-color: var(--line-strong); }
+.recall-type-procedure { background: var(--yellow-soft); color: var(--system); border-color: var(--line-strong); }
 
 .recall-tag-forced {
-  color: #8b6b09;
-  border-color: #e0d090;
+  color: var(--system);
+  border-color: var(--line-strong);
   background: var(--yellow-soft);
   font-weight: 500;
 }

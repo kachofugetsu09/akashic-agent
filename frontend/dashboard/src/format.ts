@@ -134,6 +134,4 @@ export function proactiveTickPreview(item: ProactiveTick): string {
   return parts.join(" · ");
 }
 
-export function jsonText(value: unknown): string {
-  return JSON.stringify(value ?? null, null, 2);
-}
+
