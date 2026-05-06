@@ -2,12 +2,13 @@ from __future__ import annotations
 from typing import Any, cast
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from agent.config import Config
+from agent.config import Config, DEFAULT_SOCKET
 from agent.config_models import Config as ConfigModel, WiringConfig
 from agent.lifecycle.facade import TurnLifecycle
 from agent.lifecycle.types import AfterStepCtx
@@ -349,7 +350,7 @@ def test_config_load_skips_unfilled_channels(tmp_path: Path, monkeypatch: pytest
     assert cfg.channels.qqbot.groups[0].allow_from == ["member-openid"]
     assert cfg.channels.qqbot.groups[0].require_at is True
     assert cfg.channels.qqbot.groups[0].allow_proactive is True
-    assert cfg.channels.socket == "/tmp/akashic.sock"
+    assert cfg.channels.socket == DEFAULT_SOCKET
 
 
 def test_config_load_reads_fitbit_integration_block(tmp_path: Path):
@@ -414,7 +415,11 @@ enabled = true
     assert cfg.model == "m"
     assert cfg.max_tokens == 256
     assert cfg.memory_window == 12
-    assert cfg.channels.socket == "/tmp/toml-akashic.sock"
+    if sys.platform == "win32":
+        assert cfg.channels.socket != "/tmp/toml-akashic.sock"
+        assert cfg.channels.socket.startswith("127.0.0.1:")
+    else:
+        assert cfg.channels.socket == "/tmp/toml-akashic.sock"
     assert cfg.fitbit.enabled is True
 
 

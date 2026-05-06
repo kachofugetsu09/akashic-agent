@@ -1,13 +1,11 @@
 """
-IPC Server Channel（服务端）
+IPC server channel.
 
-在 Unix socket 上监听，CLI 客户端连接后可双向通信。
-每条连接独立维护 session，消息流向：
-  CLI client → socket → MessageBus → AgentLoop → socket → CLI client
-
-特殊命令（type="command"）：
-  当前无内置命令，统一返回 unknown。
+Uses a Unix domain socket on POSIX systems and loopback TCP on Windows so the
+local CLI can talk to the running agent process.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -16,6 +14,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent.config import _normalize_cli_socket_endpoint
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 
@@ -27,6 +26,22 @@ logger = logging.getLogger(__name__)
 CHANNEL = "cli"
 
 
+def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
+    if endpoint.count(":") != 1:
+        return None
+    host, port = endpoint.rsplit(":", 1)
+    if not host:
+        return None
+    try:
+        return host, int(port)
+    except ValueError:
+        return None
+
+
+def _normalize_endpoint(endpoint: str) -> str:
+    return _normalize_cli_socket_endpoint(endpoint)
+
+
 class IPCServerChannel:
     def __init__(
         self,
@@ -35,39 +50,55 @@ class IPCServerChannel:
         proactive_loop: "ProactiveLoop | None" = None,
     ) -> None:
         self._bus = bus
-        self._socket_path = socket_path
+        self._socket_path = _normalize_endpoint(socket_path)
         self._proactive_loop = proactive_loop
-        self._writers: dict[str, asyncio.StreamWriter] = {}  # chat_id → writer
+        self._writers: dict[str, asyncio.StreamWriter] = {}
+        self._server: asyncio.AbstractServer | None = None
         bus.subscribe_outbound(CHANNEL, self._on_response)
 
     async def start(self) -> None:
-        # 清理上次遗留的 socket 文件
+        tcp_endpoint = _parse_tcp_endpoint(self._socket_path)
+        if tcp_endpoint is not None:
+            host, port = tcp_endpoint
+            self._server = await asyncio.start_server(
+                self._handle_connection,
+                host=host,
+                port=port,
+            )
+            logger.info("IPC server listening on tcp://%s:%s", host, port)
+            return
+
+        if not hasattr(asyncio, "start_unix_server"):
+            raise RuntimeError("Unix sockets are unavailable on this platform; use a host:port endpoint instead.")
         Path(self._socket_path).unlink(missing_ok=True)
         self._server = await asyncio.start_unix_server(
-            self._handle_connection, path=self._socket_path
+            self._handle_connection,
+            path=self._socket_path,
         )
-        os.chmod(self._socket_path, 0o600)  # 仅当前用户可连接
-        logger.info(f"IPC server 监听: {self._socket_path}")
+        os.chmod(self._socket_path, 0o600)
+        logger.info("IPC server listening on %s", self._socket_path)
 
     async def stop(self) -> None:
+        if not self._server:
+            return
         self._server.close()
         await self._server.wait_closed()
-        Path(self._socket_path).unlink(missing_ok=True)
+        if _parse_tcp_endpoint(self._socket_path) is None:
+            Path(self._socket_path).unlink(missing_ok=True)
 
     def set_proactive_loop(self, proactive_loop: "ProactiveLoop") -> None:
-        """在 IPC server 启动后注入 ProactiveLoop。"""
         self._proactive_loop = proactive_loop
-        logger.info("[cli] ProactiveLoop 已注入")
-
-    # ── 私有方法 ──────────────────────────────────────────────────
+        logger.info("[cli] ProactiveLoop attached")
 
     async def _handle_connection(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
     ) -> None:
-        peer = writer.get_extra_info("peername") or "unix"
+        peer = writer.get_extra_info("peername") or "local"
         chat_id = f"cli-{id(writer)}"
         self._writers[chat_id] = writer
-        logger.info(f"[cli] 客户端已连接  session={chat_id}  peer={peer}")
+        logger.info("[cli] client connected session=%s peer=%s", chat_id, peer)
         try:
             while True:
                 line = await reader.readline()
@@ -75,29 +106,32 @@ class IPCServerChannel:
                     break
                 try:
                     data = json.loads(line)
-                    # 特殊命令分支
-                    if data.get("type") == "command":
-                        await self._handle_command(data, chat_id, writer)
-                        continue
-                    content = data.get("content", "").strip()
-                    if not content:
-                        continue
-                    preview = content[:60] + "..." if len(content) > 60 else content
-                    logger.info(f"[cli] 收到消息  session={chat_id}  内容: {preview!r}")
-                    await self._bus.publish_inbound(
-                        InboundMessage(
-                            channel=CHANNEL,
-                            sender="cli-user",
-                            chat_id=chat_id,
-                            content=content,
-                        )
-                    )
                 except json.JSONDecodeError:
-                    logger.warning(f"[cli] 收到非 JSON 数据，已忽略")
+                    logger.warning("[cli] received non-JSON payload")
+                    continue
+
+                if data.get("type") == "command":
+                    await self._handle_command(data, chat_id, writer)
+                    continue
+
+                content = str(data.get("content", "")).strip()
+                if not content:
+                    continue
+                preview = content[:60] + "..." if len(content) > 60 else content
+                logger.info("[cli] received session=%s content=%r", chat_id, preview)
+                await self._bus.publish_inbound(
+                    InboundMessage(
+                        channel=CHANNEL,
+                        sender="cli-user",
+                        chat_id=chat_id,
+                        content=content,
+                    )
+                )
         finally:
             self._writers.pop(chat_id, None)
             writer.close()
-            logger.info(f"[cli] 客户端已断开  session={chat_id}")
+            await writer.wait_closed()
+            logger.info("[cli] client disconnected session=%s", chat_id)
 
     async def _handle_command(
         self,
@@ -105,14 +139,12 @@ class IPCServerChannel:
         chat_id: str,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """处理 type=command 的特殊指令，结果通过同一 writer 回写。"""
         cmd = data.get("command", "")
-        logger.info("[cli] 收到命令 cmd=%r session=%s", cmd, chat_id)
-
+        logger.info("[cli] received command cmd=%r session=%s", cmd, chat_id)
         await self._write_command_result(
             writer,
             ok=False,
-            message=f"未知命令: {cmd!r}",
+            message=f"unknown command: {cmd!r}",
         )
 
     @staticmethod
@@ -129,7 +161,7 @@ class IPCServerChannel:
             )
             + "\n"
         )
-        writer.write(payload.encode())
+        writer.write(payload.encode("utf-8"))
         await writer.drain()
 
     async def _on_response(self, msg: OutboundMessage) -> None:
@@ -146,5 +178,5 @@ class IPCServerChannel:
                 )
                 + "\n"
             )
-            writer.write(payload.encode())
+            writer.write(payload.encode("utf-8"))
             await writer.drain()

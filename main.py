@@ -84,8 +84,17 @@ async def serve(
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
     watched_signals = (signal.SIGINT, signal.SIGTERM)
+    signal_handlers_registered = False
     for sig in watched_signals:
-        loop.add_signal_handler(sig, stop_event.set)
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+            signal_handlers_registered = True
+        except NotImplementedError:
+            # Windows' default event loop does not support add_signal_handler.
+            signal.signal(
+                sig,
+                lambda _sig, _frame: loop.call_soon_threadsafe(stop_event.set),
+            )
 
     runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
     stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
@@ -102,8 +111,9 @@ async def serve(
         with suppress(asyncio.CancelledError):
             await runtime_task
     finally:
-        for sig in watched_signals:
-            _ = loop.remove_signal_handler(sig)
+        if signal_handlers_registered:
+            for sig in watched_signals:
+                _ = loop.remove_signal_handler(sig)
         _ = stop_task.cancel()
         with suppress(asyncio.CancelledError):
             await stop_task

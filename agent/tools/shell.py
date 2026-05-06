@@ -20,6 +20,7 @@ import os
 import signal
 import shlex
 import ipaddress
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,7 @@ _STREAM_CHUNK_SIZE = 4096
 _STREAM_DRAIN_GRACE_S = 0.2
 _BG_TTL_S = 4 * 3600  # 后台任务最长存活时间：4 小时
 _BG_EVICT_DELAY_S = 300  # 任务完成后延迟 5 分钟清理注册表和日志
+_IS_WINDOWS = os.name == "nt"
 
 # 禁止命令（对应 OpenCode bannedCommands）
 _BANNED = frozenset(
@@ -183,6 +185,34 @@ def _schedule_eviction(task_id: str, log_path: str) -> None:
     loop.call_later(_BG_EVICT_DELAY_S, _evict)
 
 
+def _subprocess_options(cwd: Path | None, env: dict[str, str] | None) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "cwd": str(cwd) if cwd is not None else None,
+        "env": env,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+    }
+    if _IS_WINDOWS:
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        options["start_new_session"] = True
+    return options
+
+
+def _kill_process_tree(proc: Any) -> None:
+    if _IS_WINDOWS:
+        result = subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode != 0:
+            proc.kill()
+        return
+    os.killpg(proc.pid, signal.SIGKILL)
+
+
 def _bg_kill(task_id: str) -> None:
     """杀掉后台任务、从注册表移除并立即删除日志文件。"""
     task = _BG_REGISTRY.pop(task_id, None)
@@ -191,7 +221,7 @@ def _bg_kill(task_id: str) -> None:
     if task.timeout_handle is not None:
         task.timeout_handle.cancel()
     try:
-        os.killpg(task.proc.pid, signal.SIGKILL)
+        _kill_process_tree(task.proc)
     except (ProcessLookupError, PermissionError):
         pass
     if task.pump_task is not None:
@@ -357,11 +387,7 @@ class ShellTool(Tool):
         wall_start_ms = int(time.time() * 1000)
         proc = await asyncio.create_subprocess_shell(
             command,
-            cwd=str(cwd) if cwd is not None else None,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
+            **_subprocess_options(cwd, env),
         )
         # 先建 bg_task 对象，pump 需要引用它来更新 last_output_at_ms
         bg = _BackgroundTask(
@@ -414,11 +440,7 @@ class ShellTool(Tool):
 
         proc = await asyncio.create_subprocess_shell(
             command,
-            cwd=str(cwd) if cwd is not None else None,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
+            **_subprocess_options(cwd, env),
         )
         bg = _BackgroundTask(
             proc=proc,
@@ -464,7 +486,7 @@ class ShellTool(Tool):
         except asyncio.CancelledError:
             # 外层被取消 → 杀掉进程并清理
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
+                _kill_process_tree(proc)
             except (ProcessLookupError, PermissionError):
                 pass
             pump.cancel()
@@ -526,7 +548,7 @@ class ShellTool(Tool):
         start_mono: float,
     ) -> str:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            _kill_process_tree(proc)
         except (ProcessLookupError, PermissionError):
             pass
 
@@ -825,17 +847,13 @@ async def _run(
     """执行命令，并发读取 stdout/stderr，返回 (stdout, stderr, exit_code, interrupted)"""
     proc = await asyncio.create_subprocess_shell(
         command,
-        cwd=str(cwd) if cwd is not None else None,
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,  # 独立 process group，便于 killpg 杀整棵进程树
+        **_subprocess_options(cwd, env),
     )
 
     def _kill_tree() -> None:
         """杀掉整棵进程树（按 pgid）。"""
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            _kill_process_tree(proc)
         except (ProcessLookupError, PermissionError):
             pass  # 进程已退出或无权限
 

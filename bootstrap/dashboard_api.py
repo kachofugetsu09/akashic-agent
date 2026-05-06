@@ -9,6 +9,8 @@ import json
 import sqlite3
 import sys
 import threading
+import os
+import shutil
 from datetime import timedelta
 from typing import Any, Protocol
 
@@ -521,6 +523,23 @@ _pending_plugins: list[tuple[Path, Path]] = []
 _pending_plugins_lock = threading.Lock()
 
 
+def _esbuild_command(project_root: Path) -> list[str] | None:
+    bin_name = "esbuild.cmd" if os.name == "nt" else "esbuild"
+    local_bin = project_root / "node_modules" / ".bin" / bin_name
+    if local_bin.exists():
+        return [str(local_bin)]
+    if os.name == "nt":
+        cmd_bin = shutil.which("cmd.exe") or shutil.which("cmd")
+        npx_bin = shutil.which("npx.cmd") or shutil.which("npx")
+        if cmd_bin and npx_bin:
+            return [cmd_bin, "/d", "/s", "/c", "npx", "--yes", "esbuild"]
+        return None
+    npx_bin = shutil.which("npx")
+    if npx_bin:
+        return [npx_bin, "--yes", "esbuild"]
+    return None
+
+
 def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
     ts_path = plugin_dir / "dashboard_panel.ts"
     js_path = plugin_dir / "dashboard_panel.js"
@@ -532,13 +551,13 @@ def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
     if js_path.exists() and js_path.stat().st_mtime >= ts_path.stat().st_mtime:
         return
 
-    esbuild_bin = project_root / "node_modules" / ".bin" / "esbuild"
-    if not esbuild_bin.exists():
+    esbuild_cmd = _esbuild_command(project_root)
+    if esbuild_cmd is None:
         with _pending_plugins_lock:
             _pending_plugins.append((project_root, plugin_dir))
         return
 
-    _run_esbuild([str(esbuild_bin)], ts_path, js_path, plugin_dir.name)
+    _run_esbuild(esbuild_cmd, ts_path, js_path, plugin_dir.name)
 
 
 def _run_esbuild(cmd: list[str], ts_path: Path, js_path: Path, name: str) -> None:
@@ -574,8 +593,12 @@ async def _compile_pending_plugins_async() -> None:
     first_root = pending[0][0]
 
     logger.info("正在安装前端构建工具 (npx esbuild)...")
+    esbuild_cmd = _esbuild_command(first_root)
+    if esbuild_cmd is None:
+        logger.warning("esbuild unavailable: neither local install nor npx was found")
+        return
     proc = await asyncio.create_subprocess_exec(
-        "npx", "--yes", "esbuild", "--version",
+        *esbuild_cmd, "--version",
         cwd=str(first_root),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -591,7 +614,7 @@ async def _compile_pending_plugins_async() -> None:
     version = stdout.decode("utf-8", errors="replace").strip()
     logger.info("npx esbuild 就绪 (%s)，开始编译插件面板...", version)
     for root, pdir in pending:
-        _run_esbuild(["npx", "--yes", "esbuild"], pdir / "dashboard_panel.ts", pdir / "dashboard_panel.js", pdir.name)
+        _run_esbuild(esbuild_cmd, pdir / "dashboard_panel.ts", pdir / "dashboard_panel.js", pdir.name)
 
 
 def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
@@ -682,6 +705,8 @@ def create_dashboard_app(
             return []
         result = []
         for plugin_dir in sorted(plugins_root.iterdir()):
+            if plugin_dir.is_dir():
+                _build_plugin_panel_js(project_root, plugin_dir)
             if plugin_dir.is_dir() and (plugin_dir / "dashboard_panel.js").exists():
                 js_path = plugin_dir / "dashboard_panel.js"
                 css_path = plugin_dir / "dashboard_panel.css"
@@ -698,6 +723,7 @@ def create_dashboard_app(
     def get_plugin_panel_js(plugin_id: str) -> FileResponse:
         if "/" in plugin_id or ".." in plugin_id:
             raise HTTPException(status_code=400, detail="invalid plugin id")
+        _build_plugin_panel_js(project_root, plugins_root / plugin_id)
         js_path = plugins_root / plugin_id / "dashboard_panel.js"
         if not js_path.exists():
             raise HTTPException(status_code=404, detail="plugin panel not found")

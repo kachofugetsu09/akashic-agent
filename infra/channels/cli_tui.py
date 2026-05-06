@@ -1,7 +1,5 @@
 """
-Textual CLI 客户端
-
-连接到运行中的 agent 实例（通过 Unix socket），提供 TUI 交互界面。
+Textual CLI client for the local agent.
 """
 
 from __future__ import annotations
@@ -12,7 +10,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 
-from agent.config import DEFAULT_SOCKET
+from agent.config import DEFAULT_SOCKET, _normalize_cli_socket_endpoint
 
 try:
     from rich.markdown import Markdown
@@ -23,8 +21,24 @@ try:
     from textual.widgets import Input, RichLog, Static
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError(
-        "缺少依赖 textual，请先安装：.venv/bin/pip install textual"
+        "缺少依赖 textual，请先安装：.venv\\Scripts\\pip install textual"
     ) from exc
+
+
+def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
+    if endpoint.count(":") != 1:
+        return None
+    host, port = endpoint.rsplit(":", 1)
+    if not host:
+        return None
+    try:
+        return host, int(port)
+    except ValueError:
+        return None
+
+
+def _normalize_endpoint(endpoint: str) -> str:
+    return _normalize_cli_socket_endpoint(endpoint)
 
 
 @dataclass
@@ -129,7 +143,7 @@ class CLITextualApp(App[None]):
 
     def __init__(self, socket_path: str = DEFAULT_SOCKET) -> None:
         super().__init__()
-        self.socket_path = socket_path
+        self.socket_path = _normalize_endpoint(socket_path)
         self.stats = TUIStats()
         self.connected = False
         self._reader: asyncio.StreamReader | None = None
@@ -186,8 +200,14 @@ class CLITextualApp(App[None]):
 
     async def _connect_and_receive(self) -> None:
         try:
-            reader, writer = await asyncio.open_unix_connection(self.socket_path)
-        except (FileNotFoundError, ConnectionRefusedError):
+            tcp_endpoint = _parse_tcp_endpoint(self.socket_path)
+            if tcp_endpoint is not None:
+                reader, writer = await asyncio.open_connection(*tcp_endpoint)
+            else:
+                if not hasattr(asyncio, "open_unix_connection"):
+                    raise OSError("Unix sockets are unavailable on this platform.")
+                reader, writer = await asyncio.open_unix_connection(self.socket_path)
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
             self._write_system_message(f"无法连接到 agent: {self.socket_path}")
             self._write_system_message("请先启动主进程: python main.py")
             self.connected = False
@@ -302,6 +322,5 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def run_tui(socket_path: str = DEFAULT_SOCKET) -> None:
-    # 默认启用鼠标（滚动条可用）；需要复制优先时可设置 akashic_TUI_MOUSE=0。
     mouse_enabled = _env_bool("akashic_TUI_MOUSE", True)
     CLITextualApp(socket_path).run(mouse=mouse_enabled)

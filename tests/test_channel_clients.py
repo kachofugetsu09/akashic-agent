@@ -462,7 +462,10 @@ async def test_cli_tui_paths(monkeypatch: pytest.MonkeyPatch):
     async def _open_fail(path):
         raise FileNotFoundError
 
-    monkeypatch.setattr(mod.asyncio, "open_unix_connection", _open_fail)
+    if sys.platform == "win32":
+        monkeypatch.setattr(mod.asyncio, "open_connection", AsyncMock(side_effect=FileNotFoundError()))
+    else:
+        monkeypatch.setattr(mod.asyncio, "open_unix_connection", _open_fail)
     await app._connect_and_receive()
     assert "connected: no" in meta.text
 
@@ -484,7 +487,14 @@ async def test_cli_tui_paths(monkeypatch: pytest.MonkeyPatch):
     async def _open_ok(path):
         return _Reader(), writer2
 
-    monkeypatch.setattr(mod.asyncio, "open_unix_connection", _open_ok)
+    if sys.platform == "win32":
+        monkeypatch.setattr(
+            mod.asyncio,
+            "open_connection",
+            AsyncMock(return_value=(_Reader(), writer2)),
+        )
+    else:
+        monkeypatch.setattr(mod.asyncio, "open_unix_connection", _open_ok)
     await app._connect_and_receive()
     assert app.stats.received == 1
     assert app.stats.tool_calls == 1

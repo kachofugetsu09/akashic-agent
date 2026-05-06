@@ -435,6 +435,8 @@ class WriteFileTool(Tool):
             file_path = _resolve_path(path, self._allowed_dir)
 
             async def _write() -> str:
+                if file_path.exists() and file_path.is_dir():
+                    return f"写入文件失败：目标路径是目录：{path}"
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_text(content, encoding="utf-8")
                 return f"已写入 {len(content)} 字节到 {path}"
@@ -525,7 +527,7 @@ class EditFileTool(Tool):
                 replaced_count = count if replace_all else 1
                 diff_text = _build_edit_diff(content, new_content, path)
                 restored_content = _restore_utf8_bom(new_content, has_bom)
-                file_path.write_text(restored_content, encoding="utf-8")
+                file_path.write_text(restored_content, encoding="utf-8", newline="")
                 if diff_text:
                     return (
                         f"已成功编辑 {path}（替换 {replaced_count} 处）\n\n"

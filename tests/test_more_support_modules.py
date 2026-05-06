@@ -731,10 +731,17 @@ async def test_group_filter_and_cli_paths(
     writer.write = MagicMock()
     writer.drain = AsyncMock()
     writer.close = MagicMock()
-    monkeypatch.setattr(
-        "infra.channels.cli.asyncio.open_unix_connection",
-        AsyncMock(return_value=(reader, writer)),
-    )
+    writer.wait_closed = AsyncMock()
+    if sys.platform == "win32":
+        monkeypatch.setattr(
+            "infra.channels.cli.asyncio.open_connection",
+            AsyncMock(return_value=(reader, writer)),
+        )
+    else:
+        monkeypatch.setattr(
+            "infra.channels.cli.asyncio.open_unix_connection",
+            AsyncMock(return_value=(reader, writer)),
+        )
     lines = iter(["hello\n", "exit\n"])
 
     async def _fake_read_line() -> str:
@@ -745,10 +752,16 @@ async def test_group_filter_and_cli_paths(
     writer.write.assert_called()
     assert "再见" in capsys.readouterr().out
 
-    monkeypatch.setattr(
-        "infra.channels.cli.asyncio.open_unix_connection",
-        AsyncMock(side_effect=FileNotFoundError()),
-    )
+    if sys.platform == "win32":
+        monkeypatch.setattr(
+            "infra.channels.cli.asyncio.open_connection",
+            AsyncMock(side_effect=FileNotFoundError()),
+        )
+    else:
+        monkeypatch.setattr(
+            "infra.channels.cli.asyncio.open_unix_connection",
+            AsyncMock(side_effect=FileNotFoundError()),
+        )
     await CLIClient("/tmp/missing").run()
     _print_banner()
     assert "akashic Agent CLI" in capsys.readouterr().out

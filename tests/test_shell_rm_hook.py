@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import shutil
 import tempfile
 from collections.abc import Iterator
@@ -68,8 +69,20 @@ def test_shell_rm_hook_rewrites_rm_and_creates_restore_dir(tmp_path: Path) -> No
 
         assert result.status == "success"
         assert restore_dir.is_dir()
-        assert result.final_arguments["command"] == f"mv -- foo bar {restore_dir}"
-        assert result.output["arguments"]["command"] == f"mv -- foo bar {restore_dir}"
+        assert shlex.split(result.final_arguments["command"]) == [
+            "mv",
+            "--",
+            "foo",
+            "bar",
+            str(restore_dir),
+        ]
+        assert shlex.split(result.output["arguments"]["command"]) == [
+            "mv",
+            "--",
+            "foo",
+            "bar",
+            str(restore_dir),
+        ]
     finally:
         os.environ.pop("AKASIC_RESTORE_DIR", None)
 
@@ -98,7 +111,13 @@ def test_shell_rm_hook_rewrites_sudo_rm(tmp_path: Path) -> None:
         )
 
         assert result.status == "success"
-        assert result.final_arguments["command"] == f"sudo mv -- /tmp/a {restore_dir}"
+        assert shlex.split(result.final_arguments["command"]) == [
+            "sudo",
+            "mv",
+            "--",
+            "/tmp/a",
+            str(restore_dir),
+        ]
     finally:
         os.environ.pop("AKASIC_RESTORE_DIR", None)
 

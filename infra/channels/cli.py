@@ -1,37 +1,55 @@
 """
-CLI Channel（客户端）
-
-连接到运行中的 agent 实例（通过 Unix socket），提供交互式命令行界面。
-启动方式：python main.py cli
+Basic CLI client for the local agent.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 
-from agent.config import DEFAULT_SOCKET
+from agent.config import DEFAULT_SOCKET, _normalize_cli_socket_endpoint
 
 _EXIT_CMDS = {"exit", "quit", "q"}
 
 
-class CLIClient:
-    """连接到已运行的 agent 实例"""
+def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
+    if endpoint.count(":") != 1:
+        return None
+    host, port = endpoint.rsplit(":", 1)
+    if not host:
+        return None
+    try:
+        return host, int(port)
+    except ValueError:
+        return None
 
+
+def _normalize_endpoint(endpoint: str) -> str:
+    return _normalize_cli_socket_endpoint(endpoint)
+
+
+class CLIClient:
     def __init__(self, socket_path: str = DEFAULT_SOCKET) -> None:
-        self._socket_path = socket_path
+        self._socket_path = _normalize_endpoint(socket_path)
 
     async def run(self) -> None:
         try:
-            reader, writer = await asyncio.open_unix_connection(self._socket_path)
-        except (FileNotFoundError, ConnectionRefusedError):
+            tcp_endpoint = _parse_tcp_endpoint(self._socket_path)
+            if tcp_endpoint is not None:
+                reader, writer = await asyncio.open_connection(*tcp_endpoint)
+            else:
+                if not hasattr(asyncio, "open_unix_connection"):
+                    raise OSError("Unix sockets are unavailable on this platform.")
+                reader, writer = await asyncio.open_unix_connection(self._socket_path)
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
             print(
                 f"无法连接到 agent（{self._socket_path}），请先启动主进程：python main.py"
             )
             return
 
         _print_banner()
-
-        # 后台持续接收 agent 回复
         receive_task = asyncio.create_task(self._receive(reader))
 
         try:
@@ -43,14 +61,15 @@ class CLIClient:
                 if not stripped:
                     continue
                 payload = json.dumps({"content": stripped}, ensure_ascii=False) + "\n"
-                writer.write(payload.encode())
+                writer.write(payload.encode("utf-8"))
                 await writer.drain()
         except (KeyboardInterrupt, EOFError):
             pass
         finally:
             receive_task.cancel()
             writer.close()
-            print("\n再见！")
+            await writer.wait_closed()
+            print("\n再见")
 
     @staticmethod
     async def _receive(reader: asyncio.StreamReader) -> None:
@@ -61,9 +80,6 @@ class CLIClient:
                 break
             data = json.loads(line)
             print(f"\n{data['content']}\n> ", end="", flush=True)
-
-
-# ── 工具函数 ──────────────────────────────────────────────────────
 
 
 def _print_banner() -> None:
