@@ -14,6 +14,7 @@ from agent.tools.shell import (
     ShellTaskStopTool,
     _BG_REGISTRY,
     _MAX_OUTPUT,
+    _validate_command,
     _run,
 )
 
@@ -292,6 +293,48 @@ async def test_restricted_shell_blocks_network_and_outside_paths(tmp_path: Path)
 
     assert "禁止网络访问" in network_result["error"]
     assert "父级路径" in outside_result["error"]
+
+
+def test_restricted_shell_blocks_windows_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    import agent.tools.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "_IS_WINDOWS", True)
+
+    outside_err = _validate_command(
+        r'type "C:\Users\alice\secret.txt"',
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+    parent_err = _validate_command(
+        r"type logs\..\secret.txt",
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+    root_err = _validate_command(
+        r"type \Users\alice\secret.txt",
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+    inside_err = _validate_command(
+        r"type logs\out.txt",
+        allow_network=True,
+        restricted_dir=tmp_path,
+        cwd=tmp_path,
+    )
+
+    assert outside_err is not None
+    assert "任务目录外" in outside_err
+    assert parent_err is not None
+    assert "父级路径" in parent_err
+    assert root_err is not None
+    assert "任务目录外" in root_err
+    assert inside_err is None
 
 
 @pytest.mark.asyncio

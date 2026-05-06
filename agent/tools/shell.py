@@ -23,7 +23,7 @@ import ipaddress
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import urlparse
 from uuid import uuid4
 import time
@@ -960,7 +960,7 @@ def _validate_command(
     cwd: Path | None = None,
 ) -> str | None:
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = _split_command(command)
     except ValueError:
         return "命令解析失败，请检查引号是否匹配"
     if not tokens:
@@ -984,7 +984,7 @@ def _validate_command(
 def _validate_network_command(command: str) -> str | None:
     """网络命令护栏：仅允许 HTTP(S) 且禁止内网目标与写入类参数。"""
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = _split_command(command)
     except ValueError:
         return "命令解析失败，请检查引号是否匹配"
     if not tokens:
@@ -1069,22 +1069,57 @@ def _validate_restricted_cwd(cwd: Path | None, restricted_dir: Path) -> str | No
 
 
 def _validate_restricted_token(token: str, restricted_dir: Path) -> str | None:
+    token = _strip_shell_quotes(token)
     if token.startswith("~"):
         return f"受限 shell 禁止访问任务目录外路径：{token}"
 
     if not _looks_like_path(token):
         return None
 
-    path = Path(token)
-    if any(part == ".." for part in path.parts):
+    parts = PureWindowsPath(token).parts if _IS_WINDOWS else Path(token).parts
+    if any(part == ".." for part in parts):
         return f"受限 shell 禁止访问父级路径：{token}"
 
+    win_path = PureWindowsPath(token)
+    if _IS_WINDOWS and (win_path.drive or win_path.root):
+        return _validate_restricted_absolute_path(token, restricted_dir)
+
+    path = Path(token)
+    if path.is_absolute():
+        return _validate_restricted_absolute_path(token, restricted_dir)
+    return None
+
+
+def _split_command(command: str) -> list[str]:
+    return [
+        _strip_shell_quotes(token)
+        for token in shlex.split(command, posix=not _IS_WINDOWS)
+    ]
+
+
+def _strip_shell_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+        return token[1:-1]
+    return token
+
+
+def _validate_restricted_absolute_path(token: str, restricted_dir: Path) -> str | None:
+    if _IS_WINDOWS and os.name != "nt":
+        return f"受限 shell 禁止访问任务目录外路径：{token}"
+    path = Path(token)
+    win_path = PureWindowsPath(token)
+    if _IS_WINDOWS and (win_path.drive or win_path.root) and not path.is_absolute():
+        return f"受限 shell 禁止访问任务目录外路径：{token}"
     if path.is_absolute():
         try:
             resolved = path.resolve()
         except OSError:
             resolved = path
-        if resolved != restricted_dir and restricted_dir not in resolved.parents:
+        try:
+            restricted_resolved = restricted_dir.resolve()
+        except OSError:
+            restricted_resolved = restricted_dir
+        if resolved != restricted_resolved and restricted_resolved not in resolved.parents:
             return f"受限 shell 禁止访问任务目录外路径：{token}"
     return None
 
@@ -1092,4 +1127,12 @@ def _validate_restricted_token(token: str, restricted_dir: Path) -> str | None:
 def _looks_like_path(token: str) -> bool:
     if token in {".", ".."}:
         return True
+    if _IS_WINDOWS:
+        win_path = PureWindowsPath(token)
+        return (
+            "\\" in token
+            or "/" in token
+            or bool(win_path.drive)
+            or token.startswith((".", "~"))
+        )
     return "/" in token or token.startswith((".", "~"))

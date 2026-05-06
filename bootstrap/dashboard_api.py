@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import importlib.util
 import logging
 import json
@@ -584,6 +584,19 @@ def _run_esbuild(cmd: list[str], ts_path: Path, js_path: Path, name: str) -> Non
         logger.warning("插件面板编译异常 (%s): %s", name, exc)
 
 
+def _resolve_plugin_dir(plugins_root: Path, plugin_id: str) -> Path:
+    if not plugin_id or "/" in plugin_id or "\\" in plugin_id:
+        raise HTTPException(status_code=400, detail="invalid plugin id")
+    win_path = PureWindowsPath(plugin_id)
+    if Path(plugin_id).is_absolute() or win_path.drive or win_path.root:
+        raise HTTPException(status_code=400, detail="invalid plugin id")
+    plugin_dir = (plugins_root / plugin_id).resolve()
+    root = plugins_root.resolve()
+    if plugin_dir.parent != root:
+        raise HTTPException(status_code=400, detail="invalid plugin id")
+    return plugin_dir
+
+
 async def _compile_pending_plugins_async() -> None:
     with _pending_plugins_lock:
         if not _pending_plugins:
@@ -721,19 +734,17 @@ def create_dashboard_app(
 
     @app.get("/plugins/{plugin_id}/panel.js")
     def get_plugin_panel_js(plugin_id: str) -> FileResponse:
-        if "/" in plugin_id or ".." in plugin_id:
-            raise HTTPException(status_code=400, detail="invalid plugin id")
-        _build_plugin_panel_js(project_root, plugins_root / plugin_id)
-        js_path = plugins_root / plugin_id / "dashboard_panel.js"
+        plugin_dir = _resolve_plugin_dir(plugins_root, plugin_id)
+        _build_plugin_panel_js(project_root, plugin_dir)
+        js_path = plugin_dir / "dashboard_panel.js"
         if not js_path.exists():
             raise HTTPException(status_code=404, detail="plugin panel not found")
         return FileResponse(js_path, media_type="application/javascript")
 
     @app.get("/plugins/{plugin_id}/panel.css")
     def get_plugin_panel_css(plugin_id: str) -> FileResponse:
-        if "/" in plugin_id or ".." in plugin_id:
-            raise HTTPException(status_code=400, detail="invalid plugin id")
-        css_path = plugins_root / plugin_id / "dashboard_panel.css"
+        plugin_dir = _resolve_plugin_dir(plugins_root, plugin_id)
+        css_path = plugin_dir / "dashboard_panel.css"
         if not css_path.exists():
             raise HTTPException(status_code=404, detail="plugin panel css not found")
         return FileResponse(css_path, media_type="text/css")

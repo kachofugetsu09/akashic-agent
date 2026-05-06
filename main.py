@@ -124,7 +124,6 @@ if __name__ == "__main__":
     config_path = "config.toml"
     workspace: Path | None = None
     force = "--force" in args
-    with_fitbit = "--with-fitbit" in args
     dashboard_host = "0.0.0.0"
     dashboard_port = 2236
 
@@ -159,7 +158,6 @@ if __name__ == "__main__":
             config_path=config_path,
             workspace=workspace or _default_workspace(),
             force=force,
-            with_fitbit=with_fitbit,
         )
         _print_init_summary(summary)
         sys.exit(0)
