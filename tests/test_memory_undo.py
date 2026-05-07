@@ -4,15 +4,23 @@ import json
 from pathlib import Path
 
 from memory2.store import MemoryStore2
+from plugins.default_memory.engine import DefaultMemoryEngine
 
 
 def _item_id(result: str) -> str:
     return result.split(":", 1)[1]
 
 
+def _engine(store: MemoryStore2) -> DefaultMemoryEngine:
+    engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
+    engine._v2_store = store
+    return engine
+
+
 def test_undo_marks_direct_source_memory_superseded(tmp_path: Path):
     store = MemoryStore2(tmp_path / "memory2.db")
     try:
+        engine = _engine(store)
         item_id = _item_id(
             store.upsert_item(
                 memory_type="preference",
@@ -22,7 +30,7 @@ def test_undo_marks_direct_source_memory_superseded(tmp_path: Path):
             )
         )
 
-        result = store.undo_by_message_sources(["cli:1:1"])
+        result = engine.undo_by_message_sources(["cli:1:1"])
 
         assert result["affected_ids"] == [item_id]
         assert store.get_items_by_ids([item_id])[0]["status"] == "superseded"
@@ -33,6 +41,7 @@ def test_undo_marks_direct_source_memory_superseded(tmp_path: Path):
 def test_undo_dry_run_does_not_change_memory_status(tmp_path: Path):
     store = MemoryStore2(tmp_path / "memory2.db")
     try:
+        engine = _engine(store)
         item_id = _item_id(
             store.upsert_item(
                 memory_type="preference",
@@ -42,7 +51,7 @@ def test_undo_dry_run_does_not_change_memory_status(tmp_path: Path):
             )
         )
 
-        result = store.undo_by_message_sources(["cli:1:1"], dry_run=True)
+        result = engine.undo_by_message_sources(["cli:1:1"], dry_run=True)
 
         assert result["affected_ids"] == [item_id]
         assert store.get_items_by_ids([item_id])[0]["status"] == "active"
@@ -53,6 +62,7 @@ def test_undo_dry_run_does_not_change_memory_status(tmp_path: Path):
 def test_undo_marks_consolidation_window_memory_superseded(tmp_path: Path):
     store = MemoryStore2(tmp_path / "memory2.db")
     try:
+        engine = _engine(store)
         base = json.dumps(["cli:1:0", "cli:1:1", "cli:1:2"], ensure_ascii=False)
         history_id = _item_id(
             store.upsert_item(
@@ -71,7 +81,7 @@ def test_undo_marks_consolidation_window_memory_superseded(tmp_path: Path):
             )
         )
 
-        result = store.undo_by_message_sources(["cli:1:1"])
+        result = engine.undo_by_message_sources(["cli:1:1"])
 
         assert set(result["affected_ids"]) == {history_id, profile_id}
         assert result["rollback_source_ids"] == ["cli:1:0", "cli:1:1", "cli:1:2"]
@@ -84,6 +94,7 @@ def test_undo_marks_consolidation_window_memory_superseded(tmp_path: Path):
 def test_undo_restores_old_memory_replaced_by_affected_new_memory(tmp_path: Path):
     store = MemoryStore2(tmp_path / "memory2.db")
     try:
+        engine = _engine(store)
         old_id = _item_id(
             store.upsert_item(
                 memory_type="preference",
@@ -105,7 +116,7 @@ def test_undo_restores_old_memory_replaced_by_affected_new_memory(tmp_path: Path
         store.mark_superseded_batch([old_id])
         store.record_replacements(old_items=[old_item], new_item=new_item, source_ref="cli:1:4")
 
-        result = store.undo_by_message_sources(["cli:1:4"])
+        result = engine.undo_by_message_sources(["cli:1:4"])
 
         assert result["affected_ids"] == [new_id]
         assert result["restored_ids"] == [old_id]

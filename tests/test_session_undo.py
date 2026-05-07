@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from plugins.plugin_undo.plugin import _find_last_passive_turn, _undo_last_turn
 from session.manager import SessionManager
 
 
@@ -29,16 +30,23 @@ def _saved_manager(tmp_path: Path, *, turns: int, standalone_frame: bool = True)
     return manager
 
 
+def _last_turn_message_ids(manager: SessionManager) -> list[str]:
+    session = manager.get_or_create("cli:1")
+    target = _find_last_passive_turn(session.messages)
+    assert target is not None
+    delete_indices, _, _ = target
+    return [str(session.messages[i]["id"]) for i in delete_indices]
+
+
 def test_undo_deletes_context_user_assistant_three_rows(tmp_path: Path):
     manager = _saved_manager(tmp_path, turns=2)
     session = manager.get_or_create("cli:1")
     session.last_consolidated = 6
     manager.save(session)
-    preview = manager.preview_last_turn_undo("cli:1")
-    assert preview is not None
-    assert preview.message_ids == ["cli:1:3", "cli:1:4", "cli:1:5"]
+    message_ids = _last_turn_message_ids(manager)
+    assert message_ids == ["cli:1:3", "cli:1:4", "cli:1:5"]
 
-    result = _run(manager.undo_last_turn("cli:1", expected_message_ids=preview.message_ids))
+    result = _run(_undo_last_turn(manager, "cli:1", expected_message_ids=message_ids))
 
     assert result is not None
     assert result.deleted_ids == ["cli:1:3", "cli:1:4", "cli:1:5"]
@@ -52,14 +60,14 @@ def test_undo_uses_rollback_source_ids_for_consolidated_window_start(tmp_path: P
     session = manager.get_or_create("cli:1")
     session.last_consolidated = 6
     manager.save(session)
-    preview = manager.preview_last_turn_undo("cli:1")
-    assert preview is not None
+    message_ids = _last_turn_message_ids(manager)
 
     result = _run(
-        manager.undo_last_turn(
+        _undo_last_turn(
+            manager,
             "cli:1",
             rollback_source_ids=["cli:1:0", "cli:1:1", "cli:1:2", "cli:1:3", "cli:1:4", "cli:1:5"],
-            expected_message_ids=preview.message_ids,
+            expected_message_ids=message_ids,
         )
     )
 
@@ -73,10 +81,9 @@ def test_undo_keeps_cursor_when_target_is_after_consolidated_prefix(tmp_path: Pa
     session = manager.get_or_create("cli:1")
     session.last_consolidated = 6
     manager.save(session)
-    preview = manager.preview_last_turn_undo("cli:1")
-    assert preview is not None
+    message_ids = _last_turn_message_ids(manager)
 
-    result = _run(manager.undo_last_turn("cli:1", expected_message_ids=preview.message_ids))
+    result = _run(_undo_last_turn(manager, "cli:1", expected_message_ids=message_ids))
 
     assert result is not None
     assert result.deleted_ids == ["cli:1:6", "cli:1:7", "cli:1:8"]
@@ -85,11 +92,10 @@ def test_undo_keeps_cursor_when_target_is_after_consolidated_prefix(tmp_path: Pa
 
 def test_undo_deletes_user_assistant_when_frame_is_extra(tmp_path: Path):
     manager = _saved_manager(tmp_path, turns=1, standalone_frame=False)
-    preview = manager.preview_last_turn_undo("cli:1")
-    assert preview is not None
-    assert preview.message_ids == ["cli:1:0", "cli:1:1"]
+    message_ids = _last_turn_message_ids(manager)
+    assert message_ids == ["cli:1:0", "cli:1:1"]
 
-    result = _run(manager.undo_last_turn("cli:1", expected_message_ids=preview.message_ids))
+    result = _run(_undo_last_turn(manager, "cli:1", expected_message_ids=message_ids))
 
     assert result is not None
     assert result.deleted_ids == ["cli:1:0", "cli:1:1"]
@@ -98,10 +104,9 @@ def test_undo_deletes_user_assistant_when_frame_is_extra(tmp_path: Path):
 
 def test_undo_does_not_reuse_deleted_tail_message_ids(tmp_path: Path):
     manager = _saved_manager(tmp_path, turns=1)
-    preview = manager.preview_last_turn_undo("cli:1")
-    assert preview is not None
+    message_ids = _last_turn_message_ids(manager)
 
-    result = _run(manager.undo_last_turn("cli:1", expected_message_ids=preview.message_ids))
+    result = _run(_undo_last_turn(manager, "cli:1", expected_message_ids=message_ids))
     assert result is not None
     assert result.deleted_ids == ["cli:1:0", "cli:1:1", "cli:1:2"]
 

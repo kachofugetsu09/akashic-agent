@@ -7,27 +7,13 @@ import pytest
 
 from agent.plugins.context import PluginContext, PluginKVStore
 from plugins.plugin_undo.plugin import PluginUndo, UndoCommandModule
-
-
-class _SessionManager:
-    def __init__(self) -> None:
-        self.undo_calls: list[dict[str, object]] = []
-
-    async def undo_last_turn(self, session_key: str, **kwargs):
-        resolver = kwargs.get("rollback_source_resolver")
-        rollback_source_ids = resolver(["cli:1:0", "cli:1:1", "cli:1:2"]) if callable(resolver) else []
-        self.undo_calls.append({"session_key": session_key, **kwargs})
-        return SimpleNamespace(
-            deleted_ids=["cli:1:0", "cli:1:1", "cli:1:2"],
-            rollback_source_ids=rollback_source_ids,
-            last_consolidated_before=3,
-            last_consolidated_after=0,
-        )
+from session.manager import SessionManager
 
 
 class _MemoryEngine:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_real_undo: bool = False) -> None:
         self.calls: list[dict[str, object]] = []
+        self.fail_real_undo = fail_real_undo
 
     def undo_by_message_sources(
         self,
@@ -36,6 +22,8 @@ class _MemoryEngine:
         dry_run: bool = False,
     ) -> dict[str, object]:
         self.calls.append({"message_ids": list(message_ids), "dry_run": dry_run})
+        if self.fail_real_undo and not dry_run:
+            raise RuntimeError("memory cleanup failed")
         return {
             "affected_ids": ["mem1"],
             "restored_ids": ["old1"],
@@ -46,7 +34,12 @@ class _MemoryEngine:
 @pytest.mark.asyncio
 async def test_undo_command_aborts_without_running_llm(tmp_path):
     plugin = PluginUndo()
-    session_manager = _SessionManager()
+    session_manager = SessionManager(tmp_path)
+    session = session_manager.get_or_create("cli:1")
+    session.add_message("user", '<system-reminder data-system-context-frame="true">内部</system-reminder>')
+    session.add_message("user", "u0")
+    session.add_message("assistant", "a0")
+    session_manager.save(session)
     memory_engine = _MemoryEngine()
     plugin.context = PluginContext(
         event_bus=None,
@@ -60,7 +53,7 @@ async def test_undo_command_aborts_without_running_llm(tmp_path):
     module = UndoCommandModule(plugin)
     state = SimpleNamespace(
         session_key="cli:1",
-        session=object(),
+        session=session,
         msg=SimpleNamespace(
             content="/undo",
             channel="cli",
@@ -75,8 +68,37 @@ async def test_undo_command_aborts_without_running_llm(tmp_path):
     ctx = result.slots["session:ctx"]
     assert ctx.abort is True
     assert "已撤销上一轮对话" in ctx.abort_reply
-    assert callable(session_manager.undo_calls[0]["rollback_source_resolver"])
     assert [call["dry_run"] for call in memory_engine.calls] == [True, False]
+    assert session_manager.get_or_create("cli:1").messages == []
+
+
+@pytest.mark.asyncio
+async def test_undo_reports_memory_cleanup_failure_after_session_delete(tmp_path, caplog):
+    plugin = PluginUndo()
+    session_manager = SessionManager(tmp_path)
+    session = session_manager.get_or_create("cli:1")
+    session.add_message("user", "u0")
+    session.add_message("assistant", "a0")
+    session_manager.save(session)
+    memory_engine = _MemoryEngine(fail_real_undo=True)
+    plugin.context = PluginContext(
+        event_bus=None,
+        tool_registry=None,
+        plugin_id="plugin_undo",
+        plugin_dir=tmp_path,
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        session_manager=session_manager,
+        memory_engine=memory_engine,
+    )
+
+    with caplog.at_level("ERROR", logger="plugin.undo"):
+        reply = await plugin.undo("cli:1")
+
+    assert "已撤销上一轮对话，但记忆清理失败" in reply
+    assert session_manager.get_or_create("cli:1").messages == []
+    assert [call["dry_run"] for call in memory_engine.calls] == [True, False]
+    assert "deleted_ids=['cli:1:0', 'cli:1:1']" in caplog.text
+    assert "'affected_ids': ['mem1']" in caplog.text
 
 
 def test_undo_plugin_registers_telegram_command():

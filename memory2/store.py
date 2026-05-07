@@ -150,22 +150,6 @@ def _json_embedding(raw: object) -> list[float] | None:
     return cast(list[float], json.loads(str(raw)))
 
 
-def _source_ref_message_ids(source_ref: str) -> list[str]:
-    raw = str(source_ref or "").strip()
-    if not raw:
-        return []
-    base = raw.split("#", 1)[0].strip()
-    if not base.startswith("["):
-        return []
-    try:
-        loaded = json.loads(base)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(loaded, list):
-        return []
-    return [str(item).strip() for item in loaded if str(item).strip()]
-
-
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     va = np.array(a, dtype=np.float32)
     vb = np.array(b, dtype=np.float32)
@@ -1652,110 +1636,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         self._vec_delete(rowids)
         self._db.commit()
         return cur.rowcount
-
-    def undo_by_message_sources(
-        self,
-        message_ids: list[str],
-        *,
-        dry_run: bool = False,
-    ) -> dict[str, object]:
-        clean_ids = [str(item).strip() for item in message_ids if str(item).strip()]
-        if not clean_ids:
-            return {
-                "affected_ids": [],
-                "restored_ids": [],
-                "rollback_source_ids": [],
-            }
-        target_ids = set(clean_ids)
-        with self._lock:
-            rows = self._db.execute(
-                """
-                SELECT id, source_ref
-                FROM memory_items
-                WHERE COALESCE(source_ref, '') != ''
-                """
-            ).fetchall()
-            affected_ids: set[str] = set()
-            rollback_source_ids: set[str] = set()
-            for item_id, source_ref in rows:
-                source = str(source_ref or "").strip()
-                base_ids = _source_ref_message_ids(source)
-                if source in target_ids:
-                    affected_ids.add(str(item_id))
-                    rollback_source_ids.add(source)
-                    continue
-                if base_ids and target_ids.intersection(base_ids):
-                    affected_ids.add(str(item_id))
-                    rollback_source_ids.update(base_ids)
-
-            if affected_ids and not dry_run:
-                now = _now_iso()
-                self._db.executemany(
-                    "UPDATE memory_items SET status='superseded', updated_at=? WHERE id=?",
-                    [(now, item_id) for item_id in sorted(affected_ids)],
-                )
-            restored_ids = self._restore_replacements_for_undo(
-                affected_ids,
-                dry_run=dry_run,
-            )
-            if not dry_run:
-                self._db.commit()
-        return {
-            "affected_ids": sorted(affected_ids),
-            "restored_ids": sorted(restored_ids),
-            "rollback_source_ids": sorted(rollback_source_ids),
-        }
-
-    def _restore_replacements_for_undo(
-        self,
-        affected_ids: set[str],
-        *,
-        dry_run: bool = False,
-    ) -> set[str]:
-        if not affected_ids:
-            return set()
-        placeholders = ",".join("?" for _ in affected_ids)
-        rows = self._db.execute(
-            f"""
-            SELECT DISTINCT old_item_id
-            FROM memory_replacements
-            WHERE new_item_id IN ({placeholders})
-            """,
-            tuple(sorted(affected_ids)),
-        ).fetchall()
-        old_ids = {str(row[0]) for row in rows if str(row[0]).strip()}
-        restored: set[str] = set()
-        now = _now_iso()
-        for old_id in sorted(old_ids):
-            active_replacement = self._db.execute(
-                """
-                SELECT 1
-                FROM memory_replacements r
-                JOIN memory_items m ON m.id = r.new_item_id
-                WHERE r.old_item_id = ?
-                  AND r.new_item_id NOT IN ({})
-                  AND m.status = 'active'
-                LIMIT 1
-                """.format(",".join("?" for _ in affected_ids)),
-                tuple([old_id, *sorted(affected_ids)]),
-            ).fetchone()
-            if active_replacement is not None:
-                continue
-            if dry_run:
-                old_row = self._db.execute(
-                    "SELECT 1 FROM memory_items WHERE id=? AND status='superseded'",
-                    (old_id,),
-                ).fetchone()
-                if old_row is not None:
-                    restored.add(old_id)
-                continue
-            cur = self._db.execute(
-                "UPDATE memory_items SET status='active', updated_at=? WHERE id=? AND status='superseded'",
-                (now, old_id),
-            )
-            if cur.rowcount:
-                restored.add(old_id)
-        return restored
 
     def has_item_by_source_ref(
         self,
