@@ -11,6 +11,12 @@ def _item_id(result: str) -> str:
     return result.split(":", 1)[1]
 
 
+def _result_list(result: dict[str, object], key: str) -> list[str]:
+    value = result[key]
+    assert isinstance(value, list)
+    return [str(item) for item in value]
+
+
 def _engine(store: MemoryStore2) -> DefaultMemoryEngine:
     engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
     engine._v2_store = store
@@ -32,7 +38,7 @@ def test_undo_marks_direct_source_memory_superseded(tmp_path: Path):
 
         result = engine.undo_by_message_sources(["cli:1:1"])
 
-        assert result["affected_ids"] == [item_id]
+        assert _result_list(result, "affected_ids") == [item_id]
         assert store.get_items_by_ids([item_id])[0]["status"] == "superseded"
     finally:
         store.close()
@@ -53,7 +59,7 @@ def test_undo_dry_run_does_not_change_memory_status(tmp_path: Path):
 
         result = engine.undo_by_message_sources(["cli:1:1"], dry_run=True)
 
-        assert result["affected_ids"] == [item_id]
+        assert _result_list(result, "affected_ids") == [item_id]
         assert store.get_items_by_ids([item_id])[0]["status"] == "active"
     finally:
         store.close()
@@ -83,8 +89,8 @@ def test_undo_marks_consolidation_window_memory_superseded(tmp_path: Path):
 
         result = engine.undo_by_message_sources(["cli:1:1"])
 
-        assert set(result["affected_ids"]) == {history_id, profile_id}
-        assert result["rollback_source_ids"] == ["cli:1:0", "cli:1:1", "cli:1:2"]
+        assert set(_result_list(result, "affected_ids")) == {history_id, profile_id}
+        assert _result_list(result, "rollback_source_ids") == ["cli:1:0", "cli:1:1", "cli:1:2"]
         rows = store.get_items_by_ids([history_id, profile_id])
         assert [row["status"] for row in rows] == ["superseded", "superseded"]
     finally:
@@ -118,8 +124,8 @@ def test_undo_restores_old_memory_replaced_by_affected_new_memory(tmp_path: Path
 
         result = engine.undo_by_message_sources(["cli:1:4"])
 
-        assert result["affected_ids"] == [new_id]
-        assert result["restored_ids"] == [old_id]
+        assert _result_list(result, "affected_ids") == [new_id]
+        assert _result_list(result, "restored_ids") == [old_id]
         old_row, new_row = store.get_items_by_ids([old_id, new_id])
         assert old_row["status"] == "active"
         assert new_row["status"] == "superseded"
