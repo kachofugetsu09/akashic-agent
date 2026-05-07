@@ -402,6 +402,8 @@ def build_core_runtime(
         event_bus=event_bus,
         tool_registry=tools,
         workspace=workspace,
+        session_manager=session_manager,
+        memory_engine=memory_runtime.engine,
     )
 
     return CoreRuntime(

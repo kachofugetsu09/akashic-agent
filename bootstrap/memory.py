@@ -172,5 +172,5 @@ def build_memory_admin_runtime(
 
 
 def _memory_keep_count(window: int) -> int:
-    aligned_window = max(6, ((max(1, window) + 5) // 6) * 6)
+    aligned_window = max(4, ((max(1, window) + 3) // 4) * 4)
     return aligned_window // 2

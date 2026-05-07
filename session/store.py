@@ -48,6 +48,7 @@ class SessionStore:
                 )
                 """
             )
+            self._ensure_next_seq_values()
             self._ensure_fts()
             self._conn.commit()
 
@@ -62,6 +63,28 @@ class SessionStore:
             self._conn.execute(
                 "ALTER TABLE sessions ADD COLUMN last_proactive_at TEXT"
             )
+        if "next_seq" not in existing:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN next_seq INTEGER NOT NULL DEFAULT 0"
+            )
+
+    def _ensure_next_seq_values(self) -> None:
+        rows = self._conn.execute(
+            "SELECT key, next_seq FROM sessions"
+        ).fetchall()
+        for row in rows:
+            session_key = str(row["key"])
+            current = int(row["next_seq"] or 0)
+            seq_row = self._conn.execute(
+                "SELECT COALESCE(MAX(seq) + 1, 0) AS next_seq FROM messages WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            required = int((seq_row["next_seq"] if seq_row else 0) or 0)
+            if current < required:
+                self._conn.execute(
+                    "UPDATE sessions SET next_seq = ? WHERE key = ?",
+                    (required, session_key),
+                )
 
     def _ensure_fts(self) -> None:
         try:
@@ -534,14 +557,18 @@ class SessionStore:
 
     def next_seq(self, session_key: str) -> int:
         with self._lock:
-            row = self._conn.execute(
-                "SELECT COALESCE(MAX(seq), -1) AS m FROM messages WHERE session_key = ?",
+            meta = self._conn.execute(
+                "SELECT next_seq FROM sessions WHERE key = ?",
                 (session_key,),
             ).fetchone()
-        max_seq = row["m"] if row is not None else -1
-        if max_seq is None:
-            max_seq = -1
-        return int(max_seq) + 1
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(seq) + 1, 0) AS next_seq FROM messages WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+        from_messages = int((row["next_seq"] if row else 0) or 0)
+        if meta is None:
+            return from_messages
+        return max(int(meta["next_seq"] or 0), from_messages)
 
     def insert_message(
         self,
@@ -566,6 +593,14 @@ class SessionStore:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (message_id, session_key, seq, role, content, tool_chain_payload, extra_payload, ts),
+            )
+            self._conn.execute(
+                """
+                UPDATE sessions
+                SET next_seq = CASE WHEN next_seq < ? THEN ? ELSE next_seq END
+                WHERE key = ?
+                """,
+                (int(seq) + 1, int(seq) + 1, session_key),
             )
             self._conn.commit()
         row = {
@@ -750,6 +785,57 @@ class SessionStore:
                     (now, str(row["session_key"])),
                 )
             self._conn.commit()
+        return int(cur.rowcount or 0)
+
+    def delete_session_messages_and_update_cursor(
+        self,
+        session_key: str,
+        *,
+        ids: list[str],
+        last_consolidated: int,
+    ) -> int:
+        clean_ids = [str(message_id).strip() for message_id in ids if str(message_id).strip()]
+        if not clean_ids:
+            return 0
+        placeholders = ",".join("?" for _ in clean_ids)
+        now = datetime.now().astimezone().isoformat()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                seq_rows = self._conn.execute(
+                    f"""
+                    SELECT seq
+                    FROM messages
+                    WHERE session_key = ? AND id IN ({placeholders})
+                    """,
+                    tuple([session_key, *clean_ids]),
+                ).fetchall()
+                next_seq = (
+                    max(int(row["seq"]) for row in seq_rows) + 1
+                    if seq_rows
+                    else 0
+                )
+                cur = self._conn.execute(
+                    f"""
+                    DELETE FROM messages
+                    WHERE session_key = ? AND id IN ({placeholders})
+                    """,
+                    tuple([session_key, *clean_ids]),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE sessions
+                    SET last_consolidated = ?,
+                        updated_at = ?,
+                        next_seq = CASE WHEN next_seq < ? THEN ? ELSE next_seq END
+                    WHERE key = ?
+                    """,
+                    (int(last_consolidated), now, next_seq, next_seq, session_key),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
         return int(cur.rowcount or 0)
 
     def fetch_by_ids_with_context(self, ids: list[str], context: int) -> list[dict[str, Any]]:

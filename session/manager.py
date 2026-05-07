@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
     build_context_frame_message,
+    is_context_frame,
 )
 from session.store import SessionStore
 
@@ -147,6 +149,23 @@ def _align_to_user_boundary(messages: list[dict[str, Any]]) -> list[dict[str, An
 def _safe_filename(key: str) -> str:
     """Convert a session key to a safe filename."""
     return re.sub(r"[^\w\-]", "_", key)
+
+
+@dataclass
+class UndoLastTurnPreview:
+    message_ids: list[str]
+    target_user_id: str
+    target_assistant_id: str
+
+
+@dataclass
+class UndoLastTurnResult:
+    deleted_ids: list[str]
+    target_user_id: str
+    target_assistant_id: str
+    rollback_index: int
+    last_consolidated_before: int
+    last_consolidated_after: int
 
 
 @dataclass
@@ -293,6 +312,60 @@ class Session:
         self.updated_at = datetime.now()
         self.last_consolidated = 0
         self.consolidation_requested = False
+
+
+def _is_context_frame_message(message: dict[str, Any]) -> bool:
+    if message.get("role") != "user":
+        return False
+    return is_context_frame(str(message.get("content") or ""))
+
+
+def _is_real_user_message(message: dict[str, Any]) -> bool:
+    return message.get("role") == "user" and not _is_context_frame_message(message)
+
+
+def _is_passive_assistant_message(message: dict[str, Any]) -> bool:
+    return message.get("role") == "assistant" and not bool(message.get("proactive"))
+
+
+def _find_last_passive_turn(
+    messages: list[dict[str, Any]],
+) -> tuple[list[int], int, int] | None:
+    for assistant_index in range(len(messages) - 1, -1, -1):
+        if not _is_passive_assistant_message(messages[assistant_index]):
+            continue
+        user_index = assistant_index - 1
+        while user_index >= 0 and _is_context_frame_message(messages[user_index]):
+            user_index -= 1
+        if user_index < 0 or not _is_real_user_message(messages[user_index]):
+            continue
+        delete_indices = [user_index, assistant_index]
+        context_index = user_index - 1
+        while context_index >= 0 and _is_context_frame_message(messages[context_index]):
+            delete_indices.insert(0, context_index)
+            context_index -= 1
+        return delete_indices, user_index, assistant_index
+    return None
+
+
+def _compute_rollback_index(
+    messages: list[dict[str, Any]],
+    *,
+    delete_indices: list[int],
+    old_last_consolidated: int,
+    rollback_source_ids: list[str],
+) -> int:
+    if not delete_indices:
+        return min(old_last_consolidated, len(messages))
+    rollback_index = min(delete_indices)
+    if rollback_index >= old_last_consolidated:
+        return min(old_last_consolidated, len(messages) - len(delete_indices))
+    source_ids = {str(item).strip() for item in rollback_source_ids if str(item).strip()}
+    for index, message in enumerate(messages):
+        msg_id = str(message.get("id") or "").strip()
+        if msg_id and msg_id in source_ids:
+            rollback_index = min(rollback_index, index)
+    return max(0, min(rollback_index, old_last_consolidated))
 
 
 class SessionManager:
@@ -445,6 +518,91 @@ class SessionManager:
 
     def invalidate(self, key: str) -> None:
         self._cache.pop(key, None)
+
+    def preview_last_turn_undo(self, session_key: str) -> UndoLastTurnPreview | None:
+        session = self.get_or_create(session_key)
+        target = _find_last_passive_turn(session.messages)
+        if target is None:
+            return None
+        delete_indices, user_index, assistant_index = target
+        message_ids = [
+            str(session.messages[i].get("id") or "")
+            for i in delete_indices
+            if str(session.messages[i].get("id") or "").strip()
+        ]
+        if len(message_ids) != len(delete_indices):
+            return None
+        return UndoLastTurnPreview(
+            message_ids=message_ids,
+            target_user_id=str(session.messages[user_index].get("id") or ""),
+            target_assistant_id=str(session.messages[assistant_index].get("id") or ""),
+        )
+
+    async def undo_last_turn(
+        self,
+        session_key: str,
+        *,
+        rollback_source_ids: list[str] | None = None,
+        expected_message_ids: list[str] | None = None,
+        rollback_source_resolver: Callable[[list[str]], list[str]] | None = None,
+    ) -> UndoLastTurnResult | None:
+        async with self._lock(session_key):
+            session = self.get_or_create(session_key)
+            target = _find_last_passive_turn(session.messages)
+            if target is None:
+                return None
+            delete_indices, user_index, assistant_index = target
+            deleted_ids = [
+                str(session.messages[i].get("id") or "")
+                for i in delete_indices
+                if str(session.messages[i].get("id") or "").strip()
+            ]
+            if len(deleted_ids) != len(delete_indices):
+                return None
+            expected = [
+                str(message_id).strip()
+                for message_id in (expected_message_ids or [])
+                if str(message_id).strip()
+            ]
+            if expected and expected != deleted_ids:
+                return None
+            if rollback_source_resolver is not None:
+                rollback_source_ids = rollback_source_resolver(list(deleted_ids))
+            target_user_id = str(session.messages[user_index].get("id") or "")
+            target_assistant_id = str(session.messages[assistant_index].get("id") or "")
+            old_last = max(0, int(session.last_consolidated))
+            rollback_index = _compute_rollback_index(
+                session.messages,
+                delete_indices=delete_indices,
+                old_last_consolidated=old_last,
+                rollback_source_ids=rollback_source_ids or [],
+            )
+            remaining = [
+                msg for i, msg in enumerate(session.messages) if i not in set(delete_indices)
+            ]
+            deleted_before = sum(1 for i in delete_indices if i < rollback_index)
+            new_last = max(0, rollback_index - deleted_before)
+            new_last = min(new_last, len(remaining))
+            deleted_count = self._store.delete_session_messages_and_update_cursor(
+                session.key,
+                ids=deleted_ids,
+                last_consolidated=new_last,
+            )
+            if deleted_count != len(deleted_ids):
+                self.invalidate(session.key)
+                return None
+            session.messages = remaining
+            session.last_consolidated = new_last
+            session.updated_at = datetime.now()
+            self._cache[session.key] = session
+            return UndoLastTurnResult(
+                deleted_ids=deleted_ids,
+                target_user_id=target_user_id,
+                target_assistant_id=target_assistant_id,
+                rollback_index=rollback_index,
+                last_consolidated_before=old_last,
+                last_consolidated_after=new_last,
+            )
 
     def list_sessions(self) -> list[dict[str, Any]]:
         sessions = self._store.list_sessions()

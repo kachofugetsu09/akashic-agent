@@ -1077,6 +1077,10 @@ class MarkdownMemoryMaintenance:
                 history_entries,
                 draft.source_ref,
             )
+        if draft.archive_all:
+            session.last_consolidated = 0
+        else:
+            session.last_consolidated = draft.window.consolidate_up_to
         if self._event_bus is not None:
             await self._event_bus.emit(
                 ConsolidationCommitted(
@@ -1087,10 +1091,6 @@ class MarkdownMemoryMaintenance:
                     conversation=draft.conversation,
                 )
             )
-        if draft.archive_all:
-            session.last_consolidated = 0
-        else:
-            session.last_consolidated = draft.window.consolidate_up_to
 
     async def refresh_recent_turns(
         self,

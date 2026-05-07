@@ -769,6 +769,17 @@ class DefaultMemoryEngine:
     def delete_items_batch(self, ids: list[str]) -> int:
         return self._require_v2_store().delete_items_batch(ids)
 
+    def undo_by_message_sources(
+        self,
+        message_ids: list[str],
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, object]:
+        return self._require_v2_store().undo_by_message_sources(
+            message_ids,
+            dry_run=dry_run,
+        )
+
     def find_similar_items_for_dashboard(
         self,
         item_id: str,

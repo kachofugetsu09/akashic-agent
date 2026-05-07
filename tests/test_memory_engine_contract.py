@@ -369,7 +369,7 @@ async def test_default_memory_engine_consolidates_ready_session_from_lifecycle()
     await event_bus.aclose()
 
 
-async def test_markdown_consolidation_keeps_window_when_consumer_fails(tmp_path: Path):
+async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_path: Path):
     event_bus = EventBus()
 
     async def _fail_consolidation(_event):
@@ -407,7 +407,7 @@ async def test_markdown_consolidation_keeps_window_when_consumer_fails(tmp_path:
     with pytest.raises(RuntimeError, match="vector write failed"):
         await maintenance.consolidate(ConsolidateRequest(session=session))
 
-    assert session.last_consolidated == 0
+    assert session.last_consolidated == 6
     assert "用户测试记忆" in (tmp_path / "memory" / "HISTORY.md").read_text(
         encoding="utf-8"
     )

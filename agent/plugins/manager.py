@@ -50,11 +50,15 @@ class PluginManager:
         event_bus: EventBus,
         tool_registry: Any = None,
         workspace: Path | None = None,
+        session_manager: Any = None,
+        memory_engine: Any = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
         self._tool_registry = tool_registry
         self._workspace = workspace
+        self._session_manager = session_manager
+        self._memory_engine = memory_engine
         self._loaded: set[str] = set()
         self._tool_hooks: list[ToolHook] = []
         self._before_turn_modules_early: list[object] = []
@@ -214,6 +218,8 @@ class PluginManager:
             kv_store=PluginKVStore(plugin_dir / ".kv.json"),
             config=plugin_config,
             workspace=self._workspace,
+            session_manager=self._session_manager,
+            memory_engine=self._memory_engine,
         )
         plugin_registry.register_instance(mp, instance)
         self._bind_handlers(instance, mp)

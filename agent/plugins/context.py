@@ -18,6 +18,8 @@ class PluginContext:
     kv_store: "PluginKVStore"
     config: "PluginConfig | None" = None
     workspace: Path | None = None
+    session_manager: Any = None
+    memory_engine: Any = None
 
 
 class PluginKVStore:
