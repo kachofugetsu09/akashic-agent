@@ -1002,7 +1002,7 @@ class DefaultReasoner(Reasoner):
         # 1. 初始化消息上下文、本轮工具轨迹。
         messages = initial_messages
         tools_used: list[str] = []
-        tool_chain: list[dict] = []
+        tool_chain: list[dict[str, Any]] = []
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
         streamed = False
@@ -1096,7 +1096,7 @@ class DefaultReasoner(Reasoner):
                 tool_batch = tool_call_batch_snapshot(response.tool_calls)
 
                 # 6. 逐个执行本轮工具调用。
-                iter_calls: list[dict] = []
+                iter_calls: list[dict[str, Any]] = []
                 for tool_batch_index, tool_call in enumerate(response.tool_calls):
                     # 6.1 deferred 工具未解锁时，先回填 select: 引导错误。
                     if visible_names is not None and tool_call.name not in visible_names:
@@ -1645,7 +1645,7 @@ class DefaultReasoner(Reasoner):
         *,
         reply: str,
         tools_used: list[str],
-        tool_chain: list[dict],
+        tool_chain: list[dict[str, Any]],
         visible_names: set[str] | None,
         thinking: str | None,
         streamed: bool,
