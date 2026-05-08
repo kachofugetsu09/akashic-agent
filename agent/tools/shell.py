@@ -263,8 +263,8 @@ class ShellTool(Tool):
             "- 网络命令（curl/wget/httpie/xh）仅允许访问公网 HTTP(S)，且禁止上传/写文件\n"
             "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
             "- 输出超过 30000 字符时自动截断\n"
-            "- 前台总超时默认 60 秒，最大 600 秒\n"
-            "- 命令超过 15 秒未完成时默认自动转为后台任务，返回 background_task_id；若本次设置了 timeout，后台会继续沿用这个截止时间\n"
+            "- 前台阻塞总超时默认 60 秒，最大 600 秒\n"
+            "- 命令超过 15 秒未完成时默认自动转为后台任务，返回 background_task_id；只有显式设置 timeout，后台才会继续沿用这个硬截止时间\n"
             "- 只有用户明确说“阻塞”时，才设置 auto_promote=false，并显式配置 timeout\n"
             "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台模式只有显式传 timeout 时才会按 timeout 自动终止\n"
             "- 收到 background_task_id 后，调用 task_output 查看输出和耗时，"
@@ -290,7 +290,10 @@ class ShellTool(Tool):
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": f"超时秒数，默认 {_DEFAULT_TIMEOUT}，最大 {_MAX_TIMEOUT}",
+                    "description": (
+                        f"前台阻塞或显式硬超时秒数，默认 {_DEFAULT_TIMEOUT}，最大 {_MAX_TIMEOUT}；"
+                        "自动转后台后只有显式传入才生效"
+                    ),
                     "minimum": 1,
                     "maximum": _MAX_TIMEOUT,
                 },
@@ -368,7 +371,7 @@ class ShellTool(Tool):
             cast(Callable[[str], None], on_data) if callable(on_data) else None
         )
         return await self._execute_with_auto_promote(
-            command, cwd, env, timeout, data_callback, auto_promote
+            command, cwd, env, timeout, timeout_specified, data_callback, auto_promote
         )
 
     async def _execute_background(
@@ -425,6 +428,7 @@ class ShellTool(Tool):
         cwd: Path | None,
         env: dict[str, str],
         timeout: int,
+        timeout_specified: bool,
         on_data: Callable[[str], None] | None,
         auto_promote: bool,
     ) -> str:
@@ -437,6 +441,7 @@ class ShellTool(Tool):
 
         wall_start_ms = int(time.time() * 1000)
         start_mono = time.monotonic()
+        hard_timeout_s = timeout if timeout_specified else None
 
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -448,7 +453,7 @@ class ShellTool(Tool):
             pump_task=None,
             started_at=start_mono,
             wall_started_at_ms=wall_start_ms,
-            timeout_s=timeout,
+            timeout_s=hard_timeout_s,
         )
         pump = asyncio.create_task(_bg_pump(proc, log_path, bg, on_data))
         bg.pump_task = pump
@@ -458,7 +463,7 @@ class ShellTool(Tool):
             await asyncio.wait_for(asyncio.shield(pump), timeout=fg_wait_timeout)
         except asyncio.TimeoutError:
             elapsed_s = time.monotonic() - start_mono
-            if not auto_promote or elapsed_s >= timeout:
+            if not auto_promote or (timeout_specified and elapsed_s >= timeout):
                 return await self._finalize_timed_out_process(
                     command, proc, pump, log_path, start_mono
                 )
@@ -476,7 +481,7 @@ class ShellTool(Tool):
                     "status": "running",
                     "output_path": log_path,
                     "started_at_ms": wall_start_ms,
-                    "timeout_s": timeout,
+                    "timeout_s": hard_timeout_s,
                     "exit_code": None,
                     "interrupted": False,
                     "auto_promoted": True,
@@ -655,16 +660,13 @@ class ShellTaskOutputTool(Tool):
         if task is None:
             return _err(f"任务 {task_id!r} 不存在或已清理")
 
-        if _is_background_timeout(task):
-            _bg_kill(task_id)
-            return _err(f"任务 {task_id!r} 已超时（{task.timeout_s}s），已自动终止")
-        if time.monotonic() - task.started_at > _BG_TTL_S:
-            _bg_kill(task_id)
-            return _err(f"任务 {task_id!r} 已超出 TTL（{_BG_TTL_S}s），已自动终止")
-
         pump_task = task.pump_task
         if pump_task is None:
             return _err(f"任务 {task_id!r} 状态异常：缺少输出泵")
+        if _is_background_timeout(task):
+            _bg_kill(task_id)
+            return _err(f"任务 {task_id!r} 已超时（{task.timeout_s}s），已自动终止")
+
         if block and not pump_task.done():
             try:
                 await asyncio.wait_for(
@@ -674,6 +676,17 @@ class ShellTaskOutputTool(Tool):
                 pass
 
         done = pump_task.done()
+        if done and time.monotonic() - task.started_at > _BG_TTL_S:
+            if task_id in _BG_REGISTRY:
+                del _BG_REGISTRY[task_id]
+            if task.timeout_handle is not None:
+                task.timeout_handle.cancel()
+            try:
+                os.unlink(task.log_path)
+            except OSError:
+                pass
+            return _err(f"任务 {task_id!r} 已超出 TTL（{_BG_TTL_S}s），已清理")
+
         exit_code = task.proc.returncode if done else None
         status = "done" if done else "running"
 

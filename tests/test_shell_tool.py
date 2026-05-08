@@ -602,22 +602,28 @@ async def test_task_stop_deletes_log_file(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_task_output_ttl_deletes_log_file(monkeypatch, tmp_path):
-    """TTL 到期时 _bg_kill 应同时删除日志文件。"""
+    """TTL 到期只清理已完成任务的注册表和日志。"""
     import agent.tools.shell as shell_mod
 
-    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
+    killed = []
+    monkeypatch.setattr(
+        "agent.tools.shell._kill_process_tree",
+        lambda proc: killed.append(proc.pid),
+    )
 
     log_path = tmp_path / "ttl.log"
     log_path.write_text("old output", encoding="utf-8")
 
     fake_proc = _FakeProc(stdout="", stderr="", returncode=0)
     fake_proc.pid = 2222
+    pump = asyncio.ensure_future(asyncio.sleep(0))
+    await pump
 
     task_id = "shell_ttllog"
     shell_mod._BG_REGISTRY[task_id] = shell_mod._BackgroundTask(
         proc=fake_proc,
         log_path=str(log_path),
-        pump_task=asyncio.ensure_future(asyncio.sleep(100)),
+        pump_task=pump,
         started_at=shell_mod.time.monotonic() - shell_mod._BG_TTL_S - 1,
         wall_started_at_ms=0,
     )
@@ -626,7 +632,10 @@ async def test_task_output_ttl_deletes_log_file(monkeypatch, tmp_path):
     result = json.loads(await tool.execute(task_id=task_id))
 
     assert "error" in result
-    assert not log_path.exists(), "TTL 到期后日志文件应已被删除"
+    assert "TTL" in result["error"]
+    assert not log_path.exists(), "已完成任务 TTL 到期后日志文件应已被删除"
+    assert task_id not in shell_mod._BG_REGISTRY
+    assert killed == []
 
 
 @pytest.mark.asyncio
@@ -638,30 +647,49 @@ async def test_task_stop_not_found():
 
 
 @pytest.mark.asyncio
-async def test_task_output_ttl_expired(monkeypatch):
-    """TTL 到期的任务在 task_output 时被自动终止并返回 error。"""
+async def test_task_output_ttl_does_not_kill_running_task_without_timeout(
+    monkeypatch, tmp_path
+):
+    """未显式 timeout 的 running 任务超过 TTL 后仍只返回状态，不杀进程。"""
     import agent.tools.shell as shell_mod
 
-    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
+    killed = []
+    monkeypatch.setattr(
+        "agent.tools.shell._kill_process_tree",
+        lambda proc: killed.append(proc.pid),
+    )
 
-    fake_proc = _FakeProc(stdout="", stderr="", returncode=0)
+    log_path = tmp_path / "running_ttl.log"
+    log_path.write_text("still running", encoding="utf-8")
+
+    fake_proc = _FakeProc(stdout="", stderr="", returncode=None)
     fake_proc.pid = 1234
+    pump = asyncio.ensure_future(asyncio.sleep(100))
 
     task_id = "shell_expired"
     shell_mod._BG_REGISTRY[task_id] = shell_mod._BackgroundTask(
         proc=fake_proc,
-        log_path="/tmp/fake_expired.log",
-        pump_task=asyncio.ensure_future(asyncio.sleep(100)),
+        log_path=str(log_path),
+        pump_task=pump,
         started_at=shell_mod.time.monotonic() - shell_mod._BG_TTL_S - 1,
         wall_started_at_ms=0,
+        timeout_s=None,
     )
 
     tool = ShellTaskOutputTool()
-    result = json.loads(await tool.execute(task_id=task_id))
+    try:
+        result = json.loads(await tool.execute(task_id=task_id))
 
-    assert "error" in result
-    assert "TTL" in result["error"]
-    assert task_id not in shell_mod._BG_REGISTRY
+        assert result["status"] == "running"
+        assert result["exit_code"] is None
+        assert "still running" in result["output"]
+        assert task_id in shell_mod._BG_REGISTRY
+        assert log_path.exists()
+        assert killed == []
+    finally:
+        shell_mod._BG_REGISTRY.pop(task_id, None)
+        pump.cancel()
+        await asyncio.gather(pump, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -755,9 +783,49 @@ async def test_shell_auto_promotes_to_background_after_fg_threshold(monkeypatch)
     assert task_id is not None, "应返回 background_task_id"
     assert result["status"] == "running"
     assert result.get("auto_promoted") is True
+    assert result["timeout_s"] is None
     assert task_id in shell_mod._BG_REGISTRY
+    assert shell_mod._BG_REGISTRY[task_id].timeout_s is None
+    assert shell_mod._BG_REGISTRY[task_id].timeout_handle is None
 
     # 清理
+    shell_mod._BG_REGISTRY.pop(task_id, None)
+
+
+@pytest.mark.asyncio
+async def test_shell_auto_promote_preserves_explicit_timeout(monkeypatch):
+    import agent.tools.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "_FG_THRESHOLD", 0)
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        proc = _FakeProc(stdout="", stderr="", returncode=None)
+
+        async def _wait_forever():
+            await asyncio.Future()
+
+        proc.wait = _wait_forever
+        return proc
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
+
+    tool = ShellTool()
+    result = json.loads(
+        await tool.execute(command="sleep infinity", description="显式超时", timeout=30)
+    )
+
+    task_id = result["background_task_id"]
+    assert result["timeout_s"] == 30
+    assert shell_mod._BG_REGISTRY[task_id].timeout_s == 30
+    assert shell_mod._BG_REGISTRY[task_id].timeout_handle is not None
+
+    handle = shell_mod._BG_REGISTRY[task_id].timeout_handle
+    if handle is not None:
+        handle.cancel()
     shell_mod._BG_REGISTRY.pop(task_id, None)
 
 
