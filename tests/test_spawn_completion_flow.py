@@ -7,8 +7,8 @@ from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
 from agent.provider import LLMResponse
 from agent.tools.registry import ToolRegistry
-from bus.events import SpawnCompletionItem
-from bus.internal_events import SpawnCompletionEvent
+from bus.events import ShellCompletionItem, SpawnCompletionItem
+from bus.internal_events import ShellCompletionEvent, SpawnCompletionEvent
 from tests.memory_fakes import FakeMemoryEngine
 from session.manager import SessionManager
 
@@ -117,3 +117,57 @@ async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path
     )
     assert "已重试一次，不再重试" in joined_messages
     assert "调用 spawn 重试" not in joined_messages
+
+
+@pytest.mark.asyncio
+async def test_shell_completion_persists_assistant_only_without_llm(tmp_path):
+    provider = _Provider()
+    session_manager = SessionManager(tmp_path)
+    tools = ToolRegistry()
+    loop = AgentLoop(
+        AgentLoopDeps(
+            bus=MagicMock(),
+            provider=cast(Any, provider),
+            tools=tools,
+            session_manager=session_manager,
+            workspace=tmp_path,
+            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+        ),
+        AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
+    )
+
+    session = session_manager.get_or_create("telegram:123")
+    session.add_message("user", "跑一下测试")
+    session.add_message("assistant", "我开始跑，结束后告诉你。")
+    session_manager.save(session)
+
+    item = ShellCompletionItem(
+        channel="telegram",
+        chat_id="123",
+        event=ShellCompletionEvent(
+            task_id="shell_abc",
+            description="测试",
+            command="pytest tests/test_shell_tool.py -q",
+            status="completed",
+            exit_code=0,
+            duration_ms=1680,
+            output="31 passed",
+            output_path="/tmp/shell.log",
+        ),
+    )
+
+    response = await loop._process(item)
+    updated = session_manager.get_or_create("telegram:123")
+
+    assert response.channel == "telegram"
+    assert response.chat_id == "123"
+    assert "后台命令已完成：测试" in response.content
+    assert "31 passed" in response.content
+    assert provider.calls == []
+    assert len(updated.messages) == 3
+    assert updated.messages[-1]["role"] == "assistant"
+    assert "后台命令已完成：测试" in updated.messages[-1]["content"]
+    assert all(
+        message["content"] != "[后台 shell 完成] 测试"
+        for message in updated.messages
+    )

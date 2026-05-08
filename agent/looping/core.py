@@ -34,7 +34,13 @@ __all__ = [
     "AgentLoop",
 ]
 from bus.event_bus import EventBus
-from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
+from bus.events import (
+    InboundItem,
+    InboundMessage,
+    OutboundMessage,
+    ShellCompletionItem,
+    SpawnCompletionItem,
+)
 from bus.events_lifecycle import (
     StreamDeltaReady,
     TurnStarted,
@@ -81,6 +87,10 @@ def _supports_stream_events(channel: str, chat_id: str) -> bool:
 def _item_content(item: InboundItem) -> str:
     if isinstance(item, InboundMessage):
         return item.content
+    if isinstance(item, ShellCompletionItem):
+        event = item.event
+        label = event.description or event.command or event.task_id
+        return f"[后台 shell 完成] {label}"
     return f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
 
 
@@ -503,6 +513,12 @@ class AgentLoop:
                     original_metadata=dict(item.metadata or {}),
                 )
             case SpawnCompletionItem():
+                return TurnInterruptState(
+                    session_key=key,
+                    original_user_message=_item_content(item),
+                    original_metadata={},
+                )
+            case ShellCompletionItem():
                 return TurnInterruptState(
                     session_key=key,
                     original_user_message=_item_content(item),

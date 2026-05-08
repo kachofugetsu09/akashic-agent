@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from agent.policies.delegation import SpawnDecision
-    from bus.internal_events import SpawnCompletionEvent
+    from bus.internal_events import ShellCompletionEvent, SpawnCompletionEvent
 
 
 def _empty_media() -> list[str]:
@@ -63,4 +63,18 @@ class SpawnCompletionItem:
         return f"{self.channel}:{self.chat_id}"
 
 
-InboundItem = InboundMessage | SpawnCompletionItem
+@dataclass
+class ShellCompletionItem:
+    """后台 shell 完成后的内部回灌项。"""
+
+    channel: str
+    chat_id: str
+    event: "ShellCompletionEvent"
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    @property
+    def session_key(self) -> str:
+        return f"{self.channel}:{self.chat_id}"
+
+
+InboundItem = InboundMessage | SpawnCompletionItem | ShellCompletionItem

@@ -11,8 +11,8 @@ from agent.lifecycle.types import PromptRenderResult
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.core.runner import CoreRunner, CoreRunnerDeps
-from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
-from bus.internal_events import SpawnCompletionEvent
+from bus.events import InboundMessage, OutboundMessage, ShellCompletionItem, SpawnCompletionItem
+from bus.internal_events import ShellCompletionEvent, SpawnCompletionEvent
 
 
 @pytest.mark.asyncio
@@ -119,3 +119,97 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     pr_kwargs = pipeline_mock.post_reasoning.await_args.kwargs
     assert pr_kwargs["dispatch_outbound"] is False
     runner._agent_core.process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_core_runner_handles_shell_completion_without_llm():
+    pipeline_mock = SimpleNamespace(
+        post_reasoning=AsyncMock(
+            return_value=OutboundMessage(
+                channel="telegram",
+                chat_id="123",
+                content="shell done",
+            )
+        )
+    )
+    runner = CoreRunner(
+        CoreRunnerDeps(
+            agent_core=cast(
+                Any,
+                SimpleNamespace(
+                    process=AsyncMock(),
+                    pipeline=pipeline_mock,
+                ),
+            ),
+        )
+    )
+    item = ShellCompletionItem(
+        channel="telegram",
+        chat_id="123",
+        event=ShellCompletionEvent(
+            task_id="shell_1",
+            description="跑测试",
+            command="pytest",
+            status="completed",
+            exit_code=0,
+            duration_ms=123,
+            output="31 passed",
+            output_path="/tmp/shell.log",
+        ),
+    )
+
+    out = await runner.process(item, "telegram:123", dispatch_outbound=False)
+
+    assert out.content == "shell done"
+    pipeline_mock.post_reasoning.assert_awaited_once()
+    kwargs = pipeline_mock.post_reasoning.await_args.kwargs
+    assert kwargs["dispatch_outbound"] is False
+    assert kwargs["turn_result"].reply.startswith("后台命令已完成：跑测试")
+    assert kwargs["turn_result"].tools_used == []
+    assert kwargs["msg"].metadata["omit_user_turn"] is True
+    assert kwargs["msg"].metadata["skip_post_memory"] is True
+    runner._agent_core.process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_core_runner_skips_consumed_shell_completion():
+    import agent.tools.shell as shell_mod
+
+    pipeline_mock = SimpleNamespace(post_reasoning=AsyncMock())
+    runner = CoreRunner(
+        CoreRunnerDeps(
+            agent_core=cast(
+                Any,
+                SimpleNamespace(
+                    process=AsyncMock(),
+                    pipeline=pipeline_mock,
+                ),
+            ),
+        )
+    )
+    task_id = "shell_consumed"
+    shell_mod._mark_shell_completion_consumed(task_id)
+    item = ShellCompletionItem(
+        channel="telegram",
+        chat_id="123",
+        event=ShellCompletionEvent(
+            task_id=task_id,
+            description="跑测试",
+            command="pytest",
+            status="completed",
+            exit_code=0,
+            duration_ms=123,
+            output="31 passed",
+            output_path="/tmp/shell.log",
+        ),
+    )
+
+    try:
+        out = await runner.process(item, "telegram:123", dispatch_outbound=True)
+
+        assert out.content == ""
+        assert out.metadata["shell_completion_consumed"] is True
+        pipeline_mock.post_reasoning.assert_not_awaited()
+        runner._agent_core.process.assert_not_awaited()
+    finally:
+        shell_mod._CONSUMED_COMPLETIONS.discard(task_id)

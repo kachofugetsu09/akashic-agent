@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 from agent.tools.filesystem import EditFileTool, WriteFileTool
 from agent.tools.forget_memory import ForgetMemoryTool
@@ -12,6 +12,7 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
+from bus.queue import MessageBus
 
 _MEMORY_TOOL_NAMES = {"recall_memory", "memorize", "forget_memory"}
 
@@ -19,12 +20,13 @@ _MEMORY_TOOL_NAMES = {"recall_memory", "memorize", "forget_memory"}
 def register_common_meta_tools(
     tools: ToolRegistry,
     readonly_tools: dict[str, Tool],
-    session_store,
+    session_store: Any,
     push_tool: MessagePushTool | None = None,
+    bus: MessageBus | None = None,
 ) -> MessagePushTool:
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
     tools.register(
-        ShellTool(),
+        ShellTool(completion_bus=bus),
         always_on=True,
         risk="external-side-effect",
         search_hint="终端 脚本 bash 命令",

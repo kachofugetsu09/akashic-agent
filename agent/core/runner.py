@@ -3,8 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from agent.looping.handlers import process_spawn_completion_event
-from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
+from agent.looping.handlers import (
+    process_shell_completion_event,
+    process_spawn_completion_event,
+)
+from bus.events import (
+    InboundItem,
+    InboundMessage,
+    OutboundMessage,
+    ShellCompletionItem,
+    SpawnCompletionItem,
+)
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import AgentCore
@@ -74,6 +83,13 @@ class CoreRunner:
                         dispatch_outbound=dispatch_outbound,
                     )
                 raise RuntimeError("spawn completion 缺少处理依赖")
+            case ShellCompletionItem():
+                return await process_shell_completion_event(
+                    item=msg,
+                    key=key,
+                    pipeline=self._agent_core.pipeline,
+                    dispatch_outbound=dispatch_outbound,
+                )
             case InboundMessage():
                 # 2. 默认普通被动消息统一走 AgentCore。
                 return await self._agent_core.process(

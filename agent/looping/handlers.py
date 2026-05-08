@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING, cast
 from agent.core.runtime_support import AgentLoopRunner, PromptRenderRunner, TurnRunResult
 from agent.lifecycle.types import PromptRenderInput
 from agent.looping.ports import SessionServices
-from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
+from agent.tools.shell import is_shell_completion_consumed
+from bus.events import InboundMessage, OutboundMessage, ShellCompletionItem, SpawnCompletionItem
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import PassiveTurnPipeline
@@ -124,6 +125,62 @@ async def process_spawn_completion_event(
             reply=final_content,
             tools_used=tools_used,
             tool_chain=parsed_tool_chain,
+        ),
+        dispatch_outbound=dispatch_outbound,
+    )
+
+
+async def process_shell_completion_event(
+    *,
+    item: ShellCompletionItem,
+    key: str,
+    pipeline: "PassiveTurnPipeline",
+    dispatch_outbound: bool = True,
+) -> OutboundMessage:
+    event = item.event
+    label = event.description.strip() or event.command.strip() or event.task_id
+    if is_shell_completion_consumed(event.task_id):
+        return OutboundMessage(
+            channel=item.channel,
+            chat_id=item.chat_id,
+            content="",
+            metadata={"shell_completion_consumed": True},
+        )
+    status_label = {
+        "completed": "完成",
+        "failed": "失败",
+        "timeout": "超时",
+    }.get(event.status, event.status or "完成")
+    exit_code = "null" if event.exit_code is None else str(event.exit_code)
+    output = event.output.strip() or "（无输出）"
+    truncation = "\n输出已截断，完整日志见 output_path。" if event.output_truncated else ""
+    reply = (
+        f"后台命令已{status_label}：{label}\n"
+        f"退出码：{exit_code}\n"
+        f"耗时：{event.duration_ms}ms\n"
+        f"日志：{event.output_path}\n\n"
+        f"输出：\n{output}{truncation}"
+    )
+    pseudo_msg = InboundMessage(
+        channel=item.channel,
+        sender="shell",
+        chat_id=item.chat_id,
+        content=f"[后台 shell 完成] {label}",
+        timestamp=item.timestamp,
+        media=[],
+        metadata={
+            "omit_user_turn": True,
+            "skip_post_memory": True,
+            "shell_completion": True,
+        },
+    )
+    return await pipeline.post_reasoning(
+        msg=pseudo_msg,
+        session_key=key,
+        turn_result=TurnRunResult(
+            reply=reply,
+            tools_used=[],
+            tool_chain=[],
         ),
         dispatch_outbound=dispatch_outbound,
     )

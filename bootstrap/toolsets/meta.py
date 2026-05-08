@@ -32,6 +32,7 @@ class CommonMetaToolsetProvider(ToolsetProvider):
             self._readonly_tools,
             deps.session_store,
             push_tool=deps.push_tool,
+            bus=deps.bus,
         )
 
         # 主模型不支持多模态时，注册视觉工具供模型调用

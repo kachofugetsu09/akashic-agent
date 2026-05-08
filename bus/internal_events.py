@@ -15,3 +15,16 @@ class SpawnCompletionEvent:
     result: str
     retry_count: int = 0
     profile: str = ""
+
+
+@dataclass(frozen=True)
+class ShellCompletionEvent:
+    task_id: str
+    description: str
+    command: str
+    status: str
+    exit_code: int | None
+    duration_ms: int
+    output: str
+    output_path: str
+    output_truncated: bool = False
