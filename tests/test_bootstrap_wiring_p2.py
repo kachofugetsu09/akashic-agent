@@ -660,6 +660,7 @@ async def test_wire_turn_lifecycle_registers_afterstep_progress_handler():
             channel="telegram",
             chat_id="1",
             iteration=0,
+            context_tokens_estimate=0,
             tools_called=("noop",),
             partial_reply="部分回复",
             tools_used_so_far=("a", "b"),

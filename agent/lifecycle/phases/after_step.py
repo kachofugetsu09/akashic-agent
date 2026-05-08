@@ -19,6 +19,7 @@ AfterStepModules: TypeAlias = list[PhaseModule[AfterStepFrame]]
 _CTX_SLOT = "step:ctx"
 _TELEMETRY_PREFIX = "step:telemetry:"
 _COLLECTED_TELEMETRY_SLOT = "step:telemetry_collected"
+_EARLY_STOP_REASON_SLOT = "step:early_stop_reason"
 
 
 class _CopyInputToCtxModule:
@@ -57,7 +58,16 @@ class _CollectAfterStepExportSlotsModule:
         }
         extra_metadata = dict(ctx.extra_metadata)
         extra_metadata.update(new_exports)
-        frame.slots[_CTX_SLOT] = replace(ctx, extra_metadata=extra_metadata)
+        early_stop_reason = frame.slots.get(_EARLY_STOP_REASON_SLOT)
+        if isinstance(early_stop_reason, str) and early_stop_reason.strip():
+            frame.slots[_CTX_SLOT] = replace(
+                ctx,
+                early_stop=True,
+                early_stop_reason=early_stop_reason.strip(),
+                extra_metadata=extra_metadata,
+            )
+        else:
+            frame.slots[_CTX_SLOT] = replace(ctx, extra_metadata=extra_metadata)
         frame.slots[_COLLECTED_TELEMETRY_SLOT] = collected | set(new_exports)
         return frame
 

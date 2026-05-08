@@ -181,6 +181,7 @@ async def test_lifecycle_on_after_step():
     lifecycle.on_after_step(handler)
     await bus.fanout(AfterStepCtx(
         session_key="k", channel="c", chat_id="ch", iteration=0,
+        context_tokens_estimate=0,
         tools_called=(), partial_reply="",
         tools_used_so_far=(), tool_chain_partial=(),
         partial_thinking=None, has_more=True,

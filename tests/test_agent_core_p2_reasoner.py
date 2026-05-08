@@ -4,7 +4,6 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
-import agent.core.passive_turn as passive_turn
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
@@ -14,6 +13,8 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from bus.event_bus import EventBus
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
+import plugins.context_pressure.plugin as context_pressure_plugin
+from plugins.context_pressure.plugin import ContextPressureStopModule
 
 
 class _DummyTool(Tool):
@@ -146,7 +147,7 @@ def test_default_reasoner_zero_max_iterations_is_unlimited():
 
 
 def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch):
-    monkeypatch.setattr(passive_turn, "_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS", 1)
+    monkeypatch.setattr(context_pressure_plugin, "_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS", 1)
     provider = _Provider(
         [
             LLMResponse(content="", tool_calls=[ToolCall("c1", "inflate_probe", {"value": 1})]),
@@ -173,6 +174,7 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
         tool_search_enabled=False,
         memory_window=40,
     )
+    reasoner.add_after_step_plugin_modules([ContextPressureStopModule()], [])
 
     result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
 
@@ -186,6 +188,42 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
     assert "还缺什么信息或步骤" in summary_messages
     assert "inflate_probe" in summary_messages
     assert len(result.metadata["tool_chain"]) == 1
+
+
+def test_default_reasoner_context_pressure_policy_lives_in_after_step_plugin(monkeypatch):
+    monkeypatch.setattr(context_pressure_plugin, "_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS", 1)
+    provider = _Provider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "inflate_probe", {"value": 1})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_InflateTool(), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(
+            model="m",
+            max_iterations=0,
+            max_tokens=512,
+        ),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "final"
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["tools"]
 
 
 def test_default_reasoner_observes_tool_lifecycle_events():

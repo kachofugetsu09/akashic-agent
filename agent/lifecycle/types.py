@@ -156,12 +156,15 @@ class AfterStepCtx:
     channel: str
     chat_id: str
     iteration: int
+    context_tokens_estimate: int
     tools_called: tuple[str, ...]
     partial_reply: str
     tools_used_so_far: tuple[str, ...]
     tool_chain_partial: tuple[dict[str, Any], ...]
     partial_thinking: str | None
     has_more: bool
+    early_stop: bool = False
+    early_stop_reason: str = ""
     extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
 

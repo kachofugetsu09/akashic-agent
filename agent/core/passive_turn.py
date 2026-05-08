@@ -102,8 +102,6 @@ logger = logging.getLogger(__name__)
 # └─ done
 
 # ── 被动 turn 内联常量 ──────────────────────────────────────────
-_MODEL_CONTEXT_WINDOW_TOKENS = 1_000_000
-_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = _MODEL_CONTEXT_WINDOW_TOKENS * 80 // 100
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
 _SUMMARY_MAX_TOKENS = 512
 _INCOMPLETE_SUMMARY_PROMPT = """当前任务需要先暂停继续调用工具，请直接输出给用户看的中文阶段性回复。
@@ -1397,19 +1395,6 @@ class DefaultReasoner(Reasoner):
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
                 tool_chain.append(tool_chain_group)
-                # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
-                _ = await self._after_step.run(AfterStepCtx(
-                    session_key=tool_event_session_key,
-                    channel=tool_event_channel,
-                    chat_id=tool_event_chat_id,
-                    iteration=iteration,
-                    tools_called=tuple(tc.name for tc in response.tool_calls),
-                    partial_reply=response.content or "",
-                    tools_used_so_far=tuple(tools_used),
-                    tool_chain_partial=tuple(tool_chain),
-                    partial_thinking=response.thinking,
-                    has_more=True,
-                ))
                 messages.append(
                     support.build_context_hint_message(
                         "loop_state",
@@ -1424,15 +1409,30 @@ class DefaultReasoner(Reasoner):
                     )
                 )
                 pressure_tokens = support.estimate_messages_tokens(messages)
-                if pressure_tokens > _CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS:
+                # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
+                after_step = await self._after_step.run(AfterStepCtx(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                    iteration=iteration,
+                    context_tokens_estimate=pressure_tokens,
+                    tools_called=tuple(tc.name for tc in response.tool_calls),
+                    partial_reply=response.content or "",
+                    tools_used_so_far=tuple(tools_used),
+                    tool_chain_partial=tuple(tool_chain),
+                    partial_thinking=response.thinking,
+                    has_more=True,
+                ))
+                if after_step.early_stop:
+                    reason = after_step.early_stop_reason or "after_step"
                     logger.warning(
-                        "[上下文阈值] tokens~=%d 超过阈值 %d，停止继续调用工具并收尾",
+                        "[插件收尾] reason=%s tokens~=%d，停止继续调用工具并收尾",
+                        reason,
                         pressure_tokens,
-                        _CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS,
                     )
                     summary = await self._summarize_incomplete_progress(
                         messages,
-                        reason="context_pressure",
+                        reason=reason,
                         iteration=iteration + 1,
                         tools_used=tools_used,
                     )
@@ -1494,6 +1494,7 @@ class DefaultReasoner(Reasoner):
                 channel=tool_event_channel,
                 chat_id=tool_event_chat_id,
                 iteration=iteration,
+                context_tokens_estimate=support.estimate_messages_tokens(messages),
                 tools_called=(),
                 partial_reply=response.content or "",
                 tools_used_so_far=tuple(tools_used),

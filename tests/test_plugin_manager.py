@@ -71,6 +71,7 @@ def _after_step_ctx(**overrides: object) -> AfterStepCtx:
         channel="cli",
         chat_id="123",
         iteration=0,
+        context_tokens_estimate=0,
         tools_called=(),
         partial_reply="",
         tools_used_so_far=(),
