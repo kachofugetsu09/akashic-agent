@@ -1018,7 +1018,14 @@ class DefaultReasoner(Reasoner):
                 "yes" if len(visible_names) == len(always_on) else "maybe",
             )
 
-        for iteration in range(self._llm_config.max_iterations):
+        iteration = -1
+        while True:
+            iteration += 1
+            if (
+                self._llm_config.max_iterations > 0
+                and iteration >= self._llm_config.max_iterations
+            ):
+                break
             # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
             step_ctx = await self._before_step.run(BeforeStepInput(
                 session_key=tool_event_session_key,

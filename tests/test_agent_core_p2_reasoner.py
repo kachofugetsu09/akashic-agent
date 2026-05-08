@@ -101,6 +101,40 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
 
 
+def test_default_reasoner_zero_max_iterations_is_unlimited():
+    provider = _Provider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "dummy", {})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c2", "dummy", {})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c3", "dummy", {})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tool = _DummyTool()
+    tools = ToolRegistry()
+    tools.register(tool, always_on=True)
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=0, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "final"
+    assert len(tool.calls) == 3
+    assert result.metadata["react_stats"]["iteration_count"] == 4
+
+
 def test_default_reasoner_observes_tool_lifecycle_events():
     provider = _Provider(
         [
