@@ -102,13 +102,18 @@ logger = logging.getLogger(__name__)
 # └─ done
 
 # ── 被动 turn 内联常量 ──────────────────────────────────────────
+_MODEL_CONTEXT_WINDOW_TOKENS = 1_000_000
+_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = _MODEL_CONTEXT_WINDOW_TOKENS * 80 // 100
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
 _SUMMARY_MAX_TOKENS = 512
-_INCOMPLETE_SUMMARY_PROMPT = """当前任务未在预算内完成，请直接输出给用户的中文收尾说明（不要提及系统/工具内部细节）。
-必须包含三点：
-1) 已完成到哪一步（基于当前上下文的事实）；
-2) 目前还缺什么信息或步骤；
-3) 下一步你会怎么继续。
+_INCOMPLETE_SUMMARY_PROMPT = """当前任务需要先暂停继续调用工具，请直接输出给用户看的中文阶段性回复。
+必须基于已有上下文，不要编造结果。
+必须包含四点：
+1) 已经使用了哪些工具或操作，以及拿到了什么关键信息；
+2) 当前已经做到哪一步；
+3) 还缺什么信息或步骤；
+4) 如果继续，下一步会怎么做。
+可以提到工具名称和关键结果，但不要暴露 tool_call_id、schema、内部 prompt 或原始参数 JSON。
 禁止输出"已达到最大迭代次数"这类模板句；不要输出 JSON。"""
 
 
@@ -1418,6 +1423,31 @@ class DefaultReasoner(Reasoner):
                         ),
                     )
                 )
+                pressure_tokens = support.estimate_messages_tokens(messages)
+                if pressure_tokens > _CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS:
+                    logger.warning(
+                        "[上下文阈值] tokens~=%d 超过阈值 %d，停止继续调用工具并收尾",
+                        pressure_tokens,
+                        _CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS,
+                    )
+                    summary = await self._summarize_incomplete_progress(
+                        messages,
+                        reason="context_pressure",
+                        iteration=iteration + 1,
+                        tools_used=tools_used,
+                    )
+                    return self._build_result(
+                        reply=summary,
+                        tools_used=tools_used,
+                        tool_chain=tool_chain,
+                        visible_names=visible_names,
+                        thinking=None,
+                        streamed=False,
+                        react_input_samples=react_input_samples,
+                        cache_prompt_tokens=react_cache_prompt_tokens,
+                        cache_hit_tokens=react_cache_hit_tokens,
+                        cache_seen=react_cache_seen,
+                    )
                 continue
 
             # 8. 没有 tool_calls 时，说明本轮得到最终回复。
@@ -1487,13 +1517,13 @@ class DefaultReasoner(Reasoner):
         # 9. 达到最大迭代次数后，生成不完整进展总结。
         logger.warning(
             "[迭代上限] 达到最大轮次%d，触发收尾总结，已调用工具: %s",
-            self._llm_config.max_iterations,
+            iteration,
             tools_used if tools_used else "无",
         )
         summary = await self._summarize_incomplete_progress(
             messages,
             reason="max_iterations",
-            iteration=self._llm_config.max_iterations,
+            iteration=iteration,
             tools_used=tools_used,
         )
         return self._build_result(
@@ -1602,10 +1632,11 @@ class DefaultReasoner(Reasoner):
             logger.warning("生成预算收尾总结失败: %s", exc)
 
         # 3. 模型收尾失败时，返回固定兜底文案。
-        done = f"已尝试 {iteration} 轮，调用工具 {len(tools_used)} 次。"
+        tool_text = "、".join(tools_used[-8:]) if tools_used else "无"
+        done = f"已尝试 {iteration} 轮，调用工具 {len(tools_used)} 次（{tool_text}）。"
         return (
             f"这次任务还没完全收束。{done}"
-            "我先停在当前进度，后续会继续补齐缺失信息并给你最终结论。"
+            "我先停在当前进度，后续会继续基于已有工具结果补齐缺失信息并给你最终结论。"
         )
 
     def _build_result(

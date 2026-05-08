@@ -103,7 +103,7 @@ class Config:
     api_key: str
     system_prompt: str
     max_tokens: int = 8192
-    max_iterations: int = 0
+    max_iterations: int = 10
     memory_window: int = 24
     base_url: str | None = None
     extra_body: dict = field(default_factory=dict)

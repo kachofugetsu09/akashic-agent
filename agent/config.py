@@ -100,7 +100,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         ),
         max_tokens=int(agent_cfg.get("max_tokens", data.get("max_tokens", 8192))),
         max_iterations=int(
-            agent_cfg.get("max_iterations", data.get("max_iterations", 0))
+            agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
         memory_window=int(
             agent_context.get("memory_window", data.get("memory_window", 24))

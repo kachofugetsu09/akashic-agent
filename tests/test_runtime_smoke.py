@@ -20,6 +20,7 @@ from agent.config import (
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
+    load_config,
 )
 from agent.memory import DEFAULT_SELF_MD
 from bus.event_bus import EventBus
@@ -91,6 +92,29 @@ def _write_config(path: Path, socket_path: Path) -> None:
         },
     }
     path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
+
+
+def test_load_config_keeps_internal_max_iterations_default(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+provider = "openai"
+
+[llm.main]
+model = "test-model"
+api_key = "test-key"
+
+[agent]
+system_prompt = "test"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg.max_iterations == 10
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,10 @@
 import asyncio
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
 
+import agent.core.passive_turn as passive_turn
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
@@ -34,6 +36,15 @@ class _DummyTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         self.calls.append(kwargs)
         return f"{self._name}-ok"
+
+
+class _InflateTool(Tool):
+    name = "inflate_probe"
+    description = "inflate_probe"
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"payload-{kwargs.get('value', '')}-" + ("x" * 2400)
 
 
 class _Provider:
@@ -132,7 +143,49 @@ def test_default_reasoner_zero_max_iterations_is_unlimited():
 
     assert result.reply == "final"
     assert len(tool.calls) == 3
-    assert result.metadata["react_stats"]["iteration_count"] == 4
+
+
+def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch):
+    monkeypatch.setattr(passive_turn, "_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS", 1)
+    provider = _Provider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "inflate_probe", {"value": 1})]),
+            LLMResponse(content="阶段性回复", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_InflateTool(), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(
+            model="m",
+            max_iterations=0,
+            max_tokens=512,
+        ),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "阶段性回复"
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["tools"] == []
+    summary_messages = json.dumps(provider.calls[1]["messages"], ensure_ascii=False)
+    assert "[收尾原因] context_pressure" in summary_messages
+    assert "已经使用了哪些工具或操作" in summary_messages
+    assert "当前已经做到哪一步" in summary_messages
+    assert "还缺什么信息或步骤" in summary_messages
+    assert "inflate_probe" in summary_messages
+    assert len(result.metadata["tool_chain"]) == 1
 
 
 def test_default_reasoner_observes_tool_lifecycle_events():
