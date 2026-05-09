@@ -4,8 +4,6 @@
 
 一个**会主动找你**的 AI 伙伴——不只是被动回答问题，还能根据你订阅的信息源主动判断"现在该不该发消息、发什么"，在空闲时自主执行后台任务。
 
-**[Proactive 主动推送](./_handbook/proactive-guide.md)** — **[Drift 空闲任务](./_handbook/drift-guide.md)**
-
 ---
 
 ## Quickstart
@@ -20,29 +18,57 @@ uv venv && uv pip install -r requirements.txt
 
 没有 uv？先 `pip install uv`。
 
-### 1. 初始化
+**1. 初始化**
 
 ```bash
 uv run python main.py setup    # 交互向导（推荐）
-# 或
 uv run python main.py init     # 非交互，CI/自动化用
 ```
 
-### 2. 填写 config.toml 最少配置
+**2. 填写 config.toml**
+
+推荐配置：DeepSeek 主模型 + Qwen 轻量/视觉/向量：
 
 ```toml
+[llm]
+provider = "deepseek"
+
 [llm.main]
-model = "deepseek-v4-flash"
+model = "deepseek-v4-flash"     # 主模型：推理强、速度快、价格低
 api_key = "sk-..."
+base_url = "https://api.deepseek.com/v1"
+enable_thinking = true          # 开启 reasoning
+multimodal = false              # DeepSeek 不支持图片，用 VL 工具补
+
+[llm.fast]
+model = "qwen-flash"            # 轻量模型：memory gate / query rewrite / HyDE
+api_key = "sk-..."
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[llm.vl]
+model = "qwen-vl-plus"          # 视觉：主模型 multimodal=false 时自动启用
+api_key = "sk-..."
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[memory]
+enabled = true
+engine = ""                     # 记忆引擎，留空 = default_memory 插件
+
+[memory.embedding]
+model = "text-embedding-v3"     # 向量模型
+api_key = "sk-..."
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [channels.telegram]
 token = "123456:ABC..."
 allow_from = ["your_username"]
 ```
 
-见 `config.example.toml` 完整模板。
+**个人推荐**：
+这个项目和 deepseekv4flash 以及 qwen 相性比较好，其他模型不保证效果。特别是一些连 xml 输出都做不好的国产模型。
+通信渠道推荐 telegram，提供了丰富好看的流式输出。
 
-### 3. 启动
+**3. 启动**
 
 ```bash
 uv run python main.py
@@ -52,40 +78,56 @@ uv run python main.py
 
 ---
 
-## 核心功能
-
-### 被动回复链路
-
-收到消息 → 记忆检索 → 工具调用 → 流式回复。每轮经过 6 个生命周期 Phase（BeforeTurn → BeforeReasoning → Reasoner → AfterReasoning → AfterTurn），插件可在各 Phase 通过 EventBus 或模块插入点介入。
-
-### Proactive 主动推送
-
-agent 定期检查你订阅的信息源，自主决定是否推送。
+## 系统全景
 
 ```
-proactive loop
-  ├── 自适应轮询（你的活跃度决定频率）
-  ├── 三路数据预取（alert / content / context）
-  ├── LLM 逐条评分分类（interesting / not_interesting）
-  └── 推送决策（去重 + 打扰检查 → 发送或跳过）
+你的消息 → [被动回复] ──→ agent loop ──→ 回复
+                │
+                ├── 记忆系统 ─── 每轮注入长期记忆 + 对话后 consolidation
+                │
+                └── 插件系统 ─── 拦截命令、注入协议、阻断工具、挂载新工具...
+
+[主动推送] ──→ 定期轮询 ──→ 三路数据 (alert/content/context) ──→ LLM 决策 ──→ 推送或跳过
+                │
+                └── [Drift] ──→ 没东西推时执行后台任务 (SKILL.md)
 ```
 
-三类数据通道：
-- **alert**：高优先级告警（心率异常、日历提醒），直接透传不评分
-- **content**：内容流（RSS 新闻、社交更新），逐条评分分类
-- **context**：背景上下文（睡眠状态、游戏在线），概率注入
+| 想看什么 | 文档 |
+|---------|------|
+| 怎么让 agent 主动推送消息、怎么配数据源 | [_handbook/proactive-guide.md](./_handbook/proactive-guide.md) |
+| 怎么写后台任务让 agent 空闲时自动干活 | [_handbook/drift-guide.md](./_handbook/drift-guide.md) |
+| MEMORY.md / SELF.md / consolidation / 记忆怎么流转 | [_handbook/memory-markdown.md](./_handbook/memory-markdown.md) |
+| 怎么写插件介入生命周期、注册工具 | [_handbook/plugins-tutorial.md](./_handbook/plugins-tutorial.md) |
 
-详见 [proactive-guide.md](./_handbook/proactive-guide.md)。
+---
 
-### Drift 空闲任务
+## 被动回复
 
-没有可推送内容时，agent 不空转——它会执行你定义的 drift skill：
+收到消息 → 记忆检索 → 工具调用 → 流式回复。每轮经过 6 个 Phase（BeforeTurn → BeforeReasoning → PromptRender → Reasoner → AfterReasoning → AfterTurn）。
 
-- **audit-dirty-memories** — 随机抽检长期记忆，回溯原文验证准确性
-- **explore-curiosity** — 补足用户画像空白，随口一问
-- **review-drift-gaps** — Drift 自我反思，跟踪停滞方向
+插件有 **4 种介入方式**：PhaseModule 链（14 个注入位置）、EventBus 装饰器（9 种事件）、`@on_tool_pre`（工具拦截）、`@tool`（注册工具）。见 [插件系统](./_handbook/plugins-tutorial.md)。
 
-详见 [drift-guide.md](./_handbook/drift-guide.md)。
+## 主动推送（Proactive）
+
+Agent 根据电量模型自适应调整轮询频率——你刚聊完时不烦你（8 分钟一次），半天没动静就加速到 1 分钟一次。每轮拉取三路 MCP 数据：
+
+- **alert** — 高优先级告警，直接透传
+- **content** — 内容流，逐条 LLM 评分分类
+- **context** — 背景上下文，概率注入做 fallback
+
+见 [Proactive 配置指南](./_handbook/proactive-guide.md)。
+
+## 记忆系统
+
+对话通过 **consolidation** 自动提取为结构化事实：HISTORY.md（时间线事件） + PENDING.md（待归档缓冲） + RECENT_CONTEXT.md（近期上下文摘要）。**Optimizer** 定时将 PENDING 归档到 MEMORY.md——中间隔一层是为了保护 prompt cache（MEMORY.md 全文注入 system prompt，高频修改会破坏缓存）。同时 `memory2.db`（向量层）提供语义检索。
+
+见 [记忆系统](./_handbook/memory-markdown.md)。
+
+## Drift 空闲任务
+
+没内容可推时 agent 不空转——执行你写的 `SKILL.md`（分步操作指南），比如审计长期记忆是否准确、补用户画像、自我诊断。
+
+见 [Drift 指南](./_handbook/drift-guide.md)。
 
 ---
 
@@ -96,21 +138,9 @@ uv run python main.py cli       # 连接运行中的 agent（TUI）
 uv run python main.py dashboard # 打开 Dashboard（默认 :2236）
 uv run python main.py --help    # 查看全部子命令
 
-pytest tests/                   # 单元测试
-akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/  # 场景测试
+pytest tests/
+akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
 ```
-
----
-
-## 配置图像能力
-
-| 路线 | 配置 | 说明 |
-|------|------|------|
-| A: 主模型多模态 | `multimodal = true`，`vl.model = ""` | 图片直接进主模型 |
-| B: 主模型 + VL 工具 | `multimodal = false`，`vl.model = "qwen-vl-plus"` | 推荐方案（DeepSeek + Qwen VL） |
-| C: 纯文本 | `multimodal = false`，`vl.model = ""` | 图片不可理解 |
-
----
 
 ## 工作区
 
