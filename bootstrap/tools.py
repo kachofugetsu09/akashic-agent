@@ -109,32 +109,25 @@ class CoreRuntime:
             await self.plugin_manager.load_all()
             logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
             self.loop.add_before_turn_plugin_modules(
-                self.plugin_manager.before_turn_modules_early,
-                self.plugin_manager.before_turn_modules_late,
+                self.plugin_manager.before_turn_modules,
             )
             self.loop.add_before_reasoning_plugin_modules(
-                self.plugin_manager.before_reasoning_modules_before_emit,
-                self.plugin_manager.before_reasoning_modules_after_emit,
+                self.plugin_manager.before_reasoning_modules,
             )
             self.loop.add_prompt_render_plugin_modules(
-                self.plugin_manager.prompt_render_modules_top,
-                self.plugin_manager.prompt_render_modules_bottom,
+                self.plugin_manager.prompt_render_modules,
             )
             self.loop.add_before_step_plugin_modules(
-                self.plugin_manager.before_step_modules_before_emit,
-                self.plugin_manager.before_step_modules_after_emit,
+                self.plugin_manager.before_step_modules,
             )
             self.loop.add_after_step_plugin_modules(
-                self.plugin_manager.after_step_modules_before_fanout,
-                self.plugin_manager.after_step_modules_after_fanout,
+                self.plugin_manager.after_step_modules,
             )
             self.loop.add_after_reasoning_plugin_modules(
-                self.plugin_manager.after_reasoning_modules_before_emit,
-                self.plugin_manager.after_reasoning_modules_before_persist,
+                self.plugin_manager.after_reasoning_modules,
             )
             self.loop.add_after_turn_plugin_modules(
-                self.plugin_manager.after_turn_modules_before_commit,
-                self.plugin_manager.after_turn_modules_before_fanout,
+                self.plugin_manager.after_turn_modules,
             )
             if self.plugin_manager.tool_hooks:
                 self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)

@@ -138,18 +138,12 @@ class AgentCoreDeps:
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
     history_window: int = 500
-    before_turn_plugin_modules_early: list[object] | None = None
-    before_turn_plugin_modules_late: list[object] | None = None
-    before_reasoning_plugin_modules_before_emit: list[object] | None = None
-    before_reasoning_plugin_modules_after_emit: list[object] | None = None
-    before_step_plugin_modules_before_emit: list[object] | None = None
-    before_step_plugin_modules_after_emit: list[object] | None = None
-    after_step_plugin_modules_before_fanout: list[object] | None = None
-    after_step_plugin_modules_after_fanout: list[object] | None = None
-    after_reasoning_plugin_modules_before_emit: list[object] | None = None
-    after_reasoning_plugin_modules_before_persist: list[object] | None = None
-    after_turn_plugin_modules_before_commit: list[object] | None = None
-    after_turn_plugin_modules_before_fanout: list[object] | None = None
+    before_turn_plugin_modules: list[object] | None = None
+    before_reasoning_plugin_modules: list[object] | None = None
+    before_step_plugin_modules: list[object] | None = None
+    after_step_plugin_modules: list[object] | None = None
+    after_reasoning_plugin_modules: list[object] | None = None
+    after_turn_plugin_modules: list[object] | None = None
 
 
 class AgentCore:
@@ -171,40 +165,27 @@ class AgentCore:
 
     def add_before_turn_plugin_modules(
         self,
-        early: list[object],
-        late: list[object],
+        modules: list[object],
     ) -> None:
-        self._passive_pipeline.add_before_turn_plugin_modules(early, late)
+        self._passive_pipeline.add_before_turn_plugin_modules(modules)
 
     def add_before_reasoning_plugin_modules(
         self,
-        before_emit: list[object],
-        after_emit: list[object],
+        modules: list[object],
     ) -> None:
-        self._passive_pipeline.add_before_reasoning_plugin_modules(
-            before_emit,
-            after_emit,
-        )
+        self._passive_pipeline.add_before_reasoning_plugin_modules(modules)
 
     def add_after_reasoning_plugin_modules(
         self,
-        before_emit: list[object],
-        before_persist: list[object],
+        modules: list[object],
     ) -> None:
-        self._passive_pipeline.add_after_reasoning_plugin_modules(
-            before_emit,
-            before_persist,
-        )
+        self._passive_pipeline.add_after_reasoning_plugin_modules(modules)
 
     def add_after_turn_plugin_modules(
         self,
-        before_commit: list[object],
-        before_fanout: list[object],
+        modules: list[object],
     ) -> None:
-        self._passive_pipeline.add_after_turn_plugin_modules(
-            before_commit,
-            before_fanout,
-        )
+        self._passive_pipeline.add_after_turn_plugin_modules(modules)
 
     async def process(
         self,
@@ -242,38 +223,20 @@ class PassiveTurnPipeline:
         self._reasoner = deps.reasoner
         add_before_step = getattr(self._reasoner, "add_before_step_plugin_modules", None)
         if add_before_step is not None:
-            add_before_step(
-                list(deps.before_step_plugin_modules_before_emit or []),
-                list(deps.before_step_plugin_modules_after_emit or []),
-            )
+            add_before_step(list(deps.before_step_plugin_modules or []))
         add_after_step = getattr(self._reasoner, "add_after_step_plugin_modules", None)
         if add_after_step is not None:
-            add_after_step(
-                list(deps.after_step_plugin_modules_before_fanout or []),
-                list(deps.after_step_plugin_modules_after_fanout or []),
-            )
+            add_after_step(list(deps.after_step_plugin_modules or []))
         self._outbound_port = deps.outbound_port or _NoopOutboundPort()
         self._history_window = deps.history_window
-        self._before_turn_plugin_modules_early = list(deps.before_turn_plugin_modules_early or [])
-        self._before_turn_plugin_modules_late = list(deps.before_turn_plugin_modules_late or [])
-        self._before_reasoning_plugin_modules_before_emit = list(
-            deps.before_reasoning_plugin_modules_before_emit or []
+        self._before_turn_plugin_modules = list(deps.before_turn_plugin_modules or [])
+        self._before_reasoning_plugin_modules = list(
+            deps.before_reasoning_plugin_modules or []
         )
-        self._before_reasoning_plugin_modules_after_emit = list(
-            deps.before_reasoning_plugin_modules_after_emit or []
+        self._after_reasoning_plugin_modules = list(
+            deps.after_reasoning_plugin_modules or []
         )
-        self._after_reasoning_plugin_modules_before_emit = list(
-            deps.after_reasoning_plugin_modules_before_emit or []
-        )
-        self._after_reasoning_plugin_modules_before_persist = list(
-            deps.after_reasoning_plugin_modules_before_persist or []
-        )
-        self._after_turn_plugin_modules_before_commit = list(
-            deps.after_turn_plugin_modules_before_commit or []
-        )
-        self._after_turn_plugin_modules_before_fanout = list(
-            deps.after_turn_plugin_modules_before_fanout or []
-        )
+        self._after_turn_plugin_modules = list(deps.after_turn_plugin_modules or [])
         bus = deps.event_bus or EventBus()
         self._bus = bus
 
@@ -284,38 +247,30 @@ class PassiveTurnPipeline:
 
     def add_before_turn_plugin_modules(
         self,
-        early: list[object],
-        late: list[object],
+        modules: list[object],
     ) -> None:
-        self._before_turn_plugin_modules_early.extend(early)
-        self._before_turn_plugin_modules_late.extend(late)
+        self._before_turn_plugin_modules.extend(modules)
         self._before_turn = self._build_before_turn_phase()
 
     def add_before_reasoning_plugin_modules(
         self,
-        before_emit: list[object],
-        after_emit: list[object],
+        modules: list[object],
     ) -> None:
-        self._before_reasoning_plugin_modules_before_emit.extend(before_emit)
-        self._before_reasoning_plugin_modules_after_emit.extend(after_emit)
+        self._before_reasoning_plugin_modules.extend(modules)
         self._before_reasoning = self._build_before_reasoning_phase()
 
     def add_after_reasoning_plugin_modules(
         self,
-        before_emit: list[object],
-        before_persist: list[object],
+        modules: list[object],
     ) -> None:
-        self._after_reasoning_plugin_modules_before_emit.extend(before_emit)
-        self._after_reasoning_plugin_modules_before_persist.extend(before_persist)
+        self._after_reasoning_plugin_modules.extend(modules)
         self._after_reasoning = self._build_after_reasoning_phase()
 
     def add_after_turn_plugin_modules(
         self,
-        before_commit: list[object],
-        before_fanout: list[object],
+        modules: list[object],
     ) -> None:
-        self._after_turn_plugin_modules_before_commit.extend(before_commit)
-        self._after_turn_plugin_modules_before_fanout.extend(before_fanout)
+        self._after_turn_plugin_modules.extend(modules)
         self._after_turn = self._build_after_turn_phase()
 
     def _build_before_turn_phase(self) -> Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]:
@@ -324,8 +279,7 @@ class PassiveTurnPipeline:
                 self._bus,
                 self._session.session_manager,
                 self._context_store,
-                plugin_modules_early=cast("list[Any]", self._before_turn_plugin_modules_early),
-                plugin_modules_late=cast("list[Any]", self._before_turn_plugin_modules_late),
+                plugin_modules=cast("list[Any]", self._before_turn_plugin_modules),
             ),
             frame_factory=BeforeTurnFrame,
         )
@@ -339,14 +293,7 @@ class PassiveTurnPipeline:
                 self._tools,
                 self._session.session_manager,
                 self._context,
-                plugin_modules_before_emit=cast(
-                    "list[Any]",
-                    self._before_reasoning_plugin_modules_before_emit,
-                ),
-                plugin_modules_after_emit=cast(
-                    "list[Any]",
-                    self._before_reasoning_plugin_modules_after_emit,
-                ),
+                plugin_modules=cast("list[Any]", self._before_reasoning_plugin_modules),
             ),
             frame_factory=BeforeReasoningFrame,
         )
@@ -358,14 +305,7 @@ class PassiveTurnPipeline:
             default_after_reasoning_modules(
                 self._bus,
                 self._session,
-                plugin_modules_before_emit=cast(
-                    "list[Any]",
-                    self._after_reasoning_plugin_modules_before_emit,
-                ),
-                plugin_modules_before_persist=cast(
-                    "list[Any]",
-                    self._after_reasoning_plugin_modules_before_persist,
-                ),
+                plugin_modules=cast("list[Any]", self._after_reasoning_plugin_modules),
             ),
             frame_factory=AfterReasoningFrame,
         )
@@ -379,14 +319,7 @@ class PassiveTurnPipeline:
                 self._outbound_port,
                 self._context,
                 self._history_window,
-                plugin_modules_before_commit=cast(
-                    "list[Any]",
-                    self._after_turn_plugin_modules_before_commit,
-                ),
-                plugin_modules_before_fanout=cast(
-                    "list[Any]",
-                    self._after_turn_plugin_modules_before_fanout,
-                ),
+                plugin_modules=cast("list[Any]", self._after_turn_plugin_modules),
             ),
             frame_factory=AfterTurnFrame,
         )
@@ -632,22 +565,19 @@ class Reasoner(ABC):
 
     def add_prompt_render_plugin_modules(
         self,
-        top: list[object],
-        bottom: list[object],
+        modules: list[object],
     ) -> None:
         """子类可重写以注入 prompt render modules。默认 no-op。"""
 
     def add_before_step_plugin_modules(
         self,
-        before_emit: list[object],
-        after_emit: list[object],
+        modules: list[object],
     ) -> None:
         """子类可重写以注入 before-step modules。默认 no-op。"""
 
     def add_after_step_plugin_modules(
         self,
-        before_fanout: list[object],
-        after_fanout: list[object],
+        modules: list[object],
     ) -> None:
         """子类可重写以注入 after-step modules。默认 no-op。"""
 
@@ -681,12 +611,9 @@ class DefaultReasoner(Reasoner):
         self._context = context
         self._session_manager = session_manager
         self._event_bus = event_bus
-        self._prompt_render_plugin_modules_top: list[object] = []
-        self._prompt_render_plugin_modules_bottom: list[object] = []
-        self._before_step_plugin_modules_before_emit: list[object] = []
-        self._before_step_plugin_modules_after_emit: list[object] = []
-        self._after_step_plugin_modules_before_fanout: list[object] = []
-        self._after_step_plugin_modules_after_fanout: list[object] = []
+        self._prompt_render_plugin_modules: list[object] = []
+        self._before_step_plugin_modules: list[object] = []
+        self._after_step_plugin_modules: list[object] = []
         # Direct reference to ToolSearchTool so we can pass excluded_names
         # explicitly instead of routing through the ContextVar side-channel.
         _ts = tools.get_tool("tool_search")
@@ -716,30 +643,24 @@ class DefaultReasoner(Reasoner):
 
     def add_prompt_render_plugin_modules(
         self,
-        top: list[object],
-        bottom: list[object],
+        modules: list[object],
     ) -> None:
-        self._prompt_render_plugin_modules_top.extend(top)
-        self._prompt_render_plugin_modules_bottom.extend(bottom)
+        self._prompt_render_plugin_modules.extend(modules)
         if self._context is not None:
             self._prompt_render = self._build_prompt_render_phase(self._context)
 
     def add_before_step_plugin_modules(
         self,
-        before_emit: list[object],
-        after_emit: list[object],
+        modules: list[object],
     ) -> None:
-        self._before_step_plugin_modules_before_emit.extend(before_emit)
-        self._before_step_plugin_modules_after_emit.extend(after_emit)
+        self._before_step_plugin_modules.extend(modules)
         self._before_step = self._build_before_step_phase()
 
     def add_after_step_plugin_modules(
         self,
-        before_fanout: list[object],
-        after_fanout: list[object],
+        modules: list[object],
     ) -> None:
-        self._after_step_plugin_modules_before_fanout.extend(before_fanout)
-        self._after_step_plugin_modules_after_fanout.extend(after_fanout)
+        self._after_step_plugin_modules.extend(modules)
         self._after_step = self._build_after_step_phase()
 
     def _build_before_step_phase(
@@ -748,14 +669,7 @@ class DefaultReasoner(Reasoner):
         return Phase(
             default_before_step_modules(
                 self._bus,
-                plugin_modules_before_emit=cast(
-                    "list[Any]",
-                    self._before_step_plugin_modules_before_emit,
-                ),
-                plugin_modules_after_emit=cast(
-                    "list[Any]",
-                    self._before_step_plugin_modules_after_emit,
-                ),
+                plugin_modules=cast("list[Any]", self._before_step_plugin_modules),
             ),
             frame_factory=BeforeStepFrame,
         )
@@ -764,14 +678,7 @@ class DefaultReasoner(Reasoner):
         return Phase(
             default_after_step_modules(
                 self._bus,
-                plugin_modules_before_fanout=cast(
-                    "list[Any]",
-                    self._after_step_plugin_modules_before_fanout,
-                ),
-                plugin_modules_after_fanout=cast(
-                    "list[Any]",
-                    self._after_step_plugin_modules_after_fanout,
-                ),
+                plugin_modules=cast("list[Any]", self._after_step_plugin_modules),
             ),
             frame_factory=AfterStepFrame,
         )
@@ -784,14 +691,7 @@ class DefaultReasoner(Reasoner):
             default_prompt_render_modules(
                 self._bus,
                 context,
-                plugin_modules_top=cast(
-                    "list[Any]",
-                    self._prompt_render_plugin_modules_top,
-                ),
-                plugin_modules_bottom=cast(
-                    "list[Any]",
-                    self._prompt_render_plugin_modules_bottom,
-                ),
+                plugin_modules=cast("list[Any]", self._prompt_render_plugin_modules),
             ),
             frame_factory=PromptRenderFrame,
         )

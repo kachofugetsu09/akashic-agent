@@ -398,55 +398,45 @@ class AgentLoop:
 
     def add_before_turn_plugin_modules(
         self,
-        early: list[object],
-        late: list[object],
+        modules: list[object],
     ) -> None:
-        self._agent_core.add_before_turn_plugin_modules(early, late)
+        self._agent_core.add_before_turn_plugin_modules(modules)
 
     def add_before_reasoning_plugin_modules(
         self,
-        before_emit: list[object],
-        after_emit: list[object],
+        modules: list[object],
     ) -> None:
-        self._agent_core.add_before_reasoning_plugin_modules(before_emit, after_emit)
+        self._agent_core.add_before_reasoning_plugin_modules(modules)
 
     def add_after_reasoning_plugin_modules(
         self,
-        before_emit: list[object],
-        before_persist: list[object],
+        modules: list[object],
     ) -> None:
-        self._agent_core.add_after_reasoning_plugin_modules(
-            before_emit,
-            before_persist,
-        )
+        self._agent_core.add_after_reasoning_plugin_modules(modules)
 
     def add_after_turn_plugin_modules(
         self,
-        before_commit: list[object],
-        before_fanout: list[object],
+        modules: list[object],
     ) -> None:
-        self._agent_core.add_after_turn_plugin_modules(before_commit, before_fanout)
+        self._agent_core.add_after_turn_plugin_modules(modules)
 
     def add_prompt_render_plugin_modules(
         self,
-        top: list[object],
-        bottom: list[object],
+        modules: list[object],
     ) -> None:
-        self._reasoner.add_prompt_render_plugin_modules(top, bottom)
+        self._reasoner.add_prompt_render_plugin_modules(modules)
 
     def add_before_step_plugin_modules(
         self,
-        before_emit: list[object],
-        after_emit: list[object],
+        modules: list[object],
     ) -> None:
-        self._reasoner.add_before_step_plugin_modules(before_emit, after_emit)
+        self._reasoner.add_before_step_plugin_modules(modules)
 
     def add_after_step_plugin_modules(
         self,
-        before_fanout: list[object],
-        after_fanout: list[object],
+        modules: list[object],
     ) -> None:
-        self._reasoner.add_after_step_plugin_modules(before_fanout, after_fanout)
+        self._reasoner.add_after_step_plugin_modules(modules)
 
     # ── 中断控制面 ────────────────────────────────────────────────
 

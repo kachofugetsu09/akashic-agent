@@ -61,20 +61,13 @@ class PluginManager:
         self._memory_engine = memory_engine
         self._loaded: set[str] = set()
         self._tool_hooks: list[ToolHook] = []
-        self._before_turn_modules_early: list[object] = []
-        self._before_turn_modules_late: list[object] = []
-        self._before_reasoning_modules_before_emit: list[object] = []
-        self._before_reasoning_modules_after_emit: list[object] = []
-        self._prompt_render_modules_top: list[object] = []
-        self._prompt_render_modules_bottom: list[object] = []
-        self._before_step_modules_before_emit: list[object] = []
-        self._before_step_modules_after_emit: list[object] = []
-        self._after_step_modules_before_fanout: list[object] = []
-        self._after_step_modules_after_fanout: list[object] = []
-        self._after_reasoning_modules_before_emit: list[object] = []
-        self._after_reasoning_modules_before_persist: list[object] = []
-        self._after_turn_modules_before_commit: list[object] = []
-        self._after_turn_modules_before_fanout: list[object] = []
+        self._before_turn_modules: list[object] = []
+        self._before_reasoning_modules: list[object] = []
+        self._prompt_render_modules: list[object] = []
+        self._before_step_modules: list[object] = []
+        self._after_step_modules: list[object] = []
+        self._after_reasoning_modules: list[object] = []
+        self._after_turn_modules: list[object] = []
 
     @property
     def loaded_count(self) -> int:
@@ -85,60 +78,32 @@ class PluginManager:
         return list(self._tool_hooks)
 
     @property
-    def before_turn_modules_early(self) -> list[object]:
-        return list(self._before_turn_modules_early)
+    def before_turn_modules(self) -> list[object]:
+        return list(self._before_turn_modules)
 
     @property
-    def before_turn_modules_late(self) -> list[object]:
-        return list(self._before_turn_modules_late)
+    def before_reasoning_modules(self) -> list[object]:
+        return list(self._before_reasoning_modules)
 
     @property
-    def before_reasoning_modules_before_emit(self) -> list[object]:
-        return list(self._before_reasoning_modules_before_emit)
+    def prompt_render_modules(self) -> list[object]:
+        return list(self._prompt_render_modules)
 
     @property
-    def before_reasoning_modules_after_emit(self) -> list[object]:
-        return list(self._before_reasoning_modules_after_emit)
+    def before_step_modules(self) -> list[object]:
+        return list(self._before_step_modules)
 
     @property
-    def prompt_render_modules_top(self) -> list[object]:
-        return list(self._prompt_render_modules_top)
+    def after_step_modules(self) -> list[object]:
+        return list(self._after_step_modules)
 
     @property
-    def prompt_render_modules_bottom(self) -> list[object]:
-        return list(self._prompt_render_modules_bottom)
+    def after_reasoning_modules(self) -> list[object]:
+        return list(self._after_reasoning_modules)
 
     @property
-    def before_step_modules_before_emit(self) -> list[object]:
-        return list(self._before_step_modules_before_emit)
-
-    @property
-    def before_step_modules_after_emit(self) -> list[object]:
-        return list(self._before_step_modules_after_emit)
-
-    @property
-    def after_step_modules_before_fanout(self) -> list[object]:
-        return list(self._after_step_modules_before_fanout)
-
-    @property
-    def after_step_modules_after_fanout(self) -> list[object]:
-        return list(self._after_step_modules_after_fanout)
-
-    @property
-    def after_reasoning_modules_before_emit(self) -> list[object]:
-        return list(self._after_reasoning_modules_before_emit)
-
-    @property
-    def after_reasoning_modules_before_persist(self) -> list[object]:
-        return list(self._after_reasoning_modules_before_persist)
-
-    @property
-    def after_turn_modules_before_commit(self) -> list[object]:
-        return list(self._after_turn_modules_before_commit)
-
-    @property
-    def after_turn_modules_before_fanout(self) -> list[object]:
-        return list(self._after_turn_modules_before_fanout)
+    def after_turn_modules(self) -> list[object]:
+        return list(self._after_turn_modules)
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
@@ -226,40 +191,19 @@ class PluginManager:
         tool_names = self._register_tools(instance, mp)
         hook_count_before = len(self._tool_hooks)
         self._bind_tool_hooks(instance, mp)
-        early_count_before = len(self._before_turn_modules_early)
-        late_count_before = len(self._before_turn_modules_late)
+        before_turn_count_before = len(self._before_turn_modules)
         self._collect_before_turn_modules(instance)
-        before_reasoning_before_emit_count_before = len(
-            self._before_reasoning_modules_before_emit
-        )
-        before_reasoning_after_emit_count_before = len(
-            self._before_reasoning_modules_after_emit
-        )
+        before_reasoning_count_before = len(self._before_reasoning_modules)
         self._collect_before_reasoning_modules(instance)
-        prompt_top_count_before = len(self._prompt_render_modules_top)
-        prompt_bottom_count_before = len(self._prompt_render_modules_bottom)
+        prompt_render_count_before = len(self._prompt_render_modules)
         self._collect_prompt_render_modules(instance)
-        step_before_emit_count_before = len(self._before_step_modules_before_emit)
-        step_after_emit_count_before = len(self._before_step_modules_after_emit)
+        before_step_count_before = len(self._before_step_modules)
         self._collect_before_step_modules(instance)
-        after_step_before_fanout_count_before = len(
-            self._after_step_modules_before_fanout
-        )
-        after_step_after_fanout_count_before = len(
-            self._after_step_modules_after_fanout
-        )
+        after_step_count_before = len(self._after_step_modules)
         self._collect_after_step_modules(instance)
-        after_reasoning_before_emit_count_before = len(
-            self._after_reasoning_modules_before_emit
-        )
-        after_reasoning_before_persist_count_before = len(
-            self._after_reasoning_modules_before_persist
-        )
+        after_reasoning_count_before = len(self._after_reasoning_modules)
         self._collect_after_reasoning_modules(instance)
-        turn_before_commit_count_before = len(self._after_turn_modules_before_commit)
-        turn_before_fanout_count_before = len(
-            self._after_turn_modules_before_fanout
-        )
+        after_turn_count_before = len(self._after_turn_modules)
         self._collect_after_turn_modules(instance)
         # 5. 给插件机会做异步初始化；失败时回滚所有注册
         try:
@@ -272,36 +216,13 @@ class PluginManager:
                 if self._tool_registry is not None:
                     self._tool_registry.unregister(tn)
             del self._tool_hooks[hook_count_before:]
-            del self._before_turn_modules_early[early_count_before:]
-            del self._before_turn_modules_late[late_count_before:]
-            del self._before_reasoning_modules_before_emit[
-                before_reasoning_before_emit_count_before:
-            ]
-            del self._before_reasoning_modules_after_emit[
-                before_reasoning_after_emit_count_before:
-            ]
-            del self._prompt_render_modules_top[prompt_top_count_before:]
-            del self._prompt_render_modules_bottom[prompt_bottom_count_before:]
-            del self._before_step_modules_before_emit[step_before_emit_count_before:]
-            del self._before_step_modules_after_emit[step_after_emit_count_before:]
-            del self._after_step_modules_before_fanout[
-                after_step_before_fanout_count_before:
-            ]
-            del self._after_step_modules_after_fanout[
-                after_step_after_fanout_count_before:
-            ]
-            del self._after_reasoning_modules_before_emit[
-                after_reasoning_before_emit_count_before:
-            ]
-            del self._after_reasoning_modules_before_persist[
-                after_reasoning_before_persist_count_before:
-            ]
-            del self._after_turn_modules_before_commit[
-                turn_before_commit_count_before:
-            ]
-            del self._after_turn_modules_before_fanout[
-                turn_before_fanout_count_before:
-            ]
+            del self._before_turn_modules[before_turn_count_before:]
+            del self._before_reasoning_modules[before_reasoning_count_before:]
+            del self._prompt_render_modules[prompt_render_count_before:]
+            del self._before_step_modules[before_step_count_before:]
+            del self._after_step_modules[after_step_count_before:]
+            del self._after_reasoning_modules[after_reasoning_count_before:]
+            del self._after_turn_modules[after_turn_count_before:]
             return
         self._loaded.add(mp)
         logger.info("插件已加载: %s", mod["name"])
@@ -385,60 +306,61 @@ class PluginManager:
             logger.info("插件 tool hook 已注册: %s", hook.name)
 
     def _collect_before_turn_modules(self, instance: Any) -> None:
-        self._before_turn_modules_early.extend(
-            _load_module_list(instance, "before_turn_modules_early")
-        )
-        self._before_turn_modules_late.extend(
-            _load_module_list(instance, "before_turn_modules_late")
+        self._collect_phase_modules(
+            instance,
+            "before_turn_modules",
+            self._before_turn_modules,
         )
 
     def _collect_before_reasoning_modules(self, instance: Any) -> None:
-        self._before_reasoning_modules_before_emit.extend(
-            _load_module_list(instance, "before_reasoning_modules_before_emit")
-        )
-        self._before_reasoning_modules_after_emit.extend(
-            _load_module_list(instance, "before_reasoning_modules_after_emit")
+        self._collect_phase_modules(
+            instance,
+            "before_reasoning_modules",
+            self._before_reasoning_modules,
         )
 
     def _collect_prompt_render_modules(self, instance: Any) -> None:
-        self._prompt_render_modules_top.extend(
-            _load_module_list(instance, "prompt_render_modules_top")
-        )
-        self._prompt_render_modules_bottom.extend(
-            _load_module_list(instance, "prompt_render_modules_bottom")
+        self._collect_phase_modules(
+            instance,
+            "prompt_render_modules",
+            self._prompt_render_modules,
         )
 
     def _collect_before_step_modules(self, instance: Any) -> None:
-        self._before_step_modules_before_emit.extend(
-            _load_module_list(instance, "before_step_modules_before_emit")
-        )
-        self._before_step_modules_after_emit.extend(
-            _load_module_list(instance, "before_step_modules_after_emit")
+        self._collect_phase_modules(
+            instance,
+            "before_step_modules",
+            self._before_step_modules,
         )
 
     def _collect_after_step_modules(self, instance: Any) -> None:
-        self._after_step_modules_before_fanout.extend(
-            _load_module_list(instance, "after_step_modules_before_fanout")
-        )
-        self._after_step_modules_after_fanout.extend(
-            _load_module_list(instance, "after_step_modules_after_fanout")
+        self._collect_phase_modules(
+            instance,
+            "after_step_modules",
+            self._after_step_modules,
         )
 
     def _collect_after_reasoning_modules(self, instance: Any) -> None:
-        self._after_reasoning_modules_before_emit.extend(
-            _load_module_list(instance, "after_reasoning_modules_before_emit")
-        )
-        self._after_reasoning_modules_before_persist.extend(
-            _load_module_list(instance, "after_reasoning_modules_before_persist")
+        self._collect_phase_modules(
+            instance,
+            "after_reasoning_modules",
+            self._after_reasoning_modules,
         )
 
     def _collect_after_turn_modules(self, instance: Any) -> None:
-        self._after_turn_modules_before_commit.extend(
-            _load_module_list(instance, "after_turn_modules_before_commit")
+        self._collect_phase_modules(
+            instance,
+            "after_turn_modules",
+            self._after_turn_modules,
         )
-        self._after_turn_modules_before_fanout.extend(
-            _load_module_list(instance, "after_turn_modules_before_fanout")
-        )
+
+    def _collect_phase_modules(
+        self,
+        instance: Any,
+        attr_name: str,
+        target: list[object],
+    ) -> None:
+        target.extend(_load_module_list(instance, attr_name))
 
     async def terminate_all(self) -> None:
         for mp in list(self._loaded):
@@ -455,20 +377,13 @@ class PluginManager:
             plugin_registry.remove_plugin(mp)
         self._loaded.clear()
         self._tool_hooks.clear()
-        self._before_turn_modules_early.clear()
-        self._before_turn_modules_late.clear()
-        self._before_reasoning_modules_before_emit.clear()
-        self._before_reasoning_modules_after_emit.clear()
-        self._prompt_render_modules_top.clear()
-        self._prompt_render_modules_bottom.clear()
-        self._before_step_modules_before_emit.clear()
-        self._before_step_modules_after_emit.clear()
-        self._after_step_modules_before_fanout.clear()
-        self._after_step_modules_after_fanout.clear()
-        self._after_reasoning_modules_before_emit.clear()
-        self._after_reasoning_modules_before_persist.clear()
-        self._after_turn_modules_before_commit.clear()
-        self._after_turn_modules_before_fanout.clear()
+        self._before_turn_modules.clear()
+        self._before_reasoning_modules.clear()
+        self._prompt_render_modules.clear()
+        self._before_step_modules.clear()
+        self._after_step_modules.clear()
+        self._after_reasoning_modules.clear()
+        self._after_turn_modules.clear()
 
 
 def _load_plugin_config(plugin_dir: Path) -> "Any":

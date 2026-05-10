@@ -21,3 +21,24 @@ class Plugin(ABC):
 
     async def initialize(self) -> None: ...
     async def terminate(self) -> None: ...
+
+    def before_turn_modules(self) -> list[object]:
+        return []
+
+    def before_reasoning_modules(self) -> list[object]:
+        return []
+
+    def prompt_render_modules(self) -> list[object]:
+        return []
+
+    def before_step_modules(self) -> list[object]:
+        return []
+
+    def after_step_modules(self) -> list[object]:
+        return []
+
+    def after_reasoning_modules(self) -> list[object]:
+        return []
+
+    def after_turn_modules(self) -> list[object]:
+        return []
