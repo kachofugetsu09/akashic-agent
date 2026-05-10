@@ -8,7 +8,7 @@
 
 | 接入方式 | 阶段 |
 |---|---|
-| `before_turn_modules_late()` | BeforeTurn 管道晚期模块——记录上下文准备结果 |
+| `before_turn_modules()` | `before_turn.emit` 之后——记录上下文准备结果 |
 | `@on_tool_result()` TAP | 工具返回后——记录 recall_memory 结果 |
 
 ---
@@ -21,7 +21,7 @@
 
 ### 2. 记录上下文准备（ContextPrepareRecordModule）
 
-插入在 BeforeTurn 管道的 late 位置（EventBus emit 之后），此时 `BeforeTurnCtx` 已由记忆检索模块填充完毕。读取以下字段并写一条 `kind=context_prepare` 记录：
+依赖 `before_turn.emit`，此时 `BeforeTurnCtx` 已由记忆检索模块填充完毕。读取以下字段并写一条 `kind=context_prepare` 记录：
 
 - `retrieved_memory_block`：注入给 LLM 的记忆文本块，解析出 item_id 列表。
 - `retrieval_trace_raw`：检索过程的原始 trace（包含每条命中的 score、memory_type、injected 标志）。

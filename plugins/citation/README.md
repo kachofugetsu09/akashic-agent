@@ -8,9 +8,9 @@
 
 | 接入方式 | 阶段 |
 |---|---|
-| `prompt_render_modules_bottom()` | PromptRender 阶段末尾——注入引用协议文本 |
-| `after_reasoning_modules_before_emit()` | AfterReasoning emit 之前——提取 cited ID |
-| `after_reasoning_modules_before_persist()` | AfterReasoning persist 之前——清理残留协议标签 |
+| `prompt_render_modules()` | `prompt_render.emit` 之后——注入引用协议文本 |
+| `after_reasoning_modules()` | `after_reasoning.build_ctx` 之后——提取 cited ID |
+| `after_reasoning_modules()` | `after_reasoning.emit` 之后——清理残留协议标签 |
 
 ---
 

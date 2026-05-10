@@ -31,7 +31,8 @@ _CITATION_PROTOCOL = """### 记忆引用协议 - 内部元数据，对用户不�
 
 
 class CitationPromptModule:
-    requires = (_PROMPT_CTX_SLOT,)
+    slot = "citation.prompt"
+    requires = ("prompt_render.emit", _PROMPT_CTX_SLOT)
     produces = (_PROMPT_CTX_SLOT,)
 
     async def run(self, frame: Any) -> Any:
@@ -49,7 +50,8 @@ class CitationPromptModule:
 
 
 class CitationAfterReasoningModule:
-    requires = (_REASONING_CTX_SLOT,)
+    slot = "citation.after_reasoning"
+    requires = ("after_reasoning.build_ctx", _REASONING_CTX_SLOT)
     produces = (_REASONING_CTX_SLOT, _PERSIST_CITED_SLOT)
 
     async def run(self, frame: Any) -> Any:
@@ -72,7 +74,8 @@ class CitationAfterReasoningModule:
 
 
 class ProtocolTagCleanupModule:
-    requires = (_REASONING_CTX_SLOT,)
+    slot = "citation.protocol_cleanup"
+    requires = ("after_reasoning.emit", _REASONING_CTX_SLOT)
     produces = (_REASONING_CTX_SLOT,)
 
     async def run(self, frame: Any) -> Any:
@@ -89,14 +92,11 @@ class ProtocolTagCleanupModule:
 class CitationPlugin(Plugin):
     name = "citation"
 
-    def prompt_render_modules_bottom(self) -> list[object]:
+    def prompt_render_modules(self) -> list[object]:
         return [CitationPromptModule()]
 
-    def after_reasoning_modules_before_emit(self) -> list[object]:
-        return [CitationAfterReasoningModule()]
-
-    def after_reasoning_modules_before_persist(self) -> list[object]:
-        return [ProtocolTagCleanupModule()]
+    def after_reasoning_modules(self) -> list[object]:
+        return [CitationAfterReasoningModule(), ProtocolTagCleanupModule()]
 
 
 def extract_cited_ids(response: str) -> tuple[str, list[str]]:

@@ -14,7 +14,8 @@ _CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = _MODEL_CONTEXT_WINDOW_TOKENS * 80 // 1
 
 
 class ContextPressureStopModule:
-    requires = (_CTX_SLOT,)
+    slot = "context_pressure.stop"
+    requires = ("after_step.copy_input", _CTX_SLOT)
     produces = (
         _EARLY_STOP_REASON_SLOT,
         f"{_TELEMETRY_PREFIX}context_pressure_tokens",
@@ -45,5 +46,5 @@ class ContextPressurePlugin(Plugin):
     version = "0.1.0"
     desc = "上下文压力过高时请求被动循环阶段性收尾"
 
-    def after_step_modules_before_fanout(self) -> list[object]:
+    def after_step_modules(self) -> list[object]:
         return [ContextPressureStopModule()]

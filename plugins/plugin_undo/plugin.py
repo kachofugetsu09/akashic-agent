@@ -26,7 +26,8 @@ class _UndoSessionResult:
 
 
 class UndoCommandModule:
-    requires = (_SESSION_SLOT,)
+    slot = "plugin_undo.undo"
+    requires = ("before_turn.acquire_session", _SESSION_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, plugin: "PluginUndo") -> None:
@@ -49,7 +50,7 @@ class PluginUndo(Plugin):
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
         return [("undo", "撤销上一轮对话")]
 
-    def before_turn_modules_early(self) -> list[object]:
+    def before_turn_modules(self) -> list[object]:
         return [UndoCommandModule(self)]
 
     async def undo(self, session_key: str) -> str:

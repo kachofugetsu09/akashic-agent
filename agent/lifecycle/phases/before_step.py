@@ -115,14 +115,13 @@ def default_before_step_modules(
     bus: EventBus,
     plugin_modules: BeforeStepModules | None = None,
 ) -> BeforeStepModules:
-    builtins = [
+    builtins: BeforeStepModules = [
         _BuildBeforeStepCtxModule(),
         _EmitBeforeStepCtxModule(bus),
         _CollectBeforeStepExportSlotsModule(),
         _InjectHintsModule(),
         _ReturnBeforeStepCtxModule(),
     ]
-    return topo_sort_modules(builtins + list(plugin_modules or []))
     return cast(
         BeforeStepModules,
         topo_sort_modules(builtins + list(plugin_modules or [])),

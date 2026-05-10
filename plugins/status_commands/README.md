@@ -8,7 +8,7 @@
 
 | 接入方式 | 阶段 |
 |---|---|
-| `before_turn_modules_early()` | BeforeTurn 管道早期模块——命令识别与 abort |
+| `before_turn_modules()` | `before_turn.acquire_session` 之后——命令识别与 abort |
 
 ---
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -79,13 +78,15 @@ class SlotModule(Protocol):
 
 def topo_sort_modules(modules: Sequence[object]) -> list[object]:
     slot_map: dict[str, SlotModule] = {}
-    for module in modules:
+    slot_order: dict[str, int] = {}
+    for index, module in enumerate(modules):
         slot = getattr(module, "slot", None)
         if not isinstance(slot, str) or not slot:
             raise RuntimeError(f"模块缺少 slot 声明: {type(module).__name__}")
         if slot in slot_map:
             raise RuntimeError(f"模块 slot 重复: {slot}")
         slot_map[slot] = cast(SlotModule, module)
+        slot_order[slot] = index
 
     in_degree = {slot: 0 for slot in slot_map}
     dependents: dict[str, list[str]] = {slot: [] for slot in slot_map}
@@ -94,10 +95,11 @@ def topo_sort_modules(modules: Sequence[object]) -> list[object]:
             in_degree[slot] += 1
             dependents[req].append(slot)
 
-    queue = deque(slot for slot, degree in in_degree.items() if degree == 0)
+    queue = [slot for slot, degree in in_degree.items() if degree == 0]
     sorted_modules: list[object] = []
     while queue:
-        slot = queue.popleft()
+        queue.sort(key=lambda item: (_is_builtin_slot(item), slot_order[item]))
+        slot = queue.pop(0)
         sorted_modules.append(slot_map[slot])
         for dependent in dependents[slot]:
             in_degree[dependent] -= 1
@@ -123,12 +125,14 @@ def render_dependency_tree(modules: Sequence[object]) -> str:
 
     roots = [slot for slot, degree in in_degree.items() if degree == 0]
     lines: list[str] = []
+    visited: set[str] = set()
     for index, slot in enumerate(roots):
         _render_tree_node(
             lines,
             slot,
             children,
             slot_map,
+            visited,
             prefix="",
             is_last=index == len(roots) - 1,
         )
@@ -178,10 +182,14 @@ def _render_tree_node(
     slot: str,
     children: Mapping[str, list[str]],
     slot_map: Mapping[str, SlotModule],
+    visited: set[str],
     *,
     prefix: str,
     is_last: bool,
 ) -> None:
+    if slot in visited:
+        return
+    visited.add(slot)
     connector = "└── " if is_last else "├── "
     module = slot_map[slot]
     lines.append(f"{prefix}{connector}{_module_label(module)}")
@@ -194,6 +202,7 @@ def _render_tree_node(
             child,
             children,
             slot_map,
+            visited,
             prefix=child_prefix,
             is_last=index == len(child_slots) - 1,
         )

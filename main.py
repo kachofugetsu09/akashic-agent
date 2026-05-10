@@ -72,6 +72,28 @@ def connect_cli(config_path: str = "config.toml") -> None:
     run_tui(socket_path)
 
 
+async def inspect_modules(
+    config_path: str = "config.toml",
+    workspace: Path | None = None,
+) -> None:
+    import logging
+    from bootstrap.tools import build_core_runtime
+
+    logging.getLogger().setLevel(logging.WARNING)
+    config = Config.load(config_path)
+    http_resources = SharedHttpResources()
+    runtime = build_core_runtime(
+        config,
+        workspace or _default_workspace(),
+        http_resources,
+    )
+    try:
+        print(await runtime.inspect_modules())
+    finally:
+        await runtime.stop()
+        await http_resources.aclose()
+
+
 async def serve(
     config_path: str = "config.toml",
     workspace: Path | None = None,
@@ -195,7 +217,9 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
-    if "cli" in args:
+    if "--inspect-modules" in args:
+        asyncio.run(inspect_modules(config_path, workspace))
+    elif "cli" in args:
         connect_cli(config_path)
     else:
         asyncio.run(serve(config_path, workspace))

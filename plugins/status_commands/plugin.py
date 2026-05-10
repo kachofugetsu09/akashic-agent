@@ -21,7 +21,8 @@ _BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class MemoryStatusCommandModule:
-    requires = (_SESSION_SLOT,)
+    slot = "status_commands.memory_status"
+    requires = ("before_turn.acquire_session", _SESSION_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, plugin_name: str) -> None:
@@ -57,7 +58,8 @@ class MemoryStatusCommandModule:
 
 
 class KVCacheCommandModule:
-    requires = (_SESSION_SLOT,)
+    slot = "status_commands.kvcache"
+    requires = ("before_turn.acquire_session", _SESSION_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, plugin_name: str, db_path: Path | None) -> None:
@@ -151,7 +153,7 @@ class StatusCommands(Plugin):
             ("kvcache", "查看 KVCache 状态"),
         ]
 
-    def before_turn_modules_early(self) -> list[object]:
+    def before_turn_modules(self) -> list[object]:
         plugin_name = self.name or "status_commands"
         db_path = None
         if self.context.workspace is not None:

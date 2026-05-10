@@ -17,7 +17,8 @@ _META_RE = re.compile(r"（(?P<meta>[^（）]*(?:证据|src|有印象|不确定)
 
 
 class ContextPrepareRecordModule:
-    requires = (_CTX_SLOT,)
+    slot = "recall_inspector.main"
+    requires = ("before_turn.emit", _CTX_SLOT)
 
     def __init__(self, plugin: "RecallInspector") -> None:
         self._plugin = plugin
@@ -41,7 +42,7 @@ class RecallInspector(Plugin):
         )
         self._data_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def before_turn_modules_late(self) -> list[object]:
+    def before_turn_modules(self) -> list[object]:
         return [ContextPrepareRecordModule(self)]
 
     def record_context_prepare(self, event: BeforeTurnCtx) -> None:

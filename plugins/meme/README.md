@@ -8,7 +8,7 @@
 
 | 接入方式 | 阶段 |
 |---|---|
-| `prompt_render_modules_bottom()` | PromptRender 阶段末尾——注入表情包目录说明 |
+| `prompt_render_modules()` | `prompt_render.emit` 之后——注入表情包目录说明 |
 | `@on_after_reasoning()` | AfterReasoning GATE——解析 meme 标签，附加媒体 |
 
 ---

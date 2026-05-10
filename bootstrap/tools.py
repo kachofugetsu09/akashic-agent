@@ -135,6 +135,111 @@ class CoreRuntime:
                 if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
                     spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
 
+    async def inspect_modules(self) -> str:
+        if self.plugin_manager is not None:
+            await self.plugin_manager.load_all()
+
+        from agent.lifecycle.phase import inspect_phase
+        from agent.lifecycle.phases.after_reasoning import (
+            default_after_reasoning_modules,
+        )
+        from agent.lifecycle.phases.after_step import default_after_step_modules
+        from agent.lifecycle.phases.after_turn import default_after_turn_modules
+        from agent.lifecycle.phases.before_reasoning import (
+            default_before_reasoning_modules,
+        )
+        from agent.lifecycle.phases.before_step import default_before_step_modules
+        from agent.lifecycle.phases.before_turn import default_before_turn_modules
+        from agent.lifecycle.phases.prompt_render import default_prompt_render_modules
+
+        manager = self.plugin_manager
+        before_turn_modules = manager.before_turn_modules if manager is not None else []
+        before_reasoning_modules = (
+            manager.before_reasoning_modules if manager is not None else []
+        )
+        prompt_render_modules = manager.prompt_render_modules if manager is not None else []
+        before_step_modules = manager.before_step_modules if manager is not None else []
+        after_step_modules = manager.after_step_modules if manager is not None else []
+        after_reasoning_modules = (
+            manager.after_reasoning_modules if manager is not None else []
+        )
+        after_turn_modules = manager.after_turn_modules if manager is not None else []
+
+        agent_core = cast(Any, getattr(self.loop, "_agent_core"))
+        pipeline = agent_core.pipeline
+        reasoner = getattr(self.loop, "_reasoner", None)
+        context = getattr(reasoner, "_context", None)
+
+        phases = [
+            (
+                "before_turn",
+                default_before_turn_modules(
+                    self.event_bus,
+                    self.session_manager,
+                    cast(Any, getattr(pipeline, "_context_store", None)),
+                    plugin_modules=cast(Any, before_turn_modules),
+                ),
+            ),
+            (
+                "before_reasoning",
+                default_before_reasoning_modules(
+                    self.event_bus,
+                    self.tools,
+                    self.session_manager,
+                    cast(Any, context),
+                    plugin_modules=cast(Any, before_reasoning_modules),
+                ),
+            ),
+            (
+                "prompt_render",
+                default_prompt_render_modules(
+                    self.event_bus,
+                    cast(Any, context),
+                    plugin_modules=cast(Any, prompt_render_modules),
+                ),
+            ),
+            (
+                "before_step",
+                default_before_step_modules(
+                    self.event_bus,
+                    plugin_modules=cast(Any, before_step_modules),
+                ),
+            ),
+            (
+                "after_step",
+                default_after_step_modules(
+                    self.event_bus,
+                    plugin_modules=cast(Any, after_step_modules),
+                ),
+            ),
+            (
+                "after_reasoning",
+                default_after_reasoning_modules(
+                    self.event_bus,
+                    cast(Any, getattr(pipeline, "_session", None)),
+                    plugin_modules=cast(Any, after_reasoning_modules),
+                ),
+            ),
+            (
+                "after_turn",
+                default_after_turn_modules(
+                    self.event_bus,
+                    cast(Any, getattr(pipeline, "_outbound_port", BusOutboundPort(self.bus))),
+                    cast(Any, context),
+                    cast(int, getattr(pipeline, "_history_window", 500)),
+                    plugin_modules=cast(Any, after_turn_modules),
+                ),
+            ),
+        ]
+
+        parts: list[str] = []
+        for phase_name, modules in phases:
+            parts.append("=" * 60)
+            parts.append(phase_name)
+            parts.append("=" * 60)
+            parts.append(inspect_phase(modules))
+        return "\n".join(parts)
+
     async def stop(self) -> None:
         if self.plugin_manager is not None:
             await self.plugin_manager.terminate_all()

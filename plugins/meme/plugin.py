@@ -14,7 +14,8 @@ _MEME_RE = re.compile(r"<meme:([a-zA-Z0-9_-]+)>", re.IGNORECASE)
 
 
 class MemePromptModule:
-    requires = (_CTX_SLOT,)
+    slot = "meme.prompt"
+    requires = ("prompt_render.emit", "citation.prompt", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, plugin: "MemePlugin") -> None:
@@ -47,7 +48,7 @@ class MemePlugin(Plugin):
         self._catalog = MemeCatalog(memes_dir)
         self._decorator = MemeDecorator(self._catalog)
 
-    def prompt_render_modules_bottom(self) -> list[object]:
+    def prompt_render_modules(self) -> list[object]:
         return [MemePromptModule(self)]
 
     @on_after_reasoning()

@@ -147,14 +147,13 @@ def default_prompt_render_modules(
     context: ContextBuilder,
     plugin_modules: PromptRenderModules | None = None,
 ) -> PromptRenderModules:
-    builtins = [
+    builtins: PromptRenderModules = [
         _BuildPromptRenderCtxModule(),
         _EmitPromptRenderCtxModule(bus),
         _CollectPromptExportSlotsModule(),
         _RenderPromptModule(context),
         _ReturnPromptRenderResultModule(),
     ]
-    return topo_sort_modules(builtins + list(plugin_modules or []))
     return cast(
         PromptRenderModules,
         topo_sort_modules(builtins + list(plugin_modules or [])),

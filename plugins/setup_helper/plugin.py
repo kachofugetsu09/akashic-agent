@@ -7,7 +7,8 @@ from agent.plugins import Plugin
 
 
 class ChatIdCommandModule:
-    requires = ("session:session",)
+    slot = "setup_helper.chatid"
+    requires = ("before_turn.acquire_session", "session:session")
     produces = ("session:ctx",)
 
     async def run(self, frame: object) -> object:
@@ -29,7 +30,7 @@ class SetupHelper(Plugin):
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
         return [("chatid", "查看我的 chat_id（配置 proactive 用）")]
 
-    def before_turn_modules_early(self) -> list[object]:
+    def before_turn_modules(self) -> list[object]:
         return cast("list[object]", [ChatIdCommandModule()])
 
 
