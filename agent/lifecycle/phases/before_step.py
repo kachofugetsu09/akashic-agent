@@ -32,6 +32,8 @@ _ABORT_REPLY_SLOT = "step:abort_reply"
 
 
 class _BuildBeforeStepCtxModule:
+    slot = "before_step.build_ctx"
+    requires: tuple[str, ...] = ()
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
@@ -52,7 +54,8 @@ class _BuildBeforeStepCtxModule:
 
 
 class _EmitBeforeStepCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_step.emit"
+    requires = ("before_step.build_ctx", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, bus: EventBus) -> None:
@@ -65,7 +68,8 @@ class _EmitBeforeStepCtxModule:
 
 
 class _InjectHintsModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_step.inject_hints"
+    requires = ("before_step.collect_exports", _CTX_SLOT)
 
     async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
         ctx = cast(BeforeStepCtx, frame.slots[_CTX_SLOT])
@@ -80,7 +84,8 @@ class _InjectHintsModule:
 
 
 class _CollectBeforeStepExportSlotsModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_step.collect_exports"
+    requires = ("before_step.emit", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
@@ -97,7 +102,8 @@ class _CollectBeforeStepExportSlotsModule:
 
 
 class _ReturnBeforeStepCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_step.return"
+    requires = ("before_step.inject_hints", _CTX_SLOT)
 
     async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
         frame.output = cast(BeforeStepCtx, frame.slots[_CTX_SLOT])

@@ -11,6 +11,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    topo_sort_modules,
 )
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 
@@ -35,6 +36,8 @@ _ABORT_REPLY_SLOT = "session:abort_reply"
 
 
 class _AcquireSessionModule:
+    slot = "before_turn.acquire_session"
+    requires: tuple[str, ...] = ()
     produces = (_SESSION_SLOT,)
 
     def __init__(self, session_manager: SessionManager) -> None:
@@ -49,7 +52,8 @@ class _AcquireSessionModule:
 
 
 class _PrepareContextModule:
-    requires = (_SESSION_SLOT,)
+    slot = "before_turn.prepare_context"
+    requires = ("before_turn.acquire_session", _SESSION_SLOT)
     produces = (_CONTEXT_BUNDLE_SLOT,)
 
     def __init__(self, context_store: ContextStore) -> None:
@@ -70,7 +74,8 @@ class _PrepareContextModule:
 
 
 class _BuildBeforeTurnCtxModule:
-    requires = (_CONTEXT_BUNDLE_SLOT,)
+    slot = "before_turn.build_ctx"
+    requires = ("before_turn.prepare_context", _CONTEXT_BUNDLE_SLOT)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
@@ -93,7 +98,8 @@ class _BuildBeforeTurnCtxModule:
 
 
 class _EmitBeforeTurnCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_turn.emit"
+    requires = ("before_turn.build_ctx", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, bus: EventBus) -> None:
@@ -106,7 +112,8 @@ class _EmitBeforeTurnCtxModule:
 
 
 class _ReturnBeforeTurnCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_turn.return"
+    requires = ("before_turn.collect_exports", _CTX_SLOT)
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         frame.output = cast(BeforeTurnCtx, frame.slots[_CTX_SLOT])
@@ -114,7 +121,8 @@ class _ReturnBeforeTurnCtxModule:
 
 
 class _CollectBeforeTurnExportSlotsModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_turn.collect_exports"
+    requires = ("before_turn.emit", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
@@ -134,18 +142,14 @@ def default_before_turn_modules(
     bus: EventBus,
     session_manager: SessionManager,
     context_store: ContextStore,
-    plugin_modules_early: BeforeTurnModules | None = None,
-    plugin_modules_late: BeforeTurnModules | None = None,
+    plugin_modules: BeforeTurnModules | None = None,
 ) -> BeforeTurnModules:
-    early_modules = plugin_modules_early or []
-    late_modules = plugin_modules_late or []
-    return [
+    builtins = [
         _AcquireSessionModule(session_manager),
-        *early_modules,
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),
         _EmitBeforeTurnCtxModule(bus),
-        *late_modules,
         _CollectBeforeTurnExportSlotsModule(),
         _ReturnBeforeTurnCtxModule(),
     ]
+    return topo_sort_modules(builtins + list(plugin_modules or []))

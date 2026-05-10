@@ -35,6 +35,8 @@ _EXTRA_HINT_PREFIX = "prompt:extra_hint:"
 
 
 class _BuildPromptRenderCtxModule:
+    slot = "prompt_render.build_ctx"
+    requires: tuple[str, ...] = ()
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
@@ -57,7 +59,8 @@ class _BuildPromptRenderCtxModule:
 
 
 class _EmitPromptRenderCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "prompt_render.emit"
+    requires = ("prompt_render.build_ctx", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, bus: EventBus) -> None:
@@ -70,7 +73,8 @@ class _EmitPromptRenderCtxModule:
 
 
 class _RenderPromptModule:
-    requires = (_CTX_SLOT,)
+    slot = "prompt_render.render"
+    requires = ("prompt_render.collect_exports", _CTX_SLOT)
     produces = (_RESULT_SLOT,)
 
     def __init__(self, context: ContextBuilder) -> None:
@@ -107,7 +111,8 @@ class _RenderPromptModule:
 
 
 class _CollectPromptExportSlotsModule:
-    requires = (_CTX_SLOT,)
+    slot = "prompt_render.collect_exports"
+    requires = ("prompt_render.emit", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
@@ -128,7 +133,8 @@ class _CollectPromptExportSlotsModule:
 
 
 class _ReturnPromptRenderResultModule:
-    requires = (_RESULT_SLOT,)
+    slot = "prompt_render.return"
+    requires = ("prompt_render.render", _RESULT_SLOT)
 
     async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
         frame.output = cast(PromptRenderResult, frame.slots[_RESULT_SLOT])

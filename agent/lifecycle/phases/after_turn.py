@@ -47,6 +47,9 @@ _TELEMETRY_PREFIX = "turn:telemetry:"
 
 
 class _BuildTurnWorkModule:
+    slot = "after_turn.build_work"
+    requires: tuple[str, ...] = ()
+
     def __init__(
         self,
         context: ContextBuilder,
@@ -92,6 +95,7 @@ class _BuildTurnWorkModule:
 
 class _BuildTurnCommittedModule:
     requires = (
+        "after_turn.collect_extras",
         _BUDGET_SLOT,
         _REACT_STATS_SLOT,
         _TOOL_CHAIN_SLOT,
@@ -99,6 +103,7 @@ class _BuildTurnCommittedModule:
         _EXTRA_SLOT,
         _EXTRA_COLLECTED_SLOT,
     )
+    slot = "after_turn.build_committed"
     produces = (_TURN_COMMITTED_SLOT,)
 
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
@@ -130,7 +135,8 @@ class _BuildTurnCommittedModule:
 
 
 class _CollectAfterTurnExtraSlotsModule:
-    requires = (_EXTRA_SLOT,)
+    slot = "after_turn.collect_extras"
+    requires = ("after_turn.build_work", _EXTRA_SLOT)
     produces = (_EXTRA_SLOT, _EXTRA_COLLECTED_SLOT)
 
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
@@ -142,7 +148,8 @@ class _CollectAfterTurnExtraSlotsModule:
 
 
 class _FanoutTurnCommittedModule:
-    requires = (_TURN_COMMITTED_SLOT,)
+    slot = "after_turn.fanout_committed"
+    requires = ("after_turn.build_committed", _TURN_COMMITTED_SLOT)
 
     def __init__(self, bus: EventBus) -> None:
         self._bus = bus
@@ -153,7 +160,8 @@ class _FanoutTurnCommittedModule:
 
 
 class _LogBudgetModule:
-    requires = (_BUDGET_SLOT, _REACT_STATS_SLOT)
+    slot = "after_turn.log_budget"
+    requires = ("after_turn.build_work", _BUDGET_SLOT, _REACT_STATS_SLOT)
 
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
         state = frame.input.state
@@ -169,6 +177,8 @@ class _LogBudgetModule:
 
 
 class _BuildAfterTurnCtxModule:
+    slot = "after_turn.build_ctx"
+    requires = ("after_turn.fanout_committed",)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
@@ -187,7 +197,8 @@ class _BuildAfterTurnCtxModule:
 
 
 class _FanoutAfterTurnCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "after_turn.fanout_ctx"
+    requires = ("after_turn.collect_telemetry", _CTX_SLOT)
 
     def __init__(self, bus: EventBus) -> None:
         self._bus = bus
@@ -198,7 +209,8 @@ class _FanoutAfterTurnCtxModule:
 
 
 class _CollectAfterTurnTelemetrySlotsModule:
-    requires = (_CTX_SLOT,)
+    slot = "after_turn.collect_telemetry"
+    requires = ("after_turn.build_ctx", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
@@ -210,7 +222,8 @@ class _CollectAfterTurnTelemetrySlotsModule:
 
 
 class _DispatchOutboundModule:
-    requires = (_CTX_SLOT,)
+    slot = "after_turn.dispatch"
+    requires = ("after_turn.fanout_ctx", _CTX_SLOT)
 
     def __init__(self, outbound: OutboundPort) -> None:
         self._outbound = outbound
@@ -233,6 +246,9 @@ class _DispatchOutboundModule:
 
 
 class _ReturnOutboundMessageModule:
+    slot = "after_turn.return"
+    requires = ("after_turn.dispatch",)
+
     async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
         frame.output = frame.input.outbound
         return frame

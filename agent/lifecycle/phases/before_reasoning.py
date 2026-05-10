@@ -10,6 +10,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    topo_sort_modules,
 )
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeReasoningInput
 from bus.event_bus import EventBus
@@ -34,6 +35,9 @@ _ABORT_REPLY_SLOT = "reasoning:abort_reply"
 
 
 class _SyncToolContextModule:
+    slot = "before_reasoning.sync_tools"
+    requires: tuple[str, ...] = ()
+
     def __init__(
         self,
         tools: ToolRegistry,
@@ -59,6 +63,8 @@ class _SyncToolContextModule:
 
 
 class _BuildBeforeReasoningCtxModule:
+    slot = "before_reasoning.build_ctx"
+    requires = ("before_reasoning.sync_tools",)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: BeforeReasoningFrame) -> BeforeReasoningFrame:
@@ -77,7 +83,8 @@ class _BuildBeforeReasoningCtxModule:
 
 
 class _EmitBeforeReasoningCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_reasoning.emit"
+    requires = ("before_reasoning.build_ctx", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, bus: EventBus) -> None:
@@ -90,7 +97,8 @@ class _EmitBeforeReasoningCtxModule:
 
 
 class _PromptWarmupModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_reasoning.warmup"
+    requires = ("before_reasoning.collect_exports", _CTX_SLOT)
 
     def __init__(self, context: ContextBuilder) -> None:
         self._context = context
@@ -114,7 +122,8 @@ class _PromptWarmupModule:
 
 
 class _CollectBeforeReasoningExportSlotsModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_reasoning.collect_exports"
+    requires = ("before_reasoning.emit", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: BeforeReasoningFrame) -> BeforeReasoningFrame:
@@ -132,7 +141,8 @@ class _CollectBeforeReasoningExportSlotsModule:
 
 
 class _ReturnBeforeReasoningCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "before_reasoning.return"
+    requires = ("before_reasoning.warmup", _CTX_SLOT)
 
     async def run(self, frame: BeforeReasoningFrame) -> BeforeReasoningFrame:
         frame.output = cast(BeforeReasoningCtx, frame.slots[_CTX_SLOT])
@@ -144,18 +154,14 @@ def default_before_reasoning_modules(
     tools: ToolRegistry,
     session_manager: SessionManager,
     context: ContextBuilder,
-    plugin_modules_before_emit: BeforeReasoningModules | None = None,
-    plugin_modules_after_emit: BeforeReasoningModules | None = None,
+    plugin_modules: BeforeReasoningModules | None = None,
 ) -> BeforeReasoningModules:
-    before_emit = plugin_modules_before_emit or []
-    after_emit = plugin_modules_after_emit or []
-    return [
+    builtins = [
         _SyncToolContextModule(tools, session_manager),
         _BuildBeforeReasoningCtxModule(),
-        *before_emit,
         _EmitBeforeReasoningCtxModule(bus),
-        *after_emit,
         _CollectBeforeReasoningExportSlotsModule(),
         _PromptWarmupModule(context),
         _ReturnBeforeReasoningCtxModule(),
     ]
+    return topo_sort_modules(builtins + list(plugin_modules or []))
