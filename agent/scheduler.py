@@ -489,6 +489,8 @@ class SchedulerService:
                 chat_id=job.chat_id,
                 session_key=f"scheduler:{job.id}",
                 omit_user_turn=True,
+                skip_post_memory=True,
+                disabled_tools=["message_push"],
             )
             elapsed = time.monotonic() - t0
             self.tracker.record(elapsed)

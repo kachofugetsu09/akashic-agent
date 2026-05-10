@@ -113,6 +113,92 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
 
 
+def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
+    provider = _Provider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("c1", "message_push", {"message": "天气"})],
+            ),
+            LLMResponse(content="最终天气", tool_calls=[]),
+        ]
+    )
+    push = _DummyTool("message_push")
+    tools = ToolRegistry()
+    tools.register(push, always_on=True, risk="external-side-effect")
+    reasoner = DefaultReasoner(
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(
+        reasoner.run(
+            [{"role": "user", "content": "发天气"}],
+            disabled_tools={"message_push"},
+        )
+    )
+
+    first_tool_names = [
+        schema["function"]["name"] for schema in provider.calls[0]["tools"]
+    ]
+    assert "message_push" not in first_tool_names
+    assert push.calls == []
+    assert result.reply == "最终天气"
+    assert result.metadata["tools_used"] == []
+    calls = result.metadata["tool_chain"][0]["calls"]
+    assert calls[0]["name"] == "message_push"
+    assert calls[0]["status"] == "blocked"
+
+
+def test_default_reasoner_tool_search_cannot_reunlock_disabled_tool():
+    provider = _Provider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("s1", "tool_search", {"query": "select:message_push"})
+                ],
+            ),
+            LLMResponse(content="最终天气", tool_calls=[]),
+        ]
+    )
+    push = _DummyTool("message_push")
+    tools = ToolRegistry()
+    tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
+    tools.register(push, always_on=True, risk="external-side-effect")
+    reasoner = DefaultReasoner(
+        llm=cast(Any, LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider))),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=True,
+        memory_window=40,
+    )
+
+    result = asyncio.run(
+        reasoner.run(
+            [{"role": "user", "content": "发天气"}],
+            disabled_tools={"message_push"},
+        )
+    )
+
+    first_tool_names = [
+        schema["function"]["name"] for schema in provider.calls[0]["tools"]
+    ]
+    second_tool_names = [
+        schema["function"]["name"] for schema in provider.calls[1]["tools"]
+    ]
+    assert "message_push" not in first_tool_names
+    assert "message_push" not in second_tool_names
+    assert push.calls == []
+    assert result.reply == "最终天气"
+    assert "message_push" not in result.metadata["visible_names"]
+
+
 def test_default_reasoner_zero_max_iterations_is_unlimited():
     provider = _Provider(
         [

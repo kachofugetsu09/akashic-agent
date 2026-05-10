@@ -944,6 +944,8 @@ class MarkdownMemoryMaintenance:
         self._save_session = request.save_session
 
     def on_turn_committed(self, event: TurnCommitted) -> None:
+        if bool((event.extra or {}).get("skip_post_memory")):
+            return
         self._enqueue_maintenance(event.session_key)
 
     def _enqueue_maintenance(self, session_key: str) -> None:

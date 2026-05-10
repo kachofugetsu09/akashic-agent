@@ -84,6 +84,14 @@ def _supports_stream_events(channel: str, chat_id: str) -> bool:
     return bool(policy is not None and policy(chat_id))
 
 
+def _suppresses_stream_events(msg: object) -> bool:
+    metadata: object = getattr(msg, "metadata", None)
+    if not isinstance(metadata, dict):
+        return False
+    typed = cast(dict[str, object], metadata)
+    return bool(typed.get("suppress_stream_events"))
+
+
 def _item_content(item: InboundItem) -> str:
     if isinstance(item, InboundMessage):
         return item.content
@@ -171,6 +179,8 @@ class AgentLoop:
             return None
 
         def _build(msg: object) -> StreamSink | None:
+            if _suppresses_stream_events(msg):
+                return None
             downstream = factory(msg)
             channel = str(getattr(msg, "channel", ""))
             chat_id = str(getattr(msg, "chat_id", ""))
@@ -198,6 +208,8 @@ class AgentLoop:
     def _build_stream_event_sink(self, msg: object) -> StreamSink | None:
         channel = str(getattr(msg, "channel", ""))
         chat_id = str(getattr(msg, "chat_id", ""))
+        if _suppresses_stream_events(msg):
+            return None
         if not _supports_stream_events(channel, chat_id):
             return None
         session_key = str(getattr(msg, "session_key", f"{channel}:{chat_id}"))
@@ -605,13 +617,25 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         omit_user_turn: bool = False,
+        skip_post_memory: bool = False,
+        stream_events: bool = False,
+        disabled_tools: list[str] | None = None,
     ) -> str:
+        metadata: dict[str, object] = {}
+        if omit_user_turn:
+            metadata["omit_user_turn"] = True
+        if skip_post_memory:
+            metadata["skip_post_memory"] = True
+        if not stream_events:
+            metadata["suppress_stream_events"] = True
+        if disabled_tools:
+            metadata["disabled_tools"] = list(disabled_tools)
         msg = InboundMessage(
             channel=channel,
             sender="user",
             chat_id=chat_id,
             content=content,
-            metadata={"omit_user_turn": True} if omit_user_turn else {},
+            metadata=metadata,
         )
         response = await self._process(
             msg,

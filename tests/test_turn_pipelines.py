@@ -21,7 +21,7 @@ from agent.retrieval.protocol import (
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
-from bus.events import InboundMessage
+from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryEngineRetrieveResult
 from bootstrap.wiring import wire_turn_lifecycle
@@ -99,6 +99,53 @@ def test_stream_events_only_support_telegram_private_chat():
     assert not _supports_stream_events("telegram", "@alice")
     assert not _supports_stream_events("qq", "123")
     assert not _supports_stream_events("cli", "direct")
+
+
+def test_stream_event_sink_respects_suppression_flag():
+    loop = object.__new__(AgentLoop)
+    loop._event_bus = EventBus()
+    msg = InboundMessage(
+        channel="telegram",
+        sender="u",
+        chat_id="123",
+        content="hello",
+        metadata={"suppress_stream_events": True},
+    )
+
+    assert AgentLoop._build_stream_event_sink(loop, msg) is None
+
+
+@pytest.mark.asyncio
+async def test_process_direct_suppresses_stream_and_memory_when_requested():
+    loop = object.__new__(AgentLoop)
+    loop._process = AsyncMock(
+        return_value=OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="ok",
+        )
+    )
+
+    result = await AgentLoop.process_direct(
+        loop,
+        content="天气",
+        session_key="scheduler:job",
+        channel="telegram",
+        chat_id="123",
+        omit_user_turn=True,
+        skip_post_memory=True,
+        disabled_tools=["message_push"],
+    )
+
+    msg = loop._process.await_args.args[0]
+    assert result == "ok"
+    assert msg.metadata == {
+        "omit_user_turn": True,
+        "skip_post_memory": True,
+        "suppress_stream_events": True,
+        "disabled_tools": ["message_push"],
+    }
+    assert loop._process.await_args.kwargs["dispatch_outbound"] is False
 
 
 def _make_loop(

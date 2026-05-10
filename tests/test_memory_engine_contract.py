@@ -283,6 +283,26 @@ async def test_default_memory_engine_respects_skip_post_memory_event_flag():
     await event_bus.aclose()
 
 
+def test_markdown_maintenance_respects_skip_post_memory_event_flag():
+    maintenance = MarkdownMemoryMaintenance.__new__(MarkdownMemoryMaintenance)
+    maintenance._enqueue_maintenance = MagicMock()
+
+    maintenance.on_turn_committed(
+        TurnCommitted(
+            session_key="scheduler:job",
+            channel="telegram",
+            chat_id="1",
+            input_message="天气",
+            persisted_user_message=None,
+            assistant_response="不带伞",
+            tools_used=[],
+            extra={"skip_post_memory": True},
+        )
+    )
+
+    maintenance._enqueue_maintenance.assert_not_called()
+
+
 async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
     event_bus = EventBus()
     session = SimpleNamespace(
