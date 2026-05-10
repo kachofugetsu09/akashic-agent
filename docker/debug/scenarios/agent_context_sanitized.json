@@ -1,0 +1,25 @@
+{
+  "name": "agent_context_browser_vs_nat_sanitized",
+  "turns": [
+    {
+      "role": "user",
+      "content": "之前我们配好了一个常住无头浏览器，用的是ExampleBrowser改装的Chromium，现在example-browser.service已经active running，监听端口9311，--user-data-dir指向/srv/example-browser/profile，开机自启。你以后需要操作网页的时候直接connect_over_cdp('http://localhost:9311')就行，我已经在里面登录了常用站点。",
+      "label": "browser_deployed"
+    },
+    {
+      "role": "user",
+      "content": "顺便问一下，家里另一台机器想从外面SSH回来，但宽带光猫拿到的是10.64.12.34，应该是CGNAT。直接端口映射的方法在CGNAT下不行对吗？有什么穿透方案？",
+      "label": "nat_discussion"
+    },
+    {
+      "action": "consolidate",
+      "label": "after_browser_and_nat",
+      "force": true
+    },
+    {
+      "role": "user",
+      "content": "你现在知道我的常住浏览器监听哪个端口吗？我要用你帮我查一下某个控制台的用量。",
+      "final": true
+    }
+  ]
+}
