@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+"""
+shell_background_probe.py
+
+验证新版 shell 后台设计：agent 能自主发现卡死任务并调用 task_stop，
+整个生命周期在单次 turn 内完成，不依赖系统自动回调。
+
+被测行为：
+  1. agent 对外观无害的命令启动 shell
+  2. 命令 15s 后 auto-promote 转后台，agent 拿到 task_id
+  3. agent 用 task_output 轮询，发现从无输出（since_last_output_ms=null）
+  4. agent 判定卡死，调用 task_stop
+  5. agent 给用户一条最终回复，整个 turn 内完成，无孤悬后台进程
+"""
 from __future__ import annotations
 
 import argparse
@@ -14,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+
+# ── 路径 ─────────────────────────────────────────────────────────────
 
 @dataclass
 class ProbePaths:
@@ -45,14 +60,12 @@ class ProbePaths:
     def observe_db(self) -> Path:
         return self.workspace / "observe" / "observe.db"
 
-    @property
-    def memory_db(self) -> Path:
-        return self.workspace / "memory" / "memory2.db"
-
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
+
+# ── Docker / 配置 ─────────────────────────────────────────────────────
 
 def _run_compose(paths: ProbePaths, args: list[str]) -> None:
     _ = subprocess.run(
@@ -75,12 +88,7 @@ def _bootstrap_profile(paths: ProbePaths, from_profile: str | None) -> None:
     shutil.copy2(src, paths.config)
 
 
-def _replace_section_value(
-    text: str,
-    section_name: str,
-    key: str,
-    value: str,
-) -> str:
+def _replace_section_value(text: str, section_name: str, key: str, value: str) -> str:
     marker = f"[{section_name}]\n"
     if marker not in text:
         return text
@@ -106,6 +114,8 @@ def _isolate_cli_config(config_path: Path) -> str:
     return original
 
 
+# ── DB ────────────────────────────────────────────────────────────────
+
 def _connect_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -117,13 +127,7 @@ def _latest_cli_session_key(db_path: Path) -> str:
     conn = _connect_db(db_path)
     try:
         row = conn.execute(
-            """
-            select key
-            from sessions
-            where key like 'cli:%'
-            order by updated_at desc
-            limit 1
-            """
+            "select key from sessions where key like 'cli:%' order by updated_at desc limit 1"
         ).fetchone()
         return str(row["key"]) if row else ""
     finally:
@@ -143,147 +147,121 @@ def _session_messages(db_path: Path, session_key: str) -> list[dict[str, Any]]:
     conn = _connect_db(db_path)
     try:
         rows = conn.execute(
-            """
-            select seq, role, content, tool_chain, extra, ts
-            from messages
-            where session_key = ?
-            order by seq
-            """,
+            "select seq, role, content, tool_chain, extra, ts from messages "
+            "where session_key = ? order by seq",
             (session_key,),
         ).fetchall()
     finally:
         conn.close()
     result: list[dict[str, Any]] = []
     for row in rows:
-        extra = _json_loads(row["extra"]) or {}
-        result.append(
-            {
-                "seq": int(row["seq"]),
-                "role": str(row["role"]),
-                "content": str(row["content"] or ""),
-                "tool_chain": _json_loads(row["tool_chain"]),
-                "extra": extra,
-                "ts": str(row["ts"]),
-            }
-        )
+        result.append({
+            "seq": int(row["seq"]),
+            "role": str(row["role"]),
+            "content": str(row["content"] or ""),
+            "tool_chain": _json_loads(row["tool_chain"]),
+            "extra": _json_loads(row["extra"]) or {},
+            "ts": str(row["ts"]),
+        })
     return result
 
 
-def _observe_turns(db_path: Path, session_key: str) -> list[dict[str, Any]]:
-    if not db_path.exists():
+# ── 工具调用提取 ──────────────────────────────────────────────────────
+
+def _flatten_calls(tool_chain: Any) -> list[dict[str, Any]]:
+    """从 tool_chain 里按顺序提取所有工具调用。"""
+    if not isinstance(tool_chain, list):
         return []
-    conn = _connect_db(db_path)
-    try:
-        rows = conn.execute(
-            """
-            select id, user_msg, tool_calls, error
-            from turns
-            where session_key = ?
-            order by id
-            """,
-            (session_key,),
-        ).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-    return [
-        {
-            "id": int(row["id"]),
-            "user": str(row["user_msg"] or ""),
-            "tool_calls": _json_loads(row["tool_calls"]) or [],
-            "error": str(row["error"] or ""),
-        }
-        for row in rows
-    ]
+    calls: list[dict[str, Any]] = []
+    for group in tool_chain:
+        if not isinstance(group, dict):
+            continue
+        for call in group.get("calls") or []:
+            if isinstance(call, dict):
+                calls.append(call)
+    return calls
 
 
-def _memory_baseline(memory_db: Path) -> dict[str, str]:
-    if not memory_db.exists():
-        return {}
-    conn = _connect_db(memory_db)
-    try:
-        rows = conn.execute("select id, updated_at from memory_items").fetchall()
-    except sqlite3.Error:
-        return {}
-    finally:
-        conn.close()
-    return {str(row["id"]): str(row["updated_at"] or "") for row in rows}
+def _calls_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg["role"] == "assistant":
+            calls.extend(_flatten_calls(msg.get("tool_chain")))
+    return calls
 
 
-def _changed_memory_items(
-    memory_db: Path,
-    baseline: dict[str, str],
-) -> list[dict[str, str]]:
-    if not memory_db.exists():
-        return []
-    conn = _connect_db(memory_db)
-    try:
-        rows = conn.execute(
-            """
-            select id, memory_type, summary, source_ref, updated_at
-            from memory_items
-            order by updated_at
-            """
-        ).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-    return [
-        {
-            "id": str(row["id"]),
-            "memory_type": str(row["memory_type"] or ""),
-            "summary": str(row["summary"] or ""),
-            "source_ref": str(row["source_ref"] or ""),
-        }
-        for row in rows
-        if baseline.get(str(row["id"])) != str(row["updated_at"] or "")
-    ]
+# ── Checks ────────────────────────────────────────────────────────────
 
-
-def _memory_writes(
-    observe_db: Path,
-    session_key: str,
-    started_at: str,
-) -> list[dict[str, str]]:
-    if not observe_db.exists():
-        return []
-    conn = _connect_db(observe_db)
-    try:
-        rows = conn.execute(
-            """
-            select action, item_id, memory_type, summary, source_ref, ts
-            from memory_writes
-            where session_key = ? and ts >= ?
-            order by id
-            """,
-            (session_key, started_at),
-        ).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-    return [
-        {
-            "action": str(row["action"] or ""),
-            "item_id": str(row["item_id"] or ""),
-            "memory_type": str(row["memory_type"] or ""),
-            "summary": str(row["summary"] or ""),
-            "source_ref": str(row["source_ref"] or ""),
-            "ts": str(row["ts"] or ""),
-        }
-        for row in rows
-    ]
-
-
-async def _read_assistant(
-    reader: asyncio.StreamReader,
-    timeout: float,
+def _build_checks(
+    *,
+    responses: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    all_calls = _calls_from_messages(messages)
+    call_names = [c.get("name", "") for c in all_calls]
+
+    shell_idx = next((i for i, n in enumerate(call_names) if n == "shell"), -1)
+    task_output_idx = next((i for i, n in enumerate(call_names) if n == "task_output"), -1)
+    task_stop_idx = next((i for i, n in enumerate(call_names) if n == "task_stop"), -1)
+
+    assistant_messages = [m for m in messages if m["role"] == "assistant"]
+    # 旧格式消息："后台命令已..." 由已删除的 process_shell_completion_event 生成
+    old_format_messages = [
+        m for m in assistant_messages if "后台命令已" in m["content"]
+    ]
+
+    # task_output 调用里有没有拿到 status=done（不应该，死循环不会自然结束）
+    task_output_done = any(
+        _json_loads(c.get("output", "")) is not None
+        and isinstance(_json_loads(c.get("output", "")), dict)
+        and _json_loads(c.get("output", "")).get("status") == "done"
+        for c in all_calls
+        if c.get("name") == "task_output"
+    )
+
+    checks: dict[str, Any] = {
+        # 核心行为验证
+        "shell_called": shell_idx >= 0,
+        "task_output_called": task_output_idx >= 0,
+        "task_stop_called": task_stop_idx >= 0,
+        # 顺序：shell → task_output → task_stop
+        "correct_call_order": (
+            shell_idx >= 0
+            and task_output_idx > shell_idx
+            and task_stop_idx > task_output_idx
+        ),
+        # 单 turn 内完成，无孤悬回调产生的额外消息
+        "single_assistant_turn": len(assistant_messages) == 1,
+        # 旧格式的自动回调消息不再出现
+        "no_old_completion_format": len(old_format_messages) == 0,
+        # 死循环不应该自然结束，agent 不应该看到 status=done
+        "task_not_done_naturally": not task_output_done,
+        # 调用序列摘要（供报告查看）
+        "call_sequence": call_names,
+    }
+    checks["passed"] = all(
+        bool(checks[k])
+        for k in (
+            "shell_called",
+            "task_output_called",
+            "task_stop_called",
+            "correct_call_order",
+            "single_assistant_turn",
+            "no_old_completion_format",
+        )
+    )
+    return checks
+
+
+# ── CLI 通信 ──────────────────────────────────────────────────────────
+
+async def _read_assistant(reader: asyncio.StreamReader, timeout: float) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        line = await asyncio.wait_for(reader.readline(), timeout=deadline - time.monotonic())
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        line = await asyncio.wait_for(reader.readline(), timeout=remaining)
         if not line:
             raise RuntimeError("CLI 连接已断开")
         data = json.loads(line)
@@ -295,106 +273,14 @@ async def _read_assistant(
     raise TimeoutError("等待 assistant 回复超时")
 
 
-async def _send(
-    writer: asyncio.StreamWriter,
-    text: str,
-) -> None:
+async def _send(writer: asyncio.StreamWriter, text: str) -> None:
     writer.write((json.dumps({"content": text}, ensure_ascii=False) + "\n").encode())
     await writer.drain()
 
 
-def _extract_marker(text: str) -> str:
-    match = re.search(r"AKASHIC_BG_DONE_[0-9a-f]{32}", text)
-    return match.group(0) if match else ""
+# ── 报告 ──────────────────────────────────────────────────────────────
 
-
-def _has_shell_tool(msg: dict[str, Any]) -> bool:
-    extra = msg.get("extra") if isinstance(msg.get("extra"), dict) else {}
-    tools_used = extra.get("tools_used") if isinstance(extra, dict) else None
-    if isinstance(tools_used, list) and "shell" in tools_used:
-        return True
-    chain = msg.get("tool_chain")
-    if not isinstance(chain, list):
-        return False
-    for group in chain:
-        if not isinstance(group, dict):
-            continue
-        calls = group.get("calls")
-        if not isinstance(calls, list):
-            continue
-        for call in calls:
-            if isinstance(call, dict) and call.get("name") == "shell":
-                return True
-    return False
-
-
-def _build_checks(
-    *,
-    responses: list[dict[str, Any]],
-    messages: list[dict[str, Any]],
-    memory_writes: list[dict[str, str]],
-    memory_items: list[dict[str, str]],
-) -> dict[str, Any]:
-    completion_messages = [
-        msg
-        for msg in messages
-        if msg["role"] == "assistant" and "后台命令已" in msg["content"]
-    ]
-    first_shell_messages = [
-        msg
-        for msg in messages
-        if msg["role"] == "assistant" and _has_shell_tool(msg)
-    ]
-    marker = ""
-    for row in responses:
-        marker = _extract_marker(row["content"])
-        if marker:
-            break
-    memory_blob = "\n".join(
-        [
-            *(row["summary"] + "\n" + row["source_ref"] for row in memory_writes),
-            *(row["summary"] + "\n" + row["source_ref"] for row in memory_items),
-        ]
-    )
-    fake_user_rows = [
-        msg
-        for msg in messages
-        if msg["role"] == "user" and "[后台 shell 完成]" in msg["content"]
-    ]
-    completion_uses_shell = [
-        msg
-        for msg in completion_messages
-        if _has_shell_tool(msg)
-    ]
-    checks = {
-        "first_turn_used_shell": bool(first_shell_messages),
-        "has_auto_completion_message": bool(completion_messages),
-        "no_fake_user_shell_completion": not fake_user_rows,
-        "completion_tools_used_is_empty": not completion_uses_shell,
-        "completion_marker_observed": bool(marker),
-        "completion_marker_not_in_memory": bool(marker) and marker not in memory_blob,
-        "assistant_completion_count": len(completion_messages),
-        "exact_marker": marker,
-    }
-    checks["passed"] = all(
-        bool(checks[name])
-        for name in (
-            "first_turn_used_shell",
-            "has_auto_completion_message",
-            "no_fake_user_shell_completion",
-            "completion_tools_used_is_empty",
-            "completion_marker_observed",
-            "completion_marker_not_in_memory",
-        )
-    )
-    return checks
-
-
-def _write_report(
-    *,
-    report_base: Path,
-    payload: dict[str, Any],
-) -> None:
+def _write_report(*, report_base: Path, payload: dict[str, Any]) -> None:
     report_base.parent.mkdir(parents=True, exist_ok=True)
     report_json = report_base.with_suffix(".json")
     report_md = report_base.with_suffix(".md")
@@ -402,58 +288,59 @@ def _write_report(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    checks = payload["checks"]
     lines = [
         "# shell background probe",
         "",
-        "```text",
-        "docker/debug profile",
-        "  |",
-        "  +-- cli user prompt",
-        "  |     |",
-        "  |     +-- shell auto-promote after 15s",
-        "  |",
-        "  +-- shell completion inbound",
-        "        |",
-        "        +-- assistant-only persistence",
+        "验证 agent 能自主发现卡死的后台 shell 任务并调用 task_stop，",
+        "整个生命周期在单次 turn 内完成，不依赖系统自动回调。",
+        "",
+        "```",
+        "shell(死循环命令)",
+        "  └─ auto-promote 15s → task_id",
+        "       └─ task_output(block=true) → since_last_output_ms=null",
+        "            └─ task_stop → 最终回复（单 turn 完成）",
         "```",
         "",
         f"- profile: {payload['profile']}",
         f"- session_key: {payload['session_key']}",
-        f"- passed: {payload['checks']['passed']}",
-        f"- exact_marker: {payload['checks']['exact_marker']}",
+        f"- passed: **{checks['passed']}**",
         "",
         "## Checks",
         "",
     ]
-    for key, value in payload["checks"].items():
-        lines.append(f"- {key}: {value}")
-    lines.extend(["", "## Responses", ""])
-    for index, row in enumerate(payload["responses"], 1):
-        lines.extend([f"### Response {index}", "", row["content"], ""])
+    for key, value in checks.items():
+        if key == "call_sequence":
+            lines.append(f"- call_sequence: {' → '.join(value) if value else '(empty)'}")
+        else:
+            icon = "✓" if value else "✗"
+            lines.append(f"- {icon} {key}: {value}")
+    lines.extend(["", "## Agent Response", ""])
+    for i, r in enumerate(payload["responses"], 1):
+        lines.extend([f"### Response {i}", "", r["content"], ""])
     lines.extend(["## Session Messages", ""])
     for row in payload["session_messages"]:
         content = row["content"].replace("\n", "\\n")
-        if len(content) > 180:
-            content = content[:180] + "..."
-        tools_used = row["extra"].get("tools_used") if isinstance(row["extra"], dict) else None
-        lines.append(
-            f"- seq={row['seq']} role={row['role']} tools_used={tools_used} content={content}"
-        )
-    lines.extend(["", "## Memory Writes", ""])
-    if payload["memory_writes"]:
-        for row in payload["memory_writes"]:
-            lines.append(f"- {row['action']} [{row['memory_type']}] {row['summary']}")
-    else:
-        lines.append("- none")
-    lines.extend(["", "## Changed Memory Items", ""])
-    if payload["changed_memory_items"]:
-        for row in payload["changed_memory_items"]:
-            lines.append(f"- [{row['memory_type']}] {row['summary']}")
-    else:
-        lines.append("- none")
+        if len(content) > 200:
+            content = content[:200] + "..."
+        tools = row["extra"].get("tools_used") if isinstance(row["extra"], dict) else None
+        lines.append(f"- seq={row['seq']} role={row['role']} tools={tools} | {content}")
     report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"markdown: {report_md}")
-    print(f"json: {report_json}")
+    print(f"json:     {report_json}")
+
+
+# ── 主流程 ────────────────────────────────────────────────────────────
+
+# 死循环命令：外表像"运行中"，实际永远无输出
+# iter(int, 1) 是永远不停的迭代器；time.sleep(1) 让进程安静占着 CPU
+_HIDDEN_LOOP_COMMAND = "python3 -c \"import time; [time.sleep(1) for _ in iter(int, 1)]\""
+
+# 发给 agent 的 prompt：不暴露循环意图，agent 只能通过 task_output 观察到什么都没输出
+_PROBE_PROMPT = (
+    "帮我运行下面这个命令，告诉我它的输出是什么。\n\n"
+    f"命令：{_HIDDEN_LOOP_COMMAND}"
+)
 
 
 async def _run_probe(args: argparse.Namespace) -> None:
@@ -468,17 +355,12 @@ async def _run_probe(args: argparse.Namespace) -> None:
     try:
         if args.reset_workspace:
             _run_compose(paths, ["run", "--rm", "akashic-debug", "reset-workspace"])
+
         if args.start_agent:
             paths.socket.unlink(missing_ok=True)
             proc = subprocess.Popen(
-                [
-                    "docker",
-                    "compose",
-                    "-f",
-                    str(paths.debug_dir / "docker-compose.yml"),
-                    "up",
-                    "akashic-debug",
-                ],
+                ["docker", "compose", "-f", str(paths.debug_dir / "docker-compose.yml"),
+                 "up", "akashic-debug"],
                 cwd=paths.repo,
                 env={**dict(os.environ), "AKASHIC_DEBUG_PROFILE": paths.profile},
                 stdout=subprocess.DEVNULL if args.quiet_agent else None,
@@ -492,70 +374,54 @@ async def _run_probe(args: argparse.Namespace) -> None:
             if not paths.socket.exists():
                 raise SystemExit(f"等待 socket 超时: {paths.socket}")
 
-        started_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-        memory_baseline = _memory_baseline(paths.memory_db)
         reader, writer = await asyncio.open_unix_connection(str(paths.socket))
-        command = (
-            "python -c 'import time, uuid; "
-            'print("AKASHIC_BG_START", flush=True); '
-            "time.sleep(18); "
-            'print("AKASHIC_BG_DONE_"+uuid.uuid4().hex, flush=True)' "'"
-        )
-        prompt = (
-            "请真实调用 shell 工具执行下面这个命令，不要用文字模拟。"
-            "不要设置 timeout，不要设置 run_in_background=true，让它按默认 15 秒自动转后台。"
-            "拿到 background_task_id 后只告诉我任务已转后台，不要调用 task_output。\n\n"
-            f"命令：{command}"
-        )
         responses: list[dict[str, Any]] = []
         try:
-            await _send(writer, prompt)
-            first = await _read_assistant(reader, args.turn_timeout)
-            responses.append(first)
-            print(f"first response: {first['content'][:120]}")
-            deadline = time.monotonic() + args.completion_timeout
-            while time.monotonic() < deadline:
-                item = await _read_assistant(
-                    reader,
-                    max(1.0, deadline - time.monotonic()),
-                )
-                responses.append(item)
-                print(f"completion candidate: {item['content'][:120]}")
-                if _extract_marker(item["content"]) or "后台命令已" in item["content"]:
-                    break
-            session_key = _latest_cli_session_key(paths.sessions_db)
-            if not session_key:
-                raise SystemExit("未找到 CLI session")
+            print(f"发送 prompt（死循环命令，agent 不知情）：\n  {_HIDDEN_LOOP_COMMAND}\n")
+            await _send(writer, _PROBE_PROMPT)
+            # agent 需要：15s auto-promote + 至少一次 task_output + task_stop + 回复
+            # 给充裕的 turn_timeout（默认 120s）
+            response = await _read_assistant(reader, args.turn_timeout)
+            responses.append(response)
+            print(f"agent 回复：{response['content'][:200]}")
         finally:
             writer.close()
             await writer.wait_closed()
 
-        await asyncio.sleep(args.after_completion_wait)
+        await asyncio.sleep(2.0)  # 等 DB 写入
+
+        session_key = _latest_cli_session_key(paths.sessions_db)
+        if not session_key:
+            raise SystemExit("未找到 CLI session")
+
         messages = _session_messages(paths.sessions_db, session_key)
-        observe_turns = _observe_turns(paths.observe_db, session_key)
-        writes = _memory_writes(paths.observe_db, session_key, started_at)
-        changed_items = _changed_memory_items(paths.memory_db, memory_baseline)
-        checks = _build_checks(
-            responses=responses,
-            messages=messages,
-            memory_writes=writes,
-            memory_items=changed_items,
-        )
+        checks = _build_checks(responses=responses, messages=messages)
+
+        print("\n── checks ──")
+        for k, v in checks.items():
+            if k == "call_sequence":
+                print(f"  call_sequence: {' → '.join(v) if v else '(empty)'}")
+            else:
+                icon = "✓" if v else "✗"
+                print(f"  {icon} {k}: {v}")
+        print(f"\npassed: {checks['passed']}\n")
+
         payload = {
             "profile": paths.profile,
             "session_key": session_key,
-            "prompt": prompt,
+            "prompt": _PROBE_PROMPT,
+            "command": _HIDDEN_LOOP_COMMAND,
             "responses": responses,
             "session_messages": messages,
-            "observe_turns": observe_turns,
-            "memory_writes": writes,
-            "changed_memory_items": changed_items,
             "checks": checks,
         }
         report_base = args.output or paths.workspace / f"shell-background-probe-{paths.profile}"
         _write_report(report_base=report_base, payload=payload)
+
         if not checks["passed"]:
-            raise SystemExit("shell background probe failed")
+            raise SystemExit("shell background probe FAILED")
+        print("shell background probe PASSED")
+
     finally:
         if proc is not None and args.stop_agent:
             _run_compose(paths, ["down"])
@@ -563,15 +429,18 @@ async def _run_probe(args: argparse.Namespace) -> None:
             paths.config.write_text(original_config, encoding="utf-8")
 
 
+# ── CLI ───────────────────────────────────────────────────────────────
+
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="运行后台 shell 完成回灌真实探针。")
+    parser = argparse.ArgumentParser(
+        description="测试 agent 能否自主发现卡死后台 shell 任务并调用 task_stop。"
+    )
     parser.add_argument("--profile", default="shell-bg-probe")
     parser.add_argument("--bootstrap-from", default="")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--turn-timeout", type=float, default=180)
-    parser.add_argument("--completion-timeout", type=float, default=90)
+    parser.add_argument("--turn-timeout", type=float, default=120,
+                        help="等待 agent 完成整个 turn 的超时秒数（含 auto-promote 15s + 轮询 + 回复）")
     parser.add_argument("--start-timeout", type=float, default=90)
-    parser.add_argument("--after-completion-wait", type=float, default=2)
     parser.add_argument("--reset-workspace", action="store_true")
     parser.add_argument("--start-agent", action="store_true")
     parser.add_argument("--stop-agent", action="store_true")

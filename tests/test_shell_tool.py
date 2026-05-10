@@ -17,8 +17,6 @@ from agent.tools.shell import (
     _validate_command,
     _run,
 )
-from bus.events import ShellCompletionItem
-from bus.queue import MessageBus
 
 _KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
@@ -431,123 +429,6 @@ async def test_shell_run_in_background_returns_task_id(monkeypatch, tmp_path):
 
     # 清理注册表，避免污染其他测试
     _BG_REGISTRY.pop(task_id, None)
-
-
-@pytest.mark.asyncio
-async def test_shell_background_completion_publishes_item(monkeypatch):
-    async def _fake_create_subprocess_shell(command, **kwargs):
-        return _FakeProc(stdout="done from bg", stderr="", returncode=0)
-
-    monkeypatch.setattr(
-        "agent.tools.shell.asyncio.create_subprocess_shell",
-        _fake_create_subprocess_shell,
-    )
-
-    bus = MessageBus()
-    tool = ShellTool(completion_bus=bus)
-    result = json.loads(
-        await tool.execute(
-            command="echo done",
-            description="后台完成",
-            run_in_background=True,
-            channel="telegram",
-            chat_id="123",
-        )
-    )
-    task_id = result["background_task_id"]
-
-    item = await asyncio.wait_for(bus.consume_inbound(), timeout=1.0)
-
-    assert isinstance(item, ShellCompletionItem)
-    assert item.channel == "telegram"
-    assert item.chat_id == "123"
-    assert item.event.task_id == task_id
-    assert item.event.description == "后台完成"
-    assert item.event.command == "echo done"
-    assert item.event.status == "completed"
-    assert item.event.exit_code == 0
-    assert "done from bg" in item.event.output
-
-    _BG_REGISTRY.pop(task_id, None)
-
-
-@pytest.mark.asyncio
-async def test_task_stop_suppresses_shell_completion(monkeypatch):
-    import agent.tools.shell as shell_mod
-
-    async def _fake_create_subprocess_shell(command, **kwargs):
-        proc = _FakeProc(stdout="", stderr="", returncode=None)
-
-        async def _wait_forever():
-            await asyncio.Future()
-
-        proc.wait = _wait_forever
-        return proc
-
-    monkeypatch.setattr(
-        "agent.tools.shell.asyncio.create_subprocess_shell",
-        _fake_create_subprocess_shell,
-    )
-    monkeypatch.setattr("agent.tools.shell._kill_process_tree", lambda *_: None)
-
-    bus = MessageBus()
-    tool = ShellTool(completion_bus=bus)
-    result = json.loads(
-        await tool.execute(
-            command="sleep infinity",
-            description="手动停止",
-            run_in_background=True,
-            channel="telegram",
-            chat_id="123",
-        )
-    )
-    task_id = result["background_task_id"]
-
-    stop_tool = ShellTaskStopTool()
-    stop_result = json.loads(await stop_tool.execute(task_id=task_id))
-
-    assert stop_result["status"] == "stopped"
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(bus.consume_inbound(), timeout=0.05)
-    shell_mod._BG_REGISTRY.pop(task_id, None)
-
-
-@pytest.mark.asyncio
-async def test_task_output_done_consumes_shell_completion(monkeypatch, tmp_path):
-    import agent.tools.shell as shell_mod
-
-    bus = MessageBus()
-    log_path = tmp_path / "done.log"
-    log_path.write_text("final output", encoding="utf-8")
-    pump = asyncio.ensure_future(asyncio.sleep(0))
-    await pump
-
-    task_id = "shell_done_consumed"
-    task = shell_mod._BackgroundTask(
-        proc=_FakeProc(stdout="", stderr="", returncode=0),
-        log_path=str(log_path),
-        pump_task=pump,
-        started_at=shell_mod.time.monotonic(),
-        wall_started_at_ms=int(shell_mod.time.time() * 1000),
-        command="pytest",
-        description="检查测试",
-        channel="telegram",
-        chat_id="123",
-        completion_bus=bus,
-    )
-    shell_mod._BG_REGISTRY[task_id] = task
-
-    try:
-        result = json.loads(await ShellTaskOutputTool().execute(task_id=task_id))
-        shell_mod._on_background_task_done(task_id, task)
-
-        assert result["status"] == "done"
-        assert "final output" in result["output"]
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(bus.consume_inbound(), timeout=0.05)
-    finally:
-        shell_mod._BG_REGISTRY.pop(task_id, None)
-        shell_mod._CONSUMED_COMPLETIONS.discard(task_id)
 
 
 @pytest.mark.asyncio
