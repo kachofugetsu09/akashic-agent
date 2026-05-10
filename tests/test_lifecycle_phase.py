@@ -68,6 +68,15 @@ class _NeedsMissingSlotModule:
         return frame
 
 
+class _NeedsMissingModuleSlotModule:
+    slot = "plugin.consumer"
+    requires = ("plugin.provider",)
+
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        frame.output = frame.input
+        return frame
+
+
 @pytest.mark.asyncio
 async def test_phase_modules_run_in_order():
     phase = Phase[str, str, _TextFrame](
@@ -109,6 +118,18 @@ def test_phase_warns_when_slot_not_closed(caplog: pytest.LogCaptureFixture):
             frame_factory=_TextFrame,
         )
     assert "Phase slot 未闭合" in caplog.text
+
+
+def test_phase_warns_when_module_dependency_missing(
+    caplog: pytest.LogCaptureFixture,
+):
+    with caplog.at_level("WARNING", logger="agent.lifecycle.phase"):
+        Phase[str, str, _TextFrame](
+            [_NeedsMissingModuleSlotModule()],
+            frame_factory=_TextFrame,
+        )
+    assert "Phase 模块依赖不存在" in caplog.text
+    assert "Phase slot 未闭合" not in caplog.text
 
 
 _now = datetime.now()

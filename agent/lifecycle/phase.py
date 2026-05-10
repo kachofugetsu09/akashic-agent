@@ -253,7 +253,8 @@ class Phase(Generic[I, O, F]):
         for index, module in enumerate(self._modules):
             requires = tuple(getattr(module, "requires", ()))
             produces = tuple(getattr(module, "produces", ()))
-            for slot in requires:
+            for raw_slot in requires:
+                slot = str(raw_slot)
                 if slot in module_slots:
                     if slot != getattr(module, "slot", None) and slot not in provided:
                         logger.warning(
@@ -262,6 +263,14 @@ class Phase(Generic[I, O, F]):
                             module.__class__.__name__,
                             slot,
                         )
+                    continue
+                if "." in slot and ":" not in slot:
+                    logger.warning(
+                        "Phase 模块依赖不存在: module=%d name=%s requires=%s",
+                        index,
+                        module.__class__.__name__,
+                        slot,
+                    )
                     continue
                 if slot not in provided:
                     logger.warning(
