@@ -87,6 +87,8 @@ def topo_sort_modules(modules: Sequence[object]) -> list[object]:
             raise RuntimeError(f"模块 slot 重复: {slot}")
         slot_map[slot] = cast(SlotModule, module)
         slot_order[slot] = index
+    active_slots = _active_module_slots(slot_map)
+    slot_map = {slot: module for slot, module in slot_map.items() if slot in active_slots}
 
     in_degree = {slot: 0 for slot in slot_map}
     dependents: dict[str, list[str]] = {slot: [] for slot in slot_map}
@@ -155,6 +157,78 @@ def _module_requires(
 ) -> tuple[str, ...]:
     requires = tuple(str(slot) for slot in getattr(module, "requires", ()))
     return tuple(slot for slot in requires if slot in known_slots)
+
+
+def _active_module_slots(slot_map: Mapping[str, object]) -> set[str]:
+    active = set(slot_map)
+    while True:
+        disabled = set[str]()
+        for slot, module in slot_map.items():
+            if slot not in active or _is_builtin_slot(slot):
+                continue
+            missing = _missing_module_requires(module, active)
+            if missing:
+                logger.warning(
+                    "Phase 模块依赖不存在，已禁用模块: module=%s requires=%s",
+                    slot,
+                    ", ".join(missing),
+                )
+                disabled.add(slot)
+        if not disabled:
+            return active
+        active -= disabled
+
+
+def _disable_modules_with_missing_module_dependencies(
+    modules: Sequence[PhaseModule[F]],
+) -> list[PhaseModule[F]]:
+    module_slots = {
+        str(slot)
+        for slot in (getattr(module, "slot", None) for module in modules)
+        if isinstance(slot, str) and slot
+    }
+    active = set(module_slots)
+    disabled = set[str]()
+    while True:
+        current = set[str]()
+        for module in modules:
+            slot = getattr(module, "slot", None)
+            if not isinstance(slot, str) or not slot:
+                continue
+            if slot not in active or _is_builtin_slot(slot):
+                continue
+            missing = _missing_module_requires(module, active)
+            if missing:
+                logger.warning(
+                    "Phase 模块依赖不存在，已禁用模块: module=%s requires=%s",
+                    slot,
+                    ", ".join(missing),
+                )
+                current.add(slot)
+        if not current:
+            break
+        disabled |= current
+        active -= current
+    return [
+        module
+        for module in modules
+        if getattr(module, "slot", None) not in disabled
+    ]
+
+
+def _missing_module_requires(
+    module: object,
+    active_slots: set[str],
+) -> tuple[str, ...]:
+    return tuple(
+        req
+        for req in (str(slot) for slot in getattr(module, "requires", ()))
+        if _is_module_slot(req) and req not in active_slots
+    )
+
+
+def _is_module_slot(slot: str) -> bool:
+    return "." in slot and ":" not in slot
 
 
 def _module_label(module: SlotModule) -> str:
@@ -231,7 +305,7 @@ class Phase(Generic[I, O, F]):
         *,
         frame_factory: Callable[[I], F],
     ) -> None:
-        self._modules = list(modules)
+        self._modules = _disable_modules_with_missing_module_dependencies(modules)
         self._frame_factory = frame_factory
         self._validate()
 
@@ -264,7 +338,7 @@ class Phase(Generic[I, O, F]):
                             slot,
                         )
                     continue
-                if "." in slot and ":" not in slot:
+                if _is_module_slot(slot):
                     logger.warning(
                         "Phase 模块依赖不存在: module=%d name=%s requires=%s",
                         index,

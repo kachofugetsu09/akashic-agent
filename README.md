@@ -105,7 +105,7 @@ uv run python main.py
 
 收到消息 → 记忆检索 → 工具调用 → 流式回复。每轮经过 6 个 Phase（BeforeTurn → BeforeReasoning → PromptRender → Reasoner → AfterReasoning → AfterTurn）。
 
-插件有 **4 种介入方式**：PhaseModule 链（14 个注入位置）、EventBus 装饰器（9 种事件）、`@on_tool_pre`（工具拦截）、`@tool`（注册工具）。见 [插件系统](./_handbook/plugins-tutorial.md)。
+插件有 **4 种介入方式**：PhaseModule 链（7 个 Phase 方法 + slot 依赖声明）、EventBus 装饰器（9 种事件）、`@on_tool_pre`（工具拦截）、`@tool`（注册工具）。见 [插件系统](./_handbook/plugins-tutorial.md)。
 
 ## 主动推送（Proactive）
 
