@@ -38,7 +38,7 @@ class SendMessageTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "向用户发送一条消息。单次 Drift run 最多只能调用一次。\n"
+            "向用户发送一条消息，可附带图片。单次 Drift run 最多只能调用一次。\n"
             "channel 和 chat_id 在 Drift 上下文中已由配置预设，可省略不填。"
         )
 
@@ -48,6 +48,12 @@ class SendMessageTool(Tool):
             "type": "object",
             "properties": {
                 "message": {"type": "string", "description": "要发送的消息内容"},
+                "image": {"type": "string", "description": "要发送的一张图片本地路径或 URL"},
+                "media": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要随消息发送的图片路径或 URL 列表",
+                },
                 "channel": {
                     "type": "string",
                     "description": "目标渠道（Drift 上下文可省略，已由配置预设）",
@@ -57,11 +63,19 @@ class SendMessageTool(Tool):
                     "description": "目标会话 ID（Drift 上下文可省略，已由配置预设）",
                 },
             },
-            "required": ["message"],
+            "required": [],
         }
 
-    async def execute(self, message: str = "", content: str = "", **_: Any) -> str:
+    async def execute(
+        self,
+        message: str = "",
+        content: str = "",
+        image: str = "",
+        media: list[str] | str | None = None,
+        **_: Any,
+    ) -> str:
         text = normalize_outbound_text(message or content or "").strip()
+        media_paths = self._normalize_media(image=image, media=media)
         if self._send_message_fn is None:
             logger.info("[drift_tools] message_push unavailable")
             return json.dumps({"error": "message_push not configured"}, ensure_ascii=False)
@@ -71,16 +85,27 @@ class SendMessageTool(Tool):
                 {"error": "message_push already used in this drift run"},
                 ensure_ascii=False,
             )
-        if not text:
-            logger.info("[drift_tools] message_push rejected: empty message")
-            return json.dumps({"error": "message is required"}, ensure_ascii=False)
-        ok = await self._send_message_fn(text)
+        if not text and not media_paths:
+            logger.info("[drift_tools] message_push rejected: empty message and media")
+            return json.dumps({"error": "message or media is required"}, ensure_ascii=False)
+        ok = await self._send_message_fn(text, media_paths)
         if not ok:
             logger.warning("[drift_tools] message_push failed")
             return json.dumps({"error": "message_push failed"}, ensure_ascii=False)
         self._ctx.drift_message_sent = True
         logger.info("[drift_tools] message_push ok")
         return json.dumps({"ok": True}, ensure_ascii=False)
+
+    @staticmethod
+    def _normalize_media(*, image: str = "", media: list[str] | str | None = None) -> list[str]:
+        paths: list[str] = []
+        if image:
+            paths.append(str(image).strip())
+        if isinstance(media, str):
+            paths.append(media.strip())
+        elif media:
+            paths.extend(str(item).strip() for item in media)
+        return [path for path in paths if path]
 
 
 class FinishDriftTool(Tool):

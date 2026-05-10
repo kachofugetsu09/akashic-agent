@@ -145,6 +145,44 @@ def test_drift_tool_schemas_include_reused_tools():
     assert "get_recent_chat" not in names
 
 
+def test_drift_message_push_schema_supports_media(tmp_path: Path):
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    schemas = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=DriftStateStore(tmp_path),
+            shared_tools=_build_shared_tools(),
+        ),
+    ).get_schemas()
+    message_push = next(
+        schema["function"] for schema in schemas if schema["function"]["name"] == "message_push"
+    )
+    props = message_push["parameters"]["properties"]
+    assert "image" in props
+    assert "media" in props
+    assert "message" not in message_push["parameters"].get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_drift_message_push_sends_media(tmp_path: Path):
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    send_message = AsyncMock(return_value=True)
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "message_push",
+        {
+            "message": "新表情来啦",
+            "image": "/tmp/one.png",
+            "media": ["/tmp/two.png"],
+        },
+        send_message_fn=send_message,
+    )
+    assert json.loads(cast(Any, raw))["ok"] is True
+    send_message.assert_awaited_once_with("新表情来啦", ["/tmp/one.png", "/tmp/two.png"])
+
+
 def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
@@ -414,7 +452,7 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
     # FakeLLM 不记录 schemas，这里用行为结果兜底：send 后仍正常 finish。
     assert ctx.drift_finished is True
     assert store.load_drift()["recent_runs"][-1]["message_result"] == "sent"
-    send_message.assert_awaited_once_with("hello\n\nfrom drift")
+    send_message.assert_awaited_once_with("hello\n\nfrom drift", [])
 
 
 @pytest.mark.asyncio
@@ -544,11 +582,11 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
         )
     )
 
-    async def send_message(content: str) -> bool:
+    async def send_message(content: str, media: list[str] | None = None) -> bool:
         return await orchestrator.handle_proactive_turn(
             result=TurnResult(
                 decision="reply",
-                outbound=TurnOutbound(session_key="test_session", content=content),
+                outbound=TurnOutbound(session_key="test_session", content=content, media=list(media or [])),
                 trace=TurnTrace(source="proactive", extra={"source_mode": "drift"}),
             ),
             session_key="test_session",

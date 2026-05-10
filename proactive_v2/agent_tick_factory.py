@@ -289,7 +289,7 @@ class AgentTickFactory:
             tool_hooks=self._deps.tool_hooks,
         )
 
-    def _build_drift_send_message_fn(self) -> Callable[[str], Awaitable[bool]] | None:
+    def _build_drift_send_message_fn(self) -> Callable[..., Awaitable[bool]] | None:
         orchestrator = self._deps.turn_orchestrator
         session_key = self._get_session_key()
         state_store = self._deps.state_store
@@ -303,11 +303,12 @@ class AgentTickFactory:
             async def run(self) -> None:
                 self.callback()
 
-        async def send_message(content: str) -> bool:
-            delivery_key = sha1(content[:500].encode()).hexdigest()[:16]
+        async def send_message(content: str, media: list[str] | None = None) -> bool:
+            media_paths = list(media or [])
+            delivery_key = sha1((content[:500] + "|".join(media_paths[:5])).encode()).hexdigest()[:16]
             result = TurnResult(
                 decision="reply",
-                outbound=TurnOutbound(session_key=session_key, content=content),
+                outbound=TurnOutbound(session_key=session_key, content=content, media=media_paths),
                 trace=TurnTrace(source="proactive", extra={"source_mode": "drift"}),
                 success_side_effects=[
                     _SideEffect(

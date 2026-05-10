@@ -43,11 +43,13 @@ class TurnOrchestrator:
             raise ValueError("proactive reply result requires outbound")
 
         content = result.outbound.content
+        media = list(result.outbound.media or [])
         session = self._session.session_manager.get_or_create(session_key)
         # 2. reply 路径只写 proactive session；后处理只归 passive commit 管。
         self._persist_proactive_session(
             session=session,
             content=content,
+            media=media,
             result=result,
         )
         await self._session.session_manager.append_messages(session, session.messages[-1:])
@@ -62,6 +64,7 @@ class TurnOrchestrator:
                     chat_id=chat_id,
                     content=content,
                     metadata={},
+                    media=media,
                 )
             )
         except Exception as e:
@@ -94,6 +97,7 @@ class TurnOrchestrator:
         *,
         session: SessionLike,
         content: str,
+        media: list[str],
         result: TurnResult,
     ) -> None:
         source_refs = []
@@ -106,6 +110,7 @@ class TurnOrchestrator:
         session.add_message(
             "assistant",
             content,
+            media=media if media else None,
             proactive=True,
             tools_used=["message_push"],
             evidence_item_ids=[str(item_id) for item_id in result.evidence],

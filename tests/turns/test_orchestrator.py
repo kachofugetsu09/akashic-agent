@@ -125,3 +125,43 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
     assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_proactive_reply_dispatches_media():
+    session = _DummySession("telegram:123")
+    dispatched: list[OutboundDispatch] = []
+
+    class _Outbound:
+        async def dispatch(self, outbound: OutboundDispatch) -> bool:
+            dispatched.append(outbound)
+            return True
+
+    session_manager = SimpleNamespace(
+        get_or_create=lambda _key: session,
+        append_messages=AsyncMock(return_value=None),
+    )
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=SessionServices(session_manager=cast(Any, session_manager), presence=None),
+            outbound=_Outbound(),
+        )
+    )
+
+    sent = await orchestrator.handle_proactive_turn(
+        result=TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(
+                session_key="telegram:123",
+                content="新表情来啦",
+                media=["/tmp/meme.png"],
+            ),
+        ),
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+    )
+
+    assert sent is True
+    assert dispatched[0].media == ["/tmp/meme.png"]
+    assert session.messages[0]["media"] == ["/tmp/meme.png"]

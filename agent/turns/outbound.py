@@ -49,14 +49,24 @@ class PushToolOutboundPort:
         message = str(outbound.content or "").strip()
         channel = str(outbound.channel or "").strip()
         chat_id = str(outbound.chat_id or "").strip()
-        if not message or not channel or not chat_id:
+        media = [str(item).strip() for item in outbound.media if str(item).strip()]
+        if (not message and not media) or not channel or not chat_id:
             return False
         try:
-            result = await self._push.execute(
-                channel=channel,
-                chat_id=chat_id,
-                message=message,
-            )
+            result = ""
+            if message or media:
+                result = await self._push.execute(
+                    channel=channel,
+                    chat_id=chat_id,
+                    message=message,
+                    image=media[0] if media else None,
+                )
+            for image in media[1:]:
+                result = await self._push.execute(
+                    channel=channel,
+                    chat_id=chat_id,
+                    image=image,
+                )
         except Exception:
             return False
         return "已发送" in str(result)

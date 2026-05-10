@@ -8,6 +8,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 class TurnOutbound:
     session_key: str
     content: str
+    media: list[str] = field(default_factory=list)
 
 
 @dataclass
