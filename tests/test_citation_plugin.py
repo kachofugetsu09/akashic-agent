@@ -15,8 +15,8 @@ from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 
 
 def _load_citation_plugin_module() -> Any:
-    path = Path(__file__).parents[1] / "plugins" / "01_citation" / "plugin.py"
-    spec = importlib.util.spec_from_file_location("test_01_citation_plugin", path)
+    path = Path(__file__).parents[1] / "plugins" / "citation" / "plugin.py"
+    spec = importlib.util.spec_from_file_location("test_citation_plugin", path)
     if spec is None or spec.loader is None:
         raise ImportError(str(path))
     module = importlib.util.module_from_spec(spec)
@@ -149,7 +149,7 @@ def test_citation_tool_chain_fallback_uses_item_ids() -> None:
 @pytest.mark.asyncio
 async def test_citation_prompt_module_injects_prompt_section() -> None:
     plugin = CitationPlugin()
-    module = plugin.prompt_render_modules_bottom()[0]
+    module = plugin.prompt_render_modules()[0]
     ctx = PromptRenderCtx(
         session_key="telegram:1",
         channel="telegram",

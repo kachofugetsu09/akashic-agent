@@ -174,7 +174,7 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
         tool_search_enabled=False,
         memory_window=40,
     )
-    reasoner.add_after_step_plugin_modules([ContextPressureStopModule()], [])
+    reasoner.add_after_step_plugin_modules([ContextPressureStopModule()])
 
     result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
 

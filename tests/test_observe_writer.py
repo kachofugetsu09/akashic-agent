@@ -9,11 +9,11 @@ from typing import cast
 
 import pytest
 
-_observe_db = importlib.import_module("plugins.00_observe.db")
-_observe_events = importlib.import_module("plugins.00_observe.events")
-_observe_migration = importlib.import_module("plugins.00_observe.migrate_legacy_rag")
-_observe_retention = importlib.import_module("plugins.00_observe.retention")
-_observe_writer = importlib.import_module("plugins.00_observe.writer")
+_observe_db = importlib.import_module("plugins.observe.db")
+_observe_events = importlib.import_module("plugins.observe.events")
+_observe_migration = importlib.import_module("plugins.observe.migrate_legacy_rag")
+_observe_retention = importlib.import_module("plugins.observe.retention")
+_observe_writer = importlib.import_module("plugins.observe.writer")
 
 open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
 RagHitLog = getattr(_observe_events, "RagHitLog")

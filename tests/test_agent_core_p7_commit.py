@@ -24,9 +24,9 @@ from bus.events_lifecycle import TurnCommitted
 
 
 def _load_meme_plugin_class() -> Any:
-    path = Path(__file__).parents[1] / "plugins" / "02_meme" / "plugin.py"
+    path = Path(__file__).parents[1] / "plugins" / "meme" / "plugin.py"
     spec = importlib.util.spec_from_file_location(
-        "test_p7_02_meme_plugin",
+        "test_p7_meme_plugin",
         path,
         submodule_search_locations=[str(path.parent)],
     )
@@ -262,6 +262,10 @@ def test_response_parser_keeps_reply_protocols_for_plugins():
 
 
 class _CitationPersistModule:
+    slot = "test.citation.persist"
+    requires = ("after_reasoning.build_ctx", "reasoning:ctx")
+    produces = ("reasoning:ctx", "persist:assistant:cited_memory_ids")
+
     async def run(self, frame):
         ctx = frame.slots["reasoning:ctx"]
         ctx.reply = "原始回复 <meme:shy>"
@@ -362,7 +366,7 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
             event_bus=event_bus,
             outbound_port=cast(Any, dispatch_port),
             history_window=100,
-            after_reasoning_plugin_modules_before_emit=[_CitationPersistModule()],
+            after_reasoning_plugin_modules=[_CitationPersistModule()],
         )
     )
     wire_turn_lifecycle(

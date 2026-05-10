@@ -20,9 +20,9 @@ from bus.event_bus import EventBus
 
 
 def _load_meme_plugin_module() -> Any:
-    path = Path(__file__).parents[1] / "plugins" / "02_meme" / "plugin.py"
+    path = Path(__file__).parents[1] / "plugins" / "meme" / "plugin.py"
     spec = importlib.util.spec_from_file_location(
-        "test_02_meme_plugin",
+        "test_meme_plugin",
         path,
         submodule_search_locations=[str(path.parent)],
     )
@@ -85,7 +85,7 @@ async def _make_plugin(tmp_path: Path) -> MemePlugin:
 async def test_meme_prompt_module_injects_bottom_section(tmp_path: Path) -> None:
     _write_meme_workspace(tmp_path)
     plugin = await _make_plugin(tmp_path)
-    module = plugin.prompt_render_modules_bottom()[0]
+    module = plugin.prompt_render_modules()[0]
     assert isinstance(module, MemePromptModule)
 
     ctx = PromptRenderCtx(
@@ -113,7 +113,7 @@ async def test_meme_prompt_module_injects_bottom_section(tmp_path: Path) -> None
 async def test_plugin_manager_collects_meme_prompt_module_before_initialize(tmp_path: Path) -> None:
     _write_meme_workspace(tmp_path)
     plugin_dir = tmp_path / "plugin_src" / "meme"
-    shutil.copytree(Path(__file__).parents[1] / "plugins" / "02_meme", plugin_dir)
+    shutil.copytree(Path(__file__).parents[1] / "plugins" / "meme", plugin_dir)
     manager = PluginManager(
         [plugin_dir.parent],
         event_bus=EventBus(),
@@ -123,7 +123,7 @@ async def test_plugin_manager_collects_meme_prompt_module_before_initialize(tmp_
     await manager.load_all()
 
     assert manager.loaded_count == 1
-    assert len(manager.prompt_render_modules_bottom) == 1
+    assert len(manager.prompt_render_modules) == 1
 
 
 @pytest.mark.asyncio

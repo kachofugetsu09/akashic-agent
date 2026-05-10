@@ -1,4 +1,4 @@
-"""Unit tests for plugins/02_meme/runtime.py."""
+"""Unit tests for plugins/meme/runtime.py."""
 import importlib.util
 import json
 import sys
@@ -10,8 +10,8 @@ import pytest
 
 
 def _load_meme_runtime() -> Any:
-    path = Path(__file__).parents[1] / "plugins" / "02_meme" / "runtime.py"
-    spec = importlib.util.spec_from_file_location("test_02_meme_runtime", path)
+    path = Path(__file__).parents[1] / "plugins" / "meme" / "runtime.py"
+    spec = importlib.util.spec_from_file_location("test_meme_runtime", path)
     if spec is None or spec.loader is None:
         raise ImportError(str(path))
     module = importlib.util.module_from_spec(spec)

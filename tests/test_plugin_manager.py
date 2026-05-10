@@ -25,7 +25,7 @@ from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
 
-_observe_db = importlib.import_module("plugins.00_observe.db")
+_observe_db = importlib.import_module("plugins.observe.db")
 open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
 
 
@@ -98,9 +98,9 @@ async def test_load_hello_plugin():
 
 @pytest.mark.asyncio
 async def test_observe_plugin_writes_turn_trace(tmp_path: Path):
-    source = Path(__file__).parents[1] / "plugins" / "00_observe"
+    source = Path(__file__).parents[1] / "plugins" / "observe"
     plugin_root = tmp_path / "plugins"
-    shutil.copytree(source, plugin_root / "00_observe")
+    shutil.copytree(source, plugin_root / "observe")
     bus = EventBus()
     mgr = PluginManager(
         plugin_dirs=[plugin_root],
@@ -144,9 +144,9 @@ async def test_observe_plugin_writes_turn_trace(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_observe_plugin_writes_memory_domain_events(tmp_path: Path):
-    source = Path(__file__).parents[1] / "plugins" / "00_observe"
+    source = Path(__file__).parents[1] / "plugins" / "observe"
     plugin_root = tmp_path / "plugins"
-    shutil.copytree(source, plugin_root / "00_observe")
+    shutil.copytree(source, plugin_root / "observe")
     bus = EventBus()
     mgr = PluginManager(
         plugin_dirs=[plugin_root],
@@ -460,81 +460,60 @@ class AfterTurnBeforeFanoutModule:
 class PhasePlugin(Plugin):
     name = "phase_plugin"
 
-    def before_turn_modules_early(self):
-        return [EarlyModule()]
+    def before_turn_modules(self):
+        return [EarlyModule(), LateModule()]
 
-    def before_turn_modules_late(self):
-        return [LateModule()]
+    def before_reasoning_modules(self):
+        return [BeforeReasoningBeforeEmitModule(), BeforeReasoningAfterEmitModule()]
 
-    def before_reasoning_modules_before_emit(self):
-        return [BeforeReasoningBeforeEmitModule()]
+    def prompt_render_modules(self):
+        return [PromptTopModule(), PromptBottomModule()]
 
-    def before_reasoning_modules_after_emit(self):
-        return [BeforeReasoningAfterEmitModule()]
+    def before_step_modules(self):
+        return [BeforeStepBeforeEmitModule(), BeforeStepAfterEmitModule()]
 
-    def prompt_render_modules_top(self):
-        return [PromptTopModule()]
+    def after_step_modules(self):
+        return [AfterStepBeforeFanoutModule(), AfterStepAfterFanoutModule()]
 
-    def prompt_render_modules_bottom(self):
-        return [PromptBottomModule()]
+    def after_reasoning_modules(self):
+        return [AfterReasoningBeforeEmitModule(), AfterReasoningBeforePersistModule()]
 
-    def before_step_modules_before_emit(self):
-        return [BeforeStepBeforeEmitModule()]
-
-    def before_step_modules_after_emit(self):
-        return [BeforeStepAfterEmitModule()]
-
-    def after_step_modules_before_fanout(self):
-        return [AfterStepBeforeFanoutModule()]
-
-    def after_step_modules_after_fanout(self):
-        return [AfterStepAfterFanoutModule()]
-
-    def after_reasoning_modules_before_emit(self):
-        return [AfterReasoningBeforeEmitModule()]
-
-    def after_reasoning_modules_before_persist(self):
-        return [AfterReasoningBeforePersistModule()]
-
-    def after_turn_modules_before_commit(self):
-        return [AfterTurnBeforeCommitModule()]
-
-    def after_turn_modules_before_fanout(self):
-        return [AfterTurnBeforeFanoutModule()]
+    def after_turn_modules(self):
+        return [AfterTurnBeforeCommitModule(), AfterTurnBeforeFanoutModule()]
 """.strip(),
             encoding="utf-8",
         )
         mgr = _make_manager([Path(tmp)], event_bus=bus)
         await mgr.load_all()
 
-        assert len(mgr.before_turn_modules_early) == 1
-        assert len(mgr.before_turn_modules_late) == 1
-        assert len(mgr.before_reasoning_modules_before_emit) == 1
-        assert len(mgr.before_reasoning_modules_after_emit) == 1
-        assert len(mgr.prompt_render_modules_top) == 1
-        assert len(mgr.prompt_render_modules_bottom) == 1
-        assert len(mgr.before_step_modules_before_emit) == 1
-        assert len(mgr.before_step_modules_after_emit) == 1
-        assert len(mgr.after_step_modules_before_fanout) == 1
-        assert len(mgr.after_step_modules_after_fanout) == 1
-        assert len(mgr.after_reasoning_modules_before_emit) == 1
-        assert len(mgr.after_reasoning_modules_before_persist) == 1
-        assert len(mgr.after_turn_modules_before_commit) == 1
-        assert len(mgr.after_turn_modules_before_fanout) == 1
-        assert mgr.before_turn_modules_early[0].__class__.__name__ == "EarlyModule"
-        assert mgr.before_turn_modules_late[0].__class__.__name__ == "LateModule"
-        assert mgr.before_reasoning_modules_before_emit[0].__class__.__name__ == "BeforeReasoningBeforeEmitModule"
-        assert mgr.before_reasoning_modules_after_emit[0].__class__.__name__ == "BeforeReasoningAfterEmitModule"
-        assert mgr.prompt_render_modules_top[0].__class__.__name__ == "PromptTopModule"
-        assert mgr.prompt_render_modules_bottom[0].__class__.__name__ == "PromptBottomModule"
-        assert mgr.before_step_modules_before_emit[0].__class__.__name__ == "BeforeStepBeforeEmitModule"
-        assert mgr.before_step_modules_after_emit[0].__class__.__name__ == "BeforeStepAfterEmitModule"
-        assert mgr.after_step_modules_before_fanout[0].__class__.__name__ == "AfterStepBeforeFanoutModule"
-        assert mgr.after_step_modules_after_fanout[0].__class__.__name__ == "AfterStepAfterFanoutModule"
-        assert mgr.after_reasoning_modules_before_emit[0].__class__.__name__ == "AfterReasoningBeforeEmitModule"
-        assert mgr.after_reasoning_modules_before_persist[0].__class__.__name__ == "AfterReasoningBeforePersistModule"
-        assert mgr.after_turn_modules_before_commit[0].__class__.__name__ == "AfterTurnBeforeCommitModule"
-        assert mgr.after_turn_modules_before_fanout[0].__class__.__name__ == "AfterTurnBeforeFanoutModule"
+        assert [m.__class__.__name__ for m in mgr.before_turn_modules] == [
+            "EarlyModule",
+            "LateModule",
+        ]
+        assert [m.__class__.__name__ for m in mgr.before_reasoning_modules] == [
+            "BeforeReasoningBeforeEmitModule",
+            "BeforeReasoningAfterEmitModule",
+        ]
+        assert [m.__class__.__name__ for m in mgr.prompt_render_modules] == [
+            "PromptTopModule",
+            "PromptBottomModule",
+        ]
+        assert [m.__class__.__name__ for m in mgr.before_step_modules] == [
+            "BeforeStepBeforeEmitModule",
+            "BeforeStepAfterEmitModule",
+        ]
+        assert [m.__class__.__name__ for m in mgr.after_step_modules] == [
+            "AfterStepBeforeFanoutModule",
+            "AfterStepAfterFanoutModule",
+        ]
+        assert [m.__class__.__name__ for m in mgr.after_reasoning_modules] == [
+            "AfterReasoningBeforeEmitModule",
+            "AfterReasoningBeforePersistModule",
+        ]
+        assert [m.__class__.__name__ for m in mgr.after_turn_modules] == [
+            "AfterTurnBeforeCommitModule",
+            "AfterTurnBeforeFanoutModule",
+        ]
 
 
 # ── _conf_schema.json 测试 ────────────────────────────────────────────────────
@@ -999,20 +978,13 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     class FakePluginManager:
         def __init__(self) -> None:
             self.tool_hooks = [object()]
-            self.before_turn_modules_early = [object()]
-            self.before_turn_modules_late = [object()]
-            self.before_reasoning_modules_before_emit = [object()]
-            self.before_reasoning_modules_after_emit = [object()]
-            self.prompt_render_modules_top = [object()]
-            self.prompt_render_modules_bottom = [object()]
-            self.before_step_modules_before_emit = [object()]
-            self.before_step_modules_after_emit = [object()]
-            self.after_step_modules_before_fanout = [object()]
-            self.after_step_modules_after_fanout = [object()]
-            self.after_reasoning_modules_before_emit = [object()]
-            self.after_reasoning_modules_before_persist = [object()]
-            self.after_turn_modules_before_commit = [object()]
-            self.after_turn_modules_before_fanout = [object()]
+            self.before_turn_modules = [object()]
+            self.before_reasoning_modules = [object()]
+            self.prompt_render_modules = [object()]
+            self.before_step_modules = [object()]
+            self.after_step_modules = [object()]
+            self.after_reasoning_modules = [object()]
+            self.after_turn_modules = [object()]
             self.loaded_count = 0
 
         async def load_all(self) -> None:
@@ -1021,79 +993,58 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     class FakeLoop:
         def __init__(self) -> None:
             self.received_hooks: list[ToolHook] | None = None
-            self.received_before_turn_early: list[object] | None = None
-            self.received_before_turn_late: list[object] | None = None
-            self.received_before_reasoning_before_emit: list[object] | None = None
-            self.received_before_reasoning_after_emit: list[object] | None = None
-            self.received_prompt_render_top: list[object] | None = None
-            self.received_prompt_render_bottom: list[object] | None = None
-            self.received_before_step_before_emit: list[object] | None = None
-            self.received_before_step_after_emit: list[object] | None = None
-            self.received_after_step_before_fanout: list[object] | None = None
-            self.received_after_step_after_fanout: list[object] | None = None
-            self.received_after_reasoning_before_emit: list[object] | None = None
-            self.received_after_reasoning_before_persist: list[object] | None = None
-            self.received_after_turn_before_commit: list[object] | None = None
-            self.received_after_turn_before_fanout: list[object] | None = None
+            self.received_before_turn: list[object] | None = None
+            self.received_before_reasoning: list[object] | None = None
+            self.received_prompt_render: list[object] | None = None
+            self.received_before_step: list[object] | None = None
+            self.received_after_step: list[object] | None = None
+            self.received_after_reasoning: list[object] | None = None
+            self.received_after_turn: list[object] | None = None
 
         def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
             self.received_hooks = list(hooks)
 
         def add_before_turn_plugin_modules(
             self,
-            early: list[object],
-            late: list[object],
+            modules: list[object],
         ) -> None:
-            self.received_before_turn_early = list(early)
-            self.received_before_turn_late = list(late)
+            self.received_before_turn = list(modules)
 
         def add_before_reasoning_plugin_modules(
             self,
-            before_emit: list[object],
-            after_emit: list[object],
+            modules: list[object],
         ) -> None:
-            self.received_before_reasoning_before_emit = list(before_emit)
-            self.received_before_reasoning_after_emit = list(after_emit)
+            self.received_before_reasoning = list(modules)
 
         def add_prompt_render_plugin_modules(
             self,
-            top: list[object],
-            bottom: list[object],
+            modules: list[object],
         ) -> None:
-            self.received_prompt_render_top = list(top)
-            self.received_prompt_render_bottom = list(bottom)
+            self.received_prompt_render = list(modules)
 
         def add_before_step_plugin_modules(
             self,
-            before_emit: list[object],
-            after_emit: list[object],
+            modules: list[object],
         ) -> None:
-            self.received_before_step_before_emit = list(before_emit)
-            self.received_before_step_after_emit = list(after_emit)
+            self.received_before_step = list(modules)
 
         def add_after_step_plugin_modules(
             self,
-            before_fanout: list[object],
-            after_fanout: list[object],
+            modules: list[object],
         ) -> None:
-            self.received_after_step_before_fanout = list(before_fanout)
-            self.received_after_step_after_fanout = list(after_fanout)
+            self.received_after_step = list(modules)
 
         def add_after_reasoning_plugin_modules(
             self,
-            before_emit: list[object],
-            before_persist: list[object],
+            modules: list[object],
         ) -> None:
-            self.received_after_reasoning_before_emit = list(before_emit)
-            self.received_after_reasoning_before_persist = list(before_persist)
+            self.received_after_reasoning = list(modules)
 
         def add_after_turn_plugin_modules(
             self,
-            before_commit: list[object],
-            before_fanout: list[object],
+            modules: list[object],
         ) -> None:
-            self.received_after_turn_before_commit = list(before_commit)
-            self.received_after_turn_before_fanout = list(before_fanout)
+            self.received_after_turn = list(modules)
 
     class FakeSpawnTool:
         def __init__(self) -> None:
@@ -1136,19 +1087,12 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     await runtime.start()
 
     assert plugin_manager.loaded_count == 1
-    assert loop.received_before_turn_early == plugin_manager.before_turn_modules_early
-    assert loop.received_before_turn_late == plugin_manager.before_turn_modules_late
-    assert loop.received_before_reasoning_before_emit == plugin_manager.before_reasoning_modules_before_emit
-    assert loop.received_before_reasoning_after_emit == plugin_manager.before_reasoning_modules_after_emit
-    assert loop.received_prompt_render_top == plugin_manager.prompt_render_modules_top
-    assert loop.received_prompt_render_bottom == plugin_manager.prompt_render_modules_bottom
-    assert loop.received_before_step_before_emit == plugin_manager.before_step_modules_before_emit
-    assert loop.received_before_step_after_emit == plugin_manager.before_step_modules_after_emit
-    assert loop.received_after_step_before_fanout == plugin_manager.after_step_modules_before_fanout
-    assert loop.received_after_step_after_fanout == plugin_manager.after_step_modules_after_fanout
-    assert loop.received_after_reasoning_before_emit == plugin_manager.after_reasoning_modules_before_emit
-    assert loop.received_after_reasoning_before_persist == plugin_manager.after_reasoning_modules_before_persist
-    assert loop.received_after_turn_before_commit == plugin_manager.after_turn_modules_before_commit
-    assert loop.received_after_turn_before_fanout == plugin_manager.after_turn_modules_before_fanout
+    assert loop.received_before_turn == plugin_manager.before_turn_modules
+    assert loop.received_before_reasoning == plugin_manager.before_reasoning_modules
+    assert loop.received_prompt_render == plugin_manager.prompt_render_modules
+    assert loop.received_before_step == plugin_manager.before_step_modules
+    assert loop.received_after_step == plugin_manager.after_step_modules
+    assert loop.received_after_reasoning == plugin_manager.after_reasoning_modules
+    assert loop.received_after_turn == plugin_manager.after_turn_modules
     assert loop.received_hooks == plugin_manager.tool_hooks
     assert spawn_tool.received_hooks == plugin_manager.tool_hooks

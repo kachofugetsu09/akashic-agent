@@ -69,7 +69,7 @@ from agent.prompting import PromptSectionRender
 from agent.turns.outbound import OutboundDispatch
 from session.manager import SessionManager
 
-_observe_db = importlib.import_module("plugins.00_observe.db")
+_observe_db = importlib.import_module("plugins.observe.db")
 open_observe_db = cast(
     Callable[[Path], sqlite3.Connection],
     getattr(_observe_db, "open_db"),
@@ -79,7 +79,8 @@ _now = datetime.now()
 
 
 class _MemoryStatusPluginModule:
-    requires = ("session:session",)
+    slot = "test.memory_status"
+    requires = ("before_turn.acquire_session", "session:session")
     produces = ("session:ctx",)
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
@@ -116,7 +117,8 @@ class _DummyOutbound:
 
 
 class _KVCachePluginModule:
-    requires = ("session:session",)
+    slot = "test.kvcache"
+    requires = ("before_turn.acquire_session", "session:session")
     produces = ("session:ctx",)
 
     def __init__(self, db_path) -> None:
@@ -282,7 +284,6 @@ async def test_before_turn_setup_fills_turn_state():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            plugin_modules_early=[],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -320,7 +321,7 @@ async def test_before_turn_chain_can_abort():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            plugin_modules_early=[_MemoryStatusPluginModule()],
+            plugin_modules=[_MemoryStatusPluginModule()],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -354,7 +355,7 @@ async def test_before_turn_memory_status_command_aborts_without_context_prepare(
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            plugin_modules_early=[_MemoryStatusPluginModule()],
+            plugin_modules=[_MemoryStatusPluginModule()],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -384,7 +385,8 @@ async def test_before_turn_accepts_custom_command_module():
     ctx_store = SimpleNamespace(prepare=AsyncMock())
 
     class CustomCommandModule:
-        requires = ("session:session",)
+        slot = "test.custom_command"
+        requires = ("before_turn.acquire_session", "session:session")
         produces = ("session:ctx",)
 
         async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
@@ -411,7 +413,7 @@ async def test_before_turn_accepts_custom_command_module():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            plugin_modules_early=[_MemoryStatusPluginModule(), CustomCommandModule()],
+            plugin_modules=[_MemoryStatusPluginModule(), CustomCommandModule()],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -432,7 +434,7 @@ async def test_before_turn_accepts_custom_command_module():
 
 
 @pytest.mark.asyncio
-async def test_before_turn_accepts_plugin_modules_early_and_late():
+async def test_before_turn_accepts_plugin_modules():
     bus = EventBus()
     session = _DummySession("telegram:123")
     session_mgr = SimpleNamespace(get_or_create=lambda key: session)
@@ -446,7 +448,8 @@ async def test_before_turn_accepts_plugin_modules_early_and_late():
     seen: list[str] = []
 
     class EarlyPluginModule:
-        requires = ("session:session",)
+        slot = "test.before_turn.early"
+        requires = ("before_turn.acquire_session", "session:session")
 
         async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
             seen.append("early")
@@ -454,7 +457,8 @@ async def test_before_turn_accepts_plugin_modules_early_and_late():
             return frame
 
     class LatePluginModule:
-        requires = ("session:ctx",)
+        slot = "test.before_turn.late"
+        requires = ("before_turn.emit", "session:ctx")
         produces = ("session:ctx",)
 
         async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
@@ -470,8 +474,7 @@ async def test_before_turn_accepts_plugin_modules_early_and_late():
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            plugin_modules_early=[EarlyPluginModule()],
-            plugin_modules_late=[LatePluginModule()],
+            plugin_modules=[EarlyPluginModule(), LatePluginModule()],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -533,7 +536,7 @@ async def test_before_turn_kvcache_command(tmp_path):
             bus,
             cast(SessionManager, session_mgr),
             cast(ContextStore, ctx_store),
-            plugin_modules_early=[_KVCachePluginModule(db_path)],
+            plugin_modules=[_KVCachePluginModule(db_path)],
         ),
         frame_factory=BeforeTurnFrame,
     )
@@ -776,6 +779,9 @@ async def test_before_reasoning_collects_export_slots():
     context_builder.render = Mock(return_value=None)
 
     class SlotModule:
+        slot = "test.before_reasoning.slot"
+        requires = ("before_reasoning.emit", "reasoning:ctx")
+
         async def run(self, frame: BeforeReasoningFrame) -> BeforeReasoningFrame:
             frame.slots["reasoning:extra_hint:test"] = "slot hint"
             frame.slots["reasoning:abort_reply"] = "slot abort"
@@ -787,7 +793,7 @@ async def test_before_reasoning_collects_export_slots():
             cast(ToolRegistry, tools),
             cast(SessionManager, session_mgr),
             cast(ContextBuilder, context_builder),
-            plugin_modules_after_emit=[SlotModule()],
+            plugin_modules=[SlotModule()],
         ),
         frame_factory=BeforeReasoningFrame,
     )
@@ -927,6 +933,10 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
 @pytest.mark.asyncio
 async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
     class BottomModule:
+        slot = "test.prompt.bottom"
+        requires = ("prompt_render.emit", "prompt:ctx")
+        produces = ("prompt:ctx",)
+
         async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
             ctx = cast(PromptRenderCtx, frame.slots["prompt:ctx"])
             ctx.system_sections_bottom.append(
@@ -949,7 +959,7 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
         default_prompt_render_modules(
             EventBus(),
             context,
-            plugin_modules_bottom=[BottomModule()],
+            plugin_modules=[BottomModule()],
         ),
         frame_factory=PromptRenderFrame,
     )
@@ -976,6 +986,9 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
 @pytest.mark.asyncio
 async def test_prompt_render_collects_export_slots(tmp_path):
     class SlotModule:
+        slot = "test.prompt.slot"
+        requires = ("prompt_render.emit", "prompt:ctx")
+
         async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
             frame.slots["prompt:section_top:top_slot"] = "top content"
             frame.slots["prompt:section_bottom:bottom_slot"] = PromptSectionRender(
@@ -997,7 +1010,7 @@ async def test_prompt_render_collects_export_slots(tmp_path):
         default_prompt_render_modules(
             EventBus(),
             context,
-            plugin_modules_bottom=[SlotModule()],
+            plugin_modules=[SlotModule()],
         ),
         frame_factory=PromptRenderFrame,
     )
@@ -1054,6 +1067,9 @@ async def test_before_step_finalize_injects_extra_hints():
 @pytest.mark.asyncio
 async def test_before_step_collects_export_slots():
     class SlotModule:
+        slot = "test.before_step.slot"
+        requires = ("before_step.emit", "step:ctx")
+
         async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
             frame.slots["step:extra_hint:test"] = "slot step hint"
             frame.slots["step:abort_reply"] = "slot stop"
@@ -1062,7 +1078,7 @@ async def test_before_step_collects_export_slots():
     phase = Phase(
         default_before_step_modules(
             EventBus(),
-            plugin_modules_after_emit=[SlotModule()],
+            plugin_modules=[SlotModule()],
         ),
         frame_factory=BeforeStepFrame,
     )
@@ -1147,11 +1163,17 @@ async def test_after_step_collects_telemetry_slots_before_fanout():
     seen: list[dict[str, Any]] = []
 
     class SlotModule:
+        slot = "test.after_step.pre"
+        requires = ("after_step.copy_input", "step:ctx")
+
         async def run(self, frame: AfterStepFrame) -> AfterStepFrame:
             frame.slots["step:telemetry:test"] = {"ok": True}
             return frame
 
     class AfterFanoutSlotModule:
+        slot = "test.after_step.post"
+        requires = ("after_step.fanout", "step:ctx")
+
         async def run(self, frame: AfterStepFrame) -> AfterStepFrame:
             frame.slots["step:telemetry:after"] = "done"
             frame.slots["step:telemetry:test"] = "overwritten"
@@ -1164,8 +1186,7 @@ async def test_after_step_collects_telemetry_slots_before_fanout():
     phase = Phase(
         default_after_step_modules(
             bus,
-            plugin_modules_before_fanout=[SlotModule()],
-            plugin_modules_after_fanout=[AfterFanoutSlotModule()],
+            plugin_modules=[SlotModule(), AfterFanoutSlotModule()],
         ),
         frame_factory=AfterStepFrame,
     )
@@ -1192,6 +1213,9 @@ async def test_after_step_collects_telemetry_slots_before_fanout():
 @pytest.mark.asyncio
 async def test_after_reasoning_collects_persist_and_outbound_slots():
     class SlotModule:
+        slot = "test.after_reasoning.slot"
+        requires = ("after_reasoning.emit", "reasoning:ctx")
+
         async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
             frame.slots["persist:user:user_flag"] = "u"
             frame.slots["persist:assistant:assistant_flag"] = "a"
@@ -1220,7 +1244,7 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
         default_after_reasoning_modules(
             EventBus(),
             cast(Any, services),
-            plugin_modules_before_persist=[SlotModule()],
+            plugin_modules=[SlotModule()],
         ),
         frame_factory=AfterReasoningFrame,
     )
@@ -1241,11 +1265,17 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
     bus = EventBus()
 
     class ExtraModule:
+        slot = "test.after_turn.extra"
+        requires = ("after_turn.build_work", "turn:extra")
+
         async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
             frame.slots["turn:extra:plugin_flag"] = "extra"
             return frame
 
     class TelemetryModule:
+        slot = "test.after_turn.telemetry"
+        requires = ("after_turn.build_ctx", "turn:ctx")
+
         async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
             frame.slots["turn:telemetry:plugin_flag"] = "telemetry"
             return frame
@@ -1282,8 +1312,7 @@ async def test_after_turn_collects_extra_and_telemetry_slots():
             bus,
             _DummyOutbound(),
             cast(ContextBuilder, context),
-            plugin_modules_before_commit=[ExtraModule()],
-            plugin_modules_before_fanout=[TelemetryModule()],
+            plugin_modules=[ExtraModule(), TelemetryModule()],
         ),
         frame_factory=AfterTurnFrame,
     )
