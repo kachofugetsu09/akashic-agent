@@ -12,7 +12,12 @@ from agent.core.passive_support import (
     log_react_context_budget,
 )
 from agent.core.types import to_tool_call_groups
-from agent.lifecycle.phase import PhaseFrame, PhaseModule, collect_prefixed_slots
+from agent.lifecycle.phase import (
+    PhaseFrame,
+    PhaseModule,
+    collect_prefixed_slots,
+    topo_sort_modules,
+)
 from agent.lifecycle.types import AfterTurnCtx, TurnSnapshot
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
@@ -259,22 +264,21 @@ def default_after_turn_modules(
     outbound: OutboundPort,
     context: ContextBuilder,
     history_window: int = 500,
-    plugin_modules_before_commit: AfterTurnModules | None = None,
-    plugin_modules_before_fanout: AfterTurnModules | None = None,
+    plugin_modules: AfterTurnModules | None = None,
 ) -> AfterTurnModules:
-    before_commit = plugin_modules_before_commit or []
-    before_fanout = plugin_modules_before_fanout or []
-    return [
+    builtins: AfterTurnModules = [
         _BuildTurnWorkModule(context, history_window),
-        *before_commit,
         _CollectAfterTurnExtraSlotsModule(),
         _BuildTurnCommittedModule(),
         _FanoutTurnCommittedModule(bus),
         _LogBudgetModule(),
         _BuildAfterTurnCtxModule(),
-        *before_fanout,
         _CollectAfterTurnTelemetrySlotsModule(),
         _FanoutAfterTurnCtxModule(bus),
         _DispatchOutboundModule(outbound),
         _ReturnOutboundMessageModule(),
     ]
+    return cast(
+        AfterTurnModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )

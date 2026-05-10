@@ -144,7 +144,7 @@ def default_before_turn_modules(
     context_store: ContextStore,
     plugin_modules: BeforeTurnModules | None = None,
 ) -> BeforeTurnModules:
-    builtins = [
+    builtins: BeforeTurnModules = [
         _AcquireSessionModule(session_manager),
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),
@@ -152,4 +152,7 @@ def default_before_turn_modules(
         _CollectBeforeTurnExportSlotsModule(),
         _ReturnBeforeTurnCtxModule(),
     ]
-    return topo_sort_modules(builtins + list(plugin_modules or []))
+    return cast(
+        BeforeTurnModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )

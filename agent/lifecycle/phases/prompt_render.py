@@ -10,6 +10,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    topo_sort_modules,
 )
 from agent.lifecycle.types import PromptRenderCtx, PromptRenderInput, PromptRenderResult
 from agent.prompting import PromptSectionRender
@@ -144,20 +145,20 @@ class _ReturnPromptRenderResultModule:
 def default_prompt_render_modules(
     bus: EventBus,
     context: ContextBuilder,
-    plugin_modules_top: PromptRenderModules | None = None,
-    plugin_modules_bottom: PromptRenderModules | None = None,
+    plugin_modules: PromptRenderModules | None = None,
 ) -> PromptRenderModules:
-    top_modules = plugin_modules_top or []
-    bottom_modules = plugin_modules_bottom or []
-    return [
+    builtins = [
         _BuildPromptRenderCtxModule(),
         _EmitPromptRenderCtxModule(bus),
-        *top_modules,
-        *bottom_modules,
         _CollectPromptExportSlotsModule(),
         _RenderPromptModule(context),
         _ReturnPromptRenderResultModule(),
     ]
+    return topo_sort_modules(builtins + list(plugin_modules or []))
+    return cast(
+        PromptRenderModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )
 
 
 def _append_sections(

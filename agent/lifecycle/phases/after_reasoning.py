@@ -11,6 +11,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    topo_sort_modules,
 )
 from agent.lifecycle.types import (
     AfterReasoningCtx,
@@ -230,16 +231,11 @@ class _ReturnAfterReasoningResultModule:
 def default_after_reasoning_modules(
     bus: EventBus,
     session_services: SessionServices,
-    plugin_modules_before_emit: AfterReasoningModules | None = None,
-    plugin_modules_before_persist: AfterReasoningModules | None = None,
+    plugin_modules: AfterReasoningModules | None = None,
 ) -> AfterReasoningModules:
-    before_emit = plugin_modules_before_emit or []
-    before_persist = plugin_modules_before_persist or []
-    return [
+    builtins: AfterReasoningModules = [
         _BuildAfterReasoningCtxModule(),
-        *before_emit,
         _EmitAfterReasoningCtxModule(bus),
-        *before_persist,
         _PersistUserMessageModule(session_services),
         _PersistAssistantMessageModule(),
         _UpdateSessionMetadataModule(),
@@ -247,6 +243,10 @@ def default_after_reasoning_modules(
         _BuildOutboundMessageModule(),
         _ReturnAfterReasoningResultModule(),
     ]
+    return cast(
+        AfterReasoningModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )
 
 
 def _collect_persist_assistant_slots(slots: dict[str, object]) -> dict[str, object]:

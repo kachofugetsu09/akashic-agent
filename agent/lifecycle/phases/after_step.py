@@ -4,7 +4,12 @@ from dataclasses import dataclass, replace
 from typing import TypeAlias, cast
 
 from bus.event_bus import EventBus
-from agent.lifecycle.phase import PhaseFrame, PhaseModule, collect_prefixed_slots
+from agent.lifecycle.phase import (
+    PhaseFrame,
+    PhaseModule,
+    collect_prefixed_slots,
+    topo_sort_modules,
+)
 from agent.lifecycle.types import AfterStepCtx
 
 
@@ -48,6 +53,7 @@ class _FanoutAfterStepCtxModule:
 class _CollectAfterStepExportSlotsModule:
     produces = (_CTX_SLOT,)
 
+    # 同一个模块类要在 fanout 前后各实例化一次，所以 slot / requires 由实例注入。
     def __init__(self, *, slot: str, requires: tuple[str, ...]) -> None:
         self.slot = slot
         self.requires = requires
@@ -89,24 +95,23 @@ class _ReturnAfterStepCtxModule:
 
 def default_after_step_modules(
     bus: EventBus,
-    plugin_modules_before_fanout: AfterStepModules | None = None,
-    plugin_modules_after_fanout: AfterStepModules | None = None,
+    plugin_modules: AfterStepModules | None = None,
 ) -> AfterStepModules:
-    before_fanout = plugin_modules_before_fanout or []
-    after_fanout = plugin_modules_after_fanout or []
-    return [
+    builtins: AfterStepModules = [
         _CopyInputToCtxModule(),
-        *before_fanout,
         # collect 两次：fanout 前给 handler 读，fanout 后把 after_fanout 的补充带回返回 ctx。
         _CollectAfterStepExportSlotsModule(
             slot="after_step.collect_pre",
             requires=("after_step.copy_input", _CTX_SLOT),
         ),
         _FanoutAfterStepCtxModule(bus),
-        *after_fanout,
         _CollectAfterStepExportSlotsModule(
             slot="after_step.collect_post",
             requires=("after_step.fanout", _CTX_SLOT),
         ),
         _ReturnAfterStepCtxModule(),
     ]
+    return cast(
+        AfterStepModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )

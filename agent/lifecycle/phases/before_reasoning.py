@@ -156,7 +156,7 @@ def default_before_reasoning_modules(
     context: ContextBuilder,
     plugin_modules: BeforeReasoningModules | None = None,
 ) -> BeforeReasoningModules:
-    builtins = [
+    builtins: BeforeReasoningModules = [
         _SyncToolContextModule(tools, session_manager),
         _BuildBeforeReasoningCtxModule(),
         _EmitBeforeReasoningCtxModule(bus),
@@ -164,4 +164,7 @@ def default_before_reasoning_modules(
         _PromptWarmupModule(context),
         _ReturnBeforeReasoningCtxModule(),
     ]
-    return topo_sort_modules(builtins + list(plugin_modules or []))
+    return cast(
+        BeforeReasoningModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )

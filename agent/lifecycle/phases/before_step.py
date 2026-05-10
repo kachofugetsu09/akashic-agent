@@ -12,6 +12,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    topo_sort_modules,
 )
 from agent.lifecycle.types import BeforeStepCtx, BeforeStepInput
 from bus.event_bus import EventBus
@@ -112,17 +113,17 @@ class _ReturnBeforeStepCtxModule:
 
 def default_before_step_modules(
     bus: EventBus,
-    plugin_modules_before_emit: BeforeStepModules | None = None,
-    plugin_modules_after_emit: BeforeStepModules | None = None,
+    plugin_modules: BeforeStepModules | None = None,
 ) -> BeforeStepModules:
-    before_emit = plugin_modules_before_emit or []
-    after_emit = plugin_modules_after_emit or []
-    return [
+    builtins = [
         _BuildBeforeStepCtxModule(),
-        *before_emit,
         _EmitBeforeStepCtxModule(bus),
-        *after_emit,
         _CollectBeforeStepExportSlotsModule(),
         _InjectHintsModule(),
         _ReturnBeforeStepCtxModule(),
     ]
+    return topo_sort_modules(builtins + list(plugin_modules or []))
+    return cast(
+        BeforeStepModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )
