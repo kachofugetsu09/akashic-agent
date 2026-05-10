@@ -20,6 +20,7 @@ _TRAILING_PROTOCOL_TAGS_RE = re.compile(
     rf"(?:\s*{_TRAILING_PROTOCOL_TAG}\s*)+$",
     re.IGNORECASE,
 )
+_INLINE_MEMORY_REF_RE = re.compile(r"[ \t]*(?:\[§[A-Za-z0-9:_-]{1,128}\])+", re.IGNORECASE)
 
 _CITATION_PROTOCOL = """### 记忆引用协议 - 内部元数据，对用户不可见
 每轮回复若用到了系统注入的记忆条目 [item_id] 前缀标识，或 recall_memory / fetch_messages 工具返回的条目，在回复正文末尾另起一行输出：
@@ -60,6 +61,7 @@ class CitationAfterReasoningModule:
             return frame
         reply = str(getattr(ctx, "reply", "") or "")
         cleaned, cited_ids = extract_cited_ids(reply)
+        cleaned = strip_inline_memory_refs(cleaned)
         if cited_ids:
             frame.slots[_PERSIST_CITED_SLOT] = cited_ids
         else:
@@ -83,7 +85,7 @@ class ProtocolTagCleanupModule:
         if ctx is None:
             return frame
         reply = str(getattr(ctx, "reply", "") or "")
-        cleaned = strip_trailing_protocol_tags(reply)
+        cleaned = strip_inline_memory_refs(strip_trailing_protocol_tags(reply))
         if cleaned != reply:
             ctx.reply = cleaned
         return frame
@@ -114,6 +116,10 @@ def extract_cited_ids(response: str) -> tuple[str, list[str]]:
 
 def strip_trailing_protocol_tags(response: str) -> str:
     return _TRAILING_PROTOCOL_TAGS_RE.sub("", response).rstrip()
+
+
+def strip_inline_memory_refs(response: str) -> str:
+    return _INLINE_MEMORY_REF_RE.sub("", response).rstrip()
 
 
 def extract_cited_ids_from_tool_chain(
