@@ -6,6 +6,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -13,7 +14,12 @@ import pytest
 
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
-from bus.events_lifecycle import StreamDeltaReady, ToolCallCompleted, ToolCallStarted
+from bus.events_lifecycle import (
+    StreamDeltaReady,
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnStarted,
+)
 
 
 class _Bus:
@@ -363,11 +369,44 @@ def _import_qq_channel(monkeypatch: pytest.MonkeyPatch):
         def exit(self):
             return None
 
+    class ForwardConstructor:
+        def __init__(self, user_id, nickname):
+            self.user_id = user_id
+            self.nickname = nickname
+            self.nodes = []
+
+        def attach_text(self, text, nickname=None):
+            self.nodes.append(
+                {
+                    "type": "text",
+                    "data": {"text": text},
+                    "nickname": nickname or self.nickname,
+                    "user_id": self.user_id,
+                }
+            )
+
+        def to_forward(self):
+            class _Forward:
+                def __init__(self, nodes):
+                    self._nodes = nodes
+
+                def to_forward_dict(self):
+                    return {
+                        "messages": list(self._nodes),
+                        "news": [],
+                        "prompt": "",
+                        "summary": "",
+                        "source": "",
+                    }
+
+            return _Forward(self.nodes)
+
     def _fake_connect(*args, **kwargs):
         captured_connect_calls.append(kwargs.copy())
         return ("connect", args, kwargs)
 
     ncatbot_core.BotClient = BotClient
+    ncatbot_core.ForwardConstructor = ForwardConstructor
     ncatbot_core_adapter_adapter.websockets = SimpleNamespace(connect=_fake_connect)
     ncatbot_core_adapter_adapter._captured_connect_calls = captured_connect_calls
     ncatbot_utils.ncatbot_config = SimpleNamespace(
@@ -972,7 +1011,12 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert mod._is_local("https://example.com/x.jpg") is False
     assert mod._local_to_base64(str(sample)).startswith("base64://")
 
-    paths = await mod._download_to_temp(["http://x/a.png", "http://x/b.png"], requester)
+    test_attachments = mod.AttachmentStore(tmp_path / "uploads")
+    paths = await mod._download_to_temp(
+        ["http://x/a.png", "http://x/b.png"],
+        requester,
+        test_attachments,
+    )
     assert len(paths) == 1
 
     channel._bot_loop = None
@@ -981,6 +1025,164 @@ async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
         await mod.QQChannel._run_on_bot_loop(channel, pending)
     pending.close()
     await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_qq_private_trace_sends_forward_then_final_and_clears_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    mod = _import_qq_channel(monkeypatch)
+    bus = _Bus()
+    session_manager = _SessionManager()
+    event_bus = EventBus()
+    channel = mod.QQChannel(
+        "42",
+        bus,
+        session_manager,
+        allow_from=["1"],
+        event_bus=event_bus,
+        http_requester=SimpleNamespace(get=AsyncMock()),
+    )
+    await channel.start()
+
+    calls: list[tuple[str, object, object]] = []
+
+    async def _drain(coro):
+        return await coro
+
+    async def _fake_send_private_forward_msg(user_id, **payload):
+        calls.append(("forward", user_id, payload))
+
+    async def _fake_send_private_text(user_id, content):
+        calls.append(("text", user_id, content))
+
+    async def _fake_get_login_info():
+        return SimpleNamespace(user_id="42", nickname="Bot")
+
+    channel._run_on_bot_loop = AsyncMock(side_effect=_drain)
+    channel._api.send_private_forward_msg = _fake_send_private_forward_msg
+    channel._api.send_private_text = _fake_send_private_text
+    channel._api.get_login_info = _fake_get_login_info
+    channel._workspace = tmp_path
+    (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "memory" / "SELF.md").write_text(
+        "# Akashic 的自我认知\n- 我是 Steria，负责陪伴和协作。\n",
+        encoding="utf-8",
+    )
+
+    await event_bus.observe(
+        TurnStarted(
+            session_key="qq:1",
+            channel="qq",
+            chat_id="1",
+            content="帮我看看最近的提交",
+            timestamp=__import__("datetime").datetime.now(),
+        )
+    )
+    await event_bus.observe(
+        ToolCallStarted(
+            session_key="qq:1",
+            channel="qq",
+            chat_id="1",
+            iteration=1,
+            call_id="call-1",
+            tool_name="fetch_messages",
+            arguments={"description": "查最近消息", "query": "最近提交"},
+        )
+    )
+    await event_bus.observe(
+        ToolCallCompleted(
+            session_key="qq:1",
+            channel="qq",
+            chat_id="1",
+            iteration=1,
+            call_id="call-1",
+            tool_name="fetch_messages",
+            arguments={"description": "查最近消息", "query": "最近提交"},
+            final_arguments={"description": "查最近消息", "query": "最近提交"},
+            status="ok",
+            result_preview='{"count": 21, "matched_count": 1}',
+        )
+    )
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="qq",
+            chat_id="1",
+            content="我看到了，最近主要是 QQ tracing 的改动。",
+            thinking="先确认这轮是否有工具调用，再组织结论。",
+        )
+    )
+
+    assert [item[0] for item in calls] == ["forward", "text"]
+    forward_payload = cast(dict[str, Any], calls[0][2])
+    assert forward_payload["news"] == [
+        {"text": "Steria：【模型思路】"},
+        {"text": "Steria：【工具链】"},
+    ]
+    assert "fetch_messages" in str(forward_payload)
+    assert "命中 1 条，返回上下文 21 条" in str(forward_payload)
+    assert calls[1] == ("text", 1, "我看到了，最近主要是 QQ tracing 的改动。")
+    assert "qq:1" not in channel._trace_states
+
+
+@pytest.mark.asyncio
+async def test_qq_private_trace_skips_empty_trace(monkeypatch: pytest.MonkeyPatch):
+    mod = _import_qq_channel(monkeypatch)
+    bus = _Bus()
+    session_manager = _SessionManager()
+    event_bus = EventBus()
+    channel = mod.QQChannel(
+        "42",
+        bus,
+        session_manager,
+        allow_from=["1"],
+        event_bus=event_bus,
+        http_requester=SimpleNamespace(get=AsyncMock()),
+    )
+    await channel.start()
+
+    calls: list[tuple[str, object, object]] = []
+
+    async def _drain(coro):
+        return await coro
+
+    async def _fake_send_private_forward_msg(user_id, **payload):
+        calls.append(("forward", user_id, payload))
+
+    async def _fake_send_private_text(user_id, content):
+        calls.append(("text", user_id, content))
+
+    async def _fake_get_login_info():
+        return SimpleNamespace(user_id="42", nickname="Bot")
+
+    channel._run_on_bot_loop = AsyncMock(side_effect=_drain)
+    channel._api.send_private_forward_msg = _fake_send_private_forward_msg
+    channel._api.send_private_text = _fake_send_private_text
+    channel._api.get_login_info = _fake_get_login_info
+
+    await event_bus.observe(
+        TurnStarted(
+            session_key="qq:1",
+            channel="qq",
+            chat_id="1",
+            content="好",
+            timestamp=__import__("datetime").datetime.now(),
+        )
+    )
+
+    await channel._on_response(
+        OutboundMessage(
+            channel="qq",
+            chat_id="1",
+            content="嗯，收到。",
+            thinking=None,
+        )
+    )
+
+    assert [item[0] for item in calls] == ["text"]
+    assert calls[0] == ("text", 1, "嗯，收到。")
 
 
 @pytest.mark.asyncio

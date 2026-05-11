@@ -65,6 +65,7 @@ async def start_channels(
             groups=qq.groups,
             websocket_open_timeout_seconds=qq.websocket_open_timeout_seconds,
             http_requester=http_resources.external_default,
+            event_bus=event_bus,
             interrupt_controller=interrupt_controller,
         )
         await qq_channel.start()

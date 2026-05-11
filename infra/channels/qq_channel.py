@@ -16,6 +16,7 @@ chat_id 约定：
 
 import asyncio
 import base64
+from dataclasses import dataclass, field
 import html
 import importlib
 import logging
@@ -26,7 +27,13 @@ from typing import Any, cast
 
 from agent.config_models import QQGroupConfig
 from agent.looping.interrupt import InterruptController
+from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
+from bus.events_lifecycle import (
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnStarted,
+)
 from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore, SessionIdentityIndex
 from infra.channels.group_filter import (
@@ -44,6 +51,162 @@ logger = logging.getLogger(__name__)
 
 _CHANNEL = "qq"
 _GROUP_PREFIX = "gqq:"
+_TRACE_THINKING_LIMIT = 500
+_TRACE_TOOL_RESULT_LIMIT = 120
+_TRACE_DEFAULT_ACTOR = "Akashic"
+
+
+@dataclass
+class _QQTraceLine:
+    tool_name: str
+    status: str = "started"
+    intent: str = ""
+    target: str = ""
+    result_preview: str = ""
+
+
+@dataclass
+class _QQTraceState:
+    user_message: str = ""
+    tool_lines: list[_QQTraceLine] = field(default_factory=list)
+
+
+def _session_key_for_chat(chat_id: str) -> str:
+    return f"{_CHANNEL}:{chat_id}"
+
+
+def _truncate_trace_text(text: str, limit: int) -> str:
+    raw = str(text or "").strip()
+    if len(raw) <= limit:
+        return raw
+    omitted = len(raw) - limit
+    head = max(0, limit // 2)
+    tail = max(0, limit - head)
+    return f"{raw[:head]} ...[{omitted} chars omitted]... {raw[-tail:]}"
+
+
+def _format_tool_intent(arguments: dict[str, Any]) -> str:
+    if not isinstance(arguments, dict):
+        return ""
+    for key in ("description", "query", "summary", "task", "action"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return _truncate_trace_text(value, 80)
+    return ""
+
+
+def _format_tool_target(arguments: dict[str, Any]) -> str:
+    if not isinstance(arguments, dict):
+        return ""
+    if isinstance(arguments.get("path"), str) and arguments.get("path", "").strip():
+        return _truncate_trace_text(str(arguments["path"]).strip(), 60)
+    if isinstance(arguments.get("file_path"), str) and arguments.get("file_path", "").strip():
+        return _truncate_trace_text(str(arguments["file_path"]).strip(), 60)
+    for key in (
+        "cmd",
+        "command",
+        "query",
+        "url",
+        "file",
+        "text",
+        "content",
+        "prompt",
+        "name",
+    ):
+        value = arguments.get(key)
+        if isinstance(value, str | int | float) and str(value).strip():
+            return _truncate_trace_text(str(value).strip(), 80)
+    return ""
+
+
+def _format_tool_trace_lines(lines: list[_QQTraceLine]) -> str:
+    if not lines:
+        return "No tool calls."
+    rendered: list[str] = []
+    for index, line in enumerate(lines, start=1):
+        rendered.append(f"{index}. {_compress_tool_line(line)}")
+    return "\n".join(rendered)
+
+
+def _summarize_tool_result_preview(tool_name: str, preview: str) -> str:
+    text = str(preview or "").strip()
+    if not text:
+        return ""
+    name = tool_name.lower()
+    if name == "fetch_messages":
+        if '"matched_count"' in text or '"count"' in text:
+            matched = re.search(r'"matched_count"\s*:\s*(\d+)', text)
+            count = re.search(r'"count"\s*:\s*(\d+)', text)
+            hit_text = matched.group(1) if matched else "?"
+            total_text = count.group(1) if count else "?"
+            return f"结果：命中 {hit_text} 条，返回上下文 {total_text} 条"
+        return "结果：已返回消息上下文"
+    if name == "list_dir":
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if lines:
+            return f"结果：列出 {len(lines)} 项"
+        return "结果：已列出目录内容"
+    if name == "read_file":
+        line_no = re.search(r"(\d+)→", text)
+        if line_no:
+            return f"结果：已读取第 {line_no.group(1)} 行附近内容"
+        if "字节" in text:
+            return "结果：已读取文件片段"
+        return "结果：已读取文件"
+    if name == "shell":
+        exit_code = re.search(r'"exit_code"\s*:\s*(-?\d+)', text)
+        if exit_code:
+            code = exit_code.group(1)
+            if code == "0":
+                return "结果：命令执行成功"
+            return f"结果：命令退出码 {code}"
+        command = re.search(r'"command"\s*:\s*"([^"]+)"', text)
+        if command:
+            snippet = _truncate_trace_text(command.group(1), 50)
+            return f"结果：已执行命令 {snippet}"
+        if "（无输出）" in text or "(无输出)" in text:
+            return "结果：命令已执行（无输出）"
+        return "结果：命令已执行"
+    if name == "list_schedules":
+        matched = re.search(r"(\d+)\s*个", text)
+        if matched:
+            return f"结果：当前有 {matched.group(1)} 个提醒"
+        return "结果：已列出提醒"
+    if name == "cancel_schedule":
+        matched = re.search(r"(\d+)\s*个", text)
+        if matched:
+            return f"结果：已取消 {matched.group(1)} 个提醒"
+        return "结果：已执行取消"
+    if name == "schedule":
+        return "结果：已创建提醒"
+    return f"结果：{_truncate_trace_text(text, _TRACE_TOOL_RESULT_LIMIT)}"
+
+
+def _tool_emoji(tool_name: str) -> str:
+    name = tool_name.lower()
+    if name.startswith("mcp"):
+        return "📡"
+    if "search" in name or "fetch" in name:
+        return "🔍"
+    if "schedule" in name or "cancel" in name:
+        return "⏰"
+    if "shell" in name:
+        return "⚙"
+    if "file" in name or "read" in name or "write" in name:
+        return "📄"
+    return "🔧"
+
+
+def _compress_tool_line(line: _QQTraceLine) -> str:
+    status = "已完成" if line.status == "done" else "失败" if line.status == "error" else "进行中"
+    parts = [f"{_tool_emoji(line.tool_name)} {line.tool_name}", status]
+    if line.intent:
+        parts.append(f"意图：{line.intent}")
+    elif line.target:
+        parts.append(f"目标：{line.target}")
+    if line.result_preview:
+        parts.append(line.result_preview)
+    return " | ".join(parts)
 
 # 匹配 CQ:image 码中的 url 字段
 _CQ_IMAGE_RE = re.compile(r"\[CQ:image[^\]]*?(?:,|\b)url=([^,\]]+)[^\]]*\]")
@@ -140,6 +303,7 @@ class QQChannel:
         websocket_open_timeout_seconds: float = 5.0,
         group_filter: GroupMessageFilter | None = None,
         http_requester: HttpRequester | None = None,
+        event_bus: EventBus | None = None,
         interrupt_controller: InterruptController | None = None,
     ) -> None:
         from ncatbot.core import BotClient
@@ -153,7 +317,9 @@ class QQChannel:
         self._websocket_open_timeout_seconds = float(websocket_open_timeout_seconds)
         self._interrupt_controller = interrupt_controller
         ws = getattr(session_manager, "workspace", None)
+        self._workspace = Path(ws) if ws else None
         self._attachments = AttachmentStore(Path(ws) / "uploads" if ws else None)
+        self._trace_actor_name_cache: str | None = None
         self._identity_index = SessionIdentityIndex(
             session_manager,
             channel=_CHANNEL,
@@ -170,6 +336,8 @@ class QQChannel:
         self._http_requester = http_requester or get_default_http_requester(
             "external_default"
         )
+        self._event_bus = event_bus
+        self._trace_states: dict[str, _QQTraceState] = {}
 
         self._bot = BotClient()
         self._api = None
@@ -202,6 +370,10 @@ class QQChannel:
     async def start(self) -> None:
         self._main_loop = asyncio.get_running_loop()
         self._identity_index.rebuild()
+        if self._event_bus is not None:
+            self._event_bus.on(TurnStarted, self._on_turn_started)
+            self._event_bus.on(ToolCallStarted, self._on_tool_call_started)
+            self._event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
 
         @cast(Any, self._bot.on_private_message())
         async def _(event) -> None:
@@ -279,6 +451,52 @@ class QQChannel:
             if callable(bot_exit):
                 await loop.run_in_executor(None, bot_exit)
             logger.info("[qq] QQChannel 已停止")
+
+    async def _on_turn_started(self, event: TurnStarted) -> None:
+        if event.channel != _CHANNEL:
+            return
+        self._trace_states[event.session_key] = _QQTraceState(
+            user_message=event.content,
+        )
+
+    async def _on_tool_call_started(self, event: ToolCallStarted) -> None:
+        if event.channel != _CHANNEL:
+            return
+        state = self._trace_states.setdefault(event.session_key, _QQTraceState())
+        state.tool_lines.append(
+            _QQTraceLine(
+                tool_name=event.tool_name,
+                intent=_format_tool_intent(event.arguments),
+                target=_format_tool_target(event.arguments),
+            )
+        )
+
+    async def _on_tool_call_completed(self, event: ToolCallCompleted) -> None:
+        if event.channel != _CHANNEL:
+            return
+        state = self._trace_states.setdefault(event.session_key, _QQTraceState())
+        line = next(
+            (
+                item
+                for item in reversed(state.tool_lines)
+                if item.tool_name == event.tool_name and item.status == "started"
+            ),
+            None,
+        )
+        if line is None:
+            line = _QQTraceLine(
+                tool_name=event.tool_name,
+                intent=_format_tool_intent(event.final_arguments or event.arguments),
+                target=_format_tool_target(event.final_arguments or event.arguments),
+            )
+            state.tool_lines.append(line)
+        line.status = "error" if event.status == "error" else "done"
+        preview = str(event.result_preview or "").strip()
+        if preview:
+            line.result_preview = _summarize_tool_result_preview(
+                event.tool_name,
+                preview,
+            )
 
     # ── 入站处理 ──────────────────────────────────────────────────────
 
@@ -366,6 +584,12 @@ class QQChannel:
         api = self._api
         if api is None:
             raise RuntimeError("QQChannel 尚未启动")
+        session_key = _session_key_for_chat(msg.chat_id)
+        if not msg.chat_id.startswith(_GROUP_PREFIX):
+            try:
+                await self._send_private_trace(msg.chat_id, session_key, msg)
+            except Exception as e:
+                logger.warning(f"[qq] 私聊 tracing 合并转发失败  chat_id={msg.chat_id}  错误: {e}")
         if msg.content.strip():
             try:
                 if msg.chat_id.startswith(_GROUP_PREFIX):
@@ -386,6 +610,82 @@ class QQChannel:
                 await self.send_image(msg.chat_id, image)
             except Exception as e:
                 logger.error(f"[qq] meme 图片发送失败  chat_id={msg.chat_id}  path={image}  err={e}")
+        self._trace_states.pop(session_key, None)
+
+    async def _send_private_trace(
+        self,
+        chat_id: str,
+        session_key: str,
+        msg: OutboundMessage,
+    ) -> None:
+        api = self._api
+        if api is None:
+            raise RuntimeError("QQChannel 尚未启动")
+        trace = self._trace_states.get(session_key)
+        if trace is None:
+            return
+        thinking_source = str(msg.thinking or "")
+        thinking = _truncate_trace_text(thinking_source, _TRACE_THINKING_LIMIT)
+        tool_text = _format_tool_trace_lines(trace.tool_lines)
+        if not thinking and not trace.tool_lines:
+            return
+        from ncatbot.core import ForwardConstructor
+
+        info = await self._run_on_bot_loop(api.get_login_info())
+        actor_name = self._trace_actor_name()
+        constructor = ForwardConstructor(str(info.user_id), actor_name)
+        constructor.attach_text(
+            f"【模型思路】\n{thinking or '（无 thinking）'}",
+            nickname=actor_name,
+        )
+        constructor.attach_text(
+            f"【工具链】\n{tool_text}",
+            nickname=actor_name,
+        )
+        forward = constructor.to_forward()
+        payload = forward.to_forward_dict()
+        payload["source"] = f"{actor_name} 的过程记录"
+        payload["summary"] = "查看本轮过程记录"
+        payload["prompt"] = f"{actor_name} 过程记录"
+        payload["news"] = [
+            {"text": f"{actor_name}：【模型思路】"},
+            {"text": f"{actor_name}：【工具链】"},
+        ]
+        await self._run_on_bot_loop(
+            api.send_private_forward_msg(int(chat_id), **payload)
+        )
+
+    def _trace_actor_name(self) -> str:
+        cached = self._trace_actor_name_cache
+        if cached:
+            return cached
+        workspace = self._workspace
+        if workspace is None:
+            self._trace_actor_name_cache = _TRACE_DEFAULT_ACTOR
+            return _TRACE_DEFAULT_ACTOR
+        self_path = workspace / "memory" / "SELF.md"
+        try:
+            text = self_path.read_text(encoding="utf-8")
+        except Exception:
+            self._trace_actor_name_cache = _TRACE_DEFAULT_ACTOR
+            return _TRACE_DEFAULT_ACTOR
+        body_match = re.search(
+            r"(?m)^-\s*我是\s+([A-Za-z][A-Za-z0-9_-]{1,40})\b",
+            text,
+        )
+        if body_match:
+            name = body_match.group(1).strip()
+            if name:
+                self._trace_actor_name_cache = name
+                return name
+        match = re.search(r"(?m)^#\s*(.+?)\s+的自我认知\s*$", text)
+        if match:
+            name = match.group(1).strip()
+            if name:
+                self._trace_actor_name_cache = name
+                return name
+        self._trace_actor_name_cache = _TRACE_DEFAULT_ACTOR
+        return _TRACE_DEFAULT_ACTOR
 
     # ── 主动推送（供 MessagePushTool 使用）────────────────────────────
 
@@ -436,11 +736,11 @@ class QQChannel:
 
     async def _run_on_bot_loop(
         self, coro: Coroutine[object, object, object]
-    ) -> None:
+    ) -> object:
         if self._bot_loop is None:
             raise RuntimeError("QQ bot loop 未就绪")
         future = asyncio.run_coroutine_threadsafe(coro, self._bot_loop)
-        await asyncio.wrap_future(future)
+        return await asyncio.wrap_future(future)
 
 
 def _is_local(path: str) -> bool:
