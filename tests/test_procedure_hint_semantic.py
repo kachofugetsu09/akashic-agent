@@ -3,7 +3,12 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
-from agent.prompting import is_context_frame
+from agent.prompting import (
+    PromptSectionRender,
+    build_context_frame_content,
+    build_context_frame_message,
+    is_context_frame,
+)
 
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
@@ -82,7 +87,18 @@ def test_reflect_prompt_no_longer_contains_procedure_hint(tmp_path: Path):
     )
     loop = _make_loop(tmp_path, provider, tool)
 
-    asyncio.run(loop._run_agent_loop([{"role": "user", "content": "test"}]))
+    context_frame = build_context_frame_message(
+        build_context_frame_content(
+            [
+                PromptSectionRender(
+                    name="retrieved_memory",
+                    content="已知上下文",
+                    is_static=False,
+                )
+            ]
+        )
+    )
+    asyncio.run(loop._run_agent_loop([context_frame, {"role": "user", "content": "test"}]))
 
     reflect_msgs = provider.calls[1]["messages"]
     all_content = " ".join(str(m.get("content", "")) for m in reflect_msgs)
