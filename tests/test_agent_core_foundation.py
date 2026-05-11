@@ -43,11 +43,13 @@ def test_agent_core_runtime_support_tool_discovery_lru():
     state = ToolDiscoveryState(capacity=2)
     state.update("cli:1", ["tool_a", "tool_b"], {"always"})
     assert state.get_preloaded("cli:1") == {"tool_a", "tool_b"}
+    assert state.get_preloaded_ordered("cli:1") == ["tool_a", "tool_b"]
 
     state.update("cli:1", ["tool_a"], {"always"})
     state.update("cli:1", ["tool_c"], {"always"})
 
     assert state.get_preloaded("cli:1") == {"tool_a", "tool_c"}
+    assert state.get_preloaded_ordered("cli:1") == ["tool_a", "tool_c"]
     assert "tool_b" not in state.get_preloaded("cli:1")
 
 

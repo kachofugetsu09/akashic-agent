@@ -520,11 +520,17 @@ def _save_llm_payload_snapshot(
 def _extract_cache_usage(usage: Any) -> tuple[int | None, int | None]:
     hit_tokens = _coerce_int(_get_field(usage, "prompt_cache_hit_tokens"))
     miss_tokens = _coerce_int(_get_field(usage, "prompt_cache_miss_tokens"))
-    if hit_tokens is None and miss_tokens is None:
+    if hit_tokens is not None or miss_tokens is not None:
+        hit = hit_tokens or 0
+        miss = miss_tokens or 0
+        return hit + miss, hit
+
+    prompt_tokens = _coerce_int(_get_field(usage, "prompt_tokens"))
+    prompt_details = _get_field(usage, "prompt_tokens_details")
+    cached_tokens = _coerce_int(_get_field(prompt_details, "cached_tokens"))
+    if prompt_tokens is None or cached_tokens is None:
         return None, None
-    hit = hit_tokens or 0
-    miss = miss_tokens or 0
-    return hit + miss, hit
+    return prompt_tokens, cached_tokens
 
 
 def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:

@@ -236,6 +236,50 @@ class TestVisibilityGuard:
         assert "tool_search" in first_call_tools
         assert "hidden_tool" not in first_call_tools
 
+    def test_unlocked_schema_appends_after_always_on(self, tmp_path):
+        reg = ToolRegistry()
+        hidden = _DummyTool("early_hidden")
+        reg.register(hidden)
+        reg.register(ToolSearchTool(reg), always_on=True, risk="read-only")
+
+        schemas_seen: list[list[str]] = []
+        messages_seen: list[list[dict[str, Any]]] = []
+
+        class _CapturingProvider(_FakeProvider):
+            async def chat(self, **kwargs: Any) -> LLMResponse:
+                schemas_seen.append(
+                    [t["function"]["name"] for t in (kwargs.get("tools") or [])]
+                )
+                messages_seen.append(list(kwargs.get("messages") or []))
+                return await super().chat(**kwargs)
+
+        provider = _CapturingProvider(
+            [
+                LLMResponse(
+                    content="",
+                    tool_calls=[
+                        ToolCall("s1", "tool_search", {"query": "select:early_hidden"})
+                    ],
+                ),
+                LLMResponse(content="", tool_calls=[ToolCall("h1", "early_hidden", {})]),
+                LLMResponse(content="done", tool_calls=[]),
+            ]
+        )
+        loop = _make_loop(tmp_path, provider, reg)
+
+        final, tools_used, _, _, _ = asyncio.run(
+            loop._run_agent_loop([{"role": "user", "content": "use hidden"}])
+        )
+
+        assert final == "done"
+        assert "early_hidden" in tools_used
+        assert schemas_seen[0] == ["tool_search"]
+        assert schemas_seen[1] == ["tool_search", "early_hidden"]
+        second_call_text = "\n".join(
+            str(message.get("content") or "") for message in messages_seen[1]
+        )
+        assert "当前工具状态" not in second_call_text
+
 
 # ── LRU 测试 ──────────────────────────────────────────────────────────────────
 

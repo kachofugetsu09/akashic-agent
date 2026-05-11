@@ -552,6 +552,7 @@ class Reasoner(ABC):
         *,
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
+        preloaded_tool_order: list[str] | None = None,
         preflight_injected: bool = True,
         on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
         tool_event_session_key: str = "",
@@ -760,11 +761,13 @@ class DefaultReasoner(Reasoner):
         )
         total_history = len(source_history)
         preloaded: set[str] | None = None
+        preloaded_order: list[str] = []
         if self._tool_search_enabled:
-            preloaded = self._discovery.get_preloaded(session.key)
+            preloaded_order = self._discovery.get_preloaded_ordered(session.key)
+            preloaded = set(preloaded_order)
             logger.info(
                 "[tool_search] LRU preloaded=%s",
-                sorted(preloaded) if preloaded else "[]",
+                preloaded_order if preloaded_order else "[]",
             )
         stream_sink = (
             self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
@@ -819,6 +822,7 @@ class DefaultReasoner(Reasoner):
                     initial_messages,
                     request_time=msg.timestamp,
                     preloaded_tools=preloaded,
+                    preloaded_tool_order=preloaded_order,
                     preflight_injected=True,
                     on_content_delta=stream_sink,
                     tool_event_session_key=session.key,
@@ -827,6 +831,7 @@ class DefaultReasoner(Reasoner):
                     disabled_tools=disabled_tools,
                 )
                 tools_used = list(result.metadata.get("tools_used") or [])
+                tools_unlocked = list(result.metadata.get("tools_unlocked") or [])
                 tool_chain = list(result.metadata.get("tool_chain") or [])
                 if attempt > 0:
                     window = plan["history_window"]
@@ -845,10 +850,10 @@ class DefaultReasoner(Reasoner):
                     session.last_consolidated = 0
                     await self._session_manager.save_async(cast(Any, session))
 
-                if self._tool_search_enabled and tools_used:
+                if self._tool_search_enabled and (tools_used or tools_unlocked):
                     self._discovery.update(
                         session.key,
-                        tools_used,
+                        [*tools_unlocked, *tools_used],
                         self._tools.get_always_on_names(),
                     )
                 if attempt == 0:
@@ -913,6 +918,7 @@ class DefaultReasoner(Reasoner):
         *,
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
+        preloaded_tool_order: list[str] | None = None,
         preflight_injected: bool = True,
         on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
         tool_event_session_key: str = "",
@@ -923,9 +929,11 @@ class DefaultReasoner(Reasoner):
         # 1. 初始化消息上下文、本轮工具轨迹。
         messages = initial_messages
         tools_used: list[str] = []
+        tools_unlocked: list[str] = []
         tool_chain: list[dict[str, Any]] = []
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
+        visible_order: list[str] | None = None
         streamed = False
         react_input_samples: list[int] = []
         react_cache_prompt_tokens = 0
@@ -935,6 +943,12 @@ class DefaultReasoner(Reasoner):
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
             visible_names = (always_on | (preloaded_tools or set())) - disabled
+            visible_order = self._tools.get_registered_order(always_on - disabled)
+            seen_visible = set(visible_order)
+            for name in preloaded_tool_order or sorted(preloaded_tools or set()):
+                if name in visible_names and name not in seen_visible:
+                    visible_order.append(name)
+                    seen_visible.add(name)
             logger.info(
                 "[tool_search] visible=%d 个工具 always_on=%d preloaded=%d need_search=%s",
                 len(visible_names),
@@ -978,6 +992,7 @@ class DefaultReasoner(Reasoner):
                     cache_prompt_tokens=react_cache_prompt_tokens,
                     cache_hit_tokens=react_cache_hit_tokens,
                     cache_seen=react_cache_seen,
+                    tools_unlocked=tools_unlocked,
                 )
             # 4. 调用 LLM，带上当前可见工具 schema。
             react_input_samples.append(step_ctx.input_tokens_estimate)
@@ -987,11 +1002,13 @@ class DefaultReasoner(Reasoner):
                 f"{len(visible_names)}个" if visible_names is not None else "全部（tool_search未开启）",
                 step_ctx.input_tokens_estimate,
             )
-            schema_names = set(visible_names) if visible_names is not None else None
+            schema_names: list[str] | set[str] | None = (
+                list(visible_order) if visible_order is not None else None
+            )
             if schema_names is None and disabled:
                 schema_names = self._tools.get_registered_names() - disabled
             elif schema_names is not None:
-                schema_names -= disabled
+                schema_names = [name for name in schema_names if name not in disabled]
             response = await self._llm.provider.chat(
                 messages=messages,
                 tools=self._tools.get_schemas(names=schema_names),
@@ -1157,6 +1174,7 @@ class DefaultReasoner(Reasoner):
                                 cache_prompt_tokens=react_cache_prompt_tokens,
                                 cache_hit_tokens=react_cache_hit_tokens,
                                 cache_seen=react_cache_seen,
+                                tools_unlocked=tools_unlocked,
                             )
                         logger.warning(
                             "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
@@ -1287,11 +1305,20 @@ class DefaultReasoner(Reasoner):
                         and tool_call.name == "tool_search"
                         and visible_names is not None
                     ):
-                        _newly_unlocked = self._discovery.unlock_from_result(normalized.text)
-                        _newly_unlocked -= visible_names  # keep only genuinely new ones
-                        _newly_unlocked -= disabled
+                        _newly_unlocked = [
+                            name
+                            for name in self._discovery.unlock_names_from_result(normalized.text)
+                            if name not in visible_names and name not in disabled
+                        ]
                         if _newly_unlocked:
                             visible_names.update(_newly_unlocked)
+                            tools_unlocked.extend(_newly_unlocked)
+                            if visible_order is not None:
+                                seen_visible = set(visible_order)
+                                for name in _newly_unlocked:
+                                    if name not in seen_visible:
+                                        visible_order.append(name)
+                                        seen_visible.add(name)
                             logger.info("[工具解锁] tool_search 新解锁: %s", sorted(_newly_unlocked))
                         else:
                             logger.info("[工具解锁] tool_search 未解锁新工具")
@@ -1360,26 +1387,14 @@ class DefaultReasoner(Reasoner):
                             cache_prompt_tokens=react_cache_prompt_tokens,
                             cache_hit_tokens=react_cache_hit_tokens,
                             cache_seen=react_cache_seen,
+                            tools_unlocked=tools_unlocked,
                         )
 
-                # 7. 本轮工具执行完后，记录 tool_chain 并追加下一轮 loop_state 提示。
+                # 7. 本轮工具执行完后，记录 tool_chain。
                 tool_chain_group = {"text": response.content, "calls": iter_calls}
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
                 tool_chain.append(tool_chain_group)
-                messages.append(
-                    support.build_context_hint_message(
-                        "loop_state",
-                        build_loop_state_hint(
-                            visible_names=visible_names,
-                            always_on_names=(
-                                self._tools.get_always_on_names()
-                                if self._tool_search_enabled
-                                else None
-                            ),
-                        ),
-                    )
-                )
                 pressure_tokens = support.estimate_messages_tokens(messages)
                 # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
                 after_step = await self._after_step.run(AfterStepCtx(
@@ -1419,6 +1434,7 @@ class DefaultReasoner(Reasoner):
                         cache_prompt_tokens=react_cache_prompt_tokens,
                         cache_hit_tokens=react_cache_hit_tokens,
                         cache_seen=react_cache_seen,
+                        tools_unlocked=tools_unlocked,
                     )
                 continue
 
@@ -1485,6 +1501,7 @@ class DefaultReasoner(Reasoner):
                 cache_prompt_tokens=react_cache_prompt_tokens,
                 cache_hit_tokens=react_cache_hit_tokens,
                 cache_seen=react_cache_seen,
+                tools_unlocked=tools_unlocked,
             )
 
         # 9. 达到最大迭代次数后，生成不完整进展总结。
@@ -1510,6 +1527,7 @@ class DefaultReasoner(Reasoner):
             cache_prompt_tokens=react_cache_prompt_tokens,
             cache_hit_tokens=react_cache_hit_tokens,
             cache_seen=react_cache_seen,
+            tools_unlocked=tools_unlocked,
         )
 
     async def _observe_tool_call_started(
@@ -1625,6 +1643,7 @@ class DefaultReasoner(Reasoner):
         cache_prompt_tokens: int,
         cache_hit_tokens: int,
         cache_seen: bool,
+        tools_unlocked: list[str] | None = None,
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
         invocations: list[LLMToolCall] = []
@@ -1662,6 +1681,7 @@ class DefaultReasoner(Reasoner):
             )
         metadata = {
             "tools_used": list(tools_used),
+            "tools_unlocked": list(tools_unlocked or []),
             "tool_chain": list(tool_chain),
             "visible_names": set(visible_names) if visible_names is not None else None,
             "react_stats": react_stats,
@@ -1814,19 +1834,3 @@ def build_deferred_tools_hint(
         "- 描述功能   → tool_search(query=\"关键词\") 搜索匹配"
     )
     return "\n".join(lines) + "\n\n"
-
-
-def build_loop_state_hint(
-    visible_names: set[str] | None = None,
-    always_on_names: set[str] | None = None,
-) -> str:
-    if visible_names is None or always_on_names is None:
-        return "【当前工具状态】tool_search 未开启，本轮按现有工具继续。"
-
-    unlocked_extra = visible_names - always_on_names - {"tool_search"}
-    visible_text = ", ".join(sorted(unlocked_extra)) if unlocked_extra else "仅 always-on"
-    return (
-        f"【当前工具状态】已解锁: {visible_text}\n"
-        "未知工具: tool_search(query=\"关键词\") 搜索\n"
-        "已知工具名但未加载: tool_search(query=\"select:工具名\")"
-    )

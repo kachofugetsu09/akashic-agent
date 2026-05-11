@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Set as AbstractSet
+from collections.abc import Iterable, Set as AbstractSet
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, cast
@@ -170,21 +170,35 @@ class ToolRegistry:
         """返回当前已注册工具名集合。"""
         return set(self._tools.keys())
 
-    def get_schemas(self, names: set[str] | None = None) -> list[dict[str, Any]]:
+    def get_schemas(
+        self,
+        names: AbstractSet[str] | Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """返回 OpenAI function calling 格式的工具定义列表。
 
-        names 为 None 时返回全量；否则只返回指定名称的工具。
+        names 为 None 时返回全量；传 set 时按注册顺序过滤；传 list/tuple 时按调用方顺序返回。
         """
         if names is None:
             return [
                 _with_progress_description(t.to_schema(), t)
                 for t in self._tools.values()
             ]
+        if not isinstance(names, AbstractSet):
+            return [
+                _with_progress_description(tool.to_schema(), tool)
+                for name in names
+                if (tool := self._tools.get(name)) is not None
+            ]
         return [
             _with_progress_description(t.to_schema(), t)
             for name, t in self._tools.items()
             if name in names
         ]
+
+    def get_registered_order(self, names: AbstractSet[str] | None = None) -> list[str]:
+        if names is None:
+            return list(self._tools.keys())
+        return [name for name in self._tools.keys() if name in names]
 
     def get_always_on_names(self) -> set[str]:
         """返回标记为 always_on 的工具名称集合。"""

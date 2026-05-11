@@ -163,6 +163,19 @@ def test_registry_adds_model_description_for_progress() -> None:
     assert "description" not in _PathOnlyTool.parameters["properties"]
 
 
+def test_registry_get_schemas_preserves_explicit_name_order() -> None:
+    reg = ToolRegistry()
+    reg.register(_StubTool("hidden_first", "先注册的隐藏工具"))
+    reg.register(_StubTool("always_later", "后注册的常驻工具"), always_on=True)
+
+    schemas = reg.get_schemas(names=["always_later", "hidden_first"])
+
+    assert [schema["function"]["name"] for schema in schemas] == [
+        "always_later",
+        "hidden_first",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_registry_strips_progress_description_before_execute() -> None:
     reg = ToolRegistry()
@@ -606,6 +619,37 @@ class TestToolSearchTool:
         assert all(r["name"] != "schedule" for r in data.get("matched", []))
         assert "tip" in data
         assert "schedule" in data["tip"]
+        assert data["already_loaded"] == ["schedule"]
+
+    def test_select_result_reports_unlocked_next_action(self):
+        reg = _make_registry()
+        tool = ToolSearchTool(reg)
+
+        data = json.loads(asyncio.run(tool.execute(query="select:schedule")))
+
+        assert data["unlocked"] == ["schedule"]
+        assert data["already_loaded"] == []
+        assert "直接调用" in data["next_action"]
+
+    def test_select_empty_result_keeps_unlock_shape(self):
+        reg = _make_registry()
+        tool = ToolSearchTool(reg)
+
+        data = json.loads(asyncio.run(tool.execute(query="select:")))
+
+        assert data["matched"] == []
+        assert data["unlocked"] == []
+        assert data["already_loaded"] == []
+
+    def test_keyword_result_reports_unlocked_next_action(self):
+        reg = _make_registry()
+        tool = ToolSearchTool(reg)
+
+        data = json.loads(asyncio.run(tool.execute(query="定时任务", top_k=3)))
+
+        assert any(name == "schedule" for name in data["unlocked"])
+        assert data["already_loaded"] == []
+        assert "再次 tool_search" in data["next_action"]
 
     def test_select_meta_tools_are_excluded(self):
         """select:tool_search 与 search() 语义一致 → matched 为空。"""

@@ -91,7 +91,12 @@ class ToolSearchTool(Tool):
         query = (query or "").strip()
         if not query:
             return json.dumps(
-                {"matched": [], "tip": "query 不能为空，请描述你需要的功能"},
+                {
+                    "matched": [],
+                    "unlocked": [],
+                    "already_loaded": [],
+                    "tip": "query 不能为空，请描述你需要的功能",
+                },
                 ensure_ascii=False,
             )
 
@@ -113,10 +118,32 @@ class ToolSearchTool(Tool):
         )
         if not results:
             return json.dumps(
-                {"matched": [], "tip": "没有找到匹配工具，请换个关键词重试"},
+                {
+                    "matched": [],
+                    "unlocked": [],
+                    "already_loaded": [],
+                    "tip": "没有找到匹配工具，请换个关键词重试",
+                },
                 ensure_ascii=False,
             )
-        return json.dumps({"matched": results}, ensure_ascii=False, indent=2)
+        unlocked = [
+            item["name"]
+            for item in results
+            if isinstance(item.get("name"), str) and item["name"]
+        ]
+        return json.dumps(
+            {
+                "matched": results,
+                "unlocked": unlocked,
+                "already_loaded": [],
+                "next_action": (
+                    "unlocked 中的工具 schema 已加载。下一步直接调用需要的工具，"
+                    "不要再次 tool_search。"
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     def _handle_select(
         self,
@@ -134,7 +161,12 @@ class ToolSearchTool(Tool):
         requested = [n.strip() for n in names_str.split(",") if n.strip()]
         if not requested:
             return json.dumps(
-                {"matched": [], "tip": "select: 后面需要提供工具名"},
+                {
+                    "matched": [],
+                    "unlocked": [],
+                    "already_loaded": [],
+                    "tip": "select: 后面需要提供工具名",
+                },
                 ensure_ascii=False,
             )
 
@@ -159,7 +191,16 @@ class ToolSearchTool(Tool):
                     found.append(name)
 
         matched = self._registry.get_schemas_as_doc_results(found)
-        result: dict[str, Any] = {"matched": matched}
+        result: dict[str, Any] = {
+            "matched": matched,
+            "unlocked": found,
+            "already_loaded": already_loaded,
+        }
+        if found:
+            result["next_action"] = (
+                "unlocked 中的工具 schema 已加载。下一步直接调用需要的工具，"
+                "不要再次 tool_search。"
+            )
 
         tip_parts: list[str] = []
         if already_loaded:

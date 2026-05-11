@@ -144,6 +144,22 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
 
     fake = _FakeClient(
         [
+            _Response(
+                content="mimo-cache-ok",
+                usage=SimpleNamespace(
+                    prompt_tokens=100,
+                    prompt_tokens_details=SimpleNamespace(cached_tokens=76),
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    result = await LLMProvider(api_key="k").chat([], [], "mimo-v2.5", 1)
+    assert result.cache_prompt_tokens == 100
+    assert result.cache_hit_tokens == 76
+
+    fake = _FakeClient(
+        [
             RuntimeError("Error code: 429"),
             _Response(content="retry-ok"),
         ]
@@ -319,6 +335,43 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     assert fake.calls[0]["stream"] is True
     assert result.cache_prompt_tokens == 64
     assert result.cache_hit_tokens == 16
+
+
+@pytest.mark.asyncio
+async def test_provider_chat_stream_extracts_openai_cached_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(delta=SimpleNamespace(content="好", tool_calls=[]))
+                ]
+            ),
+            SimpleNamespace(
+                choices=[],
+                usage=SimpleNamespace(
+                    prompt_tokens=100,
+                    prompt_tokens_details={"cached_tokens": 80},
+                ),
+            ),
+        ]
+    )
+    fake = _FakeClient([stream])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    provider = LLMProvider(api_key="k")
+
+    result = await provider.chat(
+        messages=[],
+        tools=[],
+        model="mimo-v2.5",
+        max_tokens=10,
+        on_content_delta=lambda chunk: _collect_delta([], chunk),
+    )
+
+    assert result.content == "好"
+    assert result.cache_prompt_tokens == 100
+    assert result.cache_hit_tokens == 80
 
 
 @pytest.mark.asyncio

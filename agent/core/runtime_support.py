@@ -38,6 +38,32 @@ class ToolDiscoveryState:
     def get_preloaded(self, session_key: str) -> set[str]:
         return set(self._unlocked.get(session_key, {}).keys())
 
+    def get_preloaded_ordered(self, session_key: str) -> list[str]:
+        return list(self._unlocked.get(session_key, {}).keys())
+
+    def unlock_names_from_result(self, result_json: str) -> list[str]:
+        try:
+            data = json.loads(result_json)
+            raw_unlocked = data.get("unlocked")
+            raw_names: list[object]
+            if isinstance(raw_unlocked, list):
+                raw_names = raw_unlocked
+            else:
+                raw_names = [
+                    item.get("name")
+                    for item in data.get("matched", [])
+                    if isinstance(item, dict)
+                ]
+            names: list[str] = []
+            seen: set[str] = set()
+            for item in raw_names:
+                if isinstance(item, str) and item and item not in seen:
+                    names.append(item)
+                    seen.add(item)
+            return names
+        except Exception:
+            return []
+
     def unlock_from_result(self, result_json: str) -> set[str]:
         """Parse a tool_search JSON result and return the tool names in 'matched'.
 
@@ -45,15 +71,7 @@ class ToolDiscoveryState:
         lived in agent/core/reasoner.py. Pure parsing — no mutation of external
         state; caller decides what to do with the returned names.
         """
-        try:
-            data = json.loads(result_json)
-            return {
-                item["name"]
-                for item in data.get("matched", [])
-                if isinstance(item.get("name"), str) and item["name"]
-            }
-        except Exception:
-            return set()
+        return set(self.unlock_names_from_result(result_json))
 
     def update(self, session_key: str, tools_used: list[str], always_on: set[str]) -> None:
         skip = always_on | {"tool_search"}
