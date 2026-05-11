@@ -16,13 +16,20 @@ class SessionStore:
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
+        self._closed = False
         self._has_fts = False
         self._init_schema()
 
+    def __del__(self) -> None:
+        if not self._closed:
+            try:
+                self.close()
+            except Exception:
+                pass
+
     def _init_schema(self) -> None:
         with self._lock:
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     key               TEXT PRIMARY KEY,
                     created_at        TEXT NOT NULL,
@@ -30,11 +37,9 @@ class SessionStore:
                     last_consolidated INTEGER NOT NULL DEFAULT 0,
                     metadata          TEXT
                 )
-                """
-            )
+                """)
             self._ensure_session_columns()
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id          TEXT PRIMARY KEY,
                     session_key TEXT NOT NULL,
@@ -46,8 +51,7 @@ class SessionStore:
                     ts          TEXT NOT NULL,
                     UNIQUE (session_key, seq)
                 )
-                """
-            )
+                """)
             self._ensure_next_seq_values()
             self._ensure_fts()
             self._conn.commit()
@@ -56,22 +60,16 @@ class SessionStore:
         rows = self._conn.execute("PRAGMA table_info(sessions)").fetchall()
         existing = {str(row["name"]) for row in rows}
         if "last_user_at" not in existing:
-            self._conn.execute(
-                "ALTER TABLE sessions ADD COLUMN last_user_at TEXT"
-            )
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN last_user_at TEXT")
         if "last_proactive_at" not in existing:
-            self._conn.execute(
-                "ALTER TABLE sessions ADD COLUMN last_proactive_at TEXT"
-            )
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN last_proactive_at TEXT")
         if "next_seq" not in existing:
             self._conn.execute(
                 "ALTER TABLE sessions ADD COLUMN next_seq INTEGER NOT NULL DEFAULT 0"
             )
 
     def _ensure_next_seq_values(self) -> None:
-        rows = self._conn.execute(
-            "SELECT key, next_seq FROM sessions"
-        ).fetchall()
+        rows = self._conn.execute("SELECT key, next_seq FROM sessions").fetchall()
         for row in rows:
             session_key = str(row["key"])
             current = int(row["next_seq"] or 0)
@@ -96,7 +94,9 @@ class SessionStore:
             if existing:
                 try:
                     cfg = dict(
-                        self._conn.execute("SELECT * FROM messages_fts_config").fetchall()
+                        self._conn.execute(
+                            "SELECT * FROM messages_fts_config"
+                        ).fetchall()
                     )
                     is_trigram = "trigram" in cfg.get("tokenize", "")
                 except sqlite3.OperationalError:
@@ -106,42 +106,36 @@ class SessionStore:
                     for trig in ("messages_ai", "messages_ad", "messages_au"):
                         self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
 
-            self._conn.execute(
-                """
+            self._conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                     content,
                     content='messages',
                     content_rowid='rowid',
                     tokenize='trigram'
                 )
-                """
-            )
-            self._conn.execute(
-                """
+                """)
+            self._conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
                     INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
                 END
-                """
-            )
-            self._conn.execute(
-                """
+                """)
+            self._conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
                     INSERT INTO messages_fts(messages_fts, rowid, content)
                     VALUES('delete', old.rowid, old.content);
                 END
-                """
-            )
-            self._conn.execute(
-                """
+                """)
+            self._conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
                     INSERT INTO messages_fts(messages_fts, rowid, content)
                     VALUES('delete', old.rowid, old.content);
                     INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
                 END
-                """
-            )
+                """)
             # Rebuild index so existing messages are covered by trigram.
-            self._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+            self._conn.execute(
+                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+            )
             self._conn.commit()
             self._has_fts = True
         except sqlite3.OperationalError:
@@ -149,6 +143,9 @@ class SessionStore:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._conn.close()
 
     def session_exists(self, key: str) -> bool:
@@ -215,13 +212,11 @@ class SessionStore:
 
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._conn.execute(
-                """
+            rows = self._conn.execute("""
                 SELECT key, created_at, updated_at, last_user_at, last_proactive_at
                 FROM sessions
                 ORDER BY updated_at DESC
-                """
-            ).fetchall()
+                """).fetchall()
         return [
             {
                 "key": str(row["key"]),
@@ -249,12 +244,17 @@ class SessionStore:
         safe_page = max(1, int(page))
         safe_page_size = max(1, min(int(page_size), 200))
         offset = (safe_page - 1) * safe_page_size
-        safe_sort_by = sort_by if sort_by in {
-            "updated_at",
-            "created_at",
-            "last_user_at",
-            "last_proactive_at",
-        } else "updated_at"
+        safe_sort_by = (
+            sort_by
+            if sort_by
+            in {
+                "updated_at",
+                "created_at",
+                "last_user_at",
+                "last_proactive_at",
+            }
+            else "updated_at"
+        )
         safe_sort_order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
 
         params: list[Any] = []
@@ -439,7 +439,9 @@ class SessionStore:
                 ).fetchone()
                 count = int((row["c"] if row else 0) or 0)
                 if count > 0:
-                    raise ValueError("选中的 session 中仍有 messages，需使用 cascade 删除")
+                    raise ValueError(
+                        "选中的 session 中仍有 messages，需使用 cascade 删除"
+                    )
             else:
                 self._conn.execute(
                     f"DELETE FROM messages WHERE session_key IN ({placeholders})",
@@ -501,13 +503,11 @@ class SessionStore:
 
     def list_presence(self) -> dict[str, dict[str, str | None]]:
         with self._lock:
-            rows = self._conn.execute(
-                """
+            rows = self._conn.execute("""
                 SELECT key, last_user_at, last_proactive_at
                 FROM sessions
                 WHERE last_user_at IS NOT NULL OR last_proactive_at IS NOT NULL
-                """
-            ).fetchall()
+                """).fetchall()
         return {
             str(row["key"]): {
                 "last_user_at": row["last_user_at"],
@@ -518,13 +518,11 @@ class SessionStore:
 
     def most_recent_user_at(self) -> str | None:
         with self._lock:
-            row = self._conn.execute(
-                """
+            row = self._conn.execute("""
                 SELECT MAX(last_user_at) AS last_user_at
                 FROM sessions
                 WHERE last_user_at IS NOT NULL
-                """
-            ).fetchone()
+                """).fetchone()
         if row is None:
             return None
         return row["last_user_at"]
@@ -551,7 +549,8 @@ class SessionStore:
     def count_messages(self, session_key: str) -> int:
         with self._lock:
             row = self._conn.execute(
-                "SELECT COUNT(1) AS c FROM messages WHERE session_key = ?", (session_key,)
+                "SELECT COUNT(1) AS c FROM messages WHERE session_key = ?",
+                (session_key,),
             ).fetchone()
         return int((row["c"] if row else 0) or 0)
 
@@ -583,7 +582,9 @@ class SessionStore:
     ) -> dict[str, Any]:
         message_id = f"{session_key}:{seq}"
         tool_chain_payload = (
-            json.dumps(tool_chain, ensure_ascii=False) if tool_chain is not None else None
+            json.dumps(tool_chain, ensure_ascii=False)
+            if tool_chain is not None
+            else None
         )
         extra_payload = json.dumps(extra or {}, ensure_ascii=False)
         with self._lock:
@@ -592,7 +593,16 @@ class SessionStore:
                 INSERT INTO messages (id, session_key, seq, role, content, tool_chain, extra, ts)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (message_id, session_key, seq, role, content, tool_chain_payload, extra_payload, ts),
+                (
+                    message_id,
+                    session_key,
+                    seq,
+                    role,
+                    content,
+                    tool_chain_payload,
+                    extra_payload,
+                    ts,
+                ),
             )
             self._conn.execute(
                 """
@@ -645,7 +655,9 @@ class SessionStore:
         safe_page_size = max(1, min(int(page_size), 200))
         offset = (safe_page - 1) * safe_page_size
         safe_sort = "ASC" if str(sort_order).lower() == "asc" else "DESC"
-        safe_sort_by = sort_by if sort_by in {"ts", "seq", "role", "session_key"} else "ts"
+        safe_sort_by = (
+            sort_by if sort_by in {"ts", "seq", "role", "session_key"} else "ts"
+        )
 
         params: list[Any] = []
         where_parts: list[str] = []
@@ -765,7 +777,9 @@ class SessionStore:
         return cur.rowcount > 0
 
     def delete_messages_batch(self, ids: list[str]) -> int:
-        clean_ids = [str(message_id).strip() for message_id in ids if str(message_id).strip()]
+        clean_ids = [
+            str(message_id).strip() for message_id in ids if str(message_id).strip()
+        ]
         if not clean_ids:
             return 0
         placeholders = ",".join("?" for _ in clean_ids)
@@ -794,7 +808,9 @@ class SessionStore:
         ids: list[str],
         last_consolidated: int,
     ) -> int:
-        clean_ids = [str(message_id).strip() for message_id in ids if str(message_id).strip()]
+        clean_ids = [
+            str(message_id).strip() for message_id in ids if str(message_id).strip()
+        ]
         if not clean_ids:
             return 0
         placeholders = ",".join("?" for _ in clean_ids)
@@ -811,9 +827,7 @@ class SessionStore:
                     tuple([session_key, *clean_ids]),
                 ).fetchall()
                 next_seq = (
-                    max(int(row["seq"]) for row in seq_rows) + 1
-                    if seq_rows
-                    else 0
+                    max(int(row["seq"]) for row in seq_rows) + 1 if seq_rows else 0
                 )
                 cur = self._conn.execute(
                     f"""
@@ -838,7 +852,9 @@ class SessionStore:
                 raise
         return int(cur.rowcount or 0)
 
-    def fetch_by_ids_with_context(self, ids: list[str], context: int) -> list[dict[str, Any]]:
+    def fetch_by_ids_with_context(
+        self, ids: list[str], context: int
+    ) -> list[dict[str, Any]]:
         """Fetch messages by ID, expanding each hit by ±context rows in its session.
 
         Returns messages ordered by (session_key, seq).
@@ -970,7 +986,9 @@ class SessionStore:
                 fts_params.extend([limit, offset])
                 try:
                     with self._lock:
-                        count_row = self._conn.execute(count_sql, tuple(count_params)).fetchone()
+                        count_row = self._conn.execute(
+                            count_sql, tuple(count_params)
+                        ).fetchone()
                         rows = self._conn.execute(fts_sql, tuple(fts_params)).fetchall()
                     total = int((count_row["c"] if count_row else 0) or 0)
                     return [self._row_to_message(row) for row in rows], total

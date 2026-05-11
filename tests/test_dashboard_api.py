@@ -6,13 +6,35 @@ import sqlite3
 import threading
 from datetime import datetime
 
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as _RawTestClient
 
 from bootstrap.dashboard_api import create_dashboard_app as _create_dashboard_app
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
+
+
+class _TrackedTestClient(_RawTestClient):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._is_closed = False
+
+    def close(self) -> None:
+        if self._is_closed:
+            return
+        self._is_closed = True
+        super().close()
+
+    def __del__(self) -> None:
+        if not self._is_closed:
+            try:
+                self.close()
+            except Exception:
+                pass
+
+
+TestClient = _TrackedTestClient
 
 
 class _DashboardMemoryAdmin:
@@ -32,7 +54,9 @@ class _DashboardMemoryAdmin:
         return self._store.list_items_for_dashboard(**kwargs)
 
     def get_item_for_dashboard(self, item_id: str, *, include_embedding: bool = False):
-        return self._store.get_item_for_dashboard(item_id, include_embedding=include_embedding)
+        return self._store.get_item_for_dashboard(
+            item_id, include_embedding=include_embedding
+        )
 
     def update_item_for_dashboard(self, item_id: str, **kwargs):
         return self._store.update_item_for_dashboard(item_id, **kwargs)
@@ -45,6 +69,9 @@ class _DashboardMemoryAdmin:
 
     def find_similar_items_for_dashboard(self, item_id: str, **kwargs):
         return self._store.find_similar_items_for_dashboard(item_id, **kwargs)
+
+    def close(self) -> None:
+        self._store.close()
 
 
 def create_dashboard_app(tmp_path, **kwargs):
@@ -338,101 +365,95 @@ def _seed_workspace(tmp_path) -> None:
 
 def test_list_sessions_with_filters(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        resp = client.get(
+            "/api/dashboard/sessions",
+            params={"q": "alpha", "channel": "telegram"},
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["total"] == 1
+        assert payload["items"][0]["key"] == "telegram:100"
+        assert payload["items"][0]["message_count"] == 2
 
-    resp = client.get(
-        "/api/dashboard/sessions",
-        params={"q": "alpha", "channel": "telegram"},
-    )
-    assert resp.status_code == 200
-    payload = resp.json()
-    assert payload["total"] == 1
-    assert payload["items"][0]["key"] == "telegram:100"
-    assert payload["items"][0]["message_count"] == 2
-
-    messages_resp = client.get(
-        "/api/dashboard/messages",
-        params={"sort_by": "seq", "sort_order": "asc"},
-    )
-    assert messages_resp.status_code == 200
-    assert messages_resp.json()["items"][0]["seq"] == 0
+        messages_resp = client.get(
+            "/api/dashboard/messages",
+            params={"sort_by": "seq", "sort_order": "asc"},
+        )
+        assert messages_resp.status_code == 200
+        assert messages_resp.json()["items"][0]["seq"] == 0
 
 
 def test_update_and_delete_session(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        patch_resp = client.patch(
+            "/api/dashboard/sessions/telegram:100",
+            json={"metadata": {"title": "patched"}, "last_consolidated": 9},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["metadata"]["title"] == "patched"
+        assert patch_resp.json()["last_consolidated"] == 9
 
-    patch_resp = client.patch(
-        "/api/dashboard/sessions/telegram:100",
-        json={"metadata": {"title": "patched"}, "last_consolidated": 9},
-    )
-    assert patch_resp.status_code == 200
-    assert patch_resp.json()["metadata"]["title"] == "patched"
-    assert patch_resp.json()["last_consolidated"] == 9
+        delete_resp = client.delete("/api/dashboard/sessions/telegram:100")
+        assert delete_resp.status_code == 200
 
-    delete_resp = client.delete("/api/dashboard/sessions/telegram:100")
-    assert delete_resp.status_code == 200
-
-    get_resp = client.get("/api/dashboard/sessions/telegram:100")
-    assert get_resp.status_code == 404
+        get_resp = client.get("/api/dashboard/sessions/telegram:100")
+        assert get_resp.status_code == 404
 
 
 def test_manual_consolidate_session_uses_runtime_entrypoint(tmp_path) -> None:
     _seed_workspace(tmp_path)
     consolidator = _ManualConsolidator(result=True)
-    client = TestClient(
+    with TestClient(
         create_dashboard_app(tmp_path, manual_consolidator=consolidator)
-    )
+    ) as client:
+        resp = client.post(
+            "/api/dashboard/sessions/telegram:100/consolidate",
+            json={"archive_all": True},
+        )
 
-    resp = client.post(
-        "/api/dashboard/sessions/telegram:100/consolidate",
-        json={"archive_all": True},
-    )
-
-    assert resp.status_code == 200
-    payload = resp.json()
-    assert payload["triggered"] is True
-    assert payload["archive_all"] is True
-    assert payload["force"] is True
-    assert payload["session"]["key"] == "telegram:100"
-    assert consolidator.calls == [("telegram:100", True, True)]
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["triggered"] is True
+        assert payload["archive_all"] is True
+        assert payload["force"] is True
+        assert payload["session"]["key"] == "telegram:100"
+        assert consolidator.calls == [("telegram:100", True, True)]
 
 
 def test_manual_consolidate_session_requires_existing_session(tmp_path) -> None:
     _seed_workspace(tmp_path)
     consolidator = _ManualConsolidator(result=True)
-    client = TestClient(
+    with TestClient(
         create_dashboard_app(tmp_path, manual_consolidator=consolidator)
-    )
+    ) as client:
+        resp = client.post("/api/dashboard/sessions/missing/consolidate", json={})
 
-    resp = client.post("/api/dashboard/sessions/missing/consolidate", json={})
-
-    assert resp.status_code == 404
-    assert consolidator.calls == []
+        assert resp.status_code == 404
+        assert consolidator.calls == []
 
 
 def test_manual_consolidate_session_reports_unavailable_runtime(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
 
-    resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
-
-    assert resp.status_code == 503
+        assert resp.status_code == 503
 
 
 def test_manual_consolidate_session_reports_concurrency_timeout(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(
+    with TestClient(
         create_dashboard_app(
             tmp_path,
             manual_consolidator=_ManualConsolidator(error=TimeoutError("busy")),
         )
-    )
+    ) as client:
+        resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
 
-    resp = client.post("/api/dashboard/sessions/telegram:100/consolidate", json={})
-
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "busy"
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "busy"
 
 
 def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:
@@ -449,14 +470,13 @@ def test_manual_memory_optimizer_uses_runtime_entrypoint(tmp_path) -> None:
 
 
 def test_manual_memory_optimizer_reports_unavailable_runtime(tmp_path) -> None:
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        status_resp = client.get("/api/dashboard/memory/optimizer")
+        resp = client.post("/api/dashboard/memory/optimize")
 
-    status_resp = client.get("/api/dashboard/memory/optimizer")
-    resp = client.post("/api/dashboard/memory/optimize")
-
-    assert status_resp.status_code == 200
-    assert status_resp.json()["enabled"] is False
-    assert resp.status_code == 503
+        assert status_resp.status_code == 200
+        assert status_resp.json()["enabled"] is False
+        assert resp.status_code == 503
 
 
 def test_manual_memory_optimizer_reports_busy_runtime(tmp_path) -> None:
@@ -497,68 +517,68 @@ def test_manual_memory_optimizer_skips_when_backend_reports_busy(tmp_path) -> No
 
 def test_list_update_and_batch_delete_messages(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        list_resp = client.get(
+            "/api/dashboard/sessions/telegram:100/messages",
+            params={"q": "睡", "role": "assistant"},
+        )
+        assert list_resp.status_code == 200
+        payload = list_resp.json()
+        assert payload["total"] == 1
+        message_id = payload["items"][0]["id"]
 
-    list_resp = client.get(
-        "/api/dashboard/sessions/telegram:100/messages",
-        params={"q": "睡", "role": "assistant"},
-    )
-    assert list_resp.status_code == 200
-    payload = list_resp.json()
-    assert payload["total"] == 1
-    message_id = payload["items"][0]["id"]
+        patch_resp = client.patch(
+            f"/api/dashboard/messages/{message_id}",
+            json={"content": "已经睡了", "extra": {"edited": True}},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["content"] == "已经睡了"
+        assert patch_resp.json()["edited"] is True
 
-    patch_resp = client.patch(
-        f"/api/dashboard/messages/{message_id}",
-        json={"content": "已经睡了", "extra": {"edited": True}},
-    )
-    assert patch_resp.status_code == 200
-    assert patch_resp.json()["content"] == "已经睡了"
-    assert patch_resp.json()["edited"] is True
+        batch_resp = client.post(
+            "/api/dashboard/messages/batch-delete",
+            json={"ids": [message_id, "cli:local:0"]},
+        )
+        assert batch_resp.status_code == 200
+        assert batch_resp.json()["deleted_count"] == 2
 
-    batch_resp = client.post(
-        "/api/dashboard/messages/batch-delete",
-        json={"ids": [message_id, "cli:local:0"]},
-    )
-    assert batch_resp.status_code == 200
-    assert batch_resp.json()["deleted_count"] == 2
-
-    remain_resp = client.get("/api/dashboard/messages", params={"session_key": "telegram:100"})
-    assert remain_resp.status_code == 200
-    assert remain_resp.json()["total"] == 1
+        remain_resp = client.get(
+            "/api/dashboard/messages", params={"session_key": "telegram:100"}
+        )
+        assert remain_resp.status_code == 200
+        assert remain_resp.json()["total"] == 1
 
 
 def test_list_memory_items_with_filters(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        resp = client.get(
+            "/api/dashboard/memories",
+            params={
+                "q": "奶茶",
+                "memory_type": "preference",
+                "scope_channel": "telegram",
+                "has_embedding": "true",
+            },
+        )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["total"] == 1
+        assert payload["items"][0]["memory_type"] == "preference"
+        assert payload["items"][0]["scope_chat_id"] == "100"
+        assert payload["items"][0]["has_embedding"] is True
 
-    resp = client.get(
-        "/api/dashboard/memories",
-        params={
-            "q": "奶茶",
-            "memory_type": "preference",
-            "scope_channel": "telegram",
-            "has_embedding": "true",
-        },
-    )
-    assert resp.status_code == 200
-    payload = resp.json()
-    assert payload["total"] == 1
-    assert payload["items"][0]["memory_type"] == "preference"
-    assert payload["items"][0]["scope_chat_id"] == "100"
-    assert payload["items"][0]["has_embedding"] is True
-
-    status_resp = client.get(
-        "/api/dashboard/memories",
-        params={
-            "memory_type": "profile",
-            "status": "active",
-            "page_size": 1,
-        },
-    )
-    assert status_resp.status_code == 200
-    assert status_resp.json()["total"] == 1
-    assert status_resp.json()["items"][0]["memory_type"] == "profile"
+        status_resp = client.get(
+            "/api/dashboard/memories",
+            params={
+                "memory_type": "profile",
+                "status": "active",
+                "page_size": 1,
+            },
+        )
+        assert status_resp.status_code == 200
+        assert status_resp.json()["total"] == 1
+        assert status_resp.json()["items"][0]["memory_type"] == "profile"
 
 
 def test_list_memory_items_sorts_by_created_at_desc(tmp_path) -> None:
@@ -580,19 +600,18 @@ def test_list_memory_items_sorts_by_created_at_desc(tmp_path) -> None:
         conn.commit()
     finally:
         conn.close()
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        resp = client.get(
+            "/api/dashboard/memories",
+            params={"sort_by": "created_at", "sort_order": "desc"},
+        )
 
-    resp = client.get(
-        "/api/dashboard/memories",
-        params={"sort_by": "created_at", "sort_order": "desc"},
-    )
-
-    assert resp.status_code == 200
-    assert [item["source_ref"] for item in resp.json()["items"]] == [
-        "cli:local:profile",
-        "telegram:100:event",
-        "telegram:100:pref",
-    ]
+        assert resp.status_code == 200
+        assert [item["source_ref"] for item in resp.json()["items"]] == [
+            "cli:local:profile",
+            "telegram:100:event",
+            "telegram:100:pref",
+        ]
 
 
 def test_list_memory_items_default_sort_is_created_at_desc(tmp_path) -> None:
@@ -626,170 +645,170 @@ def test_list_memory_items_default_sort_is_created_at_desc(tmp_path) -> None:
         conn.commit()
     finally:
         conn.close()
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        resp = client.get("/api/dashboard/memories")
 
-    resp = client.get("/api/dashboard/memories")
-
-    assert resp.status_code == 200
-    assert resp.json()["items"][0]["source_ref"] == "cli:local:profile"
+        assert resp.status_code == 200
+        assert resp.json()["items"][0]["source_ref"] == "cli:local:profile"
 
 
 def test_get_update_and_delete_memory(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        list_resp = client.get("/api/dashboard/memories", params={"q": "奶茶"})
+        memory_id = list_resp.json()["items"][0]["id"]
 
-    list_resp = client.get("/api/dashboard/memories", params={"q": "奶茶"})
-    memory_id = list_resp.json()["items"][0]["id"]
+        get_resp = client.get(
+            f"/api/dashboard/memories/{memory_id}",
+            params={"include_embedding": "true"},
+        )
+        assert get_resp.status_code == 200
+        assert get_resp.json()["embedding_dim"] == 2
 
-    get_resp = client.get(
-        f"/api/dashboard/memories/{memory_id}",
-        params={"include_embedding": "true"},
-    )
-    assert get_resp.status_code == 200
-    assert get_resp.json()["embedding_dim"] == 2
+        patch_resp = client.patch(
+            f"/api/dashboard/memories/{memory_id}",
+            json={
+                "status": "superseded",
+                "source_ref": "telegram:100:pref:patched",
+                "emotional_weight": 9,
+                "extra_json": {"scope_channel": "telegram", "scope_chat_id": "100"},
+            },
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["status"] == "superseded"
+        assert patch_resp.json()["emotional_weight"] == 9
+        assert patch_resp.json()["source_ref"] == "telegram:100:pref:patched"
 
-    patch_resp = client.patch(
-        f"/api/dashboard/memories/{memory_id}",
-        json={
-            "status": "superseded",
-            "source_ref": "telegram:100:pref:patched",
-            "emotional_weight": 9,
-            "extra_json": {"scope_channel": "telegram", "scope_chat_id": "100"},
-        },
-    )
-    assert patch_resp.status_code == 200
-    assert patch_resp.json()["status"] == "superseded"
-    assert patch_resp.json()["emotional_weight"] == 9
-    assert patch_resp.json()["source_ref"] == "telegram:100:pref:patched"
+        delete_resp = client.delete(f"/api/dashboard/memories/{memory_id}")
+        assert delete_resp.status_code == 200
 
-    delete_resp = client.delete(f"/api/dashboard/memories/{memory_id}")
-    assert delete_resp.status_code == 200
-
-    missing_resp = client.get(f"/api/dashboard/memories/{memory_id}")
-    assert missing_resp.status_code == 404
+        missing_resp = client.get(f"/api/dashboard/memories/{memory_id}")
+        assert missing_resp.status_code == 404
 
 
 def test_memory_similar_and_batch_delete(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        list_resp = client.get(
+            "/api/dashboard/memories", params={"scope_channel": "telegram"}
+        )
+        items = list_resp.json()["items"]
+        pref = next(item for item in items if item["memory_type"] == "preference")
+        event = next(item for item in items if item["memory_type"] == "event")
 
-    list_resp = client.get("/api/dashboard/memories", params={"scope_channel": "telegram"})
-    items = list_resp.json()["items"]
-    pref = next(item for item in items if item["memory_type"] == "preference")
-    event = next(item for item in items if item["memory_type"] == "event")
+        similar_resp = client.get(f"/api/dashboard/memories/{pref['id']}/similar")
+        assert similar_resp.status_code == 200
+        assert similar_resp.json()["total"] >= 1
+        assert similar_resp.json()["items"][0]["id"] == event["id"]
 
-    similar_resp = client.get(f"/api/dashboard/memories/{pref['id']}/similar")
-    assert similar_resp.status_code == 200
-    assert similar_resp.json()["total"] >= 1
-    assert similar_resp.json()["items"][0]["id"] == event["id"]
-
-    batch_resp = client.post(
-        "/api/dashboard/memories/batch-delete",
-        json={"ids": [pref["id"], event["id"]]},
-    )
-    assert batch_resp.status_code == 200
-    assert batch_resp.json()["deleted_count"] == 2
+        batch_resp = client.post(
+            "/api/dashboard/memories/batch-delete",
+            json={"ids": [pref["id"], event["id"]]},
+        )
+        assert batch_resp.status_code == 200
+        assert batch_resp.json()["deleted_count"] == 2
 
 
 def test_memory_dashboard_filters_survive_parallel_requests(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
 
-    def _fetch(memory_type: str) -> tuple[int, dict]:
-        resp = client.get(
-            "/api/dashboard/memories",
-            params={
-                "status": "active",
-                "memory_type": memory_type,
-                "page_size": 1,
-                "sort_by": "updated_at",
-                "sort_order": "desc",
-            },
-        )
-        return resp.status_code, resp.json()
+        def _fetch(memory_type: str) -> tuple[int, dict]:
+            resp = client.get(
+                "/api/dashboard/memories",
+                params={
+                    "status": "active",
+                    "memory_type": memory_type,
+                    "page_size": 1,
+                    "sort_by": "updated_at",
+                    "sort_order": "desc",
+                },
+            )
+            return resp.status_code, resp.json()
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(
-            executor.map(_fetch, ["procedure", "preference", "profile", "event"])
-        )
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(
+                executor.map(_fetch, ["procedure", "preference", "profile", "event"])
+            )
 
-    for status_code, payload in results:
-        assert status_code == 200
-        assert "total" in payload
+        for status_code, payload in results:
+            assert status_code == 200
+            assert "total" in payload
 
 
 def test_proactive_dashboard_endpoints(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        overview_resp = client.get("/api/dashboard/proactive/overview")
+        assert overview_resp.status_code == 200
+        overview = overview_resp.json()
+        assert overview["counts"]["seen_items"] == 3
+        assert overview["counts"]["deliveries"] == 2
+        assert overview["counts"]["tick_logs"] == 2
+        assert overview["flow_counts"]["drift"] == 1
+        assert overview["flow_counts"]["proactive"] == 1
+        assert overview["last_tick_at"] == "2026-04-19T03:00:00+00:00"
+        assert overview["last_send_at"] == "2026-04-19T02:06:00+00:00"
+        assert overview["last_skip_reason"] == "busy"
 
-    overview_resp = client.get("/api/dashboard/proactive/overview")
-    assert overview_resp.status_code == 200
-    overview = overview_resp.json()
-    assert overview["counts"]["seen_items"] == 3
-    assert overview["counts"]["deliveries"] == 2
-    assert overview["counts"]["tick_logs"] == 2
-    assert overview["flow_counts"]["drift"] == 1
-    assert overview["flow_counts"]["proactive"] == 1
-    assert overview["last_tick_at"] == "2026-04-19T03:00:00+00:00"
-    assert overview["last_send_at"] == "2026-04-19T02:06:00+00:00"
-    assert overview["last_skip_reason"] == "busy"
+        deliveries_resp = client.get(
+            "/api/dashboard/proactive/deliveries",
+            params={"session_key": "telegram:100"},
+        )
+        assert deliveries_resp.status_code == 200
+        assert deliveries_resp.json()["total"] == 1
+        assert deliveries_resp.json()["items"][0]["delivery_key"] == "delivery-a"
 
-    deliveries_resp = client.get(
-        "/api/dashboard/proactive/deliveries",
-        params={"session_key": "telegram:100"},
-    )
-    assert deliveries_resp.status_code == 200
-    assert deliveries_resp.json()["total"] == 1
-    assert deliveries_resp.json()["items"][0]["delivery_key"] == "delivery-a"
+        seen_resp = client.get(
+            "/api/dashboard/proactive/seen_items",
+            params={"source_key": "mcp:feed"},
+        )
+        assert seen_resp.status_code == 200
+        assert seen_resp.json()["total"] == 2
 
-    seen_resp = client.get(
-        "/api/dashboard/proactive/seen_items",
-        params={"source_key": "mcp:feed"},
-    )
-    assert seen_resp.status_code == 200
-    assert seen_resp.json()["total"] == 2
+        semantic_resp = client.get(
+            "/api/dashboard/proactive/semantic_items",
+            params={"window_hours": 100000},
+        )
+        assert semantic_resp.status_code == 200
+        assert semantic_resp.json()["total"] == 2
 
-    semantic_resp = client.get(
-        "/api/dashboard/proactive/semantic_items",
-        params={"window_hours": 100000},
-    )
-    assert semantic_resp.status_code == 200
-    assert semantic_resp.json()["total"] == 2
+        tick_logs_resp = client.get(
+            "/api/dashboard/proactive/tick_logs",
+            params={"terminal_action": "skip"},
+        )
+        assert tick_logs_resp.status_code == 200
+        assert tick_logs_resp.json()["total"] == 1
+        assert tick_logs_resp.json()["items"][0]["tick_id"] == "tick-2"
 
-    tick_logs_resp = client.get(
-        "/api/dashboard/proactive/tick_logs",
-        params={"terminal_action": "skip"},
-    )
-    assert tick_logs_resp.status_code == 200
-    assert tick_logs_resp.json()["total"] == 1
-    assert tick_logs_resp.json()["items"][0]["tick_id"] == "tick-2"
+        drift_logs_resp = client.get(
+            "/api/dashboard/proactive/tick_logs",
+            params={"flow": "drift"},
+        )
+        assert drift_logs_resp.status_code == 200
+        assert drift_logs_resp.json()["total"] == 1
+        assert drift_logs_resp.json()["items"][0]["tick_id"] == "tick-2"
 
-    drift_logs_resp = client.get(
-        "/api/dashboard/proactive/tick_logs",
-        params={"flow": "drift"},
-    )
-    assert drift_logs_resp.status_code == 200
-    assert drift_logs_resp.json()["total"] == 1
-    assert drift_logs_resp.json()["items"][0]["tick_id"] == "tick-2"
+        proactive_sorted_resp = client.get(
+            "/api/dashboard/proactive/tick_logs",
+            params={"sort_by": "started_at", "sort_order": "asc"},
+        )
+        assert proactive_sorted_resp.status_code == 200
+        assert proactive_sorted_resp.json()["items"][0]["tick_id"] == "tick-1"
 
-    proactive_sorted_resp = client.get(
-        "/api/dashboard/proactive/tick_logs",
-        params={"sort_by": "started_at", "sort_order": "asc"},
-    )
-    assert proactive_sorted_resp.status_code == 200
-    assert proactive_sorted_resp.json()["items"][0]["tick_id"] == "tick-1"
+        tick_detail_resp = client.get("/api/dashboard/proactive/tick_logs/tick-1")
+        assert tick_detail_resp.status_code == 200
+        assert tick_detail_resp.json()["interesting_ids"] == ["mcp:feed:feed-1"]
+        assert tick_detail_resp.json()["final_message"] == "记得早点休息"
 
-    tick_detail_resp = client.get("/api/dashboard/proactive/tick_logs/tick-1")
-    assert tick_detail_resp.status_code == 200
-    assert tick_detail_resp.json()["interesting_ids"] == ["mcp:feed:feed-1"]
-    assert tick_detail_resp.json()["final_message"] == "记得早点休息"
-
-    tick_steps_resp = client.get("/api/dashboard/proactive/tick_logs/tick-1/steps")
-    assert tick_steps_resp.status_code == 200
-    assert tick_steps_resp.json()["total"] == 2
-    assert tick_steps_resp.json()["items"][0]["tool_name"] == "message_push"
-    assert tick_steps_resp.json()["items"][0]["tool_args"]["message"] == "记得早点休息"
-    assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
+        tick_steps_resp = client.get("/api/dashboard/proactive/tick_logs/tick-1/steps")
+        assert tick_steps_resp.status_code == 200
+        assert tick_steps_resp.json()["total"] == 2
+        assert tick_steps_resp.json()["items"][0]["tool_name"] == "message_push"
+        assert (
+            tick_steps_resp.json()["items"][0]["tool_args"]["message"] == "记得早点休息"
+        )
+        assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
 
 
 def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> None:
@@ -798,8 +817,7 @@ def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> N
     observe_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(observe_dir / "observe.db")
     try:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE turns(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts TEXT NOT NULL,
@@ -810,8 +828,7 @@ def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> N
                 react_cache_prompt_tokens INTEGER,
                 react_cache_hit_tokens INTEGER
             )
-            """
-        )
+            """)
         conn.execute(
             """
             INSERT INTO turns(
@@ -832,85 +849,83 @@ def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> N
         conn.commit()
     finally:
         conn.close()
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        overview = client.get("/api/dashboard/status-commands/kvcache/overview")
+        turns = client.get("/api/dashboard/status-commands/kvcache/turns")
 
-    overview = client.get("/api/dashboard/status-commands/kvcache/overview")
-    turns = client.get("/api/dashboard/status-commands/kvcache/turns")
-
-    assert overview.status_code == 200
-    assert overview.json()["tracked_turn_count"] == 1
-    assert overview.json()["hit_rate"] == 260 / 300
-    assert turns.status_code == 200
-    payload = turns.json()
-    assert payload["total"] == 1
-    assert payload["items"][0]["session_key"] == "telegram:100"
-    assert payload["items"][0]["user_preview"] == "again"
+        assert overview.status_code == 200
+        assert overview.json()["tracked_turn_count"] == 1
+        assert overview.json()["hit_rate"] == 260 / 300
+        assert turns.status_code == 200
+        payload = turns.json()
+        assert payload["total"] == 1
+        assert payload["items"][0]["session_key"] == "telegram:100"
+        assert payload["items"][0]["user_preview"] == "again"
 
 
 def test_proactive_dashboard_batch_delete(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        seen_delete_resp = client.request(
+            "DELETE",
+            "/api/dashboard/proactive/seen_items/batch",
+            json={"source_key": "mcp:feed", "item_ids": ["feed-1"]},
+        )
+        assert seen_delete_resp.status_code == 200
+        assert seen_delete_resp.json()["deleted_count"] == 1
 
-    seen_delete_resp = client.request(
-        "DELETE",
-        "/api/dashboard/proactive/seen_items/batch",
-        json={"source_key": "mcp:feed", "item_ids": ["feed-1"]},
-    )
-    assert seen_delete_resp.status_code == 200
-    assert seen_delete_resp.json()["deleted_count"] == 1
+        seen_resp = client.get(
+            "/api/dashboard/proactive/seen_items",
+            params={"source_key": "mcp:feed"},
+        )
+        assert seen_resp.json()["total"] == 1
 
-    seen_resp = client.get(
-        "/api/dashboard/proactive/seen_items",
-        params={"source_key": "mcp:feed"},
-    )
-    assert seen_resp.json()["total"] == 1
+        cooldown_delete_resp = client.request(
+            "DELETE",
+            "/api/dashboard/proactive/rejection_cooldown/batch",
+            json={"source_key": "mcp:feed", "item_ids": ["feed-3"]},
+        )
+        assert cooldown_delete_resp.status_code == 200
+        assert cooldown_delete_resp.json()["deleted_count"] == 1
 
-    cooldown_delete_resp = client.request(
-        "DELETE",
-        "/api/dashboard/proactive/rejection_cooldown/batch",
-        json={"source_key": "mcp:feed", "item_ids": ["feed-3"]},
-    )
-    assert cooldown_delete_resp.status_code == 200
-    assert cooldown_delete_resp.json()["deleted_count"] == 1
-
-    cooldown_resp = client.get(
-        "/api/dashboard/proactive/rejection_cooldown",
-        params={"source_key": "mcp:feed"},
-    )
-    assert cooldown_resp.status_code == 200
-    assert cooldown_resp.json()["total"] == 0
+        cooldown_resp = client.get(
+            "/api/dashboard/proactive/rejection_cooldown",
+            params={"source_key": "mcp:feed"},
+        )
+        assert cooldown_resp.status_code == 200
+        assert cooldown_resp.json()["total"] == 0
 
 
 def test_proactive_dashboard_batch_delete_rejects_empty_payload(tmp_path) -> None:
     _seed_workspace(tmp_path)
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        seen_delete_resp = client.request(
+            "DELETE",
+            "/api/dashboard/proactive/seen_items/batch",
+            json={},
+        )
+        assert seen_delete_resp.status_code == 400
+        assert seen_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
 
-    seen_delete_resp = client.request(
-        "DELETE",
-        "/api/dashboard/proactive/seen_items/batch",
-        json={},
-    )
-    assert seen_delete_resp.status_code == 400
-    assert seen_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
-
-    cooldown_delete_resp = client.request(
-        "DELETE",
-        "/api/dashboard/proactive/rejection_cooldown/batch",
-        json={},
-    )
-    assert cooldown_delete_resp.status_code == 400
-    assert cooldown_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
+        cooldown_delete_resp = client.request(
+            "DELETE",
+            "/api/dashboard/proactive/rejection_cooldown/batch",
+            json={},
+        )
+        assert cooldown_delete_resp.status_code == 400
+        assert (
+            cooldown_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
+        )
 
 
 def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
-    client = TestClient(create_dashboard_app(tmp_path))
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        for path in (
+            "/plugins/..%5Csecret/panel.js",
+            "/plugins/C:%5Csecret/panel.js",
+            "/plugins/%5C%5Cserver%5Cshare/panel.css",
+        ):
+            response = client.get(path)
+            assert response.status_code == 400
 
-    for path in (
-        "/plugins/..%5Csecret/panel.js",
-        "/plugins/C:%5Csecret/panel.js",
-        "/plugins/%5C%5Cserver%5Cshare/panel.css",
-    ):
-        response = client.get(path)
-        assert response.status_code == 400
-
-    assert client.get("/plugins/missing/panel.js").status_code == 404
+        assert client.get("/plugins/missing/panel.js").status_code == 404

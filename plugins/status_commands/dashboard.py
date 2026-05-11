@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from fastapi import FastAPI
 
@@ -18,8 +19,7 @@ class KVCacheDashboardReader:
             return _summary_from_row(None)
         with self._lock:
             with _connect(self.db_path) as db:
-                row = db.execute(
-                    """
+                row = db.execute("""
                     SELECT
                         COUNT(*) AS turn_count,
                         SUM(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS tracked_turn_count,
@@ -27,8 +27,7 @@ class KVCacheDashboardReader:
                         COALESCE(SUM(react_cache_hit_tokens), 0) AS hit_tokens,
                         MAX(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN ts ELSE NULL END) AS last_tracked_at
                     FROM turns
-                    """
-                ).fetchone()
+                    """).fetchone()
         return _summary_from_row(row)
 
     def list_turns(
@@ -44,13 +43,11 @@ class KVCacheDashboardReader:
         offset = (safe_page - 1) * safe_size
         with self._lock:
             with _connect(self.db_path) as db:
-                total_row = db.execute(
-                    """
+                total_row = db.execute("""
                     SELECT COUNT(*) AS total
                     FROM turns
                     WHERE react_cache_prompt_tokens IS NOT NULL
-                    """
-                ).fetchone()
+                    """).fetchone()
                 rows = db.execute(
                     """
                     SELECT
@@ -139,10 +136,14 @@ def _summary_from_row(row: sqlite3.Row | None) -> dict[str, Any]:
     }
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+@contextmanager
+def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _row_to_cache_turn(row: sqlite3.Row) -> dict[str, Any]:

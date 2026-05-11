@@ -34,5 +34,7 @@ jobs:
 
       - name: Run pytest
         timeout-minutes: 10
+        env:
+          PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
-          .venv/bin/pytest tests/
+          .venv/bin/pytest -q -W error tests/

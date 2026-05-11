@@ -31,6 +31,7 @@ class ProactiveStateStore:
         self._lock = threading.RLock()
         self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        self._closed = False
         with self._lock:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=NORMAL")
@@ -44,8 +45,18 @@ class ProactiveStateStore:
             self._count_rows("rejection_cooldown"),
         )
 
+    def __del__(self) -> None:
+        if not self._closed:
+            try:
+                self.close()
+            except Exception:
+                pass
+
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._db.close()
 
     def record_tick_log_start(
@@ -224,7 +235,10 @@ class ProactiveStateStore:
             return
         now = now or _utcnow()
         ts = now.isoformat()
-        params = [(_dedupe_source_key(source_key), item_id, ts) for source_key, item_id in entries]
+        params = [
+            (_dedupe_source_key(source_key), item_id, ts)
+            for source_key, item_id in entries
+        ]
         with self._lock:
             self._db.executemany(
                 """
@@ -424,7 +438,10 @@ class ProactiveStateStore:
             return
         now = now or _utcnow()
         ts = now.isoformat()
-        params = [(_dedupe_source_key(source_key), item_id, ts) for source_key, item_id in entries]
+        params = [
+            (_dedupe_source_key(source_key), item_id, ts)
+            for source_key, item_id in entries
+        ]
         with self._lock:
             self._db.executemany(
                 """
@@ -450,8 +467,12 @@ class ProactiveStateStore:
     ) -> None:
         now = _utcnow()
         seen_cutoff = (now - timedelta(hours=max(seen_ttl_hours, 1))).isoformat()
-        delivery_cutoff = (now - timedelta(hours=max(delivery_ttl_hours, 1))).isoformat()
-        semantic_cutoff = (now - timedelta(hours=max(semantic_ttl_hours, 1))).isoformat()
+        delivery_cutoff = (
+            now - timedelta(hours=max(delivery_ttl_hours, 1))
+        ).isoformat()
+        semantic_cutoff = (
+            now - timedelta(hours=max(semantic_ttl_hours, 1))
+        ).isoformat()
         context_only_cutoff = (now - timedelta(hours=24)).isoformat()
         with self._lock:
             removed_seen = self._db.execute(
@@ -557,8 +578,7 @@ class ProactiveStateStore:
         return int(row[0]) if row is not None else 0
 
     def _init_schema(self) -> None:
-        self._db.executescript(
-            """
+        self._db.executescript("""
             CREATE TABLE IF NOT EXISTS seen_items (
                 source_key TEXT NOT NULL,
                 item_id TEXT NOT NULL,
@@ -652,8 +672,7 @@ class ProactiveStateStore:
             );
             CREATE INDEX IF NOT EXISTS idx_tick_step_log_tick_step
             ON tick_step_log(tick_id, step_index);
-            """
-        )
+            """)
         self._db.commit()
 
     def _get_kv_datetime(self, key: str) -> datetime | None:

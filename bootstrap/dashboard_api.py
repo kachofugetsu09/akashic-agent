@@ -161,52 +161,54 @@ class ProactiveDashboardReader:
             "tick_steps": self._count("tick_step_log"),
         }
         with self._lock:
-            recent_tick = self._db.execute(
-                """
+            recent_tick = self._db.execute("""
                 SELECT tick_id, session_key, started_at, finished_at, gate_exit,
                        terminal_action, skip_reason, steps_taken, drift_entered
                 FROM tick_log
                 ORDER BY started_at DESC
                 LIMIT 1
-                """
-            ).fetchone()
-            last_send_at = self._db.execute(
-                """
+                """).fetchone()
+            last_send_at = self._db.execute("""
                 SELECT sent_at
                 FROM deliveries
                 ORDER BY sent_at DESC
                 LIMIT 1
-                """
-            ).fetchone()
-            result_counts_rows = self._db.execute(
-                """
+                """).fetchone()
+            result_counts_rows = self._db.execute("""
                 SELECT COALESCE(terminal_action, gate_exit, 'unknown') AS bucket, COUNT(*) AS total
                 FROM tick_log
                 GROUP BY COALESCE(terminal_action, gate_exit, 'unknown')
-                """
-            ).fetchall()
-            flow_counts_rows = self._db.execute(
-                """
+                """).fetchall()
+            flow_counts_rows = self._db.execute("""
                 SELECT CASE WHEN drift_entered = 1 THEN 'drift' ELSE 'proactive' END AS bucket,
                        COUNT(*) AS total
                 FROM tick_log
                 GROUP BY CASE WHEN drift_entered = 1 THEN 'drift' ELSE 'proactive' END
-                """
-            ).fetchall()
-        result_counts = {str(row["bucket"]): int(row["total"]) for row in result_counts_rows}
-        flow_counts = {str(row["bucket"]): int(row["total"]) for row in flow_counts_rows}
+                """).fetchall()
+        result_counts = {
+            str(row["bucket"]): int(row["total"]) for row in result_counts_rows
+        }
+        flow_counts = {
+            str(row["bucket"]): int(row["total"]) for row in flow_counts_rows
+        }
         return {
             "counts": counts,
             "result_counts": result_counts,
             "flow_counts": flow_counts,
-            "last_tick_at": recent_tick["started_at"] if recent_tick is not None else None,
-            "last_send_at": last_send_at["sent_at"] if last_send_at is not None else None,
+            "last_tick_at": (
+                recent_tick["started_at"] if recent_tick is not None else None
+            ),
+            "last_send_at": (
+                last_send_at["sent_at"] if last_send_at is not None else None
+            ),
             "last_skip_reason": (
                 recent_tick["skip_reason"]
                 if recent_tick is not None and recent_tick["terminal_action"] != "reply"
                 else None
             ),
-            "recent_tick": self._row_to_tick_log(recent_tick) if recent_tick is not None else None,
+            "recent_tick": (
+                self._row_to_tick_log(recent_tick) if recent_tick is not None else None
+            ),
         }
 
     def list_deliveries(
@@ -307,18 +309,23 @@ class ProactiveDashboardReader:
             drift_only = "1"
         elif flow == "proactive":
             drift_only = "0"
-        safe_sort_by = sort_by if sort_by in {
-            "session_key",
-            "started_at",
-            "finished_at",
-            "terminal_action",
-            "gate_exit",
-            "steps_taken",
-            "alert_count",
-            "content_count",
-            "context_count",
-            "drift_entered",
-        } else "started_at"
+        safe_sort_by = (
+            sort_by
+            if sort_by
+            in {
+                "session_key",
+                "started_at",
+                "finished_at",
+                "terminal_action",
+                "gate_exit",
+                "steps_taken",
+                "alert_count",
+                "content_count",
+                "context_count",
+                "drift_entered",
+            }
+            else "started_at"
+        )
         safe_sort_order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
         where, params = self._build_filters(
             ("session_key = ?", session_key),
@@ -493,7 +500,9 @@ class ProactiveDashboardReader:
 
     def _row_to_tick_log(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)
-        payload["interesting_ids"] = self._decode_json_list(payload.get("interesting_ids"))
+        payload["interesting_ids"] = self._decode_json_list(
+            payload.get("interesting_ids")
+        )
         payload["discarded_ids"] = self._decode_json_list(payload.get("discarded_ids"))
         payload["cited_ids"] = self._decode_json_list(payload.get("cited_ids"))
         payload["drift_entered"] = bool(payload.get("drift_entered"))
@@ -501,10 +510,18 @@ class ProactiveDashboardReader:
 
     def _row_to_tick_step(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)
-        payload["tool_args"] = self._decode_json_object(payload.pop("tool_args_json", ""))
-        payload["interesting_ids_after"] = self._decode_json_list(payload.get("interesting_ids_after"))
-        payload["discarded_ids_after"] = self._decode_json_list(payload.get("discarded_ids_after"))
-        payload["cited_ids_after"] = self._decode_json_list(payload.get("cited_ids_after"))
+        payload["tool_args"] = self._decode_json_object(
+            payload.pop("tool_args_json", "")
+        )
+        payload["interesting_ids_after"] = self._decode_json_list(
+            payload.get("interesting_ids_after")
+        )
+        payload["discarded_ids_after"] = self._decode_json_list(
+            payload.get("discarded_ids_after")
+        )
+        payload["cited_ids_after"] = self._decode_json_list(
+            payload.get("cited_ids_after")
+        )
         return payload
 
     @staticmethod
@@ -611,7 +628,8 @@ async def _compile_pending_plugins_async() -> None:
         logger.warning("esbuild unavailable: neither local install nor npx was found")
         return
     proc = await asyncio.create_subprocess_exec(
-        *esbuild_cmd, "--version",
+        *esbuild_cmd,
+        "--version",
         cwd=str(first_root),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -627,7 +645,12 @@ async def _compile_pending_plugins_async() -> None:
     version = stdout.decode("utf-8", errors="replace").strip()
     logger.info("npx esbuild 就绪 (%s)，开始编译插件面板...", version)
     for root, pdir in pending:
-        _run_esbuild(esbuild_cmd, pdir / "dashboard_panel.ts", pdir / "dashboard_panel.js", pdir.name)
+        _run_esbuild(
+            esbuild_cmd,
+            pdir / "dashboard_panel.ts",
+            pdir / "dashboard_panel.js",
+            pdir.name,
+        )
 
 
 def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
@@ -691,6 +714,8 @@ def create_dashboard_app(
             except asyncio.CancelledError:
                 pass
             store.close()
+            if hasattr(memory_admin, "close"):
+                memory_admin.close()
             if proactive_reader is not None:
                 get_proactive_reader().close()
 
@@ -726,10 +751,12 @@ def create_dashboard_app(
                 asset_mtime = js_path.stat().st_mtime_ns
                 if css_path.exists():
                     asset_mtime = max(asset_mtime, css_path.stat().st_mtime_ns)
-                result.append({
-                    "id": plugin_dir.name,
-                    "asset_version": str(asset_mtime),
-                })
+                result.append(
+                    {
+                        "id": plugin_dir.name,
+                        "asset_version": str(asset_mtime),
+                    }
+                )
         return result
 
     @app.get("/plugins/{plugin_id}/panel.js")
@@ -891,8 +918,7 @@ def create_dashboard_app(
         if manual_memory_optimizer is None:
             raise HTTPException(status_code=503, detail="memory optimizer 未启用")
         if (
-            optimizer_task is not None
-            and not optimizer_task.done()
+            optimizer_task is not None and not optimizer_task.done()
         ) or manual_memory_optimizer.is_running:
             raise HTTPException(status_code=409, detail="memory optimizer 正在运行")
         logger.info("Manual memory optimizer triggered via dashboard")
