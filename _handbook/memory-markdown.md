@@ -129,7 +129,7 @@ Optimizer (定时触发)
 ```
 PENDING.md（增量事实缓冲区）
     ↓
-  Optimizer 定时触发（默认 memory_optimizer_interval_seconds = 10800）
+  Optimizer 定时触发（默认 memory_optimizer_interval_seconds = 50400）
     ↓
   读 MEMORY.md + PENDING.md → LLM 做归档决策：
     • 新事实 → 写入 MEMORY.md 对应分类

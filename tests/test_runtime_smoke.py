@@ -117,6 +117,29 @@ system_prompt = "test"
     assert cfg.max_iterations == 10
 
 
+def test_load_config_defaults_memory_optimizer_to_14h(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+provider = "openai"
+
+[llm.main]
+model = "test-model"
+api_key = "test-key"
+
+[agent]
+system_prompt = "test"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path)
+
+    assert cfg.memory_optimizer_interval_seconds == 50400
+
+
 @pytest.mark.asyncio
 async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path):
     config_path = tmp_path / "config.toml"

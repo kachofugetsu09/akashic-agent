@@ -48,7 +48,7 @@ search_enabled = true
 # 可选：长期记忆整理任务（默认已启用，通常无需修改）
 # [agent.maintenance]
 # memory_optimizer_enabled = true
-# memory_optimizer_interval_seconds = 10800
+# memory_optimizer_interval_seconds = 50400
 
 # 可选：控制加载哪些工具集（默认值适合大多数场景）
 # [agent.wiring]
