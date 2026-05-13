@@ -104,13 +104,13 @@ class Config:
     system_prompt: str
     max_tokens: int = 8192
     max_iterations: int = 10
-    memory_window: int = 24
+    memory_window: int = 40
     base_url: str | None = None
     extra_body: dict = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
-    memory_optimizer_interval_seconds: int = 50400
+    memory_optimizer_interval_seconds: int = 64800
     light_model: str = ""
     light_api_key: str = ""
     light_base_url: str = ""

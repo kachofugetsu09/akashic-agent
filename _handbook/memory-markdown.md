@@ -108,7 +108,7 @@ PENDING.md 只是缓冲——consolidation 把新事实写进 PENDING，但 PEND
 
 **为什么要隔一层？为了缓存。**
 
-MEMORY.md 是全文注入 system prompt 的。如果每次 consolidation 都直接改 MEMORY.md，那每轮对话的 system prompt 都不一样 → DeepSeek 的 prompt cache 永远命中不了 → 每轮都多花几秒和一份 cache_write token。Optimizer 把 MEMORY.md 的更新频率降到 3 小时一次，中间攒在 PENDING.md 里不动它，让 prompt cache 能稳定命中几十上百轮。
+MEMORY.md 是全文注入 system prompt 的。如果每次 consolidation 都直接改 MEMORY.md，那每轮对话的 system prompt 都不一样 → DeepSeek 的 prompt cache 永远命中不了 → 每轮都多花几秒和一份 cache_write token。Optimizer 把 MEMORY.md 的更新频率降到 18 小时一次，中间攒在 PENDING.md 里不动它，让 prompt cache 能稳定命中几十上百轮。
 
 ```
 consolidation (每 N 条消息触发一次)
@@ -129,7 +129,7 @@ Optimizer (定时触发)
 ```
 PENDING.md（增量事实缓冲区）
     ↓
-  Optimizer 定时触发（默认 memory_optimizer_interval_seconds = 50400）
+  Optimizer 定时触发（默认 memory_optimizer_interval_seconds = 64800）
     ↓
   读 MEMORY.md + PENDING.md → LLM 做归档决策：
     • 新事实 → 写入 MEMORY.md 对应分类

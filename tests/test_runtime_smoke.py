@@ -117,7 +117,7 @@ system_prompt = "test"
     assert cfg.max_iterations == 10
 
 
-def test_load_config_defaults_memory_optimizer_to_14h(tmp_path: Path):
+def test_load_config_defaults_memory_window_and_optimizer_interval(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
@@ -137,7 +137,8 @@ system_prompt = "test"
 
     cfg = load_config(config_path)
 
-    assert cfg.memory_optimizer_interval_seconds == 50400
+    assert cfg.memory_window == 40
+    assert cfg.memory_optimizer_interval_seconds == 64800
 
 
 @pytest.mark.asyncio

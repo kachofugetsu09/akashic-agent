@@ -322,7 +322,7 @@ class MemoryOptimizer:
 
 # ── MemoryOptimizerLoop ───────────────────────────────────────────
 
-_DEFAULT_INTERVAL_SECONDS = 10800  # 默认每 3 小时整点
+_DEFAULT_INTERVAL_SECONDS = 64800  # 默认每 18 小时整点
 
 
 class MemoryOptimizerLoop:

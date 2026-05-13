@@ -103,7 +103,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
             agent_cfg.get("max_iterations", data.get("max_iterations", 10))
         ),
         memory_window=int(
-            agent_context.get("memory_window", data.get("memory_window", 24))
+            agent_context.get("memory_window", data.get("memory_window", 40))
         ),
         base_url=str(llm_main.get("base_url") or data.get("base_url") or _PRESETS.get(provider) or ""),
         extra_body=_load_extra_body(data),
@@ -118,7 +118,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         memory_optimizer_interval_seconds=int(
             agent_maintenance.get(
                 "memory_optimizer_interval_seconds",
-                data.get("memory_optimizer_interval_seconds", 50400),
+                data.get("memory_optimizer_interval_seconds", 64800),
             )
         ),
         light_model=str(llm_fast.get("model") or data.get("light_model", "")),
