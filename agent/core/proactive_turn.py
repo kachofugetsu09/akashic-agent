@@ -274,7 +274,7 @@ class ProactiveTurnPipelineDeps:
     llm_fn: Any | None
     rng: Any | None
     recent_proactive_fn: Callable[[], list] | None
-    drift_runner: DriftTurnPipeline | None
+    drift_pipeline: DriftTurnPipeline | None
     tool_hooks: list[ToolHook] | None = None
 
 
@@ -313,12 +313,12 @@ class ProactiveTurnPipeline:
         self._llm_fn = deps.llm_fn
         self._rng = deps.rng if deps.rng is not None else _random_module.Random()
         self._recent_proactive_fn = deps.recent_proactive_fn
-        self._drift_runner = deps.drift_runner
+        self._drift_pipeline = deps.drift_pipeline
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
 
-        # 1. drift_runner 的 step_recorder 指向本 pipeline 的记录方法。
-        if self._drift_runner is not None and getattr(self._drift_runner, "step_recorder", None) is None:
-            self._drift_runner.step_recorder = (
+        # 1. drift_pipeline 的 step_recorder 指向本 pipeline 的记录方法。
+        if self._drift_pipeline is not None and getattr(self._drift_pipeline, "step_recorder", None) is None:
+            self._drift_pipeline.step_recorder = (
                 lambda ctx, phase, tool_name, tool_call_id, tool_args, tool_result_text: (
                     self._record_tick_step(
                         ctx,
@@ -476,7 +476,7 @@ class ProactiveTurnPipeline:
 
         # 2.3 快速 skip：无 alert、无 content、且 fallback 未开启时尝试 drift。
         if not gw_result.alerts and not gw_result.content_meta and not ctx.context_as_fallback_open:
-            if self._drift_runner is not None and self._cfg.drift_enabled:
+            if self._drift_pipeline is not None and self._cfg.drift_enabled:
                 last_drift_at = self._state_store.get_last_drift_at(self._session_key)
                 min_interval_hours = max(0, int(getattr(self._cfg, "drift_min_interval_hours", 0) or 0))
                 if (
@@ -494,7 +494,7 @@ class ProactiveTurnPipeline:
                     self.last_ctx = ctx
                     return FeedResult(drift_entered=False, base_score=None)
                 logger.info("[proactive_v2] fetch: empty gateway, attempting drift")
-                entered_drift = await self._drift_runner.run(ctx, self._llm_fn)
+                entered_drift = await self._drift_pipeline.run(ctx, self._llm_fn)
                 if entered_drift:
                     self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
                     logger.info("[proactive_v2] fetch: drift entered, message_sent=%s", ctx.drift_message_sent)

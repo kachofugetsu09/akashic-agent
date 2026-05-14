@@ -278,23 +278,23 @@ async def test_context_gate_interval_satisfied_opens():
 async def test_drift_interval_blocks_recent_drift():
     state = FakeStateStore()
     state.set_last_drift_at(datetime.now(timezone.utc) - timedelta(hours=1))
-    drift_runner = MagicMock()
+    drift_pipeline = MagicMock()
     tick = make_proactive_pipeline(
         cfg=cfg_with(drift_enabled=True, drift_min_interval_hours=3, agent_tick_context_prob=0.0),
         state_store=state,
         rng=FakeRng(value=1.0),
         llm_fn=AsyncMock(return_value=None),
-        drift_runner=drift_runner,
+        drift_pipeline=drift_pipeline,
     )
     await tick.run()
     assert tick.last_ctx.drift_entered is False
     assert tick.last_ctx.skip_reason == "no_content"
-    drift_runner.run.assert_not_called()
+    drift_pipeline.run.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_drift_interval_allows_after_window():
-    from proactive_v2.drift_runner import DriftRunner
+    from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
     from proactive_v2.drift_state import DriftStateStore
     from proactive_v2.drift_tools import DriftToolDeps
     from tests.proactive_v2.conftest import FakeLLM
@@ -331,10 +331,15 @@ async def test_drift_interval_allows_after_window():
             state_store=state,
             llm_fn=llm,
             rng=FakeRng(value=1.0),
-            drift_runner=DriftRunner(
-                store=DriftStateStore(tmp_path),
-                tool_deps=DriftToolDeps(drift_dir=tmp_path, store=DriftStateStore(tmp_path)),
-                max_steps=5,
+            drift_pipeline=DriftTurnPipeline(
+                DriftTurnPipelineDeps(
+                    store=DriftStateStore(tmp_path),
+                    tool_deps=DriftToolDeps(
+                        drift_dir=tmp_path,
+                        store=DriftStateStore(tmp_path),
+                    ),
+                    max_steps=5,
+                )
             ),
         )
         await tick.run()

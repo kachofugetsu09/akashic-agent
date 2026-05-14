@@ -65,7 +65,7 @@ def test_agent_tick_factory_build_returns_tick():
     assert tick is not None
 
 
-def test_agent_tick_factory_builds_drift_runner_when_enabled(tmp_path):
+def test_agent_tick_factory_builds_drift_pipeline_when_enabled(tmp_path):
     deps = _build_deps(with_pool=True)
     deps.cfg = ProactiveConfig(
         default_chat_id="cid",
@@ -74,8 +74,8 @@ def test_agent_tick_factory_builds_drift_runner_when_enabled(tmp_path):
     deps.state_store = SimpleNamespace(workspace_dir=tmp_path)
     deps.any_action_gate = SimpleNamespace()
     tick = AgentTickFactory(deps).build()
-    assert tick._drift_runner is not None
-    assert tick._drift_runner._store.drift_dir == tmp_path / "drift"
+    assert tick._drift_pipeline is not None
+    assert tick._drift_pipeline._store.drift_dir == tmp_path / "drift"
 
 
 def test_agent_tick_factory_binds_drift_step_recorder_to_tick_store(tmp_path):
@@ -91,12 +91,12 @@ def test_agent_tick_factory_binds_drift_step_recorder_to_tick_store(tmp_path):
     deps.state_store = state_store
 
     tick = AgentTickFactory(deps).build()
-    assert tick._drift_runner is not None
-    assert tick._drift_runner.step_recorder is not None
+    assert tick._drift_pipeline is not None
+    assert tick._drift_pipeline.step_recorder is not None
 
     ctx = AgentTickContext(tick_id="tick1", session_key="telegram:1")
     ctx.steps_taken = 3
-    tick._drift_runner.step_recorder(
+    tick._drift_pipeline.step_recorder(
         ctx,
         "drift",
         "read_file",

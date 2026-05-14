@@ -75,7 +75,7 @@ class AgentTickFactory:
         tool_deps = self._build_tool_deps()
         gateway_deps = self._build_gateway_deps(tool_deps)
         recent_proactive_fn = self._build_recent_proactive_fn()
-        drift_runner = self._build_drift_runner(tool_deps)
+        drift_pipeline = self._build_drift_pipeline(tool_deps)
 
         # 3. 产出 ProactiveTurnPipeline。后续每次 proactive loop 触发时调用 pipeline.run()。
         return ProactiveTurnPipeline(
@@ -94,7 +94,7 @@ class AgentTickFactory:
                 llm_fn=self._build_llm_fn(),
                 rng=self._deps.rng,
                 recent_proactive_fn=recent_proactive_fn,
-                drift_runner=drift_runner,
+                drift_pipeline=drift_pipeline,
                 tool_hooks=self._deps.tool_hooks,
             )
         )
@@ -265,7 +265,7 @@ class AgentTickFactory:
         recent_n = getattr(self._deps.cfg, "message_dedupe_recent_n", 5)
         return lambda: self._deps.sense.collect_recent_proactive(recent_n)
 
-    def _build_drift_runner(self, tool_deps: ToolDeps) -> DriftTurnPipeline | None:
+    def _build_drift_pipeline(self, tool_deps: ToolDeps) -> DriftTurnPipeline | None:
         if not getattr(self._deps.cfg, "drift_enabled", False):
             return None
         drift_dir = Path(self._deps.state_store.workspace_dir) / "drift"

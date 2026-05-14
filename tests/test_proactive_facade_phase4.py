@@ -105,7 +105,7 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
             llm_fn=None,
             rng=None,
             recent_proactive_fn=None,
-            drift_runner=None,
+            drift_pipeline=None,
         ),
     )
 
