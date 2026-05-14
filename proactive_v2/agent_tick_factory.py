@@ -18,7 +18,7 @@ from agent.turns.orchestrator import TurnOrchestrator
 from proactive_v2 import mcp_sources
 from proactive_v2.mcp_sources import McpClientPool
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
-from proactive_v2.drift_runner import DriftRunner
+from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
 from proactive_v2.drift_state import DriftStateStore
 from proactive_v2.drift_tools import DriftToolDeps
 from proactive_v2.gateway import GatewayDeps
@@ -265,7 +265,7 @@ class AgentTickFactory:
         recent_n = getattr(self._deps.cfg, "message_dedupe_recent_n", 5)
         return lambda: self._deps.sense.collect_recent_proactive(recent_n)
 
-    def _build_drift_runner(self, tool_deps: ToolDeps) -> DriftRunner | None:
+    def _build_drift_runner(self, tool_deps: ToolDeps) -> DriftTurnPipeline | None:
         if not getattr(self._deps.cfg, "drift_enabled", False):
             return None
         drift_dir = Path(self._deps.state_store.workspace_dir) / "drift"
@@ -275,19 +275,21 @@ class AgentTickFactory:
             include_builtin_skills=True,
             builtin_skill_names=BUILTIN_DRIFT_SKILL_NAMES,
         )
-        return DriftRunner(
-            store=store,
-            tool_deps=DriftToolDeps(
-                drift_dir=drift_dir,
+        return DriftTurnPipeline(
+            DriftTurnPipelineDeps(
                 store=store,
-                builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
-                memory=self._deps.memory,
-                shared_tools=self._deps.shared_tools,
-                send_message_fn=self._build_drift_send_message_fn(),
-                max_web_fetch_chars=tool_deps.max_chars,
-            ),
-            max_steps=getattr(self._deps.cfg, "drift_max_steps", 20),
-            tool_hooks=self._deps.tool_hooks,
+                tool_deps=DriftToolDeps(
+                    drift_dir=drift_dir,
+                    store=store,
+                    builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
+                    memory=self._deps.memory,
+                    shared_tools=self._deps.shared_tools,
+                    send_message_fn=self._build_drift_send_message_fn(),
+                    max_web_fetch_chars=tool_deps.max_chars,
+                ),
+                max_steps=getattr(self._deps.cfg, "drift_max_steps", 20),
+                tool_hooks=self._deps.tool_hooks,
+            )
         )
 
     def _build_drift_send_message_fn(self) -> Callable[..., Awaitable[bool]] | None:

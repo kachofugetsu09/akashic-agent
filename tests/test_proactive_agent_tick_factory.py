@@ -75,7 +75,7 @@ def test_agent_tick_factory_builds_drift_runner_when_enabled(tmp_path):
     deps.any_action_gate = SimpleNamespace()
     tick = AgentTickFactory(deps).build()
     assert tick._drift_runner is not None
-    assert tick._drift_runner.store.drift_dir == tmp_path / "drift"
+    assert tick._drift_runner._store.drift_dir == tmp_path / "drift"
 
 
 def test_agent_tick_factory_binds_drift_step_recorder_to_tick_store(tmp_path):

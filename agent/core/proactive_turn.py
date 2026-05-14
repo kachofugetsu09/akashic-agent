@@ -43,7 +43,7 @@ from proactive_v2.contracts import (
     normalize_content,
     normalize_context,
 )
-from proactive_v2.drift_runner import DriftRunner
+from agent.core.drift_turn import DriftTurnPipeline
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, dispatch
 
@@ -274,7 +274,7 @@ class ProactiveTurnPipelineDeps:
     llm_fn: Any | None
     rng: Any | None
     recent_proactive_fn: Callable[[], list] | None
-    drift_runner: DriftRunner | None
+    drift_runner: DriftTurnPipeline | None
     tool_hooks: list[ToolHook] | None = None
 
 
