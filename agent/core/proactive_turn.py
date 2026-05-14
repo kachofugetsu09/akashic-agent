@@ -7,13 +7,16 @@ ProactiveTurnPipeline — 主动回复链路顶层抽象。
 ┌─ tick trigger
 │  └─ ProactiveTurnPipeline.run()
 │     ├─ 1. Gate      准入检查（busy / cooldown / anyaction / fallback）
-│     ├─ 2. Fetch     拉取数据（alerts / content / context → messages）
-│     ├─ 3. Judge     LLM 评估（多轮工具调用：分类 → 草稿 → 收尾）
-│     ├─ 4. Resolve   决策去重（skip/reply + delivery_dedupe + message_dedupe）
-│     └─ 5. Deliver   执行发送（dispatch + ACK + persist + tick_log）
+│     ├─ 2. Fetch     拉取数据（DataGateway 并行拉取 alerts / content / context）
+│     ├─ 3. Drift     无数据时尝试空闲 drift（interval check → DriftTurnPipeline.run）
+│     ├─ 4. Build     构建 LLM 输入 messages（system prompt + context frame + kickoff）
+│     ├─ 5. Judge     LLM 评估（多轮工具调用：分类 → 草稿 → 收尾）
+│     ├─ 6. Resolve   决策去重（skip/reply + delivery_dedupe + message_dedupe）
+│     └─ 7. Deliver   执行发送（dispatch + ACK + persist + tick_log）
 └─ done
 
 段之间通过 AgentTickContext 传递状态，每段各司其职，不跨段直接访问对方内部实现。
+drift 分支在 run() 中作为第一公民分支显式表达，不再隐藏在 fetch 内部。
 后续可按需将任一段升级为 Phase 模块链，对外接口不变。
 """
 
@@ -22,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import random as _random_module
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
 from typing import Any, Awaitable, Callable, cast
@@ -65,16 +68,6 @@ class GateResult:
     reason: str          # no_target / busy / cooldown / presence / passed
     base_score: float | None
     context_as_fallback_open: bool = False
-
-
-# ── Fetch 步骤的输出 ──────────────────────────────────────────────────────
-
-@dataclass
-class FeedResult:
-    """数据拉取结果。drift_entered=True 时跳过 Judge/Resolve，直接收尾。"""
-    drift_entered: bool
-    base_score: float | None
-    messages: list[dict] = field(default_factory=list)
 
 
 # ── Resolve 步骤的输出 ─────────────────────────────────────────────────────
@@ -280,19 +273,23 @@ class ProactiveTurnPipelineDeps:
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
 
-# 主动链路核心入口，串起 Gate → Fetch → Judge → Resolve → Deliver 五段。
+# 主动链路核心入口，串起 Gate → Fetch → Drift → Build → Judge → Resolve → Deliver 七段。
 #
 # ┌─ tick trigger
 # │  └─ ProactiveTurnPipeline.run
 # │     ├─ 1. Gate ── _gate_check
 # │     │  └─ no_target / busy / cooldown / anyaction / context_fallback
-# │     ├─ 2. Fetch ── _fetch_pull
-# │     │  └─ DataGateway 并行拉取 → drift 分支 → 构建 system prompt + messages
-# │     ├─ 3. Judge ── _judge_evaluate
+# │     ├─ 2. Fetch ── _fetch_data
+# │     │  └─ DataGateway 并行拉取 → 灌入 ctx
+# │     ├─ 3. Drift ── _try_drift
+# │     │  └─ 无数据且 fallback 关闭时：interval check → DriftTurnPipeline.run
+# │     ├─ 4. Build ── _build_judge_messages
+# │     │  └─ system prompt + context frame + kickoff
+# │     ├─ 5. Judge ── _judge_evaluate
 # │     │  └─ _run_tool_step 循环 → completeness_check → reflection_pass
-# │     ├─ 4. Resolve ── _resolve_decide
+# │     ├─ 6. Resolve ── _resolve_decide
 # │     │  └─ skip 判定 / delivery_dedupe / message_dedupe → TurnResult
-# │     └─ 5. Deliver ── _deliver_execute
+# │     └─ 7. Deliver ── _deliver_execute
 # │        └─ _record_tick_log_finish → TurnOrchestrator.handle_proactive_turn
 # └─ done
 
@@ -336,7 +333,7 @@ class ProactiveTurnPipeline:
 
     # ── 入口 ──────────────────────────────────────────────────────────
 
-    # 核心方法：处理一次主动 tick，串起 Gate → Fetch → Judge → Resolve → Deliver 五段链路。
+    # 核心方法：处理一次主动 tick，串起 Gate → Fetch → Drift → Build → Judge → Resolve → Deliver 七段链路。
     async def run(self) -> float | None:
         # 1. Gate — 该不该动？
         ctx = AgentTickContext(
@@ -352,24 +349,33 @@ class ProactiveTurnPipeline:
         self.last_ctx = ctx
         self._record_tick_log_start(ctx)
 
-        # 2. Fetch — 外面有什么新鲜事？
-        feed = await self._fetch_pull(ctx)
-        if feed.drift_entered:
-            self._finalize_after_drift(ctx)
-            return feed.base_score
+        # 2. Fetch — 拉取本轮数据源。
+        gw_result = await self._fetch_data(ctx)
 
-        # 3. Judge — LLM 评估哪些值得说
-        if feed.messages and ctx.terminal_action is None:
-            await self._judge_evaluate(ctx, feed.messages)
+        # 3. Drift — 无数据且 fallback 关闭时，尝试空闲 drift。
+        if not gw_result.alerts and not gw_result.content_meta and not ctx.context_as_fallback_open:
+            entered = await self._try_drift(ctx)
+            if entered:
+                self._finalize_after_drift(ctx)
+                return 0.0
+            # drift 未进入 → 标记 skip，继续走 Resolve → Deliver 正常收尾。
+            ctx.terminal_action = "skip"
+            ctx.skip_reason = "no_content"
 
-        # 3.5 LLM 判定 reply 时记录 anyaction（drift 路径在 _finalize_after_drift 中处理）。
+        # 4. Build + Judge — 有 LLM 且有数据（或 fallback 开启）时构建 messages 并进入 LLM 评估。
+        if self._llm_fn is not None and ctx.terminal_action is None:
+            if gw_result.alerts or gw_result.content_meta or ctx.context_as_fallback_open:
+                messages = self._build_judge_messages(ctx, gw_result)
+                await self._judge_evaluate(ctx, messages)
+
+        # 5. AnyAction 记录（LLM 判定 reply 时）。
         if ctx.terminal_action == "reply" and self._any_action_gate is not None:
             self._any_action_gate.record_action(now_utc=ctx.now_utc)
 
-        # 4. Resolve — 发还是不发？
+        # 6. Resolve — 最终裁定。
         decision = await self._resolve_decide(ctx)
 
-        # 5. Deliver — 执行发送
+        # 7. Deliver — 执行发送。
         score = await self._deliver_execute(ctx, decision)
         ctx.content_store.clear()
         return score
@@ -433,10 +439,10 @@ class ProactiveTurnPipeline:
 
     # ── 2. Fetch ──────────────────────────────────────────────────────
 
-    async def _fetch_pull(self, ctx: AgentTickContext) -> FeedResult:
-        """拉取本轮数据源，构建 LLM 输入 messages。"""
+    async def _fetch_data(self, ctx: AgentTickContext) -> GatewayResult:
+        """纯数据拉取：并行拉取 alerts / content / context 并灌入 ctx。"""
 
-        # 2.1 通过 DataGateway 并行拉取 alerts / content / context。
+        # 2.1 通过 DataGateway 并行拉取。
         gateway_deps = self._gateway_deps or GatewayDeps(
             alert_fn=None,
             feed_fn=None,
@@ -474,45 +480,50 @@ class ProactiveTurnPipeline:
         ctx.mark_contents_prefetched(fetched_contents, gw_result.content_store)
         ctx.mark_context_prefetched(gw_result.context)
 
-        # 2.3 快速 skip：无 alert、无 content、且 fallback 未开启时尝试 drift。
-        if not gw_result.alerts and not gw_result.content_meta and not ctx.context_as_fallback_open:
-            if self._drift_pipeline is not None and self._cfg.drift_enabled:
-                last_drift_at = self._state_store.get_last_drift_at(self._session_key)
-                min_interval_hours = max(0, int(getattr(self._cfg, "drift_min_interval_hours", 0) or 0))
-                if (
-                    last_drift_at is not None
-                    and min_interval_hours > 0
-                    and (ctx.now_utc - last_drift_at).total_seconds() < min_interval_hours * 3600
-                ):
-                    logger.info(
-                        "[proactive_v2] fetch: drift blocked by interval last_drift_at=%s min_interval_hours=%d",
-                        last_drift_at.isoformat(),
-                        min_interval_hours,
-                    )
-                    ctx.terminal_action = "skip"
-                    ctx.skip_reason = "no_content"
-                    self.last_ctx = ctx
-                    return FeedResult(drift_entered=False, base_score=None)
-                logger.info("[proactive_v2] fetch: empty gateway, attempting drift")
-                entered_drift = await self._drift_pipeline.run(ctx, self._llm_fn)
-                if entered_drift:
-                    self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
-                    logger.info("[proactive_v2] fetch: drift entered, message_sent=%s", ctx.drift_message_sent)
-                    self.last_ctx = ctx
-                    return FeedResult(drift_entered=True, base_score=0.0)
-                logger.info("[proactive_v2] fetch: drift not entered")
-            logger.info("[proactive_v2] fetch: no data and fallback off → skip")
-            ctx.terminal_action = "skip"
-            ctx.skip_reason = "no_content"
-            self.last_ctx = ctx
-            return FeedResult(drift_entered=False, base_score=None)
+        return gw_result
 
-        # 2.4 llm_fn 为空 → 无法进入 Judge，直接退出。
-        if self._llm_fn is None:
-            self.last_ctx = ctx
-            return FeedResult(drift_entered=False, base_score=None)
+    # ── 3. Drift ──────────────────────────────────────────────────────
 
-        # 2.5 构造本轮 proactive 输入 messages。
+    async def _try_drift(self, ctx: AgentTickContext) -> bool:
+        """无内容时尝试进入空闲 drift。含 interval gate 和 DriftTurnPipeline.run。"""
+
+        if self._drift_pipeline is None or not self._cfg.drift_enabled:
+            return False
+
+        # 3.1 interval check。
+        last_drift_at = self._state_store.get_last_drift_at(self._session_key)
+        min_interval_hours = max(0, int(getattr(self._cfg, "drift_min_interval_hours", 0) or 0))
+        if (
+            last_drift_at is not None
+            and min_interval_hours > 0
+            and (ctx.now_utc - last_drift_at).total_seconds() < min_interval_hours * 3600
+        ):
+            logger.info(
+                "[proactive_v2] drift: blocked by interval last_drift_at=%s min_interval_hours=%d",
+                last_drift_at.isoformat(),
+                min_interval_hours,
+            )
+            return False
+
+        # 3.2 进入 drift。
+        logger.info("[proactive_v2] drift: empty gateway, attempting drift")
+        entered = await self._drift_pipeline.run(ctx, self._llm_fn)
+        if entered:
+            self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
+            logger.info("[proactive_v2] drift: entered, message_sent=%s", ctx.drift_message_sent)
+        else:
+            logger.info("[proactive_v2] drift: not entered")
+        return entered
+
+    # ── 4. Build ──────────────────────────────────────────────────────
+
+    def _build_judge_messages(
+        self,
+        ctx: AgentTickContext,
+        gw_result: GatewayResult,
+    ) -> list[dict]:
+        """构造 LLM Judge 阶段的输入 messages（system prompt + context frame + kickoff）。"""
+
         system_msg = {"role": "system", "content": self._build_system_prompt()}
         runtime_context_msg = self._build_runtime_context_message(ctx, gw_result)
         kickoff_msg = {
@@ -523,11 +534,9 @@ class ProactiveTurnPipeline:
                 "最后通过 message_push + finish_turn(decision=reply)，或 finish_turn(decision=skip, reason=...) 收尾。"
             ),
         }
-        messages: list[dict] = [system_msg, runtime_context_msg, kickoff_msg]
+        return [system_msg, runtime_context_msg, kickoff_msg]
 
-        return FeedResult(drift_entered=False, base_score=None, messages=messages)
-
-    # ── 3. Judge ──────────────────────────────────────────────────────
+    # ── 5. Judge ──────────────────────────────────────────────────────
 
     async def _judge_evaluate(self, ctx: AgentTickContext, messages: list[dict]) -> None:
         """LLM 多轮工具调用：逐条内容分类 → 草稿 → 收尾。"""
@@ -535,7 +544,7 @@ class ProactiveTurnPipeline:
         if self._llm_fn is None:
             return
 
-        # 3.1 主 loop：模型自行决定调用工具，直到 finish_turn 或达到步数上限。
+        # 5.1 主 loop：模型自行决定调用工具，直到 finish_turn 或达到步数上限。
         while ctx.steps_taken < self._cfg.agent_tick_max_steps:
             ok = await self._run_tool_step(messages, ctx, loop_tag="loop", tool_choice="auto")
             if not ok:
@@ -543,7 +552,7 @@ class ProactiveTurnPipeline:
             if ctx.terminal_action is not None:
                 break
 
-        # 3.2 完整性检查：如果 finish_skip 了但还有未分类条目，补全。
+        # 5.2 完整性检查：如果 finish_skip 了但还有未分类条目，补全。
         gw_result = self._last_gateway_result
         if ctx.terminal_action == "skip" and gw_result is not None and gw_result.content_meta:
             all_content_ids = {m["id"] for m in gw_result.content_meta}
@@ -577,7 +586,7 @@ class ProactiveTurnPipeline:
                     if not ok:
                         break
 
-        # 3.3 反思阶段：如果 interesting 已标好但还没 finish_turn，逼它收尾。
+        # 5.3 反思阶段：如果 interesting 已标好但还没 finish_turn，逼它收尾。
         if ctx.terminal_action is None and ctx.interesting_item_ids and ctx.steps_taken < self._cfg.agent_tick_max_steps:
             ids_str = ", ".join(sorted(ctx.interesting_item_ids))
             reflection = (
@@ -596,14 +605,14 @@ class ProactiveTurnPipeline:
 
         self.last_ctx = ctx
 
-    # ── 4. Resolve ────────────────────────────────────────────────────
+    # ── 6. Resolve ────────────────────────────────────────────────────
 
     async def _resolve_decide(self, ctx: AgentTickContext) -> ResolveResult:
         """最终裁定：skip/reply + delivery 去重 + message 去重。"""
 
         ack_fn = self._tool_deps.ack_fn
 
-        # 4.1 LLM 判定为 skip → 直接构建 skip 结果。
+        # 6.1 LLM 判定为 skip → 直接构建 skip 结果。
         if ctx.terminal_action != "reply":
             logger.info(
                 "[proactive_v2] resolve: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
@@ -634,7 +643,7 @@ class ProactiveTurnPipeline:
             )
             return ResolveResult(action="skip", result=skip_result)
 
-        # 4.2 delivery 去重：同一批来源内容短时间内不重复发。
+        # 6.2 delivery 去重：同一批来源内容短时间内不重复发。
         delivery_key = build_delivery_key(ctx)
         if self._state_store.is_delivery_duplicate(
             self._session_key, delivery_key, self._cfg.delivery_dedupe_hours
@@ -665,7 +674,7 @@ class ProactiveTurnPipeline:
                 ),
             )
 
-        # 4.3 message 语义去重：和最近主动消息实质重复也跳过。
+        # 6.3 message 语义去重：和最近主动消息实质重复也跳过。
         if self._cfg.message_dedupe_enabled and self._deduper is not None:
             recent_proactive = (
                 self._recent_proactive_fn()
@@ -705,7 +714,7 @@ class ProactiveTurnPipeline:
                     ),
                 )
 
-        # 4.4 两层 guard 都通过 → 构建 send 结果。
+        # 6.4 两层 guard 都通过 → 构建 send 结果。
         send_result = TurnResult(
             decision="reply",
             outbound=TurnOutbound(session_key=self._session_key, content=ctx.final_message),
@@ -754,15 +763,15 @@ class ProactiveTurnPipeline:
         )
         return ResolveResult(action="send", result=send_result)
 
-    # ── 5. Deliver ────────────────────────────────────────────────────
+    # ── 7. Deliver ────────────────────────────────────────────────────
 
     async def _deliver_execute(self, ctx: AgentTickContext, decision: ResolveResult) -> float | None:
         """执行发送：记日志 → 通过 TurnOrchestrator 落会话、发消息、执行副作用。"""
-        # 5.1 先记 tick 日志。
+        # 7.1 先记 tick 日志。
         self._record_tick_log_finish(ctx, result=decision.result)
         if self._turn_orchestrator is None:
             raise RuntimeError("proactive turn_orchestrator is required")
-        # 5.2 再统一交给 TurnOrchestrator。
+        # 7.2 再统一交给 TurnOrchestrator。
         await self._turn_orchestrator.handle_proactive_turn(
             result=decision.result,
             session_key=self._session_key,
