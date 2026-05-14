@@ -14,6 +14,7 @@ import pytest
 
 from proactive_v2.context import AgentTickContext
 from proactive_v2.tools import _get_recent_chat
+from tests.proactive_v2.conftest import make_proactive_pipeline
 
 
 # ── Fix 1: get_recent_chat 过滤 role=assistant ────────────────────────────
@@ -133,32 +134,7 @@ async def test_get_recent_chat_mixed_passive_and_proactive():
 
 
 def _make_system_prompt() -> str:
-    from proactive_v2.agent_tick import AgentTick
-    from proactive_v2.gateway import GatewayDeps
-    from proactive_v2.config import ProactiveConfig
-    from unittest.mock import MagicMock
-
-    gate = MagicMock()
-    gate.should_act.return_value = (True, {})
-
-    tick = AgentTick(
-        cfg=ProactiveConfig(),
-        session_key="test",
-        state_store=MagicMock(),
-        any_action_gate=gate,
-        last_user_at_fn=lambda: None,
-        passive_busy_fn=None,
-        deduper=MagicMock(),
-        tool_deps=__import__("proactive_v2.tools", fromlist=["ToolDeps"]).ToolDeps(
-            recent_chat_fn=AsyncMock(return_value=[]),
-        ),
-        gateway_deps=GatewayDeps(
-            alert_fn=AsyncMock(return_value=[]),
-            feed_fn=AsyncMock(return_value=[]),
-            context_fn=AsyncMock(return_value=[]),
-        ),
-        llm_fn=None,
-    )
+    tick = make_proactive_pipeline(llm_fn=None)
     return tick._build_system_prompt()
 
 

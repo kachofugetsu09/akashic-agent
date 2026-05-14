@@ -13,13 +13,11 @@ from agent.skills import BUILTIN_SKILLS_DIR
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
-from agent.tools.web_search import WebSearchTool
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
 from proactive_v2 import mcp_sources
 from proactive_v2.mcp_sources import McpClientPool
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
-from proactive_v2.agent_tick import AgentTick
 from proactive_v2.drift_runner import DriftRunner
 from proactive_v2.drift_state import DriftStateStore
 from proactive_v2.drift_tools import DriftToolDeps
@@ -123,7 +121,7 @@ class AgentTickFactory:
             tool_choice: str | dict = "auto",
             disable_thinking: bool = False,
         ) -> dict | None:
-            # AgentTick 自己维护 messages 和工具 schema；
+            # ProactiveTurnPipeline 自己维护 messages 和工具 schema；
             # factory 这里只负责把 provider.chat 包成“返回首个 tool_call”的薄适配层。
             resp = await provider.chat(
                 messages=messages,

@@ -1,5 +1,5 @@
 """
-TDD — Phase 5: proactive_v2/agent_tick.py — Agent Loop
+TDD — Phase 5: proactive_v2/ProactiveTurnPipeline — Agent Loop
 
 测试覆盖：
   - max_steps 保护：loop 不超过 agent_tick_max_steps
@@ -24,7 +24,7 @@ import pytest
 from agent.prompting import is_context_frame
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
-from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_agent_tick
+from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_proactive_pipeline
 
 
 # ── max_steps 保护 ────────────────────────────────────────────────────────
@@ -33,12 +33,12 @@ from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_agent_tick
 async def test_loop_stops_at_max_steps():
     """LLM 一直返回非终止工具 → loop 在 max_steps 处退出"""
     llm = FakeLLM([("get_recent_chat", {})] * 25)
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         cfg=cfg_with(agent_tick_max_steps=20),
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.steps_taken == 20
     assert tick.last_ctx.terminal_action is None
 
@@ -46,12 +46,12 @@ async def test_loop_stops_at_max_steps():
 @pytest.mark.asyncio
 async def test_loop_max_steps_configurable():
     llm = FakeLLM([("get_recent_chat", {})] * 15)
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         cfg=cfg_with(agent_tick_max_steps=5),
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.steps_taken == 5
 
 
@@ -60,8 +60,8 @@ async def test_loop_max_steps_configurable():
 @pytest.mark.asyncio
 async def test_loop_stops_when_llm_returns_none():
     llm = FakeLLM([])  # 空序列，第一次就返回 None
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     assert tick.last_ctx.steps_taken == 0
     assert tick.last_ctx.terminal_action is None
 
@@ -69,7 +69,7 @@ async def test_loop_stops_when_llm_returns_none():
 @pytest.mark.asyncio
 async def test_loop_puts_runtime_context_frame_before_kickoff():
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "no_content"})])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
@@ -88,7 +88,7 @@ async def test_loop_puts_runtime_context_frame_before_kickoff():
         ),
     )
 
-    await tick.tick()
+    await tick.run()
 
     messages = llm.calls[0]
     assert messages[0]["role"] == "system"
@@ -105,14 +105,14 @@ async def test_loop_stops_after_partial_sequence_then_none():
         ("get_content_events", {}),
         # 之后 None，loop 结束
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[]),
         ),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.steps_taken == 2
     assert tick.last_ctx.terminal_action is None
 
@@ -121,8 +121,8 @@ async def test_loop_stops_after_partial_sequence_then_none():
 
 @pytest.mark.asyncio
 async def test_loop_with_no_llm_fn_executes_nothing():
-    tick = make_agent_tick(llm_fn=None)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=None)
+    await tick.run()
     assert tick.last_ctx.steps_taken == 0
     assert len(tick._state_store.tick_log_starts) == 1
     assert len(tick._state_store.tick_log_finishes) == 1
@@ -138,11 +138,11 @@ async def test_send_message_stops_loop_immediately():
         ("finish_turn", {"decision": "reply"}),
         ("get_recent_chat", {}),   # 不应执行
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.tick()
+    await tick.run()
     # message_push + finish_turn 是前 2 步，之后 loop 停止
     assert tick.last_ctx.steps_taken == 2
     assert tick.last_ctx.terminal_action == "reply"
@@ -154,11 +154,11 @@ async def test_skip_stops_loop_immediately():
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
         ("get_recent_chat", {}),   # 不应执行
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.steps_taken == 1
     assert tick.last_ctx.terminal_action == "skip"
 
@@ -171,8 +171,8 @@ async def test_only_first_terminal_counts():
         ("finish_turn", {"decision": "reply"}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     assert tick.last_ctx.terminal_action == "reply"
     assert tick.last_ctx.steps_taken == 2
 
@@ -185,8 +185,8 @@ async def test_send_message_writes_final_message():
         ("message_push", {"message": "Hello world!", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     assert tick.last_ctx.final_message == "Hello world!"
 
 
@@ -196,8 +196,8 @@ async def test_tool_chain_step_logs_capture_args_and_results():
         ("message_push", {"message": "Hello world!", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     assert len(tick._state_store.tick_step_logs) == 2
     first = tick._state_store.tick_step_logs[0]
     second = tick._state_store.tick_step_logs[1]
@@ -216,14 +216,14 @@ async def test_send_message_writes_cited_ids():
         ("message_push", {"message": "msg", "evidence": ["feed-mcp:1", "alert-mcp:2"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[{"ack_server": "alert-mcp", "event_id": "2", "title": "a"}]),
             feed_fn=AsyncMock(return_value=[{"id": "1", "ack_server": "feed-mcp", "title": "t"}]),
         ),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.cited_item_ids == ["feed-mcp:1", "alert-mcp:2"]
 
 
@@ -233,13 +233,13 @@ async def test_send_message_cited_added_to_interesting():
         ("message_push", {"message": "msg", "evidence": ["feed-mcp:1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(
             feed_fn=AsyncMock(return_value=[{"id": "1", "ack_server": "feed-mcp", "title": "t"}]),
         ),
     )
-    await tick.tick()
+    await tick.run()
     assert "feed-mcp:1" in tick.last_ctx.interesting_item_ids
 
 
@@ -248,16 +248,16 @@ async def test_send_message_cited_added_to_interesting():
 @pytest.mark.asyncio
 async def test_skip_writes_reason():
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "user_busy"})])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     assert tick.last_ctx.skip_reason == "user_busy"
 
 
 @pytest.mark.asyncio
 async def test_skip_writes_note():
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "other", "note": "debug"})])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     assert tick.last_ctx.skip_note == "debug"
 
 
@@ -272,11 +272,11 @@ async def test_alert_path_send_sets_terminal():
         ("message_push", {"message": "告警：CPU 95%", "evidence": ["alert-mcp:a1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[alert])),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.terminal_action == "reply"
     assert tick.last_ctx.cited_item_ids == ["alert-mcp:a1"]
 
@@ -289,11 +289,11 @@ async def test_alert_stored_in_ctx_fetched_alerts():
         ("get_alert_events", {}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[alert])),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.fetched_alerts == [alert]
 
 
@@ -305,11 +305,11 @@ async def test_alert_fn_called_once_even_if_llm_calls_twice():
         ("get_alert_events", {}),   # 重复，应命中缓存
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(alert_fn=alert_fn),
     )
-    await tick.tick()
+    await tick.run()
     assert alert_fn.call_count == 1
 
 
@@ -324,14 +324,14 @@ async def test_content_stored_in_ctx_fetched_contents():
         ("get_content_events", {}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[event]),
         ),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.fetched_contents == [{
         "id": "c1",
         "event_id": "c1",
@@ -350,12 +350,12 @@ async def test_content_fn_called_with_configured_limit():
         ("get_content_events", {"limit": 3}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         cfg=cfg_with(agent_tick_content_limit=3),
         gateway_deps=GatewayDeps(feed_fn=feed_fn, content_limit=3),
     )
-    await tick.tick()
+    await tick.run()
     # limit 来自工具调用参数
     feed_fn.assert_called_once_with(limit=3)
 
@@ -371,14 +371,14 @@ async def test_content_path_send_interesting_tracked():
         ("message_push", {"message": "Great article", "evidence": ["feed-mcp:c1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[event]),
         ),
     )
-    await tick.tick()
+    await tick.run()
     assert "feed-mcp:c1" in tick.last_ctx.interesting_item_ids
     assert tick.last_ctx.terminal_action == "reply"
 
@@ -394,11 +394,11 @@ async def test_mark_not_interesting_in_loop_writes_discarded():
         ("mark_not_interesting", {"item_ids": ["feed-mcp:c1"]}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(feed_fn=AsyncMock(return_value=[event])),
     )
-    await tick.tick()
+    await tick.run()
     assert "feed-mcp:c1" in tick.last_ctx.discarded_item_ids
 
 
@@ -408,8 +408,8 @@ async def test_mark_not_interesting_multiple_items():
         ("mark_not_interesting", {"item_ids": ["feed-mcp:1", "feed-mcp:2"]}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     assert "feed-mcp:1" in tick.last_ctx.discarded_item_ids
     assert "feed-mcp:2" in tick.last_ctx.discarded_item_ids
 
@@ -424,11 +424,11 @@ async def test_context_data_fn_called_only_once_in_loop():
         ("get_context_data", {}),   # 第二次应命中缓存
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(context_fn=context_fn),
     )
-    await tick.tick()
+    await tick.run()
     assert context_fn.call_count == 1
 
 
@@ -446,11 +446,11 @@ async def test_recall_memory_in_loop():
         ("message_push", {"message": "RPG 推荐", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         tool_deps=ToolDeps(memory=memory),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.terminal_action == "reply"
     memory.retrieve_interest_block.assert_awaited_once()
 
@@ -463,13 +463,13 @@ async def test_user_busy_skip():
         ("get_recent_chat", {}),
         ("finish_turn", {"decision": "skip", "reason": "user_busy"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[
             {"role": "user", "content": "我现在很忙"}
         ])),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.terminal_action == "skip"
     assert tick.last_ctx.skip_reason == "user_busy"
 
@@ -483,11 +483,11 @@ async def test_llm_receives_growing_message_history():
         ("get_alert_events", {}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[])),
     )
-    await tick.tick()
+    await tick.run()
     # 第一次调用：messages 可能只有 system prompt（无工具历史）
     # 第二次调用：messages 应包含 get_alert_events 的 tool_use + tool_result
     assert len(llm.calls) == 2
@@ -500,8 +500,8 @@ async def test_llm_receives_growing_message_history():
 async def test_llm_receives_system_message():
     """第一次调用时 messages 应包含 system prompt"""
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "no_content"})])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     assert llm.calls  # 至少调用了一次
     first_messages = llm.calls[0]
     roles = [m.get("role") for m in first_messages]
@@ -516,8 +516,8 @@ async def test_unknown_tool_breaks_loop_gracefully():
         ("nonexistent_tool", {}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),  # 不应执行
     ])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
     # execute() 在分发前就递增 steps_taken，所以是 1；但 terminal_action 不变
     assert tick.last_ctx.terminal_action is None
     assert tick.last_ctx.steps_taken == 1   # unknown tool 被调用了，只是分发失败
@@ -533,7 +533,7 @@ async def test_steps_taken_counts_all_tool_calls():
         ("get_recent_chat", {}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
         gateway_deps=GatewayDeps(
@@ -541,7 +541,7 @@ async def test_steps_taken_counts_all_tool_calls():
             feed_fn=AsyncMock(return_value=[]),
         ),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.steps_taken == 4
 
 
@@ -556,11 +556,11 @@ async def test_main_loop_uses_auto_tool_choice():
         ("get_recent_chat", {}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.tick()
+    await tick.run()
 
     assert all(tc == "auto" for tc in llm.tool_choices), (
         f"expected all tool_choices to be 'auto', got {llm.tool_choices}"
@@ -582,7 +582,7 @@ async def test_alert_present_llm_called_with_auto_tool_choice():
         ("finish_turn", {"decision": "reply"}),
     ])
 
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
         gateway_deps=GatewayDeps(
@@ -591,7 +591,7 @@ async def test_alert_present_llm_called_with_auto_tool_choice():
             context_fn=AsyncMock(return_value=[]),
         ),
     )
-    await tick.tick()
+    await tick.run()
 
     # 消息被正常发出
     assert tick.last_ctx.terminal_action == "reply"
@@ -610,8 +610,8 @@ async def test_main_loop_stops_when_auto_tool_call_is_empty():
         calls.append(list(messages))
         return None
 
-    tick = make_agent_tick(llm_fn=llm_fn)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm_fn)
+    await tick.run()
 
     assert tick.last_ctx.terminal_action is None
     assert tick.last_ctx.steps_taken == 0
@@ -624,12 +624,12 @@ async def test_finish_turn_error_stops_under_auto_tool_choice():
         ("get_recent_chat", {"n": 10}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
 
-    await tick.tick()
+    await tick.run()
 
     assert tick.last_ctx.terminal_action is None
     assert tick.last_ctx.steps_taken == 2

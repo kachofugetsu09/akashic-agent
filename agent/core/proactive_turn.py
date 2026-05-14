@@ -359,7 +359,8 @@ class ProactiveTurnPipeline:
             return feed.base_score
 
         # 3. Judge — LLM 评估哪些值得说
-        await self._judge_evaluate(ctx, feed.messages)
+        if feed.messages and ctx.terminal_action is None:
+            await self._judge_evaluate(ctx, feed.messages)
 
         # 3.5 LLM 判定 reply 时记录 anyaction（drift 路径在 _finalize_after_drift 中处理）。
         if ctx.terminal_action == "reply" and self._any_action_gate is not None:
@@ -1175,5 +1176,3 @@ class ProactiveTurnPipeline:
             cited_ids_after=list(ctx.cited_item_ids),
             final_message_after=ctx.final_message,
         )
-
-

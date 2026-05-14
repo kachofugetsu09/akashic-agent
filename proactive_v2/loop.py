@@ -209,8 +209,6 @@ class ProactiveLoop:
         self._sense = self._build_sense(self._build_fitbit_provider())
         self._message_deduper = self._build_message_deduper()
         self._proactive_pipeline = self._build_agent_tick()
-        # 向后兼容：_agent_tick 别名指向 pipeline（原调用方通过 ._agent_tick.tick() 访问）。
-        self._agent_tick = self._proactive_pipeline
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
 
@@ -447,14 +445,7 @@ class ProactiveLoop:
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
         # 主动回复全链路入口：Gate → Fetch → Judge → Resolve → Deliver。
-        # 向后兼容：测试可能绕过 _init_runtime_components 直接设 _agent_tick。
-        pipeline = getattr(self, '_proactive_pipeline', None)
-        if pipeline is not None:
-            return await pipeline.run()
-        agent_tick = getattr(self, '_agent_tick', None)
-        if agent_tick is not None and hasattr(agent_tick, 'tick'):
-            return await agent_tick.tick()
-        return None
+        return await self._proactive_pipeline.run()
 
 
 def build_proactive_loop(**kwargs: Any) -> ProactiveLoop:

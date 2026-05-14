@@ -381,7 +381,7 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     loop._sessions = SimpleNamespace(workspace=tmp_path)
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
-    loop._agent_tick = SimpleNamespace(tick=AsyncMock(return_value=0.2))
+    loop._proactive_pipeline = SimpleNamespace(run=AsyncMock(return_value=0.2))
     loop._feed_poll_lock = asyncio.Lock()
     loop._mcp_pool = SimpleNamespace(
         connect_all=AsyncMock(return_value=None),

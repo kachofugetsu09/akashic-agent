@@ -1,9 +1,9 @@
 """
-TDD — Phase 6: proactive_v2/agent_tick.py — Post-guard + ACK
+TDD — Phase 6: ProactiveTurnPipeline — Post-guard + ACK
 
 测试分两层：
-  A. 模块级纯函数（build_delivery_key、ack_* helpers）— 无需 tick()
-  B. tick() 集成测试 — 验证 flow 分支正确触发 guard 和 ACK
+  A. 模块级纯函数（build_delivery_key、ack_* helpers）
+  B. run() 集成测试 — 验证 flow 分支正确触发 guard 和 ACK
 """
 from __future__ import annotations
 from typing import Any, cast
@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from proactive_v2.agent_tick import (
+from agent.core.proactive_turn import (
     ack_discarded,
     ack_on_success,
     ack_post_guard_fail,
@@ -29,7 +29,7 @@ from tests.proactive_v2.conftest import (
     FakeLLM,
     FakeStateStore,
     cfg_with,
-    make_agent_tick,
+    make_proactive_pipeline,
 )
 
 
@@ -271,11 +271,11 @@ async def test_ack_on_success_cited_not_in_fetched_not_acked():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# B. tick() 集成测试
+# B. run() 集成测试
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _make_tick_with_sink(llm, *, state=None, sender=None, deduper=None,
-                          tool_deps_extra=None, cfg=None):
+def _make_pipeline_with_sink(llm, *, state=None, sender=None, deduper=None,
+                            tool_deps_extra=None, cfg=None):
     sink = FakeAckSink()
     if state is None:
         state = FakeStateStore()
@@ -299,7 +299,7 @@ def _make_tick_with_sink(llm, *, state=None, sender=None, deduper=None,
     if deduper is None:
         deduper = AsyncMock()
         deduper.is_duplicate = AsyncMock(return_value=(False, ""))
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         state_store=state,
         sender=sender,
@@ -324,8 +324,8 @@ async def test_delivery_dedupe_hit_prevents_send():
         ("message_push", {"message": "hello", "evidence": ["feed-mcp:1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, state=state, sender=sender)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, state=state, sender=sender)
+    await tick.run()
 
     sender.send.assert_not_called()
 
@@ -340,10 +340,10 @@ async def test_delivery_dedupe_hit_acks_cited_24h():
         ("message_push", {"message": "hello", "evidence": ["feed-mcp:1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm, state=state, tool_deps_extra={"feed_fn": AsyncMock(return_value=[event])}
     )
-    await tick.tick()
+    await tick.run()
 
     assert sink.acked("feed-mcp:1", 24)
 
@@ -357,8 +357,8 @@ async def test_delivery_dedupe_hit_no_mark_delivery():
         ("message_push", {"message": "hi", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, state=state)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, state=state)
+    await tick.run()
 
     assert state._deliveries == []
 
@@ -376,8 +376,8 @@ async def test_message_dedupe_hit_prevents_send():
         ("message_push", {"message": "hello", "evidence": ["feed-mcp:1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, sender=sender, deduper=deduper)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, sender=sender, deduper=deduper)
+    await tick.run()
 
     sender.send.assert_not_called()
 
@@ -392,12 +392,12 @@ async def test_message_dedupe_hit_acks_cited_24h():
         ("message_push", {"message": "hello", "evidence": ["feed-mcp:1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm,
         deduper=deduper,
         tool_deps_extra={"feed_fn": AsyncMock(return_value=[event])},
     )
-    await tick.tick()
+    await tick.run()
 
     assert sink.acked("feed-mcp:1", 24)
 
@@ -413,11 +413,11 @@ async def test_message_dedupe_disabled_skips_check():
         ("message_push", {"message": "hi", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm, sender=sender, deduper=deduper,
         cfg=cfg_with(message_dedupe_enabled=False),
     )
-    await tick.tick()
+    await tick.run()
 
     deduper.is_duplicate.assert_not_called()
     sender.send.assert_called_once()
@@ -432,8 +432,8 @@ async def test_message_dedupe_called_with_correct_message():
         ("message_push", {"message": "the message", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, deduper=deduper)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, deduper=deduper)
+    await tick.run()
 
     call_kwargs = deduper.is_duplicate.call_args[1]
     assert call_kwargs["new_message"] == "the message"
@@ -450,8 +450,8 @@ async def test_send_success_calls_sender():
         ("message_push", {"message": "hi", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, sender=sender)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, sender=sender)
+    await tick.run()
     sender.send.assert_called_once_with("hi")
 
 
@@ -462,8 +462,8 @@ async def test_send_success_marks_delivery():
         ("message_push", {"message": "hi", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, state=state)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, state=state)
+    await tick.run()
     assert len(state._deliveries) == 1
 
 
@@ -475,10 +475,10 @@ async def test_send_success_acks_content_168h():
         ("message_push", {"message": "hi", "evidence": ["feed-mcp:c1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm, tool_deps_extra={"feed_fn": AsyncMock(return_value=[event])}
     )
-    await tick.tick()
+    await tick.run()
     assert sink.acked("feed-mcp:c1", 168)
 
 
@@ -489,8 +489,8 @@ async def test_send_success_acks_discarded_720h():
         ("message_push", {"message": "hi", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm)
+    await tick.run()
     assert sink.acked("feed-mcp:bad", 720)
 
 
@@ -506,8 +506,8 @@ async def test_send_failure_no_mark_delivery():
         ("message_push", {"message": "hi", "evidence": ["feed-mcp:1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, state=state, sender=sender)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, state=state, sender=sender)
+    await tick.run()
 
     assert state._deliveries == []
 
@@ -521,8 +521,8 @@ async def test_send_failure_no_ack_cited():
         ("message_push", {"message": "hi", "evidence": ["feed-mcp:1"]}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, sender=sender)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, sender=sender)
+    await tick.run()
 
     assert sink.not_acked("feed-mcp:1")
 
@@ -537,8 +537,8 @@ async def test_send_failure_acks_discarded_720h():
         ("message_push", {"message": "hi", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, sender=sender)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, sender=sender)
+    await tick.run()
 
     assert sink.acked("feed-mcp:bad", 720)
 
@@ -551,8 +551,8 @@ async def test_skip_acks_discarded_720h():
         ("mark_not_interesting", {"item_ids": ["feed-mcp:x"]}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick, sink = _make_tick_with_sink(llm)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm)
+    await tick.run()
 
     assert sink.acked("feed-mcp:x", 720)
 
@@ -561,9 +561,9 @@ async def test_skip_acks_discarded_720h():
 async def test_skip_no_ack_interesting():
     """skip 路径：interesting_set 中的条目不 ACK"""
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "user_busy"})])
-    tick, sink = _make_tick_with_sink(llm)
+    tick, sink = _make_pipeline_with_sink(llm)
     # interesting_set 为空，sink 应无调用
-    await tick.tick()
+    await tick.run()
     assert sink.calls == []
 
 
@@ -571,9 +571,9 @@ async def test_skip_no_ack_interesting():
 async def test_no_terminal_action_no_ack_cited():
     """LLM 返回 None，无 terminal → 不 ACK cited"""
     llm = FakeLLM([])
-    tick, sink = _make_tick_with_sink(llm)
+    tick, sink = _make_pipeline_with_sink(llm)
     tick.last_ctx = None
-    await tick.tick()
+    await tick.run()
     assert sink.calls == []
 
 
@@ -604,7 +604,7 @@ async def test_context_only_marks_state_on_success():
     deduper = AsyncMock()
     deduper.is_duplicate = AsyncMock(return_value=(False, ""))
 
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         state_store=state,
         sender=sender,
@@ -614,7 +614,7 @@ async def test_context_only_marks_state_on_success():
         cfg=cfg_with(agent_tick_context_prob=1.0, context_only_daily_max=3),
         rng=FakeRng(value=0.0),  # random() < 1.0 → gate 开
     )
-    await tick.tick()
+    await tick.run()
 
     assert state.context_only_send_marked is True
 
@@ -645,7 +645,7 @@ async def test_context_only_not_marked_when_cited_ids_present():
     deduper = AsyncMock()
     deduper.is_duplicate = AsyncMock(return_value=(False, ""))
 
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         state_store=state,
         sender=sender,
@@ -655,7 +655,7 @@ async def test_context_only_not_marked_when_cited_ids_present():
         cfg=cfg_with(agent_tick_context_prob=1.0, context_only_daily_max=3),
         rng=FakeRng(value=0.0),
     )
-    await tick.tick()
+    await tick.run()
 
     assert state.context_only_send_marked is False
 
@@ -672,10 +672,10 @@ async def test_cited_wins_over_discarded_gets_168h_not_720h():
         ("message_push", {"message": "actually good", "evidence": ["feed-mcp:c1"]}),  # cited wins
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm, tool_deps_extra={"feed_fn": AsyncMock(return_value=[event])}
     )
-    await tick.tick()
+    await tick.run()
 
     # cited 优先 → 168h；不应有 720h
     assert sink.acked("feed-mcp:c1", 168)
@@ -771,7 +771,7 @@ async def test_message_dedupe_receives_recent_proactive_list():
     sender = AsyncMock()
     sender.send.return_value = True
 
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         llm_fn=llm,
         deduper=deduper,
         sender=sender,
@@ -779,7 +779,7 @@ async def test_message_dedupe_receives_recent_proactive_list():
         gateway_deps=gateway,
         recent_proactive_fn=recent_proactive_fn,
     )
-    await tick.tick()
+    await tick.run()
 
     call_kwargs = deduper.is_duplicate.call_args[1]
     assert call_kwargs["recent_proactive"] == recent_msgs
@@ -795,8 +795,8 @@ async def test_message_dedupe_empty_list_when_no_fn():
         ("message_push", {"message": "msg", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(llm, deduper=deduper)
-    await tick.tick()
+    tick, sink = _make_pipeline_with_sink(llm, deduper=deduper)
+    await tick.run()
 
     call_kwargs = deduper.is_duplicate.call_args[1]
     assert call_kwargs["recent_proactive"] == []
@@ -814,10 +814,10 @@ async def test_discarded_content_not_in_interesting():
         ("message_push", {"message": "hi", "evidence": []}),
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm, tool_deps_extra={"feed_fn": AsyncMock(return_value=[event])}
     )
-    await tick.tick()
+    await tick.run()
     assert sink.acked("feed-mcp:c1", 720)
     assert 24 not in sink.ttls_for("feed-mcp:c1")
 
@@ -827,7 +827,7 @@ async def test_discarded_content_not_in_interesting():
 @pytest.mark.asyncio
 async def test_ack_on_success_alert_cited_calls_alert_ack_fn():
     """发送成功：cited alert 调用 alert_ack_fn（独立通道），不调用普通 ack_fn"""
-    from proactive_v2.agent_tick import ack_on_success
+    from agent.core.proactive_turn import ack_on_success
     ctx = AgentTickContext()
     ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
     ctx.fetched_contents = []
@@ -846,7 +846,7 @@ async def test_ack_on_success_alert_cited_calls_alert_ack_fn():
 @pytest.mark.asyncio
 async def test_ack_on_success_alert_ack_fn_none_falls_back_to_regular():
     """alert_ack_fn=None 时，cited alert 回退到普通 ack_fn（168h）"""
-    from proactive_v2.agent_tick import ack_on_success
+    from agent.core.proactive_turn import ack_on_success
     ctx = AgentTickContext()
     ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
     ctx.fetched_contents = []
@@ -863,7 +863,7 @@ async def test_ack_on_success_alert_ack_fn_none_falls_back_to_regular():
 @pytest.mark.asyncio
 async def test_ack_on_success_content_unaffected_by_alert_ack_fn():
     """alert_ack_fn 独立时，content cited 仍走普通 ack_fn（168h）"""
-    from proactive_v2.agent_tick import ack_on_success
+    from agent.core.proactive_turn import ack_on_success
     ctx = AgentTickContext()
     ctx.fetched_alerts = []
     ctx.fetched_contents = [{"id": "c1", "ack_server": "feed-mcp"}]
@@ -910,8 +910,8 @@ async def test_run_loop_appends_openai_format_tool_messages():
         ("get_content_events", {}),      # step 1 → produces messages for step 2
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),  # step 2 → terminates
     ])
-    tick = make_agent_tick(llm_fn=llm)
-    await tick.tick()
+    tick = make_proactive_pipeline(llm_fn=llm)
+    await tick.run()
 
     # 第二次 LLM 调用收到的 messages 包含 step 1 的工具调用和结果
     assert len(llm.calls) >= 2, "Expected at least 2 LLM calls"
@@ -953,10 +953,10 @@ async def test_mark_interesting_uncited_acks_24h_on_success():
         ("message_push", {"message": "hi", "evidence": []}),     # 未引用
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm, tool_deps_extra={"feed_fn": AsyncMock(return_value=[event])}
     )
-    await tick.tick()
+    await tick.run()
     assert sink.acked("feed-mcp:c1", 24)
 
 
@@ -968,10 +968,10 @@ async def test_fetched_but_unclassified_not_acked_on_skip():
         ("get_content_events", {}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm, tool_deps_extra={"feed_fn": AsyncMock(return_value=[event])}
     )
-    await tick.tick()
+    await tick.run()
     assert sink.not_acked("feed-mcp:c1")
 
 
@@ -985,8 +985,8 @@ async def test_fetched_but_unclassified_not_acked_on_send():
         ("message_push", {"message": "other topic", "evidence": []}),  # c1 未 cite
         ("finish_turn", {"decision": "reply"}),
     ])
-    tick, sink = _make_tick_with_sink(
+    tick, sink = _make_pipeline_with_sink(
         llm, tool_deps_extra={"feed_fn": AsyncMock(return_value=[event])}
     )
-    await tick.tick()
+    await tick.run()
     assert sink.not_acked("feed-mcp:c1")

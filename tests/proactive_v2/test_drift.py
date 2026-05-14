@@ -10,13 +10,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.prompting import is_context_frame
+from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from proactive_v2.agent_tick import AgentTick
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_runner import DriftRunner
 from proactive_v2.drift_state import DriftStateStore
@@ -25,7 +25,7 @@ from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.tools import ToolDeps
-from tests.proactive_v2.conftest import FakeLLM, FakeRng, cfg_with, make_agent_tick
+from tests.proactive_v2.conftest import FakeLLM, FakeRng, cfg_with, make_proactive_pipeline
 
 
 def _write_skill(root: Path, name: str = "explore-curiosity") -> Path:
@@ -514,7 +514,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
             ),
         ]
     )
-    tick = make_agent_tick(
+    tick = make_proactive_pipeline(
         cfg=cfg_with(drift_enabled=True),
         any_action_gate=gate,
         llm_fn=llm,
@@ -535,7 +535,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
             max_steps=5,
         ),
     )
-    await tick.tick()
+    await tick.run()
     assert tick.last_ctx.drift_entered is True
     gate.record_action.assert_called_once()
     assert len(tick._state_store.tick_step_logs) == 2
@@ -610,51 +610,55 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
             ),
         ]
     )
-    tick = AgentTick(
-        cfg=cfg_with(
-            drift_enabled=True,
-            default_channel="telegram",
-            default_chat_id="1",
-        ),
-        session_key="test_session",
-        state_store=SimpleNamespace(
-            count_deliveries_in_window=lambda *_args: 0,
-            get_last_context_only_at=lambda *_args: None,
-            count_context_only_in_window=lambda *_args, **_kwargs: 0,
-            get_last_drift_at=lambda *_args: None,
-            mark_drift_run=lambda *_args, **_kwargs: None,
-            is_delivery_duplicate=lambda *_args, **_kwargs: False,
-            record_tick_log_start=lambda **_kwargs: None,
-            record_tick_log_finish=lambda **_kwargs: None,
-            record_tick_step_log=lambda **_kwargs: None,
-        ),
-        any_action_gate=gate,
-        last_user_at_fn=lambda: None,
-        passive_busy_fn=None,
-        turn_orchestrator=orchestrator,
-        deduper=AsyncMock(),
-        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
-        gateway_deps=GatewayDeps(
-            alert_fn=AsyncMock(return_value=[]),
-            feed_fn=AsyncMock(return_value=[]),
-            context_fn=AsyncMock(return_value=[]),
-        ),
-        llm_fn=llm,
-        rng=FakeRng(value=1.0),
-        recent_proactive_fn=lambda: [],
-        drift_runner=DriftRunner(
-            store=DriftStateStore(tmp_path),
-            tool_deps=DriftToolDeps(
-                drift_dir=tmp_path,
-                store=DriftStateStore(tmp_path),
-                shared_tools=_build_shared_tools(),
-                send_message_fn=send_message,
+    tick = ProactiveTurnPipeline(
+        ProactiveTurnPipelineDeps(
+            cfg=cfg_with(
+                drift_enabled=True,
+                default_channel="telegram",
+                default_chat_id="1",
             ),
-            max_steps=5,
-        ),
+            session_key="test_session",
+            state_store=SimpleNamespace(
+                count_deliveries_in_window=lambda *_args: 0,
+                get_last_context_only_at=lambda *_args: None,
+                count_context_only_in_window=lambda *_args, **_kwargs: 0,
+                get_last_drift_at=lambda *_args: None,
+                mark_drift_run=lambda *_args, **_kwargs: None,
+                is_delivery_duplicate=lambda *_args, **_kwargs: False,
+                record_tick_log_start=lambda **_kwargs: None,
+                record_tick_log_finish=lambda **_kwargs: None,
+                record_tick_step_log=lambda **_kwargs: None,
+            ),
+            any_action_gate=gate,
+            last_user_at_fn=lambda: None,
+            passive_busy_fn=None,
+            turn_orchestrator=orchestrator,
+            deduper=AsyncMock(),
+            tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+            gateway_deps=GatewayDeps(
+                alert_fn=AsyncMock(return_value=[]),
+                feed_fn=AsyncMock(return_value=[]),
+                context_fn=AsyncMock(return_value=[]),
+            ),
+            workspace_context_fn=None,
+            llm_fn=llm,
+            rng=FakeRng(value=1.0),
+            recent_proactive_fn=lambda: [],
+            drift_runner=DriftRunner(
+                store=DriftStateStore(tmp_path),
+                tool_deps=DriftToolDeps(
+                    drift_dir=tmp_path,
+                    store=DriftStateStore(tmp_path),
+                    shared_tools=_build_shared_tools(),
+                    send_message_fn=send_message,
+                ),
+                max_steps=5,
+            ),
+            tool_hooks=None,
+        )
     )
 
-    await tick.tick()
+    await tick.run()
 
     sender.assert_awaited_once_with("hello from drift")
     gate.record_action.assert_called_once()

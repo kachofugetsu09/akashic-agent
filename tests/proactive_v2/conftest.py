@@ -1,5 +1,5 @@
 """
-共享测试设施：FakeStateStore、FakeRng、FakeLLM、make_agent_tick、cfg_with
+共享测试设施：FakeStateStore、FakeRng、FakeLLM、make_proactive_pipeline、cfg_with
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from agent.turns.outbound import OutboundDispatch
 # ── FakeStateStore ────────────────────────────────────────────────────────
 
 class FakeStateStore:
-    """ProactiveStateStore 的最小 fake，只实现 AgentTick 需要的接口。"""
+    """ProactiveStateStore 的最小 fake，只实现主动 pipeline 需要的接口。"""
 
     def __init__(self):
         self._delivery_count: int = 0
@@ -198,9 +198,9 @@ def cfg_with(**kwargs) -> ProactiveConfig:
     return ProactiveConfig(**kwargs)
 
 
-# ── make_agent_tick ───────────────────────────────────────────────────────
+# ── make_proactive_pipeline ─────────────────────────────────────────────────
 
-def make_agent_tick(
+def make_proactive_pipeline(
     *,
     cfg: ProactiveConfig | None = None,
     session_key: str = "test_session",
@@ -218,7 +218,10 @@ def make_agent_tick(
     workspace_context_fn: Any = None,
     drift_runner: Any = None,
 ):
-    from proactive_v2.agent_tick import AgentTick
+    from agent.core.proactive_turn import (
+        ProactiveTurnPipeline,
+        ProactiveTurnPipelineDeps,
+    )
 
     # 合理的默认值：所有 gate 都放行
     if state_store is None:
@@ -275,20 +278,23 @@ def make_agent_tick(
         )
     )
 
-    return AgentTick(
-        cfg=cfg or cfg_with(),
-        session_key=session_key,
-        state_store=state_store,
-        any_action_gate=any_action_gate,
-        last_user_at_fn=last_user_at_fn or (lambda: None),
-        passive_busy_fn=passive_busy_fn,
-        turn_orchestrator=orchestrator,
-        deduper=deduper,
-        tool_deps=tool_deps,
-        gateway_deps=gateway_deps,
-        llm_fn=llm_fn,
-        rng=rng,
-        recent_proactive_fn=recent_proactive_fn,
-        workspace_context_fn=workspace_context_fn,
-        drift_runner=drift_runner,
+    return ProactiveTurnPipeline(
+        ProactiveTurnPipelineDeps(
+            cfg=cfg or cfg_with(),
+            session_key=session_key,
+            state_store=state_store,
+            any_action_gate=any_action_gate,
+            last_user_at_fn=last_user_at_fn or (lambda: None),
+            passive_busy_fn=passive_busy_fn,
+            turn_orchestrator=orchestrator,
+            deduper=deduper,
+            tool_deps=tool_deps,
+            gateway_deps=gateway_deps,
+            llm_fn=llm_fn,
+            rng=rng,
+            recent_proactive_fn=recent_proactive_fn,
+            workspace_context_fn=workspace_context_fn,
+            drift_runner=drift_runner,
+            tool_hooks=None,
+        )
     )

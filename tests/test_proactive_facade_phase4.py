@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from bootstrap.proactive import _build_proactive_provider, build_proactive_runtime
-from proactive_v2.agent_tick import AgentTick
+from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
 from proactive_v2.gateway import GatewayDeps, GatewayResult
@@ -79,27 +79,34 @@ def test_sensor_reads_long_term_from_facade():
 
 
 def test_agent_tick_prompt_keeps_self_block_with_facade():
-    tick = AgentTick(
-        cfg=ProactiveConfig(),
-        session_key="test",
-        state_store=MagicMock(),
-        any_action_gate=MagicMock(),
-        last_user_at_fn=lambda: None,
-        passive_busy_fn=None,
-        deduper=MagicMock(),
-        tool_deps=cast(Any, SimpleNamespace(
-            memory=SimpleNamespace(
-                read_long_term_context=lambda: "MEMORY",
-                read_self=lambda: "SELF",
+    tick = ProactiveTurnPipeline(
+        ProactiveTurnPipelineDeps(
+            cfg=ProactiveConfig(),
+            session_key="test",
+            state_store=MagicMock(),
+            any_action_gate=MagicMock(),
+            last_user_at_fn=lambda: None,
+            passive_busy_fn=None,
+            turn_orchestrator=None,
+            deduper=MagicMock(),
+            tool_deps=cast(Any, SimpleNamespace(
+                memory=SimpleNamespace(
+                    read_long_term_context=lambda: "MEMORY",
+                    read_self=lambda: "SELF",
+                ),
+                recent_chat_fn=None,
+            )),
+            gateway_deps=GatewayDeps(
+                alert_fn=MagicMock(),
+                feed_fn=MagicMock(),
+                context_fn=MagicMock(),
             ),
-            recent_chat_fn=None,
-        )),
-        gateway_deps=GatewayDeps(
-            alert_fn=MagicMock(),
-            feed_fn=MagicMock(),
-            context_fn=MagicMock(),
+            workspace_context_fn=None,
+            llm_fn=None,
+            rng=None,
+            recent_proactive_fn=None,
+            drift_runner=None,
         ),
-        llm_fn=None,
     )
 
     runtime_context = tick._build_runtime_context_message(

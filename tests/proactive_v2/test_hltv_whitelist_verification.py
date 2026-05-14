@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.proactive_v2.conftest import make_agent_tick
+from tests.proactive_v2.conftest import make_proactive_pipeline
 
 
 # ── 确定性单元测试（不调用真实 LLM）─────────────────────────────────────────
@@ -18,8 +18,8 @@ async def test_system_prompt_contains_training_data_warning():
     验证系统提示里包含"训练数据记忆"不能替代 web_fetch 的规则。
     这是一个确定性测试，不依赖真实 LLM。
     """
-    # 构建一个最小化的 AgentTick 来获取系统提示
-    tick = make_agent_tick(llm_fn=None)
+    # 构建一个最小化的 pipeline 来获取系统提示
+    tick = make_proactive_pipeline(llm_fn=None)
 
     prompt = tick._build_system_prompt()
 
@@ -36,7 +36,7 @@ async def test_system_prompt_rule8_covers_ranking_verification():
     """
     验证规则第8条明确说明排名/赛况等时效性数据必须 web_fetch，不能用训练记忆。
     """
-    tick = make_agent_tick(llm_fn=None)
+    tick = make_proactive_pipeline(llm_fn=None)
     prompt = tick._build_system_prompt()
 
     # 规则8的核心断言
