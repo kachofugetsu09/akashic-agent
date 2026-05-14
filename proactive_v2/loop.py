@@ -1,10 +1,10 @@
 """
-ProactiveLoop — 主动触达核心循环。
+ProactiveLoop - 主动触达核心循环。
 
-独立于 AgentLoop，定期：
+独立于 AgentLoop,定期:
   1. 拉取所有内容源的最新候选事件
   2. 获取用户最近聊天上下文
-  3. 调用 LLM 反思：有没有值得主动说的
+  3. 调用 LLM 反思:有没有值得主动说的
   4. 产出 TurnResult 并由统一 OutboundPort 发送消息
 """
 
@@ -54,10 +54,10 @@ class ProactiveLoop:
 在这里写用户当前对主动推送的明确要求和规则。
 
 - 主 agent 负责维护这份文件。
-- proactive agent 每轮都会读取它，并把它视为需要遵守的规则，不是普通参考建议。
+- proactive agent 每轮都会读取它,并把它视为需要遵守的规则,不是普通参考建议。
 - 这里适合写白名单、黑名单、过滤条件、优先级、必须先验证的步骤。
-- 这里不提供新闻事实，不提供候选内容，只定义规则。
-- 写结论即可，不要写冗长过程。
+- 这里不提供新闻事实,不提供候选内容,只定义规则。
+- 写结论即可,不要写冗长过程。
 """
 
     def __init__(
@@ -166,7 +166,7 @@ class ProactiveLoop:
         from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
 
         # 1. 把 loop 级公共依赖收束成 AgentTickDeps。
-        # 2. 交给 factory 组装出“单次 tick 执行器”。
+        # 2. 交给 factory 组装出 ProactiveTurnPipeline（主动链路顶层抽象）。
         return AgentTickFactory(
             AgentTickDeps(
                 cfg=self._cfg,
@@ -203,12 +203,14 @@ class ProactiveLoop:
         self._ensure_workspace_proactive_context_file()
         # 2. 预读规则面板内容并做缓存。
         self._read_workspace_proactive_context()
-        # 3. 构建发送编排器、前置 gate、传感器、去重器和单次 tick 执行器。
+        # 3. 构建发送编排器、前置 gate、传感器、去重器和主动链路 pipeline。
         self._turn_orchestrator = self._build_turn_orchestrator()
         self._anyaction = self._build_anyaction_gate()
         self._sense = self._build_sense(self._build_fitbit_provider())
         self._message_deduper = self._build_message_deduper()
-        self._agent_tick = self._build_agent_tick()
+        self._proactive_pipeline = self._build_agent_tick()
+        # 向后兼容：_agent_tick 别名指向 pipeline（原调用方通过 ._agent_tick.tick() 访问）。
+        self._agent_tick = self._proactive_pipeline
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
 
@@ -310,12 +312,12 @@ class ProactiveLoop:
             logger.warning("[proactive] write trace failed %s: %s", filename, exc)
 
     async def _poll_feeds_once(self) -> None:
-        """执行一次 feed 轮询，加锁保证不并发。
-        MCP tool 层已将系统级失败序列化为 "error: ..." 字符串返回，
-        此处统一检测并 warning 记录，不阻断 loop 主流程。
+        """执行一次 feed 轮询,加锁保证不并发。
+        MCP tool 层已将系统级失败序列化为 "error: ..." 字符串返回,
+        此处统一检测并 warning 记录,不阻断 loop 主流程。
         """
         if self._feed_poll_lock.locked():
-            logger.debug("[proactive] feed poll 仍在进行，跳过本次")
+            logger.debug("[proactive] feed poll 仍在进行,跳过本次")
             return
         async with self._feed_poll_lock:
             try:
@@ -351,7 +353,7 @@ class ProactiveLoop:
             logger.info("[proactive] mcp pool 已关闭")
 
     async def _run_loop(self) -> None:
-        # 启动时先同步完成首次 feed 轮询，保证首次 tick 能拿到新鲜数据
+        # 启动时先同步完成首次 feed 轮询,保证首次 tick 能拿到新鲜数据
         await self._poll_feeds_once()
         # 后台周期轮询
         asyncio.create_task(self._poll_loop())
@@ -376,7 +378,7 @@ class ProactiveLoop:
                 mode="fixed_no_presence",
             )
             return interval
-        # base_score 由 _tick 传入；首次启动时用电量估算一个初始值
+        # base_score 由 _tick 传入;首次启动时用电量估算一个初始值
         if base_score is None:
             session_key = self._target_session_key()
             last_user_at = self._presence.get_last_user_at(session_key)
@@ -405,7 +407,7 @@ class ProactiveLoop:
         self._running = False
 
     def _sample_random_memory(self, n: int = 2) -> list[str]:
-        """随机抽取 n 条记忆片段，无记忆时返回 []。"""
+        """随机抽取 n 条记忆片段,无记忆时返回 []。"""
         if not self._memory:
             return []
         try:
@@ -423,7 +425,7 @@ class ProactiveLoop:
         return self._sense.read_memory_text()
 
     def _compute_energy(self) -> float:
-        """计算目标 session 的当前电量（取目标与全局较高值）。"""
+        """计算目标 session 的当前电量(取目标与全局较高值)。"""
         return self._sense.compute_energy()
 
     def _compute_interruptibility(
@@ -433,7 +435,7 @@ class ProactiveLoop:
         now_utc: datetime,
         recent_msg_count: int,
     ) -> tuple[float, dict[str, float]]:
-        """计算软打扰系数（0~1），并注入随机探索，避免长期锁死。"""
+        """计算软打扰系数(0~1),并注入随机探索,避免长期锁死。"""
         return self._sense.compute_interruptibility(
             now_hour=now_hour,
             now_utc=now_utc,
@@ -444,8 +446,15 @@ class ProactiveLoop:
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
-        # 真正的“主动决策 + 生成回复 + 发送”主链都在 AgentTick.tick() 里。
-        return await self._agent_tick.tick()
+        # 主动回复全链路入口：Gate → Fetch → Judge → Resolve → Deliver。
+        # 向后兼容：测试可能绕过 _init_runtime_components 直接设 _agent_tick。
+        pipeline = getattr(self, '_proactive_pipeline', None)
+        if pipeline is not None:
+            return await pipeline.run()
+        agent_tick = getattr(self, '_agent_tick', None)
+        if agent_tick is not None and hasattr(agent_tick, 'tick'):
+            return await agent_tick.tick()
+        return None
 
 
 def build_proactive_loop(**kwargs: Any) -> ProactiveLoop:

@@ -18,6 +18,7 @@ from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
 from proactive_v2 import mcp_sources
 from proactive_v2.mcp_sources import McpClientPool
+from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
 from proactive_v2.agent_tick import AgentTick
 from proactive_v2.drift_runner import DriftRunner
 from proactive_v2.drift_state import DriftStateStore
@@ -64,7 +65,7 @@ class AgentTickFactory:
     def __init__(self, deps: AgentTickDeps) -> None:
         self._deps = deps
 
-    def build(self) -> AgentTick:
+    def build(self) -> ProactiveTurnPipeline:
         if self._deps.pool is None:
             raise RuntimeError("proactive_v2 依赖 MCP 连接池，pool 不能为空")
 
@@ -78,24 +79,26 @@ class AgentTickFactory:
         recent_proactive_fn = self._build_recent_proactive_fn()
         drift_runner = self._build_drift_runner(tool_deps)
 
-        # 3. 最后产出 AgentTick。后续每次 proactive loop 触发时都调用它的 tick()。
-        return AgentTick(
-            cfg=self._deps.cfg,
-            session_key=session_key,
-            state_store=self._deps.state_store,
-            any_action_gate=self._deps.any_action_gate,
-            last_user_at_fn=last_user_at_fn,
-            passive_busy_fn=self._deps.passive_busy_fn,
-            turn_orchestrator=self._deps.turn_orchestrator,
-            deduper=self._deps.deduper,
-            tool_deps=tool_deps,
-            gateway_deps=gateway_deps,
-            workspace_context_fn=self._deps.workspace_context_fn,
-            llm_fn=self._build_llm_fn(),
-            rng=self._deps.rng,
-            recent_proactive_fn=recent_proactive_fn,
-            drift_runner=drift_runner,
-            tool_hooks=self._deps.tool_hooks,
+        # 3. 产出 ProactiveTurnPipeline。后续每次 proactive loop 触发时调用 pipeline.run()。
+        return ProactiveTurnPipeline(
+            ProactiveTurnPipelineDeps(
+                cfg=self._deps.cfg,
+                session_key=session_key,
+                state_store=self._deps.state_store,
+                any_action_gate=self._deps.any_action_gate,
+                last_user_at_fn=last_user_at_fn,
+                passive_busy_fn=self._deps.passive_busy_fn,
+                turn_orchestrator=self._deps.turn_orchestrator,
+                deduper=self._deps.deduper,
+                tool_deps=tool_deps,
+                gateway_deps=gateway_deps,
+                workspace_context_fn=self._deps.workspace_context_fn,
+                llm_fn=self._build_llm_fn(),
+                rng=self._deps.rng,
+                recent_proactive_fn=recent_proactive_fn,
+                drift_runner=drift_runner,
+                tool_hooks=self._deps.tool_hooks,
+            )
         )
 
     def _get_session_key(self) -> str:
