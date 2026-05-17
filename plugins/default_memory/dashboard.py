@@ -59,6 +59,8 @@ class RecallInspectorDashboardReader:
         records = self._read_records()
         turns: dict[str, dict[str, Any]] = {}
         for record in records:
+            if not _is_default_record(record):
+                continue
             turn_id = str(record.get("turn_id", "") or "")
             if not turn_id:
                 continue
@@ -183,6 +185,15 @@ def _matches_recall_turn(
         ]
     ).lower()
     return q in haystack
+
+
+def _is_default_record(record: dict[str, Any]) -> bool:
+    engine = str(record.get("engine", "") or "")
+    if engine:
+        return engine == "default"
+    channel = str(record.get("channel", "") or "")
+    session_key = str(record.get("session_key", "") or "")
+    return channel != "cross_mem" and not session_key.startswith("cross_mem:")
 
 
 def _active_memory_engine(app: FastAPI) -> str:

@@ -937,9 +937,10 @@ def test_memory_engine_plugins_only_expose_active_engine_panels(tmp_path) -> Non
         memory_plugins = {
             item["id"]: [panel["name"] for panel in item["panels"]]
             for item in plugins
-            if item["id"] == "default_memory"
+            if item["id"] in {"default_memory", "cross_memory"}
         }
         assert memory_plugins == {
             "default_memory": ["dashboard_panel", "dashboard_panel_inspector"]
         }
         assert client.get("/plugins/default_memory/dashboard_panel_inspector.js").status_code == 200
+        assert client.get("/plugins/cross_memory/dashboard_panel_inspector.js").status_code == 404

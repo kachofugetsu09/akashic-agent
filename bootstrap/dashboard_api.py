@@ -667,7 +667,7 @@ def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> l
 def _plugin_dashboard_enabled(app: FastAPI, plugin_dir: Path) -> bool:
     dash_path = plugin_dir / "dashboard.py"
     if not dash_path.exists():
-        return True
+        return False
     try:
         mod = _load_plugin_dashboard_module(plugin_dir)
     except Exception as e:

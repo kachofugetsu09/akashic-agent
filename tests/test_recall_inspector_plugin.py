@@ -124,3 +124,48 @@ def test_recall_inspector_reader_reports_unavailable(tmp_path: Path) -> None:
     assert reader.get_overview() == {"available": True, "total": 0, "latest_at": None}
     assert reader.list_turns() == ([], 0)
     assert reader.get_turn("missing") is None
+
+
+def test_recall_inspector_exposes_before_turn_module_before_initialize() -> None:
+    plugin = DefaultMemoryInspector()
+
+    modules = plugin.before_turn_modules()
+
+    assert len(modules) == 1
+
+
+def test_recall_inspector_reader_ignores_cross_memory_records(tmp_path: Path) -> None:
+    data_path = tmp_path / "observe" / "recall_inspector.jsonl"
+    data_path.parent.mkdir(parents=True)
+    records = [
+        {
+            "kind": "context_prepare",
+            "turn_id": "default-turn",
+            "session_key": "telegram:1",
+            "channel": "telegram",
+            "chat_id": "1",
+            "user_text": "默认记忆",
+            "timestamp": "2026-05-17T00:22:00",
+            "context_prepare": {"items": []},
+        },
+        {
+            "kind": "context_prepare",
+            "turn_id": "cross-turn",
+            "session_key": "cross_mem:7674283004",
+            "channel": "cross_mem",
+            "chat_id": "7674283004",
+            "user_text": "cross 记忆",
+            "timestamp": "2026-05-17T00:21:00",
+            "context_prepare": {"items": []},
+        },
+    ]
+    data_path.write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+    reader = RecallInspectorDashboardReader(tmp_path)
+    items, total = reader.list_turns()
+
+    assert total == 1
+    assert items[0]["turn_id"] == "default-turn"
