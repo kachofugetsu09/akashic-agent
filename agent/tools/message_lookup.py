@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 from agent.tools.base import Tool
 from session.store import SessionStore
@@ -15,10 +15,10 @@ _MAX_PREVIEW_LINES = 50
 class FetchMessagesTool(Tool):
     name = "fetch_messages"
     description = (
-        "根据消息 ID 或 source_ref 读取原始历史消息原文与上下文。\n"
+        "fetch_messages 根据消息 ID 或 source_ref 读取原始历史消息原文与上下文。\n"
         "这是 recall_memory / search_messages / 记忆注入三条路里唯一可以直接作为最终证据的工具。\n"
         "何时必须调用：回答依赖具体时间、原话、金额、配置值、是否发生过——只要结论需要事实支撑，就在回复前调用此工具。\n"
-        "recall_memory 或 search_messages 拿到 source_ref 后，若答案依赖原文细节，直接用 fetch_messages(source_ref) 取证，不要猜。\n"
+        "recall_memory 返回 evidence 时优先传 evidence；search_messages 返回 source_ref 时传 source_ref。\n"
         "支持 context 参数扩展前后文，适合还原完整上下文片段。\n"
         "【引用协议（必须执行）】本工具调用后，最终回复正文末尾必须另起一行输出：\n"
         "  §cited:[memory_id1,memory_id2,...]§\n"
@@ -41,6 +41,11 @@ class FetchMessagesTool(Tool):
                 "items": {"type": "string"},
                 "description": "多个 source_ref，可混合传 message id 与记忆条目的 source_ref",
             },
+            "evidence": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": "recall_memory 返回的 evidence 列表",
+            },
             "context": {
                 "type": "integer",
                 "description": "每条消息前后各扩展的上下文条数（0=仅精确匹配，最大 10，默认 0）",
@@ -59,6 +64,7 @@ class FetchMessagesTool(Tool):
         ids: list[str] | None = None,
         source_ref: str | None = None,
         source_refs: list[str] | None = None,
+        evidence: list[dict[str, object]] | None = None,
         context: int = 0,
         **_: Any,
     ) -> str:
@@ -66,6 +72,7 @@ class FetchMessagesTool(Tool):
             ids=ids or [],
             source_ref=source_ref,
             source_refs=source_refs or [],
+            evidence=evidence or [],
         )
         if not clean_ids:
             return json.dumps({"count": 0, "matched_count": 0, "messages": []}, ensure_ascii=False)
@@ -94,15 +101,36 @@ def _resolve_fetch_ids(
     ids: list[str],
     source_ref: str | None,
     source_refs: list[str],
+    evidence: list[dict[str, object]],
 ) -> list[str]:
     resolved: list[str] = []
     seen: set[str] = set()
-    for value in list(ids) + ([source_ref] if source_ref else []) + list(source_refs):
+    for value in (
+        list(ids)
+        + ([source_ref] if source_ref else [])
+        + list(source_refs)
+        + _source_refs_from_evidence(evidence)
+    ):
         for item_id in _expand_source_ref(value):
             if item_id not in seen:
                 seen.add(item_id)
                 resolved.append(item_id)
     return resolved
+
+
+def _source_refs_from_evidence(evidence: list[dict[str, object]]) -> list[str]:
+    values: list[str] = []
+    for item in evidence:
+        source_ref = str(item.get("source_ref") or "").strip()
+        if source_ref:
+            values.append(source_ref)
+        refs = item.get("refs")
+        if isinstance(refs, list):
+            for ref in cast(list[object], refs):
+                text = str(ref).strip()
+                if text:
+                    values.append(text)
+    return values
 
 
 def _expand_source_ref(value: str | None) -> list[str]:
@@ -113,11 +141,16 @@ def _expand_source_ref(value: str | None) -> list[str]:
     if not prefix:
         return []
     try:
-        parsed = json.loads(prefix)
+        parsed: object = json.loads(prefix)
     except (json.JSONDecodeError, ValueError):
         return [prefix]
     if isinstance(parsed, list):
-        return [str(item).strip() for item in parsed if str(item).strip()]
+        values: list[str] = []
+        for item in cast(list[object], parsed):
+            text = str(item).strip()
+            if text:
+                values.append(text)
+        return values
     if isinstance(parsed, str) and parsed.strip():
         return [parsed.strip()]
     return []
@@ -223,7 +256,7 @@ def _build_search_preview(message: dict[str, Any], query_terms: list[str] | None
         [t for t in query_terms if t.lower() in content.lower()]
         if query_terms else []
     )
-    result = {
+    result: dict[str, Any] = {
         "id": str(message.get("id", "") or ""),
         "source_ref": str(message.get("id", "") or ""),
         "session_key": str(message.get("session_key", "") or ""),

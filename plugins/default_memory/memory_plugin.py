@@ -3,13 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent.config_models import Config
-from agent.tools.forget_memory import ForgetMemoryTool
-from agent.tools.memorize import MemorizeTool
-from agent.tools.recall_memory import RecallMemoryTool
 from core.memory.plugin import (
     MemoryPluginBuildDeps,
     MemoryPluginRuntime,
-    MemoryToolBundle,
 )
 from plugins.default_memory.config import (
     ensure_default_memory_config_file,
@@ -57,11 +53,6 @@ class MemoryPlugin:
         )
         return MemoryPluginRuntime(
             engine=engine,
-            tools=MemoryToolBundle(
-                recall_memory=RecallMemoryTool(facade=engine),
-                memorize=MemorizeTool(engine),
-                forget_memory=ForgetMemoryTool(engine),
-            ),
             closeables=list(engine.closeables),
             admin=engine,
         )

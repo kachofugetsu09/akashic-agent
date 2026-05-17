@@ -7,20 +7,15 @@ from typing import Any
 from agent.memory import MemoryStore
 from core.memory.engine import (
     EngineProfile,
-    ExplicitRetrievalRequest,
-    ExplicitRetrievalResult,
-    ForgetRequest,
-    ForgetResult,
-    InterestRetrievalRequest,
-    InterestRetrievalResult,
     MemoryCapability,
     MemoryEngineDescriptor,
-    MemoryEngineRetrieveRequest,
-    MemoryEngineRetrieveResult,
     MemoryIngestRequest,
     MemoryIngestResult,
-    RememberRequest,
-    RememberResult,
+    MemoryMutation,
+    MemoryMutationResult,
+    MemoryQuery,
+    MemoryQueryResult,
+    MemoryToolProfile,
 )
 from core.memory.markdown import ConsolidateRequest, ConsolidateResult
 
@@ -29,7 +24,7 @@ class FakeMemoryEngine:
     def __init__(self, workspace: Path | None = None) -> None:
         self._store = MemoryStore(workspace) if workspace is not None else None
         self.consolidate_calls: list[ConsolidateRequest] = []
-        self.retrieve_result = MemoryEngineRetrieveResult(text_block="")
+        self.retrieve_result = MemoryQueryResult(text_block="")
 
     def describe(self) -> MemoryEngineDescriptor:
         return MemoryEngineDescriptor(
@@ -38,29 +33,27 @@ class FakeMemoryEngine:
             capabilities=frozenset({MemoryCapability.RETRIEVE_CONTEXT_BLOCK}),
         )
 
-    async def retrieve(
+    def tool_profile(self) -> MemoryToolProfile:
+        return MemoryToolProfile()
+
+    async def query(
         self,
-        request: MemoryEngineRetrieveRequest,
-    ) -> MemoryEngineRetrieveResult:
+        request: MemoryQuery,
+    ) -> MemoryQueryResult:
         return self.retrieve_result
 
-    async def retrieve_explicit(
+    async def mutate(
         self,
-        request: ExplicitRetrievalRequest,
-    ) -> ExplicitRetrievalResult:
-        return ExplicitRetrievalResult()
-
-    async def retrieve_interest_block(
-        self,
-        request: InterestRetrievalRequest,
-    ) -> InterestRetrievalResult:
-        return InterestRetrievalResult()
-
-    async def remember(self, request: RememberRequest) -> RememberResult:
-        return RememberResult(item_id="mem-1", actual_type=request.memory_type)
-
-    async def forget(self, request: ForgetRequest) -> ForgetResult:
-        return ForgetResult(missing_ids=list(request.ids))
+        request: MemoryMutation,
+    ) -> MemoryMutationResult:
+        if request.kind == "forget":
+            return MemoryMutationResult(accepted=False, missing_ids=list(request.ids))
+        return MemoryMutationResult(
+            accepted=True,
+            item_id="mem-1",
+            actual_kind=request.memory_kind,
+            status="new",
+        )
 
     def reinforce_items_batch(self, ids: list[str]) -> None:
         return None

@@ -21,7 +21,10 @@ package-lock.json
 frontend/dashboard/static/
 
 # Compiled plugin panel JS (auto-built from .ts at dashboard startup)
-plugins/*/dashboard_panel.js
+plugins/*/dashboard_panel*.js
+# Local plugin settings / disable markers
+plugins/*/plugin_config.json
+plugins/*/plugin.disabled
 
 # 运行时产物
 logs/
@@ -46,6 +49,7 @@ plugins/**/.data/
 # Benchmark 运行产物
 benchmark/result*.json
 benchmark/data/
+/eval/local_testsets/
 qa_error_log_*.txt
 lme_error_log_*.txt
 /config.json.bak

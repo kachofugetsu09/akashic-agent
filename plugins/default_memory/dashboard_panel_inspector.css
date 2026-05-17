@@ -1,0 +1,124 @@
+/* ── Recall Inspector — item list ── */
+
+.recall-item-list {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.recall-item {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.recall-item:last-child {
+  border-bottom: none;
+}
+
+/* Left-border accent per source type */
+.recall-item-inject  { box-shadow: inset 3px 0 0 var(--green); }
+.recall-item-context { box-shadow: inset 3px 0 0 var(--accent); }
+.recall-item-recall  { box-shadow: inset 3px 0 0 var(--tool); }
+
+/* Head: tags + id */
+.recall-item-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.recall-item-head code {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+/* Summary */
+.recall-summary {
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+/* ── Tags ── */
+
+.recall-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-soft);
+}
+
+/* Injected = green — made it into context */
+.recall-tag-injected {
+  background: var(--green-soft);
+  color: var(--green);
+  border-color: rgba(93, 184, 114, 0.35);
+}
+
+/* Forced = amber — manually pinned */
+.recall-tag-forced {
+  background: var(--yellow-soft);
+  color: var(--system);
+  border-color: rgba(139, 107, 9, 0.3);
+}
+
+/* Score metric */
+.recall-tag-score {
+  background: transparent;
+  color: var(--text-soft);
+  border-color: var(--line);
+  font-family: var(--mono);
+}
+
+/* Memory type badges — follow role-badge palette */
+.recall-tag-type {
+  font-weight: 500;
+}
+
+.recall-type-profile {
+  background: var(--blue-soft);
+  color: var(--tool);
+  border-color: rgba(39, 100, 137, 0.25);
+}
+
+.recall-type-preference {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: rgba(204, 120, 92, 0.3);
+}
+
+.recall-type-event {
+  background: var(--green-soft);
+  color: var(--green);
+  border-color: rgba(93, 184, 114, 0.35);
+}
+
+.recall-type-procedure {
+  background: var(--yellow-soft);
+  color: var(--system);
+  border-color: rgba(139, 107, 9, 0.3);
+}
+
+/* Empty state */
+.recall-empty {
+  padding: 20px 14px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}

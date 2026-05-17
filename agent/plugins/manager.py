@@ -157,6 +157,10 @@ class PluginManager:
         # 1. 幂等：已加载过直接跳过
         if mp in self._loaded:
             return
+        # 1b. 本地禁用标记存在时跳过
+        if _is_plugin_disabled(Path(mod["module_path"]).parent):
+            logger.info("插件已禁用（plugin.disabled）: %s", mod["name"])
+            return
         # 2. 用 importlib 从文件路径加载，不依赖 sys.path
         try:
             self._import_plugin(mp, Path(mod["module_path"]))
@@ -535,3 +539,7 @@ class _PluginToolHook(ToolHook):
         if isinstance(result, dict):
             return HookOutcome(updated_input=cast("dict[str, Any]", result))
         return HookOutcome()
+
+
+def _is_plugin_disabled(plugin_dir: Path) -> bool:
+    return (plugin_dir / "plugin.disabled").exists()

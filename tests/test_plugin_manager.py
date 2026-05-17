@@ -568,6 +568,20 @@ async def test_plugin_config_json_overrides_defaults():
 
 
 @pytest.mark.asyncio
+async def test_plugin_disabled_marker_skips_plugin():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
+        (Path(tmp) / "configured" / "plugin.disabled").write_text("", encoding="utf-8")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        await mgr.load_all()
+
+        assert mgr.loaded_count == 0
+        with pytest.raises(KeyError):
+            _get_instance("configured")
+
+
+@pytest.mark.asyncio
 async def test_no_plugin_config_json_keeps_original_defaults():
     """没有 plugin_config.json 时行为不变。"""
     bus = EventBus()

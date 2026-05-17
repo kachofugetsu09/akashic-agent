@@ -7,27 +7,21 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from core.memory.engine import (
     EngineProfile,
-    ExplicitRetrievalRequest,
-    ExplicitRetrievalResult,
-    ForgetRequest,
-    ForgetResult,
-    InterestRetrievalRequest,
-    InterestRetrievalResult,
     MemoryAdminApi,
     MemoryEngine,
     MemoryEngineDescriptor,
-    MemoryEngineRetrieveRequest,
-    MemoryEngineRetrieveResult,
     MemoryIngestRequest,
     MemoryIngestResult,
-    RememberRequest,
-    RememberResult,
+    MemoryMutation,
+    MemoryMutationResult,
+    MemoryQuery,
+    MemoryQueryResult,
+    MemoryToolProfile,
 )
 
 if TYPE_CHECKING:
     from agent.config_models import Config
     from agent.provider import LLMProvider
-    from agent.tools.base import Tool
     from bus.event_bus import EventBus
     from core.memory.markdown import MarkdownMemoryRuntime
     from core.net.http import SharedHttpResources
@@ -44,18 +38,10 @@ class MemoryPluginBuildDeps:
     markdown: "MarkdownMemoryRuntime"
 
 
-@dataclass(frozen=True)
-class MemoryToolBundle:
-    recall_memory: "Tool | None" = None
-    memorize: "Tool | None" = None
-    forget_memory: "Tool | None" = None
-
-
 @dataclass
 class MemoryPluginRuntime:
     engine: MemoryEngine
-    tools: MemoryToolBundle = field(default_factory=MemoryToolBundle)
-    closeables: list[object] = field(default_factory=lambda: [])
+    closeables: list[object] = field(default_factory=list[object])
     admin: MemoryAdminApi | None = None
 
 
@@ -69,7 +55,7 @@ class MemoryPlugin(Protocol):
     ) -> MemoryPluginRuntime: ...
 
 
-class DisabledMemoryEngine:
+class DisabledMemoryEngine(MemoryEngine):
     DESCRIPTOR = MemoryEngineDescriptor(
         name="disabled",
         profile=EngineProfile.CONTEXT_RESOURCE_ENGINE,
@@ -80,35 +66,29 @@ class DisabledMemoryEngine:
     async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:
         return MemoryIngestResult(accepted=False, raw={"reason": "disabled"})
 
-    async def retrieve(
+    async def query(
         self,
-        request: MemoryEngineRetrieveRequest,
-    ) -> MemoryEngineRetrieveResult:
-        return MemoryEngineRetrieveResult(text_block="", trace={"mode": "disabled"})
+        request: MemoryQuery,
+    ) -> MemoryQueryResult:
+        return MemoryQueryResult(trace={"mode": "disabled", "intent": request.intent})
 
-    async def retrieve_explicit(
-        self,
-        request: ExplicitRetrievalRequest,
-    ) -> ExplicitRetrievalResult:
-        return ExplicitRetrievalResult(trace={"mode": "disabled"})
-
-    async def retrieve_interest_block(
-        self,
-        request: InterestRetrievalRequest,
-    ) -> InterestRetrievalResult:
-        return InterestRetrievalResult(trace={"mode": "disabled"})
-
-    async def remember(self, request: RememberRequest) -> RememberResult:
-        raise RuntimeError("semantic memory disabled")
-
-    async def forget(self, request: ForgetRequest) -> ForgetResult:
-        return ForgetResult(missing_ids=list(request.ids))
+    async def mutate(self, request: MemoryMutation) -> MemoryMutationResult:
+        if request.kind == "forget":
+            return MemoryMutationResult(
+                accepted=False,
+                status="disabled",
+                missing_ids=list(request.ids),
+            )
+        return MemoryMutationResult(accepted=False, status="disabled")
 
     def reinforce_items_batch(self, ids: list[str]) -> None:
         return None
 
     def describe(self) -> MemoryEngineDescriptor:
         return self.DESCRIPTOR
+
+    def tool_profile(self) -> MemoryToolProfile:
+        return MemoryToolProfile()
 
     def keyword_match_procedures(
         self,

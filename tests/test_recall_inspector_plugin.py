@@ -8,23 +8,26 @@ import pytest
 
 from agent.lifecycle.types import AfterToolResultCtx, BeforeTurnCtx
 from agent.plugins.context import PluginContext, PluginKVStore
-from plugins.recall_inspector.dashboard import RecallInspectorDashboardReader
-from plugins.recall_inspector.plugin import RecallInspector
+from plugins.default_memory.dashboard import RecallInspectorDashboardReader
+from plugins.default_memory.engine import DefaultMemoryEngine
+from plugins.default_memory.plugin import DefaultMemoryInspector
 
 
 @pytest.mark.asyncio
 async def test_recall_inspector_records_context_and_recall(tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "plugins" / "recall_inspector"
+    plugin_dir = tmp_path / "plugins" / "default_memory"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.py").write_text("", encoding="utf-8")
 
-    plugin = RecallInspector()
+    plugin = DefaultMemoryInspector()
     plugin.context = PluginContext(
         event_bus=None,
         tool_registry=None,
-        plugin_id="recall_inspector",
+        plugin_id="default_memory",
         plugin_dir=plugin_dir,
         kv_store=PluginKVStore(plugin_dir / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=DefaultMemoryEngine.__new__(DefaultMemoryEngine),
     )
     await plugin.initialize()
 
@@ -64,7 +67,7 @@ async def test_recall_inspector_records_context_and_recall(tmp_path: Path) -> No
         )
     )
 
-    reader = RecallInspectorDashboardReader(plugin_dir)
+    reader = RecallInspectorDashboardReader(tmp_path)
     items, total = reader.list_turns()
 
     assert total == 1
@@ -76,19 +79,20 @@ async def test_recall_inspector_records_context_and_recall(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_recall_inspector_uses_workspace_data_path(tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "plugins" / "recall_inspector"
+    plugin_dir = tmp_path / "plugins" / "default_memory"
     workspace = tmp_path / "workspace"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.py").write_text("", encoding="utf-8")
 
-    plugin = RecallInspector()
+    plugin = DefaultMemoryInspector()
     plugin.context = PluginContext(
         event_bus=None,
         tool_registry=None,
-        plugin_id="recall_inspector",
+        plugin_id="default_memory",
         plugin_dir=plugin_dir,
         kv_store=PluginKVStore(plugin_dir / ".kv.json"),
         workspace=workspace,
+        memory_engine=DefaultMemoryEngine.__new__(DefaultMemoryEngine),
     )
     await plugin.initialize()
 
@@ -106,7 +110,7 @@ async def test_recall_inspector_uses_workspace_data_path(tmp_path: Path) -> None
         )
     )
 
-    reader = RecallInspectorDashboardReader(plugin_dir, workspace)
+    reader = RecallInspectorDashboardReader(workspace)
     _, total = reader.list_turns()
 
     assert total == 1
@@ -117,6 +121,6 @@ async def test_recall_inspector_uses_workspace_data_path(tmp_path: Path) -> None
 def test_recall_inspector_reader_reports_unavailable(tmp_path: Path) -> None:
     reader = RecallInspectorDashboardReader(tmp_path)
 
-    assert reader.get_overview() == {"available": False, "total": 0, "latest_at": None}
+    assert reader.get_overview() == {"available": True, "total": 0, "latest_at": None}
     assert reader.list_turns() == ([], 0)
     assert reader.get_turn("missing") is None

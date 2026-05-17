@@ -137,6 +137,7 @@ function App(): React.ReactElement {
   const [activeProactiveKey, setActiveProactiveKey] = useState<string | null>(null);
   const [activeProactiveDetail, setActiveProactiveDetail] = useState<ProactiveTick | null>(null);
   const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
+  const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
   const messagePageSize = 25;
@@ -279,10 +280,15 @@ function App(): React.ReactElement {
     for (const plugin of plugins) {
       void run(async () => {
         const count = await plugin.getCount();
-        setPluginState((current) => ({
-          ...current,
-          [plugin.id]: { ...current[plugin.id], total: typeof count === "number" ? count : current[plugin.id]?.total ?? 0 },
-        }));
+        if (count === null) {
+          setHiddenPlugins((current) => ({ ...current, [plugin.id]: true }));
+        } else {
+          setHiddenPlugins((current) => ({ ...current, [plugin.id]: false }));
+          setPluginState((current) => ({
+            ...current,
+            [plugin.id]: { ...current[plugin.id], total: count },
+          }));
+        }
       });
     }
   }, [plugins, run]);
@@ -487,12 +493,12 @@ function App(): React.ReactElement {
                 ))}
               </div>
             </NavGroup>
-            {plugins.length > 0 && (
+            {plugins.some((p) => !hiddenPlugins[p.id]) && (
               <div className="nav-section-divider">
                 <span>Plugins</span>
               </div>
             )}
-            {plugins.map((plugin) => {
+            {plugins.filter((p) => !hiddenPlugins[p.id]).map((plugin) => {
               const pState = pluginState[plugin.id];
               const pDispatch = pState
                 ? makeDispatch(

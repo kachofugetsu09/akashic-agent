@@ -12,21 +12,31 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
+from core.memory.engine import MemoryToolProfile, MemoryToolSpec
 
 
-class _RecallMemoryToolStub(Tool):
-    name = "recall_memory"
-    description = "test"
-    parameters = {"type": "object", "properties": {}}
+class _MemoryEngineStub:
+    def tool_profile(self) -> MemoryToolProfile:
+        return MemoryToolProfile(
+            recall=MemoryToolSpec(
+                description="test",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            ),
+            forget=MemoryToolSpec(
+                description="test",
+                parameters={"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}}, "required": ["ids"]},
+                risk="write",
+            ),
+        )
 
-    async def execute(self, **kwargs):
-        return ""
+    async def query(self, request):
+        raise NotImplementedError
 
+    async def mutate(self, request):
+        raise NotImplementedError
 
-class _ForgetMemoryToolStub(Tool):
-    name = "forget_memory"
-    description = "test"
-    parameters = {"type": "object", "properties": {}}
+    def reinforce_items_batch(self, ids: list[str]) -> None:
+        return None
 
     async def execute(self, **kwargs):
         return ""
@@ -58,8 +68,7 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     )
     register_memory_meta_tools(
         tools,
-        forget_tool=cast(Any, _ForgetMemoryToolStub()),
-        recall_tool=cast(Any, _RecallMemoryToolStub()),
+        cast(Any, _MemoryEngineStub()),
     )
 
     always_on = tools.get_always_on_names()
@@ -69,9 +78,8 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
 
 def test_register_memory_meta_tools_rejects_duplicate_names():
     tools = ToolRegistry()
-    recall_tool = cast(Any, _RecallMemoryToolStub())
 
-    register_memory_meta_tools(tools, recall_tool=recall_tool)
+    register_memory_meta_tools(tools, cast(Any, _MemoryEngineStub()))
 
     with pytest.raises(ValueError, match="重复注册"):
-        register_memory_meta_tools(tools, recall_tool=cast(Any, _RecallMemoryToolStub()))
+        register_memory_meta_tools(tools, cast(Any, _MemoryEngineStub()))

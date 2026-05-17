@@ -252,7 +252,7 @@ async def test_web_search_without_tool_returns_error():
 @pytest.mark.asyncio
 async def test_recall_memory_empty_hits():
     fake_memory = MagicMock()
-    fake_memory.retrieve_interest_block = AsyncMock(return_value=SimpleNamespace(hits=[]))
+    fake_memory.query = AsyncMock(return_value=SimpleNamespace(records=[]))
     result = json.loads(await _recall_memory(
         ctx=AgentTickContext(),
         args={"query": "game news"},
@@ -264,11 +264,11 @@ async def test_recall_memory_empty_hits():
 @pytest.mark.asyncio
 async def test_recall_memory_joins_texts():
     fake_memory = MagicMock()
-    fake_memory.retrieve_interest_block = AsyncMock(
+    fake_memory.query = AsyncMock(
         return_value=SimpleNamespace(
-            hits=[
-                {"text": "用户喜欢 RPG"},
-                {"text": "不喜欢 PvP"},
+            records=[
+                SimpleNamespace(id="m1", summary="用户喜欢 RPG", score=0.9),
+                SimpleNamespace(id="m2", summary="不喜欢 PvP", score=0.8),
             ]
         )
     )
@@ -285,11 +285,11 @@ async def test_recall_memory_joins_texts():
 @pytest.mark.asyncio
 async def test_recall_memory_skips_empty_text():
     fake_memory = MagicMock()
-    fake_memory.retrieve_interest_block = AsyncMock(
+    fake_memory.query = AsyncMock(
         return_value=SimpleNamespace(
-            hits=[
-                {"text": ""},
-                {"text": "有效记忆"},
+            records=[
+                SimpleNamespace(id="m1", summary="", score=0.1),
+                SimpleNamespace(id="m2", summary="有效记忆", score=0.8),
             ]
         )
     )
@@ -305,21 +305,22 @@ async def test_recall_memory_skips_empty_text():
 @pytest.mark.asyncio
 async def test_recall_memory_passes_query_to_facade_interest_request():
     fake_memory = MagicMock()
-    fake_memory.retrieve_interest_block = AsyncMock(return_value=SimpleNamespace(hits=[]))
+    fake_memory.query = AsyncMock(return_value=SimpleNamespace(records=[]))
     await _recall_memory(ctx=AgentTickContext(), args={"query": "q"}, memory=fake_memory)
-    request = fake_memory.retrieve_interest_block.await_args.args[0]
-    assert request.query == "q"
-    assert request.top_k == 2
+    request = fake_memory.query.await_args.args[0]
+    assert request.text == "q"
+    assert request.intent == "interest"
+    assert request.limit == 2
 
 
 @pytest.mark.asyncio
 async def test_recall_memory_prefers_facade_interest_block():
     fake_memory = MagicMock()
-    fake_memory.retrieve_interest_block = AsyncMock(
+    fake_memory.query = AsyncMock(
         return_value=SimpleNamespace(
-            hits=[
-                {"id": "p1", "text": "用户偏好中文回复"},
-                {"id": "u1", "text": "用户常用 Telegram"},
+            records=[
+                SimpleNamespace(id="p1", summary="用户偏好中文回复", score=0.9),
+                SimpleNamespace(id="u1", summary="用户常用 Telegram", score=0.8),
             ]
         )
     )
@@ -332,17 +333,17 @@ async def test_recall_memory_prefers_facade_interest_block():
 
     assert result["hits"] == 2
     assert "用户偏好中文回复" in result["result"]
-    fake_memory.retrieve_interest_block.assert_awaited_once()
+    fake_memory.query.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_recall_memory_separator_between_hits():
     fake_memory = MagicMock()
-    fake_memory.retrieve_interest_block = AsyncMock(
+    fake_memory.query = AsyncMock(
         return_value=SimpleNamespace(
-            hits=[
-                {"text": "A"},
-                {"text": "B"},
+            records=[
+                SimpleNamespace(id="m1", summary="A", score=0.9),
+                SimpleNamespace(id="m2", summary="B", score=0.8),
             ]
         )
     )
@@ -702,8 +703,10 @@ async def test_execute_web_search_uses_tool_from_deps():
 @pytest.mark.asyncio
 async def test_execute_recall_memory_uses_memory_from_deps():
     fake_memory = MagicMock()
-    fake_memory.retrieve_interest_block = AsyncMock(
-        return_value=SimpleNamespace(hits=[{"text": "pref"}])
+    fake_memory.query = AsyncMock(
+        return_value=SimpleNamespace(
+            records=[SimpleNamespace(id="m1", summary="pref", score=0.9)]
+        )
     )
     ctx = AgentTickContext()
     deps = ToolDeps(memory=fake_memory)

@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from agent.tools.base import Tool
 from agent.tools.filesystem import EditFileTool, WriteFileTool
 from agent.tools.forget_memory import ForgetMemoryTool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
-from agent.tools.recall_memory import RecallMemoryTool
 from agent.tools.message_push import MessagePushTool
-from agent.tools.base import Tool
+from agent.tools.recall_memory import RecallMemoryTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
+from core.memory.engine import MemoryEngine
 
 _MEMORY_TOOL_NAMES = {"recall_memory", "memorize", "forget_memory"}
 
@@ -116,27 +117,32 @@ def _register_memory_tool(
 
 def register_memory_meta_tools(
     tools: ToolRegistry,
-    memorize_tool: MemorizeTool | Tool | None = None,
-    forget_tool: ForgetMemoryTool | Tool | None = None,
-    recall_tool: RecallMemoryTool | Tool | None = None,
+    engine: MemoryEngine,
 ) -> None:
-    if memorize_tool is not None:
+    profile = engine.tool_profile()
+    if profile.memorize is not None:
         _register_memory_tool(
             tools,
-            memorize_tool,
-            risk="write",
+            _build_tool(engine, profile.memorize, MemorizeTool),
+            risk=profile.memorize.risk,
+            search_hint=profile.memorize.search_hint or None,
         )
-    if forget_tool is not None:
+    if profile.forget is not None:
         _register_memory_tool(
             tools,
-            forget_tool,
-            risk="write",
-            search_hint="记错了 删除记忆 撤销错误记忆 失效记忆",
+            _build_tool(engine, profile.forget, ForgetMemoryTool),
+            risk=profile.forget.risk,
+            search_hint=profile.forget.search_hint or None,
         )
-    if recall_tool is not None:
+    if profile.recall is not None:
         _register_memory_tool(
             tools,
-            recall_tool,
-            risk="read-only",
-            search_hint="记得 以前 历史 做过什么 有没有 重构 记忆查询",
+            _build_tool(engine, profile.recall, RecallMemoryTool),
+            risk=profile.recall.risk,
+            search_hint=profile.recall.search_hint or None,
         )
+
+
+def _build_tool(engine: MemoryEngine, spec: Any, default_cls: type) -> Tool:
+    cls = spec.tool_class if spec.tool_class is not None else default_cls
+    return cast(Tool, cls(engine, spec))

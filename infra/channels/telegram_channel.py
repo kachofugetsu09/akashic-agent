@@ -78,17 +78,19 @@ class TelegramChannel:
         bot_commands: list[tuple[str, str]] | None = None,
         event_bus: EventBus | None = None,
         interrupt_controller: InterruptController | None = None,
+        channel_name: str = _CHANNEL,
     ) -> None:
         self._bus = bus
         self._session_manager = session_manager
         self._interrupt_controller = interrupt_controller
+        self._channel = channel_name
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._message_deduper = MessageDeduper(_SEEN_MSG_MAXSIZE)
         ws = getattr(session_manager, "workspace", None)
         self._attachments = AttachmentStore(Path(ws) / "uploads" if ws else None)
         self._identity_index = SessionIdentityIndex(
             session_manager,
-            channel=_CHANNEL,
+            channel=channel_name,
             metadata_key="username",
             normalizer=lambda value: value.lower(),
         )
@@ -107,7 +109,7 @@ class TelegramChannel:
         self._app.add_handler(
             MessageHandler(filters.Document.ALL & ~filters.COMMAND, self._on_document)
         )
-        bus.subscribe_outbound(_CHANNEL, self._on_response)
+        bus.subscribe_outbound(self._channel, self._on_response)
         if event_bus is not None:
             event_bus.on(TurnStarted, self._on_turn_started)
             event_bus.on(StreamDeltaReady, self._on_stream_delta)
@@ -291,7 +293,7 @@ class TelegramChannel:
                 )
         await self._bus.publish_inbound(
             InboundMessage(
-                channel=_CHANNEL,
+                channel=self._channel,
                 sender=str(user.id),
                 chat_id=str(chat.id),
                 content=inbound_text,
@@ -326,7 +328,7 @@ class TelegramChannel:
             )
             return
 
-        session_key = f"{_CHANNEL}:{chat.id}"
+        session_key = f"{self._channel}:{chat.id}"
         result = self._interrupt_controller.request_interrupt(
             session_key=session_key,
             sender=str(user.id),
@@ -356,7 +358,7 @@ class TelegramChannel:
 
         await self._bus.publish_inbound(
             InboundMessage(
-                channel=_CHANNEL,
+                channel=self._channel,
                 sender=str(user.id),
                 chat_id=str(chat.id),
                 content=str(getattr(msg, "text", "") or ""),
@@ -422,7 +424,7 @@ class TelegramChannel:
                 )
         await self._bus.publish_inbound(
             InboundMessage(
-                channel=_CHANNEL,
+                channel=self._channel,
                 sender=str(user.id),
                 chat_id=str(chat.id),
                 content=inbound_text,
@@ -475,7 +477,7 @@ class TelegramChannel:
             inbound_text = f"[文件: {doc.file_name}]\n{inbound_text}".strip()
         await self._bus.publish_inbound(
             InboundMessage(
-                channel=_CHANNEL,
+                channel=self._channel,
                 sender=str(user.id),
                 chat_id=str(chat.id),
                 content=inbound_text,
@@ -532,7 +534,7 @@ class TelegramChannel:
         return _push
 
     async def _on_turn_started(self, event: TurnStarted) -> None:
-        if event.channel != _CHANNEL:
+        if event.channel != self._channel:
             return
         await self._cancel_live_tasks(event.session_key)
         _ = self._tool_lines.pop(event.session_key, None)
@@ -543,7 +545,7 @@ class TelegramChannel:
         _ = self._live_messages.pop(event.session_key, None)
 
     async def _on_stream_delta(self, event: StreamDeltaReady) -> None:
-        if event.channel != _CHANNEL:
+        if event.channel != self._channel:
             return
         if not event.content_delta and not event.thinking_delta:
             return
@@ -573,7 +575,7 @@ class TelegramChannel:
         )
 
     async def _on_tool_call_started(self, event: ToolCallStarted) -> None:
-        if event.channel != _CHANNEL:
+        if event.channel != self._channel:
             return
         cid = int(self._resolve_chat_id(event.chat_id))
         if cid <= 0:
@@ -593,7 +595,7 @@ class TelegramChannel:
         )
 
     async def _on_tool_call_completed(self, event: ToolCallCompleted) -> None:
-        if event.channel != _CHANNEL:
+        if event.channel != self._channel:
             return
         cid = int(self._resolve_chat_id(event.chat_id))
         if cid <= 0:
@@ -753,7 +755,7 @@ class TelegramChannel:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
         cid = int(self._resolve_chat_id(msg.chat_id))
-        session_key = f"{_CHANNEL}:{msg.chat_id}"
+        session_key = f"{self._channel}:{msg.chat_id}"
         had_live = self._has_live_messages(session_key)
         if had_live:
             await self._cancel_live_tasks(session_key)

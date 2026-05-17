@@ -32,12 +32,15 @@ function listPluginPanels() {
   return readdirSync(pluginsRoot)
     .map((name) => join(pluginsRoot, name))
     .filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory())
-    .map((pluginDir) => ({
-      pluginDir,
-      tsPath: join(pluginDir, "dashboard_panel.ts"),
-      jsPath: join(pluginDir, "dashboard_panel.js"),
-    }))
-    .filter((item) => existsSync(item.tsPath));
+    .flatMap((pluginDir) =>
+      readdirSync(pluginDir)
+        .filter((name) => name.startsWith("dashboard_panel") && name.endsWith(".ts"))
+        .map((name) => ({
+          pluginDir,
+          tsPath: join(pluginDir, name),
+          jsPath: join(pluginDir, name.replace(/\.ts$/, ".js")),
+        })),
+    );
 }
 
 function buildArgs(command, panel, { watch = false } = {}) {

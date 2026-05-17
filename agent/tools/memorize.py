@@ -1,88 +1,81 @@
-"""
-memorize 工具：用户主动写记忆
-"""
-
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.tools.base import Tool
-from core.memory.engine import MemoryScope, MemoryWriteApi, RememberRequest
+from core.memory.engine import (
+    MemoryMutation,
+    MemoryScope,
+    MemoryToolSpec,
+)
+
+if TYPE_CHECKING:
+    from core.memory.engine import MemoryWriteApi
 
 logger = logging.getLogger(__name__)
 
 
-def _format_remember_result_text(item_id: str, write_status: str, summary: str) -> str:
-    value = (item_id or "").strip()
-    status = (write_status or "new").strip()
-    return f"已记住（item_id={value}；status={status}）：{summary}"
 class MemorizeTool(Tool):
     name = "memorize"
-    description = (
-        "将重要规则/流程/偏好永久写入记忆。\n"
-        "仅在用户明确表达意图时调用（如：记住、以后、下次、你要）。\n"
-        "来源会自动绑定到当前用户这条消息，无需也不要手动传 source_ref。\n"
-        "禁止存储：第三方行为描述、用户个人印象、知识分享内容、已存储的偏好重复记录。\n"
-        "【勿记录】：时效性事件（发布日期/赛季/已过期日程节点）、"
-        "系统连接状态（管道/Token/服务可用性）、"
-        "生理指标具体数值或推断（心率/血氧基线等，应通过 mcp_fitbit__fitbit_health_snapshot 实时查询）、"
-        "针对单次任务的专项操作规范。"
-    )
+    description = "由当前 memory engine 的 tool_profile 注入工具描述。"
     parameters = {
         "type": "object",
-        "properties": {
-            "summary": {
-                "type": "string",
-                "description": "一句话描述要记住的内容",
-            },
-            "memory_type": {
-                "type": "string",
-                "enum": ["procedure", "preference", "event", "profile"],
-                "description": "记忆类型",
-            },
-            "tool_requirement": {
-                "type": "string",
-                "description": "该规则要求必须调用的工具名（可选）",
-            },
-            "steps": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "执行步骤（可选）",
-            },
-        },
-        "required": ["summary", "memory_type"],
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
     }
 
-    def __init__(self, engine: MemoryWriteApi) -> None:
-        self._engine = engine
+    def __init__(
+        self,
+        memory: "MemoryWriteApi",
+        spec: MemoryToolSpec,
+    ) -> None:
+        self._memory = memory
+        self._spec = spec
+        self.description = self._spec.description
+        self.parameters = self._spec.parameters
 
     async def execute(
         self,
         summary: str,
-        memory_type: str,
+        memory_kind: str = "",
         tool_requirement: str | None = None,
         steps: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
         current_user_source_ref: str | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
-        **_: Any,
+        **extra_kwargs: Any,
     ) -> str:
-        result = await self._engine.remember(
-            RememberRequest(
+        kind = memory_kind.strip()
+        extra = dict(metadata or {})
+        extra.update(extra_kwargs)
+        if tool_requirement is not None:
+            extra["tool_requirement"] = tool_requirement
+        if steps is not None:
+            extra["steps"] = steps
+        result = await self._memory.mutate(
+            MemoryMutation(
+                kind="remember",
                 summary=summary,
-                memory_type=memory_type,
+                memory_kind=kind,
+                source_ref=str(current_user_source_ref or "").strip(),
                 scope=MemoryScope(
                     session_key=f"{channel}:{chat_id}" if channel and chat_id else "",
                     channel=channel or "",
                     chat_id=chat_id or "",
                 ),
-                source_ref=str(current_user_source_ref or "").strip(),
-                raw_extra={
-                    "tool_requirement": tool_requirement,
-                    "steps": steps or [],
-                },
+                metadata=extra,
             )
         )
-        logger.info("memorize: engine stored memory_type=%s", result.actual_type)
-        return _format_remember_result_text(result.item_id, result.write_status, summary)
+        logger.info("memorize: engine stored memory_kind=%s", result.actual_kind)
+        return _format_result(result.item_id, result.status, result.actual_kind, summary)
+
+
+def _format_result(item_id: str, status: str, actual_kind: str, summary: str) -> str:
+    value = (item_id or "").strip()
+    write_status = (status or "new").strip()
+    kind = (actual_kind or "").strip()
+    if kind:
+        return f"已记住（item_id={value}；kind={kind}；status={write_status}）：{summary}"
+    return f"已记住（item_id={value}；status={write_status}）：{summary}"

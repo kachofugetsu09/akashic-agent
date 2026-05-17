@@ -10,6 +10,7 @@ from proactive_v2.config import ProactiveConfig
 class TelegramChannelConfig:
     token: str
     allow_from: list[str] = field(default_factory=list)
+    channel_name: str = "telegram"
 
 
 @dataclass

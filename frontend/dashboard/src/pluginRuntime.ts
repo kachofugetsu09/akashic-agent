@@ -148,11 +148,13 @@ export function installDashboardGlobals(onRegister: (plugin: PluginConfig) => vo
 }
 
 export async function loadPluginAssets(): Promise<void> {
-  const plugins = await api<{ id: string; asset_version?: string }[]>("/api/dashboard/plugins").catch(() => []);
+  const plugins = await api<{ id: string; panels: { name: string; js_version: string; has_css: boolean }[] }[]>("/api/dashboard/plugins").catch(() => []);
   for (const plugin of plugins) {
-    const version = plugin.asset_version ? `?v=${encodeURIComponent(plugin.asset_version)}` : "";
-    injectStylesheet(`/plugins/${plugin.id}/panel.css${version}`);
-    await injectScript(`/plugins/${plugin.id}/panel.js${version}`);
+    for (const panel of plugin.panels ?? []) {
+      const v = panel.js_version ? `?v=${encodeURIComponent(panel.js_version)}` : "";
+      if (panel.has_css) injectStylesheet(`/plugins/${plugin.id}/${panel.name}.css${v}`);
+      await injectScript(`/plugins/${plugin.id}/${panel.name}.js${v}`);
+    }
   }
 }
 

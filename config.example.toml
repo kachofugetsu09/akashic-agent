@@ -64,6 +64,9 @@ search_enabled = true
 token = ""
 # 你的 Telegram 用户名（不带 @），只有白名单用户才能使用 bot。
 allow_from = ["your_username"]
+# channel 标识符，决定 session key 前缀（如 telegram:12345）。
+# 多个 bot 想要隔离记忆时，改成不同的名字（如 "telegram_work"）。
+# channel_name = "telegram"
 
 [channels.qq]
 # 填 QQ 号启用 QQ 频道，留空跳过。

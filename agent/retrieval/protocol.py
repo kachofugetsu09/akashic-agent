@@ -17,14 +17,14 @@ class RetrievalRequest:
     # DefaultMemoryRetrievalPipeline 内部截取末尾 MemoryConfig.window 条后使用。
     session_metadata: dict[str, object]
     timestamp: datetime | None = None
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, object] = field(default_factory=dict[str, object])
 
 
 @dataclass
 class RetrievalResult:
     block: str
     trace: RetrievalTrace | None = None
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict[str, object])
 
 
 @runtime_checkable

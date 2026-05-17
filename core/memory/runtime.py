@@ -3,28 +3,34 @@ from __future__ import annotations
 import inspect
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from core.memory.engine import (
-        ExplicitRetrievalRequest,
-        ExplicitRetrievalResult,
-        InterestRetrievalRequest,
-        InterestRetrievalResult,
         MemoryEngine,
-        MemoryEngineRetrieveRequest,
-        MemoryEngineRetrieveResult,
+        MemoryMutation,
+        MemoryMutationResult,
+        MemoryQuery,
+        MemoryQueryResult,
     )
     from core.memory.markdown import MarkdownMemoryRuntime
 
 logger = logging.getLogger(__name__)
 
 
+class _AsyncCloseable(Protocol):
+    def aclose(self) -> object: ...
+
+
+class _Closeable(Protocol):
+    def close(self) -> object: ...
+
+
 @dataclass
 class MemoryRuntime:
     markdown: "MarkdownMemoryRuntime"
     engine: "MemoryEngine"
-    closeables: list[Any] = field(default_factory=list)
+    closeables: list[object] = field(default_factory=list[object])
 
     def read_long_term(self) -> str:
         return self.markdown.store.read_long_term()
@@ -44,34 +50,28 @@ class MemoryRuntime:
     def has_long_term_memory(self) -> bool:
         return bool(self.read_long_term().strip())
 
-    async def retrieve(
+    async def query(
         self,
-        request: "MemoryEngineRetrieveRequest",
-    ) -> "MemoryEngineRetrieveResult":
-        return await self.engine.retrieve(request)
+        request: "MemoryQuery",
+    ) -> "MemoryQueryResult":
+        return await self.engine.query(request)
 
-    async def retrieve_explicit(
+    async def mutate(
         self,
-        request: "ExplicitRetrievalRequest",
-    ) -> "ExplicitRetrievalResult":
-        return await self.engine.retrieve_explicit(request)
-
-    async def retrieve_interest_block(
-        self,
-        request: "InterestRetrievalRequest",
-    ) -> "InterestRetrievalResult":
-        return await self.engine.retrieve_interest_block(request)
+        request: "MemoryMutation",
+    ) -> "MemoryMutationResult":
+        return await self.engine.mutate(request)
 
     async def aclose(self) -> None:
         first_error: Exception | None = None
         for closeable in reversed(self.closeables):
             try:
                 if hasattr(closeable, "aclose"):
-                    result = closeable.aclose()
+                    result = cast(_AsyncCloseable, closeable).aclose()
                     if inspect.isawaitable(result):
                         await result
                 elif hasattr(closeable, "close"):
-                    closeable.close()
+                    _ = cast(_Closeable, closeable).close()
             except Exception as exc:
                 if first_error is None:
                     first_error = exc

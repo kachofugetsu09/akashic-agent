@@ -438,8 +438,10 @@ async def test_context_data_fn_called_only_once_in_loop():
 async def test_recall_memory_in_loop():
     from unittest.mock import MagicMock
     memory = MagicMock()
-    memory.retrieve_interest_block = AsyncMock(
-        return_value=SimpleNamespace(hits=[{"text": "用户喜欢 RPG"}])
+    memory.query = AsyncMock(
+        return_value=SimpleNamespace(
+            records=[SimpleNamespace(id="m1", summary="用户喜欢 RPG", score=0.9)]
+        )
     )
     llm = FakeLLM([
         ("recall_memory", {"query": "RPG games"}),
@@ -452,7 +454,7 @@ async def test_recall_memory_in_loop():
     )
     await tick.run()
     assert tick.last_ctx.terminal_action == "reply"
-    memory.retrieve_interest_block.assert_awaited_once()
+    memory.query.assert_awaited_once()
 
 
 # ── user_busy skip 路径 ───────────────────────────────────────────────────

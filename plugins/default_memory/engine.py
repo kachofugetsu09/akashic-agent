@@ -18,23 +18,24 @@ from agent.skills import SkillsLoader
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import (
     EngineProfile,
-    ExplicitRetrievalRequest,
-    ExplicitRetrievalResult,
-    ForgetRequest,
-    ForgetResult,
-    InterestRetrievalRequest,
-    InterestRetrievalResult,
     MemoryCapability,
     MemoryEngineDescriptor,
-    MemoryEngineRetrieveRequest,
-    MemoryEngineRetrieveResult,
-    MemoryHit,
     MemoryIngestRequest,
     MemoryIngestResult,
-    RememberRequest,
-    RememberResult,
+    MemoryMutation,
+    MemoryMutationResult,
+    MemoryQuery,
+    MemoryQueryResult,
+    MemoryRecord,
+    MemoryToolProfile,
+    MemoryToolSpec,
 )
 from core.memory.events import ConsolidationCommitted, TurnIngested
+from core.memory.utils import (
+    evidence_from_source_ref,
+    resolve_memory_scope,
+    should_require_scope_match,
+)
 from core.net.http import SharedHttpResources
 from memory2.embedder import Embedder
 from memory2.memorizer import Memorizer
@@ -72,12 +73,17 @@ def _source_ref_message_ids(source_ref: str) -> list[str]:
     if not base.startswith("["):
         return []
     try:
-        loaded = json.loads(base)
+        loaded: object = json.loads(base)
     except json.JSONDecodeError:
         return []
     if not isinstance(loaded, list):
         return []
-    return [str(item).strip() for item in loaded if str(item).strip()]
+    values: list[str] = []
+    for item in cast(list[object], loaded):
+        text = str(item).strip()
+        if text:
+            values.append(text)
+    return values
 
 
 def _undo_store_by_message_sources(
@@ -193,6 +199,16 @@ def _coerce_emotional_weight(value: object) -> int:
         return max(0, min(10, int(value)))
     except (TypeError, ValueError):
         return 0
+
+
+def _dict_items(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        cast(dict[str, object], item)
+        for item in value
+        if isinstance(item, dict)
+    ]
 
 
 def _build_long_term_prompt(*, conversation: str, existing_profile: str) -> str:
@@ -415,6 +431,96 @@ USER: 那就直接写个脚本绕过去吧
   ]
 }}"""
 
+
+def _default_memory_tool_profile() -> MemoryToolProfile:
+    return MemoryToolProfile(
+        recall=MemoryToolSpec(
+            description=(
+                "检索长期记忆中的事实、偏好、流程与历史事件线索。"
+                "query 写成陈述句；intent=answer 做主题检索，intent=timeline 做时间线回顾。"
+                "返回的是记忆摘要和 evidence，回答依赖原文细节时继续用 fetch_messages 取证。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "要查找的记忆主题，推荐写成陈述句"},
+                    "intent": {
+                        "type": "string",
+                        "enum": ["answer", "timeline"],
+                        "description": "answer=主题检索；timeline=按 time_filter 列出历史事件",
+                        "default": "answer",
+                    },
+                    "memory_kind": {
+                        "type": "string",
+                        "enum": ["event", "profile", "preference", "procedure", ""],
+                        "description": "限定记忆类型，留空表示不限",
+                        "default": "",
+                    },
+                    "time_filter": {
+                        "type": "string",
+                        "description": "today / yesterday / recent_3d / recent_7d / recent_30d / YYYY-MM-DD / YYYY-MM-DD~YYYY-MM-DD",
+                        "default": "",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "最多返回条数",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "default": 8,
+                    },
+                },
+                "required": ["query"],
+            },
+            search_hint="记得 以前 历史 做过什么 有没有 重构 记忆查询",
+        ),
+        memorize=MemoryToolSpec(
+            description=(
+                "将用户明确要求长期保留的信息写入记忆。"
+                "memory_kind 可选 event/profile/preference/procedure，engine 会自行校正分类。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "一句话描述要记住的内容"},
+                    "memory_kind": {
+                        "type": "string",
+                        "enum": ["procedure", "preference", "event", "profile", ""],
+                        "description": "记忆类型，留空由 engine 决定",
+                        "default": "",
+                    },
+                    "tool_requirement": {
+                        "type": "string",
+                        "description": "该规则要求必须调用的工具名（可选）",
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "执行步骤（可选）",
+                    },
+                },
+                "required": ["summary"],
+            },
+            risk="write",
+        ),
+        forget=MemoryToolSpec(
+            description="将已确认错误的记忆条目标记为失效。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "要失效的 memory item id 列表",
+                    }
+                },
+                "required": ["ids"],
+            },
+            risk="write",
+            search_hint="记错了 删除记忆 撤销错误记忆 失效记忆",
+        ),
+    )
+
+
 class DefaultMemoryEngine:
     DESCRIPTOR = MemoryEngineDescriptor(
         name="default",
@@ -593,7 +699,7 @@ class DefaultMemoryEngine:
         *,
         conversation: str,
         existing_profile: str = "",
-    ) -> dict | None:
+    ) -> dict[str, object] | None:
         try:
             started_at = time.perf_counter()
             prompt = _build_long_term_prompt(
@@ -625,45 +731,60 @@ class DefaultMemoryEngine:
             logger.warning("consolidation long_term extraction failed: %s", e)
             raise RuntimeError("consolidation long_term extraction failed") from e
 
-    async def retrieve(
-        self,
-        request: MemoryEngineRetrieveRequest,
-    ) -> MemoryEngineRetrieveResult:
-        if self._retriever is None:
-            return MemoryEngineRetrieveResult(text_block="", hits=[], raw={"items": []})
+    def tool_profile(self) -> MemoryToolProfile:
+        return _default_memory_tool_profile()
 
-        scope = self._resolve_scope(request.scope)
+    async def query(
+        self,
+        request: MemoryQuery,
+    ) -> MemoryQueryResult:
+        if self._retriever is None:
+            return MemoryQueryResult(raw={"items": []})
+        if request.intent == "timeline":
+            return self._query_timeline(request)
+        if request.intent == "interest":
+            return await self._query_interest(request)
+        if request.intent in {"context", "procedure"}:
+            return await self._query_context(request)
+        return await self._query_answer(request)
+
+    async def _query_context(self, request: MemoryQuery) -> MemoryQueryResult:
+        retriever = self._retriever
+        if retriever is None:
+            return MemoryQueryResult(raw={"items": []})
+        scope = resolve_memory_scope(request.scope)
         queries = self._resolve_queries(request)
         memory_types = self._resolve_memory_types(request)
         items = await self._retrieve_related(
-            request.query,
+            request.text,
             memory_types=memory_types,
-            top_k=request.top_k,
+            top_k=request.limit,
             scope_channel=scope.channel or None,
             scope_chat_id=scope.chat_id or None,
-            require_scope_match=bool(request.hints.get("require_scope_match", False)),
+            require_scope_match=bool(request.filters.hints.get("require_scope_match", False)),
             aux_queries=queries[1:],
+            time_start=request.filters.time_start,
+            time_end=request.filters.time_end,
         )
-        text_block, injected_ids = self._retriever.build_injection_block(items)
-        hits = [
-            self._build_hit(item, injected_ids=injected_ids)
+        text_block, injected_ids = retriever.build_injection_block(items)
+        records = [
+            self._build_record(item, injected_ids=injected_ids)
             for item in items
-            if isinstance(item, dict)
         ]
-        return MemoryEngineRetrieveResult(
+        return MemoryQueryResult(
             text_block=text_block,
-            hits=hits,
+            records=records,
             trace={
                 "engine": self.DESCRIPTOR.name,
                 "profile": self.DESCRIPTOR.profile.value,
-                "mode": request.mode,
+                "intent": request.intent,
             },
             raw={"items": items},
         )
 
     # post-response 摄入入口：外部只提交对话内容，失效判断仍在 engine 内部完成。
     async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:
-        scope = self._resolve_scope(request.scope)
+        scope = resolve_memory_scope(request.scope)
         if self._post_response_worker is None:
             return MemoryIngestResult(
                 accepted=False,
@@ -703,27 +824,36 @@ class DefaultMemoryEngine:
             raw={"engine": self.DESCRIPTOR.name},
         )
 
+    async def mutate(self, request: MemoryMutation) -> MemoryMutationResult:
+        if request.kind == "forget":
+            return await self._forget(request)
+        return await self._remember(request)
+
     # 显式记忆写入入口，供 memorize 工具和内部迁移代码复用。
-    async def remember(self, request: RememberRequest) -> RememberResult:
+    async def _remember(self, request: MemoryMutation) -> MemoryMutationResult:
         # 1. procedure 必须有执行条件，否则降级为 preference。
         if self._memorizer is None:
             raise RuntimeError("memorizer unavailable")
 
-        raw_steps = request.raw_extra.get("steps")
-        steps = [str(step) for step in raw_steps] if isinstance(raw_steps, list) else None
+        raw_steps = request.metadata.get("steps")
+        steps = (
+            [str(step) for step in cast(list[object], raw_steps)]
+            if isinstance(raw_steps, list)
+            else None
+        )
         memory_type = _coerce_memory_type(
-            request.memory_type,
-            str(request.raw_extra.get("tool_requirement") or ""),
+            request.memory_kind,
+            str(request.metadata.get("tool_requirement") or ""),
             steps,
         )
-        extra = {
-            "tool_requirement": request.raw_extra.get("tool_requirement"),
+        extra: dict[str, object] = {
+            "tool_requirement": request.metadata.get("tool_requirement"),
             "steps": list(steps or []),
         }
         if memory_type == "procedure":
             extra["rule_schema"] = build_procedure_rule_schema(
                 summary=request.summary,
-                tool_requirement=str(request.raw_extra.get("tool_requirement") or "") or None,
+                tool_requirement=str(request.metadata.get("tool_requirement") or "") or None,
                 steps=list(steps or []),
             )
             await self._attach_trigger_tags(extra=extra, summary=request.summary)
@@ -733,29 +863,31 @@ class DefaultMemoryEngine:
             summary=request.summary,
             memory_type=memory_type,
             extra=extra,
-            source_ref=request.source_ref,
+            source_ref=request.source_ref or "memorize_tool",
         )
         write_status, actual_id = _split_write_result(result)
-        return RememberResult(
+        return MemoryMutationResult(
+            accepted=bool(actual_id),
             item_id=actual_id,
-            actual_type=memory_type,
-            write_status=write_status,
-            superseded_ids=[],
+            actual_kind=memory_type,
+            status=write_status,
         )
 
     # 显式遗忘入口：只把条目标成 superseded，不物理删除。
-    async def forget(self, request: ForgetRequest) -> ForgetResult:
+    async def _forget(self, request: MemoryMutation) -> MemoryMutationResult:
         # 1. 先按 id 去重并读取现存条目。
         store = self._require_v2_store()
-        clean_ids = _dedupe_ids(request.ids)
+        clean_ids = _dedupe_ids(list(request.ids))
         items = store.get_items_by_ids(clean_ids)
         found_ids = [str(item.get("id") or "") for item in items if item.get("id")]
 
         # 2. 只失效能确认存在的条目，缺失 id 返回给调用方展示。
         if found_ids:
             store.mark_superseded_batch(found_ids)
-        return ForgetResult(
-            superseded_ids=found_ids,
+        return MemoryMutationResult(
+            accepted=bool(found_ids),
+            status="superseded",
+            affected_ids=found_ids,
             missing_ids=[item_id for item_id in clean_ids if item_id not in set(found_ids)],
             items=[
                 {
@@ -765,37 +897,6 @@ class DefaultMemoryEngine:
                 }
                 for item in items
             ],
-        )
-
-    # recall_memory 的显式检索入口，按 search_mode 选择语义检索或时间线 grep。
-    async def retrieve_explicit(
-        self,
-        request: ExplicitRetrievalRequest,
-    ) -> ExplicitRetrievalResult:
-        if request.search_mode == "grep":
-            return self._retrieve_explicit_grep(request)
-        return await self._retrieve_explicit_semantic(request)
-
-    # proactive 专用兴趣召回，只查 preference/profile，避免 event 噪声影响候选判断。
-    async def retrieve_interest_block(
-        self,
-        request: InterestRetrievalRequest,
-    ) -> InterestRetrievalResult:
-        scope = self._resolve_scope(request.scope)
-        hits = await self._retrieve_related(
-            request.query,
-            memory_types=["preference", "profile"],
-            top_k=request.top_k,
-            scope_channel=scope.channel or None,
-            scope_chat_id=scope.chat_id or None,
-            require_scope_match=bool(scope.channel and scope.chat_id),
-        )
-        texts = [str(hit.get("text", "") or "") for hit in hits if hit.get("text")]
-        return InterestRetrievalResult(
-            text_block="\n---\n".join(texts),
-            hits=list(hits),
-            trace={"source": self.DESCRIPTOR.name, "mode": "interest"},
-            raw={"hits": list(hits)},
         )
 
     def describe(self) -> MemoryEngineDescriptor:
@@ -922,7 +1023,7 @@ class DefaultMemoryEngine:
     async def _save_from_consolidation(
         self,
         history_entry: str,
-        behavior_updates: list[dict],
+        behavior_updates: list[dict[str, object]],
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
@@ -943,7 +1044,7 @@ class DefaultMemoryEngine:
         self,
         summary: str,
         memory_type: str,
-        extra: dict,
+        extra: dict[str, object],
         source_ref: str,
         happened_at: str | None = None,
         emotional_weight: int = 0,
@@ -961,7 +1062,7 @@ class DefaultMemoryEngine:
 
     async def _save_implicit_long_term(
         self,
-        result: dict,
+        result: dict[str, object],
         *,
         source_ref: str,
         scope_channel: str,
@@ -970,13 +1071,13 @@ class DefaultMemoryEngine:
         saved_counts = {"profile": 0, "preference": 0, "procedure": 0}
 
         # 1. profile 写入用户画像类事实。
-        for item in result.get("profile") or []:
-            if not isinstance(item, dict):
-                continue
+        for item in _dict_items(result.get("profile")):
             summary = str(item.get("summary") or "").strip()
             if not summary:
                 continue
             category = str(item.get("category") or "personal_fact").strip()
+            raw_happened_at = item.get("happened_at")
+            happened_at = raw_happened_at if isinstance(raw_happened_at, str) else None
             await self._save_item_with_supersede(
                 summary=summary,
                 memory_type="profile",
@@ -986,7 +1087,7 @@ class DefaultMemoryEngine:
                     "scope_chat_id": scope_chat_id,
                 },
                 source_ref=f"{source_ref}#profile",
-                happened_at=item.get("happened_at") or None,
+                happened_at=happened_at,
                 emotional_weight=_coerce_emotional_weight(
                     item.get("emotional_weight")
                 ),
@@ -996,9 +1097,7 @@ class DefaultMemoryEngine:
 
         # 2. preference / procedure 写入行为偏好和执行规则。
         for memory_type in ("preference", "procedure"):
-            for item in result.get(memory_type) or []:
-                if not isinstance(item, dict):
-                    continue
+            for item in _dict_items(result.get(memory_type)):
                 summary = str(item.get("summary") or "").strip()
                 if not summary:
                     continue
@@ -1029,57 +1128,80 @@ class DefaultMemoryEngine:
                 )
         return saved_counts
 
-    async def _retrieve_explicit_semantic(
+    async def _query_answer(
         self,
-        request: ExplicitRetrievalRequest,
-    ) -> ExplicitRetrievalResult:
-        hyp1_task = asyncio.create_task(self._gen_hypothesis(request.query, style="event"))
-        hyp2_task = asyncio.create_task(self._gen_hypothesis(request.query, style="general"))
+        request: MemoryQuery,
+    ) -> MemoryQueryResult:
+        hyp1_task = asyncio.create_task(self._gen_hypothesis(request.text, style="event"))
+        hyp2_task = asyncio.create_task(self._gen_hypothesis(request.text, style="general"))
         hyp1, hyp2 = await asyncio.gather(hyp1_task, hyp2_task)
         aux_queries = [text for text in (hyp1, hyp2) if text]
-        types = [request.memory_type] if request.memory_type else None
+        scope = resolve_memory_scope(request.scope)
+        types = self._resolve_memory_types(request)
         hits = await self._retrieve_related(
-            request.query,
+            request.text,
             memory_types=types,
             top_k=max(request.limit, _VECTOR_TOP_K),
-            scope_channel=request.scope.channel or None,
-            scope_chat_id=request.scope.chat_id or None,
-            require_scope_match=bool(request.scope.channel and request.scope.chat_id),
+            scope_channel=scope.channel or None,
+            scope_chat_id=scope.chat_id or None,
+            require_scope_match=should_require_scope_match(request, scope),
             aux_queries=aux_queries,
             score_threshold=_VECTOR_SCORE_THRESHOLD,
-            time_start=request.time_start,
-            time_end=request.time_end,
+            time_start=request.filters.time_start,
+            time_end=request.filters.time_end,
             keyword_enabled=True,
         )
         sliced = list(hits)[: request.limit]
-        return ExplicitRetrievalResult(
-            hits=sliced,
+        return MemoryQueryResult(
+            records=[self._build_record(item) for item in sliced if isinstance(item, dict)],
             trace={
                 "source": self.DESCRIPTOR.name,
-                "mode": "semantic",
+                "intent": request.intent,
                 "hit_count": len(sliced),
                 "hyde_hypotheses": aux_queries,
             },
-            raw={"hits": sliced},
+            raw={"items": sliced},
         )
 
-    def _retrieve_explicit_grep(
+    def _query_timeline(
         self,
-        request: ExplicitRetrievalRequest,
-    ) -> ExplicitRetrievalResult:
-        if request.time_start is None or request.time_end is None:
-            return ExplicitRetrievalResult(
-                trace={"source": self.DESCRIPTOR.name, "mode": "grep_missing_time"}
+        request: MemoryQuery,
+    ) -> MemoryQueryResult:
+        if request.filters.time_start is None or request.filters.time_end is None:
+            return MemoryQueryResult(
+                trace={"source": self.DESCRIPTOR.name, "intent": "timeline_missing_time"}
             )
         hits = self.list_events_by_time_range(
-            request.time_start,
-            request.time_end,
+            request.filters.time_start,
+            request.filters.time_end,
             limit=request.limit,
         )
-        return ExplicitRetrievalResult(
-            hits=list(hits),
-            trace={"source": self.DESCRIPTOR.name, "mode": "grep", "hit_count": len(hits)},
-            raw={"hits": list(hits)},
+        return MemoryQueryResult(
+            records=[self._build_record(item) for item in hits if isinstance(item, dict)],
+            trace={"source": self.DESCRIPTOR.name, "intent": "timeline", "hit_count": len(hits)},
+            raw={"items": list(hits)},
+        )
+
+    async def _query_interest(
+        self,
+        request: MemoryQuery,
+    ) -> MemoryQueryResult:
+        scope = resolve_memory_scope(request.scope)
+        hits = await self._retrieve_related(
+            request.text,
+            memory_types=["preference", "profile"],
+            top_k=request.limit,
+            scope_channel=scope.channel or None,
+            scope_chat_id=scope.chat_id or None,
+            require_scope_match=should_require_scope_match(request, scope),
+        )
+        records = [self._build_record(item) for item in hits if isinstance(item, dict)]
+        texts = [record.summary for record in records]
+        return MemoryQueryResult(
+            text_block="\n---\n".join(texts),
+            records=records,
+            trace={"source": self.DESCRIPTOR.name, "intent": "interest"},
+            raw={"items": list(hits)},
         )
 
     async def _retrieve_related(
@@ -1096,21 +1218,25 @@ class DefaultMemoryEngine:
         time_start: datetime | None = None,
         time_end: datetime | None = None,
         keyword_enabled: bool = True,
-    ) -> list[dict]:
-        if self._retriever is None:
+    ) -> list[dict[str, object]]:
+        retriever = self._retriever
+        if retriever is None:
             return []
-        return await self._retriever.retrieve(
-            query,
-            memory_types=memory_types,
-            top_k=top_k,
-            scope_channel=scope_channel,
-            scope_chat_id=scope_chat_id,
-            require_scope_match=require_scope_match,
-            aux_queries=aux_queries,
-            score_threshold=score_threshold,
-            time_start=time_start,
-            time_end=time_end,
-            keyword_enabled=keyword_enabled,
+        return cast(
+            list[dict[str, object]],
+            await retriever.retrieve(
+                query,
+                memory_types=memory_types,
+                top_k=top_k,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=require_scope_match,
+                aux_queries=aux_queries,
+                score_threshold=score_threshold,
+                time_start=time_start,
+                time_end=time_end,
+                keyword_enabled=keyword_enabled,
+            ),
         )
 
     async def _gen_hypothesis(self, query: str, style: str) -> str | None:
@@ -1132,7 +1258,12 @@ class DefaultMemoryEngine:
             logger.debug("explicit retrieval hypothesis failed: %s", e)
             return None
 
-    async def _attach_trigger_tags(self, *, extra: dict, summary: str) -> None:
+    async def _attach_trigger_tags(
+        self,
+        *,
+        extra: dict[str, object],
+        summary: str,
+    ) -> None:
         if self._tagger is None:
             return
         try:
@@ -1148,38 +1279,28 @@ class DefaultMemoryEngine:
         return self._v2_store
 
     @classmethod
-    def _build_hit(
+    def _build_record(
         cls,
-        item: dict,
+        item: dict[str, object],
         *,
         injected_ids: list[str] | None = None,
-    ) -> MemoryHit:
+    ) -> MemoryRecord:
         extra = item.get("extra_json")
-        metadata = dict(extra) if isinstance(extra, dict) else {}
-        metadata["memory_type"] = item.get("memory_type", "")
+        signals = dict(cast(dict[str, object], extra)) if isinstance(extra, dict) else {}
+        memory_kind = str(item.get("memory_type", "") or "")
         item_id = str(item.get("id", "") or "")
-        return MemoryHit(
+        source_ref = str(item.get("source_ref", "") or "")
+        raw_score = item.get("score", 0.0)
+        score = raw_score if isinstance(raw_score, int | float) else 0.0
+        return MemoryRecord(
             id=item_id,
+            kind=memory_kind,
             summary=str(item.get("summary", "") or ""),
-            content=str(item.get("summary", "") or ""),
-            score=float(item.get("score", 0.0) or 0.0),
-            source_ref=str(item.get("source_ref", "") or ""),
+            score=float(score),
             engine_kind=cls.DESCRIPTOR.name,
-            metadata=metadata,
+            evidence=evidence_from_source_ref(source_ref),
+            signals=signals,
             injected=item_id in set(injected_ids or []),
-        )
-
-    @staticmethod
-    def _resolve_scope(scope):
-        if scope.channel and scope.chat_id:
-            return scope
-        if not scope.session_key or ":" not in scope.session_key:
-            return scope
-        channel, chat_id = scope.session_key.split(":", 1)
-        return type(scope)(
-            session_key=scope.session_key,
-            channel=scope.channel or channel,
-            chat_id=scope.chat_id or chat_id,
         )
 
     @staticmethod
@@ -1209,7 +1330,7 @@ class DefaultMemoryEngine:
 
         user_message = ""
         assistant_response = ""
-        tool_chain: list[dict] = []
+        tool_chain: list[dict[str, object]] = []
         for message in content:
             if not isinstance(message, dict):
                 continue
@@ -1221,7 +1342,11 @@ class DefaultMemoryEngine:
                 assistant_response = body
                 maybe_tool_chain = message.get("tool_chain")
                 if isinstance(maybe_tool_chain, list):
-                    tool_chain = maybe_tool_chain
+                    tool_chain = [
+                        item
+                        for item in maybe_tool_chain
+                        if isinstance(item, dict)
+                    ]
         if not user_message and not assistant_response:
             return None
         return cast(
@@ -1236,33 +1361,30 @@ class DefaultMemoryEngine:
 
     @staticmethod
     def _resolve_memory_types(
-        request: MemoryEngineRetrieveRequest,
+        request: MemoryQuery,
     ) -> list[str] | None:
-        memory_types = request.hints.get("memory_types")
-        if isinstance(memory_types, list):
-            return [str(item) for item in memory_types if str(item).strip()]
-        if request.mode == "procedure":
+        if request.filters.kinds:
+            return [str(item) for item in request.filters.kinds if str(item).strip()]
+        if request.intent == "procedure":
             return ["procedure", "preference"]
-        if request.mode == "episodic":
-            return ["event", "profile"]
         return None
 
     @staticmethod
-    def _resolve_queries(request: MemoryEngineRetrieveRequest) -> list[str]:
-        raw_queries = request.hints.get("queries")
+    def _resolve_queries(request: MemoryQuery) -> list[str]:
+        raw_queries = request.filters.hints.get("queries")
         if isinstance(raw_queries, list):
             queries = [str(item).strip() for item in raw_queries if str(item).strip()]
             if queries:
                 return queries
-        if request.mode == "procedure":
-            return build_procedure_queries(request.query)
-        return [request.query]
+        if request.intent == "procedure":
+            return build_procedure_queries(request.text)
+        return [request.text]
 
 
 class _NormalizedIngestContent(TypedDict):
     user_message: str
     assistant_response: str
-    tool_chain: list[dict]
+    tool_chain: list[dict[str, object]]
     source_ref: str
 
 

@@ -173,6 +173,7 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 allow_from=[
                     str(u) for u in tg.get("allow_from", tg.get("allowFrom", []))
                 ],
+                channel_name=str(tg.get("channel_name", "telegram")),
             )
 
     qq = None

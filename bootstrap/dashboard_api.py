@@ -6,19 +6,21 @@ from pathlib import Path, PureWindowsPath
 import importlib.util
 import logging
 import json
+import re
 import sqlite3
 import sys
 import threading
 import os
 import shutil
 from datetime import timedelta
-from typing import Any, Protocol
+from types import ModuleType
+from typing import Any, Protocol, cast
 
 import subprocess
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -32,6 +34,10 @@ from session.store import SessionStore
 logger = logging.getLogger(__name__)
 
 _DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets", "/plugins/")
+
+
+def _is_plugin_disabled(plugin_dir: Path) -> bool:
+    return (plugin_dir / "plugin.disabled").exists()
 
 
 def _is_dashboard_access_record(record: logging.LogRecord) -> bool:
@@ -557,24 +563,19 @@ def _esbuild_command(project_root: Path) -> list[str] | None:
     return None
 
 
-def _build_plugin_panel_js(project_root: Path, plugin_dir: Path) -> None:
-    ts_path = plugin_dir / "dashboard_panel.ts"
-    js_path = plugin_dir / "dashboard_panel.js"
-
-    if not ts_path.exists():
-        return
-
-    # Skip if .js exists and is not older than .ts
-    if js_path.exists() and js_path.stat().st_mtime >= ts_path.stat().st_mtime:
-        return
-
-    esbuild_cmd = _esbuild_command(project_root)
-    if esbuild_cmd is None:
-        with _pending_plugins_lock:
-            _pending_plugins.append((project_root, plugin_dir))
-        return
-
-    _run_esbuild(esbuild_cmd, ts_path, js_path, plugin_dir.name)
+def _build_plugin_panels_js(project_root: Path, plugin_dir: Path) -> None:
+    esbuild_cmd: list[str] | None = None
+    for ts_path in sorted(plugin_dir.glob("dashboard_panel*.ts")):
+        js_path = ts_path.with_suffix(".js")
+        if js_path.exists() and js_path.stat().st_mtime >= ts_path.stat().st_mtime:
+            continue
+        if esbuild_cmd is None:
+            esbuild_cmd = _esbuild_command(project_root)
+        if esbuild_cmd is None:
+            with _pending_plugins_lock:
+                _pending_plugins.append((project_root, plugin_dir))
+            return
+        _run_esbuild(esbuild_cmd, ts_path, js_path, f"{plugin_dir.name}/{ts_path.stem}")
 
 
 def _run_esbuild(cmd: list[str], ts_path: Path, js_path: Path, name: str) -> None:
@@ -645,29 +646,74 @@ async def _compile_pending_plugins_async() -> None:
     version = stdout.decode("utf-8", errors="replace").strip()
     logger.info("npx esbuild 就绪 (%s)，开始编译插件面板...", version)
     for root, pdir in pending:
-        _run_esbuild(
-            esbuild_cmd,
-            pdir / "dashboard_panel.ts",
-            pdir / "dashboard_panel.js",
-            pdir.name,
-        )
+        for ts_path in sorted(pdir.glob("dashboard_panel*.ts")):
+            js_path = ts_path.with_suffix(".js")
+            if not (js_path.exists() and js_path.stat().st_mtime >= ts_path.stat().st_mtime):
+                _run_esbuild(esbuild_cmd, ts_path, js_path, f"{pdir.name}/{ts_path.stem}")
 
 
-def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
-    dash_path = plugin_dir / "dashboard.py"
-    module_name = f"akasic_dashboard_plugin_{plugin_dir.name}"
+def _load_plugin_dashboard(app: FastAPI, plugin_dir: Path, workspace: Path) -> list[object]:
     try:
-        spec = importlib.util.spec_from_file_location(module_name, dash_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load {dash_path}")
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = mod
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        mod = _load_plugin_dashboard_module(plugin_dir)
         if hasattr(mod, "register"):
-            mod.register(app, plugin_dir, workspace)
+            result = mod.register(app, plugin_dir, workspace)
             logger.info("插件 dashboard 已挂载: %s", plugin_dir.name)
+            return _dashboard_closeables(result)
     except Exception as e:
         logger.warning("插件 dashboard 挂载失败 (%s): %s", plugin_dir.name, e)
+    return []
+
+
+def _plugin_dashboard_enabled(app: FastAPI, plugin_dir: Path) -> bool:
+    dash_path = plugin_dir / "dashboard.py"
+    if not dash_path.exists():
+        return True
+    try:
+        mod = _load_plugin_dashboard_module(plugin_dir)
+    except Exception as e:
+        logger.warning("插件 dashboard 检查失败 (%s): %s", plugin_dir.name, e)
+        return False
+    enabled = getattr(mod, "plugin_enabled", None)
+    if not callable(enabled):
+        return True
+    return bool(enabled(app))
+
+
+def _load_plugin_dashboard_module(plugin_dir: Path) -> ModuleType:
+    dash_path = plugin_dir / "dashboard.py"
+    module_name = f"akasic_dashboard_plugin_{plugin_dir.name}"
+    spec = importlib.util.spec_from_file_location(module_name, dash_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {dash_path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+def _dashboard_closeables(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items = cast(list[object], value)
+        return [
+            item
+            for item in items
+            if _is_dashboard_closeable(item)
+        ]
+    if _is_dashboard_closeable(value):
+        return [value]
+    return []
+
+
+def _is_dashboard_closeable(value: object) -> bool:
+    return callable(getattr(value, "close", None))
+
+
+def _close_dashboard_value(value: object) -> None:
+    close = getattr(value, "close", None)
+    if callable(close):
+        _ = close()
 
 
 def _preview_text(value: Any, limit: int) -> str:
@@ -691,6 +737,7 @@ def create_dashboard_app(
     optimizer_task: asyncio.Task[None] | None = None
     optimizer_last_status = "idle"
     optimizer_last_error: str | None = None
+    plugin_closeables: list[object] = []
     project_root = Path(__file__).resolve().parent.parent
     plugins_root = project_root / "plugins"
     static_dir = project_root / "static" / "dashboard"
@@ -703,19 +750,20 @@ def create_dashboard_app(
         return proactive_reader
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(_app: FastAPI):
         compile_task = asyncio.create_task(_compile_pending_plugins_async())
         try:
             yield
         finally:
-            compile_task.cancel()
+            _ = compile_task.cancel()
             try:
                 await compile_task
             except asyncio.CancelledError:
                 pass
             store.close()
-            if hasattr(memory_admin, "close"):
-                memory_admin.close()
+            _close_dashboard_value(memory_admin)
+            for closeable in reversed(plugin_closeables):
+                _close_dashboard_value(closeable)
             if proactive_reader is not None:
                 get_proactive_reader().close()
 
@@ -729,49 +777,69 @@ def create_dashboard_app(
         for _plugin_dir in sorted(plugins_root.iterdir()):
             if not _plugin_dir.is_dir():
                 continue
-            _build_plugin_panel_js(project_root, _plugin_dir)
+            if _is_plugin_disabled(_plugin_dir):
+                continue
+            if not _plugin_dashboard_enabled(app, _plugin_dir):
+                continue
+            _build_plugin_panels_js(project_root, _plugin_dir)
             if (_plugin_dir / "dashboard.py").exists():
-                _load_plugin_dashboard(app, _plugin_dir, workspace)
+                plugin_closeables.extend(
+                    _load_plugin_dashboard(app, _plugin_dir, workspace)
+                )
 
     @app.get("/")
-    def dashboard_index() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
+    def dashboard_index() -> Response:
+        html = (static_dir / "index.html").read_text(encoding="utf-8")
+        app_v = str(int((static_dir / "app.js").stat().st_mtime_ns))
+        css_v = str(int((static_dir / "styles.css").stat().st_mtime_ns))
+        html = re.sub(r'(/assets/styles\.css)(\?[^"]*)?', rf'\1?v={css_v}', html)
+        html = re.sub(r'(/assets/app\.js)(\?[^"]*)?', rf'\1?v={app_v}', html)
+        return Response(content=html, media_type="text/html")
 
     @app.get("/api/dashboard/plugins")
     def list_dashboard_plugins() -> list[dict[str, Any]]:
         if not plugins_root.is_dir():
             return []
-        result = []
+        result: list[dict[str, Any]] = []
         for plugin_dir in sorted(plugins_root.iterdir()):
-            if plugin_dir.is_dir():
-                _build_plugin_panel_js(project_root, plugin_dir)
-            if plugin_dir.is_dir() and (plugin_dir / "dashboard_panel.js").exists():
-                js_path = plugin_dir / "dashboard_panel.js"
-                css_path = plugin_dir / "dashboard_panel.css"
-                asset_mtime = js_path.stat().st_mtime_ns
-                if css_path.exists():
-                    asset_mtime = max(asset_mtime, css_path.stat().st_mtime_ns)
-                result.append(
-                    {
-                        "id": plugin_dir.name,
-                        "asset_version": str(asset_mtime),
-                    }
-                )
+            if not plugin_dir.is_dir() or _is_plugin_disabled(plugin_dir):
+                continue
+            if not _plugin_dashboard_enabled(app, plugin_dir):
+                continue
+            _build_plugin_panels_js(project_root, plugin_dir)
+            panels: list[dict[str, Any]] = []
+            for js_path in sorted(plugin_dir.glob("dashboard_panel*.js")):
+                css_path = js_path.with_suffix(".css")
+                panels.append({
+                    "name": js_path.stem,
+                    "js_version": str(js_path.stat().st_mtime_ns),
+                    "has_css": css_path.exists(),
+                })
+            if panels:
+                result.append({"id": plugin_dir.name, "panels": panels})
         return result
 
-    @app.get("/plugins/{plugin_id}/panel.js")
-    def get_plugin_panel_js(plugin_id: str) -> FileResponse:
+    @app.get("/plugins/{plugin_id}/{panel_name}.js")
+    def get_plugin_panel_js(plugin_id: str, panel_name: str) -> FileResponse:
+        if not panel_name.startswith("dashboard_panel"):
+            raise HTTPException(status_code=404, detail="plugin panel not found")
         plugin_dir = _resolve_plugin_dir(plugins_root, plugin_id)
-        _build_plugin_panel_js(project_root, plugin_dir)
-        js_path = plugin_dir / "dashboard_panel.js"
+        if _is_plugin_disabled(plugin_dir) or not _plugin_dashboard_enabled(app, plugin_dir):
+            raise HTTPException(status_code=404, detail="plugin panel not found")
+        _build_plugin_panels_js(project_root, plugin_dir)
+        js_path = plugin_dir / f"{panel_name}.js"
         if not js_path.exists():
             raise HTTPException(status_code=404, detail="plugin panel not found")
         return FileResponse(js_path, media_type="application/javascript")
 
-    @app.get("/plugins/{plugin_id}/panel.css")
-    def get_plugin_panel_css(plugin_id: str) -> FileResponse:
+    @app.get("/plugins/{plugin_id}/{panel_name}.css")
+    def get_plugin_panel_css(plugin_id: str, panel_name: str) -> FileResponse:
+        if not panel_name.startswith("dashboard_panel"):
+            raise HTTPException(status_code=404, detail="plugin panel css not found")
         plugin_dir = _resolve_plugin_dir(plugins_root, plugin_id)
-        css_path = plugin_dir / "dashboard_panel.css"
+        if _is_plugin_disabled(plugin_dir) or not _plugin_dashboard_enabled(app, plugin_dir):
+            raise HTTPException(status_code=404, detail="plugin panel css not found")
+        css_path = plugin_dir / f"{panel_name}.css"
         if not css_path.exists():
             raise HTTPException(status_code=404, detail="plugin panel css not found")
         return FileResponse(css_path, media_type="text/css")
@@ -895,6 +963,11 @@ def create_dashboard_app(
             optimizer_last_status = "failed"
             optimizer_last_error = str(exc)
             logger.exception("manual memory optimizer failed: %s", exc)
+
+    @app.get("/api/dashboard/memory/engine-info")
+    def get_memory_engine_info() -> dict[str, Any]:
+        desc = memory_admin.describe()
+        return {"name": desc.name}
 
     @app.get("/api/dashboard/memory/optimizer")
     async def get_memory_optimizer_status() -> dict[str, Any]:

@@ -53,6 +53,12 @@ def _make_default_engine(
     return engine
 
 
+def _memorize_tool(engine) -> MemorizeTool:
+    spec = engine.tool_profile().memorize
+    assert spec is not None
+    return MemorizeTool(engine, spec)
+
+
 class _DummyTool(Tool):
     @property
     def name(self) -> str:
@@ -150,7 +156,7 @@ async def test_memorize_tool_cover_branches(
             assert summary == "记住这条流程"
             return {"scope": "task"}
 
-    tool = MemorizeTool(
+    tool = _memorize_tool(
         _make_default_engine(
             retriever=MagicMock(),
             memorizer=memorizer,
@@ -159,7 +165,7 @@ async def test_memorize_tool_cover_branches(
     )
     result = await tool.execute(
         summary="记住这条流程",
-        memory_type="procedure",
+        memory_kind="procedure",
         steps=["先查", "再做"],
     )
 
@@ -174,15 +180,15 @@ async def test_memorize_tool_cover_branches(
         async def tag(self, summary: str) -> dict[str, str]:
             raise RuntimeError("bad")
 
-    bad = MemorizeTool(
+    bad = _memorize_tool(
         _make_default_engine(
             retriever=MagicMock(),
             memorizer=memorizer,
             tagger=cast(Any, _BadTagger()),
         )
     )
-    await bad.execute(summary="普通偏好", memory_type="procedure")
-    await bad.execute(summary="偏好", memory_type="preference")
+    await bad.execute(summary="普通偏好", memory_kind="procedure")
+    await bad.execute(summary="偏好", memory_kind="preference")
 
 
 @pytest.mark.asyncio
@@ -193,7 +199,7 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
 
     store = MemoryStore2(":memory:")
     memorizer = Memorizer(store, cast(Any, _Embedder()))
-    tool = MemorizeTool(
+    tool = _memorize_tool(
         _make_default_engine(
             retriever=MagicMock(),
             memorizer=memorizer,
@@ -215,7 +221,7 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
 
     await tool.execute(
         summary="查询 Steam 游戏信息时，先判断区服（大陆区/港区/美区），再使用 steam_mcp 工具查询游戏详情。",
-        memory_type="procedure",
+        memory_kind="procedure",
         tool_requirement="steam_mcp",
         steps=["判断目标区服", "使用 steam_mcp 工具查询游戏详情"],
     )
@@ -298,7 +304,7 @@ async def test_memorizer_profile_supersede_retires_low_emotional_weight_item_at_
 async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
     memorizer = MagicMock()
     memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
-    tool = MemorizeTool(
+    tool = _memorize_tool(
         _make_default_engine(
             retriever=MagicMock(),
             memorizer=memorizer,
@@ -307,7 +313,7 @@ async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
 
     await tool.execute(
         summary="之后跟我说话只用中文，不要夹杂英文，专有名词也尽量翻译。",
-        memory_type="procedure",
+        memory_kind="procedure",
     )
 
     assert (
@@ -576,6 +582,17 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert render_result.messages[-2]["role"] == "user"
     assert render_result.messages[-2]["content"].startswith(SYSTEM_CONTEXT_FRAME_MARKER)
     assert "pref" in render_result.messages[-2]["content"]
+
+    custom_telegram = builder.render(
+        ContextRequest(
+            history=[],
+            current_message="hello",
+            channel="telegram_work",
+            chat_id="42",
+            message_timestamp=now,
+        )
+    )
+    assert "telegram prompt" in custom_telegram.messages[0]["content"]
 
     media_only_messages = builder.render(
         ContextRequest(

@@ -16,19 +16,16 @@ _RAG_HIT_RE = re.compile(
 _MEMORY_META_RE = re.compile(r"（(?P<meta>[^（）]*(?:证据|src|有印象|不确定)[^（）]*)）$")
 
 
+def plugin_enabled(app: FastAPI) -> bool:
+    return _active_memory_engine(app) == "default"
+
+
 class RecallInspectorDashboardReader:
-    def __init__(self, plugin_dir: Path, workspace: Path | None = None) -> None:
-        self.plugin_dir = plugin_dir
-        self.data_path = _data_path(plugin_dir=plugin_dir, workspace=workspace)
+    def __init__(self, workspace: Path) -> None:
+        self.data_path = workspace / "observe" / "recall_inspector.jsonl"
         self._lock = threading.RLock()
 
-    @property
-    def available(self) -> bool:
-        return (self.plugin_dir / "plugin.py").exists()
-
     def get_overview(self) -> dict[str, Any]:
-        if not self.available:
-            return {"available": False, "total": 0, "latest_at": None}
         turns = self._collect_turns()
         latest = turns[0]["timestamp"] if turns else None
         return {"available": True, "total": len(turns), "latest_at": latest}
@@ -41,8 +38,6 @@ class RecallInspectorDashboardReader:
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[dict[str, Any]], int]:
-        if not self.available:
-            return [], 0
         normalized_q = q.strip().lower()
         turns = [
             item for item in self._collect_turns()
@@ -55,8 +50,6 @@ class RecallInspectorDashboardReader:
         return turns[start:start + safe_size], total
 
     def get_turn(self, turn_id: str) -> dict[str, Any] | None:
-        if not self.available:
-            return None
         for item in self._collect_turns():
             if item["turn_id"] == turn_id:
                 return item
@@ -136,7 +129,8 @@ class RecallInspectorDashboardReader:
 
 
 def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
-    reader = RecallInspectorDashboardReader(plugin_dir, workspace)
+    _ = plugin_dir
+    reader = RecallInspectorDashboardReader(workspace)
 
     @app.get("/api/dashboard/recall-inspector/overview")
     def get_recall_inspector_overview() -> dict[str, Any]:
@@ -149,8 +143,6 @@ def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
-        if not reader.available:
-            raise HTTPException(status_code=404, detail="recall_inspector 插件未启用")
         items, total = reader.list_turns(
             session_key=session_key,
             q=q,
@@ -166,8 +158,6 @@ def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
 
     @app.get("/api/dashboard/recall-inspector/turns/{turn_id}")
     def get_recall_inspector_turn(turn_id: str) -> dict[str, Any]:
-        if not reader.available:
-            raise HTTPException(status_code=404, detail="recall_inspector 插件未启用")
         item = reader.get_turn(turn_id)
         if item is None:
             raise HTTPException(status_code=404, detail="召回记录不存在")
@@ -195,10 +185,12 @@ def _matches_recall_turn(
     return q in haystack
 
 
-def _data_path(*, plugin_dir: Path, workspace: Path | None) -> Path:
-    if workspace is not None:
-        return workspace / "observe" / "recall_inspector.jsonl"
-    return plugin_dir / ".data" / "recall_turns.jsonl"
+def _active_memory_engine(app: FastAPI) -> str:
+    memory_admin = getattr(app.state, "memory_admin", None)
+    describe = getattr(memory_admin, "describe", None)
+    if not callable(describe):
+        return ""
+    return str(describe().name)
 
 
 def _normalize_context_prepare(value: object) -> dict[str, Any]:

@@ -50,7 +50,7 @@ function _memoryTypeClass(t: string): string {
 
 function _renderRecallItems(items: RecallItem[], source: string): string {
   if (!items.length) {
-    return '<div class="muted-text">没有召回条目。</div>';
+    return '<div class="recall-empty">没有召回条目。</div>';
   }
   return `
     <div class="recall-item-list">
@@ -167,7 +167,7 @@ window.AkashicDashboard.registerPlugin({
           <div class="detail-label">召回结果</div>
           ${recallCalls.length
             ? recallCalls.map((call) => _renderRecallItems(call.items || [], "recall")).join("")
-            : '<div class="muted-text">本轮没有显式调用 recall_memory。</div>'
+            : '<div class="recall-empty">本轮没有显式调用 recall_memory。</div>'
           }
         </div>
       </div>

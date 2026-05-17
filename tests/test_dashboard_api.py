@@ -921,11 +921,25 @@ def test_proactive_dashboard_batch_delete_rejects_empty_payload(tmp_path) -> Non
 def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
     with TestClient(create_dashboard_app(tmp_path)) as client:
         for path in (
-            "/plugins/..%5Csecret/panel.js",
-            "/plugins/C:%5Csecret/panel.js",
-            "/plugins/%5C%5Cserver%5Cshare/panel.css",
+            "/plugins/..%5Csecret/dashboard_panel.js",
+            "/plugins/C:%5Csecret/dashboard_panel.js",
+            "/plugins/%5C%5Cserver%5Cshare/dashboard_panel.css",
         ):
             response = client.get(path)
             assert response.status_code == 400
 
-        assert client.get("/plugins/missing/panel.js").status_code == 404
+        assert client.get("/plugins/missing/dashboard_panel.js").status_code == 404
+
+
+def test_memory_engine_plugins_only_expose_active_engine_panels(tmp_path) -> None:
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        plugins = client.get("/api/dashboard/plugins").json()
+        memory_plugins = {
+            item["id"]: [panel["name"] for panel in item["panels"]]
+            for item in plugins
+            if item["id"] == "default_memory"
+        }
+        assert memory_plugins == {
+            "default_memory": ["dashboard_panel", "dashboard_panel_inspector"]
+        }
+        assert client.get("/plugins/default_memory/dashboard_panel_inspector.js").status_code == 200

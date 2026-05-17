@@ -53,6 +53,9 @@ class TelegramChannelPolicy:
     def augment_system_prompt(self, prompt: str) -> str:
         return prompt + build_telegram_rendering_prompt()
 
+    def matches(self, channel: str) -> bool:
+        return channel == self.channel or channel.startswith(f"{self.channel}_")
+
 
 class MessageEnvelopeBuilder:
     def __init__(
@@ -88,7 +91,7 @@ class MessageEnvelopeBuilder:
     ) -> list[dict[str, Any]]:
         prompt = system_prompt
         if channel:
-            policy = self._policies.get(channel)
+            policy = self._resolve_policy(channel)
             if policy is not None:
                 prompt = policy.augment_system_prompt(prompt)
 
@@ -198,6 +201,16 @@ class MessageEnvelopeBuilder:
             return text
         stamp = build_current_message_time_envelope(message_timestamp=message_timestamp)
         return f"{stamp}\n{text}"
+
+    def _resolve_policy(self, channel: str) -> ChannelPolicy | None:
+        policy = self._policies.get(channel)
+        if policy is not None:
+            return policy
+        for candidate in self._policies.values():
+            matches = getattr(candidate, "matches", None)
+            if callable(matches) and matches(channel):
+                return candidate
+        return None
 
 
 class ContextBuilder:

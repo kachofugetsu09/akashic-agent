@@ -14,6 +14,7 @@ import agent.tools.recall_memory as recall_memory_module
 import memory2.retriever as retriever_module
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
+from core.memory.engine import EvidenceRef, MemoryQueryResult, MemoryRecord
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
@@ -49,9 +50,17 @@ def _recall_tool(store: object, embedder: object, provider: object) -> RecallMem
     facade._event_bus = None
     facade._consolidation = None
     facade.closeables = []
-    return RecallMemoryTool(
-        facade=cast(Any, facade),
-    )
+    spec = facade.tool_profile().recall
+    assert spec is not None
+    return RecallMemoryTool(cast(Any, facade), spec)
+
+
+class _CaptureMemory:
+    request = None
+
+    async def query(self, request):
+        self.request = request
+        return MemoryQueryResult()
 
 
 class _FakeProvider:
@@ -534,7 +543,7 @@ def test_store_keyword_time_filter_prefilters_before_candidate_limit(
 
 
 @pytest.mark.asyncio
-async def test_recall_memory_grep_mode_lists_events_without_embedding() -> None:
+async def test_recall_memory_timeline_intent_lists_events_without_embedding() -> None:
     store = _TimelineStore()
     provider = _FakeProvider()
     tool = _recall_tool(store, _FailingEmbedder(), provider)
@@ -542,7 +551,7 @@ async def test_recall_memory_grep_mode_lists_events_without_embedding() -> None:
     payload = json.loads(
         await tool.execute(
             query="今天我都做了什么",
-            search_mode="grep",
+            intent="timeline",
             time_filter="2026-04-25",
             limit=80,
         )
@@ -558,7 +567,7 @@ async def test_recall_memory_grep_mode_lists_events_without_embedding() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recall_memory_semantic_mode_passes_time_range_to_searches() -> None:
+async def test_recall_memory_answer_intent_passes_time_range_to_searches() -> None:
     store = _TimedSemanticStore()
     provider = _FakeProvider("用户讨论 DeepSeek 缓存")
     tool = _recall_tool(store, _StaticEmbedder(), provider)
@@ -566,7 +575,7 @@ async def test_recall_memory_semantic_mode_passes_time_range_to_searches() -> No
     payload = json.loads(
         await tool.execute(
             query="DeepSeek 缓存命中率",
-            search_mode="semantic",
+            intent="answer",
             time_filter="2026-04-25",
         )
     )
@@ -620,6 +629,43 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(
     assert store.vector_search_called is False
 
 
-def test_recall_memory_description_emphasizes_mandatory_citation() -> None:
-    assert "只要最终回复使用了本工具返回的任何记忆条目" in RecallMemoryTool.description
-    assert "cited_item_ids / citation_required / citation_format" in RecallMemoryTool.description
+def test_recall_memory_description_is_profile_backed() -> None:
+    store = _CaptureMemory()
+    spec = DefaultMemoryEngine.__new__(DefaultMemoryEngine).tool_profile().recall
+    assert spec is not None
+    tool = RecallMemoryTool(cast(Any, store), spec)
+
+    assert "fetch_messages" in tool.description
+
+
+def test_recall_memory_response_preserves_activation_metadata() -> None:
+    payload = json.loads(
+        recall_memory_module._render_records(
+            [
+                MemoryRecord(
+                    id="mem:1",
+                    kind="event",
+                    summary="用户提到 Falcons 比赛",
+                    score=0.704,
+                    engine_kind="default_memory",
+                    evidence=[EvidenceRef(refs=["msg:1"], source_ref="msg:1")],
+                    signals={
+                        "cosine": 0.81,
+                        "lambda_before": 0.2,
+                        "lambda_after": 0.9,
+                        "activation": 0.9,
+                        "activated": True,
+                    },
+                )
+            ],
+            trace={},
+        )
+    )
+
+    item = payload["items"][0]
+    signals = item["signals"]
+    assert signals["cosine"] == 0.81
+    assert signals["lambda_before"] == 0.2
+    assert signals["lambda_after"] == 0.9
+    assert signals["activation"] == 0.9
+    assert signals["activated"] is True

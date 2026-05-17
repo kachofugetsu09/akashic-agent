@@ -41,10 +41,11 @@ async def start_channels(
             bot_commands=bot_commands,
             event_bus=event_bus,
             interrupt_controller=interrupt_controller,
+            channel_name=tg.channel_name,
         )
         await tg_channel.start()
         push_tool.register_channel(
-            "telegram",
+            tg.channel_name,
             text=tg_channel.send,
             stream_text=tg_channel.send_stream,
             file=tg_channel.send_file,

@@ -7,7 +7,6 @@ from agent.config_models import Config
 from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
-from core.memory.engine import MemoryEngine
 from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.plugin import (
     DisabledMemoryEngine,
@@ -67,12 +66,15 @@ def ensure_memory_plugin_storage(
     initializer = getattr(plugin, "ensure_workspace_storage", None)
     if not callable(initializer):
         return []
-    result = initializer(config=config, workspace=workspace)
+    result: object = initializer(config=config, workspace=workspace)
     if isinstance(result, list):
         normalized: list[tuple[Path, bool]] = []
-        for item in result:
-            if isinstance(item, tuple) and len(item) == 2:
-                raw_path, raw_existed = item
+        for item in cast(list[object], result):
+            if isinstance(item, tuple):
+                values = cast(tuple[object, ...], item)
+                if len(values) != 2:
+                    continue
+                raw_path, raw_existed = values
                 path = Path(str(raw_path))
                 normalized.append((path, bool(raw_existed)))
             elif isinstance(item, str | Path):
@@ -117,12 +119,10 @@ def build_memory_runtime(
         closeables.extend(plugin_runtime.closeables)
         register_memory_meta_tools(
             tools,
-            memorize_tool=plugin_runtime.tools.memorize,
-            forget_tool=plugin_runtime.tools.forget_memory,
-            recall_tool=plugin_runtime.tools.recall_memory,
+            engine,
         )
     else:
-        engine = cast(MemoryEngine, DisabledMemoryEngine())
+        engine = DisabledMemoryEngine()
 
     return MemoryRuntime(
         markdown=markdown,
@@ -163,7 +163,7 @@ def build_memory_admin_runtime(
         engine = plugin_runtime.engine
         closeables[:0] = plugin_runtime.closeables
     else:
-        engine = cast(MemoryEngine, DisabledMemoryEngine())
+        engine = DisabledMemoryEngine()
     return MemoryRuntime(
         markdown=markdown,
         engine=engine,

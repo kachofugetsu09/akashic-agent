@@ -23,7 +23,7 @@ from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import TurnCommitted
-from core.memory.engine import MemoryEngineRetrieveResult
+from core.memory.engine import MemoryQueryResult
 from bootstrap.wiring import wire_turn_lifecycle
 
 
@@ -83,8 +83,8 @@ class _FakeMemoryEngine:
     def has_long_term_memory(self) -> bool:
         return False
 
-    async def retrieve(self, request) -> MemoryEngineRetrieveResult:
-        return MemoryEngineRetrieveResult(text_block="", hits=[], raw={})
+    async def query(self, request) -> MemoryQueryResult:
+        return MemoryQueryResult(text_block="", records=[], raw={})
 
     async def refresh_recent_turns(self, request) -> None:
         return None

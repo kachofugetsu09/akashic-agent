@@ -17,10 +17,10 @@ _META_RE = re.compile(r"（(?P<meta>[^（）]*(?:证据|src|有印象|不确定)
 
 
 class ContextPrepareRecordModule:
-    slot = "recall_inspector.main"
+    slot = "default_memory.inspector"
     requires = ("before_turn.emit", _CTX_SLOT)
 
-    def __init__(self, plugin: "RecallInspector") -> None:
+    def __init__(self, plugin: "DefaultMemoryInspector") -> None:
         self._plugin = plugin
 
     async def run(self, frame: Any) -> Any:
@@ -30,10 +30,11 @@ class ContextPrepareRecordModule:
         return frame
 
 
-class RecallInspector(Plugin):
-    name = "recall_inspector"
+class DefaultMemoryInspector(Plugin):
+    name = "default_memory"
 
     async def initialize(self) -> None:
+        self._active = _is_memory_engine(self.context.memory_engine, "default")
         self._lock = threading.RLock()
         self._active_turns: dict[str, str] = {}
         self._data_path = _data_path(
@@ -43,9 +44,13 @@ class RecallInspector(Plugin):
         self._data_path.parent.mkdir(parents=True, exist_ok=True)
 
     def before_turn_modules(self) -> list[object]:
+        if not self._active:
+            return []
         return [ContextPrepareRecordModule(self)]
 
     def record_context_prepare(self, event: BeforeTurnCtx) -> None:
+        if not self._active:
+            return
         turn_id = _turn_id(event.session_key, event.timestamp.isoformat(), event.content)
         self._active_turns[event.session_key] = turn_id
         block = event.retrieved_memory_block or ""
@@ -73,7 +78,7 @@ class RecallInspector(Plugin):
 
     @on_tool_result()
     async def record_recall_memory(self, event: AfterToolResultCtx) -> None:
-        if event.tool_name != "recall_memory":
+        if not self._active or event.tool_name != "recall_memory":
             return
         turn_id = self._active_turns.get(event.session_key)
         if not turn_id:
@@ -116,6 +121,15 @@ class RecallInspector(Plugin):
 def _turn_id(session_key: str, timestamp: str, content: str) -> str:
     raw = f"{session_key}\n{timestamp}\n{content}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_memory_engine(engine: object, name: str) -> bool:
+    if engine is None:
+        return True
+    describe = getattr(engine, "describe", None)
+    if not callable(describe):
+        return False
+    return str(describe().name) == name
 
 
 def _data_path(*, plugin_dir: Path, workspace: Path | None) -> Path:

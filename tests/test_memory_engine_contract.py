@@ -16,13 +16,11 @@ from plugins.default_memory.engine import DefaultMemoryEngine
 from core.memory.engine import (
     EngineProfile,
     MemoryCapability,
-    MemoryEngineRetrieveRequest,
-    MemoryEngineRetrieveResult,
     MemoryIngestRequest,
-    MemoryHit,
+    MemoryMutation,
+    MemoryQuery,
+    MemoryQueryFilters,
     MemoryScope,
-    RememberRequest,
-    RememberResult,
 )
 from core.memory.events import ConsolidationCommitted, TurnIngested
 from core.memory.markdown import (
@@ -92,21 +90,25 @@ async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
     )
     engine = _make_default_engine(retriever=cast(Any, retriever))
 
-    result = await engine.retrieve(
-        MemoryEngineRetrieveRequest(
-            query="中文回复",
+    result = await engine.query(
+        MemoryQuery(
+            text="中文回复",
+            intent="context",
             scope=MemoryScope(channel="cli", chat_id="1"),
-            hints={"memory_types": ["preference"], "require_scope_match": True},
-            top_k=3,
+            filters=MemoryQueryFilters(
+                kinds=("preference",),
+                hints={"require_scope_match": True},
+            ),
+            limit=3,
         )
     )
 
     assert result.text_block == "注入块"
-    assert len(result.hits) == 1
-    assert result.hits[0].id == "m1"
-    assert result.hits[0].injected is True
-    assert result.hits[0].engine_kind == "default"
-    assert result.hits[0].metadata["memory_type"] == "preference"
+    assert len(result.records) == 1
+    assert result.records[0].id == "m1"
+    assert result.records[0].injected is True
+    assert result.records[0].engine_kind == "default"
+    assert result.records[0].kind == "preference"
     assert result.trace["profile"] == EngineProfile.RICH_MEMORY_ENGINE.value
 
 
@@ -128,23 +130,26 @@ async def test_default_memory_engine_retrieve_keeps_raw_items_and_mode_trace():
     )
     engine = _make_default_engine(retriever=cast(Any, retriever))
 
-    result = await engine.retrieve(
-        MemoryEngineRetrieveRequest(
-            query="Fitbit 型号",
+    result = await engine.query(
+        MemoryQuery(
+            text="Fitbit 型号",
+            intent="context",
             scope=MemoryScope(session_key="telegram:1"),
-            mode="episodic",
-            hints={"memory_types": ["event"], "require_scope_match": True},
-            top_k=2,
+            filters=MemoryQueryFilters(
+                kinds=("event",),
+                hints={"require_scope_match": True},
+            ),
+            limit=2,
         )
     )
 
     assert result.text_block == "历史块"
-    assert result.trace["mode"] == "episodic"
+    assert result.trace["intent"] == "context"
     raw = cast(dict[str, object], result.raw)
     raw_items = cast(list[object], raw["items"])
     assert cast(dict[str, object], raw_items[0])["id"] == "e1"
-    assert result.hits[0].id == "e1"
-    assert result.hits[0].injected is True
+    assert result.records[0].id == "e1"
+    assert result.records[0].injected is True
 
 
 async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
@@ -154,11 +159,12 @@ async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
     )
     engine = _make_default_engine(retriever=cast(Any, retriever))
 
-    await engine.retrieve(
-        MemoryEngineRetrieveRequest(
-            query="作用域测试",
+    await engine.query(
+        MemoryQuery(
+            text="作用域测试",
+            intent="context",
             scope=MemoryScope(session_key="telegram:test_user"),
-            hints={"require_scope_match": True},
+            filters=MemoryQueryFilters(hints={"require_scope_match": True}),
         )
     )
 
@@ -187,18 +193,21 @@ async def test_default_engine_keeps_history_injected_ids():
     )
     engine = _make_default_engine(retriever=cast(Any, retriever))
 
-    history_result = await engine.retrieve(
-        MemoryEngineRetrieveRequest(
-            query="Fitbit 型号",
+    history_result = await engine.query(
+        MemoryQuery(
+            text="Fitbit 型号",
+            intent="context",
             scope=MemoryScope(session_key="telegram:1", channel="telegram", chat_id="1"),
-            mode="episodic",
-            hints={"memory_types": ["event"], "require_scope_match": True},
-            top_k=8,
+            filters=MemoryQueryFilters(
+                kinds=("event",),
+                hints={"require_scope_match": True},
+            ),
+            limit=8,
         )
     )
 
     assert "用户昨天提过 FitBit" in history_result.text_block
-    assert [hit.id for hit in history_result.hits if hit.injected] == ["e1"]
+    assert [record.id for record in history_result.records if record.injected] == ["e1"]
 
 
 async def test_default_memory_engine_ingest_delegates_to_post_worker():
@@ -512,16 +521,17 @@ async def test_default_memory_engine_remember_uses_memorizer():
         memorizer=cast(Any, memorizer),
     )
 
-    result = await engine.remember(
-        RememberRequest(
+    result = await engine.mutate(
+        MemoryMutation(
+            kind="remember",
             summary="以后用中文回复",
-            memory_type="preference",
+            memory_kind="preference",
             scope=MemoryScope(session_key="cli:1", channel="cli", chat_id="1"),
         )
     )
 
     assert result.item_id == "memu-1"
-    assert result.write_status == "new"
+    assert result.status == "new"
     memorizer.save_item_with_supersede.assert_awaited_once()
 
 
@@ -534,17 +544,18 @@ async def test_default_memory_engine_remember_merged_keeps_target_id_alive():
         memorizer=cast(Any, memorizer),
     )
 
-    result = await engine.remember(
-        RememberRequest(
+    result = await engine.mutate(
+        MemoryMutation(
+            kind="remember",
             summary="以后用中文回复",
-            memory_type="preference",
+            memory_kind="preference",
             scope=MemoryScope(session_key="cli:1", channel="cli", chat_id="1"),
         )
     )
 
     assert result.item_id == "memu-1"
-    assert result.write_status == "merged"
-    assert result.superseded_ids == []
+    assert result.status == "merged"
+    assert result.affected_ids == []
 
 
 async def test_default_memory_engine_consumes_markdown_consolidation_event():

@@ -1,65 +1,74 @@
-"""主动失效错误记忆条目的工具。"""
-
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.tools.base import Tool
-from core.memory.engine import ForgetRequest, MemoryWriteApi
+from core.memory.engine import MemoryMutation, MemoryToolSpec
+
+if TYPE_CHECKING:
+    from core.memory.engine import MemoryWriteApi
 
 
 class ForgetMemoryTool(Tool):
     name = "forget_memory"
-    description = (
-        "将已确认错误的记忆条目标记为失效（status='superseded'）。\n"
-        "只在用户明确纠正你，且你已先用 recall_memory 确认 summary 与错误内容吻合时调用。\n"
-        "禁止在未核实内容的情况下直接传 id；禁止把它当成搜索工具使用。\n"
-        "执行后条目会被标记为 superseded，不可恢复。若用户同时给出正确版本，可再单独调用 memorize 写入。"
-    )
+    description = "由当前 memory engine 的 tool_profile 注入工具描述。"
     parameters = {
         "type": "object",
-        "properties": {
-            "ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "要失效的 memory item id 列表",
-            }
-        },
+        "properties": {"ids": {"type": "array", "items": {"type": "string"}}},
         "required": ["ids"],
     }
 
-    def __init__(self, memory: MemoryWriteApi) -> None:
+    def __init__(
+        self,
+        memory: "MemoryWriteApi",
+        spec: MemoryToolSpec,
+    ) -> None:
         self._memory = memory
+        self._spec = spec
+        self.description = self._spec.description
+        self.parameters = self._spec.parameters
 
     async def execute(self, ids: list[str], **_: Any) -> str:
-        clean_ids: list[str] = []
-        seen: set[str] = set()
-        for raw in ids or []:
-            item_id = str(raw).strip()
-            if item_id and item_id not in seen:
-                seen.add(item_id)
-                clean_ids.append(item_id)
+        clean_ids = _clean_ids(ids)
         if not clean_ids:
-            return json.dumps(
-                {
-                    "requested_ids": [],
-                    "superseded_ids": [],
-                    "missing_ids": [],
-                    "count": 0,
-                    "items": [],
-                },
-                ensure_ascii=False,
-            )
+            return _render_forget_result(clean_ids, [], [], [])
 
-        result = await self._memory.forget(ForgetRequest(ids=clean_ids))
-        return json.dumps(
-            {
-                "requested_ids": clean_ids,
-                "superseded_ids": result.superseded_ids,
-                "missing_ids": result.missing_ids,
-                "count": len(result.superseded_ids),
-                "items": result.items,
-            },
-            ensure_ascii=False,
+        result = await self._memory.mutate(
+            MemoryMutation(kind="forget", ids=tuple(clean_ids))
         )
+        return _render_forget_result(
+            clean_ids,
+            result.affected_ids,
+            result.missing_ids,
+            result.items,
+        )
+
+
+def _clean_ids(ids: list[str]) -> list[str]:
+    clean: list[str] = []
+    seen: set[str] = set()
+    for raw in ids or []:
+        item_id = str(raw).strip()
+        if item_id and item_id not in seen:
+            seen.add(item_id)
+            clean.append(item_id)
+    return clean
+
+
+def _render_forget_result(
+    requested_ids: list[str],
+    affected_ids: list[str],
+    missing_ids: list[str],
+    items: list[dict[str, object]],
+) -> str:
+    return json.dumps(
+        {
+            "requested_ids": requested_ids,
+            "superseded_ids": affected_ids,
+            "missing_ids": missing_ids,
+            "count": len(affected_ids),
+            "items": items,
+        },
+        ensure_ascii=False,
+    )

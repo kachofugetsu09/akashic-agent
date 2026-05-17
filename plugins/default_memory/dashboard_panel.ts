@@ -434,6 +434,8 @@ function dmemRenderDeleteBtn(_value: unknown, item: Record<string, unknown>): st
 
 async function dmemGetCount(): Promise<number | null> {
   try {
+    const info = await api<{ name: string }>("/api/dashboard/memory/engine-info");
+    if (info.name !== "default") return null;
     const payload = await api<{ items: unknown[]; total: number }>("/api/dashboard/memories?page=1&page_size=1&sort_by=created_at&sort_order=desc");
     return payload.total || 0;
   } catch {
