@@ -41,6 +41,9 @@ class _DashboardMemoryAdmin:
     def describe(self):
         return DefaultMemoryEngine.DESCRIPTOR
 
+    def tool_profile(self):
+        return DefaultMemoryEngine.__new__(DefaultMemoryEngine).tool_profile()
+
     def keyword_match_procedures(self, action_tokens: list[str]):
         return self._store.keyword_match_procedures(action_tokens)
 
