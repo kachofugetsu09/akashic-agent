@@ -2,7 +2,7 @@
 Shell 工具（Bash 命令执行）
 设计参考 OpenCode internal/llm/tools/bash.go：
 - 禁止高风险命令黑名单（nc、telnet、浏览器等）
-- 超时：默认 60s，最大 600s（10 分钟）
+- 超时：默认 60s，普通命令最大 600s；显式前台阻塞最大 21600s
 - 输出截断：超过 30000 字符时首尾各取一半，中间注明省略行数
 - 记录执行时长
 - 结构化 JSON 输出（command / exit_code / duration_ms / output）
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = 60  # 秒（OpenCode 默认 1 分钟）
 _FG_THRESHOLD = 15    # 前台最长等待秒数；超时自动转后台
 _MAX_TIMEOUT = 600  # 秒（OpenCode 最大 10 分钟）
+_BLOCKING_TIMEOUT = 21_600  # 秒（auto_promote=False 时默认 6 小时）
 _MAX_OUTPUT = 30_000  # 字符（与 OpenCode MaxOutputLength 一致）
 _STREAM_CHUNK_SIZE = 4096
 _STREAM_DRAIN_GRACE_S = 0.2
@@ -278,9 +279,9 @@ class ShellTool(Tool):
             "- 网络命令（curl/wget/httpie/xh）仅允许访问公网 HTTP(S)，且禁止上传/写文件\n"
             "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
             "- 输出超过 30000 字符时自动截断\n"
-            "- 前台阻塞总超时默认 60 秒，最大 600 秒\n"
+            "- 前台阻塞总超时默认 60 秒，普通命令最大 600 秒\n"
             "- 命令超过 15 秒未完成时默认自动转为后台任务，返回 background_task_id；只有显式设置 timeout，后台才会继续沿用这个硬截止时间\n"
-            "- 只有用户明确说“阻塞”时，才设置 auto_promote=false，并显式配置 timeout\n"
+            "- 只有用户明确说“阻塞”时，才设置 auto_promote=false；未显式传 timeout 时会默认阻塞 21600 秒\n"
             "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台模式只有显式传 timeout 时才会按 timeout 自动终止\n"
             "- 收到 background_task_id 后，由你负责用 task_output 主动查看进展和结果；不会有系统自动回传\n"
             "- 等待后台任务结果时，使用 task_output 的 block=true 并设置合理 timeout_ms，避免高频轮询\n"
@@ -307,11 +308,12 @@ class ShellTool(Tool):
                 "timeout": {
                     "type": "integer",
                     "description": (
-                        f"前台阻塞或显式硬超时秒数，默认 {_DEFAULT_TIMEOUT}，最大 {_MAX_TIMEOUT}；"
-                        "自动转后台后只有显式传入才生效"
+                        f"前台阻塞或显式硬超时秒数，默认 {_DEFAULT_TIMEOUT}。"
+                        f"普通命令最大 {_MAX_TIMEOUT}；auto_promote=false 时最大 {_BLOCKING_TIMEOUT}。"
+                        "自动转后台后只有显式传入才生效。"
                     ),
                     "minimum": 1,
-                    "maximum": _MAX_TIMEOUT,
+                    "maximum": _BLOCKING_TIMEOUT,
                 },
                 "run_in_background": {
                     "type": "boolean",
@@ -325,7 +327,7 @@ class ShellTool(Tool):
                     "type": "boolean",
                     "description": (
                         "前台命令超过 15 秒未完成时是否自动转后台，默认 true。"
-                        "只有用户明确说“阻塞”时才设为 false；同时应显式设置 timeout。"
+                        "只有用户明确说“阻塞”时才设为 false；不传 timeout 时默认等待 21600 秒。"
                     ),
                 },
             },
@@ -335,10 +337,20 @@ class ShellTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         command: str = kwargs.get("command", "").strip()
         description: str = kwargs.get("description", "")
-        timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
         timeout_specified = "timeout" in kwargs and kwargs.get("timeout") is not None
         run_in_background: bool = bool(kwargs.get("run_in_background", False))
         auto_promote: bool = bool(kwargs.get("auto_promote", True))
+        max_timeout = (
+            _BLOCKING_TIMEOUT
+            if not run_in_background and not auto_promote
+            else _MAX_TIMEOUT
+        )
+        default_timeout = (
+            _BLOCKING_TIMEOUT
+            if not run_in_background and not auto_promote and not timeout_specified
+            else _DEFAULT_TIMEOUT
+        )
+        timeout: int = min(int(kwargs.get("timeout", default_timeout)), max_timeout)
         on_data = kwargs.get("_on_data")
 
         if not command:

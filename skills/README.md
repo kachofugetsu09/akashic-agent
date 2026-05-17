@@ -22,6 +22,10 @@
   - 在工作区 drift/skills 下创建或更新 drift skill。
   - 文件：`skills/create-drift-skill/SKILL.md`
 
+- `codex-delegate`
+  - 把长代码库任务委托给本机 Codex CLI 后台执行，并等待完成后回灌结果。
+  - 文件：`skills/codex-delegate/SKILL.md`
+
 - `skill-creater`
   - 创建或改写技能 `SKILL.md`，用于新增技能与结构迁移。
   - 文件：`skills/skill-creater/SKILL.md`

@@ -867,6 +867,39 @@ async def test_shell_auto_promote_false_waits_for_foreground_completion(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_shell_auto_promote_false_defaults_to_long_blocking_timeout(monkeypatch):
+    """auto_promote=False 且未传 timeout 时，默认同步等待 6 小时。"""
+    import agent.tools.shell as shell_mod
+
+    observed: list[float | None] = []
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        return _FakeProc(stdout="done", stderr="", returncode=0)
+
+    async def _fake_wait_for(awaitable, timeout):
+        observed.append(timeout)
+        return await awaitable
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+    monkeypatch.setattr("agent.tools.shell.asyncio.wait_for", _fake_wait_for)
+
+    tool = ShellTool()
+    result = json.loads(
+        await tool.execute(
+            command="codex exec test",
+            description="同步 codex",
+            auto_promote=False,
+        )
+    )
+
+    assert result["exit_code"] == 0
+    assert observed[0] == shell_mod._BLOCKING_TIMEOUT
+
+
+@pytest.mark.asyncio
 async def test_shell_foreground_completes_normally_within_threshold(monkeypatch):
     """命令在 FG_THRESHOLD 内完成时，应正常返回前台格式（无 background_task_id）。"""
 
