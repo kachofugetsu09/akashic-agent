@@ -11,6 +11,7 @@ from .runtime import MemeCatalog, MemeDecorator
 
 _CTX_SLOT = "prompt:ctx"
 _MEME_RE = re.compile(r"<meme:([a-zA-Z0-9_-]+)>", re.IGNORECASE)
+_MEME_PROTOCOL_RE = re.compile(r"<meme:[^>]*>", re.IGNORECASE)
 
 
 class MemePromptModule:
@@ -75,7 +76,7 @@ class MemePlugin(Plugin):
 
 def _extract_meme_tag(response: str) -> tuple[str, str | None]:
     first = _MEME_RE.search(response)
-    cleaned = _MEME_RE.sub("", response).strip()
+    cleaned = _MEME_PROTOCOL_RE.sub("", response).strip()
     if first is None:
         return cleaned, None
     return cleaned, first.group(1).lower()

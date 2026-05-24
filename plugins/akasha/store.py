@@ -12,6 +12,30 @@ import numpy as np
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS akasha_query_log (
+    query_id              TEXT PRIMARY KEY,
+    session_key           TEXT NOT NULL,
+    seq                   INTEGER NOT NULL,
+    query_text            TEXT NOT NULL,
+    intent                TEXT NOT NULL,
+    ts                    TEXT NOT NULL,
+    seed_count            INTEGER NOT NULL DEFAULT 0,
+    pool_count            INTEGER NOT NULL DEFAULT 0,
+    activated_count       INTEGER NOT NULL DEFAULT 0,
+    activation_threshold  REAL NOT NULL DEFAULT 0,
+    dense_count           INTEGER NOT NULL DEFAULT 0,
+    ripple_count          INTEGER NOT NULL DEFAULT 0,
+    inject_chars          INTEGER NOT NULL DEFAULT 0,
+    source_ref_count      INTEGER NOT NULL DEFAULT 0,
+    activation_items      TEXT,
+    dense_items           TEXT,
+    ripple_items          TEXT,
+    text_block_preview    TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_akasha_query_log_session
+    ON akasha_query_log (session_key, seq DESC);
+CREATE INDEX IF NOT EXISTS ix_akasha_query_log_ts
+    ON akasha_query_log (ts DESC);
 CREATE TABLE IF NOT EXISTS akasha_nodes (
     key                TEXT PRIMARY KEY,
     anchor_id          TEXT NOT NULL,
@@ -703,6 +727,144 @@ class AkashaStore:
             if self.delete_item(item_id):
                 count += 1
         return count
+
+    # 写入一条检索诊断日志。
+    def insert_query_log(
+        self,
+        *,
+        query_id: str,
+        session_key: str,
+        seq: int,
+        query_text: str,
+        intent: str,
+        ts: str,
+        seed_count: int,
+        pool_count: int,
+        activated_count: int,
+        activation_threshold: float,
+        dense_count: int,
+        ripple_count: int,
+        inject_chars: int,
+        source_ref_count: int,
+        activation_items_json: str,
+        dense_items_json: str,
+        ripple_items_json: str,
+        text_block_preview: str,
+    ) -> None:
+        # 1. 写失败不中断主链路，只记录到 warning。
+        import logging
+        try:
+            with self._lock:
+                _ = self._db.execute(
+                    """
+                    INSERT OR REPLACE INTO akasha_query_log (
+                        query_id, session_key, seq, query_text, intent, ts,
+                        seed_count, pool_count, activated_count, activation_threshold,
+                        dense_count, ripple_count, inject_chars, source_ref_count,
+                        activation_items, dense_items, ripple_items, text_block_preview
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        query_id, session_key, seq, query_text, intent, ts,
+                        seed_count, pool_count, activated_count, activation_threshold,
+                        dense_count, ripple_count, inject_chars, source_ref_count,
+                        activation_items_json, dense_items_json, ripple_items_json,
+                        text_block_preview,
+                    ),
+                )
+                self._db.commit()
+        except Exception:
+            logging.getLogger("akasha.store").warning("insert_query_log failed", exc_info=True)
+
+    # 读取检索诊断日志列表（仅轻量字段）。
+    def list_query_logs(
+        self,
+        *,
+        session_key: str = "",
+        q: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[dict[str, object]], int]:
+        # 1. 过滤 session_key 和 query_text 关键字。
+        clauses: list[str] = []
+        params: list[object] = []
+        if session_key.strip():
+            clauses.append("session_key = ?")
+            params.append(session_key.strip())
+        if q.strip():
+            clauses.append("query_text LIKE ?")
+            params.append(f"%{q.strip()}%")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        page = max(1, page)
+        page_size = max(1, min(page_size, 200))
+        offset = (page - 1) * page_size
+        with self._lock:
+            count_row = self._db.execute(
+                f"SELECT COUNT(1) FROM akasha_query_log {where}", params
+            ).fetchone()
+            rows = self._db.execute(
+                f"""
+                SELECT query_id, session_key, seq, query_text, intent, ts,
+                       seed_count, pool_count, activated_count, activation_threshold,
+                       dense_count, ripple_count, inject_chars, source_ref_count
+                FROM akasha_query_log {where}
+                ORDER BY ts DESC, seq DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, page_size, offset],
+            ).fetchall()
+        total = int((count_row[0] if count_row else 0) or 0)
+        items = [
+            {
+                "query_id": str(row["query_id"]),
+                "session_key": str(row["session_key"]),
+                "seq": int(row["seq"]),
+                "query_text": str(row["query_text"]),
+                "intent": str(row["intent"]),
+                "ts": str(row["ts"]),
+                "seed_count": int(row["seed_count"] or 0),
+                "pool_count": int(row["pool_count"] or 0),
+                "activated_count": int(row["activated_count"] or 0),
+                "activation_threshold": float(row["activation_threshold"] or 0.0),
+                "dense_count": int(row["dense_count"] or 0),
+                "ripple_count": int(row["ripple_count"] or 0),
+                "inject_chars": int(row["inject_chars"] or 0),
+                "source_ref_count": int(row["source_ref_count"] or 0),
+            }
+            for row in rows
+        ]
+        return items, total
+
+    # 按 query_id 读取完整检索诊断记录。
+    def get_query_log(self, query_id: str) -> dict[str, object] | None:
+        # 1. 完整记录包含 JSON 列，由调用方反序列化。
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM akasha_query_log WHERE query_id = ?",
+                (query_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "query_id": str(row["query_id"]),
+            "session_key": str(row["session_key"]),
+            "seq": int(row["seq"]),
+            "query_text": str(row["query_text"]),
+            "intent": str(row["intent"]),
+            "ts": str(row["ts"]),
+            "seed_count": int(row["seed_count"] or 0),
+            "pool_count": int(row["pool_count"] or 0),
+            "activated_count": int(row["activated_count"] or 0),
+            "activation_threshold": float(row["activation_threshold"] or 0.0),
+            "dense_count": int(row["dense_count"] or 0),
+            "ripple_count": int(row["ripple_count"] or 0),
+            "inject_chars": int(row["inject_chars"] or 0),
+            "source_ref_count": int(row["source_ref_count"] or 0),
+            "activation_items_json": str(row["activation_items"] or "[]"),
+            "dense_items_json": str(row["dense_items"] or "[]"),
+            "ripple_items_json": str(row["ripple_items"] or "[]"),
+            "text_block_preview": str(row["text_block_preview"] or ""),
+        }
 
 
 # 把 SQLite row 转成 AkashaNode。

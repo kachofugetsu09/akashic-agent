@@ -235,6 +235,53 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
     assert 'source_ref=["s:2", "s:3"]' in ripple_block
 
 
+def test_cards_from_keys_deduplicates_same_user_assistant_pair(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    with closing(sqlite3.connect(str(db_path))) as db:
+        db.execute(
+            """
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                ts TEXT NOT NULL
+            )
+            """
+        )
+        db.executemany(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("s:0", "s", 0, "user", "我现在健康状态怎么样呢", "2026-01-01T00:00:00+00:00"),
+                ("s:1", "s", 1, "assistant", "健康状态的话……我这边真的没有更多信息", "2026-01-01T00:00:01+00:00"),
+                ("s:2", "s", 2, "user", "我现在健康状态怎么样呢", "2026-01-01T00:00:02+00:00"),
+                ("s:3", "s", 3, "assistant", "健康状态的话……我这边真的没有更多信息", "2026-01-01T00:00:03+00:00"),
+                ("s:4", "s", 4, "user", "另一个问题", "2026-01-01T00:00:04+00:00"),
+                ("s:5", "s", 5, "assistant", "第三次回复", "2026-01-01T00:00:05+00:00"),
+            ],
+        )
+        db.commit()
+
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._akasha_config = AkashaConfig(assistant_preview_chars=15)
+    engine._session_db_path = db_path
+
+    cards = engine._cards_from_keys(
+        [
+            ("s:0", 0.9, "ripple", {}),
+            ("s:2", 0.8, "ripple", {}),
+            ("s:4", 0.7, "ripple", {}),
+        ],
+        limit=10,
+    )
+
+    assert [card.source_ref for card in cards] == [
+        '["s:0", "s:1"]',
+        '["s:4", "s:5"]',
+    ]
+
+
 @pytest.mark.asyncio
 async def test_context_query_uses_akasha_top_k_over_default_query_limit(
     tmp_path: Path,
@@ -337,3 +384,38 @@ def test_compute_candidates_uses_activation_limit_for_stateful_replay(tmp_path: 
     assert len(candidates) == 8
     assert trace.seed_count == 30
     assert suppressed == []
+
+
+def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._store = store
+    engine._akasha_config = AkashaConfig()
+    result = _AkashaRetrieval(
+        dense_items=[],
+        ripple_items=[],
+        activation_items=[],
+        trace=ActivationTrace(seed_count=1, pool_count=2),
+        seq=10,
+    )
+    try:
+        for intent, text_block in [("context", "注入文本"), ("answer", "")]:
+            engine._write_query_log(
+                request=MemoryQuery(
+                    text="同一轮问题",
+                    intent=intent,
+                    scope=MemoryScope(session_key="s"),
+                ),
+                result=result,
+                seq=10,
+                dense_cards=[],
+                ripple_cards=[],
+                text_block=text_block,
+            )
+
+        items, total = store.list_query_logs(session_key="s", page=1, page_size=10)
+    finally:
+        store.close()
+
+    assert total == 2
+    assert {item["intent"] for item in items} == {"context", "answer"}

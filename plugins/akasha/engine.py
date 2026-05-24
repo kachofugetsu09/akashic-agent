@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import sqlite3
 from collections.abc import Callable, Iterable
@@ -236,6 +237,7 @@ class AkashaMemoryEngine:
             limit=dense_limit,
         )
         dense_keys = {card.key for card in dense_cards}
+        dense_pairs = {_card_dedupe_key(card) for card in dense_cards}
         ripple_cards = self._cards_from_keys(
             [
                 (item.key, item.score, "ripple", _candidate_signals(item))
@@ -243,6 +245,7 @@ class AkashaMemoryEngine:
                 if item.key not in dense_keys
             ],
             limit=ripple_limit,
+            skip_pairs=dense_pairs,
         )
         text_block = (
             self._format_context_block(dense_cards, ripple_cards)
@@ -250,6 +253,18 @@ class AkashaMemoryEngine:
             else ""
         )
         cards = [*dense_cards, *ripple_cards]
+
+        # 5. 记录检索诊断日志（context/answer intent 才有意义）。
+        if request.intent in {"context", "answer"} and request.scope.session_key:
+            self._write_query_log(
+                request=request,
+                result=result,
+                seq=result.seq,
+                dense_cards=dense_cards,
+                ripple_cards=ripple_cards,
+                text_block=text_block,
+            )
+
         return MemoryQueryResult(
             text_block=text_block,
             records=[_card_to_record(card, injected=bool(text_block)) for card in cards],
@@ -572,14 +587,16 @@ class AkashaMemoryEngine:
         items: list[tuple[str, float, str, dict[str, object]]],
         *,
         limit: int,
+        skip_pairs: set[tuple[str, str]] | None = None,
     ) -> list[AkashaCard]:
         # 1. 每个 card 的正文都回 sessions.db 取，sidecar 不充当事实来源。
         cards: list[AkashaCard] = []
-        seen: set[str] = set()
+        seen_keys: set[str] = set()
+        seen_pairs = set(skip_pairs or set())
         for key, score, lane, signals in items:
-            if key in seen:
+            if key in seen_keys:
                 continue
-            seen.add(key)
+            seen_keys.add(key)
             card = _load_turn_card(
                 self._session_db_path,
                 key,
@@ -590,10 +607,121 @@ class AkashaMemoryEngine:
             )
             if card is None:
                 continue
+            pair_key = _card_dedupe_key(card)
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
             cards.append(card)
             if len(cards) >= limit:
                 break
         return cards
+
+    # 序列化并写入本次检索诊断日志。
+    def _write_query_log(
+        self,
+        *,
+        request: "MemoryQuery",
+        result: "_AkashaRetrieval",
+        seq: int,
+        dense_cards: list[AkashaCard],
+        ripple_cards: list[AkashaCard],
+        text_block: str,
+    ) -> None:
+        # 1. 收集 source_ref 去重统计。
+        all_source_refs: set[str] = set()
+        for card in dense_cards:
+            try:
+                for ref in json.loads(card.source_ref):
+                    all_source_refs.add(str(ref))
+            except Exception:
+                pass
+        for card in ripple_cards:
+            try:
+                for ref in json.loads(card.source_ref):
+                    all_source_refs.add(str(ref))
+            except Exception:
+                pass
+
+        # 2. 批量读取 activation_items 的消息内容，填充 user_message / assistant_preview。
+        session_db_path = getattr(self, "_session_db_path", None) or Path("")
+        activation_content = _load_messages_batch(
+            session_db_path,
+            [item.key for item in result.activation_items],
+            assistant_preview_chars=self._akasha_config.assistant_preview_chars,
+        )
+
+        def _candidate_to_dict(item: AkashaCandidate) -> dict[str, object]:
+            user_msg, asst_preview = activation_content.get(item.key, ("", ""))
+            return {
+                "key": item.key,
+                "user_message": user_msg,
+                "assistant_preview": asst_preview,
+                "score": item.score,
+                "source": item.source,
+                "path_type": item.path_type,
+                "fan": item.fan,
+                "direct": item.direct,
+                "state": item.state,
+                "edge": item.edge,
+                "long": item.long,
+                "resource": item.resource,
+                "ripple": item.ripple,
+                "seed_key": item.seed_key,
+                "bridge_key": item.bridge_key,
+                "suppressed": item.suppressed,
+            }
+
+        def _card_to_dict(card: AkashaCard) -> dict[str, object]:
+            d: dict[str, object] = {
+                "key": card.key,
+                "user_message": card.user_message,
+                "assistant_preview": card.assistant_preview,
+                "score": card.score,
+                "source_ref": card.source_ref,
+            }
+            d.update(card.signals)
+            return d
+
+        activation_items_json = json.dumps(
+            [_candidate_to_dict(item) for item in result.activation_items],
+            ensure_ascii=False,
+        )
+        dense_items_json = json.dumps(
+            [_card_to_dict(card) for card in dense_cards],
+            ensure_ascii=False,
+        )
+        ripple_items_json = json.dumps(
+            [_card_to_dict(card) for card in ripple_cards],
+            ensure_ascii=False,
+        )
+
+        # 3. text_block 截断到 500 chars 作为预览。
+        preview = text_block[:500].rstrip() + ("..." if len(text_block) > 500 else "")
+
+        store = getattr(self, "_store", None)
+        if store is None:
+            return
+        from datetime import datetime, timezone
+        store.insert_query_log(
+            query_id=_query_log_id(request.scope.session_key or "", seq, request.intent, request.text),
+            session_key=request.scope.session_key or "",
+            seq=seq,
+            query_text=request.text.strip(),
+            intent=request.intent,
+            ts=datetime.now(timezone.utc).isoformat(),
+            seed_count=result.trace.seed_count,
+            pool_count=result.trace.pool_count,
+            activated_count=len(result.activation_items),
+            activation_threshold=self._akasha_config.activation_threshold,
+            dense_count=len(dense_cards),
+            ripple_count=len(ripple_cards),
+            inject_chars=len(text_block),
+            source_ref_count=len(all_source_refs),
+            activation_items_json=activation_items_json,
+            dense_items_json=dense_items_json,
+            ripple_items_json=ripple_items_json,
+            text_block_preview=preview,
+        )
 
     # 格式化 agent 看到的 Dense/Ripple 双块。
     def _format_context_block(
@@ -1398,14 +1526,33 @@ def _clip_assistant(text: str, limit: int) -> str:
     return clean[:limit].rstrip() + "..."
 
 
+# 归一化文本，避免多空格造成同文候选无法去重。
+def _normalize_card_text(text: str) -> str:
+    # 1. prompt 单行展示和去重都使用相同的空白规则。
+    return " ".join(text.split()).strip()
+
+
+# 生成注入去重键，只压掉 user 和助手预览都相同的候选。
+def _card_dedupe_key(card: AkashaCard) -> tuple[str, str]:
+    # 1. 同一句历史消息可能在不同 turn 重复出现，展示时只保留最高分。
+    return _normalize_card_text(card.user_message), _normalize_card_text(card.assistant_preview)
+
+
+# 生成检索日志 ID，避免同一轮 context 和 recall_memory 互相覆盖。
+def _query_log_id(session_key: str, seq: int, intent: str, query_text: str) -> str:
+    # 1. 同一轮可能有预检索和显式 recall_memory，多条日志都要保留。
+    digest = hashlib.sha1(f"{intent}\n{query_text}".encode("utf-8")).hexdigest()[:10]
+    return f"{session_key}:{seq}:{intent}:{digest}"
+
+
 # 格式化一个记忆块。
 def _format_cards(title: str, cards: list[AkashaCard]) -> str:
     # 1. 每条 card 都带 source_ref，agent 需要事实时可继续 fetch_messages。
     lines = [title]
     for card in cards:
-        user_text = json.dumps(" ".join(card.user_message.split()), ensure_ascii=False)
+        user_text = json.dumps(_normalize_card_text(card.user_message), ensure_ascii=False)
         assistant_text = json.dumps(
-            " ".join(card.assistant_preview.split()),
+            _normalize_card_text(card.assistant_preview),
             ensure_ascii=False,
         )
         lines.append(
@@ -1453,6 +1600,62 @@ def _card_to_raw(card: AkashaCard) -> dict[str, object]:
     }
 
 
+# 批量从 sessions.db 读取多个 turn key 的消息内容，一次连接完成。
+def _load_messages_batch(
+    session_db_path: Path,
+    keys: list[str],
+    *,
+    assistant_preview_chars: int,
+) -> dict[str, tuple[str, str]]:
+    # 1. 解析所有 key，跳过无法解析的。
+    if not keys or not session_db_path.exists():
+        return {}
+    parsed: list[tuple[str, str, int]] = []
+    for key in keys:
+        result = _parse_turn_key(key)
+        if result is not None:
+            session_key, seq = result
+            parsed.append((key, session_key, seq))
+    if not parsed:
+        return {}
+
+    # 2. 一次性拉取 user seq 和 user_seq+1（assistant），避免每个 key 单独开连接。
+    seq_pairs: list[tuple[str, int]] = []
+    for _, sk, user_seq in parsed:
+        seq_pairs.append((sk, user_seq))
+        seq_pairs.append((sk, user_seq + 1))
+    placeholders = ",".join("(?,?)" for _ in seq_pairs)
+    flat_params: list[object] = [v for pair in seq_pairs for v in pair]
+    with closing(sqlite3.connect(str(session_db_path))) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            f"""
+            SELECT session_key, seq, role, content
+            FROM messages
+            WHERE (session_key, seq) IN ({placeholders})
+              AND role IN ('user', 'assistant')
+            """,
+            flat_params,
+        ).fetchall()
+
+    # 3. 按 (session_key, seq) 分组成 {(sk, seq): {role: content}}。
+    by_turn: dict[tuple[str, int], dict[str, str]] = {}
+    for row in rows:
+        sk = str(row["session_key"])
+        seq_val = int(row["seq"])
+        role = str(row["role"])
+        content = str(row["content"] or "")
+        by_turn.setdefault((sk, seq_val), {})[role] = content
+
+    # 4. 为每个 key 映射 user_message / assistant_preview。
+    result_map: dict[str, tuple[str, str]] = {}
+    for key, sk, user_seq in parsed:
+        user_msg = by_turn.get((sk, user_seq), {}).get("user", "")
+        asst_raw = by_turn.get((sk, user_seq + 1), {}).get("assistant", "")
+        result_map[key] = (user_msg, _clip_assistant(asst_raw, assistant_preview_chars))
+    return result_map
+
+
 # 从 source_ref JSON 数组中取消息 id。
 def _source_ref_ids(source_ref: str) -> list[str]:
     # 1. source_ref 始终由 Akasha 生成，解析失败时回退空列表。
@@ -1485,3 +1688,4 @@ def _candidate_signals(item: AkashaCandidate) -> dict[str, object]:
         "path_value": item.path_value,
         "suppressed": item.suppressed,
     }
+

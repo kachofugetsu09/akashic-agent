@@ -49,6 +49,15 @@ def test_citation_extracts_marker_with_spaces_after_commas() -> None:
     assert ids == ["mem_1", "mem-2"]
 
 
+def test_citation_extracts_colon_message_ids() -> None:
+    clean, ids = extract_cited_ids(
+        "答复正文\n§cited:[telegram:7674283004:4395,telegram:7674283004:4396]§"
+    )
+
+    assert clean == "答复正文"
+    assert ids == ["telegram:7674283004:4395", "telegram:7674283004:4396"]
+
+
 def test_citation_strips_empty_marker() -> None:
     clean, ids = extract_cited_ids("答复正文\n§cited:[]§")
 

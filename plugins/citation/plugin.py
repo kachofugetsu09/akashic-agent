@@ -13,7 +13,7 @@ _REASONING_CTX_SLOT = "reasoning:ctx"
 _PERSIST_CITED_SLOT = "persist:assistant:cited_memory_ids"
 _TRAILING_PROTOCOL_TAG = r"<[a-zA-Z][a-zA-Z0-9_-]*:[^<>\s]+>"
 _CITED_RE = re.compile(
-    rf"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]*)\]§(?P<trailing>(?:\s*{_TRAILING_PROTOCOL_TAG}\s*)*)$",
+    rf"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_:,\-\s]*)\]§(?P<trailing>(?:\s*{_TRAILING_PROTOCOL_TAG}\s*)*)$",
     re.IGNORECASE,
 )
 _TRAILING_PROTOCOL_TAGS_RE = re.compile(
