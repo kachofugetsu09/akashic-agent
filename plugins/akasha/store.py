@@ -537,6 +537,15 @@ class AkashaStore:
             rows = self._db.execute("SELECT * FROM akasha_nodes").fetchall()
         return [node for row in rows if (node := _row_to_node(row)) is not None]
 
+    # 读取单个 turn 节点。
+    def get_node(self, key: str) -> AkashaNode | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM akasha_nodes WHERE key = ?",
+                (key,),
+            ).fetchone()
+        return _row_to_node(row) if row is not None else None
+
     # 读取全部共激活边。
     def load_edges(self) -> dict[tuple[str, str], float]:
         # 1. 查询阶段把边转成 dict，便于构造扩散矩阵。
@@ -814,7 +823,7 @@ class AkashaStore:
                 [*params, page_size, offset],
             ).fetchall()
         total = int((count_row[0] if count_row else 0) or 0)
-        items = [
+        items: list[dict[str, object]] = [
             {
                 "query_id": str(row["query_id"]),
                 "session_key": str(row["session_key"]),

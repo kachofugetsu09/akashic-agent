@@ -4,9 +4,10 @@ import json
 import hashlib
 import math
 import sqlite3
+import threading
 from collections.abc import Callable, Iterable
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -151,6 +152,14 @@ class AkashaMemoryEngine:
         )
         self._event_bus = event_publisher
         self._pending_by_session: dict[str, PendingActivation] = {}
+        self._graph_lock = threading.RLock()
+        self._nodes: dict[str, AkashaNode] = {}
+        self._edges: dict[tuple[str, str], float] = {}
+        self._edges_by_src: dict[str, dict[str, float]] = {}
+        self._fan: dict[str, int] = {}
+        self._message_embeddings: dict[str, np.ndarray] = {}
+        self._message_turn_keys: dict[str, str] = {}
+        self._load_graph_cache()
         self.closeables: list[object] = [self._store, self._embedder]
         self._wire_events()
 
@@ -405,12 +414,18 @@ class AkashaMemoryEngine:
     # 删除 Akasha sidecar 节点。
     def delete_item(self, item_id: str) -> bool:
         # 1. 只删除 sidecar 索引，不删除原始 messages。
-        return self._store.delete_item(item_id)
+        deleted = self._store.delete_item(item_id)
+        if deleted:
+            self._remove_cached_nodes([item_id])
+        return deleted
 
     # 批量删除 Akasha sidecar 节点。
     def delete_items_batch(self, ids: list[str]) -> int:
         # 1. 只删除 sidecar 索引，不删除原始 messages。
-        return self._store.delete_items_batch(ids)
+        deleted = self._store.delete_items_batch(ids)
+        if deleted:
+            self._remove_cached_nodes(ids)
+        return deleted
 
     # 查找相似 Akasha 节点。
     def find_similar_items_for_dashboard(
@@ -434,10 +449,8 @@ class AkashaMemoryEngine:
         request: MemoryQuery,
     ) -> "_AkashaRetrieval":
         # 1. 准备内存图和当前查询所在的预测 seq。
-        nodes = {node.key: node for node in self._store.list_nodes()}
-        edges = self._store.load_edges()
+        nodes, fan, edges_by_src, message_embeddings, message_turn_keys = self._graph_snapshot()
         seq = _current_query_seq(self._session_db_path, request.scope)
-        fan = _fan_counts(edges)
         source_db = (
             sqlite3.connect(str(self._session_db_path))
             if self._session_db_path.exists()
@@ -450,20 +463,20 @@ class AkashaMemoryEngine:
             dense_items = _dense_message_candidates(
                 query_vec,
                 nodes,
-                self._store,
-                self._config.memory.embedding.model,
-                source_cursor,
+                message_embeddings,
+                message_turn_keys,
                 limit=max(self._akasha_config.dense_top_k, request.limit),
             )
             activation_items, _, _ = _compute_candidates(
                 query,
                 query_vec,
                 nodes,
-                edges,
+                {},
                 seq,
                 config=self._akasha_config,
                 fan=fan,
                 source_cursor=source_cursor,
+                edges_by_src=edges_by_src,
                 soft_recall=False,
                 return_limit=self._akasha_config.activate_limit,
             )
@@ -475,11 +488,12 @@ class AkashaMemoryEngine:
                 query,
                 query_vec,
                 nodes,
-                edges,
+                {},
                 seq,
                 config=self._akasha_config,
                 fan=fan,
                 source_cursor=source_cursor,
+                edges_by_src=edges_by_src,
                 soft_recall=True,
                 return_limit=display_limit,
             )
@@ -490,6 +504,7 @@ class AkashaMemoryEngine:
         # 3. 查询阶段只更新旧节点状态，当前 turn 的边等 after-turn 再补。
         updates = _activation_updates(activation_items, nodes, seq)
         self._store.update_activation_batch(updates)
+        self._apply_activation_updates(updates)
         return _AkashaRetrieval(
             dense_items=dense_items,
             ripple_items=ripple_items,
@@ -533,6 +548,8 @@ class AkashaMemoryEngine:
                 embedding=embedding,
             )
             current_key = self._store.upsert_message_node(message, embedding)
+            self._refresh_cached_node(current_key)
+            self._refresh_cached_message(message, embedding, current_key)
 
         # 3. 用真实 current_key 建边，并记录激活诊断。
         pending = self._pending_by_session.pop(event.session_key, None)
@@ -562,6 +579,7 @@ class AkashaMemoryEngine:
                 edge_updates.append(EdgeUpdate(left.key, right.key, edge_strength, pending.seq))
                 edge_updates.append(EdgeUpdate(right.key, left.key, edge_strength, pending.seq))
         self._store.upsert_edges(edge_updates)
+        self._apply_edge_updates(edge_updates)
 
         # 3. 记录本轮激活明细，便于之后诊断。
         self._store.insert_activation_events([
@@ -580,6 +598,123 @@ class AkashaMemoryEngine:
             )
             for item in pending.items
         ])
+
+    # 启动时加载一次内存图。
+    def _load_graph_cache(self) -> None:
+        nodes = {node.key: node for node in self._store.list_nodes()}
+        edges = self._store.load_edges()
+        message_embeddings = dict(
+            self._store.list_cached_embeddings(model=self._config.memory.embedding.model)
+        )
+        message_turn_keys = _load_message_turn_keys(self._session_db_path)
+        with self._graph_lock:
+            self._nodes = nodes
+            self._edges = edges
+            self._edges_by_src = _edges_by_src(edges)
+            self._fan = _fan_counts(edges)
+            self._message_embeddings = message_embeddings
+            self._message_turn_keys = message_turn_keys
+
+    # 取查询使用的内存图快照。
+    def _graph_snapshot(
+        self,
+    ) -> tuple[
+        dict[str, AkashaNode],
+        dict[str, int],
+        dict[str, dict[str, float]],
+        dict[str, np.ndarray],
+        dict[str, str],
+    ]:
+        if not hasattr(self, "_graph_lock"):
+            self._graph_lock = threading.RLock()
+            self._nodes = {}
+            self._edges = {}
+            self._edges_by_src = {}
+            self._fan = {}
+            self._message_embeddings = {}
+            self._message_turn_keys = {}
+            self._load_graph_cache()
+        with self._graph_lock:
+            return (
+                dict(self._nodes),
+                dict(self._fan),
+                self._edges_by_src,
+                dict(self._message_embeddings),
+                dict(self._message_turn_keys),
+            )
+
+    # 把查询产生的状态更新同步进内存图。
+    def _apply_activation_updates(self, updates: list[ActivationUpdate]) -> None:
+        if not updates:
+            return
+        with self._graph_lock:
+            for item in updates:
+                node = self._nodes.get(item.key)
+                if node is None:
+                    continue
+                self._nodes[item.key] = replace(
+                    node,
+                    strength=item.strength,
+                    resource=item.resource,
+                    recall_count=item.recall_count,
+                    last_activated_seq=item.seq,
+                    last_strength_seq=item.seq,
+                    last_resource_seq=item.seq,
+                )
+
+    # 把新写入或合并的节点同步进内存图。
+    def _refresh_cached_node(self, key: str) -> None:
+        node = self._store.get_node(key)
+        if node is None:
+            return
+        with self._graph_lock:
+            self._nodes[key] = node
+
+    # 把 message-level dense 缓存同步进内存图。
+    def _refresh_cached_message(
+        self,
+        message: SourceMessage,
+        embedding: list[float],
+        turn_key_value: str,
+    ) -> None:
+        with self._graph_lock:
+            self._message_embeddings[message.id] = np.array(embedding, dtype=np.float32)
+            self._message_turn_keys[message.id] = turn_key_value
+
+    # 把新增或增强的边同步进内存图。
+    def _apply_edge_updates(self, updates: list[EdgeUpdate]) -> None:
+        if not updates:
+            return
+        with self._graph_lock:
+            for item in updates:
+                if item.src_key == item.dst_key:
+                    continue
+                edge_key = (item.src_key, item.dst_key)
+                old = self._edges.get(edge_key)
+                if old is None:
+                    weight = 0.12 * item.strength
+                else:
+                    decayed = old * 0.9995
+                    weight = decayed + 0.12 * item.strength * max(0.0, 1.0 - decayed / 2.0)
+                self._edges[edge_key] = weight
+                self._edges_by_src.setdefault(item.src_key, {})[item.dst_key] = weight
+            self._fan = _fan_counts(self._edges)
+
+    # 删除 dashboard 移除的节点和相关边。
+    def _remove_cached_nodes(self, ids: list[str]) -> None:
+        remove_ids = set(ids)
+        if not remove_ids:
+            return
+        with self._graph_lock:
+            for item_id in remove_ids:
+                _ = self._nodes.pop(item_id, None)
+            self._edges = {
+                key: weight
+                for key, weight in self._edges.items()
+                if key[0] not in remove_ids and key[1] not in remove_ids
+            }
+            self._edges_by_src = _edges_by_src(self._edges)
+            self._fan = _fan_counts(self._edges)
 
     # 把 turn key 列表转成可注入 card。
     def _cards_from_keys(
@@ -763,6 +898,13 @@ def _fan_counts(edges: dict[tuple[str, str], float]) -> dict[str, int]:
     return fan
 
 
+def _edges_by_src(edges: dict[tuple[str, str], float]) -> dict[str, dict[str, float]]:
+    grouped: dict[str, dict[str, float]] = {}
+    for (src, dst), weight in edges.items():
+        grouped.setdefault(src, {})[dst] = weight
+    return grouped
+
+
 # 计算 query 对所有节点的 dense 分数。
 def _dense_scores(
     query_vec: np.ndarray,
@@ -807,21 +949,19 @@ def _dense_candidates(
 def _dense_message_candidates(
     query_vec: np.ndarray,
     nodes: dict[str, AkashaNode],
-    store: AkashaStore,
-    model: str,
-    source_cursor: sqlite3.Cursor | None,
+    message_embeddings: dict[str, np.ndarray],
+    message_turn_keys: dict[str, str],
     *,
     limit: int,
 ) -> list[AkashaCandidate]:
     # 1. Dense 展示贴合原始 CLI：先命中 message，再折回 turn key。
-    rows = store.list_cached_embeddings(model=model)
-    if not rows or source_cursor is None:
+    if not message_embeddings:
         return _dense_candidates(query_vec, nodes, limit=limit)
 
     # 2. 对缓存向量做余弦排序，过滤掉尚未 replay 成节点的消息。
     query_norm = _normalize(query_vec)
     scored: list[tuple[str, float]] = []
-    for message_id, embedding in rows:
+    for message_id, embedding in message_embeddings.items():
         if embedding.size != query_norm.size:
             continue
         score = float(np.dot(_normalize(embedding), query_norm))
@@ -831,7 +971,7 @@ def _dense_message_candidates(
     candidates: list[AkashaCandidate] = []
     seen: set[str] = set()
     for message_id, score in sorted(scored, key=lambda item: item[1], reverse=True):
-        key = _message_id_to_turn_key(source_cursor, message_id)
+        key = message_turn_keys.get(message_id)
         if key is None or key not in nodes or key in seen:
             continue
         seen.add(key)
@@ -1314,21 +1454,17 @@ def _bounded_add(value: float, delta: float, cap: float) -> float:
     return value + delta * max(0.0, 1.0 - value / cap)
 
 
-# 从 message id 映射到原始 turn key。
-def _message_id_to_turn_key(
-    cursor: sqlite3.Cursor,
-    message_id: str,
-) -> str | None:
-    # 1. Dense 命中的是 message，展示和去重都回到 user turn。
-    _ = cursor.execute(
-        "SELECT session_key, seq, role FROM messages WHERE id = ? LIMIT 1",
-        (message_id,),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        return None
-    _, _, key = turn_key(str(row[0]), int(row[1]), str(row[2] or ""))
-    return key
+# 读取 message 到 turn key 的映射。
+def _load_message_turn_keys(session_db_path: Path) -> dict[str, str]:
+    if not session_db_path.exists():
+        return {}
+    with closing(sqlite3.connect(str(session_db_path))) as db:
+        rows = db.execute("SELECT id, session_key, seq, role FROM messages").fetchall()
+    result: dict[str, str] = {}
+    for message_id, session_key, seq, role in rows:
+        _, _, key = turn_key(str(session_key), int(seq), str(role or ""))
+        result[str(message_id)] = key
+    return result
 
 
 # 把 query 切成 SQLite FTS 可用的搜索词。
@@ -1688,4 +1824,3 @@ def _candidate_signals(item: AkashaCandidate) -> dict[str, object]:
         "path_value": item.path_value,
         "suppressed": item.suppressed,
     }
-
