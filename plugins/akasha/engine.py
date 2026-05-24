@@ -335,6 +335,34 @@ class AkashaMemoryEngine:
         # 1. 引用强化暂不改变 Akasha 图，图状态由真实 query 激活驱动。
         return None
 
+    # 撤销由指定消息生成的 Akasha 状态。
+    def undo_by_message_sources(
+        self,
+        message_ids: list[str],
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, object]:
+        clean_ids = [str(item).strip() for item in message_ids if str(item).strip()]
+        if not clean_ids:
+            return {"affected_ids": [], "restored_ids": [], "rollback_source_ids": []}
+        affected_keys = self._affected_turn_keys(clean_ids)
+        rollback_source_ids = list(clean_ids) if affected_keys else []
+        if not dry_run and affected_keys:
+            keys = sorted(affected_keys)
+            turns = [
+                parsed for key in keys if (parsed := _parse_turn_key(key)) is not None
+            ]
+            _ = self._store.delete_items_batch(keys)
+            self._store.delete_query_state_for_turns(turns)
+            _ = self._store.delete_cached_embeddings(clean_ids)
+            self._remove_cached_nodes(keys)
+            self._remove_cached_messages(clean_ids)
+        return {
+            "affected_ids": sorted(affected_keys),
+            "restored_ids": [],
+            "rollback_source_ids": sorted(rollback_source_ids),
+        }
+
     # 返回引擎描述。
     def describe(self) -> MemoryEngineDescriptor:
         # 1. runtime 和 dashboard 都通过 descriptor 识别当前 engine。
@@ -715,6 +743,37 @@ class AkashaMemoryEngine:
             }
             self._edges_by_src = _edges_by_src(self._edges)
             self._fan = _fan_counts(self._edges)
+
+    # 删除 undo 移除的 message-level dense 缓存。
+    def _remove_cached_messages(self, message_ids: list[str]) -> None:
+        remove_ids = {str(item).strip() for item in message_ids if str(item).strip()}
+        if not remove_ids:
+            return
+        with self._graph_lock:
+            for message_id in remove_ids:
+                _ = self._message_embeddings.pop(message_id, None)
+                _ = self._message_turn_keys.pop(message_id, None)
+
+    # 根据 message id 找到本轮 Akasha turn 节点。
+    def _affected_turn_keys(self, message_ids: list[str]) -> set[str]:
+        affected: set[str] = set()
+        message_id_set = set(message_ids)
+        with self._graph_lock:
+            cached_turn_keys = dict(self._message_turn_keys)
+            existing_keys = set(self._nodes)
+        for message_id in message_ids:
+            cached = cached_turn_keys.get(message_id)
+            if cached and cached in existing_keys:
+                affected.add(cached)
+                continue
+            parsed = _parse_message_id(message_id)
+            if parsed is None:
+                continue
+            session_key, seq = parsed
+            for candidate in _possible_turn_keys(session_key, seq, message_id_set):
+                if candidate in existing_keys:
+                    affected.add(candidate)
+        return affected
 
     # 把 turn key 列表转成可注入 card。
     def _cards_from_keys(
@@ -1650,6 +1709,28 @@ def _parse_turn_key(key: str) -> tuple[str, int] | None:
         return left, int(right)
     except ValueError:
         return None
+
+
+def _parse_message_id(message_id: str) -> tuple[str, int] | None:
+    return _parse_turn_key(message_id)
+
+
+def _possible_turn_keys(
+    session_key: str,
+    seq: int,
+    deleted_message_ids: set[str],
+) -> tuple[str, ...]:
+    current_id = f"{session_key}:{seq}"
+    previous_id = f"{session_key}:{seq - 1}" if seq > 0 else ""
+    next_id = f"{session_key}:{seq + 1}"
+    if next_id in deleted_message_ids:
+        return (current_id,)
+    if previous_id in deleted_message_ids:
+        return (previous_id,)
+    keys = [current_id]
+    if seq > 0:
+        keys.append(previous_id)
+    return tuple(key for key in keys if key)
 
 
 # 截断 assistant 预览。

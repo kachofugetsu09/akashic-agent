@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -18,7 +20,12 @@ from plugins.akasha.engine import (
     _compute_candidates,
     _load_turn_card,
 )
-from plugins.akasha.store import AkashaStore, SourceMessage
+from plugins.akasha.store import (
+    ActivationEventRow,
+    AkashaStore,
+    EdgeUpdate,
+    SourceMessage,
+)
 from scripts.build_akasha_db import _embed_batch_with_cache
 
 
@@ -419,3 +426,99 @@ def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None
 
     assert total == 2
     assert {item["intent"] for item in items} == {"context", "answer"}
+
+
+def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    store = AkashaStore(tmp_path / "akasha.db")
+    try:
+        messages = [
+            SourceMessage("s:0", "s", 0, "user", "第一条用户消息需要完整展示", "2026-01-01T00:00:00+00:00"),
+            SourceMessage("s:1", "s", 1, "assistant", "第一条助手回复会被截断展示并保留引用", "2026-01-01T00:00:01+00:00"),
+            SourceMessage("s:2", "s", 2, "user", "第二条用户消息只在联想块", "2026-01-01T00:00:02+00:00"),
+        ]
+        for index, message in enumerate(messages):
+            embedding = [1.0, 0.0] if index < 2 else [0.0, 1.0]
+            store.upsert_cached_embedding(message=message, model="m", embedding=embedding)
+            _ = store.upsert_message_node(message, embedding)
+        store.upsert_edges([
+            EdgeUpdate("s:0", "s:2", 1.0, 0),
+            EdgeUpdate("s:2", "s:0", 1.0, 0),
+        ])
+        store.insert_activation_events([
+            ActivationEventRow(
+                seq=0,
+                query_id="s:0",
+                activated_key="s:2",
+                source="Dense",
+                score=0.8,
+                direct_score=0.8,
+                state_score=0.0,
+                edge_score=0.0,
+                long_score=0.0,
+                resource=1.0,
+                fan=0,
+            )
+        ])
+        store.insert_query_log(
+            query_id="s:0:context:abc",
+            session_key="s",
+            seq=0,
+            query_text="第一条用户消息",
+            intent="context",
+            ts="2026-01-01T00:00:00+00:00",
+            seed_count=1,
+            pool_count=2,
+            activated_count=1,
+            activation_threshold=0.2,
+            dense_count=1,
+            ripple_count=1,
+            inject_chars=10,
+            source_ref_count=2,
+            activation_items_json="[]",
+            dense_items_json="[]",
+            ripple_items_json="[]",
+            text_block_preview="preview",
+        )
+
+        engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+        engine._store = store
+        engine._session_db_path = db_path
+        engine._config = SimpleNamespace(
+            memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
+        )
+        engine._graph_lock = threading.RLock()
+        engine._nodes = {}
+        engine._edges = {}
+        engine._edges_by_src = {}
+        engine._fan = {}
+        engine._message_embeddings = {}
+        engine._message_turn_keys = {}
+        engine._load_graph_cache()
+
+        dry_run = engine.undo_by_message_sources(["s:0", "s:1"], dry_run=True)
+        with closing(sqlite3.connect(str(db_path))) as db:
+            _ = db.execute("DELETE FROM messages WHERE id IN ('s:0', 's:1')")
+            db.commit()
+        result = engine.undo_by_message_sources(["s:0", "s:1"])
+
+        assert dry_run["affected_ids"] == ["s:0"]
+        assert result["affected_ids"] == ["s:0"]
+        assert result["restored_ids"] == []
+        assert result["rollback_source_ids"] == ["s:0", "s:1"]
+        assert store.get_node("s:0") is None
+        assert store.get_node("s:2") is not None
+        assert store.load_edges() == {}
+        assert store.list_query_logs(page=1, page_size=10)[1] == 0
+        with closing(sqlite3.connect(str(store.db_path))) as db:
+            event_count = db.execute("SELECT COUNT(1) FROM akasha_activation_events").fetchone()[0]
+            cache_count = db.execute("SELECT COUNT(1) FROM akasha_embedding_cache").fetchone()[0]
+        assert event_count == 0
+        assert cache_count == 1
+        assert "s:0" not in engine._nodes
+        assert ("s:0", "s:2") not in engine._edges
+        assert "s:0" not in engine._message_embeddings
+        assert "s:1" not in engine._message_turn_keys
+    finally:
+        store.close()

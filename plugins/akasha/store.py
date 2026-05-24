@@ -356,6 +356,20 @@ class AkashaStore:
             for row in rows
         ]
 
+    # 删除指定消息的 embedding cache。
+    def delete_cached_embeddings(self, message_ids: list[str]) -> int:
+        clean_ids = [str(item).strip() for item in message_ids if str(item).strip()]
+        if not clean_ids:
+            return 0
+        placeholders = ",".join("?" for _ in clean_ids)
+        with self._lock:
+            cur = self._db.execute(
+                f"DELETE FROM akasha_embedding_cache WHERE message_id IN ({placeholders})",
+                clean_ids,
+            )
+            self._db.commit()
+        return int(cur.rowcount or 0)
+
     # 开始记录一次 Akasha 迁移。
     def start_migration_run(
         self,
@@ -736,6 +750,22 @@ class AkashaStore:
             if self.delete_item(item_id):
                 count += 1
         return count
+
+    # 删除指定 turn 的检索诊断状态。
+    def delete_query_state_for_turns(self, turns: list[tuple[str, int]]) -> None:
+        if not turns:
+            return
+        with self._lock:
+            for session_key, seq in turns:
+                _ = self._db.execute(
+                    "DELETE FROM akasha_query_log WHERE session_key = ? AND seq = ?",
+                    (session_key, seq),
+                )
+                _ = self._db.execute(
+                    "DELETE FROM akasha_activation_events WHERE query_id = ?",
+                    (f"{session_key}:{seq}",),
+                )
+            self._db.commit()
 
     # 写入一条检索诊断日志。
     def insert_query_log(
