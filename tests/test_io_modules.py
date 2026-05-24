@@ -413,6 +413,42 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
 
 
 @pytest.mark.asyncio
+async def test_ipc_server_can_route_cli_to_existing_session():
+    bus = MessageBus()
+    channel = IPCServerChannel(
+        bus,
+        "/tmp/agent.sock",
+        default_session_key="telegram:7674283004",
+    )
+    reader = SimpleNamespace(
+        readline=AsyncMock(
+            side_effect=[
+                b'{"content":"hello"}\n',
+                b'{"content":"hi","as_session_key":"telegram:42"}\n',
+                b"",
+            ]
+        )
+    )
+    writer = SimpleNamespace(
+        get_extra_info=lambda name: "peer",
+        close=MagicMock(),
+        wait_closed=AsyncMock(),
+    )
+
+    await channel._handle_connection(
+        cast(asyncio.StreamReader, reader), cast(asyncio.StreamWriter, writer)
+    )
+
+    first = await bus.consume_inbound()
+    second = await bus.consume_inbound()
+    assert first.channel == "cli"
+    assert first.session_key == "telegram:7674283004"
+    assert first.context_channel == "telegram"
+    assert first.context_chat_id == "7674283004"
+    assert second.session_key == "telegram:42"
+
+
+@pytest.mark.asyncio
 async def test_ipc_server_uses_tcp_for_explicit_host_port_on_all_platforms(
     monkeypatch: pytest.MonkeyPatch,
 ):

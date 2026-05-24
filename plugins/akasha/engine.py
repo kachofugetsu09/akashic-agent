@@ -1,0 +1,1487 @@
+from __future__ import annotations
+
+import json
+import math
+import sqlite3
+from collections.abc import Callable, Iterable
+from contextlib import closing
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+import numpy as np
+
+from agent.config_models import Config
+from bus.events_lifecycle import TurnCommitted
+from core.memory.engine import (
+    EngineProfile,
+    EvidenceRef,
+    MemoryCapability,
+    MemoryEngineDescriptor,
+    MemoryIngestRequest,
+    MemoryIngestResult,
+    MemoryMutation,
+    MemoryMutationResult,
+    MemoryQuery,
+    MemoryQueryResult,
+    MemoryRecord,
+    MemoryScope,
+    MemoryToolProfile,
+    MemoryToolSpec,
+)
+from memory2.embedder import Embedder
+from plugins.akasha.config import AkashaConfig, resolve_akasha_db_path
+from plugins.akasha.store import (
+    ActivationEventRow,
+    ActivationUpdate,
+    AkashaNode,
+    AkashaStore,
+    EdgeUpdate,
+    SourceMessage,
+    turn_key,
+)
+
+if TYPE_CHECKING:
+    from bus.event_bus import EventBus
+    from core.net.http import SharedHttpResources
+
+
+_LONG_DECAY_TAU = 2200.0
+_RESOURCE_RECOVER_TAU = 14.0
+_RESOURCE_USE_RATE = 0.35
+_STRENGTH_LR = 0.18
+_STRENGTH_CAP = 3.0
+_ASSISTANT_ONLY_PENALTY = 0.12
+_FAN_PENALTY_POWER = 0.10
+_EXPANDED_DIRECT_FLOOR = 0.62
+
+
+@dataclass(frozen=True)
+class AkashaCandidate:
+    key: str
+    source: str
+    ripple: float
+    direct: float
+    state: float
+    edge: float
+    long: float
+    resource: float
+    fan: int
+    score: float
+    suppressed: str = ""
+    path_type: str = "direct"
+    seed_key: str = ""
+    bridge_key: str = ""
+    path_value: float = 0.0
+
+
+@dataclass(frozen=True)
+class ActivationTrace:
+    seed_count: int
+    pool_count: int
+
+
+@dataclass(frozen=True)
+class AkashaCard:
+    key: str
+    source_ref: str
+    user_message: str
+    assistant_preview: str
+    score: float
+    lane: str
+    signals: dict[str, object]
+
+
+@dataclass(frozen=True)
+class PendingActivation:
+    query_id: str
+    seq: int
+    items: list[AkashaCandidate]
+
+
+class AkashaMemoryEngine:
+    DESCRIPTOR = MemoryEngineDescriptor(
+        name="akasha",
+        profile=EngineProfile.RICH_MEMORY_ENGINE,
+        capabilities=frozenset(
+            {
+                MemoryCapability.INGEST_MESSAGES,
+                MemoryCapability.RETRIEVE_SEMANTIC,
+                MemoryCapability.RETRIEVE_CONTEXT_BLOCK,
+                MemoryCapability.RETRIEVE_STRUCTURED_HITS,
+                MemoryCapability.SEMANTICS_RICH_MEMORY,
+            }
+        ),
+        notes={"owner": "plugins.akasha.engine", "truth": "sessions.db/messages"},
+    )
+
+    def __init__(
+        self,
+        *,
+        config: Config,
+        akasha_config: AkashaConfig,
+        workspace: Path,
+        http_resources: "SharedHttpResources",
+        event_publisher: "EventBus | None" = None,
+    ) -> None:
+        # 1. 初始化 sidecar store、原始消息库路径和 embedding 客户端。
+        self._config = config
+        self._akasha_config = akasha_config
+        self._workspace = workspace
+        self._session_db_path = workspace / "sessions.db"
+        self._store = AkashaStore(
+            resolve_akasha_db_path(
+                workspace=workspace,
+                akasha_config=akasha_config,
+            )
+        )
+        embedding = config.memory.embedding
+        self._embedder = Embedder(
+            base_url=embedding.base_url
+            or config.light_base_url
+            or config.base_url
+            or "",
+            api_key=embedding.api_key
+            or config.light_api_key
+            or config.api_key,
+            model=embedding.model,
+            requester=http_resources.external_default,
+        )
+        self._event_bus = event_publisher
+        self._pending_by_session: dict[str, PendingActivation] = {}
+        self.closeables: list[object] = [self._store, self._embedder]
+        self._wire_events()
+
+    # 创建 Akasha sidecar 数据库。
+    @classmethod
+    def ensure_workspace_storage(
+        cls,
+        *,
+        akasha_config: AkashaConfig,
+        workspace: Path,
+    ) -> None:
+        # 1. 启动前只确保数据库和 schema 存在。
+        store = AkashaStore(
+            resolve_akasha_db_path(
+                workspace=workspace,
+                akasha_config=akasha_config,
+            )
+        )
+        store.close()
+
+    # 注册 after-turn 增量写入。
+    def _wire_events(self) -> None:
+        # 1. Akasha 不接 consolidation，只关心每轮真实消息提交。
+        if self._event_bus is not None:
+            self._event_bus.on(TurnCommitted, self._on_turn_committed)
+
+    # 返回 Akasha 工具描述。
+    def tool_profile(self) -> MemoryToolProfile:
+        # 1. Akasha 只开放 recall_memory；事实写入来自 sessions.db 生命周期。
+        return MemoryToolProfile(
+            recall=MemoryToolSpec(
+                description=(
+                    "从 Akasha message-as-truth 记忆引擎召回原始对话。"
+                    "返回 Dense 精确命中和 Ripple 联想命中；回答具体事实前继续用 fetch_messages(source_ref) 取原文。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "要召回的历史对话主题"},
+                        "limit": {
+                            "type": "integer",
+                            "description": "最多返回条数",
+                            "minimum": 1,
+                            "maximum": 20,
+                            "default": 10,
+                        },
+                    },
+                    "required": ["query"],
+                },
+                search_hint="历史对话 原始消息 Akasha 右脑联想",
+            )
+        )
+
+    # 根据 MemoryQuery 执行 Akasha 检索。
+    async def query(
+        self,
+        request: MemoryQuery,
+    ) -> MemoryQueryResult:
+        # 1. timeline 不是 Akasha MVP 范围，时间线事实仍应走 fetch/search messages。
+        if request.intent == "timeline":
+            return MemoryQueryResult(
+                trace={"engine": self.DESCRIPTOR.name, "intent": "timeline_unsupported"}
+            )
+
+        # 2. 空 query 不触发状态更新。
+        query_text = request.text.strip()
+        if not query_text:
+            return MemoryQueryResult(trace={"engine": self.DESCRIPTOR.name, "hit_count": 0})
+
+        # 3. 检索旧 turn 图，并在 context 入口记录本轮激活。
+        query_vec = np.array(await self._embedder.embed(query_text), dtype=np.float32)
+        result = self._retrieve(query_text, query_vec, request)
+        if request.intent in {"context", "answer"}:
+            self._remember_pending_activation(request, result.activation_items)
+
+        # 4. context 注入按 Akasha 配置展示 topK；工具查询继续尊重调用方 limit。
+        dense_limit = self._akasha_config.dense_top_k
+        ripple_limit = self._akasha_config.ripple_top_k
+        if request.intent != "context":
+            dense_limit = min(request.limit, dense_limit)
+            ripple_limit = min(request.limit, ripple_limit)
+        dense_cards = self._cards_from_keys(
+            [(item.key, item.score, "dense", _candidate_signals(item)) for item in result.dense_items],
+            limit=dense_limit,
+        )
+        dense_keys = {card.key for card in dense_cards}
+        ripple_cards = self._cards_from_keys(
+            [
+                (item.key, item.score, "ripple", _candidate_signals(item))
+                for item in result.ripple_items
+                if item.key not in dense_keys
+            ],
+            limit=ripple_limit,
+        )
+        text_block = (
+            self._format_context_block(dense_cards, ripple_cards)
+            if request.intent == "context"
+            else ""
+        )
+        cards = [*dense_cards, *ripple_cards]
+        return MemoryQueryResult(
+            text_block=text_block,
+            records=[_card_to_record(card, injected=bool(text_block)) for card in cards],
+            trace={
+                "engine": self.DESCRIPTOR.name,
+                "profile": self.DESCRIPTOR.profile.value,
+                "intent": request.intent,
+                "dense_count": len(dense_cards),
+                "ripple_count": len(ripple_cards),
+                "seed_count": result.trace.seed_count,
+                "pool_count": result.trace.pool_count,
+            },
+            raw={"items": [_card_to_raw(card) for card in cards]},
+        )
+
+    # 接收外部批量 ingest 请求。
+    async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:
+        # 1. Akasha 的主写入来自 TurnCommitted；ingest 只支持显式 conversation_turn。
+        if request.source_kind not in {"conversation_turn", "conversation_batch"}:
+            return MemoryIngestResult(
+                accepted=False,
+                summary="unsupported source_kind",
+                raw={"reason": "unsupported_source_kind"},
+            )
+        content: dict[str, object] = {}
+        payload: object = request.content
+        if isinstance(payload, dict):
+            raw_content = cast(dict[object, object], payload)
+            content = {str(key): value for key, value in raw_content.items()}
+        user_text = str(content.get("user_message") or "")
+        assistant_text = str(content.get("assistant_response") or "")
+        if not user_text and not assistant_text:
+            return MemoryIngestResult(
+                accepted=False,
+                summary="empty conversation",
+                raw={"reason": "empty_conversation"},
+            )
+
+        # 2. 没有稳定 message id 时不伪造事实来源。
+        return MemoryIngestResult(
+            accepted=False,
+            summary="akasha ingest requires persisted sessions.db messages",
+            raw={"reason": "requires_persisted_messages"},
+        )
+
+    # Akasha 不通过 memorize/forget 改写事实。
+    async def mutate(self, request: MemoryMutation) -> MemoryMutationResult:
+        # 1. sidecar 不是事实库，显式写删不在 MVP 中提供。
+        if request.kind == "forget":
+            return MemoryMutationResult(
+                accepted=False,
+                status="unsupported",
+                missing_ids=list(request.ids),
+            )
+        return MemoryMutationResult(accepted=False, status="unsupported")
+
+    # 强化已引用项。
+    def reinforce_items_batch(self, ids: list[str]) -> None:
+        # 1. 引用强化暂不改变 Akasha 图，图状态由真实 query 激活驱动。
+        return None
+
+    # 返回引擎描述。
+    def describe(self) -> MemoryEngineDescriptor:
+        # 1. runtime 和 dashboard 都通过 descriptor 识别当前 engine。
+        return self.DESCRIPTOR
+
+    # Akasha 不提供 procedure 关键词规则。
+    def keyword_match_procedures(
+        self,
+        action_tokens: list[str],
+    ) -> list[dict[str, object]]:
+        # 1. procedure 语义属于 default memory，不混进 message-as-truth 引擎。
+        return []
+
+    # Akasha 不提供 event timeline 查询。
+    def list_events_by_time_range(
+        self,
+        time_start: datetime,
+        time_end: datetime,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        # 1. 时间线问题使用 search_messages/fetch_messages 更贴近原始事实。
+        return []
+
+    # dashboard 列出 Akasha turn 节点。
+    def list_items_for_dashboard(
+        self,
+        *,
+        q: str = "",
+        memory_type: str = "",
+        status: str = "",
+        source_ref: str = "",
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+        has_embedding: bool | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> tuple[list[dict[str, object]], int]:
+        # 1. 过滤项先保持 MVP，只支持 q 和分页排序。
+        _ = (memory_type, status, source_ref, scope_channel, scope_chat_id, has_embedding)
+        return self._store.list_items_for_dashboard(
+            q=q,
+            page=page,
+            page_size=page_size,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+    # dashboard 读取 Akasha 节点详情。
+    def get_item_for_dashboard(
+        self,
+        item_id: str,
+        *,
+        include_embedding: bool = False,
+    ) -> dict[str, object] | None:
+        # 1. include_embedding 由 store MVP 忽略，避免把大向量塞进 dashboard。
+        _ = include_embedding
+        return self._store.get_item_for_dashboard(item_id)
+
+    # dashboard 更新 Akasha 节点。
+    def update_item_for_dashboard(
+        self,
+        item_id: str,
+        *,
+        status: str | None = None,
+        extra_json: dict[str, object] | None = None,
+        source_ref: str | None = None,
+        happened_at: str | None = None,
+        emotional_weight: int | None = None,
+    ) -> dict[str, object] | None:
+        # 1. Akasha sidecar 不支持手改事实或状态，直接返回当前详情。
+        _ = (status, extra_json, source_ref, happened_at, emotional_weight)
+        return self._store.get_item_for_dashboard(item_id)
+
+    # 删除 Akasha sidecar 节点。
+    def delete_item(self, item_id: str) -> bool:
+        # 1. 只删除 sidecar 索引，不删除原始 messages。
+        return self._store.delete_item(item_id)
+
+    # 批量删除 Akasha sidecar 节点。
+    def delete_items_batch(self, ids: list[str]) -> int:
+        # 1. 只删除 sidecar 索引，不删除原始 messages。
+        return self._store.delete_items_batch(ids)
+
+    # 查找相似 Akasha 节点。
+    def find_similar_items_for_dashboard(
+        self,
+        item_id: str,
+        *,
+        top_k: int = 8,
+        memory_type: str = "",
+        score_threshold: float = 0.0,
+        include_superseded: bool = False,
+    ) -> list[dict[str, object]]:
+        # 1. MVP dashboard 不做相似节点展开。
+        _ = (item_id, top_k, memory_type, score_threshold, include_superseded)
+        return []
+
+    # 检索 Akasha 图并更新旧节点激活。
+    def _retrieve(
+        self,
+        query: str,
+        query_vec: np.ndarray,
+        request: MemoryQuery,
+    ) -> "_AkashaRetrieval":
+        # 1. 准备内存图和当前查询所在的预测 seq。
+        nodes = {node.key: node for node in self._store.list_nodes()}
+        edges = self._store.load_edges()
+        seq = _current_query_seq(self._session_db_path, request.scope)
+        fan = _fan_counts(edges)
+        source_db = (
+            sqlite3.connect(str(self._session_db_path))
+            if self._session_db_path.exists()
+            else None
+        )
+
+        # 2. 状态激活只取原始 replay 限额，展示候选单独放宽。
+        try:
+            source_cursor = source_db.cursor() if source_db is not None else None
+            dense_items = _dense_message_candidates(
+                query_vec,
+                nodes,
+                self._store,
+                self._config.memory.embedding.model,
+                source_cursor,
+                limit=max(self._akasha_config.dense_top_k, request.limit),
+            )
+            activation_items, _, _ = _compute_candidates(
+                query,
+                query_vec,
+                nodes,
+                edges,
+                seq,
+                config=self._akasha_config,
+                fan=fan,
+                source_cursor=source_cursor,
+                soft_recall=False,
+                return_limit=self._akasha_config.activate_limit,
+            )
+            display_limit = max(
+                24,
+                max(self._akasha_config.ripple_top_k, request.limit) * 3,
+            )
+            ripple_items, _, trace = _compute_candidates(
+                query,
+                query_vec,
+                nodes,
+                edges,
+                seq,
+                config=self._akasha_config,
+                fan=fan,
+                source_cursor=source_cursor,
+                soft_recall=True,
+                return_limit=display_limit,
+            )
+        finally:
+            if source_db is not None:
+                source_db.close()
+
+        # 3. 查询阶段只更新旧节点状态，当前 turn 的边等 after-turn 再补。
+        updates = _activation_updates(activation_items, nodes, seq)
+        self._store.update_activation_batch(updates)
+        return _AkashaRetrieval(
+            dense_items=dense_items,
+            ripple_items=ripple_items,
+            activation_items=activation_items,
+            trace=trace,
+            seq=seq,
+        )
+
+    # 暂存本轮激活，等待 after-turn 拿到真实 message id 后建边。
+    def _remember_pending_activation(
+        self,
+        request: MemoryQuery,
+        items: list[AkashaCandidate],
+    ) -> None:
+        # 1. 没有 session_key 时仍可检索，但不建当前 turn 的共激活边。
+        if not request.scope.session_key or not items:
+            return
+        seq = _current_query_seq(self._session_db_path, request.scope)
+        self._pending_by_session[request.scope.session_key] = PendingActivation(
+            query_id=f"{request.scope.session_key}:{seq}",
+            seq=seq,
+            items=list(items),
+        )
+
+    # TurnCommitted 后把真实 user/assistant 写入 sidecar，并补本轮共激活边。
+    async def _on_turn_committed(self, event: TurnCommitted) -> None:
+        # 1. 跳过不应进入记忆的系统轮次。
+        if bool((event.extra or {}).get("skip_post_memory")):
+            return
+        messages = _load_committed_turn_messages(self._session_db_path, event)
+        if not messages:
+            return
+
+        # 2. 分别 embed user 和 assistant，再按 cross CLI 规则合并到 turn 节点。
+        embeddings = await self._embedder.embed_batch([message.content for message in messages])
+        current_key = ""
+        for message, embedding in zip(messages, embeddings, strict=False):
+            self._store.upsert_cached_embedding(
+                message=message,
+                model=self._config.memory.embedding.model,
+                embedding=embedding,
+            )
+            current_key = self._store.upsert_message_node(message, embedding)
+
+        # 3. 用真实 current_key 建边，并记录激活诊断。
+        pending = self._pending_by_session.pop(event.session_key, None)
+        if current_key and pending is not None:
+            self._commit_pending_activation(current_key, pending)
+
+    # 把 pending activation 转成边和事件。
+    def _commit_pending_activation(
+        self,
+        current_key: str,
+        pending: PendingActivation,
+    ) -> None:
+        # 1. 当前输入和被激活旧节点互连，形成后续桥接能力。
+        key_to_score = {item.key: item.score for item in pending.items}
+        edge_updates: list[EdgeUpdate] = []
+        for item in pending.items:
+            edge_strength = key_to_score.get(item.key, 1.0)
+            edge_updates.append(EdgeUpdate(current_key, item.key, edge_strength, pending.seq))
+            edge_updates.append(EdgeUpdate(item.key, current_key, edge_strength, pending.seq))
+
+        # 2. 同轮共同激活的旧节点互连，保持 cross CLI 的共激活语义。
+        for left_index, left in enumerate(pending.items):
+            for right in pending.items[left_index + 1:]:
+                edge_strength = math.sqrt(
+                    key_to_score.get(left.key, 1.0) * key_to_score.get(right.key, 1.0)
+                )
+                edge_updates.append(EdgeUpdate(left.key, right.key, edge_strength, pending.seq))
+                edge_updates.append(EdgeUpdate(right.key, left.key, edge_strength, pending.seq))
+        self._store.upsert_edges(edge_updates)
+
+        # 3. 记录本轮激活明细，便于之后诊断。
+        self._store.insert_activation_events([
+            ActivationEventRow(
+                seq=pending.seq,
+                query_id=pending.query_id,
+                activated_key=item.key,
+                source=item.source,
+                score=item.score,
+                direct_score=item.direct,
+                state_score=item.state,
+                edge_score=item.edge,
+                long_score=item.long,
+                resource=item.resource,
+                fan=item.fan,
+            )
+            for item in pending.items
+        ])
+
+    # 把 turn key 列表转成可注入 card。
+    def _cards_from_keys(
+        self,
+        items: list[tuple[str, float, str, dict[str, object]]],
+        *,
+        limit: int,
+    ) -> list[AkashaCard]:
+        # 1. 每个 card 的正文都回 sessions.db 取，sidecar 不充当事实来源。
+        cards: list[AkashaCard] = []
+        seen: set[str] = set()
+        for key, score, lane, signals in items:
+            if key in seen:
+                continue
+            seen.add(key)
+            card = _load_turn_card(
+                self._session_db_path,
+                key,
+                assistant_preview_chars=self._akasha_config.assistant_preview_chars,
+                score=score,
+                lane=lane,
+                signals=signals,
+            )
+            if card is None:
+                continue
+            cards.append(card)
+            if len(cards) >= limit:
+                break
+        return cards
+
+    # 格式化 agent 看到的 Dense/Ripple 双块。
+    def _format_context_block(
+        self,
+        dense_cards: list[AkashaCard],
+        ripple_cards: list[AkashaCard],
+    ) -> str:
+        # 1. Dense 块优先展示重叠项，Ripple 块只展示 ripple-only。
+        parts: list[str] = []
+        if dense_cards:
+            parts.append(_format_cards("## 左脑记忆：精确回忆", dense_cards))
+        if ripple_cards:
+            parts.append(_format_cards("## 右脑联想：潜意识第一反应", ripple_cards))
+
+        # 2. 应用字符预算，避免历史消息过长撑爆上下文。
+        text = "\n\n".join(part for part in parts if part.strip())
+        max_chars = max(1, self._akasha_config.inject_max_chars)
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars].rstrip() + f"\n...[Akasha 已截断 {len(text) - max_chars} 字]"
+
+
+@dataclass(frozen=True)
+class _AkashaRetrieval:
+    dense_items: list[AkashaCandidate]
+    ripple_items: list[AkashaCandidate]
+    activation_items: list[AkashaCandidate]
+    trace: ActivationTrace
+    seq: int
+
+
+# 计算节点扇出。
+def _fan_counts(edges: dict[tuple[str, str], float]) -> dict[str, int]:
+    # 1. 边两端都计入 fan，和 cross CLI 保持一致。
+    fan: dict[str, int] = {}
+    for src, dst in edges:
+        fan[src] = fan.get(src, 0) + 1
+        fan[dst] = fan.get(dst, 0) + 1
+    return fan
+
+
+# 计算 query 对所有节点的 dense 分数。
+def _dense_scores(
+    query_vec: np.ndarray,
+    nodes: dict[str, AkashaNode],
+) -> dict[str, float]:
+    # 1. sidecar 节点 embedding 已归一化，点积即余弦相似度。
+    if not nodes:
+        return {}
+    keys = list(nodes.keys())
+    matrix = np.vstack([nodes[key].embedding for key in keys])
+    scores = np.dot(matrix, _normalize(query_vec))
+    return {key: float(score) for key, score in zip(keys, scores, strict=False)}
+
+
+# 取 dense top 候选。
+def _dense_candidates(
+    query_vec: np.ndarray,
+    nodes: dict[str, AkashaNode],
+    *,
+    limit: int,
+) -> list[AkashaCandidate]:
+    # 1. dense 只按直接语义分数排序，不掺入状态。
+    scores = _dense_scores(query_vec, nodes)
+    return [
+        AkashaCandidate(
+            key=key,
+            source="Dense",
+            ripple=0.0,
+            direct=score,
+            state=0.0,
+            edge=0.0,
+            long=0.0,
+            resource=1.0,
+            fan=0,
+            score=score,
+        )
+        for key, score in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]
+    ]
+
+
+# 取原始 message-level dense 命中并映射回 turn。
+def _dense_message_candidates(
+    query_vec: np.ndarray,
+    nodes: dict[str, AkashaNode],
+    store: AkashaStore,
+    model: str,
+    source_cursor: sqlite3.Cursor | None,
+    *,
+    limit: int,
+) -> list[AkashaCandidate]:
+    # 1. Dense 展示贴合原始 CLI：先命中 message，再折回 turn key。
+    rows = store.list_cached_embeddings(model=model)
+    if not rows or source_cursor is None:
+        return _dense_candidates(query_vec, nodes, limit=limit)
+
+    # 2. 对缓存向量做余弦排序，过滤掉尚未 replay 成节点的消息。
+    query_norm = _normalize(query_vec)
+    scored: list[tuple[str, float]] = []
+    for message_id, embedding in rows:
+        if embedding.size != query_norm.size:
+            continue
+        score = float(np.dot(_normalize(embedding), query_norm))
+        scored.append((message_id, score))
+
+    # 3. 同一个 turn 只保留最高分，避免 user/assistant 重复占位。
+    candidates: list[AkashaCandidate] = []
+    seen: set[str] = set()
+    for message_id, score in sorted(scored, key=lambda item: item[1], reverse=True):
+        key = _message_id_to_turn_key(source_cursor, message_id)
+        if key is None or key not in nodes or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(
+            AkashaCandidate(
+                key=key,
+                source="Dense",
+                ripple=0.0,
+                direct=score,
+                state=0.0,
+                edge=0.0,
+                long=0.0,
+                resource=1.0,
+                fan=0,
+                score=score,
+            )
+        )
+        if len(candidates) >= limit:
+            break
+    return candidates
+
+
+# 计算 Ripple 联想候选。
+def _compute_candidates(
+    query: str,
+    query_vec: np.ndarray,
+    nodes: dict[str, AkashaNode],
+    edges: dict[tuple[str, str], float],
+    seq: int,
+    *,
+    config: AkashaConfig,
+    fan: dict[str, int],
+    source_cursor: sqlite3.Cursor | None = None,
+    edges_by_src: dict[str, dict[str, float]] | None = None,
+    soft_recall: bool = False,
+    return_limit: int | None = None,
+) -> tuple[list[AkashaCandidate], list[AkashaCandidate], ActivationTrace]:
+    # 1. 先用 Dense/FTS/BlackHole 三路选 seed。
+    if not nodes:
+        return [], [], ActivationTrace(seed_count=0, pool_count=0)
+    direct_scores = _dense_scores(query_vec, nodes)
+    seed_sources, seed_energy = _seed_pool(
+        query,
+        direct_scores,
+        nodes,
+        config,
+        source_cursor,
+    )
+    if not seed_sources:
+        return [], [], ActivationTrace(seed_count=0, pool_count=0)
+
+    # 2. 只在 seed 附近构建微型图，避免全图扩散噪音。
+    micro_keys = set(seed_sources)
+    for seed_key in seed_sources:
+        seed_ts = nodes[seed_key].first_ts_unix
+        for key, node in nodes.items():
+            if key in micro_keys:
+                continue
+            is_near = abs(node.first_ts_unix - seed_ts) <= config.nearby_time_seconds
+            if is_near and direct_scores.get(key, 0.0) > config.nearby_dense_threshold:
+                micro_keys.add(key)
+    valid_keys = list(micro_keys)
+    if not valid_keys:
+        return [], [], ActivationTrace(seed_count=0, pool_count=0)
+
+    # 3. 构建状态调制转移矩阵，并执行两轮 RWR 扩散。
+    index_by_key = {key: index for index, key in enumerate(valid_keys)}
+    embeddings = np.vstack([nodes[key].embedding for key in valid_keys])
+    sim_matrix = np.maximum(np.dot(embeddings, embeddings.T), 0.0)
+    np.fill_diagonal(sim_matrix, 0.0)
+    state_arr = _state_array(valid_keys, nodes, fan, seq)
+    cross_matrix = _cross_matrix(valid_keys, edges, index_by_key, edges_by_src)
+    transition = sim_matrix * state_arr[:, np.newaxis]
+    transition *= 1.0 + config.cross_boost * cross_matrix
+    transition = _keep_top_edges_per_column(transition, top_k=12)
+    transition = _normalize_columns(transition)
+    e0 = _initial_energy(valid_keys, seed_energy, fan, index_by_key)
+    te0 = np.dot(transition, e0)
+    current = e0.copy()
+    for _ in range(2):
+        current = 0.8 * np.dot(transition, current) + 0.2 * e0
+
+    # 4. 回溯路径并计算最终分数。
+    path_info = _path_info(valid_keys, transition, e0, te0)
+    candidates, suppressed = _score_candidates(
+        valid_keys,
+        nodes,
+        direct_scores,
+        seed_sources,
+        current,
+        state_arr,
+        cross_matrix,
+        fan,
+        seq,
+        path_info,
+        config,
+        source_cursor,
+        soft_recall=soft_recall,
+        return_limit=return_limit,
+    )
+    return candidates, suppressed, ActivationTrace(
+        seed_count=len(seed_sources),
+        pool_count=len(valid_keys),
+    )
+
+
+# 选择 Ripple 的语义 seed。
+def _seed_pool(
+    query: str,
+    direct_scores: dict[str, float],
+    nodes: dict[str, AkashaNode],
+    config: AkashaConfig,
+    source_cursor: sqlite3.Cursor | None,
+) -> tuple[dict[str, str], dict[str, float]]:
+    # 1. 优先选择高置信 dense seed，缺失时回退 dense top-k。
+    ranked = sorted(direct_scores.items(), key=lambda item: item[1], reverse=True)
+    seed_sources: dict[str, str] = {}
+    seed_energy: dict[str, float] = {}
+    for key, score in ranked[: min(100, len(ranked))]:
+        if score > config.dense_seed_threshold:
+            seed_sources[key] = "Dense"
+            seed_energy[key] = 1.0
+    if not seed_sources:
+        for key, _ in ranked[: config.dense_top_k]:
+            seed_sources[key] = "Dense(FB)"
+            seed_energy[key] = 1.0
+
+    # 2. FTS seed 从原始 messages_fts 映射回 turn key。
+    if source_cursor is not None:
+        fts_query = _get_jieba_keywords(query)
+        if fts_query:
+            _ = source_cursor.execute(
+                """
+                SELECT rowid
+                FROM messages_fts
+                WHERE content MATCH ?
+                LIMIT 10
+                """,
+                (fts_query,),
+            )
+            rowids = [int(row[0]) for row in source_cursor.fetchall()]
+            if rowids:
+                placeholders = ",".join("?" for _ in rowids)
+                _ = source_cursor.execute(
+                    f"""
+                    SELECT session_key, seq, role
+                    FROM messages
+                    WHERE rowid IN ({placeholders})
+                    """,
+                    rowids,
+                )
+                for session_key, seq, role in source_cursor.fetchall():
+                    _, _, key = turn_key(str(session_key), int(seq), str(role or ""))
+                    if key not in nodes:
+                        continue
+                    if key not in seed_sources:
+                        seed_sources[key] = "FTS"
+                    elif "FTS" not in seed_sources[key].split("+"):
+                        seed_sources[key] += "+FTS"
+                    seed_energy[key] = 1.0
+
+    # 3. BlackHole 保留高 salience 且语义相近的少量节点。
+    blackhole_hits: list[tuple[str, float]] = []
+    for key, node in nodes.items():
+        if node.salience <= 0.8 or key in seed_sources:
+            continue
+        score = direct_scores.get(key, 0.0)
+        if score > 0.60:
+            blackhole_hits.append((key, score))
+    for key, _ in sorted(blackhole_hits, key=lambda item: item[1], reverse=True)[:5]:
+        seed_sources[key] = "BlackHole"
+        seed_energy[key] = 1.0
+    return seed_sources, seed_energy
+
+
+# 计算节点状态权重。
+def _state_array(
+    keys: list[str],
+    nodes: dict[str, AkashaNode],
+    fan: dict[str, int],
+    seq: int,
+) -> np.ndarray:
+    # 1. 状态权重包含显著度、长期强度、短期资源和 fan 惩罚。
+    values = np.zeros(len(keys), dtype=np.float32)
+    for index, key in enumerate(keys):
+        node = nodes[key]
+        long_score = min(1.0, _decayed_strength(node, seq) / _STRENGTH_CAP)
+        resource = _recover_resource(node, seq)
+        values[index] = (
+            math.exp(1.4 * node.salience + 1.0 * long_score)
+            * resource
+            / math.sqrt(1.0 + fan.get(key, 0))
+        )
+    return values
+
+
+# 构建共激活边矩阵。
+def _cross_matrix(
+    keys: list[str],
+    edges: dict[tuple[str, str], float],
+    index_by_key: dict[str, int],
+    edges_by_src: dict[str, dict[str, float]] | None = None,
+) -> np.ndarray:
+    # 1. 只把微型图内部的边投影进矩阵。
+    matrix = np.zeros((len(keys), len(keys)), dtype=np.float32)
+    if edges_by_src is not None:
+        for src_key in keys:
+            src_index = index_by_key[src_key]
+            for dst_key, weight in edges_by_src.get(src_key, {}).items():
+                dst_index = index_by_key.get(dst_key)
+                if dst_index is not None:
+                    matrix[dst_index, src_index] = max(matrix[dst_index, src_index], weight)
+        return matrix
+
+    # 2. 没有 src 索引时扫描边表。
+    for (src_key, dst_key), weight in edges.items():
+        src_index = index_by_key.get(src_key)
+        dst_index = index_by_key.get(dst_key)
+        if src_index is not None and dst_index is not None:
+            matrix[dst_index, src_index] = max(matrix[dst_index, src_index], weight)
+    return matrix
+
+
+# 每列只保留最强的若干条边。
+def _keep_top_edges_per_column(matrix: np.ndarray, *, top_k: int) -> np.ndarray:
+    # 1. 这个稀疏化来自 cross CLI，避免微型图变成全连接噪音。
+    if len(matrix) <= top_k:
+        return matrix
+    kth = np.partition(matrix, -top_k, axis=0)[-top_k]
+    return np.where(matrix >= kth[np.newaxis, :], matrix, 0.0)
+
+
+# 对转移矩阵按列归一化。
+def _normalize_columns(matrix: np.ndarray) -> np.ndarray:
+    # 1. 空列用极小值防止除零。
+    sums = matrix.sum(axis=0)
+    sums[sums == 0] = 1e-10
+    return matrix / sums
+
+
+# 构造 RWR 初始能量。
+def _initial_energy(
+    keys: list[str],
+    seed_energy: dict[str, float],
+    fan: dict[str, int],
+    index_by_key: dict[str, int],
+) -> np.ndarray:
+    # 1. seed 能量按 fan 惩罚后再归一化。
+    energy = np.zeros(len(keys), dtype=np.float32)
+    for key, value in seed_energy.items():
+        index = index_by_key.get(key)
+        if index is not None:
+            energy[index] = value / math.sqrt(1.0 + fan.get(key, 0))
+    total = float(energy.sum())
+    return energy / total if total > 0 else energy
+
+
+# 回溯每个候选主要能量路径。
+def _path_info(
+    keys: list[str],
+    transition: np.ndarray,
+    e0: np.ndarray,
+    te0: np.ndarray,
+) -> dict[str, tuple[str, str, str, float]]:
+    # 1. 区分 direct / 1hop / 2hop，用于后续跳数惩罚和提示诊断。
+    result: dict[str, tuple[str, str, str, float]] = {}
+    seed_indices = np.where(e0 > 0)[0]
+    for index, key in enumerate(keys):
+        c0 = float(0.2 * e0[index])
+        c1_vec = 0.16 * transition[index, :] * e0
+        s1 = int(np.argmax(c1_vec))
+        c1 = float(c1_vec[s1])
+        c2_vec = 0.64 * transition[index, :] * te0
+        c2_vec[index] = 0.0
+        c2_vec[seed_indices] = 0.0
+        bridge = int(np.argmax(c2_vec))
+        c2 = float(c2_vec[bridge])
+        s2 = int(np.argmax(transition[bridge, :] * e0))
+        if c0 >= c1 and c0 >= c2:
+            result[key] = ("direct", "", "", c0)
+        elif c1 >= c2:
+            result[key] = ("1hop", keys[s1], "", c1)
+        else:
+            result[key] = ("2hop", keys[s2], keys[bridge], c2)
+    return result
+
+
+# 计算最终 Ripple 分数。
+def _score_candidates(
+    keys: list[str],
+    nodes: dict[str, AkashaNode],
+    direct_scores: dict[str, float],
+    seed_sources: dict[str, str],
+    current: np.ndarray,
+    state_arr: np.ndarray,
+    cross_matrix: np.ndarray,
+    fan: dict[str, int],
+    seq: int,
+    path_info: dict[str, tuple[str, str, str, float]],
+    config: AkashaConfig,
+    source_cursor: sqlite3.Cursor | None,
+    *,
+    soft_recall: bool,
+    return_limit: int | None,
+) -> tuple[list[AkashaCandidate], list[AkashaCandidate]]:
+    # 1. 先为微型图内每个节点计算完整分数。
+    all_candidates: dict[str, AkashaCandidate] = {}
+    max_state = max(float(np.max(state_arr)), 1e-10)
+    for index, key in enumerate(keys):
+        node = nodes[key]
+        long_score = min(1.0, _decayed_strength(node, seq) / _STRENGTH_CAP)
+        resource = _recover_resource(node, seq)
+        fan_value = fan.get(key, 0)
+        direct_value = max(0.0, direct_scores.get(key, 0.0))
+        state_value = min(1.0, float(state_arr[index]) / max_state)
+        edge_value = float(np.max(cross_matrix[index])) if len(keys) else 0.0
+        path_type, seed_key, bridge_key, path_value = path_info.get(key, ("direct", "", "", 0.0))
+        hop_penalty = {"direct": 1.0, "1hop": 0.86, "2hop": 0.62}.get(path_type, 0.62)
+        source = seed_sources.get(key, "Expanded")
+        direct_weight = 0.50 if source != "Expanded" else 0.18
+        fan_penalty = math.pow(1.0 + fan_value, _FAN_PENALTY_POWER)
+        user_penalty = 1.0 if _has_user_turn(source_cursor, key) else _ASSISTANT_ONLY_PENALTY
+        score = (
+            float(current[index]) * 3.0 * state_value
+            + direct_weight * direct_value
+            + 0.18 * long_score
+            + 0.12 * node.salience
+            + 0.20 * min(1.0, edge_value)
+        ) * resource * hop_penalty * user_penalty / fan_penalty
+        if source == "Expanded" and path_type == "1hop" and direct_value >= _EXPANDED_DIRECT_FLOOR:
+            score = max(score, config.activation_threshold + 0.01)
+        all_candidates[key] = AkashaCandidate(
+            key=key,
+            source=source,
+            ripple=float(current[index]),
+            direct=direct_value,
+            state=state_value,
+            edge=edge_value,
+            long=long_score,
+            resource=resource,
+            fan=fan_value,
+            score=score,
+            path_type=path_type,
+            seed_key=seed_key,
+            bridge_key=bridge_key,
+            path_value=path_value,
+        )
+
+    # 2. 原始算法会把 2-hop child 的中间节点提升成 Bridge 候选。
+    for child in list(all_candidates.values()):
+        if child.path_type != "2hop" or not child.bridge_key:
+            continue
+        bridge = all_candidates.get(child.bridge_key)
+        if bridge is None or not _has_user_turn(source_cursor, bridge.key):
+            continue
+        bridge_score = max(
+            bridge.score,
+            child.score * 0.62,
+            bridge.direct * 0.24 + bridge.state * 0.08,
+        )
+        all_candidates[bridge.key] = AkashaCandidate(
+            key=bridge.key,
+            source="Bridge",
+            ripple=bridge.ripple,
+            direct=bridge.direct,
+            state=bridge.state,
+            edge=bridge.edge,
+            long=bridge.long,
+            resource=bridge.resource,
+            fan=bridge.fan,
+            score=bridge_score,
+            path_type="bridge",
+            seed_key=child.seed_key,
+            bridge_key="",
+            path_value=max(bridge.path_value, child.path_value),
+        )
+
+    # 3. 写状态默认只接受硬阈值；展示查询可以追加 soft recall。
+    candidates: list[AkashaCandidate] = []
+    suppressed: list[AkashaCandidate] = []
+    for candidate in all_candidates.values():
+        soft_hit = (
+            soft_recall
+            and candidate.score >= config.soft_recall_threshold
+            and candidate.direct >= config.soft_recall_direct_floor
+            and candidate.source in {"Bridge", "Expanded"}
+            and candidate.path_type in {"bridge", "1hop", "2hop"}
+        )
+        if candidate.score >= config.activation_threshold or soft_hit:
+            if soft_hit and candidate.score < config.activation_threshold:
+                candidate = AkashaCandidate(
+                    key=candidate.key,
+                    source=candidate.source,
+                    ripple=candidate.ripple,
+                    direct=candidate.direct,
+                    state=candidate.state,
+                    edge=candidate.edge,
+                    long=candidate.long,
+                    resource=candidate.resource,
+                    fan=candidate.fan,
+                    score=candidate.score,
+                    suppressed="soft-recall",
+                    path_type=candidate.path_type,
+                    seed_key=candidate.seed_key,
+                    bridge_key=candidate.bridge_key,
+                    path_value=candidate.path_value,
+                )
+            candidates.append(candidate)
+        else:
+            suppressed.append(
+                AkashaCandidate(
+                    key=candidate.key,
+                    source=candidate.source,
+                    ripple=candidate.ripple,
+                    direct=candidate.direct,
+                    state=candidate.state,
+                    edge=candidate.edge,
+                    long=candidate.long,
+                    resource=candidate.resource,
+                    fan=candidate.fan,
+                    score=candidate.score,
+                    suppressed="below-threshold",
+                    path_type=candidate.path_type,
+                    seed_key=candidate.seed_key,
+                    bridge_key=candidate.bridge_key,
+                    path_value=candidate.path_value,
+                )
+            )
+    candidates.sort(key=lambda item: item.score, reverse=True)
+    suppressed.sort(key=lambda item: item.score, reverse=True)
+    limit = return_limit or config.activate_limit
+    return candidates[:limit], suppressed[:limit]
+
+
+# 生成旧节点状态更新。
+def _activation_updates(
+    items: list[AkashaCandidate],
+    nodes: dict[str, AkashaNode],
+    seq: int,
+) -> list[ActivationUpdate]:
+    # 1. 被激活节点执行长期强度巩固和短期资源消耗。
+    updates: list[ActivationUpdate] = []
+    for item in items:
+        node = nodes.get(item.key)
+        if node is None:
+            continue
+        strength = _decayed_strength(node, seq)
+        strength = _bounded_add(strength, _STRENGTH_LR * item.score, _STRENGTH_CAP)
+        resource = _recover_resource(node, seq)
+        resource *= max(0.05, 1.0 - _RESOURCE_USE_RATE * min(1.0, item.score))
+        updates.append(
+            ActivationUpdate(
+                key=item.key,
+                strength=strength,
+                resource=resource,
+                recall_count=node.recall_count + 1,
+                seq=seq,
+            )
+        )
+    return updates
+
+
+# 计算短期资源恢复。
+def _recover_resource(node: AkashaNode, seq: int) -> float:
+    # 1. 距离上次激活越久，resource 越接近 1。
+    gap = max(0, seq - node.last_resource_seq)
+    return 1.0 - (1.0 - node.resource) * math.exp(-gap / _RESOURCE_RECOVER_TAU)
+
+
+# 计算长期强度衰减。
+def _decayed_strength(node: AkashaNode, seq: int) -> float:
+    # 1. strength 是历史激活强度，随消息序号差缓慢衰减。
+    gap = max(0, seq - node.last_strength_seq)
+    return node.strength * math.exp(-gap / _LONG_DECAY_TAU)
+
+
+# 有界增加状态值。
+def _bounded_add(value: float, delta: float, cap: float) -> float:
+    # 1. 越接近 cap，新增越慢。
+    return value + delta * max(0.0, 1.0 - value / cap)
+
+
+# 从 message id 映射到原始 turn key。
+def _message_id_to_turn_key(
+    cursor: sqlite3.Cursor,
+    message_id: str,
+) -> str | None:
+    # 1. Dense 命中的是 message，展示和去重都回到 user turn。
+    _ = cursor.execute(
+        "SELECT session_key, seq, role FROM messages WHERE id = ? LIMIT 1",
+        (message_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    _, _, key = turn_key(str(row[0]), int(row[1]), str(row[2] or ""))
+    return key
+
+
+# 把 query 切成 SQLite FTS 可用的搜索词。
+def _get_jieba_keywords(text: str) -> str:
+    # 1. 和原始 cross CLI 一样使用 jieba 的 search mode。
+    import jieba
+
+    cut_for_search = cast(Callable[[str], Iterable[str]], getattr(jieba, "cut_for_search"))
+    words: list[str] = []
+    for word in cut_for_search(text):
+        cleaned = "".join(
+            char
+            for char in word.strip()
+            if char.isalnum() or "\u4e00" <= char <= "\u9fff"
+        )
+        if len(cleaned) > 1:
+            words.append(f'"{cleaned}"')
+    return " OR ".join(words[:20])
+
+
+# 判断 turn key 是否有 user anchor。
+def _has_user_turn(cursor: sqlite3.Cursor | None, key: str) -> bool:
+    # 1. 有 source cursor 时贴合原始 DB 检查；没有时保留节点级语义。
+    if cursor is None:
+        return True
+    parsed = _parse_turn_key(key)
+    if parsed is None:
+        return False
+    session_key, seq = parsed
+    _ = cursor.execute(
+        """
+        SELECT 1
+        FROM messages
+        WHERE session_key = ? AND seq = ? AND role = 'user'
+        LIMIT 1
+        """,
+        (session_key, seq),
+    )
+    return cursor.fetchone() is not None
+
+
+# 归一化向量。
+def _normalize(vector: np.ndarray) -> np.ndarray:
+    # 1. 所有相似度都基于单位向量。
+    norm = float(np.linalg.norm(vector))
+    return vector / norm if norm > 0 else vector
+
+
+# 获取当前 query 对应的预测 seq。
+def _current_query_seq(
+    session_db_path: Path,
+    scope: MemoryScope,
+) -> int:
+    # 1. before-turn 检索时 user 尚未持久化，因此使用 sessions.db 当前 next seq。
+    if not scope.session_key or not session_db_path.exists():
+        return 0
+    with closing(sqlite3.connect(str(session_db_path))) as db:
+        row = db.execute(
+            "SELECT COALESCE(MAX(seq) + 1, 0) FROM messages WHERE session_key = ?",
+            (scope.session_key,),
+        ).fetchone()
+    return int(row[0] if row else 0)
+
+
+# 从 sessions.db 反查 after-turn 已经持久化的本轮消息。
+def _load_committed_turn_messages(
+    session_db_path: Path,
+    event: TurnCommitted,
+) -> list[SourceMessage]:
+    # 1. after-turn 发生在 append_messages 后，这里用内容和相邻 seq 反查稳定 id。
+    if not session_db_path.exists() or not (event.persisted_user_message or event.input_message):
+        return []
+    user_text = event.persisted_user_message or event.input_message
+    with closing(sqlite3.connect(str(session_db_path))) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            """
+            SELECT
+                u.id AS user_id, u.session_key AS session_key, u.seq AS user_seq,
+                u.content AS user_content, u.ts AS user_ts,
+                a.id AS assistant_id, a.seq AS assistant_seq,
+                a.content AS assistant_content, a.ts AS assistant_ts
+            FROM messages u
+            LEFT JOIN messages a
+                ON a.session_key = u.session_key
+               AND a.seq = u.seq + 1
+               AND a.role = 'assistant'
+               AND a.content = ?
+            WHERE u.session_key = ?
+              AND u.role = 'user'
+              AND u.content = ?
+            ORDER BY u.seq DESC
+            LIMIT 1
+            """,
+            (event.assistant_response, event.session_key, user_text),
+        ).fetchone()
+    if row is None:
+        return []
+    messages = [
+        SourceMessage(
+            id=str(row["user_id"]),
+            session_key=str(row["session_key"]),
+            seq=int(row["user_seq"]),
+            role="user",
+            content=str(row["user_content"] or ""),
+            ts=str(row["user_ts"] or ""),
+        )
+    ]
+    if row["assistant_id"] is not None:
+        messages.append(
+            SourceMessage(
+                id=str(row["assistant_id"]),
+                session_key=str(row["session_key"]),
+                seq=int(row["assistant_seq"]),
+                role="assistant",
+                content=str(row["assistant_content"] or ""),
+                ts=str(row["assistant_ts"] or ""),
+            )
+        )
+    return messages
+
+
+# 从 sessions.db 读取 turn card。
+def _load_turn_card(
+    session_db_path: Path,
+    key: str,
+    *,
+    assistant_preview_chars: int,
+    score: float,
+    lane: str,
+    signals: dict[str, object],
+) -> AkashaCard | None:
+    # 1. 用 turn key 回源到 messages 表，user 全量、assistant 截断。
+    parsed = _parse_turn_key(key)
+    if parsed is None or not session_db_path.exists():
+        return None
+    session_key, seq = parsed
+    with closing(sqlite3.connect(str(session_db_path))) as db:
+        db.row_factory = sqlite3.Row
+        user_row = db.execute(
+            """
+            SELECT id, content
+            FROM messages
+            WHERE session_key = ? AND seq = ? AND role = 'user'
+            """,
+            (session_key, seq),
+        ).fetchone()
+        assistant_row = db.execute(
+            """
+            SELECT id, content
+            FROM messages
+            WHERE session_key = ? AND seq = ? AND role = 'assistant'
+            """,
+            (session_key, seq + 1),
+        ).fetchone()
+    if user_row is None and assistant_row is None:
+        return None
+    source_ids = [
+        str(row["id"])
+        for row in (user_row, assistant_row)
+        if row is not None and str(row["id"]).strip()
+    ]
+    assistant_text = str(assistant_row["content"] or "") if assistant_row is not None else ""
+    user_text = str(user_row["content"] or "") if user_row is not None else ""
+    return AkashaCard(
+        key=key,
+        source_ref=json.dumps(source_ids, ensure_ascii=False),
+        user_message=user_text,
+        assistant_preview=_clip_assistant(assistant_text, assistant_preview_chars),
+        score=score,
+        lane=lane,
+        signals=signals,
+    )
+
+
+# 解析 turn key。
+def _parse_turn_key(key: str) -> tuple[str, int] | None:
+    # 1. session_key 自身可能含冒号，因此只从右侧切 seq。
+    left, sep, right = key.rpartition(":")
+    if not sep:
+        return None
+    try:
+        return left, int(right)
+    except ValueError:
+        return None
+
+
+# 截断 assistant 预览。
+def _clip_assistant(text: str, limit: int) -> str:
+    # 1. assistant 只作为 disambiguation，不能替代 fetch 原文。
+    clean = " ".join(text.split())
+    limit = max(0, int(limit))
+    if limit <= 0 or len(clean) <= limit:
+        return clean
+    return clean[:limit].rstrip() + "..."
+
+
+# 格式化一个记忆块。
+def _format_cards(title: str, cards: list[AkashaCard]) -> str:
+    # 1. 每条 card 都带 source_ref，agent 需要事实时可继续 fetch_messages。
+    lines = [title]
+    for card in cards:
+        user_text = json.dumps(" ".join(card.user_message.split()), ensure_ascii=False)
+        assistant_text = json.dumps(
+            " ".join(card.assistant_preview.split()),
+            ensure_ascii=False,
+        )
+        lines.append(
+            f"- user={user_text} assistant={assistant_text} "
+            f"score={card.score:.4f} source_ref={card.source_ref}"
+        )
+    return "\n".join(lines)
+
+
+# 把 card 转成 MemoryRecord。
+def _card_to_record(card: AkashaCard, *, injected: bool) -> MemoryRecord:
+    # 1. summary 是展示 card，不是事实摘要；证据仍然指向 source_ref。
+    summary = f"user_message: {card.user_message}"
+    if card.assistant_preview:
+        summary += f"\nassistant_message: {card.assistant_preview}"
+    return MemoryRecord(
+        id=card.key,
+        kind="turn",
+        summary=summary,
+        score=card.score,
+        engine_kind="akasha",
+        evidence=[
+            EvidenceRef(
+                kind="message_range",
+                refs=_source_ref_ids(card.source_ref),
+                resolver="session",
+                source_ref=card.source_ref,
+            )
+        ],
+        signals=card.signals,
+        injected=injected,
+    )
+
+
+# 把 card 转成 raw item。
+def _card_to_raw(card: AkashaCard) -> dict[str, object]:
+    # 1. raw item 兼容 recall_memory 和 dashboard 里的通用命名。
+    return {
+        "id": card.key,
+        "memory_type": "turn",
+        "summary": f"user_message: {card.user_message}",
+        "score": card.score,
+        "source_ref": card.source_ref,
+        "extra_json": card.signals,
+    }
+
+
+# 从 source_ref JSON 数组中取消息 id。
+def _source_ref_ids(source_ref: str) -> list[str]:
+    # 1. source_ref 始终由 Akasha 生成，解析失败时回退空列表。
+    try:
+        value = cast(object, json.loads(source_ref))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    items = cast(list[object], value)
+    return [str(item) for item in items if str(item).strip()]
+
+
+# 把 candidate 信号放进 record。
+def _candidate_signals(item: AkashaCandidate) -> dict[str, object]:
+    # 1. signals 只用于诊断，不参与事实判断。
+    return {
+        "lane": "akasha",
+        "source": item.source,
+        "ripple": item.ripple,
+        "direct": item.direct,
+        "state": item.state,
+        "edge": item.edge,
+        "long": item.long,
+        "resource": item.resource,
+        "fan": item.fan,
+        "path_type": item.path_type,
+        "seed_key": item.seed_key,
+        "bridge_key": item.bridge_key,
+        "path_value": item.path_value,
+        "suppressed": item.suppressed,
+    }

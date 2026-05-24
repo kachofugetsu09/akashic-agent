@@ -514,8 +514,8 @@ class DefaultContextStore(ContextStore):
             RetrievalRequest(
                 message=msg.content,
                 session_key=session_key,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
+                channel=msg.context_channel,
+                chat_id=msg.context_chat_id,
                 history=history_messages,
                 session_metadata=(
                     session.metadata if isinstance(session.metadata, dict) else {}

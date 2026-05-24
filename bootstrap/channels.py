@@ -24,7 +24,11 @@ async def start_channels(
 ) -> tuple[Any, Any, Any, Any]:
     from infra.channels.ipc_server import IPCServerChannel
 
-    ipc = IPCServerChannel(bus, config.channels.socket)
+    ipc = IPCServerChannel(
+        bus,
+        config.channels.socket,
+        default_session_key=config.channels.cli_session_key,
+    )
     await ipc.start()
     print(f"Agent 已启动  |  CLI 连接地址: {config.channels.socket}")
 

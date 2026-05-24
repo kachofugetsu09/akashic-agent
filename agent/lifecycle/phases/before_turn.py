@@ -85,8 +85,8 @@ class _BuildBeforeTurnCtxModule:
         bundle = cast(ContextBundle, frame.slots[_CONTEXT_BUNDLE_SLOT])
         frame.slots[_CTX_SLOT] = BeforeTurnCtx(
             session_key=state.session_key,
-            channel=state.msg.channel,
-            chat_id=state.msg.chat_id,
+            channel=state.msg.context_channel,
+            chat_id=state.msg.context_chat_id,
             content=state.msg.content,
             timestamp=state.msg.timestamp,
             skill_names=list(bundle.skill_mentions),

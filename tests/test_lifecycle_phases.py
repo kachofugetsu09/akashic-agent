@@ -294,10 +294,48 @@ async def test_before_turn_setup_fills_turn_state():
 
     assert state.session is session
     assert ctx.skill_names == ["search"]
+    assert ctx.channel == "telegram"
+    assert ctx.chat_id == "123"
     assert ctx.retrieved_memory_block == "block_text"
     assert ctx.retrieval_trace_raw == {"trace": 1}
     assert ctx.history_messages == ({"role": "user", "content": "prev"},)
     assert ctx.abort is False
+
+
+@pytest.mark.asyncio
+async def test_before_turn_uses_cli_session_override_context():
+    bus = EventBus()
+    session = _DummySession("telegram:7674283004")
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=ContextBundle()))
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = InboundMessage(
+        channel="cli",
+        sender="user",
+        chat_id="cli-1",
+        content="hello",
+        timestamp=_now,
+        metadata={
+            "session_key_override": "telegram:7674283004",
+            "context_channel": "telegram",
+            "context_chat_id": "7674283004",
+        },
+    )
+    state = TurnState(msg=msg, session_key=msg.session_key, dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert state.session is session
+    assert ctx.session_key == "telegram:7674283004"
+    assert ctx.channel == "telegram"
+    assert ctx.chat_id == "7674283004"
 
 
 @pytest.mark.asyncio

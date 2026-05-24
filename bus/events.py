@@ -32,7 +32,18 @@ class InboundMessage:
     @property
     def session_key(self) -> str:
         """唯一会话标识，用于维护对话历史"""
+        override = str(self.metadata.get("session_key_override") or "").strip()
+        if override:
+            return override
         return f"{self.channel}:{self.chat_id}"
+
+    @property
+    def context_channel(self) -> str:
+        return str(self.metadata.get("context_channel") or self.channel).strip()
+
+    @property
+    def context_chat_id(self) -> str:
+        return str(self.metadata.get("context_chat_id") or self.chat_id).strip()
 
 
 @dataclass

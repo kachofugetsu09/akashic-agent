@@ -48,10 +48,12 @@ class IPCServerChannel:
         bus: MessageBus,
         socket_path: str,
         proactive_loop: "ProactiveLoop | None" = None,
+        default_session_key: str = "",
     ) -> None:
         self._bus = bus
         self._socket_path = _normalize_endpoint(socket_path)
         self._proactive_loop = proactive_loop
+        self._default_session_key = default_session_key.strip()
         self._writers: dict[str, asyncio.StreamWriter] = {}
         self._server: asyncio.AbstractServer | None = None
         bus.subscribe_outbound(CHANNEL, self._on_response)
@@ -118,13 +120,24 @@ class IPCServerChannel:
                 if not content:
                     continue
                 preview = content[:60] + "..." if len(content) > 60 else content
-                logger.info("[cli] received session=%s content=%r", chat_id, preview)
+                metadata = _session_override_metadata(
+                    data,
+                    default_session_key=self._default_session_key,
+                )
+                session_key = metadata.get("session_key_override", f"{CHANNEL}:{chat_id}")
+                logger.info(
+                    "[cli] received route=%s session=%s content=%r",
+                    chat_id,
+                    session_key,
+                    preview,
+                )
                 await self._bus.publish_inbound(
                     InboundMessage(
                         channel=CHANNEL,
                         sender="cli-user",
                         chat_id=chat_id,
                         content=content,
+                        metadata=metadata,
                     )
                 )
         finally:
@@ -180,3 +193,35 @@ class IPCServerChannel:
             )
             writer.write(payload.encode("utf-8"))
             await writer.drain()
+
+
+def _session_override_metadata(
+    data: dict,
+    *,
+    default_session_key: str,
+) -> dict[str, object]:
+    session_key = str(
+        data.get("as_session_key")
+        or data.get("session_key")
+        or default_session_key
+        or ""
+    ).strip()
+    if not session_key:
+        channel = str(data.get("as_channel") or "").strip()
+        chat_id = str(data.get("as_chat_id") or "").strip()
+        session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
+    if not session_key:
+        return {}
+    channel, chat_id = _split_session_key(session_key)
+    return {
+        "session_key_override": session_key,
+        "context_channel": channel,
+        "context_chat_id": chat_id,
+    }
+
+
+def _split_session_key(session_key: str) -> tuple[str, str]:
+    channel, sep, chat_id = session_key.partition(":")
+    if not sep:
+        return "", session_key
+    return channel, chat_id

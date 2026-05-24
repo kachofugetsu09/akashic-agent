@@ -50,6 +50,7 @@ class ChannelsConfig:
     qq: QQChannelConfig | None = None
     qqbot: QQBotChannelConfig | None = None
     socket: str = "/tmp/akashic.sock"
+    cli_session_key: str = ""
 
 
 @dataclass

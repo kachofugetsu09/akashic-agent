@@ -120,6 +120,41 @@ async def test_default_context_store_prepare_uses_explicit_session_key_for_retri
     assert request.session_key != msg.session_key
 
 
+@pytest.mark.asyncio
+async def test_default_context_store_uses_cli_context_override_for_retrieval():
+    retrieval = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=RetrievalResult(
+                block="remembered",
+                trace=RetrievalTrace(raw={"route": "RETRIEVE"}),
+            )
+        )
+    )
+    context = SimpleNamespace(
+        skills=SimpleNamespace(list_skills=MagicMock(return_value=[]))
+    )
+    store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
+    session = _DummySession()
+    msg = InboundMessage(
+        channel="cli",
+        sender="hua",
+        chat_id="local",
+        content="测试",
+        metadata={
+            "session_key_override": "telegram:7674283004",
+            "context_channel": "telegram",
+            "context_chat_id": "7674283004",
+        },
+    )
+
+    await store.prepare(msg=msg, session_key=msg.session_key, session=cast(Any, session))
+
+    request = retrieval.retrieve.await_args.args[0]
+    assert request.session_key == "telegram:7674283004"
+    assert request.channel == "telegram"
+    assert request.chat_id == "7674283004"
+
+
 def test_estimate_history_budget_returns_serialized_history_size():
     stats = estimate_history_budget(
         [
