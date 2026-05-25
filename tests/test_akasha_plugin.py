@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from contextlib import closing
@@ -11,6 +12,7 @@ import pytest
 import numpy as np
 
 from core.memory.engine import MemoryQuery, MemoryScope
+from agent.plugins.context import PluginContext, PluginKVStore
 from plugins.akasha.config import AkashaConfig
 from plugins.akasha.engine import (
     ActivationTrace,
@@ -20,6 +22,7 @@ from plugins.akasha.engine import (
     _compute_candidates,
     _load_turn_card,
 )
+from plugins.akasha.plugin import AkashaPlugin
 from plugins.akasha.store import (
     ActivationEventRow,
     AkashaStore,
@@ -522,3 +525,112 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
         assert "s:1" not in engine._message_turn_keys
     finally:
         store.close()
+
+
+def test_akashalast_command_only_registers_for_akasha_engine(tmp_path: Path) -> None:
+    akasha = AkashaPlugin()
+    akasha.context = PluginContext(
+        event_bus=None,
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        kv_store=PluginKVStore(tmp_path / ".akasha-kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+    default = AkashaPlugin()
+    default.context = PluginContext(
+        event_bus=None,
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        kv_store=PluginKVStore(tmp_path / ".default-kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="default")),
+    )
+
+    assert akasha.telegram_bot_commands() == [("akashalast", "查看上一轮 Akasha 检索诊断")]
+    assert len(akasha.before_turn_modules()) == 1
+    assert default.telegram_bot_commands() == []
+    assert default.before_turn_modules() == []
+
+
+def test_akashalast_renders_latest_query_log(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "memory" / "akasha.db")
+    try:
+        activation_items = json.dumps([
+            {
+                "user_message": "这个是他转的别人的帖子而已",
+                "assistant_preview": "啊你说得对，那个是转推",
+                "score": 0.501,
+                "source": "Dense",
+                "path_type": "direct",
+            }
+        ], ensure_ascii=False)
+        dense_items = json.dumps([
+            {
+                "user_message": "这个是他转的别人的帖子而已",
+                "assistant_preview": "啊你说得对，那个是转推",
+                "score": 0.703,
+                "source": "Dense",
+            }
+        ], ensure_ascii=False)
+        ripple_items = json.dumps([
+            {
+                "user_message": "我纠正过你几次有关汪远哲这个名字",
+                "assistant_preview": "花月哥哥，这个错误我真是犯过",
+                "score": 0.247,
+                "source": "FTS",
+                "path_type": "direct",
+                "direct": 0.41,
+                "state": 0.18,
+                "edge": 0.08,
+                "resource": 1.0,
+                "fan": 32,
+            }
+        ], ensure_ascii=False)
+        store.insert_query_log(
+            query_id="s:2:context:abc",
+            session_key="s",
+            seq=2,
+            query_text="这个其实不是她的 是她转发的别人的帖子",
+            intent="context",
+            ts="2026-05-24T22:15:00+08:00",
+            seed_count=11,
+            pool_count=81,
+            activated_count=4,
+            activation_threshold=0.22,
+            dense_count=1,
+            ripple_count=1,
+            inject_chars=100,
+            source_ref_count=2,
+            activation_items_json=activation_items,
+            dense_items_json=dense_items,
+            ripple_items_json=ripple_items,
+            text_block_preview="preview",
+        )
+    finally:
+        store.close()
+
+    plugin = AkashaPlugin()
+    plugin.context = PluginContext(
+        event_bus=None,
+        tool_registry=None,
+        plugin_id="akasha",
+        plugin_dir=tmp_path,
+        kv_store=PluginKVStore(tmp_path / ".kv.json"),
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+
+    reply = plugin.render_last_query("s")
+
+    assert "🧠 Akasha 记忆检索诊断" in reply
+    assert "📍 会话: `s` | seq `2`" in reply
+    assert "• 种子节点 (Seeds): `11` 个" in reply
+    assert "🔥 本轮图激活节点 (Activated Nodes):" in reply
+    assert "🎯 左脑精确回忆 (Dense):" in reply
+    assert "🌊 右脑联想记忆 (Ripple):" in reply
+    assert "分: `0.501` | 源: `Dense` | 径: `direct`" in reply
+    assert "得: `0.703` | 源: `Dense`" in reply
+    assert "因: `dir:0.41 st:0.18 edg:0.08 res:1.00 fan:32`" in reply
