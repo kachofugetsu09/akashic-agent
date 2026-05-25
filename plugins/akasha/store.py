@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-import struct
 import threading
 import uuid
 from dataclasses import dataclass
@@ -9,6 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+
+from plugins.akasha.core import (
+    AkashaNode, ActivationUpdate, EdgeUpdate, ActivationEventRow,
+    SourceMessage, turn_key, serialize_f32, deserialize_f32, parse_ts_unix,
+    normalize as _normalize,
+)
 
 
 SCHEMA = """
@@ -126,103 +131,11 @@ DROP TABLE IF EXISTS akasha_nodes;
 
 
 @dataclass(frozen=True)
-class SourceMessage:
-    id: str
-    session_key: str
-    seq: int
-    role: str
-    content: str
-    ts: str
-    salience: float | None = None
-
-
-@dataclass(frozen=True)
-class AkashaNode:
-    key: str
-    anchor_id: str
-    session_key: str
-    turn_seq: int
-    first_ts_unix: float
-    salience: float
-    strength: float
-    resource: float
-    recall_count: int
-    last_activated_seq: int
-    last_strength_seq: int
-    last_resource_seq: int
-    embedding: np.ndarray
-    emb_count: int
-
-
-@dataclass(frozen=True)
-class ActivationUpdate:
-    key: str
-    strength: float
-    resource: float
-    recall_count: int
-    seq: int
-
-
-@dataclass(frozen=True)
-class EdgeUpdate:
-    src_key: str
-    dst_key: str
-    strength: float
-    seq: int
-
-
-@dataclass(frozen=True)
-class ActivationEventRow:
-    seq: int
-    query_id: str
-    activated_key: str
-    source: str
-    score: float
-    direct_score: float
-    state_score: float
-    edge_score: float
-    long_score: float
-    resource: float
-    fan: int
-
-
-@dataclass(frozen=True)
 class SourceSessionSnapshot:
     session_key: str
     last_consolidated: int
     next_seq: int
     max_seq: int
-
-
-# 把 message 映射成原始 cross CLI 使用的 turn key。
-def turn_key(session_key: str, seq: int, role: str) -> tuple[str, int, str]:
-    # 1. assistant 归到前一个 user turn，user 归到自身 seq。
-    turn_seq = seq if role == "user" else max(0, seq - 1)
-    return session_key, turn_seq, f"{session_key}:{turn_seq}"
-
-
-# 把向量打包成 float32 BLOB。
-def serialize_f32(vector: np.ndarray) -> bytes:
-    # 1. 数据库只保存紧凑 float32，避免 JSON 大字段膨胀。
-    values = vector.astype(np.float32).tolist()
-    return struct.pack(f"{len(values)}f", *values)
-
-
-# 从 float32 BLOB 还原向量。
-def deserialize_f32(blob: bytes) -> np.ndarray:
-    # 1. 空向量不应该写入，这里按空数组兜底。
-    if not blob:
-        return np.array([], dtype=np.float32)
-    return np.array(struct.unpack(f"{len(blob) // 4}f", blob), dtype=np.float32)
-
-
-# 把时间字符串转换成 Unix 秒。
-def parse_ts_unix(value: str) -> float:
-    # 1. 优先使用 sessions.db 里的 ISO 时间。
-    try:
-        return datetime.fromisoformat(value).timestamp()
-    except Exception:
-        return datetime.now(timezone.utc).timestamp()
 
 
 # 计算 message 内容指纹。
@@ -237,15 +150,6 @@ def content_hash(content: str) -> str:
 def _now_iso() -> str:
     # 1. sidecar 内部时间统一用 UTC。
     return datetime.now(timezone.utc).isoformat()
-
-
-# 把向量归一化到单位长度。
-def _normalize(vector: np.ndarray) -> np.ndarray:
-    # 1. cross CLI 默认使用归一化 embedding；这里保持同一语义。
-    norm = float(np.linalg.norm(vector))
-    if norm <= 0:
-        return vector.astype(np.float32)
-    return (vector / norm).astype(np.float32)
 
 
 class AkashaStore:
