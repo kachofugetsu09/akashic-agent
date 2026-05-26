@@ -143,11 +143,31 @@ class AkashaMemoryEngine:
         self._message_embeddings: dict[str, np.ndarray] = {}
         self._message_turn_keys: dict[str, str] = {}
         self._load_graph_cache()
-        # 加载 IDF 表给 FTS 过滤用（表不存在时退化到无过滤）
-        from plugins.akasha.core import load_idf_from_db, set_idf_table
-        set_idf_table(load_idf_from_db(self._store._db))
+        self._ensure_idf_table()
         self.closeables: list[object] = [self._store, self._embedder]
         self._wire_events()
+
+    # 启动时自动检查 / 建 FTS IDF 表。缺失或漂移过大时重建。
+    def _ensure_idf_table(self) -> None:
+        from plugins.akasha.core import (
+            build_idf_table, idf_table_is_stale, load_idf_from_db, set_idf_table,
+        )
+        sessions_db = str(self._session_db_path)
+        conn = self._store._db
+        try:
+            stale = idf_table_is_stale(sessions_db, conn)
+        except Exception:
+            stale = True
+        if stale and self._session_db_path.exists():
+            try:
+                idf = build_idf_table(sessions_db, conn)
+                print(f"[akasha] built FTS IDF table: {len(idf)} tokens")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[akasha] IDF build failed, falling back to no-filter: {exc}")
+                set_idf_table({})
+                return
+        idf = load_idf_from_db(conn)
+        set_idf_table(idf)
 
     # 创建 Akasha sidecar 数据库。
     @classmethod

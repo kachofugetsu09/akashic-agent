@@ -57,6 +57,92 @@ def load_idf_from_db(conn: sqlite3.Connection) -> dict[str, float]:
         return {}
     return {t: float(v) for t, v in rows}
 
+
+def build_idf_table(
+    sessions_db_path: str,
+    target_conn: sqlite3.Connection,
+) -> dict[str, float]:
+    """扫描 sessions.db 所有 message 算 IDF，写入 target_conn 的 fts_token_idf 表。
+
+    用法：当 fts_token_idf 不存在或为空时调用，一次性建表。
+    增量更新场景下也可重新调用——会全表重写。
+    """
+    import jieba
+    from collections import defaultdict
+
+    sconn = sqlite3.connect(sessions_db_path)
+    df: dict[str, int] = defaultdict(int)
+    n_docs = 0
+    for (content,) in sconn.execute("SELECT content FROM messages"):
+        n_docs += 1
+        seen: set[str] = set()
+        for w in jieba.cut_for_search(content or ""):
+            cleaned = "".join(
+                ch for ch in w.strip()
+                if ch.isalnum() or "一" <= ch <= "鿿"
+            ).lower()
+            if len(cleaned) > 1 and cleaned not in seen:
+                seen.add(cleaned)
+                df[cleaned] += 1
+    sconn.close()
+
+    idf: dict[str, float] = {}
+    for tok, freq in df.items():
+        idf[tok] = math.log((n_docs + 1) / (freq + 1)) + 1
+
+    target_conn.execute("""
+        CREATE TABLE IF NOT EXISTS fts_token_idf (
+            token TEXT PRIMARY KEY,
+            df INTEGER NOT NULL,
+            idf REAL NOT NULL
+        )
+    """)
+    target_conn.execute("""
+        CREATE TABLE IF NOT EXISTS fts_token_idf_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    target_conn.execute("DELETE FROM fts_token_idf")
+    target_conn.executemany(
+        "INSERT INTO fts_token_idf VALUES (?, ?, ?)",
+        [(t, df[t], idf[t]) for t in df],
+    )
+    target_conn.execute(
+        "INSERT OR REPLACE INTO fts_token_idf_meta VALUES ('n_docs', ?)",
+        (str(n_docs),),
+    )
+    target_conn.commit()
+    return idf
+
+
+def idf_table_is_stale(
+    sessions_db_path: str,
+    target_conn: sqlite3.Connection,
+    drift_ratio: float = 0.20,
+) -> bool:
+    """判断 IDF 表是否需要重建。"""
+    try:
+        cnt = target_conn.execute("SELECT COUNT(*) FROM fts_token_idf").fetchone()[0]
+    except sqlite3.OperationalError:
+        return True
+    if cnt == 0:
+        return True
+    try:
+        row = target_conn.execute(
+            "SELECT value FROM fts_token_idf_meta WHERE key='n_docs'"
+        ).fetchone()
+        last_n = int(row[0]) if row else None
+    except sqlite3.OperationalError:
+        last_n = None
+    if last_n is None or last_n == 0:
+        return False  # 已有数据但无 meta，先不强制重建
+    sconn = sqlite3.connect(sessions_db_path)
+    cur_n = sconn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    sconn.close()
+    return abs(cur_n - last_n) / last_n > drift_ratio
+
+
 # ── 数据类型 ──────────────────────────────────────────────────────────
 
 
