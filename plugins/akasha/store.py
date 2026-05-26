@@ -12,6 +12,7 @@ import numpy as np
 from plugins.akasha.core import (
     AkashaNode, ActivationUpdate, EdgeUpdate, ActivationEventRow,
     SourceMessage, turn_key, serialize_f32, deserialize_f32, parse_ts_unix,
+    initial_strength,
     normalize as _normalize,
 )
 
@@ -51,9 +52,9 @@ CREATE TABLE IF NOT EXISTS akasha_nodes (
     strength           REAL NOT NULL,
     resource           REAL NOT NULL,
     recall_count       INTEGER NOT NULL,
-    last_activated_seq INTEGER NOT NULL,
-    last_strength_seq  INTEGER NOT NULL,
-    last_resource_seq  INTEGER NOT NULL,
+    last_activated_ts  REAL NOT NULL,
+    last_strength_ts   REAL NOT NULL,
+    last_resource_ts   REAL NOT NULL,
     embedding          BLOB NOT NULL,
     emb_count          INTEGER NOT NULL,
     created_at         TEXT NOT NULL,
@@ -66,7 +67,7 @@ CREATE TABLE IF NOT EXISTS akasha_edges (
     dst_key       TEXT NOT NULL,
     weight        REAL NOT NULL,
     co_count      INTEGER NOT NULL,
-    last_used_seq INTEGER NOT NULL,
+    last_used_ts  REAL NOT NULL,
     PRIMARY KEY (src_key, dst_key)
 );
 CREATE INDEX IF NOT EXISTS ix_akasha_edges_src
@@ -396,14 +397,18 @@ class AkashaStore:
                 (key,),
             ).fetchone()
             if row is None:
+                # 编码即峰值：strength 按 salience 初始化为接近 cap 的值
+                # 对应 Ebbinghaus 遗忘曲线起点 + ACT-R 初次激活高 base-level
+                init_str = initial_strength(salience)
+                # 新节点的 last_*_ts 设为 first_ts_unix（编码即"被激活"那一刻）
                 _ = self._db.execute(
                     """
                     INSERT INTO akasha_nodes
                         (key, anchor_id, session_key, turn_seq, first_ts_unix,
                          salience, strength, resource, recall_count,
-                         last_activated_seq, last_strength_seq, last_resource_seq,
+                         last_activated_ts, last_strength_ts, last_resource_ts,
                          embedding, emb_count, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 0.0, 1.0, 0, 0, ?, ?, ?, 1, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, 0, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
                         key,
@@ -412,8 +417,10 @@ class AkashaStore:
                         turn_seq,
                         ts_unix,
                         salience,
-                        message.seq,
-                        message.seq,
+                        init_str,
+                        ts_unix,
+                        ts_unix,
+                        ts_unix,
                         serialize_f32(vector),
                         now,
                         now,
@@ -489,9 +496,9 @@ class AkashaStore:
                 SET strength = ?,
                     resource = ?,
                     recall_count = ?,
-                    last_activated_seq = ?,
-                    last_strength_seq = ?,
-                    last_resource_seq = ?,
+                    last_activated_ts = ?,
+                    last_strength_ts = ?,
+                    last_resource_ts = ?,
                     updated_at = ?
                 WHERE key = ?
                 """,
@@ -500,9 +507,9 @@ class AkashaStore:
                         item.strength,
                         item.resource,
                         item.recall_count,
-                        item.seq,
-                        item.seq,
-                        item.seq,
+                        item.ts,
+                        item.ts,
+                        item.ts,
                         now,
                         item.key,
                     )
@@ -532,7 +539,7 @@ class AkashaStore:
                     weight = 0.12 * item.strength
                     _ = self._db.execute(
                         "INSERT INTO akasha_edges VALUES (?, ?, ?, 1, ?)",
-                        (item.src_key, item.dst_key, weight, item.seq),
+                        (item.src_key, item.dst_key, weight, item.ts),
                     )
                     continue
                 old = float(row["weight"] or 0.0) * 0.9995
@@ -542,13 +549,13 @@ class AkashaStore:
                     UPDATE akasha_edges
                     SET weight = ?,
                         co_count = ?,
-                        last_used_seq = ?
+                        last_used_ts = ?
                     WHERE src_key = ? AND dst_key = ?
                     """,
                     (
                         new_weight,
                         int(row["co_count"] or 0) + 1,
-                        item.seq,
+                        item.ts,
                         item.src_key,
                         item.dst_key,
                     ),
@@ -826,9 +833,9 @@ def _row_to_node(row: sqlite3.Row) -> AkashaNode | None:
         strength=float(row["strength"] or 0.0),
         resource=float(row["resource"] or 1.0),
         recall_count=int(row["recall_count"] or 0),
-        last_activated_seq=int(row["last_activated_seq"] or 0),
-        last_strength_seq=int(row["last_strength_seq"] or 0),
-        last_resource_seq=int(row["last_resource_seq"] or 0),
+        last_activated_ts=float(row["last_activated_ts"] or 0.0),
+        last_strength_ts=float(row["last_strength_ts"] or 0.0),
+        last_resource_ts=float(row["last_resource_ts"] or 0.0),
         embedding=embedding,
         emb_count=int(row["emb_count"] or 1),
     )

@@ -18,11 +18,23 @@ import numpy as np
 
 # ── 常量 ──────────────────────────────────────────────────────────────
 
-LONG_DECAY_TAU = 2200.0
-RESOURCE_RECOVER_TAU = 14.0
+# 时间衰减常数（秒）—— 基于 sessions.db 真实对话间隔统计
+LONG_DECAY_TAU = 604800.0       # 7 天：strength 衰减到 1/e
+RESOURCE_RECOVER_TAU = 1800.0   # 30 分钟：短期抑制恢复
+EDGE_DECAY_TAU = 1209600.0      # 14 天：Hebbian 边衰减
 RESOURCE_USE_RATE = 0.35
 STRENGTH_LR = 0.18
 STRENGTH_CAP = 3.0
+# 新事件初始 strength：编码即峰值（Ebbinghaus / ACT-R / early-LTP）
+# initial_strength = STRENGTH_CAP × (BASE + SALIENCE_BONUS · σ)
+INITIAL_STRENGTH_BASE = 0.70
+INITIAL_STRENGTH_SALIENCE_BONUS = 0.30
+
+
+def initial_strength(salience: float) -> float:
+    """新节点 encoding 时的 strength。高显著度事件起步更接近 cap。"""
+    s = max(0.0, min(1.0, salience))
+    return STRENGTH_CAP * (INITIAL_STRENGTH_BASE + INITIAL_STRENGTH_SALIENCE_BONUS * s)
 ASSISTANT_ONLY_PENALTY = 0.12
 FAN_PENALTY_POWER = 0.10
 EXPANDED_DIRECT_FLOOR = 0.62
@@ -171,9 +183,9 @@ class AkashaNode:
     strength: float
     resource: float
     recall_count: int
-    last_activated_seq: int
-    last_strength_seq: int
-    last_resource_seq: int
+    last_activated_ts: float
+    last_strength_ts: float
+    last_resource_ts: float
     embedding: np.ndarray
     emb_count: int
 
@@ -184,7 +196,7 @@ class ActivationUpdate:
     strength: float
     resource: float
     recall_count: int
-    seq: int
+    ts: float
 
 
 @dataclass(frozen=True)
@@ -228,7 +240,7 @@ class EdgeUpdate:
     src_key: str
     dst_key: str
     strength: float
-    seq: int
+    ts: float
 
 
 @dataclass(frozen=True)
@@ -380,8 +392,8 @@ def load_state(path: str) -> tuple[dict[str, AkashaNode], dict[tuple[str, str], 
     cursor.execute(
         """
         SELECT key, anchor_id, session_key, turn_seq, first_ts_unix, salience,
-               strength, resource, recall_count, last_activated_seq,
-               last_strength_seq, last_resource_seq, embedding, emb_count
+               strength, resource, recall_count, last_activated_ts,
+               last_strength_ts, last_resource_ts, embedding, emb_count
         FROM akasha_nodes
         """
     )
@@ -390,7 +402,7 @@ def load_state(path: str) -> tuple[dict[str, AkashaNode], dict[tuple[str, str], 
         (
             key, anchor_id, session_key, turn_seq, first_ts_unix,
             salience, strength, resource, recall_count,
-            last_activated_seq, last_strength_seq, last_resource_seq,
+            last_activated_ts, last_strength_ts, last_resource_ts,
             embedding_blob, emb_count,
         ) = row
         embedding = deserialize_f32(embedding_blob)
@@ -406,9 +418,9 @@ def load_state(path: str) -> tuple[dict[str, AkashaNode], dict[tuple[str, str], 
             strength=strength,
             resource=resource,
             recall_count=recall_count,
-            last_activated_seq=last_activated_seq,
-            last_strength_seq=last_strength_seq,
-            last_resource_seq=last_resource_seq,
+            last_activated_ts=last_activated_ts,
+            last_strength_ts=last_strength_ts,
+            last_resource_ts=last_resource_ts,
             embedding=embedding,
             emb_count=emb_count,
         )
@@ -431,16 +443,24 @@ def load_state(path: str) -> tuple[dict[str, AkashaNode], dict[tuple[str, str], 
 # ── 状态计算辅助函数 ──────────────────────────────────────────────────
 
 
-def recover_resource(node: AkashaNode, seq: int) -> float:
-    """计算短期资源恢复后的值。"""
-    gap = max(0, seq - node.last_resource_seq)
+def recover_resource(node: AkashaNode, now_ts: float) -> float:
+    """计算短期资源恢复后的值（按真实时间）。"""
+    gap = max(0.0, now_ts - node.last_resource_ts)
     return 1.0 - (1.0 - node.resource) * math.exp(-gap / RESOURCE_RECOVER_TAU)
 
 
-def decayed_strength(node: AkashaNode, seq: int) -> float:
-    """计算长期强度衰减后的值。"""
-    gap = max(0, seq - node.last_strength_seq)
+def decayed_strength(node: AkashaNode, now_ts: float) -> float:
+    """计算长期强度衰减后的值（按真实时间）。"""
+    gap = max(0.0, now_ts - node.last_strength_ts)
     return node.strength * math.exp(-gap / LONG_DECAY_TAU)
+
+
+def effective_edge_weight(weight: float, last_used_ts: float, now_ts: float) -> float:
+    """边的 lazy time-decay。"""
+    if last_used_ts <= 0:
+        return weight
+    gap = max(0.0, now_ts - last_used_ts)
+    return weight * math.exp(-gap / EDGE_DECAY_TAU)
 
 
 def bounded_add(value: float, delta: float, cap: float) -> float:
@@ -681,14 +701,14 @@ def state_array(
     keys: list[str],
     nodes: dict[str, AkashaNode],
     fan: dict[str, int],
-    seq: int,
+    now_ts: float,
 ) -> np.ndarray:
     """计算节点状态权重（salience + 长期强度 + 短期资源 + fan 惩罚）。"""
     values = np.zeros(len(keys), dtype=np.float32)
     for index, key in enumerate(keys):
         node = nodes[key]
-        long_score = min(1.0, decayed_strength(node, seq) / STRENGTH_CAP)
-        resource = recover_resource(node, seq)
+        long_score = min(1.0, decayed_strength(node, now_ts) / STRENGTH_CAP)
+        resource = recover_resource(node, now_ts)
         values[index] = (
             math.exp(1.4 * node.salience + 1.0 * long_score)
             * resource
@@ -702,22 +722,39 @@ def cross_matrix(
     edges: dict[tuple[str, str], float],
     index_by_key: dict[str, int],
     edges_by_src: dict[str, dict[str, float]] | None = None,
+    edges_meta: dict[tuple[str, str], float] | None = None,
+    now_ts: float = 0.0,
 ) -> np.ndarray:
-    """构建微型图内部的共激活边矩阵。"""
+    """构建微型图内部的共激活边矩阵。
+
+    若提供 edges_meta + now_ts，对每条边按 last_used_ts 做 lazy 时间衰减。
+    """
     matrix = np.zeros((len(keys), len(keys)), dtype=np.float32)
+    apply_decay = edges_meta is not None and now_ts > 0
+
+    def _eff(src_key: str, dst_key: str, weight: float) -> float:
+        if not apply_decay:
+            return weight
+        last_used_ts = edges_meta.get((src_key, dst_key), 0.0)  # type: ignore[union-attr]
+        return effective_edge_weight(weight, last_used_ts, now_ts)
+
     if edges_by_src is not None:
         for src_key in keys:
             src_index = index_by_key[src_key]
             for dst_key, weight in edges_by_src.get(src_key, {}).items():
                 dst_index = index_by_key.get(dst_key)
-                if dst_index is not None:
-                    matrix[dst_index, src_index] = max(matrix[dst_index, src_index], weight)
+                if dst_index is None:
+                    continue
+                eff_w = _eff(src_key, dst_key, weight)
+                matrix[dst_index, src_index] = max(matrix[dst_index, src_index], eff_w)
         return matrix
     for (src_key, dst_key), weight in edges.items():
         src_index = index_by_key.get(src_key)
         dst_index = index_by_key.get(dst_key)
-        if src_index is not None and dst_index is not None:
-            matrix[dst_index, src_index] = max(matrix[dst_index, src_index], weight)
+        if src_index is None or dst_index is None:
+            continue
+        eff_w = _eff(src_key, dst_key, weight)
+        matrix[dst_index, src_index] = max(matrix[dst_index, src_index], eff_w)
     return matrix
 
 
@@ -796,7 +833,7 @@ def score_candidates(
     state_arr: np.ndarray,
     cross_mat: np.ndarray,
     fan: dict[str, int],
-    seq: int,
+    now_ts: float,
     path_info_dict: dict[str, tuple[str, str, str, float]],
     config: CoreConfig,
     source_cursor: sqlite3.Cursor | None,
@@ -809,8 +846,8 @@ def score_candidates(
     max_state = max(float(np.max(state_arr)), 1e-10)
     for index, key in enumerate(keys):
         node = nodes[key]
-        long_score = min(1.0, decayed_strength(node, seq) / STRENGTH_CAP)
-        resource = recover_resource(node, seq)
+        long_score = min(1.0, decayed_strength(node, now_ts) / STRENGTH_CAP)
+        resource = recover_resource(node, now_ts)
         fan_value = fan.get(key, 0)
         direct_value = max(0.0, direct_scores.get(key, 0.0))
         state_value = min(1.0, float(state_arr[index]) / max_state)
@@ -821,12 +858,23 @@ def score_candidates(
         direct_weight = 0.50 if source != "Expanded" else 0.18
         fan_penalty = math.pow(1.0 + fan_value, FAN_PENALTY_POWER)
         user_penalty = 1.0 if has_user_turn(source_cursor, key) else ASSISTANT_ONLY_PENALTY
+        # ── 乘算 gain modulation (Salinas & Sejnowski 2001) ───────
+        # 内容基底：spreading 能量 + 直接相似度（取较大方，避免双重计数）
+        ripple_term = float(current[index]) * 3.0 * state_value
+        direct_term = direct_weight * direct_value
+        content_base = max(ripple_term, direct_term) + 0.3 * min(ripple_term, direct_term)
+
+        # 每个状态信号都是乘法 gain factor，signal=0 时 gain=1（不影响）
+        # signal 高时 gain > 1（multiplicative 放大）
+        gain_salience = 1.0 + 0.8 * node.salience           # σ ∈ [0,1] → gain ∈ [1, 1.8]
+        gain_long     = 1.0 + 0.6 * long_score              # long ∈ [0,1] → gain ∈ [1, 1.6]
+        gain_edge     = 1.0 + 0.5 * min(1.0, edge_value)    # edge → gain ∈ [1, 1.5]
+
         score = (
-            float(current[index]) * 3.0 * state_value
-            + direct_weight * direct_value
-            + 0.18 * long_score
-            + 0.12 * node.salience
-            + 0.20 * min(1.0, edge_value)
+            content_base
+            * gain_salience
+            * gain_long
+            * gain_edge
         ) * resource * hop_penalty * user_penalty / fan_penalty
         if source == "Expanded" and ptype == "1hop" and direct_value >= EXPANDED_DIRECT_FLOOR:
             score = max(score, config.activation_threshold + 0.01)
@@ -907,7 +955,7 @@ def graph_expand_candidates(
     nodes: dict[str, AkashaNode],
     direct_scores: dict[str, float],
     fan: dict[str, int],
-    seq: int,
+    now_ts: float,
     source_cursor: sqlite3.Cursor | None,
     edges_by_src: dict[str, dict[str, float]] | None,
     graph_seed_keys: list[str],
@@ -949,7 +997,7 @@ def graph_expand_candidates(
                 continue
             node = nodes[key]
             degree = max(0, fan.get(key, 0))
-            resource = recover_resource(node, seq)
+            resource = recover_resource(node, now_ts)
             long_score = min(1.0, node.strength / STRENGTH_CAP)
             normalized_edge = edge_signal / max_edge_signal
             score = (
@@ -991,12 +1039,13 @@ def compute_candidates(
     query_vec: np.ndarray,
     nodes: dict[str, AkashaNode],
     edges: dict[tuple[str, str], float],
-    seq: int,
+    now_ts: float,
     *,
     config: CoreConfig,
     fan: dict[str, int],
     source_cursor: sqlite3.Cursor | None = None,
     edges_by_src: dict[str, dict[str, float]] | None = None,
+    edges_meta: dict[tuple[str, str], float] | None = None,
     soft_recall: bool = False,
     return_limit: int | None = None,
     graph_seed_keys: list[str] | None = None,
@@ -1048,8 +1097,11 @@ def compute_candidates(
     sim_matrix = np.maximum(np.dot(embeddings, embeddings.T), 0.0)
     np.fill_diagonal(sim_matrix, 0.0)
 
-    state_arr = state_array(valid_keys, nodes, fan, seq)
-    cross_mat = cross_matrix(valid_keys, edges, index_by_key, edges_by_src)
+    state_arr = state_array(valid_keys, nodes, fan, now_ts)
+    cross_mat = cross_matrix(
+        valid_keys, edges, index_by_key, edges_by_src,
+        edges_meta=edges_meta, now_ts=now_ts,
+    )
 
     transition = sim_matrix * state_arr[:, np.newaxis]
     transition *= 1.0 + config.cross_boost * cross_mat
@@ -1065,13 +1117,13 @@ def compute_candidates(
     path_info_dict = path_info(valid_keys, transition, e0, te0)
     candidates, suppressed = score_candidates(
         valid_keys, nodes, direct_scores_map, seed_sources,
-        current, state_arr, cross_mat, fan, seq,
+        current, state_arr, cross_mat, fan, now_ts,
         path_info_dict, config, source_cursor,
         soft_recall=soft_recall, return_limit=return_limit,
     )
     if graph_seed_keys:
         graph_candidates = graph_expand_candidates(
-            query_vec, nodes, direct_scores_map, fan, seq,
+            query_vec, nodes, direct_scores_map, fan, now_ts,
             source_cursor, edges_by_src, graph_seed_keys,
         )
         limit = return_limit or config.activate_limit
@@ -1089,7 +1141,7 @@ def compute_candidates(
 def activation_updates(
     items: list[AkashaCandidate],
     nodes: dict[str, AkashaNode],
-    seq: int,
+    now_ts: float,
 ) -> list[ActivationUpdate]:
     """生成被激活节点的状态更新。"""
     updates: list[ActivationUpdate] = []
@@ -1097,12 +1149,12 @@ def activation_updates(
         node = nodes.get(item.key)
         if node is None:
             continue
-        strength = decayed_strength(node, seq)
+        strength = decayed_strength(node, now_ts)
         strength = bounded_add(strength, STRENGTH_LR * item.score, STRENGTH_CAP)
-        resource = recover_resource(node, seq)
+        resource = recover_resource(node, now_ts)
         resource *= max(0.05, 1.0 - RESOURCE_USE_RATE * min(1.0, item.score))
         updates.append(ActivationUpdate(
             key=item.key, strength=strength, resource=resource,
-            recall_count=node.recall_count + 1, seq=seq,
+            recall_count=node.recall_count + 1, ts=now_ts,
         ))
     return updates

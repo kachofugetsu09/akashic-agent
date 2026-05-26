@@ -12,6 +12,7 @@ import hashlib
 import math
 import sqlite3
 import threading
+import time
 from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -81,7 +82,8 @@ class AkashaCard:
 @dataclass(frozen=True)
 class PendingActivation:
     query_id: str
-    seq: int
+    seq: int          # 仅作 query_log 标识用
+    ts: float         # 用于 EdgeUpdate / last_used_ts
     items: list[AkashaCandidate]
 
 
@@ -485,6 +487,7 @@ class AkashaMemoryEngine:
         # 1. 准备内存图和当前查询所在的预测 seq。
         nodes, fan, edges_by_src, message_embeddings, message_turn_keys = self._graph_snapshot()
         seq = _current_query_seq(self._session_db_path, request.scope)
+        now_ts = time.time()
         source_db = (
             sqlite3.connect(str(self._session_db_path))
             if self._session_db_path.exists()
@@ -507,7 +510,7 @@ class AkashaMemoryEngine:
                 query_vec,
                 nodes,
                 {},
-                seq,
+                now_ts,
                 config=self._akasha_config,
                 fan=fan,
                 source_cursor=source_cursor,
@@ -524,7 +527,7 @@ class AkashaMemoryEngine:
                 query_vec,
                 nodes,
                 {},
-                seq,
+                now_ts,
                 config=self._akasha_config,
                 fan=fan,
                 source_cursor=source_cursor,
@@ -538,7 +541,7 @@ class AkashaMemoryEngine:
                 source_db.close()
 
         # 3. 查询阶段只更新旧节点状态，当前 turn 的边等 after-turn 再补。
-        updates = _activation_updates(activation_items, nodes, seq)
+        updates = _activation_updates(activation_items, nodes, now_ts)
         self._store.update_activation_batch(updates)
         self._apply_activation_updates(updates)
         return _AkashaRetrieval(
@@ -562,6 +565,7 @@ class AkashaMemoryEngine:
         self._pending_by_session[request.scope.session_key] = PendingActivation(
             query_id=f"{request.scope.session_key}:{seq}",
             seq=seq,
+            ts=time.time(),
             items=list(items),
         )
 
@@ -603,8 +607,8 @@ class AkashaMemoryEngine:
         edge_updates: list[EdgeUpdate] = []
         for item in pending.items:
             edge_strength = key_to_score.get(item.key, 1.0)
-            edge_updates.append(EdgeUpdate(current_key, item.key, edge_strength, pending.seq))
-            edge_updates.append(EdgeUpdate(item.key, current_key, edge_strength, pending.seq))
+            edge_updates.append(EdgeUpdate(current_key, item.key, edge_strength, pending.ts))
+            edge_updates.append(EdgeUpdate(item.key, current_key, edge_strength, pending.ts))
 
         # 2. 同轮共同激活的旧节点互连，保持 cross CLI 的共激活语义。
         for left_index, left in enumerate(pending.items):
@@ -612,8 +616,8 @@ class AkashaMemoryEngine:
                 edge_strength = math.sqrt(
                     key_to_score.get(left.key, 1.0) * key_to_score.get(right.key, 1.0)
                 )
-                edge_updates.append(EdgeUpdate(left.key, right.key, edge_strength, pending.seq))
-                edge_updates.append(EdgeUpdate(right.key, left.key, edge_strength, pending.seq))
+                edge_updates.append(EdgeUpdate(left.key, right.key, edge_strength, pending.ts))
+                edge_updates.append(EdgeUpdate(right.key, left.key, edge_strength, pending.ts))
         self._store.upsert_edges(edge_updates)
         self._apply_edge_updates(edge_updates)
 
@@ -693,9 +697,9 @@ class AkashaMemoryEngine:
                     strength=item.strength,
                     resource=item.resource,
                     recall_count=item.recall_count,
-                    last_activated_seq=item.seq,
-                    last_strength_seq=item.seq,
-                    last_resource_seq=item.seq,
+                    last_activated_ts=item.ts,
+                    last_strength_ts=item.ts,
+                    last_resource_ts=item.ts,
                 )
 
     # 把新写入或合并的节点同步进内存图。
