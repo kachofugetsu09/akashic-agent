@@ -143,6 +143,9 @@ class AkashaMemoryEngine:
         self._message_embeddings: dict[str, np.ndarray] = {}
         self._message_turn_keys: dict[str, str] = {}
         self._load_graph_cache()
+        # 加载 IDF 表给 FTS 过滤用（表不存在时退化到无过滤）
+        from plugins.akasha.core import load_idf_from_db, set_idf_table
+        set_idf_table(load_idf_from_db(self._store._db))
         self.closeables: list[object] = [self._store, self._embedder]
         self._wire_events()
 

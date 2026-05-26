@@ -31,6 +31,32 @@ GRAPH_EXPAND_LIMIT = 8
 GRAPH_DIRECT_BIAS = 0.25
 GRAPH_FAN_PENALTY_POWER = 0.15
 
+# FTS 改进参数
+FTS_MIN_IDF = 3.5          # 过滤低 IDF 常见 token
+FTS_MIN_TOKEN_LEN = 3      # trigram 分词器要求至少 3 字符
+FTS_MAX_TOKENS = 10        # FTS query 最多 OR 多少 token
+FTS_TOP_K = 10             # BM25 取 top K
+FTS_ONLY_MAX_HITS = 5      # 单跑 FTS 没 Dense 配对时最多保留几个
+FTS_OVERLAP_BOOST = 1.3    # Dense ∩ FTS 时 seed_energy 倍数
+
+# 模块级 IDF 表（由 engine 调用 set_idf_table 注入）
+_IDF_TABLE: dict[str, float] = {}
+
+
+def set_idf_table(table: dict[str, float] | None) -> None:
+    """注入 IDF 表。空表 / None 时退化到无过滤行为。"""
+    global _IDF_TABLE
+    _IDF_TABLE = table or {}
+
+
+def load_idf_from_db(conn: sqlite3.Connection) -> dict[str, float]:
+    """从 akasha.db 的 fts_token_idf 表加载 IDF 字典。"""
+    try:
+        rows = conn.execute("SELECT token, idf FROM fts_token_idf").fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    return {t: float(v) for t, v in rows}
+
 # ── 数据类型 ──────────────────────────────────────────────────────────
 
 
@@ -423,15 +449,55 @@ def dense_message_candidates(
 def get_jieba_keywords(text: str) -> str:
     """把文本切成 SQLite FTS 可用的 OR 查询。"""
     import jieba
-    words: list[str] = []
-    for word in jieba.cut_for_search(text):
-        cleaned = "".join(
-            char for char in word.strip()
-            if char.isalnum() or "\u4e00" <= char <= "\u9fff"
-        )
-        if len(cleaned) > 1:
-            words.append(f'"{cleaned}"')
-    return " OR ".join(words[:20])
+    import re
+
+    pairs: list[tuple[str, float]] = []
+    seen: set[str] = set()
+
+    def _consider(token: str, default_idf: float) -> None:
+        if len(token) < FTS_MIN_TOKEN_LEN or token in seen:
+            return
+        seen.add(token)
+        if _IDF_TABLE:
+            idf = _IDF_TABLE.get(token, 6.0)  # \u672a\u89c1\u8fc7\u89c6\u4e3a\u7a00\u6709
+            if idf < FTS_MIN_IDF:
+                return
+            pairs.append((token, idf))
+        else:
+            pairs.append((token, default_idf))
+
+    # 1. Latin / \u6570\u5b57 \u8bcd\u7ec4\uff08trigram \u76f4\u63a5\u80fd\u5904\u7406\uff09
+    for m in re.finditer(r"[a-z0-9_]{3,}", text.lower()):
+        _consider(m.group(), 5.0)
+
+    # 2. jieba \u5207\u8bcd
+    tokens = list(jieba.lcut(text))
+    cleaned_tokens: list[str] = []
+    for w in tokens:
+        c = "".join(ch for ch in w if "\u4e00" <= ch <= "\u9fff")
+        cleaned_tokens.append(c.lower())
+
+    # 3a. 3+ \u5b57\u4e2d\u6587 token \u76f4\u63a5\u52a0\uff08IDF \u8fc7\u6ee4\uff09
+    for c in cleaned_tokens:
+        if len(c) >= 3:
+            _consider(c, 5.0)
+
+    # 3b. 2 \u5b57\u4e2d\u6587 token \u4e0e\u76f8\u90bb\u5b57\u7b26\u62fc\u6210 3 \u5b57 phrase\uff08trigram \u624d\u80fd\u547d\u4e2d\uff09
+    for i, c in enumerate(cleaned_tokens):
+        if len(c) != 2:
+            continue
+        # \u62fc\u63a5\u4e0b\u4e00\u4e2a token \u7684\u9996\u5b57
+        if i + 1 < len(cleaned_tokens) and cleaned_tokens[i + 1]:
+            combined = c + cleaned_tokens[i + 1][0]
+            _consider(combined, 5.0)
+        # \u4e5f\u62fc\u63a5\u4e0a\u4e00\u4e2a token \u7684\u672b\u5b57
+        if i - 1 >= 0 and cleaned_tokens[i - 1]:
+            combined = cleaned_tokens[i - 1][-1] + c
+            _consider(combined, 5.0)
+
+    pairs.sort(key=lambda x: -x[1])
+    pairs = pairs[:FTS_MAX_TOKENS]
+    return " OR ".join(f'"{w}"' for w, _ in pairs)
 
 
 def seed_pool(
@@ -457,26 +523,56 @@ def seed_pool(
     if source_cursor is not None:
         fts_query = get_jieba_keywords(query)
         if fts_query:
-            source_cursor.execute(
-                "SELECT rowid FROM messages_fts WHERE content MATCH ? LIMIT 10",
-                (fts_query,),
-            )
-            rowids = [int(row[0]) for row in source_cursor.fetchall()]
-            if rowids:
-                placeholders = ",".join("?" for _ in rowids)
+            # 用 BM25 排序拿 top K（bm25() 返回负值，越小越匹配）
+            try:
                 source_cursor.execute(
-                    f"SELECT session_key, seq, role FROM messages WHERE rowid IN ({placeholders})",
-                    rowids,
+                    """
+                    SELECT rowid, bm25(messages_fts) AS rank
+                    FROM messages_fts
+                    WHERE content MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (fts_query, FTS_TOP_K),
                 )
-                for session_key, seq, role in source_cursor.fetchall():
+                rows = source_cursor.fetchall()
+            except sqlite3.OperationalError:
+                # FTS5 不支持 bm25 时退回旧行为
+                source_cursor.execute(
+                    "SELECT rowid, 0 FROM messages_fts WHERE content MATCH ? LIMIT ?",
+                    (fts_query, FTS_TOP_K),
+                )
+                rows = source_cursor.fetchall()
+            if rows:
+                rowid_to_rank = {int(r[0]): float(r[1] or 0.0) for r in rows}
+                placeholders = ",".join("?" for _ in rowid_to_rank)
+                source_cursor.execute(
+                    f"SELECT session_key, seq, role, rowid FROM messages WHERE rowid IN ({placeholders})",
+                    list(rowid_to_rank.keys()),
+                )
+                fts_candidates: list[tuple[str, float]] = []
+                for session_key, seq, role, rowid in source_cursor.fetchall():
                     _, _, key = turn_key(str(session_key), int(seq), str(role or ""))
                     if key not in nodes:
                         continue
-                    if key not in seed_sources:
+                    fts_candidates.append((key, rowid_to_rank.get(int(rowid), 0.0)))
+                # 按 BM25 |rank| 降序（更匹配的排前）
+                fts_candidates.sort(key=lambda x: x[1])  # rank 是负值，小的更匹配
+
+                fts_only_count = 0
+                for key, _ in fts_candidates:
+                    if key in seed_sources:
+                        # Dense ∩ FTS: 加 boost（multiplicative fusion）
+                        if "FTS" not in seed_sources[key].split("+"):
+                            seed_sources[key] += "+FTS"
+                        seed_energy[key] = min(1.5, seed_energy[key] * FTS_OVERLAP_BOOST)
+                    else:
+                        # FTS-only: 限制数量，只让最匹配的几个进
+                        if fts_only_count >= FTS_ONLY_MAX_HITS:
+                            continue
                         seed_sources[key] = "FTS"
-                    elif "FTS" not in seed_sources[key].split("+"):
-                        seed_sources[key] += "+FTS"
-                    seed_energy[key] = 1.0
+                        seed_energy[key] = 1.0
+                        fts_only_count += 1
 
     blackhole_hits: list[tuple[str, float]] = []
     for key, node in nodes.items():
