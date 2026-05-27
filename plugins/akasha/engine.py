@@ -74,6 +74,7 @@ class AkashaCard:
     source_ref: str
     user_message: str
     assistant_preview: str
+    happened_at: str
     score: float
     lane: str
     signals: dict[str, object]
@@ -937,10 +938,12 @@ class AkashaMemoryEngine:
     ) -> str:
         # 1. Dense 块优先展示重叠项，Ripple 块只展示 ripple-only。
         parts: list[str] = []
+        if dense_cards or ripple_cards:
+            parts.append(f"# Akasha memory now={datetime.now().astimezone().strftime('%Y-%m-%d')}")
         if dense_cards:
-            parts.append(_format_cards("## 左脑记忆：精确回忆", dense_cards))
+            parts.append(_format_cards("## 左脑记忆：精确回忆", _sort_cards_by_time(dense_cards)))
         if ripple_cards:
-            parts.append(_format_cards("## 右脑联想：潜意识第一反应", ripple_cards))
+            parts.append(_format_cards("## 右脑联想：潜意识第一反应", _sort_cards_by_time(ripple_cards)))
 
         # 2. 应用字符预算，避免历史消息过长撑爆上下文。
         text = "\n\n".join(part for part in parts if part.strip())
@@ -978,7 +981,7 @@ def _compute_candidates(
     query_vec: np.ndarray,
     nodes: dict[str, AkashaNode],
     edges: dict[tuple[str, str], float],
-    seq: int,
+    now_ts: float,
     *,
     config: AkashaConfig,
     fan: dict[str, int],
@@ -993,7 +996,7 @@ def _compute_candidates(
         query_vec,
         nodes,
         edges,
-        seq,
+        now_ts,
         config=_core_config(config),
         fan=fan,
         source_cursor=source_cursor,
@@ -1114,7 +1117,7 @@ def _load_turn_card(
         db.row_factory = sqlite3.Row
         user_row = db.execute(
             """
-            SELECT id, content
+            SELECT id, content, ts
             FROM messages
             WHERE session_key = ? AND seq = ? AND role = 'user'
             """,
@@ -1122,7 +1125,7 @@ def _load_turn_card(
         ).fetchone()
         assistant_row = db.execute(
             """
-            SELECT id, content
+            SELECT id, content, ts
             FROM messages
             WHERE session_key = ? AND seq = ? AND role = 'assistant'
             """,
@@ -1137,11 +1140,17 @@ def _load_turn_card(
     ]
     assistant_text = str(assistant_row["content"] or "") if assistant_row is not None else ""
     user_text = str(user_row["content"] or "") if user_row is not None else ""
+    happened_at = (
+        str(user_row["ts"] or "")
+        if user_row is not None
+        else str(assistant_row["ts"] or "")
+    )
     return AkashaCard(
         key=key,
         source_ref=json.dumps(source_ids, ensure_ascii=False),
         user_message=user_text,
         assistant_preview=_clip_assistant(assistant_text, assistant_preview_chars),
+        happened_at=happened_at,
         score=score,
         lane=lane,
         signals=signals,
@@ -1192,6 +1201,17 @@ def _card_dedupe_key(card: AkashaCard) -> tuple[str, str]:
     return _normalize_card_text(card.user_message), _normalize_card_text(card.assistant_preview)
 
 
+def _card_ts(card: AkashaCard) -> float:
+    try:
+        return datetime.fromisoformat(card.happened_at.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _sort_cards_by_time(cards: list[AkashaCard]) -> list[AkashaCard]:
+    return sorted(cards, key=_card_ts, reverse=True)
+
+
 # 生成检索日志 ID，避免同一轮 context 和 recall_memory 互相覆盖。
 def _query_log_id(session_key: str, seq: int, intent: str, query_text: str) -> str:
     # 1. 同一轮可能有预检索和显式 recall_memory，多条日志都要保留。
@@ -1209,11 +1229,20 @@ def _format_cards(title: str, cards: list[AkashaCard]) -> str:
             _normalize_card_text(card.assistant_preview),
             ensure_ascii=False,
         )
+        happened_at = _format_card_time(card.happened_at)
+        time_part = f" t={happened_at}" if happened_at else ""
         lines.append(
-            f"- user={user_text} assistant={assistant_text} "
-            f"score={card.score:.4f} source_ref={card.source_ref}"
+            f"- user={user_text} assistant={assistant_text}"
+            f"{time_part} source_ref={card.source_ref}"
         )
     return "\n".join(lines)
+
+
+def _format_card_time(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%m-%d")
+    except ValueError:
+        return ""
 
 
 # 把 card 转成 MemoryRecord。

@@ -168,6 +168,7 @@ def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> No
     assert card.user_message == "第一条用户消息需要完整展示"
     assert card.assistant_preview == "第一条助手回复会被截断展示并保..."
     assert card.source_ref == '["s:0", "s:1"]'
+    assert card.happened_at == "2026-01-01T00:00:00+00:00"
 
 
 @pytest.mark.asyncio
@@ -238,11 +239,59 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
 
     assert "## 左脑记忆：精确回忆" in result.text_block
     assert "## 右脑联想：潜意识第一反应" in result.text_block
+    assert "# Akasha memory now=" in result.text_block
     assert '- user="第一条用户消息需要完整展示" assistant=' in result.text_block
+    assert " t=01-01 source_ref=" in result.text_block
+    assert " score=" not in result.text_block
     dense_block, ripple_block = result.text_block.split("## 右脑联想：潜意识第一反应", 1)
     assert 'source_ref=["s:0", "s:1"]' in dense_block
     assert 'source_ref=["s:0", "s:1"]' not in ripple_block
     assert 'source_ref=["s:2", "s:3"]' in ripple_block
+
+
+@pytest.mark.asyncio
+async def test_context_block_sorts_injected_cards_by_time_desc(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+
+    def candidate(key: str, score: float) -> AkashaCandidate:
+        return AkashaCandidate(
+            key=key,
+            source="Dense",
+            ripple=0.0,
+            direct=score,
+            state=0.0,
+            edge=0.0,
+            long=0.0,
+            resource=1.0,
+            fan=0,
+            score=score,
+        )
+
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._akasha_config = AkashaConfig(dense_top_k=10, ripple_top_k=10)
+    engine._session_db_path = db_path
+    engine._embedder = FakeEmbedder()
+    engine._remember_pending_activation = lambda request, items: None
+    engine._retrieve = lambda query, query_vec, request: _AkashaRetrieval(
+        dense_items=[candidate("s:0", 0.9), candidate("s:2", 0.8)],
+        ripple_items=[],
+        activation_items=[],
+        trace=ActivationTrace(seed_count=1, pool_count=2),
+        seq=4,
+    )
+
+    result = await engine.query(
+        MemoryQuery(
+            text="用户消息",
+            intent="context",
+            scope=MemoryScope(session_key="s"),
+        )
+    )
+
+    assert result.text_block.index('source_ref=["s:2", "s:3"]') < result.text_block.index(
+        'source_ref=["s:0", "s:1"]'
+    )
 
 
 def test_cards_from_keys_deduplicates_same_user_assistant_pair(tmp_path: Path) -> None:
