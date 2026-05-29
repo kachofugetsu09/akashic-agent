@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
+import json
 import shutil
 import sqlite3
 import sys
@@ -11,7 +11,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, cast
 
 import numpy as np
 
@@ -20,26 +20,16 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.config_models import Config
-from core.net.http import SharedHttpResources
-from memory2.embedder import Embedder
 from plugins.akasha.config import (
     AkashaConfig,
     load_akasha_config,
     resolve_akasha_db_path,
 )
-from plugins.akasha.engine import (
-    AkashaCandidate,
-    _activation_updates,
-    _compute_candidates,
-    _fan_counts,
-)
+from plugins.akasha.core import SourceMessage
+from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage
 from plugins.akasha.store import (
-    ActivationEventRow,
     AkashaStore,
-    EdgeUpdate,
-    SourceMessage,
     SourceSessionSnapshot,
-    turn_key,
 )
 
 
@@ -68,7 +58,6 @@ def _parse_args() -> argparse.Namespace:
     )
     _ = parser.add_argument("--sessions-db", default="", help="原始 sessions.db 路径")
     _ = parser.add_argument("--db-path", default="", help="输出 akasha.db 路径")
-    _ = parser.add_argument("--batch-size", type=int, default=10, help="embedding 批大小")
     _ = parser.add_argument("--progress-every", type=int, default=500, help="进度打印间隔")
     return parser.parse_args()
 
@@ -85,36 +74,20 @@ def _load_script_config(
     return config
 
 
-# 构造 embedding 客户端。
-def _build_embedder(
-    *,
-    config: Config,
-    http_resources: SharedHttpResources,
-) -> Embedder:
-    # 1. 复用运行时的 embedding 配置和 HTTP requester。
-    embedding = config.memory.embedding
-    return Embedder(
-        base_url=embedding.base_url or config.light_base_url or config.base_url or "",
-        api_key=embedding.api_key or config.light_api_key or config.api_key,
-        model=embedding.model,
-        requester=http_resources.external_default,
-    )
-
-
 # 读取 sessions.db 中的原始消息。
 def _iter_source_batches(
     *,
     sessions_db: Path,
     batch_size: int,
 ) -> Iterator[list[SourceMessage]]:
-    # 1. 按 cross CLI 的 session_key, seq 顺序 replay。
+    # 1. 按真实时间顺序 replay，避免后来的 turn 提前进入历史图。
     with closing(sqlite3.connect(str(sessions_db))) as db:
         cursor = db.execute(
             """
             SELECT id, session_key, seq, role, content, ts
             FROM messages
             WHERE role IN ('user', 'assistant')
-            ORDER BY session_key, seq
+            ORDER BY COALESCE(datetime(ts), ts), session_key, seq
             """
         )
         while rows := cursor.fetchmany(max(1, batch_size)):
@@ -168,6 +141,26 @@ def _load_session_snapshots(sessions_db: Path) -> list[SourceSessionSnapshot]:
     ]
 
 
+# 读取不应进入 Akasha 的消息。
+def _load_skip_message_ids(sessions_db: Path) -> set[str]:
+    result: set[str] = set()
+    with closing(sqlite3.connect(str(sessions_db))) as db:
+        rows = db.execute("SELECT id, extra FROM messages").fetchall()
+    for message_id, raw_extra in rows:
+        try:
+            parsed: object = json.loads(str(raw_extra or "{}"))
+        except json.JSONDecodeError:
+            parsed = {}
+        extra = cast(dict[str, object], parsed) if isinstance(parsed, dict) else {}
+        if bool(extra.get("proactive")) or bool(extra.get("skip_post_memory")):
+            result.add(str(message_id))
+    return result
+
+
+def _skip_message(message: SourceMessage, skip_message_ids: set[str]) -> bool:
+    return message.id in skip_message_ids or message.content.startswith("[后台任务完成]")
+
+
 # 备份已有 Akasha sidecar。
 def _backup_existing_db(db_path: Path) -> Path | None:
     # 1. 重建前保留旧库，避免迁移脚本误覆盖唯一状态。
@@ -179,74 +172,22 @@ def _backup_existing_db(db_path: Path) -> Path | None:
     return backup_path
 
 
-# 从 cache 读取 embedding，缺失时批量调用 embedding API。
-async def _embed_batch_with_cache(
+# 从 cache 读取回放需要的 embedding，缺失时跳过对应消息。
+def _load_embeddings_from_cache(
     *,
     store: AkashaStore,
-    embedder: Embedder,
-    model: str,
-    batch: list[SourceMessage],
-) -> tuple[list[list[float]], int, int]:
-    # 1. 先按 message_id + content_hash + model 查 cache。
-    embeddings: list[list[float] | None] = []
-    missing: list[tuple[int, SourceMessage]] = []
-    cache_hits = 0
-    for index, message in enumerate(batch):
-        cached = store.get_cached_embedding(message=message, model=model)
-        embeddings.append(cached)
-        if cached is None:
-            missing.append((index, message))
-        else:
-            cache_hits += 1
-
-    # 2. 只对缺口调用远端 embedding，并立刻写回 cache。
-    cache_misses = len(missing)
-    if missing:
-        fresh = await embedder.embed_batch([
-            message.content if message.content.strip() else " "
-            for _, message in missing
-        ])
-        for (index, message), embedding in zip(missing, fresh, strict=False):
-            store.upsert_cached_embedding(
-                message=message,
-                model=model,
-                embedding=embedding,
-            )
-            embeddings[index] = embedding
-
-    # 3. 返回顺序必须和 batch 一致，后面的 replay 依赖消息顺序。
-    ordered: list[list[float]] = []
-    for embedding in embeddings:
-        if embedding is None:
-            raise RuntimeError("embedding cache 写入后仍有缺口")
-        ordered.append(embedding)
-    return ordered, cache_hits, cache_misses
-
-
-# 确保全量 message embedding 都在 cache 里。
-async def _ensure_embeddings_with_cache(
-    *,
-    store: AkashaStore,
-    embedder: Embedder,
     model: str,
     messages: list[SourceMessage],
-    batch_size: int,
 ) -> tuple[dict[str, list[float]], int, int]:
-    # 1. 按批次补齐缺失 embedding，但 replay 之前先拿到完整向量表。
     embedding_map: dict[str, list[float]] = {}
     cache_hits = 0
     cache_misses = 0
-    for index in range(0, len(messages), max(1, batch_size)):
-        batch = messages[index : index + max(1, batch_size)]
-        embeddings, batch_hits, batch_misses = await _embed_batch_with_cache(
-            store=store,
-            embedder=embedder,
-            model=model,
-            batch=batch,
-        )
-        cache_hits += batch_hits
-        cache_misses += batch_misses
-        for message, embedding in zip(batch, embeddings, strict=False):
+    for message in messages:
+        embedding = store.get_cached_embedding(message=message, model=model)
+        if embedding is None:
+            cache_misses += 1
+        else:
+            cache_hits += 1
             embedding_map[message.id] = embedding
     return embedding_map, cache_hits, cache_misses
 
@@ -274,6 +215,8 @@ def _compute_salience_map(
     for index, (message, _) in enumerate(available):
         session_sorted.setdefault(message.session_key, []).append(index)
         seq_index[(message.session_key, message.seq)] = index
+    for indices in session_sorted.values():
+        indices.sort(key=lambda item: available[item][0].seq)
 
     # 2. 先计算每个 session 的质心。
     centroids: dict[str, np.ndarray] = {}
@@ -342,99 +285,33 @@ def _normalize_vector(vector: np.ndarray) -> np.ndarray:
     return vector / norm if norm > 0 else vector
 
 
-# 在写入当前 user turn 前，按 cross CLI 规则激活历史节点。
-def _activate_before_upsert(
-    *,
-    store: AkashaStore,
-    message: SourceMessage,
-    embedding: list[float],
-    config: AkashaConfig,
-    source_cursor: sqlite3.Cursor,
-) -> int:
-    # 1. 只有 user 输入会触发状态激活。
-    if message.role != "user":
-        return 0
-    nodes = {node.key: node for node in store.list_nodes()}
-    if not nodes:
-        return 0
-
-    # 2. 使用当前 user embedding 检索历史节点，并更新旧节点状态。
-    edges = store.load_edges()
-    candidates, _, _ = _compute_candidates(
-        message.content,
-        np.array(embedding, dtype=np.float32),
-        nodes,
-        edges,
-        message.seq,
-        config=config,
-        fan=_fan_counts(edges),
-        source_cursor=source_cursor,
-        soft_recall=False,
-        return_limit=config.activate_limit,
-    )
-    store.update_activation_batch(_activation_updates(candidates, nodes, message.seq))
-
-    # 3. 当前 turn key 先参与建边，随后再被 upsert_message_node 写成节点。
-    current_key = turn_key(message.session_key, message.seq, message.role)[2]
-    store.upsert_edges(_edge_updates(current_key, candidates, message.seq))
-    store.insert_activation_events(_activation_events(message, candidates))
-    return len(candidates)
-
-
-# 把一轮激活候选转成共激活边。
-def _edge_updates(
-    current_key: str,
-    candidates: list[AkashaCandidate],
-    seq: int,
-) -> list[EdgeUpdate]:
-    # 1. 当前输入和被激活旧节点互连。
-    updates: list[EdgeUpdate] = []
-    key_to_score = {item.key: item.score for item in candidates}
-    for item in candidates:
-        edge_strength = key_to_score.get(item.key, 1.0)
-        updates.append(EdgeUpdate(current_key, item.key, edge_strength, seq))
-        updates.append(EdgeUpdate(item.key, current_key, edge_strength, seq))
-
-    # 2. 同轮共同激活的旧节点互连。
-    for left_index, left in enumerate(candidates):
-        for right in candidates[left_index + 1:]:
-            edge_strength = float(
-                np.sqrt(
-                    key_to_score.get(left.key, 1.0)
-                    * key_to_score.get(right.key, 1.0)
-                )
-            )
-            updates.append(EdgeUpdate(left.key, right.key, edge_strength, seq))
-            updates.append(EdgeUpdate(right.key, left.key, edge_strength, seq))
-    return updates
-
-
-# 把一轮激活候选转成诊断事件。
-def _activation_events(
-    message: SourceMessage,
-    candidates: list[AkashaCandidate],
-) -> list[ActivationEventRow]:
-    # 1. query_id 使用当前 user message id，便于回源诊断。
-    return [
-        ActivationEventRow(
-            seq=message.seq,
-            query_id=message.id,
-            activated_key=item.key,
-            source=item.source,
-            score=item.score,
-            direct_score=item.direct,
-            state_score=item.state,
-            edge_score=item.edge,
-            long_score=item.long,
-            resource=item.resource,
-            fan=item.fan,
-        )
-        for item in candidates
-    ]
+# 按 user turn 聚合回放输入，assistant 归入前一个 user turn。
+def _iter_replay_turns(
+    messages: list[SourceMessage],
+    skip_message_ids: set[str],
+) -> Iterator[list[SourceMessage]]:
+    by_turn = {
+        (message.session_key, message.seq, message.role): message
+        for message in messages
+        if not _skip_message(message, skip_message_ids)
+    }
+    used: set[str] = set()
+    for message in messages:
+        if message.id in used or _skip_message(message, skip_message_ids):
+            continue
+        if message.role != "user":
+            continue
+        turn = [message]
+        used.add(message.id)
+        assistant = by_turn.get((message.session_key, message.seq + 1, "assistant"))
+        if assistant is not None and assistant.id not in used:
+            turn.append(assistant)
+            used.add(assistant.id)
+        yield turn
 
 
 # 执行 Akasha sidecar 重建。
-async def _run() -> MigrationStats:
+def _run() -> MigrationStats:
     # 1. 解析路径、配置和目标 sidecar。
     args = _parse_args()
     workspace = Path(str(args.workspace)).expanduser()
@@ -457,9 +334,7 @@ async def _run() -> MigrationStats:
     store.insert_session_snapshots(run_id=run_id, snapshots=snapshots)
     store.reset_schema()
 
-    # 3. 先复用 embedding cache 和 salience，再按消息顺序 replay 激活状态。
-    http_resources = SharedHttpResources()
-    embedder = _build_embedder(config=config, http_resources=http_resources)
+    # 3. 只复用 embedding cache，再按消息顺序 replay 激活状态。
     messages = 0
     activations = 0
     cache_hits = 0
@@ -467,33 +342,39 @@ async def _run() -> MigrationStats:
     status = "failed"
     try:
         source_messages = _load_source_messages(sessions_db)
-        embedding_map, cache_hits, cache_misses = await _ensure_embeddings_with_cache(
+        skip_message_ids = _load_skip_message_ids(sessions_db)
+        replay_turns = list(_iter_replay_turns(source_messages, skip_message_ids))
+        replay_messages = [message for turn in replay_turns for message in turn]
+        embedding_map, cache_hits, cache_misses = _load_embeddings_from_cache(
             store=store,
-            embedder=embedder,
             model=embedding_model,
-            messages=source_messages,
-            batch_size=int(args.batch_size),
+            messages=replay_messages,
         )
-        salience_map = _compute_salience_map(source_messages, embedding_map)
+        salience_map = _compute_salience_map(replay_messages, embedding_map)
         with closing(sqlite3.connect(str(sessions_db))) as source_db:
-            source_cursor = source_db.cursor()
-            for raw_message in source_messages:
-                embedding = embedding_map.get(raw_message.id)
-                if embedding is None:
+            runtime = AkashaReplayRuntime(
+                store=store,
+                config=akasha_config,
+                source_cursor=source_db.cursor(),
+            )
+            for raw_turn in replay_turns:
+                replay_items: list[ReplayMessage] = []
+                for raw_message in raw_turn:
+                    embedding = embedding_map.get(raw_message.id)
+                    if embedding is None:
+                        continue
+                    replay_items.append(ReplayMessage(
+                        message=replace(
+                            raw_message,
+                            salience=salience_map.get(raw_message.id, 0.0),
+                        ),
+                        embedding=embedding,
+                    ))
+                if not any(item.message.role == "user" for item in replay_items):
                     continue
-                message = replace(
-                    raw_message,
-                    salience=salience_map.get(raw_message.id, 0.0),
-                )
-                activations += _activate_before_upsert(
-                    store=store,
-                    message=message,
-                    embedding=embedding,
-                    config=akasha_config,
-                    source_cursor=source_cursor,
-                )
-                _ = store.upsert_message_node(message, embedding)
-                messages += 1
+                result = runtime.replay_turn(replay_items)
+                activations += len(result.activation_items)
+                messages += len(replay_items)
                 if args.progress_every > 0 and messages % int(args.progress_every) == 0:
                     print(f"已处理 messages={messages} activations={activations}")
         status = "completed"
@@ -507,8 +388,6 @@ async def _run() -> MigrationStats:
             cache_miss_count=cache_misses,
         )
         store.close()
-        await embedder.aclose()
-        await http_resources.aclose()
 
     return MigrationStats(
         messages=messages,
@@ -523,8 +402,7 @@ async def _run() -> MigrationStats:
 
 # 脚本入口。
 def main() -> None:
-    # 1. asyncio 只包住 embedding HTTP 调用。
-    stats = asyncio.run(_run())
+    stats = _run()
     print(
         "Akasha 迁移完成: "
         f"run_id={stats.run_id} "

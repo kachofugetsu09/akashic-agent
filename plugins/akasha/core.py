@@ -229,6 +229,17 @@ class AkashaCandidate:
     path_value: float = 0.0
 
 
+@dataclass
+class _GraphPathAggregate:
+    signal: float = 0.0
+    best_signal: float = 0.0
+    best_edge: float = 0.0
+    best_weight: float = 0.0
+    direct: float = 0.0
+    paths: float = 0.0
+    seed_key: str = ""
+
+
 @dataclass(frozen=True)
 class ActivationTrace:
     seed_count: int
@@ -970,7 +981,7 @@ def graph_expand_candidates(
         for dst_key, edge_weight in src_neighbors.items():
             in_strength[dst_key] = in_strength.get(dst_key, 0.0) + edge_weight
 
-    candidates: list[AkashaCandidate] = []
+    aggregate: dict[str, _GraphPathAggregate] = {}
     for seed_key in graph_seed_keys:
         if seed_key not in nodes:
             continue
@@ -979,42 +990,46 @@ def graph_expand_candidates(
         if out_strength <= 0:
             continue
 
-        scored_neighbors = []
+        scored_neighbors: list[tuple[float, float, float, str, float]] = []
         for key, edge_weight in raw_neighbors.items():
             if key not in nodes or key in seed_set or not has_user_turn(source_cursor, key):
                 continue
             dst_strength = in_strength.get(key, edge_weight)
             edge_signal = edge_weight / math.sqrt(max(out_strength * dst_strength, 1e-9))
             direct = max(0.0, direct_scores.get(key, 0.0))
-            degree_penalty = math.pow(1.0 + max(0, fan.get(key, 0)), GRAPH_FAN_PENALTY_POWER)
-            candidate_signal = edge_signal * (GRAPH_DIRECT_BIAS + direct) / degree_penalty
+            seed_direct = max(GRAPH_DIRECT_BIAS, max(0.0, direct_scores.get(seed_key, 0.0)))
+            candidate_signal = edge_signal * seed_direct
             scored_neighbors.append((candidate_signal, edge_signal, direct, key, edge_weight))
         scored_neighbors.sort(reverse=True, key=lambda item: item[0])
-        max_edge_signal = max((item[1] for item in scored_neighbors), default=0.0)
+        for candidate_signal, edge_signal, direct, key, edge_weight in scored_neighbors[:GRAPH_EXPAND_LIMIT]:
+            item = aggregate.setdefault(key, _GraphPathAggregate(direct=direct, seed_key=seed_key))
+            item.signal += candidate_signal
+            item.paths += 1.0
+            item.direct = max(item.direct, direct)
+            if candidate_signal > item.best_signal:
+                item.best_signal = candidate_signal
+                item.best_edge = edge_signal
+                item.best_weight = edge_weight
+                item.seed_key = seed_key
 
-        for _, edge_signal, direct, key, edge_weight in scored_neighbors[:GRAPH_EXPAND_LIMIT]:
-            if max_edge_signal <= 0:
-                continue
-            node = nodes[key]
-            degree = max(0, fan.get(key, 0))
-            resource = recover_resource(node, now_ts)
-            long_score = min(1.0, node.strength / STRENGTH_CAP)
-            normalized_edge = edge_signal / max_edge_signal
-            score = (
-                3.0
-                * normalized_edge
-                * (GRAPH_DIRECT_BIAS + direct)
-                * (1.0 + 0.15 * long_score)
-                / math.pow(1.0 + degree, GRAPH_FAN_PENALTY_POWER)
-            )
-            candidates.append(AkashaCandidate(
-                key=key, source="Graph", ripple=float(edge_weight),
-                direct=direct, state=0.0, edge=float(edge_signal),
-                long=long_score, resource=resource, fan=degree,
-                score=float(score), path_type="1hop",
-                seed_key=seed_key, path_value=float(edge_signal),
-            ))
-    return candidates
+    candidates: list[AkashaCandidate] = []
+    for key, item in aggregate.items():
+        node = nodes[key]
+        resource = recover_resource(node, now_ts)
+        long_score = min(1.0, node.strength / STRENGTH_CAP)
+        direct = item.direct
+        paths = max(1.0, item.paths)
+        signal = item.signal * (1.0 + math.log(paths))
+        score = 6.0 * signal * (GRAPH_DIRECT_BIAS + direct) * (1.0 + 0.15 * long_score)
+        candidates.append(AkashaCandidate(
+            key=key, source="Graph", ripple=item.best_weight,
+            direct=direct, state=0.0, edge=signal,
+            long=long_score, resource=resource, fan=max(0, fan.get(key, 0)),
+            score=float(score * resource), path_type="1hop",
+            seed_key=item.seed_key, path_value=item.best_edge,
+        ))
+    candidates.sort(key=lambda item: item.score, reverse=True)
+    return candidates[:GRAPH_EXPAND_LIMIT]
 
 
 def merge_active_candidates(

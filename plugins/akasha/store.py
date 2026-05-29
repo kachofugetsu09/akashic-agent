@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS akasha_source_session_snapshot (
 """
 
 RESET_SQL = """
+DROP TABLE IF EXISTS akasha_query_log;
 DROP TABLE IF EXISTS akasha_activation_events;
 DROP TABLE IF EXISTS akasha_edges;
 DROP TABLE IF EXISTS akasha_nodes;
@@ -153,6 +154,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _table_columns(db: sqlite3.Connection, table: str) -> set[str]:
+    rows = db.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
 class AkashaStore:
     def __init__(self, db_path: str | Path) -> None:
         # 1. 初始化 sidecar 数据库和 schema。
@@ -176,6 +182,10 @@ class AkashaStore:
     def ensure_schema(self) -> None:
         # 1. schema 可重复执行，用于启动和迁移前检查。
         with self._lock:
+            if "run_id" not in _table_columns(self._db, "akasha_source_session_snapshot"):
+                _ = self._db.execute("DROP TABLE IF EXISTS akasha_source_session_snapshot")
+            if "message_count" not in _table_columns(self._db, "akasha_migration_runs"):
+                _ = self._db.execute("DROP TABLE IF EXISTS akasha_migration_runs")
             _ = self._db.executescript(SCHEMA)
             self._db.commit()
 
