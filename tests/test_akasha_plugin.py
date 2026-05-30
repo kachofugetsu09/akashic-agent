@@ -505,7 +505,7 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
             ),
             AkashaCandidate(
                 key="s:2",
-                source="Expanded",
+                source="Graph",
                 ripple=0.5,
                 direct=0.4,
                 state=0.8,

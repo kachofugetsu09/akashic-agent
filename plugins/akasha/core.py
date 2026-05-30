@@ -40,7 +40,6 @@ def initial_strength(salience: float) -> float:
     return STRENGTH_CAP * (INITIAL_STRENGTH_BASE + INITIAL_STRENGTH_SALIENCE_BONUS * s)
 ASSISTANT_ONLY_PENALTY = 0.12
 FAN_PENALTY_POWER = 0.10
-EXPANDED_DIRECT_FLOOR = 0.62
 ACTIVATION_THRESHOLD = 0.22
 GRAPH_EXPAND_LIMIT = 8
 GRAPH_DIRECT_BIAS = 0.25
@@ -994,8 +993,8 @@ def score_candidates(
         edge_value = float(np.max(cross_mat[index])) if len(keys) else 0.0
         ptype, seed_key, bridge_key, path_value = path_info_dict.get(key, ("direct", "", "", 0.0))
         hop_penalty = {"direct": 1.0, "1hop": 0.86, "2hop": 0.62}.get(ptype, 0.62)
-        source = seed_sources.get(key, "Expanded")
-        direct_weight = 0.50 if source != "Expanded" else 0.18
+        source = seed_sources.get(key, "")
+        direct_weight = 0.50 if source else 0.18
         fan_penalty = math.pow(1.0 + fan_value, FAN_PENALTY_POWER)
         user_penalty = 1.0 if has_user_turn(source_cursor, key) else ASSISTANT_ONLY_PENALTY
         # ── 乘算 gain modulation (Salinas & Sejnowski 2001) ───────
@@ -1021,8 +1020,6 @@ def score_candidates(
             * gain_long
             * gain_edge
         ) * resource * hop_penalty * user_penalty / fan_penalty
-        if source == "Expanded" and ptype == "1hop" and direct_value >= EXPANDED_DIRECT_FLOOR:
-            score = max(score, config.activation_threshold + 0.01)
         all_candidates[key] = AkashaCandidate(
             key=key, source=source, ripple=float(current[index]),
             direct=direct_value, state=state_value, edge=edge_value,
@@ -1056,11 +1053,13 @@ def score_candidates(
     candidates: list[AkashaCandidate] = []
     suppressed: list[AkashaCandidate] = []
     for candidate in all_candidates.values():
+        if not candidate.source:
+            continue
         soft_hit = (
             soft_recall
             and candidate.score >= config.soft_recall_threshold
             and candidate.direct >= config.soft_recall_direct_floor
-            and candidate.source in {"Bridge", "Expanded"}
+            and candidate.source == "Bridge"
             and candidate.path_type in {"bridge", "1hop", "2hop"}
         )
         if candidate.score >= config.activation_threshold or soft_hit:
