@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 import struct
 import sqlite3
-import time
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -25,10 +24,14 @@ EDGE_DECAY_TAU = 1209600.0      # 14 天：Hebbian 边衰减
 RESOURCE_USE_RATE = 0.35
 STRENGTH_LR = 0.18
 STRENGTH_CAP = 3.0
+STDP_CAUSAL_EDGE_GAIN = 1.0
+STDP_ACAUSAL_EDGE_GAIN = 0.35
+STDP_COACTIVE_EDGE_GAIN = 1.0
 # 新事件初始 strength：编码即峰值（Ebbinghaus / ACT-R / early-LTP）
 # initial_strength = STRENGTH_CAP × (BASE + SALIENCE_BONUS · σ)
 INITIAL_STRENGTH_BASE = 0.70
 INITIAL_STRENGTH_SALIENCE_BONUS = 0.30
+SALIENCE_CENTROID_SCALE = 2.0
 
 
 def initial_strength(salience: float) -> float:
@@ -42,6 +45,12 @@ ACTIVATION_THRESHOLD = 0.22
 GRAPH_EXPAND_LIMIT = 8
 GRAPH_DIRECT_BIAS = 0.25
 GRAPH_FAN_PENALTY_POWER = 0.15
+
+# RWR 重启概率 α：扩散迭代和 path_info 各 hop 权重都由它推出，
+# 不再是 0.2 / 0.16 / 0.64 三个独立字面量。
+#   iteration : r = (1−α)·P·r + α·e0
+#   path_info : direct = α, 1hop = α(1−α), 2hop = (1−α)²
+RWR_RESTART_ALPHA = 0.2
 
 # FTS 改进参数
 FTS_MIN_IDF = 3.5          # 过滤低 IDF 常见 token
@@ -247,11 +256,46 @@ class ActivationTrace:
 
 
 @dataclass(frozen=True)
+class AkashaActivationSnapshot:
+    nodes: dict[str, AkashaNode]
+    edges: dict[tuple[str, str], float]
+    edges_meta: dict[tuple[str, str], float]
+    fan: dict[str, int]
+    edges_by_src: dict[str, dict[str, float]]
+    message_embeddings: dict[str, np.ndarray]
+    message_turn_keys: dict[str, str]
+
+
+@dataclass(frozen=True)
 class EdgeUpdate:
     src_key: str
     dst_key: str
     strength: float
     ts: float
+
+
+def activation_edge_updates(
+    current_key: str,
+    candidates: list[AkashaCandidate],
+    ts: float,
+) -> list[EdgeUpdate]:
+    updates: list[EdgeUpdate] = []
+    key_to_score = {item.key: item.score for item in candidates}
+    for item in candidates:
+        edge_strength = key_to_score.get(item.key, 1.0)
+        updates.append(
+            EdgeUpdate(item.key, current_key, edge_strength * STDP_CAUSAL_EDGE_GAIN, ts)
+        )
+        updates.append(
+            EdgeUpdate(current_key, item.key, edge_strength * STDP_ACAUSAL_EDGE_GAIN, ts)
+        )
+    for left_index, left in enumerate(candidates):
+        for right in candidates[left_index + 1:]:
+            edge_strength = math.sqrt(key_to_score[left.key] * key_to_score[right.key])
+            edge_strength *= STDP_COACTIVE_EDGE_GAIN
+            updates.append(EdgeUpdate(left.key, right.key, edge_strength, ts))
+            updates.append(EdgeUpdate(right.key, left.key, edge_strength, ts))
+    return updates
 
 
 @dataclass(frozen=True)
@@ -276,6 +320,30 @@ def normalize(vector: np.ndarray) -> np.ndarray:
     """归一化向量到单位长度。"""
     norm = float(np.linalg.norm(vector))
     return vector / norm if norm > 0 else vector
+
+
+def causal_salience(
+    embedding: list[float] | np.ndarray,
+    prior_sum: np.ndarray | None,
+    prior_count: int,
+) -> float:
+    """只用当前消息之前的全局重心计算 salience。"""
+    if prior_sum is None or prior_count <= 0:
+        return 0.0
+    vector = normalize(np.array(embedding, dtype=np.float32))
+    centroid = normalize(prior_sum / float(prior_count))
+    value = (1.0 - float(np.dot(vector, centroid))) * SALIENCE_CENTROID_SCALE
+    return min(1.0, max(0.0, value))
+
+
+def advance_salience_state(
+    prior_sum: np.ndarray | None,
+    prior_count: int,
+    embedding: list[float] | np.ndarray,
+) -> tuple[np.ndarray, int]:
+    vector = normalize(np.array(embedding, dtype=np.float32))
+    total = vector.copy() if prior_sum is None else prior_sum + vector
+    return total, prior_count + 1
 
 
 def _best_device() -> str:
@@ -324,8 +392,8 @@ def parse_ts_unix(value: str) -> float:
     """把时间字符串转换成 Unix 秒。"""
     try:
         return datetime.fromisoformat(value).timestamp()
-    except Exception:
-        return time.time()
+    except ValueError as exc:
+        raise ValueError(f"无效时间戳: {value}") from exc
 
 
 def message_id_to_key_from_db(cursor: sqlite3.Cursor, message_id: str) -> str:
@@ -558,6 +626,26 @@ def dense_message_candidates(
         if len(candidates) >= limit:
             break
     return candidates
+
+
+def graph_seed_keys_from_snapshot(
+    query_vec: np.ndarray,
+    snapshot: AkashaActivationSnapshot,
+    *,
+    limit: int,
+) -> list[str]:
+    if not snapshot.message_embeddings:
+        return []
+    return [
+        item.key
+        for item in dense_message_candidates(
+            query_vec,
+            snapshot.nodes,
+            snapshot.message_embeddings,
+            snapshot.message_turn_keys,
+            limit=limit,
+        )
+    ]
 
 
 # ── Seed 选择 ─────────────────────────────────────────────────────────
@@ -811,13 +899,14 @@ def path_info(
 ) -> dict[str, tuple[str, str, str, float]]:
     """回溯每个候选的能量路径（direct / 1hop / 2hop）。"""
     result: dict[str, tuple[str, str, str, float]] = {}
+    alpha = RWR_RESTART_ALPHA
     seed_indices = np.where(e0 > 0)[0]
     for index, key in enumerate(keys):
-        c0 = float(0.2 * e0[index])
-        c1_vec = 0.16 * transition[index, :] * e0
+        c0 = float(alpha * e0[index])
+        c1_vec = alpha * (1.0 - alpha) * transition[index, :] * e0
         s1 = int(np.argmax(c1_vec))
         c1 = float(c1_vec[s1])
-        c2_vec = 0.64 * transition[index, :] * te0
+        c2_vec = (1.0 - alpha) ** 2 * transition[index, :] * te0
         c2_vec[index] = 0.0
         c2_vec[seed_indices] = 0.0
         bridge = int(np.argmax(c2_vec))
@@ -870,10 +959,15 @@ def score_candidates(
         fan_penalty = math.pow(1.0 + fan_value, FAN_PENALTY_POWER)
         user_penalty = 1.0 if has_user_turn(source_cursor, key) else ASSISTANT_ONLY_PENALTY
         # ── 乘算 gain modulation (Salinas & Sejnowski 2001) ───────
-        # 内容基底：spreading 能量 + 直接相似度（取较大方，避免双重计数）
+        # 内容基底：spreading 能量 + 直接相似度两路证据按 noisy-OR 融合。
+        # P(relevant) = a + b − a·b = strong + weak·(1 − strong)，
+        # 取代原 max + 0.3·min：0.3 本就是 (1 − strong) 的硬编码近似。
+        # strong ≥ 1（证据已饱和）时 (1−strong) 截到 0，次要证据不再加成。
         ripple_term = float(current[index]) * 3.0 * state_value
         direct_term = direct_weight * direct_value
-        content_base = max(ripple_term, direct_term) + 0.3 * min(ripple_term, direct_term)
+        strong = max(ripple_term, direct_term)
+        weak = min(ripple_term, direct_term)
+        content_base = strong + weak * max(0.0, 1.0 - strong)
 
         # 每个状态信号都是乘法 gain factor，signal=0 时 gain=1（不影响）
         # signal 高时 gain > 1（multiplicative 放大）
@@ -969,24 +1063,37 @@ def graph_expand_candidates(
     now_ts: float,
     source_cursor: sqlite3.Cursor | None,
     edges_by_src: dict[str, dict[str, float]] | None,
+    edges_meta: dict[tuple[str, str], float] | None,
     graph_seed_keys: list[str],
 ) -> list[AkashaCandidate]:
     """沿 Dense 种子的强共激活边补一跳候选。"""
     if edges_by_src is None or not graph_seed_keys:
         return []
 
+    def _eff(src_key: str, dst_key: str, weight: float) -> float:
+        if edges_meta is None or now_ts <= 0:
+            return weight
+        return effective_edge_weight(
+            weight,
+            edges_meta.get((src_key, dst_key), 0.0),
+            now_ts,
+        )
+
     seed_set = {key for key in graph_seed_keys if key in nodes}
     in_strength: dict[str, float] = {}
-    for src_neighbors in edges_by_src.values():
+    for src_key, src_neighbors in edges_by_src.items():
         for dst_key, edge_weight in src_neighbors.items():
-            in_strength[dst_key] = in_strength.get(dst_key, 0.0) + edge_weight
+            in_strength[dst_key] = in_strength.get(dst_key, 0.0) + _eff(src_key, dst_key, edge_weight)
 
     aggregate: dict[str, _GraphPathAggregate] = {}
     for seed_key in graph_seed_keys:
         if seed_key not in nodes:
             continue
         raw_neighbors = edges_by_src.get(seed_key, {})
-        out_strength = sum(raw_neighbors.values())
+        out_strength = sum(
+            _eff(seed_key, dst_key, edge_weight)
+            for dst_key, edge_weight in raw_neighbors.items()
+        )
         if out_strength <= 0:
             continue
 
@@ -994,12 +1101,13 @@ def graph_expand_candidates(
         for key, edge_weight in raw_neighbors.items():
             if key not in nodes or key in seed_set or not has_user_turn(source_cursor, key):
                 continue
-            dst_strength = in_strength.get(key, edge_weight)
-            edge_signal = edge_weight / math.sqrt(max(out_strength * dst_strength, 1e-9))
+            effective_weight = _eff(seed_key, key, edge_weight)
+            dst_strength = in_strength.get(key, effective_weight)
+            edge_signal = effective_weight / math.sqrt(max(out_strength * dst_strength, 1e-9))
             direct = max(0.0, direct_scores.get(key, 0.0))
             seed_direct = max(GRAPH_DIRECT_BIAS, max(0.0, direct_scores.get(seed_key, 0.0)))
             candidate_signal = edge_signal * seed_direct
-            scored_neighbors.append((candidate_signal, edge_signal, direct, key, edge_weight))
+            scored_neighbors.append((candidate_signal, edge_signal, direct, key, effective_weight))
         scored_neighbors.sort(reverse=True, key=lambda item: item[0])
         for candidate_signal, edge_signal, direct, key, edge_weight in scored_neighbors[:GRAPH_EXPAND_LIMIT]:
             item = aggregate.setdefault(key, _GraphPathAggregate(direct=direct, seed_key=seed_key))
@@ -1127,7 +1235,7 @@ def compute_candidates(
     te0 = np.dot(transition, e0)
     current = e0.copy()
     for _ in range(2):
-        current = 0.8 * np.dot(transition, current) + 0.2 * e0
+        current = (1.0 - RWR_RESTART_ALPHA) * np.dot(transition, current) + RWR_RESTART_ALPHA * e0
 
     path_info_dict = path_info(valid_keys, transition, e0, te0)
     candidates, suppressed = score_candidates(
@@ -1139,7 +1247,7 @@ def compute_candidates(
     if graph_seed_keys:
         graph_candidates = graph_expand_candidates(
             query_vec, nodes, direct_scores_map, fan, now_ts,
-            source_cursor, edges_by_src, graph_seed_keys,
+            source_cursor, edges_by_src, edges_meta, graph_seed_keys,
         )
         limit = return_limit or config.activate_limit
         candidates = merge_active_candidates(candidates, graph_candidates, limit)
@@ -1147,6 +1255,35 @@ def compute_candidates(
         suppressed = [item for item in suppressed if item.key not in active_keys]
     return candidates, suppressed, ActivationTrace(
         seed_count=len(seed_sources), pool_count=len(valid_keys),
+    )
+
+
+def compute_candidates_from_snapshot(
+    query: str,
+    query_vec: np.ndarray,
+    snapshot: AkashaActivationSnapshot,
+    now_ts: float,
+    *,
+    config: CoreConfig,
+    source_cursor: sqlite3.Cursor | None = None,
+    soft_recall: bool = False,
+    return_limit: int | None = None,
+    graph_seed_keys: list[str] | None = None,
+) -> tuple[list[AkashaCandidate], list[AkashaCandidate], ActivationTrace]:
+    return compute_candidates(
+        query,
+        query_vec,
+        snapshot.nodes,
+        snapshot.edges,
+        now_ts,
+        config=config,
+        fan=snapshot.fan,
+        source_cursor=source_cursor,
+        edges_by_src=snapshot.edges_by_src,
+        edges_meta=snapshot.edges_meta,
+        soft_recall=soft_recall,
+        return_limit=return_limit,
+        graph_seed_keys=graph_seed_keys,
     )
 
 

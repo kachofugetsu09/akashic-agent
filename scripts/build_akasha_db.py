@@ -25,7 +25,7 @@ from plugins.akasha.config import (
     load_akasha_config,
     resolve_akasha_db_path,
 )
-from plugins.akasha.core import SourceMessage
+from plugins.akasha.core import SourceMessage, parse_ts_unix, turn_key
 from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage
 from plugins.akasha.store import (
     AkashaStore,
@@ -80,14 +80,13 @@ def _iter_source_batches(
     sessions_db: Path,
     batch_size: int,
 ) -> Iterator[list[SourceMessage]]:
-    # 1. 按真实时间顺序 replay，避免后来的 turn 提前进入历史图。
+    # 1. 先批量读取，最终统一用核心时间解析器排序。
     with closing(sqlite3.connect(str(sessions_db))) as db:
         cursor = db.execute(
             """
             SELECT id, session_key, seq, role, content, ts
             FROM messages
             WHERE role IN ('user', 'assistant')
-            ORDER BY COALESCE(datetime(ts), ts), session_key, seq
             """
         )
         while rows := cursor.fetchmany(max(1, batch_size)):
@@ -106,10 +105,10 @@ def _iter_source_batches(
 
 # 读取 sessions.db 中全部原始消息。
 def _load_source_messages(sessions_db: Path) -> list[SourceMessage]:
-    # 1. salience 需要全量 embedding 分布，不能边读边 replay。
     messages: list[SourceMessage] = []
     for batch in _iter_source_batches(sessions_db=sessions_db, batch_size=1000):
         messages.extend(batch)
+    messages.sort(key=lambda item: (parse_ts_unix(item.ts), item.session_key, item.seq))
     return messages
 
 
@@ -192,99 +191,6 @@ def _load_embeddings_from_cache(
     return embedding_map, cache_hits, cache_misses
 
 
-# 计算原始 cross activation 使用的 message salience。
-def _compute_salience_map(
-    messages: list[SourceMessage],
-    embedding_map: dict[str, list[float]],
-) -> dict[str, float]:
-    # 1. 用 temporal isolation、assistant arousal、session outlier 三个分量复刻原始建库逻辑。
-    available = [
-        (message, embedding_map[message.id])
-        for message in messages
-        if message.id in embedding_map
-    ]
-    if not available:
-        return {}
-    matrix = np.vstack([
-        _normalize_vector(np.array(embedding, dtype=np.float32))
-        for _, embedding in available
-    ])
-    index_by_id = {message.id: index for index, (message, _) in enumerate(available)}
-    session_sorted: dict[str, list[int]] = {}
-    seq_index: dict[tuple[str, int], int] = {}
-    for index, (message, _) in enumerate(available):
-        session_sorted.setdefault(message.session_key, []).append(index)
-        seq_index[(message.session_key, message.seq)] = index
-    for indices in session_sorted.values():
-        indices.sort(key=lambda item: available[item][0].seq)
-
-    # 2. 先计算每个 session 的质心。
-    centroids: dict[str, np.ndarray] = {}
-    for session_key, indices in session_sorted.items():
-        group = matrix[indices]
-        centroid = group.mean(axis=0)
-        centroids[session_key] = _normalize_vector(centroid)
-
-    # 3. 三个原始分量分别做 p5-p95 归一化后加权。
-    temporal_raw = np.zeros(len(available), dtype=np.float32)
-    arousal_raw = np.zeros(len(available), dtype=np.float32)
-    session_out_raw = np.zeros(len(available), dtype=np.float32)
-    position_by_index = {
-        source_index: position
-        for indices in session_sorted.values()
-        for position, source_index in enumerate(indices)
-    }
-    for index, (message, _) in enumerate(available):
-        session_indices = session_sorted[message.session_key]
-        position = position_by_index[index]
-        neighbors = [
-            float(np.dot(matrix[index], matrix[neighbor_index]))
-            for neighbor_index in session_indices[max(0, position - 5) : position]
-        ]
-        temporal_raw[index] = 1.0 - max(neighbors) if neighbors else 1.0
-        if message.role == "user":
-            assistant_index = seq_index.get((message.session_key, message.seq + 1))
-            if (
-                assistant_index is None
-                or available[assistant_index][0].role != "assistant"
-            ):
-                assistant_len = 0
-            else:
-                assistant_len = len(available[assistant_index][0].content)
-            arousal_raw[index] = min(1.0, assistant_len / 300.0)
-        else:
-            arousal_raw[index] = min(1.0, len(message.content) / 300.0)
-        centroid = centroids[message.session_key]
-        session_out_raw[index] = max(0.0, (1.0 - float(np.dot(matrix[index], centroid))) / 2.0)
-
-    salience = (
-        0.4 * _percentile_normalize(temporal_raw)
-        + 0.3 * _percentile_normalize(arousal_raw)
-        + 0.3 * _percentile_normalize(session_out_raw)
-    )
-    return {
-        message_id: float(value)
-        for message_id, value in zip(index_by_id, np.clip(salience, 0.0, 1.0), strict=False)
-    }
-
-
-# p5-p95 拉伸到 0..1。
-def _percentile_normalize(values: np.ndarray) -> np.ndarray:
-    # 1. 常量分布保留中性值，避免除零。
-    p5 = float(np.percentile(values, 5))
-    p95 = float(np.percentile(values, 95))
-    if p95 - p5 < 1e-8:
-        return np.full_like(values, 0.5)
-    return np.clip((values - p5) / (p95 - p5), 0.0, 1.0)
-
-
-# 归一化向量。
-def _normalize_vector(vector: np.ndarray) -> np.ndarray:
-    # 1. 原始 salience 和 dense 分数都基于单位向量。
-    norm = float(np.linalg.norm(vector))
-    return vector / norm if norm > 0 else vector
-
-
 # 按 user turn 聚合回放输入，assistant 归入前一个 user turn。
 def _iter_replay_turns(
     messages: list[SourceMessage],
@@ -339,6 +245,7 @@ def _run() -> MigrationStats:
     activations = 0
     cache_hits = 0
     cache_misses = 0
+    next_progress = int(args.progress_every)
     status = "failed"
     try:
         source_messages = _load_source_messages(sessions_db)
@@ -350,12 +257,23 @@ def _run() -> MigrationStats:
             model=embedding_model,
             messages=replay_messages,
         )
-        salience_map = _compute_salience_map(replay_messages, embedding_map)
+        message_embeddings = {
+            message_id: np.array(embedding, dtype=np.float32)
+            for message_id, embedding in embedding_map.items()
+        }
+        message_turn_keys = {
+            message.id: turn_key(message.session_key, message.seq, message.role)[2]
+            for message in replay_messages
+            if message.id in embedding_map
+        }
         with closing(sqlite3.connect(str(sessions_db))) as source_db:
             runtime = AkashaReplayRuntime(
                 store=store,
                 config=akasha_config,
+                source_db_path=sessions_db,
                 source_cursor=source_db.cursor(),
+                message_embeddings=message_embeddings,
+                message_turn_keys=message_turn_keys,
             )
             for raw_turn in replay_turns:
                 replay_items: list[ReplayMessage] = []
@@ -364,10 +282,7 @@ def _run() -> MigrationStats:
                     if embedding is None:
                         continue
                     replay_items.append(ReplayMessage(
-                        message=replace(
-                            raw_message,
-                            salience=salience_map.get(raw_message.id, 0.0),
-                        ),
+                        message=raw_message,
                         embedding=embedding,
                     ))
                 if not any(item.message.role == "user" for item in replay_items):
@@ -375,8 +290,10 @@ def _run() -> MigrationStats:
                 result = runtime.replay_turn(replay_items)
                 activations += len(result.activation_items)
                 messages += len(replay_items)
-                if args.progress_every > 0 and messages % int(args.progress_every) == 0:
-                    print(f"已处理 messages={messages} activations={activations}")
+                if next_progress > 0 and messages >= next_progress:
+                    print(f"已处理 messages={messages} activations={activations}", flush=True)
+                    while messages >= next_progress:
+                        next_progress += int(args.progress_every)
         status = "completed"
     finally:
         store.finish_migration_run(

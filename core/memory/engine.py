@@ -109,6 +109,7 @@ class MemoryQuery:
     filters: MemoryQueryFilters = field(default_factory=MemoryQueryFilters)
     context: dict[str, object] = field(default_factory=dict[str, object])
     limit: int = 8
+    timestamp: datetime | None = None
 
 
 @dataclass

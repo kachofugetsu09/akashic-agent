@@ -205,14 +205,14 @@ TERMINAL_TOOL_SCHEMAS: list[dict] = [
 
 async def _recall_memory(ctx: AgentTickContext, args: dict, *, memory) -> str:
     query = args["query"]
-    hits = await _retrieve_interest_hits(memory=memory, query=query)
+    hits = await _retrieve_interest_hits(memory=memory, query=query, timestamp=ctx.now_utc)
     if not hits:
         return json.dumps({"result": "", "hits": 0}, ensure_ascii=False)
     texts = [h.get("text", "") for h in hits if h.get("text")]
     return json.dumps({"result": "\n---\n".join(texts), "hits": len(hits)}, ensure_ascii=False)
 
 
-async def _retrieve_interest_hits(*, memory, query: str) -> list[dict]:
+async def _retrieve_interest_hits(*, memory, query: str, timestamp) -> list[dict]:
     if memory is None:
         return []
 
@@ -222,6 +222,7 @@ async def _retrieve_interest_hits(*, memory, query: str) -> list[dict]:
             text=query,
             intent="interest",
             limit=2,
+            timestamp=timestamp,
         )
     )
     return [

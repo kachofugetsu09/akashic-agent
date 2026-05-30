@@ -15,6 +15,7 @@ TDD — Phase 3: proactive_v2/tools.py
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -306,11 +307,17 @@ async def test_recall_memory_skips_empty_text():
 async def test_recall_memory_passes_query_to_facade_interest_request():
     fake_memory = MagicMock()
     fake_memory.query = AsyncMock(return_value=SimpleNamespace(records=[]))
-    await _recall_memory(ctx=AgentTickContext(), args={"query": "q"}, memory=fake_memory)
+    now = datetime(2026, 4, 4, 14, 0, 0, tzinfo=timezone.utc)
+    await _recall_memory(
+        ctx=AgentTickContext(now_utc=now),
+        args={"query": "q"},
+        memory=fake_memory,
+    )
     request = fake_memory.query.await_args.args[0]
     assert request.text == "q"
     assert request.intent == "interest"
     assert request.limit == 2
+    assert request.timestamp == now
 
 
 @pytest.mark.asyncio

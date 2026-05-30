@@ -43,6 +43,7 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
                     "session_metadata": request.session_metadata,
                 },
                 filters=MemoryQueryFilters(hints=dict(request.extra or {})),
+                timestamp=request.timestamp,
             )
         )
 

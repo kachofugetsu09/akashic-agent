@@ -78,6 +78,7 @@ class RecallMemoryTool(Tool):
                 ),
                 limit=max(1, min(int(limit), 200)),
                 context=dict(extra),
+                timestamp=_parse_current_timestamp(extra.get("current_timestamp")),
             )
         )
         return _render_records(result.records, trace=result.trace)
@@ -162,6 +163,12 @@ def _normalize_intent(
 def _memory_kinds(memory_kind: str) -> tuple[str, ...]:
     value = memory_kind.strip()
     return (value,) if value else ()
+
+
+def _parse_current_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return datetime.fromisoformat(value)
 
 
 def _now_local() -> datetime:

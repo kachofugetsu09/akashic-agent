@@ -14,7 +14,7 @@ import agent.tools.recall_memory as recall_memory_module
 import memory2.retriever as retriever_module
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
-from core.memory.engine import EvidenceRef, MemoryQueryResult, MemoryRecord
+from core.memory.engine import EvidenceRef, MemoryQueryResult, MemoryRecord, MemoryToolSpec
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
@@ -61,6 +61,20 @@ class _CaptureMemory:
     async def query(self, request):
         self.request = request
         return MemoryQueryResult()
+
+
+@pytest.mark.asyncio
+async def test_recall_memory_passes_current_timestamp_to_engine() -> None:
+    memory = _CaptureMemory()
+    tool = RecallMemoryTool(
+        cast(Any, memory),
+        MemoryToolSpec(description="", parameters={"type": "object", "properties": {}}),
+    )
+    ts = datetime(2026, 4, 4, 22, 0, 0)
+
+    _ = await tool.execute(query="Akasha", current_timestamp=ts.isoformat())
+
+    assert memory.request.timestamp == ts
 
 
 class _FakeProvider:
