@@ -490,7 +490,13 @@ class SchedulerService:
                 session_key=f"scheduler:{job.id}",
                 omit_user_turn=True,
                 skip_post_memory=True,
-                disabled_tools=["message_push"],
+                skip_memory_retrieval=True,
+                disabled_tools=[
+                    "message_push",
+                    "recall_memory",
+                    "memorize",
+                    "forget_memory",
+                ],
             )
             elapsed = time.monotonic() - t0
             self.tracker.record(elapsed)

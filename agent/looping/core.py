@@ -607,6 +607,7 @@ class AgentLoop:
         chat_id: str = "direct",
         omit_user_turn: bool = False,
         skip_post_memory: bool = False,
+        skip_memory_retrieval: bool = False,
         stream_events: bool = False,
         disabled_tools: list[str] | None = None,
     ) -> str:
@@ -615,6 +616,8 @@ class AgentLoop:
             metadata["omit_user_turn"] = True
         if skip_post_memory:
             metadata["skip_post_memory"] = True
+        if skip_memory_retrieval:
+            metadata["skip_memory_retrieval"] = True
         if not stream_events:
             metadata["suppress_stream_events"] = True
         if disabled_tools:

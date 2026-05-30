@@ -134,6 +134,7 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
         chat_id="123",
         omit_user_turn=True,
         skip_post_memory=True,
+        skip_memory_retrieval=True,
         disabled_tools=["message_push"],
     )
 
@@ -142,6 +143,7 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
     assert msg.metadata == {
         "omit_user_turn": True,
         "skip_post_memory": True,
+        "skip_memory_retrieval": True,
         "suppress_stream_events": True,
         "disabled_tools": ["message_push"],
     }

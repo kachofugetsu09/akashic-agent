@@ -16,7 +16,7 @@ from agent.core.types import (
 )
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
 from agent.provider import ContentSafetyError, ContextLengthError
-from agent.retrieval.protocol import RetrievalRequest
+from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_runtime import (
     append_assistant_tool_calls,
@@ -509,20 +509,23 @@ class DefaultContextStore(ContextStore):
         raw_history = list(session.get_history())
         history_messages = support.to_history_messages(raw_history)
 
-        # 2. 再执行 retrieval，保持当前 pipeline 行为不变。
-        retrieval_result = await self._retrieval.retrieve(
-            RetrievalRequest(
-                message=msg.content,
-                session_key=session_key,
-                channel=msg.context_channel,
-                chat_id=msg.context_chat_id,
-                history=history_messages,
-                session_metadata=(
-                    session.metadata if isinstance(session.metadata, dict) else {}
-                ),
-                timestamp=msg.timestamp,
+        # 2. 系统轮次可显式跳过预检索，避免污染检索诊断和激活状态。
+        if bool((msg.metadata or {}).get("skip_memory_retrieval")):
+            retrieval_result = RetrievalResult(block="", trace=None)
+        else:
+            retrieval_result = await self._retrieval.retrieve(
+                RetrievalRequest(
+                    message=msg.content,
+                    session_key=session_key,
+                    channel=msg.context_channel,
+                    chat_id=msg.context_chat_id,
+                    history=history_messages,
+                    session_metadata=(
+                        session.metadata if isinstance(session.metadata, dict) else {}
+                    ),
+                    timestamp=msg.timestamp,
+                )
             )
-        )
 
         # 3. 最后补齐 ContextBundle，把主链正式字段直接收进显式合同。
         skill_mentions = support.collect_skill_mentions(

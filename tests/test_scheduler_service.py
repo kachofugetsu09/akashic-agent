@@ -85,7 +85,13 @@ async def test_soft_calls_process_direct_not_push_directly(
     assert call_kwargs.kwargs["channel"] == "telegram"
     assert call_kwargs.kwargs["chat_id"] == "123"
     assert call_kwargs.kwargs["skip_post_memory"] is True
-    assert call_kwargs.kwargs["disabled_tools"] == ["message_push"]
+    assert call_kwargs.kwargs["skip_memory_retrieval"] is True
+    assert call_kwargs.kwargs["disabled_tools"] == [
+        "message_push",
+        "recall_memory",
+        "memorize",
+        "forget_memory",
+    ]
 
 
 async def test_soft_sends_ai_response_via_push(

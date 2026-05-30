@@ -66,7 +66,10 @@ async def test_default_context_store_prepare_returns_bundle_with_legacy_metadata
             )
         )
     )
-    store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
+    store = DefaultContextStore(
+        retrieval=cast(Any, retrieval),
+        context=cast(Any, context),
+    )
     session = _DummySession()
     msg = InboundMessage(
         channel="cli",
@@ -118,6 +121,41 @@ async def test_default_context_store_prepare_uses_explicit_session_key_for_retri
     request = retrieval.retrieve.await_args.args[0]
     assert request.session_key == "scheduler:job-123"
     assert request.session_key != msg.session_key
+
+
+@pytest.mark.asyncio
+async def test_default_context_store_prepare_skips_retrieval_when_requested():
+    retrieval = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=RetrievalResult(
+                block="should-not-load",
+                trace=RetrievalTrace(raw={"route": "RETRIEVE"}),
+            )
+        )
+    )
+    context = SimpleNamespace(
+        skills=SimpleNamespace(list_skills=MagicMock(return_value=[]))
+    )
+    store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
+    session = _DummySession()
+    msg = InboundMessage(
+        channel="telegram",
+        sender="scheduler",
+        chat_id="7674283004",
+        content="查询北京天气",
+        metadata={"skip_memory_retrieval": True},
+    )
+
+    bundle = await store.prepare(
+        msg=msg,
+        session_key="scheduler:job-123",
+        session=cast(Any, session),
+    )
+
+    retrieval.retrieve.assert_not_awaited()
+    assert bundle.memory_blocks == []
+    assert bundle.retrieved_memory_block == ""
+    assert bundle.retrieval_trace_raw is None
 
 
 @pytest.mark.asyncio
