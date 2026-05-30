@@ -238,6 +238,11 @@ class AkashaCandidate:
     path_value: float = 0.0
 
 
+@dataclass(frozen=True)
+class DenseMessageIndex:
+    by_dim: dict[int, tuple[tuple[str, ...], np.ndarray]]
+
+
 @dataclass
 class _GraphPathAggregate:
     signal: float = 0.0
@@ -264,6 +269,7 @@ class AkashaActivationSnapshot:
     edges_by_src: dict[str, dict[str, float]]
     message_embeddings: dict[str, np.ndarray]
     message_turn_keys: dict[str, str]
+    message_index: DenseMessageIndex | None = None
 
 
 @dataclass(frozen=True)
@@ -592,6 +598,28 @@ def dense_candidates(
     ]
 
 
+def build_dense_message_index(
+    message_embeddings: dict[str, np.ndarray],
+) -> DenseMessageIndex:
+    grouped: dict[int, list[tuple[str, np.ndarray]]] = {}
+    for message_id, embedding in message_embeddings.items():
+        grouped.setdefault(int(embedding.size), []).append((message_id, embedding))
+
+    by_dim: dict[int, tuple[tuple[str, ...], np.ndarray]] = {}
+    for dim, items in grouped.items():
+        message_ids = tuple(message_id for message_id, _ in items)
+        matrix = np.vstack([embedding for _, embedding in items]).astype(np.float32, copy=False)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        normalized = np.divide(
+            matrix,
+            norms,
+            out=np.zeros_like(matrix),
+            where=norms > 0,
+        )
+        by_dim[dim] = (message_ids, normalized)
+    return DenseMessageIndex(by_dim=by_dim)
+
+
 def dense_message_candidates(
     query_vec: np.ndarray,
     nodes: dict[str, AkashaNode],
@@ -599,18 +627,29 @@ def dense_message_candidates(
     message_turn_keys: dict[str, str],
     *,
     limit: int,
+    message_index: DenseMessageIndex | None = None,
 ) -> list[AkashaCandidate]:
     """从 message-level embedding 命中映射回 turn 的 Dense 候选。"""
     if not message_embeddings:
         return dense_candidates(query_vec, nodes, limit=limit)
 
     query_norm = normalize(query_vec)
-    scored: list[tuple[str, float]] = []
-    for message_id, embedding in message_embeddings.items():
-        if embedding.size != query_norm.size:
-            continue
-        score = float(np.dot(normalize(embedding), query_norm))
-        scored.append((message_id, score))
+    if message_index is not None:
+        indexed = message_index.by_dim.get(int(query_norm.size))
+        if indexed is None:
+            return []
+        message_ids, matrix = indexed
+        scored = [
+            (message_id, float(score))
+            for message_id, score in zip(message_ids, np.dot(matrix, query_norm))
+        ]
+    else:
+        scored = []
+        for message_id, embedding in message_embeddings.items():
+            if embedding.size != query_norm.size:
+                continue
+            score = float(np.dot(normalize(embedding), query_norm))
+            scored.append((message_id, score))
 
     candidates: list[AkashaCandidate] = []
     seen: set[str] = set()
@@ -644,6 +683,7 @@ def graph_seed_keys_from_snapshot(
             snapshot.message_embeddings,
             snapshot.message_turn_keys,
             limit=limit,
+            message_index=snapshot.message_index,
         )
     ]
 

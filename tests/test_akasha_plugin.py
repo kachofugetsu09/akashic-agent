@@ -24,7 +24,12 @@ from plugins.akasha.engine import (
     _compute_candidates,
     _load_turn_card,
 )
-from plugins.akasha.core import activation_edge_updates
+from plugins.akasha.core import (
+    AkashaNode,
+    activation_edge_updates,
+    build_dense_message_index,
+    dense_message_candidates,
+)
 from plugins.akasha.plugin import AkashaPlugin
 from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage, _turn_messages
 from plugins.akasha.store import (
@@ -85,6 +90,99 @@ def _candidate(key: str, score: float) -> AkashaCandidate:
         resource=1.0,
         fan=0,
         score=score,
+    )
+
+
+def test_dense_message_candidates_vectorized_preserves_turn_ranking() -> None:
+    nodes = {
+        "s:0": AkashaNode(
+            key="s:0",
+            anchor_id="m0",
+            session_key="s",
+            turn_seq=0,
+            first_ts_unix=QUERY_TS.timestamp(),
+            salience=0.0,
+            strength=0.0,
+            resource=1.0,
+            recall_count=0,
+            last_activated_ts=0.0,
+            last_strength_ts=QUERY_TS.timestamp(),
+            last_resource_ts=QUERY_TS.timestamp(),
+            embedding=np.array([1.0, 0.0], dtype=np.float32),
+            emb_count=1,
+        ),
+        "s:2": AkashaNode(
+            key="s:2",
+            anchor_id="m2",
+            session_key="s",
+            turn_seq=2,
+            first_ts_unix=QUERY_TS.timestamp(),
+            salience=0.0,
+            strength=0.0,
+            resource=1.0,
+            recall_count=0,
+            last_activated_ts=0.0,
+            last_strength_ts=QUERY_TS.timestamp(),
+            last_resource_ts=QUERY_TS.timestamp(),
+            embedding=np.array([0.0, 1.0], dtype=np.float32),
+            emb_count=1,
+        ),
+        "s:4": AkashaNode(
+            key="s:4",
+            anchor_id="m4",
+            session_key="s",
+            turn_seq=4,
+            first_ts_unix=QUERY_TS.timestamp(),
+            salience=0.0,
+            strength=0.0,
+            resource=1.0,
+            recall_count=0,
+            last_activated_ts=0.0,
+            last_strength_ts=QUERY_TS.timestamp(),
+            last_resource_ts=QUERY_TS.timestamp(),
+            embedding=np.array([0.0, 0.0], dtype=np.float32),
+            emb_count=1,
+        ),
+    }
+    message_embeddings = {
+        "m0": np.array([1.0, 0.0], dtype=np.float32),
+        "m2": np.array([0.8, 0.6], dtype=np.float32),
+        "m3": np.array([0.9, 0.1], dtype=np.float32),
+        "bad-dim": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        "m4": np.array([0.0, 0.0], dtype=np.float32),
+    }
+    message_turn_keys = {
+        "m0": "s:0",
+        "m2": "s:2",
+        "m3": "s:2",
+        "bad-dim": "s:0",
+        "m4": "s:4",
+    }
+    loop_result = dense_message_candidates(
+        np.array([1.0, 0.0], dtype=np.float32),
+        nodes,
+        message_embeddings,
+        message_turn_keys,
+        limit=3,
+    )
+    indexed_result = dense_message_candidates(
+        np.array([1.0, 0.0], dtype=np.float32),
+        nodes,
+        message_embeddings,
+        message_turn_keys,
+        limit=3,
+        message_index=build_dense_message_index(message_embeddings),
+    )
+
+    assert [item.key for item in loop_result] == ["s:0", "s:2", "s:4"]
+    assert [item.key for item in indexed_result] == [item.key for item in loop_result]
+    assert [item.score for item in loop_result] == pytest.approx([
+        1.0,
+        0.9 / ((0.9 ** 2 + 0.1 ** 2) ** 0.5),
+        0.0,
+    ])
+    assert [item.score for item in indexed_result] == pytest.approx(
+        [item.score for item in loop_result]
     )
 
 

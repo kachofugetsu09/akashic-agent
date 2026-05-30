@@ -30,6 +30,7 @@ from plugins.akasha.core import (
     CoreConfig,
     EdgeUpdate,
     SourceMessage,
+    build_dense_message_index,
     turn_key,
     # Algorithm functions (aliased with _ prefix for internal convention)
     activation_edge_updates as _activation_edge_updates,
@@ -148,6 +149,7 @@ class AkashaMemoryEngine:
         self._fan: dict[str, int] = {}
         self._message_embeddings: dict[str, np.ndarray] = {}
         self._message_turn_keys: dict[str, str] = {}
+        self._message_index = build_dense_message_index({})
         self._load_graph_cache()
         self._ensure_idf_table()
         self.closeables: list[object] = [self._store, self._embedder]
@@ -517,6 +519,7 @@ class AkashaMemoryEngine:
                 snapshot.message_embeddings,
                 snapshot.message_turn_keys,
                 limit=max(self._akasha_config.dense_top_k, request.limit),
+                message_index=snapshot.message_index,
             )
             graph_seed_keys = _graph_seed_keys_from_snapshot(
                 query_vec,
@@ -647,6 +650,7 @@ class AkashaMemoryEngine:
             self._store.list_cached_embeddings(model=self._config.memory.embedding.model)
         )
         message_turn_keys = _load_message_turn_keys(self._session_db_path)
+        message_index = build_dense_message_index(message_embeddings)
         with self._graph_lock:
             self._nodes = nodes
             self._edges = edges
@@ -655,6 +659,7 @@ class AkashaMemoryEngine:
             self._fan = _fan_counts(edges)
             self._message_embeddings = message_embeddings
             self._message_turn_keys = message_turn_keys
+            self._message_index = message_index
 
     # 取查询使用的内存图快照。
     def _graph_snapshot(self) -> AkashaActivationSnapshot:
@@ -667,8 +672,11 @@ class AkashaMemoryEngine:
             self._fan = {}
             self._message_embeddings = {}
             self._message_turn_keys = {}
+            self._message_index = build_dense_message_index({})
             self._load_graph_cache()
         with self._graph_lock:
+            if not hasattr(self, "_message_index"):
+                self._message_index = build_dense_message_index(self._message_embeddings)
             return AkashaActivationSnapshot(
                 nodes=dict(self._nodes),
                 edges=dict(self._edges),
@@ -680,6 +688,7 @@ class AkashaMemoryEngine:
                 },
                 message_embeddings=dict(self._message_embeddings),
                 message_turn_keys=dict(self._message_turn_keys),
+                message_index=self._message_index,
             )
 
     # 把查询产生的状态更新同步进内存图。
@@ -719,6 +728,7 @@ class AkashaMemoryEngine:
         with self._graph_lock:
             self._message_embeddings[message.id] = np.array(embedding, dtype=np.float32)
             self._message_turn_keys[message.id] = turn_key_value
+            self._message_index = build_dense_message_index(self._message_embeddings)
 
     # 把新增或增强的边同步进内存图。
     def _apply_edge_updates(self, updates: list[EdgeUpdate]) -> None:
@@ -774,6 +784,7 @@ class AkashaMemoryEngine:
             for message_id in remove_ids:
                 _ = self._message_embeddings.pop(message_id, None)
                 _ = self._message_turn_keys.pop(message_id, None)
+            self._message_index = build_dense_message_index(self._message_embeddings)
 
     # 根据 message id 找到本轮 Akasha turn 节点。
     def _affected_turn_keys(self, message_ids: list[str]) -> set[str]:
