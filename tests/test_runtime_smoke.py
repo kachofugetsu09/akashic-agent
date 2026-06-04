@@ -304,9 +304,10 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     fake_qqbot_channel = types.ModuleType("infra.channels.qqbot_channel")
 
     class _IPCServerChannel:
-        def __init__(self, bus, socket):
+        def __init__(self, bus, socket, default_session_key: str = ""):
             self.bus = bus
             self.socket = socket
+            self.default_session_key = default_session_key
 
         async def start(self) -> None:
             starts.append("ipc")
@@ -447,9 +448,10 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     fake_qq_channel = types.ModuleType("infra.channels.qq_channel")
 
     class _IPCServerChannel:
-        def __init__(self, bus, socket):
+        def __init__(self, bus, socket, default_session_key: str = ""):
             self.bus = bus
             self.socket = socket
+            self.default_session_key = default_session_key
 
         async def start(self) -> None:
             starts.append("ipc")
