@@ -12,7 +12,7 @@ from typing import Any, cast
 import pytest
 import numpy as np
 
-from core.memory.engine import MemoryQuery, MemoryScope
+from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
 from plugins.akasha.config import AkashaConfig
 from plugins.akasha.engine import (
@@ -753,7 +753,8 @@ def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None
         seq=10,
     )
     try:
-        for intent, text_block in [("context", "注入文本"), ("answer", "")]:
+        cases: list[tuple[MemoryQueryIntent, str]] = [("context", "注入文本"), ("answer", "")]
+        for intent, text_block in cases:
             engine._write_query_log(
                 request=MemoryQuery(
                     text="同一轮问题",
