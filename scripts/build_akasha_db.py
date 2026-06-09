@@ -26,6 +26,9 @@ from plugins.akasha.config import (
     resolve_akasha_db_path,
 )
 from plugins.akasha.core import SourceMessage, parse_ts_unix, turn_key
+from plugins.akasha.fast import fast_dense, graph_fast
+from plugins.akasha.fast.dump import dump_to_db
+from plugins.akasha.fast.mem_store import CapturingMemoryStore
 from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage
 from plugins.akasha.store import (
     AkashaStore,
@@ -240,6 +243,11 @@ def _run() -> MigrationStats:
     store.insert_session_snapshots(run_id=run_id, snapshots=snapshots)
     store.reset_schema()
 
+    # 2b. 用内存图重放，末尾一次性落库；AkashaStore 只负责 cache、迁移记录和 dump 连接。
+    mem = CapturingMemoryStore()
+    graph_fast.install(mem)
+    fast_dense.install()
+
     # 3. 只复用 embedding cache，再按消息顺序 replay 激活状态。
     messages = 0
     activations = 0
@@ -268,7 +276,7 @@ def _run() -> MigrationStats:
         }
         with closing(sqlite3.connect(str(sessions_db))) as source_db:
             runtime = AkashaReplayRuntime(
-                store=store,
+                store=mem,
                 config=akasha_config,
                 source_db_path=sessions_db,
                 source_cursor=source_db.cursor(),
@@ -294,8 +302,13 @@ def _run() -> MigrationStats:
                     print(f"已处理 messages={messages} activations={activations}", flush=True)
                     while messages >= next_progress:
                         next_progress += int(args.progress_every)
+        # 3b. 内存重放完成后一次性批量落库。
+        dumped = dump_to_db(store, mem)
+        print(f"dump 完成 {dumped}", flush=True)
         status = "completed"
     finally:
+        graph_fast.uninstall()
+        fast_dense.uninstall()
         store.finish_migration_run(
             run_id=run_id,
             status=status,

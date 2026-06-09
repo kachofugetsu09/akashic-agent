@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Protocol, Sequence
 
 import numpy as np
 
@@ -13,8 +13,11 @@ from plugins.akasha.config import AkashaConfig
 from plugins.akasha.core import (
     ActivationEventRow,
     ActivationTrace,
+    ActivationUpdate,
     AkashaActivationSnapshot,
     AkashaCandidate,
+    AkashaNode,
+    EdgeUpdate,
     CoreConfig,
     SourceMessage,
     activation_edge_updates,
@@ -38,9 +41,46 @@ from plugins.akasha.engine import (
     _query_log_id,
     _sort_cards_by_time,
 )
-from plugins.akasha.store import AkashaStore
-
 CONTEXT_QUERY_LIMIT = 8
+
+
+class ReplayStore(Protocol):
+    """AkashaReplayRuntime 依赖的 store 接口。
+
+    落库版 store.AkashaStore 与内存版 fast.MemoryStore/CapturingMemoryStore 都结构性满足，
+    runtime 不关心底层是 sqlite 还是内存。
+    """
+
+    def list_nodes(self) -> list[AkashaNode]: ...
+    def load_edges_with_meta(
+        self,
+    ) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float]]: ...
+    def update_activation_batch(self, updates: list[ActivationUpdate]) -> None: ...
+    def upsert_message_node(self, message: SourceMessage, embedding: list[float]) -> str: ...
+    def upsert_edges(self, updates: list[EdgeUpdate]) -> None: ...
+    def insert_activation_events(self, rows: list[ActivationEventRow]) -> None: ...
+    def insert_query_log(
+        self,
+        *,
+        query_id: str,
+        session_key: str,
+        seq: int,
+        query_text: str,
+        intent: str,
+        ts: str,
+        seed_count: int,
+        pool_count: int,
+        activated_count: int,
+        activation_threshold: float,
+        dense_count: int,
+        ripple_count: int,
+        inject_chars: int,
+        source_ref_count: int,
+        activation_items_json: str,
+        dense_items_json: str,
+        ripple_items_json: str,
+        text_block_preview: str,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -67,7 +107,7 @@ class AkashaReplayRuntime:
     def __init__(
         self,
         *,
-        store: AkashaStore,
+        store: ReplayStore,
         config: AkashaConfig,
         source_db_path: Path,
         source_cursor: sqlite3.Cursor,

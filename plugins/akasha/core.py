@@ -1241,7 +1241,9 @@ def compute_candidates(
     if not seed_sources:
         return [], [], ActivationTrace(seed_count=0, pool_count=0)
 
-    micro_keys = set(seed_sources)
+    # dict.fromkeys 作有序集合：成员判断 O(1)，迭代序由确定的 seed→邻居遍历决定，
+    # 不受 PYTHONHASHSEED 影响（set 的迭代序随 hash 种子变，会让下游 RWR 矩阵行列序漂移）。
+    micro_keys = dict.fromkeys(seed_sources)
     for seed_key in seed_sources:
         seed_ts = nodes[seed_key].first_ts_unix
         for key, node in nodes.items():
@@ -1249,7 +1251,7 @@ def compute_candidates(
                 continue
             is_near = abs(node.first_ts_unix - seed_ts) <= config.nearby_time_seconds
             if is_near and direct_scores_map.get(key, 0.0) > config.nearby_dense_threshold:
-                micro_keys.add(key)
+                micro_keys[key] = None
     valid_keys = list(micro_keys)
     if not valid_keys:
         return [], [], ActivationTrace(seed_count=0, pool_count=0)
