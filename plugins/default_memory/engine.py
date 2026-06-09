@@ -778,6 +778,7 @@ class DefaultMemoryEngine:
                 "engine": self.DESCRIPTOR.name,
                 "profile": self.DESCRIPTOR.profile.value,
                 "intent": request.intent,
+                "effect": request.effect,
             },
             raw={"items": items},
         )
@@ -1157,6 +1158,7 @@ class DefaultMemoryEngine:
             trace={
                 "source": self.DESCRIPTOR.name,
                 "intent": request.intent,
+                "effect": request.effect,
                 "hit_count": len(sliced),
                 "hyde_hypotheses": aux_queries,
             },
@@ -1169,7 +1171,11 @@ class DefaultMemoryEngine:
     ) -> MemoryQueryResult:
         if request.filters.time_start is None or request.filters.time_end is None:
             return MemoryQueryResult(
-                trace={"source": self.DESCRIPTOR.name, "intent": "timeline_missing_time"}
+                trace={
+                    "source": self.DESCRIPTOR.name,
+                    "intent": "timeline_missing_time",
+                    "effect": request.effect,
+                }
             )
         hits = self.list_events_by_time_range(
             request.filters.time_start,
@@ -1178,7 +1184,12 @@ class DefaultMemoryEngine:
         )
         return MemoryQueryResult(
             records=[self._build_record(item) for item in hits if isinstance(item, dict)],
-            trace={"source": self.DESCRIPTOR.name, "intent": "timeline", "hit_count": len(hits)},
+            trace={
+                "source": self.DESCRIPTOR.name,
+                "intent": "timeline",
+                "effect": request.effect,
+                "hit_count": len(hits),
+            },
             raw={"items": list(hits)},
         )
 
@@ -1200,7 +1211,11 @@ class DefaultMemoryEngine:
         return MemoryQueryResult(
             text_block="\n---\n".join(texts),
             records=records,
-            trace={"source": self.DESCRIPTOR.name, "intent": "interest"},
+            trace={
+                "source": self.DESCRIPTOR.name,
+                "intent": "interest",
+                "effect": request.effect,
+            },
             raw={"items": list(hits)},
         )
 

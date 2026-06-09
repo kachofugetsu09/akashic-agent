@@ -8,10 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 import numpy as np
 
+from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
 from plugins.akasha.config import AkashaConfig
@@ -38,7 +40,7 @@ from plugins.akasha.store import (
     EdgeUpdate,
     SourceMessage,
 )
-from scripts.build_akasha_db import _load_embeddings_from_cache
+from scripts.build_akasha_db import _iter_replay_turns, _load_embeddings_from_cache, _skip_message
 
 
 QUERY_TS = datetime.fromtimestamp(1_700_000_000.0, timezone.utc)
@@ -443,6 +445,52 @@ def test_query_log_content_loader_allows_empty_user_message(tmp_path: Path) -> N
     assert assistant_preview == "assistant..."
 
 
+def test_akasha_rebuild_skips_scheduler_messages() -> None:
+    scheduler_user = SourceMessage(
+        "scheduler:job:0",
+        "scheduler:job",
+        0,
+        "user",
+        "查询北京天气",
+        "2026-01-01T00:00:00+00:00",
+    )
+    normal_user = SourceMessage(
+        "telegram:1:0",
+        "telegram:1",
+        0,
+        "user",
+        "今天聊 Akasha",
+        "2026-01-01T00:00:01+00:00",
+    )
+
+    assert _skip_message(scheduler_user, set()) is True
+    assert _skip_message(normal_user, set()) is False
+    assert list(_iter_replay_turns([scheduler_user, normal_user], set())) == [[normal_user]]
+
+
+@pytest.mark.asyncio
+async def test_runtime_skips_scheduler_turn_even_without_extra_flag(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._session_db_path = db_path
+    engine._embedder = SimpleNamespace(embed_batch=AsyncMock(side_effect=AssertionError("should skip")))
+
+    await engine._on_turn_committed(
+        TurnCommitted(
+            session_key="scheduler:job",
+            channel="telegram",
+            chat_id="1",
+            input_message="查询天气",
+            persisted_user_message="查询天气",
+            assistant_response="天气回复",
+            tools_used=[],
+        )
+    )
+
+    engine._embedder.embed_batch.assert_not_awaited()
+
+
 def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
@@ -475,7 +523,7 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     engine._remember_pending_activation = lambda request, items, **_: None
-    engine._retrieve = lambda query, query_vec, request, *, now_ts: _AkashaRetrieval(
+    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
         dense_items=[
             AkashaCandidate(
                 key="s:0",
@@ -566,7 +614,7 @@ async def test_context_block_sorts_injected_cards_by_time_desc(tmp_path: Path) -
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     engine._remember_pending_activation = lambda request, items, **_: None
-    engine._retrieve = lambda query, query_vec, request, *, now_ts: _AkashaRetrieval(
+    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
         dense_items=[candidate("s:0", 0.9), candidate("s:2", 0.8)],
         ripple_items=[],
         activation_items=[],
@@ -680,7 +728,7 @@ async def test_context_query_uses_akasha_top_k_over_default_query_limit(
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     engine._remember_pending_activation = lambda request, items, **_: None
-    engine._retrieve = lambda query, query_vec, request, *, now_ts: _AkashaRetrieval(
+    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
         dense_items=[candidate(f"s:{turn * 2}", 1.0 - turn * 0.01) for turn in range(12)],
         ripple_items=[candidate(f"s:{24 + turn * 2}", 0.8 - turn * 0.01) for turn in range(12)],
         activation_items=[],
@@ -775,6 +823,56 @@ def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None
 
     assert total == 2
     assert {item["intent"] for item in items} == {"context", "answer"}
+
+
+@pytest.mark.asyncio
+async def test_read_only_query_skips_akasha_state_effects(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._akasha_config = AkashaConfig()
+    engine._session_db_path = db_path
+    engine._embedder = FakeEmbedder()
+    side_effects: list[str] = []
+    update_state_values: list[bool] = []
+
+    def fake_retrieve(
+        query: str,
+        query_vec: np.ndarray,
+        request: MemoryQuery,
+        *,
+        now_ts: float,
+        update_state: bool,
+    ) -> _AkashaRetrieval:
+        _ = (query, query_vec, request, now_ts)
+        update_state_values.append(update_state)
+        return _AkashaRetrieval(
+            dense_items=[_candidate("s:0", 0.9)],
+            ripple_items=[],
+            activation_items=[_candidate("s:2", 0.8)],
+            trace=ActivationTrace(seed_count=1, pool_count=1),
+            seq=4,
+        )
+
+    engine._retrieve = fake_retrieve
+    engine._remember_pending_activation = lambda *_, **__: side_effects.append("pending")
+    engine._write_query_log = lambda *_, **__: side_effects.append("query_log")
+
+    result = await engine.query(
+        MemoryQuery(
+            text="用户消息",
+            intent="answer",
+            effect="read_only",
+            scope=MemoryScope(session_key="s"),
+            timestamp=QUERY_TS,
+        )
+    )
+
+    assert update_state_values == [False]
+    assert side_effects == []
+    assert result.trace["effect"] == "read_only"
+    assert result.records
 
 
 def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> None:

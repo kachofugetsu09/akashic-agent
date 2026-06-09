@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
 
 MemoryQueryIntent = Literal["context", "answer", "timeline", "interest", "procedure"]
+MemoryQueryEffect = Literal["stateful", "read_only"]
 
 
 class EngineProfile(str, Enum):
@@ -105,6 +106,7 @@ class MemoryQuery:
     text: str
     # answer/timeline 由模型工具公开；context/interest/procedure 是 runtime 内部入口。
     intent: MemoryQueryIntent = "answer"
+    effect: MemoryQueryEffect = "stateful"
     scope: MemoryScope = field(default_factory=MemoryScope)
     filters: MemoryQueryFilters = field(default_factory=MemoryQueryFilters)
     context: dict[str, object] = field(default_factory=dict[str, object])

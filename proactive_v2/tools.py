@@ -221,6 +221,7 @@ async def _retrieve_interest_hits(*, memory, query: str, timestamp) -> list[dict
         MemoryQuery(
             text=query,
             intent="interest",
+            effect="read_only",
             limit=2,
             timestamp=timestamp,
         )

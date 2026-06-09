@@ -254,8 +254,15 @@ class AkashaMemoryEngine:
                 }
             )
         query_vec = np.array(await self._embedder.embed(query_text), dtype=np.float32)
-        result = self._retrieve(query_text, query_vec, request, now_ts=now_ts)
-        if request.intent in {"context", "answer"}:
+        stateful = request.effect != "read_only"
+        result = self._retrieve(
+            query_text,
+            query_vec,
+            request,
+            now_ts=now_ts,
+            update_state=stateful,
+        )
+        if stateful and request.intent in {"context", "answer"}:
             self._remember_pending_activation(request, result.activation_items, now_ts=now_ts)
 
         # 4. context 注入按 Akasha 配置展示 topK；工具查询继续尊重调用方 limit。
@@ -287,7 +294,7 @@ class AkashaMemoryEngine:
         cards = [*dense_cards, *ripple_cards]
 
         # 5. 记录检索诊断日志（context/answer intent 才有意义）。
-        if request.intent in {"context", "answer"} and request.scope.session_key:
+        if stateful and request.intent in {"context", "answer"} and request.scope.session_key:
             self._write_query_log(
                 request=request,
                 result=result,
@@ -304,6 +311,7 @@ class AkashaMemoryEngine:
                 "engine": self.DESCRIPTOR.name,
                 "profile": self.DESCRIPTOR.profile.value,
                 "intent": request.intent,
+                "effect": request.effect,
                 "dense_count": len(dense_cards),
                 "ripple_count": len(ripple_cards),
                 "seed_count": result.trace.seed_count,
@@ -500,6 +508,7 @@ class AkashaMemoryEngine:
         request: MemoryQuery,
         *,
         now_ts: float,
+        update_state: bool,
     ) -> "_AkashaRetrieval":
         # 1. 准备内存图和当前查询所在的预测 seq。
         snapshot = self._graph_snapshot()
@@ -556,10 +565,11 @@ class AkashaMemoryEngine:
             if source_db is not None:
                 source_db.close()
 
-        # 3. 查询阶段只更新旧节点状态，当前 turn 的边等 after-turn 再补。
-        updates = _activation_updates(activation_items, snapshot.nodes, now_ts)
-        self._store.update_activation_batch(updates)
-        self._apply_activation_updates(updates)
+        # 3. 只读查询没有记忆动力学副作用。
+        if update_state:
+            updates = _activation_updates(activation_items, snapshot.nodes, now_ts)
+            self._store.update_activation_batch(updates)
+            self._apply_activation_updates(updates)
         return _AkashaRetrieval(
             dense_items=dense_items,
             ripple_items=ripple_items,
@@ -590,7 +600,7 @@ class AkashaMemoryEngine:
     # TurnCommitted 后把真实 user/assistant 写入 sidecar，并补本轮共激活边。
     async def _on_turn_committed(self, event: TurnCommitted) -> None:
         # 1. 跳过不应进入记忆的系统轮次。
-        if bool((event.extra or {}).get("skip_post_memory")):
+        if event.session_key.startswith("scheduler:") or bool((event.extra or {}).get("skip_post_memory")):
             return
         messages = _load_committed_turn_messages(self._session_db_path, event)
         if not messages:

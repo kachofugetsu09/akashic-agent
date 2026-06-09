@@ -316,6 +316,7 @@ async def test_recall_memory_passes_query_to_facade_interest_request():
     request = fake_memory.query.await_args.args[0]
     assert request.text == "q"
     assert request.intent == "interest"
+    assert request.effect == "read_only"
     assert request.limit == 2
     assert request.timestamp == now
 

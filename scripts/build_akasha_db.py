@@ -147,20 +147,28 @@ def _load_session_snapshots(sessions_db: Path) -> list[SourceSessionSnapshot]:
 def _load_skip_message_ids(sessions_db: Path) -> set[str]:
     result: set[str] = set()
     with closing(sqlite3.connect(str(sessions_db))) as db:
-        rows = db.execute("SELECT id, extra FROM messages").fetchall()
-    for message_id, raw_extra in rows:
+        rows = db.execute("SELECT id, session_key, extra FROM messages").fetchall()
+    for message_id, session_key, raw_extra in rows:
         try:
             parsed: object = json.loads(str(raw_extra or "{}"))
         except json.JSONDecodeError:
             parsed = {}
         extra = cast(dict[str, object], parsed) if isinstance(parsed, dict) else {}
-        if bool(extra.get("proactive")) or bool(extra.get("skip_post_memory")):
+        if _skip_session_key(str(session_key)) or bool(extra.get("proactive")) or bool(extra.get("skip_post_memory")):
             result.add(str(message_id))
     return result
 
 
+def _skip_session_key(session_key: str) -> bool:
+    return session_key.startswith("scheduler:")
+
+
 def _skip_message(message: SourceMessage, skip_message_ids: set[str]) -> bool:
-    return message.id in skip_message_ids or message.content.startswith("[后台任务完成]")
+    return (
+        message.id in skip_message_ids
+        or _skip_session_key(message.session_key)
+        or message.content.startswith("[后台任务完成]")
+    )
 
 
 # 备份已有 Akasha sidecar。
@@ -258,6 +266,11 @@ def _run() -> MigrationStats:
     try:
         source_messages = _load_source_messages(sessions_db)
         skip_message_ids = _load_skip_message_ids(sessions_db)
+        skipped_source_messages = [
+            message for message in source_messages if _skip_message(message, skip_message_ids)
+        ]
+        if skipped_source_messages:
+            _ = store.delete_cached_embeddings([message.id for message in skipped_source_messages])
         replay_turns = list(_iter_replay_turns(source_messages, skip_message_ids))
         replay_messages = [message for turn in replay_turns for message in turn]
         embedding_map, cache_hits, cache_misses = _load_embeddings_from_cache(

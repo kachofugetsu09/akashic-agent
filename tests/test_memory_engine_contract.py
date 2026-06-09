@@ -152,6 +152,40 @@ async def test_default_memory_engine_retrieve_keeps_raw_items_and_mode_trace():
     assert result.records[0].injected is True
 
 
+async def test_default_memory_engine_interest_preserves_read_only_effect():
+    retriever = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "id": "p1",
+                    "summary": "用户偏好中文回复",
+                    "score": 0.8,
+                    "source_ref": "telegram:1@seed",
+                    "memory_type": "preference",
+                    "extra_json": {},
+                }
+            ]
+        ),
+        build_injection_block=lambda items: ("", []),
+    )
+    engine = _make_default_engine(retriever=cast(Any, retriever))
+
+    result = await engine.query(
+        MemoryQuery(
+            text="中文回复",
+            intent="interest",
+            effect="read_only",
+            scope=MemoryScope(session_key="telegram:1"),
+            limit=2,
+        )
+    )
+
+    assert result.trace["intent"] == "interest"
+    assert result.trace["effect"] == "read_only"
+    assert result.records[0].id == "p1"
+    retriever.retrieve.assert_awaited_once()
+
+
 async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
     retriever = SimpleNamespace(
         retrieve=AsyncMock(return_value=[]),
