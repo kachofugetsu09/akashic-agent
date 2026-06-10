@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import shutil
 import sqlite3
 import sys
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -32,7 +34,6 @@ from plugins.akasha.core import (
     turn_key,
 )
 from plugins.akasha.fast import fast_dense, graph_fast
-from plugins.akasha.fast.dump import dump_to_db
 from plugins.akasha.fast.mem_store import CapturingMemoryStore
 from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage
 from plugins.akasha.store import (
@@ -285,8 +286,14 @@ def _run() -> MigrationStats:
 
     # 2b. 用内存图重放，末尾一次性落库；AkashaStore 只负责 cache、迁移记录和 dump 连接。
     mem = CapturingMemoryStore()
-    graph_fast.install(mem)
-    fast_dense.install()
+    graph_install = cast("Callable[[CapturingMemoryStore], None]", getattr(graph_fast, "install"))
+    dense_install = cast("Callable[[], None]", getattr(fast_dense, "install"))
+    dump_to_db = cast(
+        "Callable[[AkashaStore, CapturingMemoryStore], dict[str, int]]",
+        getattr(importlib.import_module("plugins.akasha.fast.dump"), "dump_to_db"),
+    )
+    graph_install(mem)
+    dense_install()
 
     # 3. 只复用 embedding cache，再按消息顺序 replay 激活状态。
     messages = 0

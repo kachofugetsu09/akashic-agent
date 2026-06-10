@@ -162,7 +162,7 @@ class AkashaMemoryEngine:
             build_idf_table, idf_table_is_stale, load_idf_from_db, set_idf_table,
         )
         sessions_db = str(self._session_db_path)
-        conn = self._store._db
+        conn = self._store.db
         try:
             stale = idf_table_is_stale(sessions_db, conn)
         except Exception:

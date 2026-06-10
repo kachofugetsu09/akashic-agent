@@ -182,6 +182,10 @@ class AkashaStore:
         self._closed = False
         self.ensure_schema()
 
+    @property
+    def db(self) -> sqlite3.Connection:
+        return self._db
+
     # 关闭 SQLite 连接。
     def close(self) -> None:
         # 1. close 需要幂等，方便 runtime 多路径收尾。

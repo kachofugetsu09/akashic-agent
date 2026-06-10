@@ -11,7 +11,7 @@ import json
 import math
 import struct
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
@@ -171,10 +171,12 @@ def build_idf_table(
     sconn = sqlite3.connect(sessions_db_path)
     df: dict[str, int] = defaultdict(int)
     n_docs = 0
+    cut_for_search = cast("Callable[[str], Iterable[object]]", getattr(jieba, "cut_for_search"))
     for (content,) in sconn.execute("SELECT content FROM messages"):
         n_docs += 1
         seen: set[str] = set()
-        for w in jieba.cut_for_search(content or ""):
+        for raw_word in cut_for_search(str(content or "")):
+            w = str(raw_word)
             cleaned = "".join(
                 ch for ch in w.strip()
                 if ch.isalnum() or "一" <= ch <= "鿿"
@@ -188,25 +190,25 @@ def build_idf_table(
     for tok, freq in df.items():
         idf[tok] = math.log((n_docs + 1) / (freq + 1)) + 1
 
-    target_conn.execute("""
+    _ = target_conn.execute("""
         CREATE TABLE IF NOT EXISTS fts_token_idf (
             token TEXT PRIMARY KEY,
             df INTEGER NOT NULL,
             idf REAL NOT NULL
         )
     """)
-    target_conn.execute("""
+    _ = target_conn.execute("""
         CREATE TABLE IF NOT EXISTS fts_token_idf_meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         )
     """)
-    target_conn.execute("DELETE FROM fts_token_idf")
-    target_conn.executemany(
+    _ = target_conn.execute("DELETE FROM fts_token_idf")
+    _ = target_conn.executemany(
         "INSERT INTO fts_token_idf VALUES (?, ?, ?)",
         [(t, df[t], idf[t]) for t in df],
     )
-    target_conn.execute(
+    _ = target_conn.execute(
         "INSERT OR REPLACE INTO fts_token_idf_meta VALUES ('n_docs', ?)",
         (str(n_docs),),
     )
@@ -517,7 +519,7 @@ def parse_ts_unix(value: str) -> float:
 
 def message_id_to_key_from_db(cursor: sqlite3.Cursor, message_id: str) -> str:
     """从 messages 表反查 message id 对应的 turn key。"""
-    cursor.execute(
+    _ = cursor.execute(
         "SELECT session_key, seq, role FROM messages WHERE id = ?",
         (message_id,),
     )
@@ -549,7 +551,7 @@ def has_user_turn(cursor: sqlite3.Cursor | None, key: str) -> bool:
     if parsed is None:
         return False
     session_key, seq = parsed
-    cursor.execute(
+    _ = cursor.execute(
         "SELECT 1 FROM messages WHERE session_key = ? AND seq = ? AND role = 'user' LIMIT 1",
         (session_key, seq),
     )
@@ -562,12 +564,12 @@ def get_turn_context(cursor: sqlite3.Cursor, key: str) -> tuple[str, str]:
     if parsed is None:
         return "", ""
     session_key, seq = parsed
-    cursor.execute(
+    _ = cursor.execute(
         "SELECT content FROM messages WHERE session_key = ? AND seq = ? AND role = 'user'",
         (session_key, seq),
     )
     user_row = cursor.fetchone()
-    cursor.execute(
+    _ = cursor.execute(
         "SELECT content FROM messages WHERE session_key = ? AND seq = ? AND role = 'assistant'",
         (session_key, seq + 1),
     )
@@ -583,11 +585,13 @@ def get_turn_context(cursor: sqlite3.Cursor, key: str) -> tuple[str, str]:
     return user_text, assistant_text
 
 
-def load_state(path: str) -> tuple[dict[str, AkashaNode], dict[tuple[str, str], float], dict[str, tuple]]:
+def load_state(
+    path: str,
+) -> tuple[dict[str, AkashaNode], dict[tuple[str, str], float], dict[str, tuple[int, int]]]:
     """从 sidecar DB 加载全部节点、边和激活统计。"""
     db = sqlite3.connect(path)
     cursor = db.cursor()
-    cursor.execute(
+    _ = cursor.execute(
         """
         SELECT key, anchor_id, session_key, turn_seq, first_ts_unix, salience,
                strength, resource, recall_count, last_activated_ts,
@@ -623,10 +627,10 @@ def load_state(path: str) -> tuple[dict[str, AkashaNode], dict[tuple[str, str], 
             emb_count=emb_count,
         )
 
-    cursor.execute("SELECT src_key, dst_key, weight FROM akasha_edges")
+    _ = cursor.execute("SELECT src_key, dst_key, weight FROM akasha_edges")
     edges = {(str(src_key), str(dst_key)): float(weight) for src_key, dst_key, weight in cursor.fetchall()}
 
-    cursor.execute(
+    _ = cursor.execute(
         """
         SELECT activated_key, COUNT(*) AS c, MAX(seq) AS last_seq
         FROM akasha_activation_events
@@ -757,7 +761,7 @@ def dense_message_candidates(
             for message_id, score in zip(message_ids, np.dot(matrix, query_norm))
         ]
     else:
-        scored = []
+        scored: list[tuple[str, float]] = []
         for message_id, embedding in message_embeddings.items():
             if embedding.size != query_norm.size:
                 continue
@@ -829,7 +833,8 @@ def get_jieba_keywords(text: str) -> str:
         _consider(m.group(), 5.0)
 
     # 2. jieba \u5207\u8bcd
-    tokens = list(jieba.lcut(text))
+    lcut = cast("Callable[[str], list[object]]", getattr(jieba, "lcut"))
+    tokens = [str(token) for token in lcut(text)]
     cleaned_tokens: list[str] = []
     for w in tokens:
         c = "".join(ch for ch in w if "\u4e00" <= ch <= "\u9fff")
@@ -883,7 +888,7 @@ def seed_pool(
         if fts_query:
             # 用 BM25 排序拿 top K（bm25() 返回负值，越小越匹配）
             try:
-                source_cursor.execute(
+                _ = source_cursor.execute(
                     """
                     SELECT rowid, bm25(messages_fts) AS rank
                     FROM messages_fts
@@ -896,7 +901,7 @@ def seed_pool(
                 rows = source_cursor.fetchall()
             except sqlite3.OperationalError:
                 # FTS5 不支持 bm25 时退回旧行为
-                source_cursor.execute(
+                _ = source_cursor.execute(
                     "SELECT rowid, 0 FROM messages_fts WHERE content MATCH ? LIMIT ?",
                     (fts_query, FTS_TOP_K),
                 )
@@ -904,7 +909,7 @@ def seed_pool(
             if rows:
                 rowid_to_rank = {int(r[0]): float(r[1] or 0.0) for r in rows}
                 placeholders = ",".join("?" for _ in rowid_to_rank)
-                source_cursor.execute(
+                _ = source_cursor.execute(
                     f"SELECT session_key, seq, role, rowid FROM messages WHERE rowid IN ({placeholders})",
                     list(rowid_to_rank.keys()),
                 )
