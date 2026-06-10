@@ -25,7 +25,12 @@ from plugins.akasha.config import (
     load_akasha_config,
     resolve_akasha_db_path,
 )
-from plugins.akasha.core import SourceMessage, parse_ts_unix, turn_key
+from plugins.akasha.core import (
+    SourceMessage,
+    parse_ts_unix,
+    reinforce_boost_from_payload,
+    turn_key,
+)
 from plugins.akasha.fast import fast_dense, graph_fast
 from plugins.akasha.fast.dump import dump_to_db
 from plugins.akasha.fast.mem_store import CapturingMemoryStore
@@ -175,32 +180,8 @@ def _load_reinforce_boosts(sessions_db: Path) -> dict[str, float]:
     with closing(sqlite3.connect(str(sessions_db))) as db:
         rows = db.execute("SELECT session_key, seq, role, extra, tool_chain FROM messages").fetchall()
     for session_key, seq, role, raw_extra, raw_chain in rows:
-        boost = 0.0
-        # 来源 1：tool_chain 里的 reinforce_memory 调用
-        if raw_chain and "reinforce_memory" in str(raw_chain):
-            try:
-                groups = json.loads(str(raw_chain))
-            except json.JSONDecodeError:
-                groups = []
-            for group in groups if isinstance(groups, list) else []:
-                for call in (group or {}).get("calls", []) if isinstance(group, dict) else []:
-                    if isinstance(call, dict) and call.get("name") == "reinforce_memory":
-                        boost = max(boost, 3.0)
-        # 来源 2：extra 回填
-        try:
-            extra = json.loads(str(raw_extra or "{}"))
-        except json.JSONDecodeError:
-            extra = {}
-        mark = extra.get("akasha_reinforce") if isinstance(extra, dict) else None
-        if mark:
-            b = 3.0
-            if isinstance(mark, dict):
-                try:
-                    b = float(cast(dict[str, object], mark).get("boost", 3.0) or 3.0)
-                except (TypeError, ValueError):
-                    b = 3.0
-            boost = max(boost, b)
-        if boost <= 0.0:
+        boost = reinforce_boost_from_payload(raw_extra, raw_chain)
+        if boost <= 1.0:
             continue
         key = turn_key(str(session_key), int(seq), str(role or ""))[2]
         boosts[key] = max(boosts.get(key, 1.0), boost)  # 同轮多标记取最大

@@ -44,6 +44,7 @@ from plugins.akasha.core import (
     graph_seed_keys_from_snapshot as _graph_seed_keys_from_snapshot,
     parse_turn_key as _parse_turn_key,
     bounded_add as _bounded_add,
+    reinforce_boost_from_payload as _reinforce_boost_from_payload,
 )
 from agent.config_models import Config
 from bus.events_lifecycle import TurnCommitted
@@ -225,21 +226,24 @@ class AkashaMemoryEngine:
                 },
                 search_hint="历史对话 原始消息 Akasha 右脑联想",
             ),
-            reinforce=MemoryToolSpec(
-                description=(
-                    "加强记忆。当用户纠正你刚才依据记忆给的答案/做法,或明确强调某事该被记牢时调用。"
-                    "把当前情境的记忆绑得更牢,影响未来召回(纯加强,不删除、不改写其它记忆)。"
-                    "例:用户说'查睡眠该用 snapshot 不是 sleep report'后,调用本工具加强这条理解。"
-                ),
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "note": {"type": "string", "description": "为什么加强(简述纠正/强调的要点)"},
+            tools=(
+                MemoryToolSpec(
+                    name="reinforce_memory",
+                    description=(
+                        "加强记忆。当用户纠正你刚才依据记忆给的答案/做法,或明确强调某事该被记牢时调用。"
+                        "把当前情境的记忆绑得更牢,影响未来召回(纯加强,不删除、不改写其它记忆)。"
+                        "例:用户说'查睡眠该用 snapshot 不是 sleep report'后,调用本工具加强这条理解。"
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "note": {"type": "string", "description": "为什么加强(简述纠正/强调的要点)"},
+                        },
+                        "required": [],
                     },
-                    "required": [],
-                },
-                risk="write",
-                search_hint="纠正 强调 记牢 加强记忆",
+                    risk="write",
+                    search_hint="纠正 强调 记牢 加强记忆",
+                ),
             ),
         )
 
@@ -639,10 +643,8 @@ class AkashaMemoryEngine:
         #    reinforce 标记 = 本轮调用了 reinforce_memory 工具(记在 tool_chain)或 extra 回填；
         #    与离线重建(build._load_reinforce_boosts)读同一来源，live 与重放一致。
         gain_boost = _reinforce_boost_for_turn(
-            self._session_db_path,
-            event.session_key,
-            [message.seq for message in messages],
             event.extra,
+            event.tool_chain_raw,
         )
         pending = self._pending_by_session.pop(event.session_key, None)
         if current_key and pending is not None:
@@ -1019,45 +1021,10 @@ class _AkashaRetrieval:
 
 
 def _reinforce_boost_for_turn(
-    session_db_path: Path,
-    session_key: str,
-    seqs: list[int],
     event_extra: dict[str, object] | None,
+    tool_chain: list[dict[str, object]],
 ) -> float:
-    """本轮是否被 reinforce(增益,默认 1.0)。两来源,与 build._load_reinforce_boosts 口径一致:
-    本轮消息的 tool_chain 里有 reinforce_memory 调用,或 extra["akasha_reinforce"](回填)。
-    """
-    def _from_extra(extra: object) -> float:
-        mark = extra.get("akasha_reinforce") if isinstance(extra, dict) else None
-        if not mark:
-            return 1.0
-        if isinstance(mark, dict):
-            try:
-                return float(cast("dict[str, object]", mark).get("boost", 3.0) or 3.0)
-            except (TypeError, ValueError):
-                return 3.0
-        return 3.0
-
-    boost = _from_extra(event_extra)
-    if not seqs:
-        return boost
-    try:
-        with sqlite3.connect(str(session_db_path)) as db:
-            placeholders = ",".join("?" for _ in seqs)
-            rows = db.execute(
-                f"SELECT tool_chain, extra FROM messages WHERE session_key = ? AND seq IN ({placeholders})",
-                [session_key, *seqs],
-            ).fetchall()
-    except sqlite3.Error:
-        return boost
-    for raw_chain, raw_extra in rows:
-        if raw_chain and "reinforce_memory" in str(raw_chain):
-            boost = max(boost, 3.0)
-        try:
-            boost = max(boost, _from_extra(json.loads(str(raw_extra or "{}"))))
-        except json.JSONDecodeError:
-            pass
-    return boost
+    return _reinforce_boost_from_payload(event_extra, tool_chain)
 
 
 def _core_config(config: AkashaConfig) -> CoreConfig:

@@ -158,6 +158,7 @@ class MemoryMutationResult:
 class MemoryToolSpec:
     description: str
     parameters: dict[str, object]
+    name: str = ""
     risk: Literal["read-only", "write", "external-side-effect"] = "read-only"
     search_hint: str = ""
     # 自定义工具类；必须接受 (engine, spec) 两个位置参数。
@@ -170,7 +171,7 @@ class MemoryToolProfile:
     recall: MemoryToolSpec | None = None
     memorize: MemoryToolSpec | None = None
     forget: MemoryToolSpec | None = None
-    reinforce: MemoryToolSpec | None = None
+    tools: tuple[MemoryToolSpec, ...] = field(default_factory=tuple)
 
 
 @runtime_checkable

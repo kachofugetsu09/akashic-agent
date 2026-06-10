@@ -31,6 +31,7 @@ from plugins.akasha.core import (
     activation_edge_updates,
     build_dense_message_index,
     dense_message_candidates,
+    reinforce_boost_from_payload,
 )
 from plugins.akasha.plugin import AkashaPlugin
 from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage, _turn_messages
@@ -93,6 +94,15 @@ def _candidate(key: str, score: float) -> AkashaCandidate:
         fan=0,
         score=score,
     )
+
+
+def test_reinforce_boost_payload_uses_exact_tool_chain_call_name() -> None:
+    wrong_chain = [{"calls": [{"name": "not_reinforce_memory"}]}]
+    reinforce_chain = [{"calls": [{"name": "reinforce_memory"}]}]
+
+    assert reinforce_boost_from_payload({}, wrong_chain) == 1.0
+    assert reinforce_boost_from_payload({}, json.dumps(reinforce_chain)) == 3.0
+    assert reinforce_boost_from_payload({"akasha_reinforce": {"boost": "4"}}, []) == 4.0
 
 
 def test_dense_message_candidates_vectorized_preserves_turn_ranking() -> None:

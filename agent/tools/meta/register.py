@@ -9,13 +9,35 @@ from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.recall_memory import RecallMemoryTool
-from agent.tools.reinforce_memory import ReinforceMemoryTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
-from core.memory.engine import MemoryEngine
+from core.memory.engine import MemoryEngine, MemoryToolSpec
 
-_MEMORY_TOOL_NAMES = {"recall_memory", "memorize", "forget_memory"}
+
+class _MemorySignalTool(Tool):
+    name = "memory_signal"
+    description = "由当前 memory engine 的 tool_profile 注入工具描述。"
+    parameters = {"type": "object", "properties": {}, "required": []}
+
+    def __init__(
+        self,
+        memory: MemoryEngine,
+        spec: MemoryToolSpec,
+    ) -> None:
+        if not spec.name:
+            raise ValueError("自定义 memory 工具缺少 name")
+        self._memory = memory
+        self._spec = spec
+        self.name = spec.name
+        self.description = spec.description
+        self.parameters = spec.parameters
+
+    async def execute(
+        self,
+        **kwargs: Any,
+    ) -> str:
+        return "已记录。"
 
 
 def register_common_meta_tools(
@@ -104,8 +126,7 @@ def _register_memory_tool(
     risk: str,
     search_hint: str | None = None,
 ) -> None:
-    if tool.name not in _MEMORY_TOOL_NAMES:
-        raise ValueError(f"未知 memory 工具: {tool.name}")
+    _validate_memory_tool_name(tool.name)
     if tools.has_tool(tool.name):
         raise ValueError(f"memory 工具重复注册: {tool.name}")
     tools.register(
@@ -142,15 +163,22 @@ def register_memory_meta_tools(
             risk=profile.recall.risk,
             search_hint=profile.recall.search_hint or None,
         )
-    if profile.reinforce is not None:
+    for spec in profile.tools:
         _register_memory_tool(
             tools,
-            _build_tool(engine, profile.reinforce, ReinforceMemoryTool),
-            risk=profile.reinforce.risk,
-            search_hint=profile.reinforce.search_hint or None,
+            _build_tool(engine, spec, _MemorySignalTool),
+            risk=spec.risk,
+            search_hint=spec.search_hint or None,
         )
 
 
 def _build_tool(engine: MemoryEngine, spec: Any, default_cls: type) -> Tool:
     cls = spec.tool_class if spec.tool_class is not None else default_cls
     return cast(Tool, cls(engine, spec))
+
+
+def _validate_memory_tool_name(name: str) -> None:
+    if not name or not name[0].isalpha():
+        raise ValueError(f"memory 工具名非法: {name}")
+    if any(not (char.islower() or char.isdigit() or char == "_") for char in name):
+        raise ValueError(f"memory 工具名非法: {name}")

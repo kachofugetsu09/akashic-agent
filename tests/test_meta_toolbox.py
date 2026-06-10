@@ -27,6 +27,14 @@ class _MemoryEngineStub:
                 parameters={"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "string"}}}, "required": ["ids"]},
                 risk="write",
             ),
+            tools=(
+                MemoryToolSpec(
+                    name="reinforce_memory",
+                    description="test",
+                    parameters={"type": "object", "properties": {"note": {"type": "string"}}, "required": []},
+                    risk="write",
+                ),
+            ),
         )
 
     async def query(self, request):
@@ -74,6 +82,7 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     always_on = tools.get_always_on_names()
     assert isinstance(push_tool, MessagePushTool)
     assert set(META_TOOLBOX_NAMES) - {"memorize"} <= always_on
+    assert "reinforce_memory" in always_on
 
 
 def test_register_memory_meta_tools_rejects_duplicate_names():
@@ -83,3 +92,22 @@ def test_register_memory_meta_tools_rejects_duplicate_names():
 
     with pytest.raises(ValueError, match="重复注册"):
         register_memory_meta_tools(tools, cast(Any, _MemoryEngineStub()))
+
+
+def test_register_memory_meta_tools_rejects_invalid_custom_name():
+    class _BadMemoryEngineStub(_MemoryEngineStub):
+        def tool_profile(self) -> MemoryToolProfile:
+            return MemoryToolProfile(
+                tools=(
+                    MemoryToolSpec(
+                        name="bad-name",
+                        description="test",
+                        parameters={"type": "object", "properties": {}, "required": []},
+                    ),
+                )
+            )
+
+    tools = ToolRegistry()
+
+    with pytest.raises(ValueError, match="非法"):
+        register_memory_meta_tools(tools, cast(Any, _BadMemoryEngineStub()))

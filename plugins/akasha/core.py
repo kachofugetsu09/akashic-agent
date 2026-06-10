@@ -7,12 +7,14 @@ Akasha RAR（Ripple Activation & Recall）引擎的纯算法层。
 
 from __future__ import annotations
 
+import json
 import math
 import struct
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import cast
 
 import numpy as np
 
@@ -28,6 +30,8 @@ STRENGTH_CAP = 3.0
 STDP_CAUSAL_EDGE_GAIN = 1.0
 STDP_ACAUSAL_EDGE_GAIN = 0.35
 STDP_COACTIVE_EDGE_GAIN = 1.0
+REINFORCE_MEMORY_TOOL = "reinforce_memory"
+DEFAULT_REINFORCE_BOOST = 3.0
 # Heterosynaptic 可塑性（Chistiakova & Volgushev 2013, J Neurosci 33:15915）：
 # 纯 Hebbian/STDP 数学上必然 runaway → hub。唯一能在同一时间尺度上稳住它的，是对
 # *非活动*突触的、依赖权重的反向改变。原算法只有 homosynaptic（只动本轮共激活的边），
@@ -46,6 +50,72 @@ def initial_strength(salience: float) -> float:
     """新节点 encoding 时的 strength。高显著度事件起步更接近 cap。"""
     s = max(0.0, min(1.0, salience))
     return STRENGTH_CAP * (INITIAL_STRENGTH_BASE + INITIAL_STRENGTH_SALIENCE_BONUS * s)
+
+
+def reinforce_boost_from_payload(
+    extra: object,
+    tool_chain: object,
+) -> float:
+    return max(
+        reinforce_boost_from_extra(extra),
+        reinforce_boost_from_tool_chain(tool_chain),
+    )
+
+
+def reinforce_boost_from_extra(extra: object) -> float:
+    parsed = _json_value(extra)
+    if not isinstance(parsed, dict):
+        return 1.0
+    mark = cast("dict[object, object]", parsed).get("akasha_reinforce")
+    if not mark:
+        return 1.0
+    if isinstance(mark, dict):
+        value = cast("dict[object, object]", mark).get("boost", DEFAULT_REINFORCE_BOOST)
+        return _coerce_reinforce_boost(value)
+    return DEFAULT_REINFORCE_BOOST
+
+
+def reinforce_boost_from_tool_chain(tool_chain: object) -> float:
+    groups_raw = _json_value(tool_chain)
+    if not isinstance(groups_raw, list):
+        return 1.0
+    boost = 1.0
+    groups = cast("list[object]", groups_raw)
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        calls_raw = cast("dict[object, object]", group).get("calls")
+        if not isinstance(calls_raw, list):
+            continue
+        calls = cast("list[object]", calls_raw)
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            if cast("dict[object, object]", call).get("name") == REINFORCE_MEMORY_TOOL:
+                boost = max(boost, DEFAULT_REINFORCE_BOOST)
+    return boost
+
+
+def _json_value(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    if not value.strip():
+        return {}
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _coerce_reinforce_boost(value: object) -> float:
+    if isinstance(value, bool):
+        return DEFAULT_REINFORCE_BOOST
+    if isinstance(value, (int, float, str)):
+        try:
+            return float(value)
+        except ValueError:
+            return DEFAULT_REINFORCE_BOOST
+    return DEFAULT_REINFORCE_BOOST
 ASSISTANT_ONLY_PENALTY = 0.12
 FAN_PENALTY_POWER = 0.10
 ACTIVATION_THRESHOLD = 0.22
