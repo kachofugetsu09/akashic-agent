@@ -16,6 +16,7 @@ from plugins.akasha.core import (
     bounded_add,
     causal_salience,
     effective_edge_weight,
+    heterosynaptic_depression,
     initial_strength,
     normalize as _normalize,
 )
@@ -627,6 +628,20 @@ class AkashaStore:
                         item.src_key,
                         item.dst_key,
                     ),
+                )
+
+            # heterosynaptic：被强化节点的非活动出边按权重压抑（last_used_ts/co_count 不变）
+            def _out_neighbors(src_key: str) -> dict[str, float]:
+                rows = self._db.execute(
+                    "SELECT dst_key, weight FROM akasha_edges WHERE src_key = ?",
+                    (src_key,),
+                ).fetchall()
+                return {str(r["dst_key"]): float(r["weight"] or 0.0) for r in rows}
+
+            for src_key, dst_key, new_w in heterosynaptic_depression(updates, _out_neighbors):
+                _ = self._db.execute(
+                    "UPDATE akasha_edges SET weight = ? WHERE src_key = ? AND dst_key = ?",
+                    (new_w, src_key, dst_key),
                 )
             self._db.commit()
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import struct
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -27,6 +28,13 @@ STRENGTH_CAP = 3.0
 STDP_CAUSAL_EDGE_GAIN = 1.0
 STDP_ACAUSAL_EDGE_GAIN = 0.35
 STDP_COACTIVE_EDGE_GAIN = 1.0
+# Heterosynaptic 可塑性（Chistiakova & Volgushev 2013, J Neurosci 33:15915）：
+# 纯 Hebbian/STDP 数学上必然 runaway → hub。唯一能在同一时间尺度上稳住它的，是对
+# *非活动*突触的、依赖权重的反向改变。原算法只有 homosynaptic（只动本轮共激活的边），
+# 缺的就是这一项。规则：节点本轮被强化时，其余非活动出边各自 ×(1-β)（Δw ∝ w）。
+# β 是机制常数：promiscuous hub 活动次数多 → 罕被重强化的边被反复 ×(1-β) 磨到≈0；
+# 真正反复共激活的边扛得住；低活动典型节点几乎不动（activity-dependent）。
+HETERO_DEPRESSION_RATE = 0.05
 # 新事件初始 strength：编码即峰值（Ebbinghaus / ACT-R / early-LTP）
 # initial_strength = STRENGTH_CAP × (BASE + SALIENCE_BONUS · σ)
 INITIAL_STRENGTH_BASE = 0.70
@@ -301,6 +309,29 @@ def activation_edge_updates(
             updates.append(EdgeUpdate(left.key, right.key, edge_strength, ts))
             updates.append(EdgeUpdate(right.key, left.key, edge_strength, ts))
     return updates
+
+
+def heterosynaptic_depression(
+    edge_updates: list[EdgeUpdate],
+    out_neighbors: Callable[[str], dict[str, float]],
+) -> list[tuple[str, str, float]]:
+    """对本轮被强化节点的*非活动*出边做权重相关压抑，返回 (src, dst, new_weight) 绝对值。
+
+    out_neighbors(src) 给出 src 当前出边 {dst: weight}（潜在权重，由 store 提供视图）。
+    非活动 = 本轮没在 (src, ·) 上发生强化的 dst。Δw = -β·w → new = w·(1-β)。
+    只压抑、不新建、不删除；权重相关使强者更耐磨、promiscuous 弱边随节点活动累积被磨平。
+    """
+    active_by_src: dict[str, set[str]] = {}
+    for update in edge_updates:
+        active_by_src.setdefault(update.src_key, set()).add(update.dst_key)
+    factor = 1.0 - HETERO_DEPRESSION_RATE
+    sets: list[tuple[str, str, float]] = []
+    for src_key, active_dsts in active_by_src.items():
+        for dst_key, weight in out_neighbors(src_key).items():
+            if dst_key in active_dsts:
+                continue
+            sets.append((src_key, dst_key, weight * factor))
+    return sets
 
 
 @dataclass(frozen=True)

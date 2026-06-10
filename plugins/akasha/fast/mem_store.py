@@ -19,7 +19,8 @@ import numpy as np
 
 from plugins.akasha.core import (
     AkashaNode, EDGE_DECAY_TAU, advance_salience_state, causal_salience,
-    effective_edge_weight, bounded_add, initial_strength, normalize, parse_ts_unix, turn_key,
+    effective_edge_weight, bounded_add, heterosynaptic_depression, initial_strength,
+    normalize, parse_ts_unix, turn_key,
 )
 
 
@@ -139,6 +140,16 @@ class MemoryStore:
                 self._meta[ek] = u.ts
                 self._cocount[ek] = self._cocount.get(ek, 0) + 1
                 self._ebs[u.src_key][u.dst_key] = neww
+        # heterosynaptic：被强化节点的非活动出边按权重压抑（动 _ebs/_edges/in_strength 因式分解）
+        for src_key, dst_key, new_w in heterosynaptic_depression(
+            updates, lambda s: self._ebs.get(s, {})
+        ):
+            ek = (src_key, dst_key)
+            oldw, oldlu = self._edges[ek], self._meta[ek]
+            self._contrib_add(dst_key, oldw, oldlu, -1)
+            self._contrib_add(dst_key, new_w, oldlu, +1)        # last_used_ts 不变：非"使用"
+            self._edges[ek] = new_w
+            self._ebs[src_key][dst_key] = new_w
 
     def insert_activation_events(self, rows) -> None:
         return None
