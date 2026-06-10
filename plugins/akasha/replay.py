@@ -113,6 +113,7 @@ class AkashaReplayRuntime:
         source_cursor: sqlite3.Cursor,
         message_embeddings: dict[str, np.ndarray],
         message_turn_keys: dict[str, str],
+        reinforce_boosts: dict[str, float] | None = None,
     ) -> None:
         self._store = store
         self._config = config
@@ -121,6 +122,8 @@ class AkashaReplayRuntime:
         self._source_cursor = source_cursor
         self._message_embeddings = dict(message_embeddings)
         self._message_turn_keys = dict(message_turn_keys)
+        # turn_key -> gain_boost：来自 messages.extra["akasha_reinforce"]，重放时定向加厚该轮边。
+        self._reinforce_boosts = dict(reinforce_boosts or {})
 
     # 按线上状态机回放一轮：先激活旧图，再提交当前 turn。
     def replay_turn(
@@ -239,7 +242,8 @@ class AkashaReplayRuntime:
         if current_key and activation_items:
             trigger = next((item.message for item in items if item.message.role == "user"), items[0].message)
             ts = parse_ts_unix(trigger.ts)
-            self._store.upsert_edges(activation_edge_updates(current_key, activation_items, ts))
+            gain_boost = self._reinforce_boosts.get(current_key, 1.0)
+            self._store.upsert_edges(activation_edge_updates(current_key, activation_items, ts, gain_boost))
             self._store.insert_activation_events(_activation_events(trigger, activation_items))
         return current_key
 

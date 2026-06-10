@@ -291,16 +291,29 @@ def activation_edge_updates(
     current_key: str,
     candidates: list[AkashaCandidate],
     ts: float,
+    gain_boost: float = 1.0,
 ) -> list[EdgeUpdate]:
+    # gain_boost>1：reinforce 增强（纯加法）。把当前轮(被用户纠正/强调时的正确表述)
+    # 绑入上下文的边加厚，让它成为该情境的强吸引子；a 由竞争+heterosynaptic 相对回落。
+    # 定向：boost 只乘到"真正相关"的候选(高 direct)，不焐厚 hub/跨session 候选，
+    # 避免溢出到邻簇(实测未定向 boost 会把 hub/cross 一起拉高)。
     updates: list[EdgeUpdate] = []
     key_to_score = {item.key: item.score for item in candidates}
+
+    def _boost(item: AkashaCandidate) -> float:
+        if gain_boost <= 1.0:
+            return 1.0
+        relevance = max(0.0, min(1.0, item.direct / 0.6))  # 越相关越受益,外围/hub≈不受影响
+        return 1.0 + (gain_boost - 1.0) * relevance
+
     for item in candidates:
         edge_strength = key_to_score.get(item.key, 1.0)
+        b = _boost(item)
         updates.append(
-            EdgeUpdate(item.key, current_key, edge_strength * STDP_CAUSAL_EDGE_GAIN, ts)
+            EdgeUpdate(item.key, current_key, edge_strength * STDP_CAUSAL_EDGE_GAIN * b, ts)
         )
         updates.append(
-            EdgeUpdate(current_key, item.key, edge_strength * STDP_ACAUSAL_EDGE_GAIN, ts)
+            EdgeUpdate(current_key, item.key, edge_strength * STDP_ACAUSAL_EDGE_GAIN * b, ts)
         )
     for left_index, left in enumerate(candidates):
         for right in candidates[left_index + 1:]:

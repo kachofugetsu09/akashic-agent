@@ -620,17 +620,20 @@ class AkashaMemoryEngine:
             self._refresh_cached_message(message, embedding, current_key)
 
         # 3. 用真实 current_key 建边，并记录激活诊断。
+        #    reinforce 标记由 reinforce 工具写入本轮 extra；live 与重放(build 读同一 extra)一致。
+        gain_boost = _reinforce_boost_from_extra(event.extra)
         pending = self._pending_by_session.pop(event.session_key, None)
         if current_key and pending is not None:
-            self._commit_pending_activation(current_key, pending)
+            self._commit_pending_activation(current_key, pending, gain_boost=gain_boost)
 
     # 把 pending activation 转成边和事件。
     def _commit_pending_activation(
         self,
         current_key: str,
         pending: PendingActivation,
+        gain_boost: float = 1.0,
     ) -> None:
-        edge_updates = _activation_edge_updates(current_key, pending.items, pending.ts)
+        edge_updates = _activation_edge_updates(current_key, pending.items, pending.ts, gain_boost)
         self._store.upsert_edges(edge_updates)
         self._apply_edge_updates(edge_updates)
 
@@ -991,6 +994,22 @@ class _AkashaRetrieval:
     activation_items: list[AkashaCandidate]
     trace: ActivationTrace
     seq: int
+
+
+def _reinforce_boost_from_extra(extra: dict[str, object] | None) -> float:
+    """从本轮 extra["akasha_reinforce"] 取 reinforce 增益(无则 1.0)。
+
+    与 build_akasha_db._load_reinforce_boosts 解析口径一致 → live 与离线重放结果相同。
+    """
+    mark = (extra or {}).get("akasha_reinforce")
+    if not mark:
+        return 1.0
+    if isinstance(mark, dict):
+        try:
+            return float(cast("dict[str, object]", mark).get("boost", 3.0) or 3.0)
+        except (TypeError, ValueError):
+            return 3.0
+    return 3.0
 
 
 def _core_config(config: AkashaConfig) -> CoreConfig:

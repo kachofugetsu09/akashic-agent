@@ -159,6 +159,35 @@ def _load_skip_message_ids(sessions_db: Path) -> set[str]:
     return result
 
 
+def _load_reinforce_boosts(sessions_db: Path) -> dict[str, float]:
+    """从 messages.extra["akasha_reinforce"] 读取 reinforce 标记，映射成 {turn_key: boost}。
+
+    reinforce 是"输入信号"，留痕在 sessions.db(源头)→ 重建时确定性复现，图不丢。
+    标记由 reinforce 工具写入(在当前轮的 extra)。值可为 {"boost": 3.0} 或真值(默认 3.0)。
+    """
+    boosts: dict[str, float] = {}
+    with closing(sqlite3.connect(str(sessions_db))) as db:
+        rows = db.execute("SELECT session_key, seq, role, extra FROM messages").fetchall()
+    for session_key, seq, role, raw_extra in rows:
+        try:
+            parsed: object = json.loads(str(raw_extra or "{}"))
+        except json.JSONDecodeError:
+            continue
+        extra = cast(dict[str, object], parsed) if isinstance(parsed, dict) else {}
+        mark = extra.get("akasha_reinforce")
+        if not mark:
+            continue
+        boost = 3.0
+        if isinstance(mark, dict):
+            try:
+                boost = float(cast(dict[str, object], mark).get("boost", 3.0) or 3.0)
+            except (TypeError, ValueError):
+                boost = 3.0
+        key = turn_key(str(session_key), int(seq), str(role or ""))[2]
+        boosts[key] = max(boosts.get(key, 1.0), boost)  # 同轮多标记取最大
+    return boosts
+
+
 def _skip_session_key(session_key: str) -> bool:
     return session_key.startswith("scheduler:")
 
@@ -266,6 +295,7 @@ def _run() -> MigrationStats:
     try:
         source_messages = _load_source_messages(sessions_db)
         skip_message_ids = _load_skip_message_ids(sessions_db)
+        reinforce_boosts = _load_reinforce_boosts(sessions_db)
         skipped_source_messages = [
             message for message in source_messages if _skip_message(message, skip_message_ids)
         ]
@@ -295,6 +325,7 @@ def _run() -> MigrationStats:
                 source_cursor=source_db.cursor(),
                 message_embeddings=message_embeddings,
                 message_turn_keys=message_turn_keys,
+                reinforce_boosts=reinforce_boosts,
             )
             for raw_turn in replay_turns:
                 replay_items: list[ReplayMessage] = []
