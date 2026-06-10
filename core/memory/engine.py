@@ -170,6 +170,7 @@ class MemoryToolProfile:
     recall: MemoryToolSpec | None = None
     memorize: MemoryToolSpec | None = None
     forget: MemoryToolSpec | None = None
+    reinforce: MemoryToolSpec | None = None
 
 
 @runtime_checkable

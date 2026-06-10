@@ -62,6 +62,11 @@ def _parse_args() -> argparse.Namespace:
     _ = parser.add_argument("--sessions-db", default="", help="原始 sessions.db 路径")
     _ = parser.add_argument("--db-path", default="", help="输出 akasha.db 路径")
     _ = parser.add_argument("--progress-every", type=int, default=500, help="进度打印间隔")
+    _ = parser.add_argument(
+        "--embedding-model",
+        default="",
+        help="直接指定 embedding 模型名（缓存命中键用）；给定后不读 --config，免依赖 agent 配置",
+    )
     return parser.parse_args()
 
 
@@ -160,29 +165,43 @@ def _load_skip_message_ids(sessions_db: Path) -> set[str]:
 
 
 def _load_reinforce_boosts(sessions_db: Path) -> dict[str, float]:
-    """从 messages.extra["akasha_reinforce"] 读取 reinforce 标记，映射成 {turn_key: boost}。
+    """读取 reinforce 标记，映射成 {turn_key: boost}。reinforce 是"输入信号"，
+    留痕在 sessions.db(源头)→ 重建时确定性复现，图不丢。两个来源(等价):
 
-    reinforce 是"输入信号"，留痕在 sessions.db(源头)→ 重建时确定性复现，图不丢。
-    标记由 reinforce 工具写入(在当前轮的 extra)。值可为 {"boost": 3.0} 或真值(默认 3.0)。
+      1. tool_chain 里有 reinforce_memory 工具调用(线上真实调用,自动记录)；
+      2. extra["akasha_reinforce"](历史纠错回填迁移用,可带 {"boost": N})。
     """
     boosts: dict[str, float] = {}
     with closing(sqlite3.connect(str(sessions_db))) as db:
-        rows = db.execute("SELECT session_key, seq, role, extra FROM messages").fetchall()
-    for session_key, seq, role, raw_extra in rows:
-        try:
-            parsed: object = json.loads(str(raw_extra or "{}"))
-        except json.JSONDecodeError:
-            continue
-        extra = cast(dict[str, object], parsed) if isinstance(parsed, dict) else {}
-        mark = extra.get("akasha_reinforce")
-        if not mark:
-            continue
-        boost = 3.0
-        if isinstance(mark, dict):
+        rows = db.execute("SELECT session_key, seq, role, extra, tool_chain FROM messages").fetchall()
+    for session_key, seq, role, raw_extra, raw_chain in rows:
+        boost = 0.0
+        # 来源 1：tool_chain 里的 reinforce_memory 调用
+        if raw_chain and "reinforce_memory" in str(raw_chain):
             try:
-                boost = float(cast(dict[str, object], mark).get("boost", 3.0) or 3.0)
-            except (TypeError, ValueError):
-                boost = 3.0
+                groups = json.loads(str(raw_chain))
+            except json.JSONDecodeError:
+                groups = []
+            for group in groups if isinstance(groups, list) else []:
+                for call in (group or {}).get("calls", []) if isinstance(group, dict) else []:
+                    if isinstance(call, dict) and call.get("name") == "reinforce_memory":
+                        boost = max(boost, 3.0)
+        # 来源 2：extra 回填
+        try:
+            extra = json.loads(str(raw_extra or "{}"))
+        except json.JSONDecodeError:
+            extra = {}
+        mark = extra.get("akasha_reinforce") if isinstance(extra, dict) else None
+        if mark:
+            b = 3.0
+            if isinstance(mark, dict):
+                try:
+                    b = float(cast(dict[str, object], mark).get("boost", 3.0) or 3.0)
+                except (TypeError, ValueError):
+                    b = 3.0
+            boost = max(boost, b)
+        if boost <= 0.0:
+            continue
         key = turn_key(str(session_key), int(seq), str(role or ""))[2]
         boosts[key] = max(boosts.get(key, 1.0), boost)  # 同轮多标记取最大
     return boosts
@@ -270,8 +289,11 @@ def _run() -> MigrationStats:
     # 2. 备份旧 sidecar，并初始化本次迁移记录。
     backup_path = _backup_existing_db(db_path)
     store = AkashaStore(db_path)
-    config = Config.load(str(args.config))
-    embedding_model = config.memory.embedding.model
+    if str(args.embedding_model).strip():
+        embedding_model = str(args.embedding_model).strip()  # 离线重建：免读 config
+    else:
+        config = Config.load(str(args.config))
+        embedding_model = config.memory.embedding.model
     run_id = store.start_migration_run(
         source_db_path=sessions_db,
         embedding_model=embedding_model,

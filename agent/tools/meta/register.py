@@ -9,6 +9,7 @@ from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.recall_memory import RecallMemoryTool
+from agent.tools.reinforce_memory import ReinforceMemoryTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
@@ -140,6 +141,13 @@ def register_memory_meta_tools(
             _build_tool(engine, profile.recall, RecallMemoryTool),
             risk=profile.recall.risk,
             search_hint=profile.recall.search_hint or None,
+        )
+    if profile.reinforce is not None:
+        _register_memory_tool(
+            tools,
+            _build_tool(engine, profile.reinforce, ReinforceMemoryTool),
+            risk=profile.reinforce.risk,
+            search_hint=profile.reinforce.search_hint or None,
         )
 
 
