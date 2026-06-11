@@ -230,9 +230,10 @@ class AkashaMemoryEngine:
                 MemoryToolSpec(
                     name="reinforce_memory",
                     description=(
-                        "加强记忆。当用户纠正你刚才依据记忆给的答案/做法,或明确强调某事该被记牢时调用。"
-                        "把当前情境的记忆绑得更牢,影响未来召回(纯加强,不删除、不改写其它记忆)。"
-                        "例:用户说'查睡眠该用 snapshot 不是 sleep report'后,调用本工具加强这条理解。"
+                        "加强当前轮的 Akasha 记忆信号。仅当用户纠正你刚才的回答/工具选择,或明确说以后要记住某条做法时调用。"
+                        "本工具强化的是当前对话轮,不需要也不能填写上一轮 source_ref;不要为了普通闲聊、新事实、已知偏好重复调用。"
+                        "常见用法:用户说'昨晚睡眠要用 fitbit_health_snapshot/snapshot,不是 sleep_report'时,加强正确工具选择。"
+                        "也适合强化流程纠正:例如'要先 fetch_messages(source_ref) 看原文再下结论'。调用后仍要正常回复用户。"
                     ),
                     parameters={
                         "type": "object",
@@ -242,7 +243,10 @@ class AkashaMemoryEngine:
                         "required": [],
                     },
                     risk="write",
-                    search_hint="纠正 强调 记牢 加强记忆",
+                    search_hint=(
+                        "纠正 强调 记牢 加强记忆 当前轮 source_ref "
+                        "snapshot fitbit_health_snapshot sleep_report fetch_messages"
+                    ),
                 ),
             ),
         )

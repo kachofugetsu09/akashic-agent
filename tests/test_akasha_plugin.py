@@ -105,6 +105,17 @@ def test_reinforce_boost_payload_uses_exact_tool_chain_call_name() -> None:
     assert reinforce_boost_from_payload({"akasha_reinforce": {"boost": "4"}}, []) == 4.0
 
 
+def test_reinforce_memory_tool_description_states_current_turn_contract() -> None:
+    profile = AkashaMemoryEngine.__new__(AkashaMemoryEngine).tool_profile()
+    reinforce = next(spec for spec in profile.tools if spec.name == "reinforce_memory")
+
+    assert "当前轮" in reinforce.description
+    assert "source_ref" in reinforce.description
+    assert "fitbit_health_snapshot" in reinforce.description
+    assert "sleep_report" in reinforce.description
+    assert "fetch_messages(source_ref)" in reinforce.description
+
+
 def test_dense_message_candidates_vectorized_preserves_turn_ranking() -> None:
     nodes = {
         "s:0": AkashaNode(
