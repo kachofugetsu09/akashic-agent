@@ -135,7 +135,7 @@ def test_session_get_history_returns_empty_when_window_is_zero():
     assert session.get_history(max_messages=0) == []
 
 
-def test_session_get_history_replays_cached_llm_turn_from_consolidated_index():
+def test_session_get_history_skips_cached_llm_frame_by_default():
     session = Session("cli:1")
     session.add_message("user", "old")
     session.add_message("assistant", "old reply")
@@ -152,10 +152,6 @@ def test_session_get_history_replays_cached_llm_turn_from_consolidated_index():
     history = session.get_history(start_index=session.last_consolidated)
 
     assert history == [
-        {
-            "role": "user",
-            "content": '<system-reminder data-system-context-frame="true">\n\n## retrieved_memory\n旧记忆',
-        },
         {"role": "user", "content": user_content},
         {"role": "assistant", "content": "world"},
     ]
@@ -239,7 +235,7 @@ def test_session_get_history_assistant_only_returns_empty():
     assert session.get_history(start_index=0) == []
 
 
-def test_session_get_history_keeps_persisted_context_frame():
+def test_session_get_history_skips_legacy_context_frame_by_default():
     session = Session("cli:1")
     session.add_message(
         "user",
@@ -250,10 +246,7 @@ def test_session_get_history_keeps_persisted_context_frame():
 
     history = session.get_history(start_index=0)
 
-    assert history == [
-        {"role": "user", "content": "[SYSTEM_CONTEXT_FRAME]\n\n## recent_context\n旧内容"},
-        {"role": "user", "content": "hello"},
-    ]
+    assert history == [{"role": "user", "content": "hello"}]
 
 
 def test_session_get_history_does_not_inject_inference_tag():
