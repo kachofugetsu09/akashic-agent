@@ -231,7 +231,24 @@ def _build_online_path(tmp_path: Path) -> Path:
                     )[2]
                     message_index = core.build_dense_message_index(message_embeddings)
                 if current_key and activation_items:
-                    edge_updates = core.activation_edge_updates(current_key, activation_items, now_ts)
+                    prior_vecs = [
+                        node.embedding
+                        for key, node in nodes.items()
+                        if key != current_key and node.embedding.size > 0
+                    ]
+                    if prior_vecs:
+                        prior = np.stack(prior_vecs).astype(np.float32)
+                        norms = np.linalg.norm(prior, axis=1, keepdims=True)
+                        norms[norms == 0] = 1.0
+                        query_residual = core.local_residual(query_vec, prior / norms)
+                    else:
+                        query_residual = 1.0
+                    edge_updates = core.activation_edge_updates(
+                        current_key,
+                        activation_items,
+                        now_ts,
+                        query_residual=query_residual,
+                    )
                     store.upsert_edges(edge_updates)
                     for item in edge_updates:
                         if item.src_key == item.dst_key:

@@ -23,6 +23,7 @@ from plugins.akasha.core import (
     CoreConfig,
     SourceMessage,
     activation_edge_updates,
+    local_residual,
     activation_updates,
     compute_candidates_from_snapshot,
     dense_message_candidates,
@@ -244,10 +245,39 @@ class AkashaReplayRuntime:
         if current_key and activation_items:
             trigger = next((item.message for item in items if item.message.role == "user"), items[0].message)
             ts = parse_ts_unix(trigger.ts)
-            gain_boost = self._reinforce_boosts.get(current_key, 1.0)
-            self._store.upsert_edges(activation_edge_updates(current_key, activation_items, ts, gain_boost))
+            reinforced = self._reinforce_boosts.get(current_key, 1.0) > 1.0
+            trigger_emb = next(
+                (item.embedding for item in items if item.message.role == "user"),
+                items[0].embedding,
+            )
+            query_residual = self._query_residual(trigger_emb, current_key)
+            self._store.upsert_edges(
+                activation_edge_updates(
+                    current_key,
+                    activation_items,
+                    ts,
+                    query_residual=query_residual,
+                    reinforced=reinforced,
+                )
+            )
             self._store.insert_activation_events(_activation_events(trigger, activation_items))
         return current_key
+
+    # ν_turn = 1 − max_{j<i} cos(query, prior_j)²；当前 turn 自身排除。
+    def _query_residual(self, embedding: list[float], current_key: str) -> float:
+        prior_vecs = []
+        for node in self._store.list_nodes():
+            if node.key == current_key or node.embedding.size == 0:
+                continue
+            prior_vecs.append(node.embedding)
+        if not prior_vecs:
+            return 1.0
+        prior = np.stack(prior_vecs).astype(np.float32)
+        norms = np.linalg.norm(prior, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        prior = prior / norms
+        query_vec = np.array(embedding, dtype=np.float32)
+        return local_residual(query_vec, prior)
 
     def _write_query_log(
         self,

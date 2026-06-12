@@ -326,9 +326,16 @@ def test_replay_and_runtime_use_same_directional_stdp_edges(tmp_path: Path) -> N
         engine._edges_meta = {}
         engine._edges_by_src = {}
         engine._fan = {}
+        engine._nodes = {}
         engine._commit_pending_activation(
             "s:2",
-            PendingActivation(query_id="q", seq=2, ts=ts, items=[candidate]),
+            PendingActivation(
+                query_id="q",
+                seq=2,
+                ts=ts,
+                items=[candidate],
+                query_vec=np.array([1.0, 0.0], dtype=np.float32),
+            ),
         )
 
         assert replay_store.load_edges() == pytest.approx(expected)
@@ -543,7 +550,7 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
     engine._akasha_config = AkashaConfig(assistant_preview_chars=15)
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
-    engine._remember_pending_activation = lambda request, items, **_: None
+    engine._remember_pending_activation = lambda *_, **__: None
     engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
         dense_items=[
             AkashaCandidate(
@@ -634,7 +641,7 @@ async def test_context_block_sorts_injected_cards_by_time_desc(tmp_path: Path) -
     engine._akasha_config = AkashaConfig(dense_top_k=10, ripple_top_k=10)
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
-    engine._remember_pending_activation = lambda request, items, **_: None
+    engine._remember_pending_activation = lambda *_, **__: None
     engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
         dense_items=[candidate("s:0", 0.9), candidate("s:2", 0.8)],
         ripple_items=[],
@@ -748,7 +755,7 @@ async def test_context_query_uses_akasha_top_k_over_default_query_limit(
     engine._akasha_config = AkashaConfig(dense_top_k=10, ripple_top_k=10, inject_max_chars=20000)
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
-    engine._remember_pending_activation = lambda request, items, **_: None
+    engine._remember_pending_activation = lambda *_, **__: None
     engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
         dense_items=[candidate(f"s:{turn * 2}", 1.0 - turn * 0.01) for turn in range(12)],
         ripple_items=[candidate(f"s:{24 + turn * 2}", 0.8 - turn * 0.01) for turn in range(12)],

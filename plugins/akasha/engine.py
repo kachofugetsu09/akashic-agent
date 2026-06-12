@@ -34,6 +34,7 @@ from plugins.akasha.core import (
     turn_key,
     # Algorithm functions (aliased with _ prefix for internal convention)
     activation_edge_updates as _activation_edge_updates,
+    local_residual as _local_residual,
     activation_updates as _activation_updates,
     compute_candidates as _core_compute_candidates,
     compute_candidates_from_snapshot as _core_compute_candidates_from_snapshot,
@@ -46,7 +47,7 @@ from plugins.akasha.core import (
     bounded_add as _bounded_add,
     reinforce_boost_from_payload as _reinforce_boost_from_payload,
 )
-from agent.config_models import Config
+from agent.config_models import Config  # noqa: F401
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import (
     EngineProfile,
@@ -91,6 +92,7 @@ class PendingActivation:
     seq: int          # 仅作 query_log 标识用
     ts: float         # 用于 EdgeUpdate / last_used_ts
     items: list[AkashaCandidate]
+    query_vec: np.ndarray
 
 
 class AkashaMemoryEngine:
@@ -287,7 +289,7 @@ class AkashaMemoryEngine:
             update_state=stateful,
         )
         if stateful and request.intent in {"context", "answer"}:
-            self._remember_pending_activation(request, result.activation_items, now_ts=now_ts)
+            self._remember_pending_activation(request, result.activation_items, query_vec, now_ts=now_ts)
 
         # 4. context 注入按 Akasha 配置展示 topK；工具查询继续尊重调用方 limit。
         dense_limit = self._akasha_config.dense_top_k
@@ -607,6 +609,7 @@ class AkashaMemoryEngine:
         self,
         request: MemoryQuery,
         items: list[AkashaCandidate],
+        query_vec: np.ndarray,
         *,
         now_ts: float,
     ) -> None:
@@ -619,6 +622,7 @@ class AkashaMemoryEngine:
             seq=seq,
             ts=now_ts,
             items=list(items),
+            query_vec=query_vec,
         )
 
     # TurnCommitted 后把真实 user/assistant 写入 sidecar，并补本轮共激活边。
@@ -646,22 +650,29 @@ class AkashaMemoryEngine:
         # 3. 用真实 current_key 建边，并记录激活诊断。
         #    reinforce 标记 = 本轮调用了 reinforce_memory 工具(记在 tool_chain)或 extra 回填；
         #    与离线重建(build._load_reinforce_boosts)读同一来源，live 与重放一致。
-        gain_boost = _reinforce_boost_for_turn(
+        reinforced = _reinforce_boost_for_turn(
             event.extra,
             event.tool_chain_raw,
-        )
+        ) > 1.0
         pending = self._pending_by_session.pop(event.session_key, None)
         if current_key and pending is not None:
-            self._commit_pending_activation(current_key, pending, gain_boost=gain_boost)
+            self._commit_pending_activation(current_key, pending, reinforced=reinforced)
 
     # 把 pending activation 转成边和事件。
     def _commit_pending_activation(
         self,
         current_key: str,
         pending: PendingActivation,
-        gain_boost: float = 1.0,
+        reinforced: bool = False,
     ) -> None:
-        edge_updates = _activation_edge_updates(current_key, pending.items, pending.ts, gain_boost)
+        query_residual = self._compute_query_residual(pending.query_vec, current_key)
+        edge_updates = _activation_edge_updates(
+            current_key,
+            pending.items,
+            pending.ts,
+            query_residual=query_residual,
+            reinforced=reinforced,
+        )
         self._store.upsert_edges(edge_updates)
         self._apply_edge_updates(edge_updates)
 
@@ -770,6 +781,22 @@ class AkashaMemoryEngine:
             self._message_embeddings[message.id] = np.array(embedding, dtype=np.float32)
             self._message_turn_keys[message.id] = turn_key_value
             self._message_index = build_dense_message_index(self._message_embeddings)
+
+    # ν_turn = 1 − max_{j<i} cos(query, prior_j)²；当前 turn 自身排除。
+    def _compute_query_residual(self, query_vec: np.ndarray, current_key: str) -> float:
+        with self._graph_lock:
+            embeddings = [
+                node.embedding
+                for key, node in self._nodes.items()
+                if key != current_key and node.embedding.size > 0
+            ]
+        if not embeddings:
+            return 1.0
+        prior = np.stack(embeddings).astype(np.float32)
+        norms = np.linalg.norm(prior, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        prior = prior / norms
+        return _local_residual(query_vec, prior)
 
     # 把新增或增强的边同步进内存图。
     def _apply_edge_updates(self, updates: list[EdgeUpdate]) -> None:

@@ -359,41 +359,53 @@ class EdgeUpdate:
     ts: float
 
 
+REINFORCE_NU_FLOOR = 0.3
+
+
 def activation_edge_updates(
     current_key: str,
     candidates: list[AkashaCandidate],
     ts: float,
-    gain_boost: float = 1.0,
+    query_residual: float = 1.0,
+    reinforced: bool = False,
 ) -> list[EdgeUpdate]:
-    # gain_boost>1：reinforce 增强（纯加法）。把当前轮(被用户纠正/强调时的正确表述)
-    # 绑入上下文的边加厚，让它成为该情境的强吸引子；a 由竞争+heterosynaptic 相对回落。
-    # 定向：boost 只乘到"真正相关"的候选(高 direct)，不焐厚 hub/跨session 候选，
-    # 避免溢出到邻簇(实测未定向 boost 会把 hub/cross 一起拉高)。
+    # Residual Hebb：右脑只对预测误差产生可塑性。
+    # gain = max(ν_turn, REINFORCE_NU_FLOOR if reinforced else 0)
+    # 完全重复输入 ν=0：本轮所有边写入权重为 0，反馈环数学上断开。
+    # reinforce 重新解释：用户标记 = 给 ν 设下界，相当于一次弱新 episode 的 surprise，
+    # 比普通复读厚但不超过自然 episode。
+    floor = REINFORCE_NU_FLOOR if reinforced else 0.0
+    gain = max(0.0, min(1.0, max(query_residual, floor)))
+    if gain <= 0.0:
+        return []
     updates: list[EdgeUpdate] = []
     key_to_score = {item.key: item.score for item in candidates}
-
-    def _boost(item: AkashaCandidate) -> float:
-        if gain_boost <= 1.0:
-            return 1.0
-        relevance = max(0.0, min(1.0, item.direct / 0.6))  # 越相关越受益,外围/hub≈不受影响
-        return 1.0 + (gain_boost - 1.0) * relevance
-
     for item in candidates:
         edge_strength = key_to_score.get(item.key, 1.0)
-        b = _boost(item)
         updates.append(
-            EdgeUpdate(item.key, current_key, edge_strength * STDP_CAUSAL_EDGE_GAIN * b, ts)
+            EdgeUpdate(item.key, current_key, edge_strength * STDP_CAUSAL_EDGE_GAIN * gain, ts)
         )
         updates.append(
-            EdgeUpdate(current_key, item.key, edge_strength * STDP_ACAUSAL_EDGE_GAIN * b, ts)
+            EdgeUpdate(current_key, item.key, edge_strength * STDP_ACAUSAL_EDGE_GAIN * gain, ts)
         )
     for left_index, left in enumerate(candidates):
         for right in candidates[left_index + 1:]:
             edge_strength = math.sqrt(key_to_score[left.key] * key_to_score[right.key])
-            edge_strength *= STDP_COACTIVE_EDGE_GAIN
+            edge_strength *= STDP_COACTIVE_EDGE_GAIN * gain
             updates.append(EdgeUpdate(left.key, right.key, edge_strength, ts))
             updates.append(EdgeUpdate(right.key, left.key, edge_strength, ts))
     return updates
+
+
+def local_residual(query_vec: np.ndarray, prior_vecs: np.ndarray) -> float:
+    """ν_turn = 1 − max_{j<i} cos(query, prior_j)²。无先前 turn 时 ν=1。"""
+    if prior_vecs.size == 0:
+        return 1.0
+    v = normalize(query_vec.astype(np.float32))
+    sims = prior_vecs @ v
+    m = float(sims.max()) if sims.size > 0 else 0.0
+    m = max(0.0, m)
+    return max(0.0, 1.0 - m * m)
 
 
 def heterosynaptic_depression(
