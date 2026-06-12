@@ -404,6 +404,18 @@ textarea:focus {
   border-left: 1px solid var(--line);
 }
 
+.plugin-workbench-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--paper);
+}
+
+.plugin-workbench-root {
+  min-height: 100%;
+}
+
 /* ── Pane head ── */
 
 .pane-head {
@@ -1574,6 +1586,7 @@ textarea:focus {
 }
 
 .detail-pane,
+.plugin-workbench-pane,
 .explorer-nav,
 .table-body,
 .modal {
@@ -1600,6 +1613,11 @@ textarea:focus {
     width: 100%;
     border-right: none;
     border-bottom: 1px solid var(--line);
+  }
+
+  .plugin-workbench-pane {
+    width: 100%;
+    min-height: 0;
   }
 
   .detail-pane {

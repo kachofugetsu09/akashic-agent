@@ -15,7 +15,7 @@ import {
   stripMarkdown,
 } from "./format";
 import { attachJsonViewers, installDashboardGlobals, jvPlaceholder, loadPluginAssets } from "./pluginRuntime";
-import { PluginDetail } from "./PluginDetail";
+import { PluginDetail, PluginMain } from "./PluginDetail";
 import type {
   DashboardColumn,
   MessageRow,
@@ -145,6 +145,7 @@ function App(): React.ReactElement {
   const currentPluginId = viewMode.startsWith("plugin:") ? viewMode.slice(7) : "";
   const currentPlugin = plugins.find((plugin) => plugin.id === currentPluginId) ?? null;
   const currentPluginState = currentPluginId ? pluginState[currentPluginId] : null;
+  const currentPluginLayout = currentPlugin?.layout ?? "table";
 
   const channels = useMemo(() => Array.from(new Set(sessions.map((session) => session.key.split(":")[0]).filter(Boolean))), [sessions]);
 
@@ -384,6 +385,13 @@ function App(): React.ReactElement {
         () => focusView(`plugin:${currentPlugin.id}`),
       )
     : undefined;
+  const isPluginWorkbench = Boolean(
+    currentPlugin
+      && currentPluginState
+      && currentDispatch
+      && currentPluginLayout === "workbench"
+      && currentPlugin.renderMain,
+  );
 
   return (
     <div className="shell">
@@ -424,7 +432,7 @@ function App(): React.ReactElement {
         </div>
       </header>
 
-      <main className="workspace">
+      <main className={`workspace${isPluginWorkbench ? " plugin-workbench-mode" : ""}`}>
         <aside className="sessions-pane">
           <div className="pane-head">
             <div className="pane-kicker">Explorer</div>
@@ -529,100 +537,108 @@ function App(): React.ReactElement {
           </nav>
         </aside>
 
-        <section className="messages-pane">
-          {batchCount > 0 && (
-            <div className="batch-bar">
-              <span>已选 {batchCount} 条</span>
-              {viewMode.startsWith("plugin:") && currentPlugin?.batchActions && currentPluginState
-                ? currentPlugin.batchActions.map((action: PluginBatchAction) => (
-                    <button key={action.label} className={action.className} type="button" onClick={() => void run(async () => {
-                      const ids = [...currentPluginState.selectedIds];
-                      await action.run(ids);
+        {isPluginWorkbench && currentPlugin && currentDispatch ? (
+          <section className="plugin-workbench-pane">
+            <PluginMain plugin={currentPlugin} dispatch={currentDispatch} />
+          </section>
+        ) : (
+          <>
+            <section className="messages-pane">
+              {batchCount > 0 && (
+                <div className="batch-bar">
+                  <span>已选 {batchCount} 条</span>
+                  {viewMode.startsWith("plugin:") && currentPlugin?.batchActions && currentPluginState
+                    ? currentPlugin.batchActions.map((action: PluginBatchAction) => (
+                        <button key={action.label} className={action.className} type="button" onClick={() => void run(async () => {
+                          const ids = [...currentPluginState.selectedIds];
+                          await action.run(ids);
+                          setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], selectedIds: new Set() } }));
+                          await loadPluginPanel(currentPlugin.id);
+                        })}>{action.label}</button>
+                      ))
+                    : <button className="danger-ghost" type="button" onClick={() => void run(async () => {
+                        await api("/api/dashboard/messages/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...selectedMessageIds] }) });
+                        setSelectedMessageIds(new Set());
+                        await refreshCurrentView();
+                      })}>批量删除</button>
+                  }
+                  <button className="ghost" type="button" onClick={() => {
+                    if (viewMode.startsWith("plugin:") && currentPlugin) {
                       setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], selectedIds: new Set() } }));
-                      await loadPluginPanel(currentPlugin.id);
-                    })}>{action.label}</button>
-                  ))
-                : <button className="danger-ghost" type="button" onClick={() => void run(async () => {
-                    await api("/api/dashboard/messages/batch-delete", { method: "POST", body: JSON.stringify({ ids: [...selectedMessageIds] }) });
-                    setSelectedMessageIds(new Set());
-                    await refreshCurrentView();
-                  })}>批量删除</button>
-              }
-              <button className="ghost" type="button" onClick={() => {
-                if (viewMode.startsWith("plugin:") && currentPlugin) {
-                  setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], selectedIds: new Set() } }));
-                } else {
-                  setSelectedMessageIds(new Set());
-                }
-              }}>取消选择</button>
-            </div>
-          )}
-          <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
-          <div className="table-body">
-            <Rows
-              viewMode={viewMode}
-              messages={messages}
-              proactiveItems={proactiveItems}
-              plugin={currentPlugin}
-              pluginState={currentPluginState}
-              selectedMessageIds={selectedMessageIds}
-              activeMessage={activeMessage}
-              activeProactiveKey={activeProactiveKey}
-              onSelectMessage={setActiveMessage}
-              onSelectProactive={(item) => void run(async () => {
-                setActiveProactiveKey(item.tick_id);
-                const [detail, steps] = await Promise.all([
-                  api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
-                  api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
-                ]);
-                setActiveProactiveDetail(detail);
-                setActiveProactiveSteps(steps.items ?? []);
-              })}
-              onSelectPluginRow={(row) => {
-                if (!currentPlugin || !currentPluginState) return;
-                const key = String(row[currentPlugin.rowKey] ?? "");
-                void run(async () => {
-                  const detail = currentPlugin.fetchDetail ? await currentPlugin.fetchDetail(row) : row;
-                  setPluginState((current) => ({ ...current, [currentPlugin.id]: { ...current[currentPlugin.id], activeRowKey: key, activeDetail: detail } }));
-                });
-              }}
-              onTogglePluginRow={(id) => {
-                if (!currentPlugin) return;
-                setPluginState((c) => {
-                  const ps = c[currentPlugin.id];
-                  if (!ps) return c;
-                  const next = new Set(ps.selectedIds);
-                  if (next.has(id)) next.delete(id);
-                  else next.add(id);
-                  return { ...c, [currentPlugin.id]: { ...ps, selectedIds: next } };
-                });
-              }}
-              setSelectedMessageIds={setSelectedMessageIds}
-            />
-          </div>
-          <footer className="table-foot">
-            <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
-            <div className="pager">
-              <button className="ghost" type="button" disabled={currentPage <= 1} onClick={() => changePage(-1)}>‹</button>
-              <span>{currentPage} / {currentPageCount}</span>
-              <button className="ghost" type="button" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}>›</button>
-            </div>
-          </footer>
-        </section>
+                    } else {
+                      setSelectedMessageIds(new Set());
+                    }
+                  }}>取消选择</button>
+                </div>
+              )}
+              <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
+              <div className="table-body">
+                <Rows
+                  viewMode={viewMode}
+                  messages={messages}
+                  proactiveItems={proactiveItems}
+                  plugin={currentPlugin}
+                  pluginState={currentPluginState}
+                  selectedMessageIds={selectedMessageIds}
+                  activeMessage={activeMessage}
+                  activeProactiveKey={activeProactiveKey}
+                  onSelectMessage={setActiveMessage}
+                  onSelectProactive={(item) => void run(async () => {
+                    setActiveProactiveKey(item.tick_id);
+                    const [detail, steps] = await Promise.all([
+                      api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
+                      api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
+                    ]);
+                    setActiveProactiveDetail(detail);
+                    setActiveProactiveSteps(steps.items ?? []);
+                  })}
+                  onSelectPluginRow={(row) => {
+                    if (!currentPlugin || !currentPluginState) return;
+                    const key = String(row[currentPlugin.rowKey] ?? "");
+                    void run(async () => {
+                      const detail = currentPlugin.fetchDetail ? await currentPlugin.fetchDetail(row) : row;
+                      setPluginState((current) => ({ ...current, [currentPlugin.id]: { ...current[currentPlugin.id], activeRowKey: key, activeDetail: detail } }));
+                    });
+                  }}
+                  onTogglePluginRow={(id) => {
+                    if (!currentPlugin) return;
+                    setPluginState((c) => {
+                      const ps = c[currentPlugin.id];
+                      if (!ps) return c;
+                      const next = new Set(ps.selectedIds);
+                      if (next.has(id)) next.delete(id);
+                      else next.add(id);
+                      return { ...c, [currentPlugin.id]: { ...ps, selectedIds: next } };
+                    });
+                  }}
+                  setSelectedMessageIds={setSelectedMessageIds}
+                />
+              </div>
+              <footer className="table-foot">
+                <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
+                <div className="pager">
+                  <button className="ghost" type="button" disabled={currentPage <= 1} onClick={() => changePage(-1)}>‹</button>
+                  <span>{currentPage} / {currentPageCount}</span>
+                  <button className="ghost" type="button" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}>›</button>
+                </div>
+              </footer>
+            </section>
 
-        <aside className="detail-pane">
-          <DetailPane
-            viewMode={viewMode}
-            activeSession={activeSession}
-            activeMessage={activeMessage}
-            activeProactiveDetail={activeProactiveDetail}
-            activeProactiveSteps={activeProactiveSteps}
-            plugin={currentPlugin}
-            pluginState={currentPluginState}
-            dispatch={currentDispatch}
-            setProactiveSessionFilter={(key) => { setProactiveSessionFilter(key); setProactivePage(1); selectView("proactive"); }}
-          />
-        </aside>
+            <aside className="detail-pane">
+              <DetailPane
+                viewMode={viewMode}
+                activeSession={activeSession}
+                activeMessage={activeMessage}
+                activeProactiveDetail={activeProactiveDetail}
+                activeProactiveSteps={activeProactiveSteps}
+                plugin={currentPlugin}
+                pluginState={currentPluginState}
+                dispatch={currentDispatch}
+                setProactiveSessionFilter={(key) => { setProactiveSessionFilter(key); setProactivePage(1); selectView("proactive"); }}
+              />
+            </aside>
+          </>
+        )}
       </main>
       {error && <div className="modal-backdrop" onClick={() => setError(null)}><div className="modal"><div className="modal-title">请求失败</div><p>{error}</p><div className="modal-actions"><button className="primary" type="button" onClick={() => setError(null)}>关闭</button></div></div></div>}
     </div>

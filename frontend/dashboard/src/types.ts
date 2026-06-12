@@ -121,10 +121,13 @@ export interface PluginBatchAction {
   run(ids: string[]): Promise<void>;
 }
 
+export type PluginLayout = "table" | "workbench";
+
 export interface PluginConfig {
   id: string;
   label: string;
   viewLabel?: string;
+  layout?: PluginLayout;
   pageSize?: number;
   countTitle?: (n: number) => string;
   rowKey: string;
@@ -136,7 +139,8 @@ export interface PluginConfig {
   fetchDetail?: (item: Record<string, unknown>) => Promise<Record<string, unknown>>;
   rowClass?: (item: Record<string, unknown>) => string;
   emptyMessage?: string;
-  renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: PluginDispatch): void;
+  renderMain?(container: HTMLElement, dispatch: PluginDispatch): void;
+  renderDetail?(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: PluginDispatch): void;
   renderNavBody?(container: HTMLElement, dispatch: PluginDispatch): void;
   renderFilters?(container: HTMLElement, dispatch: PluginDispatch): void;
   renderTopbarAction?(container: HTMLElement, dispatch: PluginDispatch): void;

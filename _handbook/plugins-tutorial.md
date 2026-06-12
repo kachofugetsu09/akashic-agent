@@ -382,6 +382,44 @@ class UndoCommandModule:
 
 ---
 
+## Dashboard 面板：表格布局与应用布局
+
+Dashboard 插件默认使用 `table` 布局：左侧导航里显示插件，主区域是插件数据表，右侧由 `renderDetail(...)` 渲染选中行详情。这个模式适合 memory、logs、records、inspector 这类“列表 + 详情”的插件。
+
+应用级插件可以声明 `layout: "workbench"`，让插件接管 dashboard 主工作区。框架仍然提供左侧插件入口、计数、filters、topbar action、刷新和排序 dispatch，但不再强制显示表格和右侧详情栏。插件通过 `renderMain(container, dispatch)` 渲染完整应用界面。
+
+最小注册形态：
+
+```ts
+window.AkashicDashboard.registerPlugin({
+  id: "my_research_app",
+  label: "My Research App",
+  viewLabel: "research",
+  layout: "workbench",
+  rowKey: "id",
+  columns: [],
+  async getCount() {
+    return 0;
+  },
+  async fetchPage() {
+    return { items: [], total: 0 };
+  },
+  renderMain(container, dispatch) {
+    container.innerHTML = '<div class="my-app"></div>';
+    // 在这里挂载完整 UI；需要刷新列表/计数时调用 dispatch.refresh()
+  },
+});
+```
+
+约束：
+
+- `renderMain` 只负责该插件主区域，不应改写 shell、topbar、全局导航或其他插件 DOM。
+- 需要列表/详情体验时继续用默认 `table` 布局；需要 Ask/Evidence/Graph/Trace/Project 这种多视图工作台时用 `workbench`。
+- `renderDetail` 现在是可选兼容槽。`workbench` 插件可以保留它作为降级路径，但主 UI 应放在 `renderMain`。
+- 插件 CSS 应限制在自己的 class 前缀下，避免影响 dashboard shell。
+
+---
+
 ## 所有真实插件
 
 | 插件 | 用了什么 | 一句话 |
