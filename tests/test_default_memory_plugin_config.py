@@ -57,4 +57,5 @@ def test_root_config_example_does_not_expose_default_memory_private_config() -> 
     assert "[memory.retrieval]" not in text
     assert "[memory.gate]" not in text
     assert "[memory.hyde]" not in text
+    assert "output_dimensionality" not in text
     assert "[memory_v2]" not in text

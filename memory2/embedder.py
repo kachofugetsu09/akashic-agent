@@ -21,11 +21,13 @@ class Embedder:
         base_url: str,
         api_key: str,
         model: str = "text-embedding-v3",
+        output_dimensionality: int | None = None,
         requester: HttpRequester | None = None,
     ) -> None:
         self._url = base_url.rstrip("/") + "/embeddings"
         self._key = api_key
         self._model = model
+        self._output_dimensionality = output_dimensionality
         self._requester = requester or get_default_http_requester("external_default")
 
     async def embed(self, text: str) -> list[float]:
@@ -40,13 +42,16 @@ class Embedder:
 
         for i in range(0, len(truncated), self.MAX_BATCH):
             batch = truncated[i : i + self.MAX_BATCH]
+            payload: dict[str, object] = {"model": self._model, "input": batch}
+            if self._output_dimensionality is not None:
+                payload["dimensions"] = self._output_dimensionality
             resp = await self._requester.post(
                 self._url,
                 headers={
                     "Authorization": f"Bearer {self._key}",
                     "Content-Type": "application/json",
                 },
-                json={"model": self._model, "input": batch},
+                json=payload,
                 timeout_s=30.0,
                 budget=RequestBudget(total_timeout_s=40.0),
             )

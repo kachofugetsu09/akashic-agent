@@ -274,6 +274,14 @@ def _load_proactive_config(data: dict) -> ProactiveConfig:
 def _load_memory_config(data: dict) -> MemoryConfig:
     memory = _as_dict(data.get("memory"))
     embedding = _as_dict(memory.get("embedding"))
+    raw_output_dimensionality = embedding.get("output_dimensionality")
+    output_dimensionality = (
+        int(raw_output_dimensionality)
+        if raw_output_dimensionality not in (None, "")
+        else None
+    )
+    if output_dimensionality is not None and output_dimensionality <= 0:
+        raise ValueError("memory.embedding.output_dimensionality 必须大于 0")
     return MemoryConfig(
         enabled=bool(memory.get("enabled", False)),
         engine=str(memory.get("engine", "") or ""),
@@ -281,6 +289,7 @@ def _load_memory_config(data: dict) -> MemoryConfig:
             model=str(embedding.get("model", "text-embedding-v3")),
             api_key=_resolve(str(embedding.get("api_key", ""))),
             base_url=str(embedding.get("base_url", "")),
+            output_dimensionality=output_dimensionality,
         ),
     )
 

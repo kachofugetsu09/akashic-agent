@@ -44,7 +44,7 @@ from memory2.procedure_tagger import ProcedureTagger
 from memory2.query_builder import build_procedure_queries
 from memory2.retriever import Retriever
 from memory2.rule_schema import build_procedure_rule_schema
-from memory2.store import MemoryStore2
+from memory2.store import VEC_DIM, MemoryStore2
 from plugins.default_memory.config import DefaultMemoryConfig, resolve_memory_db_path
 
 if TYPE_CHECKING:
@@ -572,7 +572,10 @@ class DefaultMemoryEngine:
         )
         embedding = config.memory.embedding
         retrieval = default_config.retrieval
-        self._v2_store = MemoryStore2(db_path)
+        self._v2_store = MemoryStore2(
+            db_path,
+            vec_dim=embedding.output_dimensionality or VEC_DIM,
+        )
         self._embedder = Embedder(
             base_url=embedding.base_url
             or config.light_base_url
@@ -582,6 +585,7 @@ class DefaultMemoryEngine:
             or config.light_api_key
             or config.api_key,
             model=embedding.model,
+            output_dimensionality=embedding.output_dimensionality,
             requester=http_resources.external_default,
         )
         self._memorizer = Memorizer(self._v2_store, self._embedder)

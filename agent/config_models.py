@@ -58,6 +58,7 @@ class MemoryEmbeddingConfig:
     model: str = "text-embedding-v3"
     api_key: str = ""
     base_url: str = ""
+    output_dimensionality: int | None = None
 
 
 @dataclass

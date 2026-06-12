@@ -141,6 +141,7 @@ class AkashaMemoryEngine:
             or config.light_api_key
             or config.api_key,
             model=embedding.model,
+            output_dimensionality=embedding.output_dimensionality,
             requester=http_resources.external_default,
         )
         self._event_bus = event_publisher

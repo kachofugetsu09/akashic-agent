@@ -95,6 +95,7 @@ async def test_embedder_uses_injected_requester():
     def _handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content.decode("utf-8"))
         assert payload["input"] == ["first", "second"]
+        assert "dimensions" not in payload
         return httpx.Response(
             200,
             request=request,
@@ -115,5 +116,30 @@ async def test_embedder_uses_injected_requester():
         )
         vectors = await embedder.embed_batch(["first", "second"])
         assert vectors == [[0.0, 0.1], [0.2, 0.3]]
+    finally:
+        await requester.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_embedder_sends_configured_output_dimension():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["dimensions"] == 768
+        return httpx.Response(
+            200,
+            request=request,
+            json={"data": [{"index": 0, "embedding": [0.1, 0.2]}]},
+        )
+
+    requester = _build_requester(_handler)
+    try:
+        embedder = Embedder(
+            base_url="https://embeddings.example.com/v1",
+            api_key="test-key",
+            output_dimensionality=768,
+            requester=requester,
+        )
+        vectors = await embedder.embed_batch(["first"])
+        assert vectors == [[0.1, 0.2]]
     finally:
         await requester.client.aclose()

@@ -201,6 +201,7 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_pat
                 "embedding": {
                     "model": "legacy-embedding",
                     "api_key": "legacy-key",
+                    "output_dimensionality": 1536,
                 },
                 "retrieval": {
                     "score_threshold": 0.99,
@@ -217,6 +218,7 @@ def test_config_load_reads_embedding_and_ignores_private_memory_sections(tmp_pat
     assert cfg.memory.engine == ""
     assert cfg.memory.embedding.model == "legacy-embedding"
     assert cfg.memory.embedding.api_key == "legacy-key"
+    assert cfg.memory.embedding.output_dimensionality == 1536
 
 
 def test_config_load_reads_memory_window_and_socket(tmp_path: Path):

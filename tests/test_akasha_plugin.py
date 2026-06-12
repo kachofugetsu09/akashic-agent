@@ -16,6 +16,7 @@ import numpy as np
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
+from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
 from plugins.akasha.config import AkashaConfig
 from plugins.akasha.engine import (
     ActivationTrace,
@@ -114,6 +115,45 @@ def test_reinforce_memory_tool_description_states_current_turn_contract() -> Non
     assert "fitbit_health_snapshot" in reinforce.description
     assert "sleep_report" in reinforce.description
     assert "fetch_messages(source_ref)" in reinforce.description
+
+
+def test_akasha_engine_passes_embedding_dimension_to_embedder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Embedder:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+
+    engine = AkashaMemoryEngine(
+        config=Config(
+            provider="openai",
+            model="chat-model",
+            api_key="chat-key",
+            system_prompt="system",
+            memory=MemoryConfig(
+                embedding=MemoryEmbeddingConfig(
+                    model="embedding-model",
+                    output_dimensionality=768,
+                )
+            ),
+        ),
+        akasha_config=AkashaConfig(),
+        workspace=tmp_path,
+        http_resources=cast(Any, SimpleNamespace(external_default=object())),
+    )
+    try:
+        assert captured["model"] == "embedding-model"
+        assert captured["output_dimensionality"] == 768
+    finally:
+        engine._store.close()
 
 
 def test_dense_message_candidates_vectorized_preserves_turn_ranking() -> None:
