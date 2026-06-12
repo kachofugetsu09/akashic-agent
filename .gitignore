@@ -25,6 +25,7 @@ plugins/*/dashboard_panel*.js
 # Local plugin settings / disable markers
 plugins/*/plugin_config.json
 plugins/*/plugin.disabled
+plugins/*/config.local.toml
 
 # 运行时产物
 logs/
