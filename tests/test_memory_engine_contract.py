@@ -27,6 +27,7 @@ from core.memory.markdown import (
     ConsolidateRequest,
     ConsolidateResult,
     _ConsolidationDraft,
+    _ConsolidationFailure,
     _ConsolidationWindow,
     MarkdownMemoryMaintenance,
     MarkdownMemoryStore,
@@ -475,6 +476,38 @@ async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_pa
         encoding="utf-8"
     )
     await event_bus.aclose()
+
+
+async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(tmp_path: Path):
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[{"role": "user", "content": f"u{i}"} for i in range(8)],
+        last_consolidated=0,
+    )
+    maintenance = MarkdownMemoryMaintenance(
+        store=MarkdownMemoryStore(tmp_path),
+        provider=cast(Any, SimpleNamespace()),
+        model="lm",
+        keep_count=4,
+    )
+    maintenance._worker.prepare_consolidation = AsyncMock(
+        return_value=_ConsolidationFailure(
+            step="recent_context",
+            error="TimeoutError",
+            elapsed_ms=180000,
+        )
+    )
+
+    result = await maintenance.consolidate(ConsolidateRequest(session=session))
+
+    assert result.consolidated_count == 0
+    assert result.trace == {
+        "mode": "failed",
+        "step": "recent_context",
+        "error": "TimeoutError",
+        "elapsed_ms": 180000,
+    }
+    assert session.last_consolidated == 0
 
 
 async def test_default_memory_engine_serializes_lifecycle_maintenance():

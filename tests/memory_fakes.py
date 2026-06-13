@@ -63,7 +63,7 @@ class FakeMemoryEngine:
 
     async def consolidate(self, request: ConsolidateRequest) -> ConsolidateResult:
         self.consolidate_calls.append(request)
-        return ConsolidateResult()
+        return ConsolidateResult(trace={"mode": "markdown"})
 
     async def refresh_recent_turns(self, request) -> None:
         return None

@@ -292,6 +292,7 @@ class PassiveTurnPipeline:
                 self._bus,
                 self._session.session_manager,
                 self._context_store,
+                keep_count=self._history_window,
                 plugin_modules=cast("list[Any]", self._before_turn_plugin_modules),
             ),
             frame_factory=BeforeTurnFrame,

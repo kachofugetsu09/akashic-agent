@@ -204,7 +204,9 @@ def test_consolidation_event_failure_does_not_write_markdown():
     draft = _prepare(service, session, archive_all=True)
 
     # event 失败 → last_consolidated 不推进，隐式结果不写库
-    assert draft is None
+    assert draft is not None
+    assert draft.step == "event_extract"
+    assert draft.error == "empty_response"
     assert session.last_consolidated == 0
     memory.append_history_once.assert_not_called()
     memory.append_journal.assert_not_called()
@@ -458,7 +460,7 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
     assert "[user] 第十三条" in written
 
 
-def test_consolidation_recent_context_invalid_json_keeps_old_compression():
+def test_consolidation_recent_context_invalid_json_fails_consolidation():
     old_recent_context = (
         "# Recent Context\n\n"
         "## Compression\n"
@@ -525,11 +527,66 @@ def test_consolidation_recent_context_invalid_json_keeps_old_compression():
     draft = _prepare(service, session)
 
     assert draft is not None
-    written = draft.recent_context_text
-    assert "until: 2026-03-15T10:08:00" in written
-    assert "旧话题" in written
-    assert "重要线程" in written
-    assert "[user] 第十三条" in written
+    assert draft.step == "recent_context"
+    assert draft.error == "invalid_json"
+
+
+def test_consolidation_recent_context_exception_fails_consolidation():
+    memory = SimpleNamespace(
+        read_long_term=MagicMock(return_value="MEM"),
+        read_history=MagicMock(return_value=""),
+        read_recent_context=MagicMock(return_value=""),
+        write_recent_context=MagicMock(),
+        append_history_once=MagicMock(return_value=True),
+        append_pending_once=MagicMock(return_value=True),
+        append_journal=MagicMock(),
+        save_from_consolidation=AsyncMock(),
+        save_item=AsyncMock(return_value="new:profile-1"),
+        save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
+    )
+
+    async def _chat_side_effect(**kwargs):
+        text = _message_text(kwargs)
+        if "近期语境压缩代理" in text:
+            raise TimeoutError("light timeout")
+        return _Resp(
+            '{"history_entries":["[2026-03-15 10:07] 用户继续对话"],"pending_items":[]}'
+        )
+
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
+    service = ConsolidationWorker(
+        profile_maint=cast(Any, memory),
+        provider=cast(Any, provider),
+        model="m",
+        keep_count=4,
+    )
+    session = SimpleNamespace(
+        key="cli:1",
+        messages=[
+            {"role": "user", "content": "第一条", "timestamp": "2026-03-15T10:00:00"},
+            {"role": "assistant", "content": "第二条", "timestamp": "2026-03-15T10:01:00"},
+            {"role": "user", "content": "第三条", "timestamp": "2026-03-15T10:02:00"},
+            {"role": "assistant", "content": "第四条", "timestamp": "2026-03-15T10:03:00"},
+            {"role": "user", "content": "第五条", "timestamp": "2026-03-15T10:04:00"},
+            {"role": "assistant", "content": "第六条", "timestamp": "2026-03-15T10:05:00"},
+            {"role": "user", "content": "第七条", "timestamp": "2026-03-15T10:06:00"},
+            {"role": "assistant", "content": "第八条", "timestamp": "2026-03-15T10:07:00"},
+            {"role": "user", "content": "第九条", "timestamp": "2026-03-15T10:08:00"},
+            {"role": "assistant", "content": "第十条", "timestamp": "2026-03-15T10:09:00"},
+            {"role": "user", "content": "第十一条", "timestamp": "2026-03-15T10:10:00"},
+            {"role": "assistant", "content": "第十二条", "timestamp": "2026-03-15T10:11:00"},
+            {"role": "user", "content": "第十三条", "timestamp": "2026-03-15T10:12:00"},
+        ],
+        last_consolidated=4,
+        _channel="cli",
+        _chat_id="1",
+    )
+
+    draft = _prepare(service, session)
+
+    assert draft is not None
+    assert draft.step == "recent_context"
+    assert "TimeoutError" in draft.error
 
 
 def test_select_recent_history_entries_returns_last_three_chunks():

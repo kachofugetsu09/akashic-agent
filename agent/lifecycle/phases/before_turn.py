@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING, TypeAlias, cast
 
 from bus.event_bus import EventBus
@@ -18,6 +19,8 @@ from agent.lifecycle.types import BeforeTurnCtx, TurnState
 if TYPE_CHECKING:
     from agent.core.passive_turn import ContextStore
     from session.manager import SessionManager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,6 +73,70 @@ class _PrepareContextModule:
             session=session,
         )
         frame.slots[_CONTEXT_BUNDLE_SLOT] = bundle
+        return frame
+
+
+class _MemoryContextGuardModule:
+    slot = "before_turn.memory_context_guard"
+    requires = ("before_turn.acquire_session", _SESSION_SLOT)
+    produces = (_CTX_SLOT,)
+
+    def __init__(self, keep_count: int) -> None:
+        self._keep_count = max(1, int(keep_count))
+        self._min_new = max(5, self._keep_count // 2)
+        self._threshold = self._keep_count + self._min_new
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        if _CTX_SLOT in frame.slots:
+            return frame
+        state = frame.input
+        if bool((state.msg.metadata or {}).get("skip_memory_context_guard")):
+            return frame
+        session = cast(SessionLike, frame.slots[_SESSION_SLOT])
+        messages = list(getattr(session, "messages", []))
+        last = _clamp_last_consolidated(
+            getattr(session, "last_consolidated", 0),
+            len(messages),
+        )
+        pending = len(messages) - last
+        if pending < self._threshold:
+            return frame
+
+        logger.error(
+            "memory context guard blocked turn: session=%s pending=%d threshold=%d last_consolidated=%d total=%d",
+            state.session_key,
+            pending,
+            self._threshold,
+            last,
+            len(messages),
+        )
+        frame.slots[_CTX_SLOT] = BeforeTurnCtx(
+            session_key=state.session_key,
+            channel=state.msg.context_channel,
+            chat_id=state.msg.context_chat_id,
+            content=state.msg.content,
+            timestamp=state.msg.timestamp,
+            retrieved_memory_block="",
+            retrieval_trace_raw=None,
+            history_messages=(),
+            abort=True,
+            abort_reply=_memory_context_guard_reply(
+                pending=pending,
+                threshold=self._threshold,
+                keep_count=self._keep_count,
+                last_consolidated=last,
+                total_messages=len(messages),
+            ),
+            extra_metadata={
+                "memory_context_guard": {
+                    "pending": pending,
+                    "threshold": self._threshold,
+                    "keep_count": self._keep_count,
+                    "last_consolidated": last,
+                    "total_messages": len(messages),
+                }
+            },
+        )
         return frame
 
 
@@ -142,10 +209,13 @@ def default_before_turn_modules(
     bus: EventBus,
     session_manager: SessionManager,
     context_store: ContextStore,
+    *,
+    keep_count: int = 20,
     plugin_modules: BeforeTurnModules | None = None,
 ) -> BeforeTurnModules:
     builtins: BeforeTurnModules = [
         _AcquireSessionModule(session_manager),
+        _MemoryContextGuardModule(keep_count),
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),
         _EmitBeforeTurnCtxModule(bus),
@@ -155,4 +225,33 @@ def default_before_turn_modules(
     return cast(
         BeforeTurnModules,
         topo_sort_modules(builtins + list(plugin_modules or [])),
+    )
+
+
+def _clamp_last_consolidated(value: object, total_messages: int) -> int:
+    if isinstance(value, int):
+        last = value
+    elif isinstance(value, str):
+        try:
+            last = int(value)
+        except ValueError:
+            last = 0
+    else:
+        last = 0
+    return min(max(0, last), max(0, int(total_messages)))
+
+
+def _memory_context_guard_reply(
+    *,
+    pending: int,
+    threshold: int,
+    keep_count: int,
+    last_consolidated: int,
+    total_messages: int,
+) -> str:
+    return (
+        "记忆归档现在处于异常积压状态，我先暂停本轮普通回复，避免把未归档历史继续塞进模型上下文。\n"
+        f"当前未归档消息数 {pending}，安全阈值 {threshold}，热上下文保留 {keep_count}，"
+        f"last_consolidated={last_consolidated}，total_messages={total_messages}。\n"
+        "请先修复 memory consolidation 后再重试。"
     )

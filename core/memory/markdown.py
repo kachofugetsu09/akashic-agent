@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("memory.markdown")
 
+_EVENT_EXTRACTION_TIMEOUT_S = 300.0
+_RECENT_CONTEXT_TIMEOUT_S = 180.0
+
 
 @dataclass(frozen=True)
 class ConsolidateRequest:
@@ -110,6 +113,13 @@ def _parse_consolidation_payload(text: str) -> dict | None:
     return load_json_object_loose(text)
 
 
+def _format_consolidation_error(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
+
+
 @dataclass(frozen=True)
 class _ConsolidationWindow:
     old_messages: list[dict]
@@ -128,6 +138,13 @@ class _ConsolidationDraft:
     scope_channel: str
     scope_chat_id: str
     archive_all: bool = False
+
+
+@dataclass(frozen=True)
+class _ConsolidationFailure:
+    step: str
+    error: str
+    elapsed_ms: int = 0
 
 
 def _select_consolidation_window(
@@ -551,6 +568,41 @@ ongoing_threads 严格限制：
             parsed["ongoing_threads"] = ongoing_items[:3]
         return parsed
 
+    async def _call_llm_step(
+        self,
+        *,
+        step: str,
+        provider: "LLMProvider",
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        timeout_s: float,
+    ) -> tuple[str, int] | _ConsolidationFailure:
+        started_at = time.perf_counter()
+        try:
+            response = await asyncio.wait_for(
+                provider.chat(
+                    messages=messages,
+                    tools=[],
+                    model=model,
+                    max_tokens=max_tokens,
+                    disable_thinking=True,
+                ),
+                timeout=timeout_s,
+            )
+        except Exception as e:
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            error = _format_consolidation_error(e)
+            logger.error(
+                "Memory consolidation llm step failed: step=%s elapsed_ms=%d error=%s",
+                step,
+                elapsed_ms,
+                error,
+            )
+            return _ConsolidationFailure(step=step, error=error, elapsed_ms=elapsed_ms)
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        return (response.content or "").strip(), elapsed_ms
+
     async def _build_recent_context_snapshot(
         self,
         *,
@@ -558,7 +610,7 @@ ongoing_threads 严格限制：
         profile_maint,
         window: _ConsolidationWindow | None,
         archive_all: bool,
-    ) -> str:
+    ) -> str | _ConsolidationFailure:
         tail = list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
         recent_count = min(len(tail), _recent_turn_count(self._keep_count))
         session_messages = list(session.messages)
@@ -585,7 +637,10 @@ ongoing_threads 严格限制：
                 conversation=conversation,
                 recent_turns=recent_turns_for_prompt,
             )
-            response = await self._recent_context_provider.chat(
+            call_result = await self._call_llm_step(
+                step="recent_context",
+                provider=self._recent_context_provider,
+                model=self._recent_context_model,
                 messages=[
                     {
                         "role": "system",
@@ -593,13 +648,25 @@ ongoing_threads 严格限制：
                     },
                     {"role": "user", "content": prompt},
                 ],
-                tools=[],
-                model=self._recent_context_model,
                 max_tokens=512,
-                disable_thinking=True,
+                timeout_s=_RECENT_CONTEXT_TIMEOUT_S,
             )
-            text = (response.content or "").strip()
-            parsed = _parse_consolidation_payload(text) if text else None
+            if isinstance(call_result, _ConsolidationFailure):
+                return call_result
+            text, elapsed_ms = call_result
+            logger.info(
+                "Memory consolidation recent_context raw: elapsed_ms=%d chars=%d preview=%r",
+                elapsed_ms,
+                len(text),
+                text[:300],
+            )
+            if not text:
+                return _ConsolidationFailure(
+                    step="recent_context",
+                    error="empty_response",
+                    elapsed_ms=elapsed_ms,
+                )
+            parsed = _parse_consolidation_payload(text)
             if isinstance(parsed, dict):
                 compression = {
                     key: [
@@ -616,7 +683,11 @@ ongoing_threads 严格限制：
                     )
                 }
             else:
-                compression = self._extract_recent_context_compression(old_recent_context)
+                return _ConsolidationFailure(
+                    step="recent_context",
+                    error="invalid_json",
+                    elapsed_ms=elapsed_ms,
+                )
         elif old_recent_context.strip():
             compression = self._extract_recent_context_compression(old_recent_context)
         return _render_recent_context(
@@ -652,7 +723,7 @@ ongoing_threads 严格限制：
         session,
         archive_all: bool = False,
         force: bool = False,
-    ) -> _ConsolidationDraft | None:
+    ) -> _ConsolidationDraft | _ConsolidationFailure | None:
         profile_maint = self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
         window = _select_consolidation_window(
@@ -839,65 +910,70 @@ history_entries.emotional_weight 规则：
 
 只返回合法 JSON，不要 markdown 代码块。"""
 
-        try:
-            # 3. 调主模型把这段旧对话提炼成结构化结果。
-            event_started_at = time.perf_counter()
-            response = await self._provider.chat(
-                messages=[{"role": "user", "content": prompt}],
-                tools=[],
-                model=self._model,
-                max_tokens=1024,
-                disable_thinking=True,
+        # 3. 调主模型把这段旧对话提炼成结构化结果。
+        call_result = await self._call_llm_step(
+            step="event_extract",
+            provider=self._provider,
+            model=self._model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+            timeout_s=_EVENT_EXTRACTION_TIMEOUT_S,
+        )
+        if isinstance(call_result, _ConsolidationFailure):
+            return call_result
+        text, event_elapsed_ms = call_result
+        logger.info(
+            "Memory consolidation event llm raw: elapsed_ms=%d chars=%d preview=%r",
+            event_elapsed_ms,
+            len(text),
+            text[:300],
+        )
+
+        if not text:
+            logger.warning("Memory consolidation: LLM returned empty response")
+            return _ConsolidationFailure(
+                step="event_extract",
+                error="empty_response",
+                elapsed_ms=event_elapsed_ms,
             )
-            text = (response.content or "").strip()
-            event_elapsed_ms = int((time.perf_counter() - event_started_at) * 1000)
-            logger.info(
-                "Memory consolidation event llm raw: elapsed_ms=%d chars=%d preview=%r",
-                event_elapsed_ms,
-                len(text),
-                text[:300],
+        result = _parse_consolidation_payload(text)
+        if result is None:
+            logger.warning(
+                "Memory consolidation: unexpected response type. Response: %r",
+                text[:200],
+            )
+            return _ConsolidationFailure(
+                step="event_extract",
+                error="invalid_json",
+                elapsed_ms=event_elapsed_ms,
             )
 
-            if not text:
-                logger.warning(
-                    "Memory consolidation: LLM returned empty response, skipping"
-                )
-                return
-            result = _parse_consolidation_payload(text)
-            if result is None:
-                logger.warning(
-                    "Memory consolidation: unexpected response type, skipping. Response: %r",
-                    text[:200],
-                )
-                return
-
-            # 4. 归一化文本产物，并把后续写入所需信息交给 engine。
-            history_entry_payloads = _normalize_history_entries(
-                result.get("history_entries"),
-                result.get("history_entry"),
-            )
-            pending_items = _format_pending_items(result.get("pending_items", []))
-            # 4. 归一化 markdown 产物，向量写入由 engine 订阅提交事件完成。
-            recent_context_text = await self._build_recent_context_snapshot(
-                session=session,
-                profile_maint=profile_maint,
-                window=window,
-                archive_all=archive_all,
-            )
-            return _ConsolidationDraft(
-                window=window,
-                source_ref=source_ref,
-                history_entry_payloads=history_entry_payloads,
-                pending_items=pending_items,
-                conversation=conversation,
-                recent_context_text=recent_context_text,
-                scope_channel=scope_channel,
-                scope_chat_id=scope_chat_id,
-                archive_all=archive_all,
-            )
-        except Exception as e:
-            logger.error("Memory consolidation failed: %s", e)
-            return None
+        # 4. 归一化文本产物，并把后续写入所需信息交给 engine。
+        history_entry_payloads = _normalize_history_entries(
+            result.get("history_entries"),
+            result.get("history_entry"),
+        )
+        pending_items = _format_pending_items(result.get("pending_items", []))
+        # 4. 归一化 markdown 产物，向量写入由 engine 订阅提交事件完成。
+        recent_context_text = await self._build_recent_context_snapshot(
+            session=session,
+            profile_maint=profile_maint,
+            window=window,
+            archive_all=archive_all,
+        )
+        if isinstance(recent_context_text, _ConsolidationFailure):
+            return recent_context_text
+        return _ConsolidationDraft(
+            window=window,
+            source_ref=source_ref,
+            history_entry_payloads=history_entry_payloads,
+            pending_items=pending_items,
+            conversation=conversation,
+            recent_context_text=recent_context_text,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+            archive_all=archive_all,
+        )
 
 
 
@@ -993,7 +1069,7 @@ class MarkdownMemoryMaintenance:
                     result = await self._consolidate_unlocked(
                         ConsolidateRequest(session=session)
                     )
-                    if result.trace.get("mode") != "skipped" and self._save_session:
+                    if result.trace.get("mode") == "markdown" and self._save_session:
                         await self._save_session(session)
                 else:
                     await self.refresh_recent_turns(
@@ -1056,6 +1132,15 @@ class MarkdownMemoryMaintenance:
         )
         if draft is None:
             return ConsolidateResult(trace={"mode": "skipped"})
+        if isinstance(draft, _ConsolidationFailure):
+            return ConsolidateResult(
+                trace={
+                    "mode": "failed",
+                    "step": draft.step,
+                    "error": draft.error,
+                    "elapsed_ms": draft.elapsed_ms,
+                }
+            )
         await self._commit_markdown_draft(request.session, draft)
         return ConsolidateResult(
             consolidated_count=len(draft.window.old_messages),

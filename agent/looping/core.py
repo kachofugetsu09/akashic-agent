@@ -714,7 +714,7 @@ class AgentLoop:
             )
         except TimeoutError as exc:
             raise TimeoutError("memory consolidation busy") from exc
-        if result.trace.get("mode") != "skipped":
+        if result.trace.get("mode") == "markdown":
             await self.session_manager.save_async(session)
             return True
         return False
