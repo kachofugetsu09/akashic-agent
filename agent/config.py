@@ -11,6 +11,7 @@ import sys
 import tomllib
 import zlib
 from pathlib import Path
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from agent.config_models import (
@@ -20,8 +21,6 @@ from agent.config_models import (
     MemoryConfig,
     MemoryEmbeddingConfig,
     PeerAgentConfig,
-    QQBotChannelConfig,
-    QQBotGroupConfig,
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
@@ -89,6 +88,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     peer_agents = _load_peer_agents_config(data)
     fitbit = _load_fitbit_config(data)
     wiring = _load_wiring_config(data)
+    plugins = _load_plugins_config(data)
 
     return Config(
         provider=provider,
@@ -158,6 +158,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         vl_base_url=str(llm_vl.get("base_url") or data.get("vl_base_url", "")),
         peer_agents=peer_agents,
         wiring=wiring,
+        plugins=plugins,
     )
 
 
@@ -205,41 +206,6 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 ),
             )
 
-    qqbot = None
-    if qqbot_data := channels_data.get("qqbot"):
-        app_id = _normalize_optional_config_text(
-            _resolve(str(qqbot_data.get("app_id", qqbot_data.get("appId", ""))))
-        )
-        client_secret = _normalize_optional_config_text(
-            _resolve(str(qqbot_data.get("client_secret", qqbot_data.get("clientSecret", ""))))
-        )
-        if bool(qqbot_data.get("enabled", True)) and app_id and client_secret:
-            groups = [
-                QQBotGroupConfig(
-                    group_openid=str(
-                        g["group_openid"] if "group_openid" in g else g["groupOpenid"]
-                    ),
-                    allow_from=[
-                        str(u)
-                        for u in g.get("allow_from", g.get("allowFrom", []))
-                    ],
-                    require_at=g.get("require_at", g.get("requireAt", True)),
-                    allow_proactive=bool(
-                        g.get("allow_proactive", g.get("allowProactive", False))
-                    ),
-                )
-                for g in qqbot_data.get("groups", [])
-            ]
-            qqbot = QQBotChannelConfig(
-                app_id=app_id,
-                client_secret=client_secret,
-                allow_from=[
-                    str(u)
-                    for u in qqbot_data.get("allow_from", qqbot_data.get("allowFrom", []))
-                ],
-                groups=groups,
-            )
-
     cli_data = _as_dict(channels_data.get("cli"))
     socket_value = channels_data.get("socket") or cli_data.get(
         "socket", DEFAULT_SOCKET
@@ -252,7 +218,6 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
     channels = ChannelsConfig(
         telegram=telegram,
         qq=qq,
-        qqbot=qqbot,
         socket=_normalize_cli_socket_endpoint(socket_value),
         cli_session_key=cli_session_key,
     )
@@ -336,6 +301,24 @@ def _load_wiring_config(data: dict) -> WiringConfig:
     )
 
 
+def _load_plugins_config(data: dict) -> dict[str, dict[str, Any]]:
+    plugins_data = _as_dict(data.get("plugins"))
+    plugins: dict[str, dict[str, Any]] = {}
+    for name, value in plugins_data.items():
+        if isinstance(name, str) and isinstance(value, dict):
+            plugins[name] = cast(dict[str, Any], _resolve_config_value(value))
+
+    legacy_qqbot = _as_dict(_as_dict(data.get("channels")).get("qqbot"))
+    if "qqbot" not in plugins and legacy_qqbot:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "[channels.qqbot] 已迁移到 [plugins.qqbot]，当前仍兼容旧配置"
+        )
+        plugins["qqbot"] = cast(dict[str, Any], _resolve_config_value(legacy_qqbot))
+    return plugins
+
+
 def _load_extra_body(data: dict) -> dict:
     llm = _as_dict(data.get("llm"))
     llm_main = _as_dict(llm.get("main"))
@@ -354,6 +337,16 @@ def _load_extra_body(data: dict) -> dict:
 
 def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _resolve_config_value(value: object) -> object:
+    if isinstance(value, str):
+        return _resolve(value)
+    if isinstance(value, list):
+        return [_resolve_config_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _resolve_config_value(item) for key, item in value.items()}
+    return value
 
 
 def _resolve(value: str) -> str:

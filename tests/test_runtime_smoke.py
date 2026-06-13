@@ -15,8 +15,6 @@ from agent.config import (
     ChannelsConfig,
     Config,
     DEFAULT_SOCKET,
-    QQBotChannelConfig,
-    QQBotGroupConfig,
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
@@ -301,7 +299,6 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     fake_ipc_server = types.ModuleType("infra.channels.ipc_server")
     fake_telegram_channel = types.ModuleType("infra.channels.telegram_channel")
     fake_qq_channel = types.ModuleType("infra.channels.qq_channel")
-    fake_qqbot_channel = types.ModuleType("infra.channels.qqbot_channel")
 
     class _IPCServerChannel:
         def __init__(self, bus, socket, default_session_key: str = ""):
@@ -318,9 +315,17 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     class _TelegramChannel:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self.name = kwargs.get("channel_name", "telegram")
 
-        async def start(self) -> None:
+        async def start(self, ctx) -> None:
             starts.append("telegram")
+            ctx.push_tool.register_channel(
+                self.name,
+                text=self.send,
+                stream_text=self.send_stream,
+                file=self.send_file,
+                image=self.send_image,
+            )
 
         async def stop(self) -> None:
             starts.append("telegram.stop")
@@ -338,11 +343,19 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
             return None
 
     class _QQChannel:
+        name = "qq"
+
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        async def start(self) -> None:
+        async def start(self, ctx) -> None:
             starts.append("qq")
+            ctx.push_tool.register_channel(
+                self.name,
+                text=self.send,
+                file=self.send_file,
+                image=self.send_image,
+            )
 
         async def stop(self) -> None:
             starts.append("qq.stop")
@@ -357,11 +370,18 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
             return None
 
     class _QQBotChannel:
+        name = "qqbot"
+
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        async def start(self) -> None:
+        async def start(self, ctx) -> None:
             starts.append("qqbot")
+            ctx.push_tool.register_channel(
+                self.name,
+                text=self.send_proactive,
+                stream_text=self.send_stream,
+            )
 
         async def stop(self) -> None:
             starts.append("qqbot.stop")
@@ -375,11 +395,9 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     fake_ipc_server.IPCServerChannel = _IPCServerChannel  # type: ignore[attr-defined]
     fake_telegram_channel.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
     fake_qq_channel.QQChannel = _QQChannel  # type: ignore[attr-defined]
-    fake_qqbot_channel.QQBotChannel = _QQBotChannel  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "infra.channels.ipc_server", fake_ipc_server)
     monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram_channel)
     monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq_channel)
-    monkeypatch.setitem(sys.modules, "infra.channels.qqbot_channel", fake_qqbot_channel)
 
     class _PushTool:
         def register_channel(self, name: str, **kwargs) -> None:
@@ -397,12 +415,6 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
                 allow_from=["2"],
                 groups=[QQGroupConfig(group_id="3")],
             ),
-            qqbot=QQBotChannelConfig(
-                app_id="app",
-                client_secret="secret",
-                allow_from=["user-openid"],
-                groups=[QQBotGroupConfig(group_openid="group-openid")],
-            ),
             socket=str(tmp_path / "sock"),
         ),
     )
@@ -410,7 +422,8 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     event_bus = EventBus()
     try:
         controller = object()
-        ipc, tg, qq, qqbot = await start_channels(
+        plugin_channel = _QQBotChannel(event_bus=event_bus)
+        ipc, host = await start_channels(
             config,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
@@ -418,14 +431,14 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
             http_resources=resources,
             event_bus=event_bus,
             interrupt_controller=cast(Any, controller),
+            plugin_channels=[cast(Any, plugin_channel)],
         )
+        await host.start_all()
     finally:
         await resources.aclose()
 
     assert ipc is not None
-    assert tg is not None
-    assert qq is not None
-    assert qqbot is not None
+    tg, qq, qqbot = host.channels
     assert starts == ["ipc", "telegram", "qq", "qqbot"]
     assert registrations == [
         ("telegram", ["file", "image", "stream_text", "text"]),
@@ -436,7 +449,6 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     assert tg.kwargs["interrupt_controller"] is controller
     assert qq.kwargs["interrupt_controller"] is controller
     assert qqbot.kwargs["event_bus"] is event_bus
-    assert qqbot.kwargs["interrupt_controller"] is controller
 
 
 @pytest.mark.asyncio
@@ -491,7 +503,7 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     )
     resources = SharedHttpResources()
     try:
-        ipc, tg, qq, qqbot = await start_channels(
+        ipc, host = await start_channels(
             config,
             bus=cast(Any, object()),
             session_manager=cast(Any, object()),
@@ -503,7 +515,5 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
         await resources.aclose()
 
     assert ipc is not None
-    assert tg is None
-    assert qq is None
-    assert qqbot is None
+    assert host.channels == []
     assert starts == ["ipc"]

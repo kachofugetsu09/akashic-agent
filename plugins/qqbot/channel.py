@@ -15,18 +15,19 @@ import logging
 import time
 from dataclasses import dataclass
 from collections.abc import Callable, Coroutine
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import websockets
 
-from agent.config_models import QQBotGroupConfig
 from agent.looping.interrupt import InterruptController
-from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import StreamDeltaReady, TurnStarted
 from bus.queue import MessageBus
-from session.manager import SessionManager
+from infra.channels.contract import ChannelContext
+
+if TYPE_CHECKING:
+    from plugins.qqbot.plugin import QQBotGroupConfigModel
 
 logger = logging.getLogger(__name__)
 
@@ -56,27 +57,28 @@ class _LiveStreamState:
 
 
 class QQBotChannel:
+    name = _CHANNEL
+
     def __init__(
         self,
         app_id: str,
         client_secret: str,
-        bus: MessageBus,
-        session_manager: SessionManager,
         allow_from: list[str] | None = None,
-        groups: list[QQBotGroupConfig] | None = None,
-        event_bus: EventBus | None = None,
-        interrupt_controller: InterruptController | None = None,
+        groups: list["QQBotGroupConfigModel"] | None = None,
     ) -> None:
         self._app_id = app_id
         self._client_secret = client_secret
-        self._bus = bus
-        self._session_manager = session_manager
+        self._bus: MessageBus | None = None
         self._allow_from = set(allow_from or [])
-        self._groups = {g.group_openid: g for g in (groups or [])}
-        self._interrupt_controller = interrupt_controller
+        self._groups: dict[str, QQBotGroupConfigModel] = {
+            g.group_openid: g for g in (groups or [])
+        }
+        self._interrupt_controller: InterruptController | None = None
         self._client = httpx.AsyncClient(timeout=30.0)
         self._token: _TokenCache | None = None
         self._task: asyncio.Task[None] | None = None
+        self._outbound_bound = False
+        self._events_bound = False
         self._stopped = asyncio.Event()
         self._last_c2c_msg_id: dict[str, str] = {}
         self._live_states: dict[str, _LiveStreamState] = {}
@@ -88,14 +90,24 @@ class QQBotChannel:
         self._live_locks: dict[str, asyncio.Lock] = {}
         self._live_tasks: set[asyncio.Task[None]] = set()
         self._live_tasks_by_session: dict[str, set[asyncio.Task[None]]] = {}
-        if event_bus is not None:
-            event_bus.on(TurnStarted, self._on_turn_started)
-            event_bus.on(StreamDeltaReady, self._on_stream_delta)
 
-    async def start(self) -> None:
-        _ = self._stopped.clear()
+    async def start(self, ctx: ChannelContext) -> None:
+        self._bus = ctx.bus
+        self._interrupt_controller = ctx.interrupt_controller
+        if not self._events_bound:
+            ctx.event_bus.on(TurnStarted, self._on_turn_started)
+            ctx.event_bus.on(StreamDeltaReady, self._on_stream_delta)
+            self._events_bound = True
+        ctx.push_tool.register_channel(
+            self.name,
+            text=self.send_proactive,
+            stream_text=self.send_stream,
+        )
+        self._stopped.clear()
         self._task = asyncio.create_task(self._gateway_loop())
-        self._bus.subscribe_outbound(_CHANNEL, self._on_response)
+        if not self._outbound_bound:
+            ctx.bus.subscribe_outbound(_CHANNEL, self._on_response)
+            self._outbound_bound = True
         logger.info("[qqbot] 官方 QQBot 通道已启动")
 
     async def stop(self) -> None:
@@ -109,6 +121,11 @@ class QQBotChannel:
         await self._drain_live_tasks()
         await self._client.aclose()
         logger.info("[qqbot] 官方 QQBot 通道已停止")
+
+    def _require_bus(self) -> MessageBus:
+        if self._bus is None:
+            raise RuntimeError("QQBotChannel 尚未启动")
+        return self._bus
 
     async def _gateway_loop(self) -> None:
         while not self._stopped.is_set():
@@ -193,7 +210,7 @@ class QQBotChannel:
         if content == "/stop":
             await self._handle_stop(f"c2c:{user_openid}", user_openid)
             return
-        await self._bus.publish_inbound(
+        await self._require_bus().publish_inbound(
             InboundMessage(
                 channel=_CHANNEL,
                 sender=user_openid,

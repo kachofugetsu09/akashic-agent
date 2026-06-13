@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from proactive_v2.config import ProactiveConfig
 
@@ -37,18 +38,9 @@ class QQBotGroupConfig:
 
 
 @dataclass
-class QQBotChannelConfig:
-    app_id: str
-    client_secret: str
-    allow_from: list[str] = field(default_factory=list)
-    groups: list[QQBotGroupConfig] = field(default_factory=list)
-
-
-@dataclass
 class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
-    qqbot: QQBotChannelConfig | None = None
     socket: str = "/tmp/akashic.sock"
     cli_session_key: str = ""
 
@@ -131,6 +123,7 @@ class Config:
     dev_mode: bool = False
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
+    plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path = "config.toml") -> Config:
@@ -147,7 +140,6 @@ __all__ = [
     "MemoryEmbeddingConfig",
     "PeerAgentConfig",
     "QQChannelConfig",
-    "QQBotChannelConfig",
     "QQBotGroupConfig",
     "QQGroupConfig",
     "TelegramChannelConfig",

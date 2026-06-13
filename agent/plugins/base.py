@@ -4,6 +4,8 @@ from abc import ABC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pydantic import BaseModel
+    from infra.channels.contract import Channel
     from agent.plugins.context import PluginContext
 
 
@@ -12,6 +14,7 @@ class Plugin(ABC):
     version: str | None = None
     desc: str | None = None
     author: str | None = None
+    ConfigModel: "type[BaseModel] | None" = None
     context: "PluginContext"
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -41,4 +44,7 @@ class Plugin(ABC):
         return []
 
     def after_turn_modules(self) -> list[object]:
+        return []
+
+    def channels(self) -> list["Channel"]:
         return []

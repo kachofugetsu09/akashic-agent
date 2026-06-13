@@ -35,6 +35,7 @@ from bus.events_lifecycle import (
 from bus.queue import MessageBus
 from agent.looping.interrupt import InterruptController
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
+from infra.channels.contract import ChannelContext
 from infra.channels.telegram_utils import (
     TelegramOutboundLimiter,
     TelegramLiveEditQueue,
@@ -84,6 +85,7 @@ class TelegramChannel:
         self._session_manager = session_manager
         self._interrupt_controller = interrupt_controller
         self._channel = channel_name
+        self.name = channel_name
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._message_deduper = MessageDeduper(_SEEN_MSG_MAXSIZE)
         ws = getattr(session_manager, "workspace", None)
@@ -109,12 +111,9 @@ class TelegramChannel:
         self._app.add_handler(
             MessageHandler(filters.Document.ALL & ~filters.COMMAND, self._on_document)
         )
-        bus.subscribe_outbound(self._channel, self._on_response)
-        if event_bus is not None:
-            event_bus.on(TurnStarted, self._on_turn_started)
-            event_bus.on(StreamDeltaReady, self._on_stream_delta)
-            event_bus.on(ToolCallStarted, self._on_tool_call_started)
-            event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
+        self._event_bus = event_bus
+        self._outbound_bound = False
+        self._events_bound = False
         self.user_map = self._identity_index.mapping
         self._polling_conflict_task: asyncio.Task[None] | None = None
         self._telegram_outbound_limiter = TelegramOutboundLimiter()
@@ -163,7 +162,19 @@ class TelegramChannel:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def start(self) -> None:
+    async def start(self, ctx: ChannelContext | None = None) -> None:
+        if ctx is not None:
+            self._bus = ctx.bus
+            self._event_bus = ctx.event_bus
+            self._interrupt_controller = ctx.interrupt_controller
+            ctx.push_tool.register_channel(
+                self.name,
+                text=self.send,
+                stream_text=self.send_stream,
+                file=self.send_file,
+                image=self.send_image,
+            )
+        self._bind_runtime()
         self._rebuild_user_map()
         await self._app.initialize()
         await self._app.start()
@@ -176,6 +187,17 @@ class TelegramChannel:
             error_callback=self._on_polling_error,
         )
         logger.info(f"TelegramChannel 已启动  已知用户: {len(self.user_map)}")
+
+    def _bind_runtime(self) -> None:
+        if not self._outbound_bound:
+            self._bus.subscribe_outbound(self._channel, self._on_response)
+            self._outbound_bound = True
+        if self._event_bus is not None and not self._events_bound:
+            self._event_bus.on(TurnStarted, self._on_turn_started)
+            self._event_bus.on(StreamDeltaReady, self._on_stream_delta)
+            self._event_bus.on(ToolCallStarted, self._on_tool_call_started)
+            self._event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
+            self._events_bound = True
 
     async def stop(self) -> None:
         if self._polling_conflict_task and not self._polling_conflict_task.done():

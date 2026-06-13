@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import logging
 import sys
 import types
 from pathlib import Path
@@ -20,6 +21,8 @@ from bus.events_lifecycle import (
     ToolCallStarted,
     TurnStarted,
 )
+from infra.channels.base import AttachmentStore
+from infra.channels.contract import ChannelContext
 
 
 class _Bus:
@@ -1197,22 +1200,52 @@ async def test_qq_private_trace_skips_empty_trace(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.asyncio
 async def test_qqbot_channel_text_paths(monkeypatch: pytest.MonkeyPatch):
-    sys.modules.pop("infra.channels.qqbot_channel", None)
-    mod = importlib.import_module("infra.channels.qqbot_channel")
+    sys.modules.pop("plugins.qqbot.channel", None)
+    mod = importlib.import_module("plugins.qqbot.channel")
     bus = _Bus()
     session_manager = _SessionManager()
     channel = mod.QQBotChannel(
         app_id="app",
         client_secret="secret",
-        bus=bus,
-        session_manager=session_manager,
         allow_from=["user-1"],
-        interrupt_controller=SimpleNamespace(
-            request_interrupt=MagicMock(return_value=SimpleNamespace(message="已中断"))
-        ),
     )
     channel._get_access_token = AsyncMock(return_value="token")
     channel._api_request = AsyncMock(return_value={"id": "m1", "timestamp": "now"})
+
+    class _PushTool:
+        def __init__(self) -> None:
+            self.registrations = []
+
+        def register_channel(self, name: str, **kwargs) -> None:
+            self.registrations.append((name, sorted(kwargs)))
+
+    async def _no_gateway_loop() -> None:
+        return None
+
+    channel._gateway_loop = _no_gateway_loop
+    push_tool = _PushTool()
+    await channel.start(
+        ChannelContext(
+            bus=cast(Any, bus),
+            session_manager=cast(Any, session_manager),
+            event_bus=EventBus(),
+            push_tool=cast(Any, push_tool),
+            attachment_store=AttachmentStore(),
+            http_resources=cast(Any, SimpleNamespace()),
+            interrupt_controller=cast(
+                Any,
+                SimpleNamespace(
+                    request_interrupt=MagicMock(
+                        return_value=SimpleNamespace(message="已中断")
+                    )
+                ),
+            ),
+            bot_commands=[],
+            log=logging.getLogger("test.qqbot"),
+        )
+    )
+    assert push_tool.registrations == [("qqbot", ["stream_text", "text"])]
+    assert bus.outbound[0][0] == "qqbot"
 
     assert channel._parse_chat_id("user-1") == ("c2c", "user-1")
     assert channel._parse_chat_id("qqbot:group:group-1") == ("group", "group-1")

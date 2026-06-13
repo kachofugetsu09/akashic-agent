@@ -80,7 +80,7 @@ websocket_open_timeout_seconds = 5.0
 # allow_from = ["your_qq_number"]
 # require_at = true
 
-[channels.qqbot]
+[plugins.qqbot]
 # 官方 QQBot，和 NapCat QQ 通道并存。留空跳过。
 app_id = ""
 client_secret = ""
@@ -88,7 +88,7 @@ client_secret = ""
 allow_from = []
 
 # 当前实现仅启用私聊；群配置先保留为后续扩展占位。
-# [[channels.qqbot.groups]]
+# [[plugins.qqbot.groups]]
 # group_openid = "GROUP_OPENID"
 # allow_from = ["MEMBER_OPENID"]
 # require_at = true

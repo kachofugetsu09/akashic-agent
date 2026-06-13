@@ -67,7 +67,7 @@ def _format_reply(chat_id: str, channel: str = "telegram") -> str:
             "同时确认 allow_from 已包含你的 user_openid：",
             "",
             "```toml",
-            "[channels.qqbot]",
+            "[plugins.qqbot]",
             f'allow_from = ["{raw_openid}"]',
             "```",
         ]

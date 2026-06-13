@@ -36,6 +36,7 @@ from bus.events_lifecycle import (
 )
 from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore, SessionIdentityIndex
+from infra.channels.contract import ChannelContext
 from infra.channels.group_filter import (
     DefaultGroupFilter,
     GroupMessageFilter,
@@ -292,6 +293,7 @@ async def _download_to_temp(
 
 
 class QQChannel:
+    name = _CHANNEL
 
     def __init__(
         self,
@@ -337,6 +339,8 @@ class QQChannel:
             "external_default"
         )
         self._event_bus = event_bus
+        self._outbound_bound = False
+        self._events_bound = False
         self._trace_states: dict[str, _QQTraceState] = {}
 
         self._bot = BotClient()
@@ -367,13 +371,20 @@ class QQChannel:
             return True
         return user_id in self._allow_from
 
-    async def start(self) -> None:
+    async def start(self, ctx: ChannelContext | None = None) -> None:
+        if ctx is not None:
+            self._bus = ctx.bus
+            self._event_bus = ctx.event_bus
+            self._interrupt_controller = ctx.interrupt_controller
+            ctx.push_tool.register_channel(
+                self.name,
+                text=self.send,
+                file=self.send_file,
+                image=self.send_image,
+            )
         self._main_loop = asyncio.get_running_loop()
         self._identity_index.rebuild()
-        if self._event_bus is not None:
-            self._event_bus.on(TurnStarted, self._on_turn_started)
-            self._event_bus.on(ToolCallStarted, self._on_tool_call_started)
-            self._event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
+        self._bind_events()
 
         @cast(Any, self._bot.on_private_message())
         async def _(event) -> None:
@@ -442,7 +453,17 @@ class QQChannel:
         self._api = await self._main_loop.run_in_executor(None, self._bot.run_backend)
         logger.info("[qq] NcatBot 已启动")
 
-        self._bus.subscribe_outbound(_CHANNEL, self._on_response)
+        if not self._outbound_bound:
+            self._bus.subscribe_outbound(_CHANNEL, self._on_response)
+            self._outbound_bound = True
+
+    def _bind_events(self) -> None:
+        if self._event_bus is None or self._events_bound:
+            return
+        self._event_bus.on(TurnStarted, self._on_turn_started)
+        self._event_bus.on(ToolCallStarted, self._on_tool_call_started)
+        self._event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
+        self._events_bound = True
 
     async def stop(self) -> None:
         if self._api:

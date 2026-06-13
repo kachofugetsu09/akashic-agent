@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from pydantic import BaseModel
     from agent.plugins.config import PluginConfig
 
 
@@ -16,7 +17,7 @@ class PluginContext:
     plugin_id: str
     plugin_dir: Path
     kv_store: "PluginKVStore"
-    config: "PluginConfig | None" = None
+    config: "BaseModel | PluginConfig | None" = None
     workspace: Path | None = None
     session_manager: Any = None
     memory_engine: Any = None

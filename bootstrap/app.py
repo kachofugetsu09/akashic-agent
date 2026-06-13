@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.config_models import Config
+from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
 from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.memory import build_memory_runtime
@@ -58,9 +59,7 @@ class AppRuntime:
         self.workspace = workspace
         self.http_resources = SharedHttpResources()
         self.ipc = None
-        self.tg_channel = None
-        self.qq_channel = None
-        self.qqbot_channel = None
+        self.channel_host: ChannelHost | None = None
         self.core: CoreRuntime | None = None
         self.agent_loop = None
         self.bus = None
@@ -112,7 +111,7 @@ class AppRuntime:
             await self.core.start()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
-            self.ipc, self.tg_channel, self.qq_channel, self.qqbot_channel = await start_channels(
+            self.ipc, self.channel_host = await start_channels(
                 self.config,
                 bus=self.bus,
                 session_manager=self.session_manager,
@@ -125,7 +124,9 @@ class AppRuntime:
                     else None
                 ),
                 interrupt_controller=self.agent_loop,
+                plugin_channels=plugin_manager.channels if plugin_manager else None,
             )
+            await self.channel_host.start_all()
 
             self.tasks = [
                 self.agent_loop.run(),
@@ -193,13 +194,8 @@ class AppRuntime:
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
                 (
-                    "telegram.stop",
-                    self.tg_channel.stop if self.tg_channel else _noop_async,
-                ),
-                ("qq.stop", self.qq_channel.stop if self.qq_channel else _noop_async),
-                (
-                    "qqbot.stop",
-                    self.qqbot_channel.stop if self.qqbot_channel else _noop_async,
+                    "channels.stop",
+                    self.channel_host.stop_all if self.channel_host else _noop_async,
                 ),
                 (
                     "memory_runtime.aclose",

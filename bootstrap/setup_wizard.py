@@ -386,7 +386,7 @@ def _phase_qqbot(a: WizardAnswers) -> None:
             a.proactive_chat_id = f"c2c:{openid}"
     else:
         _warn("未收到消息，allow_from 留空")
-        _hint("启动后可在 config.toml 的 [channels.qqbot] 中手动填入 allow_from")
+        _hint("启动后可在 config.toml 的 [plugins.qqbot] 中手动填入 allow_from")
 
 
 def _phase_memory(a: WizardAnswers) -> None:
@@ -727,7 +727,7 @@ def _render_channels(a: WizardAnswers) -> str:
     if a.qqbot_app_id:
         allow = ", ".join(f'"{u}"' for u in ([a.qqbot_user_openid] if a.qqbot_user_openid else []))
         lines += [
-            "[channels.qqbot]",
+            "[plugins.qqbot]",
             f'app_id = "{a.qqbot_app_id}"',
             f'client_secret = "{a.qqbot_client_secret}"',
             f"allow_from = [{allow}]",
@@ -736,7 +736,7 @@ def _render_channels(a: WizardAnswers) -> str:
     else:
         lines += [
             "# 官方 QQBot（如需启用，填写后取消注释）",
-            "# [channels.qqbot]",
+            "# [plugins.qqbot]",
             '# app_id = ""',
             '# client_secret = ""',
             '# allow_from = []  # 用户的 user_openid，发一条消息后可从日志获取',
@@ -827,7 +827,7 @@ def _print_completion(a: WizardAnswers) -> None:
         if a.proactive_channel == "qqbot" or (not a.tg_token and a.qqbot_app_id):
             _hint("启动后向 bot 发任意消息，日志中会出现 user_openid")
             _hint("将其填入 config.toml：")
-            _hint("[channels.qqbot]")
+            _hint("[plugins.qqbot]")
             _hint('allow_from = ["<user_openid>"]')
             _hint("[proactive.target]")
             _hint('channel = "qqbot"')
@@ -845,5 +845,5 @@ def _print_completion(a: WizardAnswers) -> None:
         click.echo()
         _warn("QQBot allow_from 为空，启动后所有私聊请求会被拒绝")
         _hint("向 bot 发一条消息，日志里找到 user_openid，填入 config.toml：")
-        _hint("[channels.qqbot]")
+        _hint("[plugins.qqbot]")
         _hint('allow_from = ["<user_openid>"]')

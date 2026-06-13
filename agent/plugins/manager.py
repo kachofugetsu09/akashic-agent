@@ -10,6 +10,8 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any, cast
 
+from pydantic import BaseModel, ValidationError
+
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterStepCtx,
@@ -26,6 +28,7 @@ from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registr
 from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
 from bus.event_bus import EventBus
+from infra.channels.contract import Channel
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,7 @@ class PluginManager:
         workspace: Path | None = None,
         session_manager: Any = None,
         memory_engine: Any = None,
+        plugin_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -59,7 +63,9 @@ class PluginManager:
         self._workspace = workspace
         self._session_manager = session_manager
         self._memory_engine = memory_engine
+        self._plugin_configs = plugin_configs or {}
         self._loaded: set[str] = set()
+        self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
         self._before_turn_modules: list[object] = []
         self._before_reasoning_modules: list[object] = []
@@ -76,6 +82,10 @@ class PluginManager:
     @property
     def tool_hooks(self) -> list[ToolHook]:
         return list(self._tool_hooks)
+
+    @property
+    def channels(self) -> list[Channel]:
+        return list(self._channels)
 
     @property
     def before_turn_modules(self) -> list[object]:
@@ -177,7 +187,15 @@ class PluginManager:
         plugin_dir = Path(mod["module_path"]).parent
         _apply_manifest(instance, plugin_dir)
         plugin_id = str(instance.name) if instance.name else mod["name"]
-        plugin_config = _load_plugin_config(plugin_dir)
+        try:
+            plugin_config = _load_plugin_config(
+                plugin_dir,
+                getattr(cls, "ConfigModel", None),
+                self._plugin_configs.get(plugin_id),
+            )
+        except _PluginConfigError as e:
+            logger.warning("插件 %s 配置无效，跳过: %s", mod["name"], e)
+            return
         from agent.plugins.context import PluginContext, PluginKVStore
         instance.context = PluginContext(  # type: ignore[attr-defined]
             event_bus=self._event_bus,
@@ -229,6 +247,7 @@ class PluginManager:
             del self._after_turn_modules[after_turn_count_before:]
             return
         self._loaded.add(mp)
+        self._collect_channels(instance)
         logger.info("插件已加载: %s", mod["name"])
 
     def _import_plugin(self, module_name: str, path: Path) -> None:
@@ -358,6 +377,10 @@ class PluginManager:
             self._after_turn_modules,
         )
 
+    def _collect_channels(self, instance: Any) -> None:
+        for channel in _load_module_list(instance, "channels"):
+            self._channels.append(cast(Channel, channel))
+
     def _collect_phase_modules(
         self,
         instance: Any,
@@ -388,9 +411,23 @@ class PluginManager:
         self._after_step_modules.clear()
         self._after_reasoning_modules.clear()
         self._after_turn_modules.clear()
+        self._channels.clear()
 
 
-def _load_plugin_config(plugin_dir: Path) -> "Any":
+class _PluginConfigError(Exception):
+    pass
+
+
+def _load_plugin_config(
+    plugin_dir: Path,
+    config_model: type[BaseModel] | None = None,
+    raw_config: dict[str, Any] | None = None,
+) -> Any:
+    if config_model is not None:
+        try:
+            return config_model.model_validate(raw_config or {})
+        except ValidationError as e:
+            raise _PluginConfigError(_format_validation_error(e)) from e
     # 1. 读取 _conf_schema.json，提取每个字段的 default 值
     from agent.plugins.config import PluginConfig
     schema_path = plugin_dir / "_conf_schema.json"
@@ -430,6 +467,14 @@ def _load_plugin_config(plugin_dir: Path) -> "Any":
             else:
                 logger.warning("plugin_config.json 格式错误，期望 dict (%s)", plugin_dir)
     return PluginConfig(values)
+
+
+def _format_validation_error(error: ValidationError) -> str:
+    parts: list[str] = []
+    for item in error.errors():
+        path = ".".join(str(part) for part in item.get("loc", ())) or "<root>"
+        parts.append(f"{path}: {item.get('msg', 'invalid')}")
+    return "; ".join(parts)
 
 
 def _load_module_list(instance: Any, method_name: str) -> list[object]:

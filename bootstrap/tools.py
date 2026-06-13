@@ -502,6 +502,7 @@ def build_core_runtime(
         workspace=workspace,
         session_manager=session_manager,
         memory_engine=memory_runtime.engine,
+        plugin_configs=config.plugins,
     )
 
     return CoreRuntime(

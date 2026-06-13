@@ -344,14 +344,13 @@ def test_config_load_skips_unfilled_channels(tmp_path: Path, monkeypatch: pytest
 
     assert cfg.channels.telegram is None
     assert cfg.channels.qq is None
-    assert cfg.channels.qqbot is not None
-    assert cfg.channels.qqbot.app_id == "app"
-    assert cfg.channels.qqbot.client_secret == "secret"
-    assert cfg.channels.qqbot.allow_from == ["user-openid"]
-    assert cfg.channels.qqbot.groups[0].group_openid == "group-openid"
-    assert cfg.channels.qqbot.groups[0].allow_from == ["member-openid"]
-    assert cfg.channels.qqbot.groups[0].require_at is True
-    assert cfg.channels.qqbot.groups[0].allow_proactive is True
+    assert cfg.plugins["qqbot"]["app_id"] == "app"
+    assert cfg.plugins["qqbot"]["client_secret"] == "secret"
+    assert cfg.plugins["qqbot"]["allow_from"] == ["user-openid"]
+    assert cfg.plugins["qqbot"]["groups"][0]["group_openid"] == "group-openid"
+    assert cfg.plugins["qqbot"]["groups"][0]["allow_from"] == ["member-openid"]
+    assert cfg.plugins["qqbot"]["groups"][0]["require_at"] is True
+    assert cfg.plugins["qqbot"]["groups"][0]["allow_proactive"] is True
     assert cfg.channels.socket == DEFAULT_SOCKET
 
 
