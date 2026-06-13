@@ -75,6 +75,14 @@ class ScheduleTool(Tool):
                 "type": "string",
                 "description": "任务名，方便后续用 cancel_schedule 取消",
             },
+            "missed_policy": {
+                "type": "string",
+                "enum": ["skip", "catchup"],
+                "description": (
+                    "错过触发时的处理策略（仅 every 任务有效）："
+                    "skip=跳过等下一轮（默认）；catchup=系统重启后若错过则在 6h 内补发一次"
+                ),
+            },
             "request_time": {
                 "type": "string",
                 "description": (
@@ -101,6 +109,7 @@ class ScheduleTool(Tool):
         tz = kwargs.get("timezone") or self._default_tz
         name = kwargs.get("name")
         request_time = kwargs.get("request_time")
+        missed_policy = kwargs.get("missed_policy", "skip")
 
         # ── validation ──
         if tier not in ("instant", "soft"):
@@ -151,6 +160,7 @@ class ScheduleTool(Tool):
             prompt=prompt,
             name=name,
             timezone=tz,
+            missed_policy=missed_policy,
         )
         self._service.add_job(job)
 

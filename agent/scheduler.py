@@ -14,6 +14,7 @@ Scheduler: 定时任务核心模块
 """
 
 import asyncio
+import enum
 from importlib import import_module
 import logging
 import re
@@ -32,6 +33,20 @@ from core.common.timekit import parse_iso as _parse_iso
 from infra.persistence.json_store import load_json, save_json
 
 logger = logging.getLogger(__name__)
+
+
+# ── MissedPolicy ──────────────────────────────────────────────────
+
+
+class MissedPolicy(str, enum.Enum):
+    """定时任务错过触发时的处理策略。"""
+
+    SKIP = "skip"  # 跳过（当前行为）
+    CATCHUP = "catchup"  # 错过一次则立即补发一次
+
+
+# 错过不超过此秒数才补发，超过则跳过
+DEFAULT_CATCHUP_WINDOW_SECONDS = 21600  # 6h
 
 
 # ── LatencyTracker ───────────────────────────────────────────────
@@ -272,6 +287,7 @@ class ScheduledJob:
 
     name: str | None = None
     timezone: str = "UTC"
+    missed_policy: str = MissedPolicy.SKIP.value
 
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     run_count: int = 0
@@ -415,10 +431,22 @@ class SchedulerService:
             if job.fire_at <= now:
                 age = (now - job.fire_at).total_seconds()
                 if job.trigger == "every":
-                    # 推进到下一个未来时间
-                    job.fire_at = self._advance_every(job, now)
-                    self._jobs[job.id] = job
-                    count_loaded += 1
+                    if (
+                        job.missed_policy == MissedPolicy.CATCHUP.value
+                        and age <= DEFAULT_CATCHUP_WINDOW_SECONDS
+                    ):
+                        # 补发：保留 fire_at，下次 _tick() 会立即执行
+                        self._jobs[job.id] = job
+                        count_loaded += 1
+                        logger.info(
+                            f"Job {job.id[:8]} ({job.name or 'unnamed'}) missed by "
+                            f"{age:.0f}s, will catch up"
+                        )
+                    else:
+                        # 跳过：推进到下一轮
+                        job.fire_at = self._advance_every(job, now)
+                        self._jobs[job.id] = job
+                        count_loaded += 1
                 elif age <= self.GRACE_SECONDS:
                     # 在宽限期内，保留（下次 tick 会执行）
                     self._jobs[job.id] = job
@@ -445,7 +473,8 @@ class SchedulerService:
             if actual_trigger <= now:
                 label = job.name or job.id[:8]
                 logger.info(
-                    f"[scheduler] 触发任务 {label!r}  tier={job.tier}  channel={job.channel}:{job.chat_id}"
+                    f"[scheduler] 触发任务 {label!r}  tier={job.tier}  "
+                    f"channel={job.channel}:{job.chat_id}"
                 )
                 self._in_flight.add(job.id)
                 asyncio.create_task(self._execute_and_reschedule(job))
@@ -459,13 +488,19 @@ class SchedulerService:
         finally:
             self._in_flight.discard(job.id)
             now = self._now()
+
             if job.trigger == "every":
-                # SOFT recurring jobs may execute before nominal fire_at.
-                # Reschedule strictly after the later of "now" and the nominal
-                # boundary, otherwise cron jobs can re-fire the same occurrence
-                # repeatedly until wall clock passes fire_at.
-                reschedule_after = max(now, job.fire_at) + timedelta(microseconds=1)
-                job.fire_at = self._advance_every(job, reschedule_after)
+                # 如果是 catchup 补发，先推进到未来再重算下一轮
+                if (
+                    job.missed_policy == MissedPolicy.CATCHUP.value
+                    and (now - job.fire_at).total_seconds() > 60
+                ):
+                    # 补发完成，从当前时间推进到下一轮
+                    job.fire_at = self._advance_every(job, now)
+                else:
+                    # SOFT recurring jobs may execute before nominal fire_at.
+                    reschedule_after = max(now, job.fire_at) + timedelta(microseconds=1)
+                    job.fire_at = self._advance_every(job, reschedule_after)
                 self._jobs[job.id] = job
             else:
                 self._jobs.pop(job.id, None)
@@ -495,7 +530,8 @@ class SchedulerService:
             elapsed = time.monotonic() - t0
             self.tracker.record(elapsed)
             logger.info(
-                f"[scheduler] soft AI 完成 {label!r}  耗时={elapsed:.1f}s  P90={self.tracker.lead:.1f}s"
+                f"[scheduler] soft AI 完成 {label!r}  耗时={elapsed:.1f}s  "
+                f"P90={self.tracker.lead:.1f}s"
             )
             if content:
                 result = await self.push_tool.execute(
@@ -505,10 +541,16 @@ class SchedulerService:
                 )
                 logger.info(f"[scheduler] soft 推送完成 {label!r}: {result}")
             else:
-                logger.warning(f"[scheduler] soft AI 返回空内容 {label!r}，跳过推送")
+                logger.warning(
+                    f"[scheduler] soft AI 返回空内容 {label!r}，跳过推送"
+                )
 
     def _get_agent_loop(self) -> Any:
-        loop = self._agent_loop_provider() if self._agent_loop_provider else self.agent_loop
+        loop = (
+            self._agent_loop_provider()
+            if self._agent_loop_provider
+            else self.agent_loop
+        )
         if loop is None:
             raise RuntimeError("scheduler soft job requires agent_loop")
         return loop
