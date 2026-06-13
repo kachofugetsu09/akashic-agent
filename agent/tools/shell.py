@@ -40,6 +40,8 @@ _BLOCKING_TIMEOUT = 21_600  # 秒（auto_promote=False 时默认 6 小时）
 _MAX_OUTPUT = 30_000  # 字符（与 OpenCode MaxOutputLength 一致）
 _STREAM_CHUNK_SIZE = 4096
 _STREAM_DRAIN_GRACE_S = 0.2
+_BLOCK_DEFAULT_MS = 30_000  # task_output block 默认单次等待
+_BLOCK_MAX_MS = 30_000  # task_output block 单次硬上限：超过按上限，迫使长任务走轮询而非一次死等
 _BG_TTL_S = 4 * 3600  # 后台任务最长存活时间：4 小时
 _BG_EVICT_DELAY_S = 300  # 任务完成后延迟 5 分钟清理注册表和日志
 _IS_WINDOWS = os.name == "nt"
@@ -284,7 +286,7 @@ class ShellTool(Tool):
             "- 只有用户明确说“阻塞”时，才设置 auto_promote=false；未显式传 timeout 时会默认阻塞 21600 秒\n"
             "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台模式只有显式传 timeout 时才会按 timeout 自动终止\n"
             "- 收到 background_task_id 后，由你负责用 task_output 主动查看进展和结果；不会有系统自动回传\n"
-            "- 等待后台任务结果时，使用 task_output 的 block=true 并设置合理 timeout_ms，避免高频轮询\n"
+            "- task_output 是轮询接口：block=true 单次最多等 30s 就返回快照（不会等到任务结束），长任务靠多次轮询推进\n"
             "- 如果决定放弃后台任务并准备最终回复，必须先调用 task_stop 终止它\n"
             "禁止用途：不得用 shell 替代专用工具（read_file 读文件、web_fetch 抓网页、list_dir 列目录）。"
         )
@@ -669,7 +671,9 @@ class ShellTaskOutputTool(Tool):
             "  - 任务挂起：有过输出但 since_last_output_ms 异常大，不符合该命令的预期节奏\n"
             "  - 任务卡死：从未有过输出（since_last_output_ms=null）且 elapsed_ms 超过合理预期\n"
             "不需要 stop 的情况：编译、下载、训练等明确会结束的长时间任务，或用户主动要求的服务进程。\n"
-            "- block=true 是等待后台任务结果的推荐方式；设置合理 timeout_ms 后轮询一次，再判断继续等待、汇报结果或 task_stop。\n"
+            "- 这是轮询接口：block=true 最多等待 timeout_ms（上限 30s）就返回一次快照，不会一直阻塞到任务结束。\n"
+            "- 长任务用轮询循环：每次 block 一段→返回后判断 done/继续轮询/task_stop，不要期望一次调用就等到结束（传超大 timeout_ms 也会被钳到 30s）。\n"
+            "- 分次轮询才能在等待期间响应用户新消息或 /stop；一次死等会让你长时间无响应。\n"
             "- 如果你决定放弃某个后台任务、准备输出最终回复，必须先调用 task_stop 将其终止，再生成回复。不要让后台任务在你回复后继续孤立运行。\n"
             "- 如果返回 status=done，本轮必须负责处理结果，不会有任何系统自动回传。"
         )
@@ -689,8 +693,9 @@ class ShellTaskOutputTool(Tool):
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "block=true 时的最长等待时间（毫秒），默认 30000",
+                    "description": "block=true 时本次最多等待毫秒数，默认 30000，上限 30000（超过按上限处理，单次轮询不会等到任务结束）",
                     "minimum": 0,
+                    "maximum": _BLOCK_MAX_MS,
                 },
             },
             "required": ["task_id"],
@@ -699,7 +704,8 @@ class ShellTaskOutputTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         task_id: str = kwargs.get("task_id", "")
         block: bool = bool(kwargs.get("block", False))
-        timeout_ms: int = int(kwargs.get("timeout_ms", 30000))
+        # 钳到硬上限：block 本质是轮询一次，单次最多等 _BLOCK_MAX_MS，避免一次调用长时间静默
+        timeout_ms: int = min(max(int(kwargs.get("timeout_ms", _BLOCK_DEFAULT_MS)), 0), _BLOCK_MAX_MS)
 
         task = _BG_REGISTRY.get(task_id)
         if task is None:
