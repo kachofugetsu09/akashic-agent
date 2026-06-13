@@ -1,46 +1,52 @@
 from __future__ import annotations
 
-import tomllib
-from dataclasses import dataclass, field
-from pathlib import Path
+import re
 from typing import cast
 
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
-def _empty_strings() -> list[str]:
-    return []
-
-
-@dataclass(frozen=True)
-class FeishuConfig:
-    app_id: str = ""
-    app_secret: str = ""
-    allow_from: list[str] = field(default_factory=_empty_strings)
-    domain: str = "https://open.feishu.cn"
+_UNRESOLVED_ENV_RE = re.compile(r"^\$\{\w+\}$")
+_DEFAULT_DOMAIN = "https://open.feishu.cn"
 
 
-def load_feishu_config(*, plugin_dir: Path | None = None) -> FeishuConfig:
-    root = plugin_dir or Path(__file__).resolve().parent
-    payload = _read_toml(root / "config.local.toml")
-    return FeishuConfig(
-        app_id=str(payload.get("app_id") or "").strip(),
-        app_secret=str(payload.get("app_secret") or "").strip(),
-        allow_from=_string_list(payload.get("allow_from")),
-        domain=str(payload.get("domain") or "https://open.feishu.cn").strip(),
+# 飞书插件配置，来自主 config.toml 的 [plugins.feishu]，支持 ${ENV} 插值。
+class FeishuConfigModel(BaseModel):
+    app_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("app_id", "appId"),
     )
+    app_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("app_secret", "appSecret"),
+    )
+    allow_from: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("allow_from", "allowFrom"),
+    )
+    domain: str = Field(default=_DEFAULT_DOMAIN)
 
+    @field_validator("app_id", "app_secret", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if _UNRESOLVED_ENV_RE.fullmatch(text):
+            return ""
+        return text
 
-def _read_toml(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    return cast(dict[str, object], tomllib.loads(path.read_text(encoding="utf-8")))
+    @field_validator("domain", mode="before")
+    @classmethod
+    def _normalize_domain(cls, value: object) -> str:
+        text = str(value or "").strip()
+        return (text or _DEFAULT_DOMAIN).rstrip("/")
 
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    result: list[str] = []
-    for item in cast(list[object], value):
-        text = str(item).strip()
-        if text:
-            result.append(text)
-    return result
+    @field_validator("allow_from", mode="before")
+    @classmethod
+    def _normalize_allow_from(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in cast(list[object], value):
+            text = str(item).strip()
+            if text:
+                result.append(text)
+        return result

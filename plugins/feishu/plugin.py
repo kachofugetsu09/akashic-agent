@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agent.plugins import Plugin
 from plugins.feishu.channel import FeishuChannel
-from plugins.feishu.config import load_feishu_config
+from plugins.feishu.config import FeishuConfigModel
 
 if TYPE_CHECKING:
     from infra.channels.contract import Channel
@@ -13,10 +13,11 @@ if TYPE_CHECKING:
 class FeishuPlugin(Plugin):
     name = "feishu"
     desc = "飞书私聊渠道"
+    ConfigModel = FeishuConfigModel
 
     def channels(self) -> list["Channel"]:
-        config = load_feishu_config(plugin_dir=self.context.plugin_dir)
-        if not config.app_id or not config.app_secret:
+        config = cast(FeishuConfigModel | None, self.context.config)
+        if config is None or not config.app_id or not config.app_secret:
             return []
         return [
             FeishuChannel(

@@ -73,8 +73,14 @@ def _is_positive_int(value: str) -> bool:
         return False
 
 
+def _is_nonempty(value: str) -> bool:
+    return bool(value)
+
+
 _STREAM_SUPPORT_POLICIES: dict[str, StreamSupportPolicy] = {
     "telegram": _is_positive_int,
+    # 飞书私聊渠道：chat_id 形如 oc_xxx，全程支持流式预览（卡片 PATCH 消费 StreamDeltaReady）。
+    "feishu": _is_nonempty,
 }
 
 

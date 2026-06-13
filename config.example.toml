@@ -94,6 +94,16 @@ allow_from = []
 # require_at = true
 # allow_proactive = false
 
+[plugins.feishu]
+# 飞书自建应用（长连接模式，无需公网回调）。留空跳过。
+# app_id / app_secret 来自开放平台「凭证与基础信息」。
+app_id = ""
+app_secret = ""
+# 私聊白名单填 open_id（ou_...）/ user_id / union_id，留空允许所有人。
+allow_from = []
+# 私有化部署改 domain，如 https://open.larksuite.com（Lark 国际版）。
+# domain = "https://open.feishu.cn"
+
 # =============================================================================
 # 语义记忆
 # default memory 的检索阈值在 plugins/default_memory/config.local.toml。
