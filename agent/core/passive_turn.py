@@ -44,7 +44,11 @@ from agent.lifecycle.phases.before_reasoning import (
     default_before_reasoning_modules,
 )
 from agent.lifecycle.phases.before_step import BeforeStepFrame, default_before_step_modules
-from agent.lifecycle.phases.before_turn import BeforeTurnFrame, default_before_turn_modules
+from agent.lifecycle.phases.before_turn import (
+    BeforeTurnFrame,
+    MemoryConsolidator,
+    default_before_turn_modules,
+)
 from agent.lifecycle.phases.prompt_render import (
     PromptRenderFrame,
     default_prompt_render_modules,
@@ -151,6 +155,7 @@ class AgentCoreDeps:
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
     history_window: int = 500
+    memory_consolidator: MemoryConsolidator | None = None
     before_turn_plugin_modules: list[object] | None = None
     before_reasoning_plugin_modules: list[object] | None = None
     before_step_plugin_modules: list[object] | None = None
@@ -242,6 +247,7 @@ class PassiveTurnPipeline:
             add_after_step(list(deps.after_step_plugin_modules or []))
         self._outbound_port = deps.outbound_port or _NoopOutboundPort()
         self._history_window = deps.history_window
+        self._memory_consolidator = deps.memory_consolidator
         self._before_turn_plugin_modules = list(deps.before_turn_plugin_modules or [])
         self._before_reasoning_plugin_modules = list(
             deps.before_reasoning_plugin_modules or []
@@ -293,6 +299,7 @@ class PassiveTurnPipeline:
                 self._session.session_manager,
                 self._context_store,
                 keep_count=self._history_window,
+                consolidator=self._memory_consolidator,
                 plugin_modules=cast("list[Any]", self._before_turn_plugin_modules),
             ),
             frame_factory=BeforeTurnFrame,

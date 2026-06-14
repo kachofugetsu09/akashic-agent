@@ -314,6 +314,7 @@ class AgentLoop:
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
                 history_window=config.memory.keep_count,
+                memory_consolidator=self,
             )
         )
         self._agent_core = agent_core

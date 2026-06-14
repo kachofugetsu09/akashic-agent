@@ -459,6 +459,96 @@ async def test_before_turn_memory_context_guard_blocks_unconsolidated_tail():
 
 
 @pytest.mark.asyncio
+async def test_before_turn_memory_context_guard_consolidates_before_blocking():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session.messages = [
+        {"role": "user", "content": f"u{i}"}
+        for i in range(30)
+    ]
+    session.last_consolidated = 0
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
+    )
+
+    class _Consolidator:
+        async def trigger_memory_consolidation(
+            self,
+            session_key: str,
+            *,
+            archive_all: bool = False,
+            force: bool = False,
+        ) -> bool:
+            assert session_key == "telegram:123"
+            assert archive_all is False
+            assert force is False
+            session.last_consolidated = len(session.messages) - 20
+            return True
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            keep_count=20,
+            consolidator=_Consolidator(),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert ctx.abort is False
+    assert session.last_consolidated == 10
+    ctx_store.prepare.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_before_turn_memory_context_guard_blocks_after_consolidation_failure():
+    bus = EventBus()
+    session = _DummySession("telegram:123")
+    session.messages = [
+        {"role": "user", "content": f"u{i}"}
+        for i in range(30)
+    ]
+    session.last_consolidated = 0
+    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    ctx_store = SimpleNamespace(prepare=AsyncMock())
+
+    class _Consolidator:
+        async def trigger_memory_consolidation(
+            self,
+            session_key: str,
+            *,
+            archive_all: bool = False,
+            force: bool = False,
+        ) -> bool:
+            return False
+
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+            keep_count=20,
+            consolidator=_Consolidator(),
+        ),
+        frame_factory=BeforeTurnFrame,
+    )
+    msg = _inbound()
+    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
+
+    ctx = await phase.run(state)
+
+    assert ctx.abort is True
+    assert "记忆归档现在处于异常积压状态" in ctx.abort_reply
+    ctx_store.prepare.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_before_turn_accepts_custom_command_module():
     bus = EventBus()
     session = _DummySession("telegram:123")

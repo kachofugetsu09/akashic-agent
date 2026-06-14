@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
 from bus.event_bus import EventBus
 from agent.core.runtime_support import SessionLike
@@ -29,6 +29,16 @@ class BeforeTurnFrame(PhaseFrame[TurnState, BeforeTurnCtx]):
 
 
 BeforeTurnModules: TypeAlias = list[PhaseModule[BeforeTurnFrame]]
+
+
+class MemoryConsolidator(Protocol):
+    async def trigger_memory_consolidation(
+        self,
+        session_key: str,
+        *,
+        archive_all: bool = False,
+        force: bool = False,
+    ) -> bool: ...
 
 
 _SESSION_SLOT = "session:session"
@@ -81,10 +91,15 @@ class _MemoryContextGuardModule:
     requires = ("before_turn.acquire_session", _SESSION_SLOT)
     produces = (_CTX_SLOT,)
 
-    def __init__(self, keep_count: int) -> None:
+    def __init__(
+        self,
+        keep_count: int,
+        consolidator: MemoryConsolidator | None = None,
+    ) -> None:
         self._keep_count = max(1, int(keep_count))
         self._min_new = max(5, self._keep_count // 2)
         self._threshold = self._keep_count + self._min_new
+        self._consolidator = consolidator
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         if _CTX_SLOT in frame.slots:
@@ -101,6 +116,22 @@ class _MemoryContextGuardModule:
         pending = len(messages) - last
         if pending < self._threshold:
             return frame
+
+        if self._consolidator is not None:
+            try:
+                triggered = await self._consolidator.trigger_memory_consolidation(
+                    state.session_key,
+                )
+            except Exception:
+                logger.exception(
+                    "memory context guard failed to consolidate: session=%s pending=%d threshold=%d",
+                    state.session_key,
+                    pending,
+                    self._threshold,
+                )
+            else:
+                if triggered:
+                    return frame
 
         logger.error(
             "memory context guard blocked turn: session=%s pending=%d threshold=%d last_consolidated=%d total=%d",
@@ -211,11 +242,12 @@ def default_before_turn_modules(
     context_store: ContextStore,
     *,
     keep_count: int = 20,
+    consolidator: MemoryConsolidator | None = None,
     plugin_modules: BeforeTurnModules | None = None,
 ) -> BeforeTurnModules:
     builtins: BeforeTurnModules = [
         _AcquireSessionModule(session_manager),
-        _MemoryContextGuardModule(keep_count),
+        _MemoryContextGuardModule(keep_count, consolidator),
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),
         _EmitBeforeTurnCtxModule(bus),
