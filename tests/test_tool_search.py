@@ -694,11 +694,13 @@ class TestBaseline:
     """
 
     @pytest.fixture(scope="class")
-    def reg(self):
+    @classmethod
+    def reg(cls):
         return _make_registry()
 
     @pytest.fixture(scope="class")
-    def cases(self):
+    @classmethod
+    def cases(cls):
         return json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
 
     def test_baseline_cases(self, reg, cases):
