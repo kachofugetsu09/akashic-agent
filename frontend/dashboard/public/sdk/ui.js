@@ -3,6 +3,7 @@
 const U = window.__akashicRuntime.UI;
 export const {
   ShortcutKey, Label, FieldLabel, Tile, Btn, Chip, Input, SearchInput, Select,
-  BrandMark, useTheme, ThemeToggle, cn, Pie, api, asPageResult, pageCount,
+  BrandMark, useTheme, ThemeToggle, cn, Pie, MetricTile, Sparkline, BarChart,
+  api, asPageResult, pageCount,
 } = U;
 export default U;

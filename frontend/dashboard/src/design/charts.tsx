@@ -1,5 +1,17 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { cn } from "./cn";
+
+// Shared accent palette for the monitoring atoms below — resolved to the
+// industrial RGB-triplet tokens so opacity blending stays theme-aware.
+export type ChartTone = "accent" | "success" | "warning" | "danger" | "muted";
+
+const TONE_RGB: Record<ChartTone, string> = {
+  accent: "var(--color-accent-rgb)",
+  success: "var(--color-success-rgb)",
+  warning: "var(--color-warning-rgb)",
+  danger: "var(--color-danger-rgb)",
+  muted: "var(--color-muted-rgb)",
+};
 
 // Hand-rolled SVG pie — a 2-slice hit/miss filled pie with a glossy, dimensional
 // finish (radial sheen + drop shadow + rim) and a sweep-in animation on mount.
@@ -106,6 +118,145 @@ export function Pie({
           <span className="h-2 w-2 rounded-full bg-surface-3" />
           {missLabel} {fmt(miss)} · {Math.round((100 - pct) * 10) / 10}%
         </span>
+      </div>
+    </div>
+  );
+}
+
+// MetricTile — a KPI card: a big tabular-nums value with an optional unit, a
+// secondary line (delta / context), and an inline sparkline. The workhorse of
+// the monitoring overview.
+export function MetricTile({
+  label,
+  value,
+  unit,
+  sub,
+  tone = "accent",
+  spark,
+  className,
+}: {
+  label: string;
+  value: ReactNode;
+  unit?: string;
+  sub?: ReactNode;
+  tone?: ChartTone;
+  spark?: number[];
+  className?: string;
+}) {
+  return (
+    <div className={cn("relative overflow-hidden rounded-lg border border-border bg-surface p-4 shadow-lift-sm", className)}>
+      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-subtle">{label}</span>
+      <div className="mt-2 flex items-baseline gap-1.5">
+        <span className="font-mono text-[26px] font-semibold leading-none tracking-tight tabular-nums text-fg">{value}</span>
+        {unit && <span className="font-mono text-[12px] text-muted">{unit}</span>}
+      </div>
+      {sub && <div className="mt-1.5 font-mono text-[11px] tabular-nums text-muted">{sub}</div>}
+      {spark && spark.length > 1 && (
+        <Sparkline data={spark} tone={tone} className="mt-3 w-full" height={28} />
+      )}
+    </div>
+  );
+}
+
+// Sparkline — a normalized SVG area+line trend, no axes. Fills its container
+// width via a preserveAspectRatio="none" viewBox.
+export function Sparkline({
+  data,
+  tone = "accent",
+  height = 32,
+  className,
+}: {
+  data: number[];
+  tone?: ChartTone;
+  height?: number;
+  className?: string;
+}) {
+  const uid = useId().replace(/:/g, "");
+  const w = 100;
+  const h = 32;
+  const max = Math.max(...data, 1);
+  const min = Math.min(...data, 0);
+  const span = max - min || 1;
+  const step = data.length > 1 ? w / (data.length - 1) : w;
+  const pts = data.map((v, i) => {
+    const x = i * step;
+    const y = h - ((v - min) / span) * h;
+    return [x, Math.max(1, Math.min(h - 1, y))] as const;
+  });
+  const line = pts.map(([x, y], i) => `${i === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`).join(" ");
+  const area = `${line} L ${w} ${h} L 0 ${h} Z`;
+  const rgb = TONE_RGB[tone];
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+      style={{ height }}
+      className={cn("block", className)}
+    >
+      <defs>
+        <linearGradient id={`spark-${uid}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={`rgb(${rgb})`} stopOpacity="0.32" />
+          <stop offset="100%" stopColor={`rgb(${rgb})`} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill={`url(#spark-${uid})`} />
+      <path d={line} fill="none" stroke={`rgb(${rgb})`} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+// BarChart — a bucketed bar series with a baseline grid line and per-bar hover
+// titles. Used for token / error / iteration trends over time.
+export function BarChart({
+  points,
+  height = 140,
+  tone = "accent",
+  valueFmt = (n: number) => String(n),
+  className,
+}: {
+  points: { label: string; value: number }[];
+  height?: number;
+  tone?: ChartTone;
+  valueFmt?: (n: number) => string;
+  className?: string;
+}) {
+  const rgb = TONE_RGB[tone];
+  const max = Math.max(...points.map((p) => p.value), 1);
+  if (points.length === 0) {
+    return (
+      <div className={cn("flex items-center justify-center text-[12px] text-subtle", className)} style={{ height }}>
+        暂无数据
+      </div>
+    );
+  }
+  return (
+    <div className={cn("relative", className)} style={{ height }}>
+      <div className="absolute inset-x-0 bottom-5 top-2 border-b border-border" />
+      <div className="absolute inset-x-0 bottom-5 top-2 flex items-end gap-[2px]">
+        {points.map((p, i) => {
+          const frac = p.value / max;
+          return (
+            <div
+              key={`${p.label}-${i}`}
+              className="group relative flex-1 cursor-default"
+              style={{ height: "100%" }}
+              title={`${p.label} · ${valueFmt(p.value)}`}
+            >
+              <div
+                className="absolute bottom-0 w-full rounded-t-[2px] transition-[height] duration-300"
+                style={{
+                  height: `${Math.max(frac * 100, p.value > 0 ? 2 : 0)}%`,
+                  background: `linear-gradient(to top, rgb(${rgb} / 0.55), rgb(${rgb} / 0.95))`,
+                }}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="absolute inset-x-0 bottom-0 flex justify-between font-mono text-[9px] tabular-nums text-subtle">
+        <span>{points[0]?.label}</span>
+        {points.length > 2 && <span>{points[Math.floor(points.length / 2)]?.label}</span>}
+        <span>{points[points.length - 1]?.label}</span>
       </div>
     </div>
   );
