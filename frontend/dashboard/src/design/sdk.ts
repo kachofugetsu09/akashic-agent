@@ -4,6 +4,6 @@
 // component implementations and its single React instance.
 export * from "./ui";
 export { cn } from "./cn";
-export { Pie, MetricTile, Sparkline, BarChart } from "./charts";
+export { Pie, MetricTile, Sparkline, TrendChart } from "./charts";
 export type { ChartTone } from "./charts";
 export { api, asPageResult, pageCount } from "../api";

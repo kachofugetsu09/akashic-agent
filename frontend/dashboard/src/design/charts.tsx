@@ -1,4 +1,15 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart as RBarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { cn } from "./cn";
 
 // Shared accent palette for the monitoring atoms below — resolved to the
@@ -13,10 +24,13 @@ const TONE_RGB: Record<ChartTone, string> = {
   muted: "var(--color-muted-rgb)",
 };
 
+const toneColor = (tone: ChartTone): string => `rgb(${TONE_RGB[tone]})`;
+
+const AXIS_TICK = { fontSize: 10, fill: "rgba(138,138,143,0.6)", fontFamily: "JetBrains Mono, monospace" };
+const GRID_STROKE = "rgba(255,255,255,0.07)";
+
 // Hand-rolled SVG pie — a 2-slice hit/miss filled pie with a glossy, dimensional
 // finish (radial sheen + drop shadow + rim) and a sweep-in animation on mount.
-// Lightweight (no charting lib), themed with the industrial tokens, and exposed
-// via the dashboard SDK so plugins render it as a shared React component.
 export function Pie({
   rate,
   hit,
@@ -123,13 +137,14 @@ export function Pie({
   );
 }
 
-// MetricTile — a KPI card: a big tabular-nums value with an optional unit, a
-// secondary line (delta / context), and an inline sparkline. The workhorse of
-// the monitoring overview.
+// MetricTile — a KPI card: a big tabular-nums value, an optional delta badge and
+// unit, a secondary line, and an inline sparkline. The workhorse of the
+// monitoring overview. Matches the superlog density (36px value, 14px radius).
 export function MetricTile({
   label,
   value,
   unit,
+  delta,
   sub,
   tone = "accent",
   spark,
@@ -138,21 +153,30 @@ export function MetricTile({
   label: string;
   value: ReactNode;
   unit?: string;
+  delta?: number | null;
   sub?: ReactNode;
   tone?: ChartTone;
   spark?: number[];
   className?: string;
 }) {
   return (
-    <div className={cn("relative overflow-hidden rounded-lg border border-border bg-surface p-4 shadow-lift-sm", className)}>
-      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-subtle">{label}</span>
-      <div className="mt-2 flex items-baseline gap-1.5">
-        <span className="font-mono text-[26px] font-semibold leading-none tracking-tight tabular-nums text-fg">{value}</span>
-        {unit && <span className="font-mono text-[12px] text-muted">{unit}</span>}
+    <div className={cn("relative overflow-hidden rounded-2xl border border-border bg-surface p-5 shadow-lift-sm", className)}>
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">{label}</span>
+        {typeof delta === "number" && (
+          <span className={cn("font-mono text-[11px] tabular-nums", delta >= 0 ? "text-success" : "text-danger")}>
+            {delta >= 0 ? "+" : ""}
+            {delta.toFixed(1)}%
+          </span>
+        )}
       </div>
-      {sub && <div className="mt-1.5 font-mono text-[11px] tabular-nums text-muted">{sub}</div>}
+      <div className="mt-3 flex items-baseline gap-1.5">
+        <span className="font-sans text-4xl font-semibold leading-none tracking-tight tabular-nums text-fg">{value}</span>
+        {unit && <span className="font-mono text-[11px] text-subtle">{unit}</span>}
+      </div>
+      {sub && <div className="mt-2 font-mono text-[11px] tabular-nums text-muted">{sub}</div>}
       {spark && spark.length > 1 && (
-        <Sparkline data={spark} tone={tone} className="mt-3 w-full" height={28} />
+        <Sparkline data={spark} tone={tone} className="mt-4 w-full" height={40} />
       )}
     </div>
   );
@@ -163,7 +187,7 @@ export function MetricTile({
 export function Sparkline({
   data,
   tone = "accent",
-  height = 32,
+  height = 40,
   className,
 }: {
   data: number[];
@@ -173,19 +197,19 @@ export function Sparkline({
 }) {
   const uid = useId().replace(/:/g, "");
   const w = 100;
-  const h = 32;
+  const h = 40;
   const max = Math.max(...data, 1);
   const min = Math.min(...data, 0);
   const span = max - min || 1;
   const step = data.length > 1 ? w / (data.length - 1) : w;
   const pts = data.map((v, i) => {
     const x = i * step;
-    const y = h - ((v - min) / span) * h;
+    const y = h - ((v - min) / span) * (h - 2) - 1;
     return [x, Math.max(1, Math.min(h - 1, y))] as const;
   });
   const line = pts.map(([x, y], i) => `${i === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`).join(" ");
   const area = `${line} L ${w} ${h} L 0 ${h} Z`;
-  const rgb = TONE_RGB[tone];
+  const color = toneColor(tone);
   return (
     <svg
       viewBox={`0 0 ${w} ${h}`}
@@ -195,69 +219,107 @@ export function Sparkline({
     >
       <defs>
         <linearGradient id={`spark-${uid}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={`rgb(${rgb})`} stopOpacity="0.32" />
-          <stop offset="100%" stopColor={`rgb(${rgb})`} stopOpacity="0" />
+          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
       <path d={area} fill={`url(#spark-${uid})`} />
-      <path d={line} fill="none" stroke={`rgb(${rgb})`} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      <path d={line} fill="none" stroke={color} strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
 
-// BarChart — a bucketed bar series with a baseline grid line and per-bar hover
-// titles. Used for token / error / iteration trends over time.
-export function BarChart({
-  points,
-  height = 140,
+// Tooltip styled to the industrial tokens, shared by all recharts surfaces.
+const TOOLTIP_CONTENT_STYLE = {
+  background: "rgb(var(--color-surface-2-rgb))",
+  border: "1px solid var(--color-border-strong)",
+  borderRadius: 8,
+  fontSize: 11,
+  fontFamily: "JetBrains Mono, monospace",
+  padding: "6px 10px",
+  boxShadow: "0 8px 24px -6px rgba(0,0,0,0.6)",
+};
+
+// TrendChart — a recharts area/bar time series with a dashed horizontal grid,
+// muted axis ticks (Y + sparse X), and a themed floating tooltip. This is what
+// gives the monitoring page its precision-instrument feel.
+export function TrendChart({
+  data,
+  kind = "area",
   tone = "accent",
+  height = 170,
   valueFmt = (n: number) => String(n),
   className,
+  empty,
 }: {
-  points: { label: string; value: number }[];
-  height?: number;
+  data: { label: string; value: number }[];
+  kind?: "area" | "bar";
   tone?: ChartTone;
+  height?: number;
   valueFmt?: (n: number) => string;
   className?: string;
+  empty?: ReactNode;
 }) {
-  const rgb = TONE_RGB[tone];
-  const max = Math.max(...points.map((p) => p.value), 1);
-  if (points.length === 0) {
+  const uid = useId().replace(/:/g, "");
+  const color = toneColor(tone);
+  const allZero = data.every((d) => d.value === 0);
+  if (data.length === 0 || (allZero && empty)) {
     return (
       <div className={cn("flex items-center justify-center text-[12px] text-subtle", className)} style={{ height }}>
-        暂无数据
+        {empty ?? "暂无数据"}
       </div>
     );
   }
+  const axisProps = {
+    tick: AXIS_TICK,
+    axisLine: false as const,
+    tickLine: false as const,
+  };
   return (
-    <div className={cn("relative", className)} style={{ height }}>
-      <div className="absolute inset-x-0 bottom-5 top-2 border-b border-border" />
-      <div className="absolute inset-x-0 bottom-5 top-2 flex items-end gap-[2px]">
-        {points.map((p, i) => {
-          const frac = p.value / max;
-          return (
-            <div
-              key={`${p.label}-${i}`}
-              className="group relative flex-1 cursor-default"
-              style={{ height: "100%" }}
-              title={`${p.label} · ${valueFmt(p.value)}`}
-            >
-              <div
-                className="absolute bottom-0 w-full rounded-t-[2px] transition-[height] duration-300"
-                style={{
-                  height: `${Math.max(frac * 100, p.value > 0 ? 2 : 0)}%`,
-                  background: `linear-gradient(to top, rgb(${rgb} / 0.55), rgb(${rgb} / 0.95))`,
-                }}
-              />
-            </div>
-          );
-        })}
-      </div>
-      <div className="absolute inset-x-0 bottom-0 flex justify-between font-mono text-[9px] tabular-nums text-subtle">
-        <span>{points[0]?.label}</span>
-        {points.length > 2 && <span>{points[Math.floor(points.length / 2)]?.label}</span>}
-        <span>{points[points.length - 1]?.label}</span>
-      </div>
+    <div className={className} style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        {kind === "area" ? (
+          <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <defs>
+              <linearGradient id={`trend-${uid}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={color} stopOpacity="0.28" />
+                <stop offset="100%" stopColor={color} stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
+            <XAxis dataKey="label" {...axisProps} minTickGap={28} />
+            <YAxis {...axisProps} width={42} tickFormatter={valueFmt} />
+            <Tooltip
+              cursor={{ stroke: GRID_STROKE }}
+              contentStyle={TOOLTIP_CONTENT_STYLE}
+              labelStyle={{ color: "rgb(var(--color-subtle-rgb))", marginBottom: 2 }}
+              itemStyle={{ color: "rgb(var(--color-fg-rgb))" }}
+              formatter={(v) => [valueFmt(Number(v)), ""] as [string, string]}
+            />
+            <Area type="monotone" dataKey="value" stroke={color} strokeWidth={1.5} fill={`url(#trend-${uid})`} dot={false} activeDot={{ r: 3, fill: color }} />
+          </AreaChart>
+        ) : (
+          <RBarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <defs>
+              <linearGradient id={`bar-${uid}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={color} stopOpacity="0.95" />
+                <stop offset="100%" stopColor={color} stopOpacity="0.5" />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_STROKE} />
+            <XAxis dataKey="label" {...axisProps} minTickGap={28} />
+            <YAxis {...axisProps} width={42} tickFormatter={valueFmt} />
+            <Tooltip
+              cursor={{ fill: "rgba(255,255,255,0.04)" }}
+              contentStyle={TOOLTIP_CONTENT_STYLE}
+              labelStyle={{ color: "rgb(var(--color-subtle-rgb))", marginBottom: 2 }}
+              itemStyle={{ color: "rgb(var(--color-fg-rgb))" }}
+              formatter={(v) => [valueFmt(Number(v)), ""] as [string, string]}
+            />
+            <Bar dataKey="value" fill={`url(#bar-${uid})`} radius={[2, 2, 0, 0]} maxBarSize={28} />
+          </RBarChart>
+        )}
+      </ResponsiveContainer>
     </div>
   );
 }

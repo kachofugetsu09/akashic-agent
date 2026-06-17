@@ -713,15 +713,17 @@ function TopbarFilters(props: {
 }): React.ReactElement {
   return (
     <div className="topbar-filters">
-      {props.viewMode.startsWith("plugin:") && props.currentPlugin?.renderFilters && props.currentPluginState && props.onSetPluginState
-        ? <PluginFilters
-            plugin={props.currentPlugin}
-            pluginId={props.currentPlugin.id}
-            state={props.currentPluginState}
-            onSetState={props.onSetPluginState}
-            onActivate={() => {}}
-          />
-        : props.viewMode === "proactive" ? (
+      {props.viewMode.startsWith("plugin:") ? (
+          props.currentPlugin?.renderFilters && props.currentPluginState && props.onSetPluginState
+            ? <PluginFilters
+                plugin={props.currentPlugin}
+                pluginId={props.currentPlugin.id}
+                state={props.currentPluginState}
+                onSetState={props.onSetPluginState}
+                onActivate={() => {}}
+              />
+            : null
+        ) : props.viewMode === "proactive" ? (
           <div className="filter-row">
             <div className="active-session-chip"><span>result</span><code>{proactiveSectionLabel(props.proactiveSection)}</code></div>
             {props.proactiveSessionFilter && <Chip label="session" value={props.proactiveSessionFilter} onClear={props.clearProactiveSession} />}
