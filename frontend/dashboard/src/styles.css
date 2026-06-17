@@ -395,6 +395,42 @@ body {
     @apply grid gap-2 p-3;
   }
 
+  /* ── Section switcher (flat tabs) + always-on body ── */
+
+  .section-switcher {
+    @apply flex flex-col gap-0.5 border-b border-border px-2 pb-2 pt-3;
+  }
+
+  .section-switcher .pane-kicker {
+    @apply px-2 pb-1.5;
+  }
+
+  .section-tab {
+    @apply flex w-full cursor-pointer items-center justify-between gap-2 rounded-md border border-transparent bg-transparent px-2.5 py-2 text-left text-[13px] font-semibold tracking-tight text-muted transition-colors;
+  }
+
+  .section-tab:hover {
+    @apply bg-surface-2 text-fg;
+  }
+
+  .section-tab.active {
+    @apply border-border-strong bg-accent-soft text-fg;
+  }
+
+  .section-tab-count {
+    @apply flex-shrink-0 rounded-sm bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-muted;
+    box-shadow: inset 0 1px 1px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+  }
+
+  .explorer-body {
+    @apply flex min-h-0 flex-1 flex-col overflow-y-auto pb-3;
+  }
+
+  .explorer-body .session-list,
+  .explorer-body .proactive-quick-list {
+    @apply px-1.5 pt-1;
+  }
+
   /* ── Explorer nav ── */
 
   .explorer-nav {
