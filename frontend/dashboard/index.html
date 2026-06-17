@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Akashic Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Shared singletons for dynamically-imported plugin modules: resolves the
+       plugin's react / react-dom / @akashic/dashboard-ui imports to host-backed
+       shims so plugins reuse the host's single React instance and UI library. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "/assets/sdk/react.js",
+      "react/jsx-runtime": "/assets/sdk/jsx-runtime.js",
+      "react-dom/client": "/assets/sdk/react-dom-client.js",
+      "@akashic/dashboard-ui": "/assets/sdk/ui.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import "./styles.css";
 import { api, asPageResult, pageCount } from "./api";
 import {
   encodePath,
@@ -15,6 +16,7 @@ import {
   stripMarkdown,
 } from "./format";
 import { attachJsonViewers, installDashboardGlobals, jvPlaceholder, loadPluginAssets } from "./pluginRuntime";
+import { exposeRuntime } from "./design/runtime";
 import { PluginDetail, PluginMain } from "./PluginDetail";
 import type {
   DashboardColumn,
@@ -109,7 +111,7 @@ function makeDispatch(
 
 function App(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
-  const [navOpen, setNavOpen] = useState<NavOpen>({ sessions: false, proactive: false });
+  const [navOpen, setNavOpen] = useState<NavOpen>({ sessions: true, proactive: false });
   const [plugins, setPlugins] = useState<PluginConfig[]>([]);
   const [pluginState, setPluginState] = useState<Record<string, PluginState>>({});
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -266,6 +268,7 @@ function App(): React.ReactElement {
         },
       });
     });
+    exposeRuntime();
     void loadPluginAssets();
   }, []);
 
@@ -390,7 +393,7 @@ function App(): React.ReactElement {
       && currentPluginState
       && currentDispatch
       && currentPluginLayout === "workbench"
-      && currentPlugin.renderMain,
+      && (currentPlugin.renderMain || currentPlugin.Main),
   );
 
   return (
@@ -874,7 +877,7 @@ function Rows(props: {
     <div className="cell-session mono" title={item.session_key}>{formatSessionKeyForTable(item.session_key)}</div>
     <div className="cell-seq mono">#{item.seq}</div>
     <div className="content-preview">{stripMarkdown(item.content)}</div>
-    <div className="cell-time mono">{shortTs(item.ts)}</div>
+    <div className="cell-time mono">{shortTs(item.timestamp)}</div>
     <div><span className={`role-pill ${roleClass(item.role)}`}>{item.role}</span></div>
     <div />
   </div>)}</>;
@@ -916,7 +919,7 @@ function DetailPane(props: {
       <div className="detail-toolbar"><div><div className="detail-title">消息详情</div><div className="detail-subtext">{message.session_key} · #{message.seq}</div></div></div>
       <div className="detail-grid">
         {detailRow("role", <span className={`role-pill ${roleClass(message.role)}`}>{message.role}</span>)}
-        {detailRow("time", <code>{message.ts}</code>)}
+        {detailRow("time", <code>{message.timestamp}</code>)}
         {detailRow("id", <code>{message.id}</code>)}
       </div>
       <div className="detail-block"><div className="detail-label">Content</div><div className="detail-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} /></div>

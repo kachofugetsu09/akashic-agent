@@ -1,10 +1,10 @@
 // Type declarations for globals injected by the React dashboard bundle.
 // Dashboard plugin interfaces are defined in frontend/dashboard/src/types.ts.
 
-import type { DashboardColumn, DashboardGlobal, FetchPageOpts, FetchPageResult, PluginBatchAction, PluginConfig, PluginDispatch, PluginLayout, SortOrder } from "../frontend/dashboard/src/types";
+import type { DashboardColumn, DashboardGlobal, DashboardUi, FetchPageOpts, FetchPageResult, PluginBatchAction, PluginConfig, PluginDispatch, PluginLayout, SortOrder, UiBtnSize, UiBtnVariant, UiTone } from "../frontend/dashboard/src/types";
 
 export type Column = DashboardColumn;
-export type { DashboardColumn, DashboardGlobal, FetchPageOpts, FetchPageResult, PluginBatchAction, PluginConfig, PluginDispatch, PluginLayout, SortOrder };
+export type { DashboardColumn, DashboardGlobal, DashboardUi, FetchPageOpts, FetchPageResult, PluginBatchAction, PluginConfig, PluginDispatch, PluginLayout, SortOrder, UiBtnSize, UiBtnVariant, UiTone };
 
 declare global {
   interface Window {

@@ -6,7 +6,6 @@ from pathlib import Path, PureWindowsPath
 import importlib.util
 import logging
 import json
-import re
 import sqlite3
 import sys
 import threading
@@ -787,13 +786,11 @@ def create_dashboard_app(
                     _load_plugin_dashboard(app, _plugin_dir, workspace)
                 )
 
+    # Vite emits index.html with content-hashed asset URLs under /assets, so it
+    # is served verbatim — no manual cache-busting needed.
     @app.get("/")
     def dashboard_index() -> Response:
         html = (static_dir / "index.html").read_text(encoding="utf-8")
-        app_v = str(int((static_dir / "app.js").stat().st_mtime_ns))
-        css_v = str(int((static_dir / "styles.css").stat().st_mtime_ns))
-        html = re.sub(r'(/assets/styles\.css)(\?[^"]*)?', rf'\1?v={css_v}', html)
-        html = re.sub(r'(/assets/app\.js)(\?[^"]*)?', rf'\1?v={app_v}', html)
         return Response(content=html, media_type="text/html")
 
     @app.get("/api/dashboard/plugins")

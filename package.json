@@ -4,9 +4,11 @@
   "type": "module",
   "scripts": {
     "build": "npm run build:dashboard && npm run build:plugins",
-    "build:dashboard": "node frontend/dashboard/build.mjs",
+    "build:dashboard": "vite build --config frontend/dashboard/vite.config.ts",
+    "build:dashboard:watch": "vite build --config frontend/dashboard/vite.config.ts --watch",
     "build:plugins": "node scripts/build-plugins.mjs",
     "build:watch": "node scripts/build-plugins.mjs --watch",
+    "dev": "vite --config frontend/dashboard/vite.config.ts",
     "lint": "eslint \"frontend/dashboard/src/**/*.{ts,tsx}\" \"plugins/**/*.ts\" \"types/**/*.d.ts\"",
     "typecheck": "tsc --noEmit"
   },
@@ -14,16 +16,24 @@
     "@eslint/js": "^10.0.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
     "esbuild": "^0.25.0",
     "eslint": "^10.2.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.5.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
     "typescript": "^5.8.0",
-    "typescript-eslint": "^8.59.1"
+    "typescript-eslint": "^8.59.1",
+    "vite": "^6.0.7"
   },
   "dependencies": {
+    "@radix-ui/react-scroll-area": "^1.2.2",
+    "clsx": "^2.1.1",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "tailwind-merge": "^2.6.0"
   }
 }

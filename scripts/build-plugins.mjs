@@ -34,24 +34,33 @@ function listPluginPanels() {
     .filter((path) => statSync(path, { throwIfNoEntry: false })?.isDirectory())
     .flatMap((pluginDir) =>
       readdirSync(pluginDir)
-        .filter((name) => name.startsWith("dashboard_panel") && name.endsWith(".ts"))
+        .filter((name) => name.startsWith("dashboard_panel") && /\.tsx?$/.test(name))
         .map((name) => ({
           pluginDir,
           tsPath: join(pluginDir, name),
-          jsPath: join(pluginDir, name.replace(/\.ts$/, ".js")),
+          jsPath: join(pluginDir, name.replace(/\.tsx?$/, ".js")),
         })),
     );
 }
 
+// Plugins build as ESM modules that bundle their own code but keep react /
+// react-dom / jsx-runtime / the dashboard UI external — those resolve to the
+// host's shared singletons via the page import map at runtime.
 function buildArgs(command, panel, { watch = false } = {}) {
   return [
     ...command.slice(1),
     panel.tsPath,
     `--outfile=${panel.jsPath}`,
-    "--bundle=false",
+    "--bundle",
     "--platform=browser",
     "--target=es2020",
-    "--format=iife",
+    "--format=esm",
+    "--jsx=automatic",
+    "--external:react",
+    "--external:react-dom",
+    "--external:react-dom/client",
+    "--external:react/jsx-runtime",
+    "--external:@akashic/dashboard-ui",
     ...(watch ? ["--watch"] : []),
   ];
 }

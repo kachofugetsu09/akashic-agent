@@ -1,0 +1,1235 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Industrial design tokens. Solid colors live as space-separated RGB triplets
+   so tailwind opacity modifiers (bg-danger/20) can inject <alpha-value>. The
+   derived --color-* vars keep raw CSS/plugin code theme-aware.
+   --------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+
+  --color-bg-rgb: 20 20 20;
+  --color-surface-rgb: 28 28 30;
+  --color-surface-2-rgb: 35 35 37;
+  --color-surface-3-rgb: 43 43 46;
+  --color-fg-rgb: 245 245 246;
+  --color-muted-rgb: 138 138 143;
+  --color-subtle-rgb: 90 90 96;
+  --color-accent-rgb: 72 90 226;
+  --color-accent-ink-rgb: 255 255 255;
+  --color-accent-deep-rgb: 49 64 184;
+  --color-danger-rgb: 239 90 111;
+  --color-warning-rgb: 231 177 90;
+  --color-success-rgb: 65 209 149;
+
+  --color-bg: rgb(var(--color-bg-rgb));
+  --color-surface: rgb(var(--color-surface-rgb));
+  --color-surface-2: rgb(var(--color-surface-2-rgb));
+  --color-surface-3: rgb(var(--color-surface-3-rgb));
+  --color-border: rgba(255, 255, 255, 0.07);
+  --color-border-strong: rgba(255, 255, 255, 0.12);
+
+  --color-fg: rgb(var(--color-fg-rgb));
+  --color-muted: rgb(var(--color-muted-rgb));
+  --color-subtle: rgb(var(--color-subtle-rgb));
+
+  --color-accent: rgb(var(--color-accent-rgb));
+  --color-accent-ink: rgb(var(--color-accent-ink-rgb));
+  --color-accent-soft: rgba(72, 90, 226, 0.14);
+  --color-accent-deep: rgb(var(--color-accent-deep-rgb));
+
+  --color-danger: rgb(var(--color-danger-rgb));
+  --color-warning: rgb(var(--color-warning-rgb));
+  --color-success: rgb(var(--color-success-rgb));
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --color-bg-rgb: 245 245 245;
+  --color-surface-rgb: 252 252 252;
+  --color-surface-2-rgb: 239 239 239;
+  --color-surface-3-rgb: 230 230 230;
+  --color-fg-rgb: 35 35 35;
+  --color-muted-rgb: 91 94 102;
+  --color-subtle-rgb: 156 159 166;
+  --color-danger-rgb: 214 56 64;
+  --color-warning-rgb: 184 117 3;
+  --color-success-rgb: 31 143 95;
+
+  --color-border: rgba(15, 17, 21, 0.08);
+  --color-border-strong: rgba(15, 17, 21, 0.16);
+  --color-accent-soft: rgba(72, 90, 226, 0.1);
+}
+
+/* ---------------------------------------------------------------------------
+   Legacy token compatibility shim. Runtime-injected plugin panels ship their
+   own CSS that still references the old cream/coral variable names. We alias
+   them onto the new industrial tokens so plugins inherit the unified look with
+   no per-plugin edits. Aliases derive from the --color-* vars, so they follow
+   light/dark automatically.
+   --------------------------------------------------------------------------- */
+:root {
+  --bg: var(--color-bg);
+  --bg-soft: var(--color-surface-2);
+  --paper: var(--color-surface);
+  --paper-strong: var(--color-surface-3);
+  --line: var(--color-border);
+  --line-strong: var(--color-border-strong);
+  --line-soft: var(--color-border);
+  --text: var(--color-fg);
+  --text-soft: var(--color-muted);
+  --accent: var(--color-accent);
+  --accent-soft: var(--color-accent-soft);
+  --accent-hover: var(--color-accent-deep);
+  --green: var(--color-success);
+  --green-soft: rgb(var(--color-success-rgb) / 0.15);
+  --yellow-soft: rgb(var(--color-warning-rgb) / 0.15);
+  --red-soft: rgb(var(--color-danger-rgb) / 0.15);
+  --blue-soft: rgb(var(--color-accent-rgb) / 0.15);
+  --neutral-soft: var(--color-surface-3);
+  --system: var(--color-warning);
+  --tool: var(--color-accent);
+  --danger: var(--color-danger);
+  --drift: var(--color-success);
+  --drift-soft: rgb(var(--color-success-rgb) / 0.15);
+  --proactive: var(--color-accent);
+  --proactive-soft: var(--color-accent-soft);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --radius: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --t-fast: 140ms;
+  --t-base: 220ms;
+  --t-slow: 320ms;
+  --display: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   Industrial / precision-instrument component layer.
+
+   Reskin of the legacy dashboard stylesheet onto the dark industrial tokens
+   (see src/styles.css + tailwind.config.ts). Class names, layout structure,
+   grid-template-columns, pane widths and flex behavior are preserved verbatim
+   from the legacy sheet so runtime-injected plugin panels reusing these names
+   inherit the unified look. Only color / texture / radius are restyled.
+   --------------------------------------------------------------------------- */
+
+/* Hand-authored design-system layer, kept as plain CSS (not @layer components)
+   so Tailwind never purges it — every semantic class is always available to the
+   host and to plugins, with no safelist to maintain. */
+
+  /* ── Utilities ── */
+
+  .hidden {
+    display: none !important;
+  }
+
+  .pre-wrap {
+    white-space: pre-wrap;
+  }
+
+  .align-right {
+    text-align: right;
+  }
+
+  .muted-text {
+    @apply text-muted;
+  }
+
+  /* mono / data cells use tabular figures for column alignment */
+  .mono {
+    @apply font-mono tabular-nums;
+  }
+
+  /* ── Layout ── */
+
+  .shell {
+    @apply flex h-screen flex-col overflow-hidden;
+  }
+
+  /* Raised chrome bar: hairline top highlight + soft drop to lift over content */
+  .topbar {
+    @apply flex h-[52px] flex-shrink-0 items-center gap-3 border-b border-border bg-surface px-4;
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04), 0 1px 0 0 rgba(0, 0, 0, 0.4),
+      0 6px 16px -10px rgba(0, 0, 0, 0.6);
+  }
+
+  .brand {
+    @apply flex w-64 flex-shrink-0 items-center gap-2;
+  }
+
+  .brand-mark {
+    @apply grid h-7 w-7 place-items-center rounded bg-surface-2 font-mono text-[15px] font-semibold text-accent;
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05), 0 0 0 1px var(--color-border-strong);
+  }
+
+  .brand-title {
+    @apply text-sm font-semibold tracking-tightest text-fg;
+  }
+
+  .brand-sub {
+    @apply text-xs text-muted;
+  }
+
+  .topbar-filters {
+    @apply min-w-0 flex-1;
+  }
+
+  .filter-row {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .topbar-view {
+    @apply flex flex-shrink-0 items-center gap-2;
+  }
+
+  /* ── Search ── */
+
+  .search {
+    @apply relative min-w-[240px];
+  }
+
+  .search-small {
+    @apply min-w-0;
+  }
+
+  .search span {
+    @apply pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] text-subtle;
+  }
+
+  /* ── Inputs ── */
+
+  .search input,
+  input[type="text"],
+  input[type="number"],
+  textarea,
+  select {
+    @apply w-full rounded border border-border bg-surface-2 px-3 py-1.5 font-sans text-[12.5px] text-fg outline-none transition-colors;
+  }
+
+  .search input {
+    @apply pl-7;
+  }
+
+  select {
+    @apply cursor-pointer appearance-none pr-7;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238a8a8f' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+  }
+
+  input:focus,
+  select:focus,
+  textarea:focus {
+    @apply border-border-strong bg-surface-3;
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+  }
+
+  /* ── Custom select ── */
+
+  .custom-select {
+    @apply relative inline-block flex-shrink-0;
+  }
+
+  .sessions-pane .custom-select {
+    @apply block w-full;
+  }
+
+  .cs-trigger {
+    @apply flex min-w-[120px] cursor-pointer items-center gap-1.5 whitespace-nowrap rounded border border-border bg-surface-2 py-1.5 pl-3 pr-7 text-[12.5px] text-fg transition-colors;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238a8a8f' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+  }
+
+  .sessions-pane .cs-trigger {
+    @apply w-full;
+  }
+
+  .cs-trigger:hover {
+    @apply border-border-strong bg-surface-3;
+  }
+
+  .custom-select.open .cs-trigger {
+    @apply border-border-strong;
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+  }
+
+  .cs-dropdown {
+    @apply absolute left-0 top-[calc(100%+4px)] z-[200] min-w-full overflow-hidden rounded border border-border bg-surface-2 shadow-lift-md;
+    animation: cs-drop-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+    transform-origin: top left;
+  }
+
+  @keyframes cs-drop-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.98);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  .cs-option {
+    @apply cursor-pointer whitespace-nowrap px-3 py-2 text-[12.5px] text-fg;
+  }
+
+  .cs-option:hover {
+    @apply bg-surface-3;
+  }
+
+  .cs-option.active {
+    @apply bg-accent-soft font-medium text-accent;
+  }
+
+  /* ── View chip & session chip ── */
+
+  .view-chip {
+    @apply inline-flex items-center gap-1.5 rounded-sm border border-border bg-surface-2 px-3 py-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted;
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .active-session-chip {
+    @apply flex min-w-0 max-w-[280px] items-center gap-1.5 rounded border border-border-strong bg-accent-soft px-3 py-1 text-xs;
+  }
+
+  .active-session-chip code {
+    @apply overflow-hidden text-ellipsis whitespace-nowrap font-mono font-medium tabular-nums text-accent;
+  }
+
+  .active-session-chip button {
+    @apply cursor-pointer border-none bg-transparent text-muted;
+  }
+
+  .active-session-chip button:hover {
+    @apply text-accent;
+  }
+
+  /* ── Workspace ── */
+
+  .workspace {
+    @apply flex min-h-0 flex-1 overflow-hidden;
+  }
+
+  /* ── Panes ── */
+
+  /* Side panes read as raised metal panels (hairline top highlight); the center
+     log surface is the darkest layer and sits recessed between them. */
+  .sessions-pane {
+    @apply flex min-h-0 flex-shrink-0 flex-col border-r border-border bg-surface;
+    width: clamp(240px, 18vw, 300px);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .messages-pane {
+    @apply flex min-h-0 min-w-0 flex-1 flex-col bg-bg;
+    box-shadow: inset 0 2px 6px -4px rgba(0, 0, 0, 0.55);
+  }
+
+  .detail-pane {
+    @apply min-h-0 flex-shrink-0 overflow-y-auto border-l border-border bg-surface;
+    width: clamp(360px, 26vw, 460px);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .plugin-workbench-pane {
+    @apply min-h-0 min-w-0 flex-1 overflow-y-auto bg-bg;
+  }
+
+  .plugin-workbench-root {
+    @apply min-h-full;
+  }
+
+  /* ── Pane head ── */
+
+  .pane-head {
+    @apply border-b border-border px-3 pb-2 pt-3;
+  }
+
+  .pane-kicker {
+    @apply font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;
+  }
+
+  .pane-title {
+    @apply mt-1 text-[15px] font-semibold tracking-tight text-fg;
+  }
+
+  .filters-stack {
+    @apply grid gap-2 p-3;
+  }
+
+  /* ── Explorer nav ── */
+
+  .explorer-nav {
+    @apply min-h-0 flex-1 overflow-y-auto pb-3 pt-1;
+  }
+
+  .nav-section-divider {
+    @apply mx-1.5 mb-2 mt-2.5 flex items-center gap-2 text-subtle;
+  }
+
+  .nav-section-divider::before,
+  .nav-section-divider::after {
+    content: "";
+    @apply h-px flex-1 bg-border;
+  }
+
+  .nav-section-divider span {
+    @apply whitespace-nowrap font-mono text-[9.5px] uppercase tracking-[0.14em];
+  }
+
+  .nav-group {
+    @apply mb-1.5;
+  }
+
+  .nav-group-toggle {
+    @apply mx-1.5 flex w-[calc(100%-12px)] cursor-pointer items-center gap-2 rounded border border-transparent bg-transparent px-2.5 py-2 text-fg transition-colors;
+  }
+
+  .nav-group-toggle:hover {
+    @apply bg-surface-2;
+  }
+
+  .nav-group.active .nav-group-toggle {
+    @apply border-border-strong bg-accent-soft;
+  }
+
+  .nav-group-caret {
+    @apply inline-block w-3 text-[10px] text-subtle transition-transform;
+  }
+
+  .nav-group.open .nav-group-caret {
+    transform: rotate(90deg);
+  }
+
+  /* Nav group toggles are interactive UI, not labels — readable sans, not
+     wide-tracked mono. They brighten to fg when active/open. */
+  .nav-group-label {
+    @apply flex-1 text-left text-[12.5px] font-semibold tracking-tight text-muted transition-colors;
+  }
+
+  .nav-group.active .nav-group-label,
+  .nav-group.open .nav-group-label,
+  .nav-group-toggle:hover .nav-group-label {
+    @apply text-fg;
+  }
+
+  .nav-group-count {
+    @apply rounded-sm bg-surface-3 px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-muted;
+    box-shadow: inset 0 1px 1px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+  }
+
+  .nav-group-body {
+    @apply grid overflow-hidden transition-[grid-template-rows];
+    grid-template-rows: 0fr;
+  }
+
+  .nav-group-body.open {
+    grid-template-rows: 1fr;
+  }
+
+  .nav-group-body-inner {
+    @apply ml-2.5 min-h-0 overflow-hidden border-l border-border pl-2 pt-0.5;
+  }
+
+  /* ── Nav rows ── */
+
+  .all-messages-row,
+  .session-item,
+  .memory-quick-item,
+  .proactive-quick-item {
+    @apply relative mx-1 my-px w-[calc(100%-8px)] cursor-pointer rounded border border-transparent bg-transparent px-2 py-[7px] text-left text-fg transition-colors;
+  }
+
+  .all-messages-row::before,
+  .session-item::before,
+  .memory-quick-item::before,
+  .proactive-quick-item::before {
+    content: "";
+    @apply absolute bottom-0 left-0 top-0 w-[3px] origin-center scale-y-0 bg-accent transition-transform;
+    border-radius: 0 2px 2px 0;
+  }
+
+  .all-messages-row:hover,
+  .session-item:hover,
+  .memory-quick-item:hover,
+  .proactive-quick-item:hover {
+    @apply bg-surface-2;
+  }
+
+  .all-messages-row.active,
+  .session-item.active,
+  .memory-quick-item.active,
+  .proactive-quick-item.active {
+    @apply border-border-strong bg-accent-soft;
+  }
+
+  .all-messages-row.active::before,
+  .session-item.active::before,
+  .memory-quick-item.active::before,
+  .proactive-quick-item.active::before {
+    @apply scale-y-100;
+  }
+
+  .all-messages-row {
+    @apply flex items-center justify-between;
+  }
+
+  .all-messages-row span {
+    @apply flex-1 text-[13px] font-semibold;
+  }
+
+  .all-messages-row strong {
+    @apply font-mono text-[10.5px] font-medium tabular-nums text-subtle;
+  }
+
+  .session-list,
+  .memory-quick-list,
+  .proactive-quick-list {
+    @apply min-h-0 pl-2;
+  }
+
+  .nav-item-row {
+    @apply flex items-center gap-2;
+  }
+
+  .nav-type-dot {
+    @apply h-1.5 w-1.5 flex-shrink-0 rounded-full;
+  }
+
+  .nav-item-name {
+    @apply flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-semibold;
+  }
+
+  .nav-item-name.mono {
+    @apply font-mono text-xs font-medium tabular-nums;
+  }
+
+  .nav-item-count {
+    @apply flex-shrink-0 font-mono text-[10.5px] tabular-nums text-subtle;
+  }
+
+  .nav-item-desc {
+    @apply mt-1 flex items-center gap-1.5 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted;
+  }
+
+  .session-actions {
+    @apply flex -translate-x-1 gap-1 opacity-0 transition-all;
+  }
+
+  .session-item:hover .session-actions {
+    @apply translate-x-0 opacity-100;
+  }
+
+  .session-count {
+    @apply grid h-5 min-w-[28px] place-items-center rounded-sm bg-surface-3 font-mono text-[10.5px] tabular-nums text-muted;
+  }
+
+  /* ── Pills / badges ──
+     Shared pill geometry: hairline-rimmed mono chip, sharp 2px corners. */
+
+  .badge,
+  .channel-pill,
+  .role-pill,
+  .type-pill,
+  .status-pill {
+    @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm px-2 py-0.5 font-mono text-[11px] font-medium;
+  }
+
+  /* role-user / preference -> accent (interaction tone) */
+  .role-user,
+  .memory-type-preference {
+    @apply bg-accent-soft text-accent;
+  }
+
+  /* role-assistant / event / active / reply -> success */
+  .role-assistant,
+  .memory-type-event,
+  .memory-status-active,
+  .proactive-result-reply {
+    @apply text-success;
+    background: rgb(var(--color-success-rgb) / 0.15);
+  }
+
+  /* role-system / superseded / skip -> warning */
+  .role-system,
+  .memory-status-superseded,
+  .proactive-result-skip {
+    @apply text-warning;
+    background: rgb(var(--color-warning-rgb) / 0.15);
+  }
+
+  /* role-tool / procedure -> warning amber, separated by a hairline ring */
+  .role-tool,
+  .memory-type-procedure {
+    @apply text-warning;
+    background: rgb(var(--color-warning-rgb) / 0.12);
+    box-shadow: inset 0 0 0 1px rgb(var(--color-warning-rgb) / 0.25);
+  }
+
+  /* unknown / profile -> neutral subtle */
+  .role-unknown,
+  .memory-type-profile,
+  .memory-type-unknown,
+  .proactive-result-unknown {
+    @apply bg-surface-3 text-muted;
+  }
+
+  /* busy / cooldown / presence gates -> danger */
+  .proactive-result-busy,
+  .proactive-result-cooldown,
+  .proactive-result-presence {
+    @apply text-danger;
+    background: rgb(var(--color-danger-rgb) / 0.15);
+  }
+
+  /* flow: drift -> success, proactive -> accent */
+  .proactive-flow-drift {
+    @apply text-success;
+    background: rgb(var(--color-success-rgb) / 0.15);
+  }
+
+  .proactive-flow-proactive {
+    @apply bg-accent-soft text-accent;
+  }
+
+  .proactive-status-cell {
+    @apply flex flex-wrap items-center gap-1.5;
+  }
+
+  .proactive-quick-item-child {
+    @apply relative ml-5 w-[calc(100%-28px)];
+  }
+
+  .proactive-quick-item-child::before {
+    content: "";
+    @apply absolute bottom-3 left-[-9px] top-3 w-px bg-border;
+  }
+
+  /* ── Batch bar ── */
+
+  .batch-bar {
+    @apply flex max-h-10 min-h-[40px] items-center gap-3 overflow-hidden border-b border-border-strong bg-accent-soft px-4 py-2 transition-all;
+  }
+
+  .batch-bar.hidden {
+    @apply max-h-0 min-h-0 border-b-0 py-0 opacity-0;
+    display: flex !important;
+  }
+
+  .batch-bar span {
+    @apply text-[12.5px] font-medium text-accent;
+  }
+
+  /* ── Table ── */
+
+  .table-head,
+  .table-row {
+    @apply grid items-center;
+    column-gap: 10px;
+  }
+
+  /* `table-row` collides with Tailwind's built-in display:table-row utility
+     (same specificity, utilities layer wins). The doubled-class selector raises
+     specificity to 0,2,0 so our grid display wins for every row — host modes and
+     plugin rows alike — without a blocklist (which would strip our row rule). */
+  .table-row.table-row {
+    display: grid;
+  }
+
+  .table-head.mode-messages,
+  .table-row.mode-messages {
+    grid-template-columns: 30px 132px 52px 1fr 104px 76px 16px;
+  }
+
+  .table-head.mode-memory,
+  .table-row.mode-memory {
+    grid-template-columns: 34px 88px minmax(180px, 1.5fr) 56px 64px 88px 90px 90px 72px 60px;
+  }
+
+  .table-head.mode-proactive-deliveries,
+  .table-row.mode-proactive-deliveries {
+    grid-template-columns: 120px 1fr 96px 36px;
+  }
+
+  .table-head.mode-proactive-items,
+  .table-row.mode-proactive-items {
+    grid-template-columns: 140px 1fr 96px 36px;
+  }
+
+  .table-head.mode-proactive-ticks,
+  .table-row.mode-proactive-ticks {
+    grid-template-columns: 108px 96px 84px 1fr 36px;
+  }
+
+  /* Machined header strip: hairline top highlight, defined bottom edge */
+  .table-head {
+    @apply sticky top-0 z-[1] min-h-[36px] border-b border-border-strong bg-surface-2 px-3.5 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04), 0 1px 0 0 rgba(0, 0, 0, 0.35);
+  }
+
+  .table-sort-btn {
+    @apply inline-flex w-full cursor-pointer items-center justify-between gap-1.5 border-none bg-transparent p-0 font-[inherit] uppercase tracking-[inherit];
+    color: inherit;
+  }
+
+  .table-sort-btn.active {
+    @apply text-fg;
+  }
+
+  .table-sort-arrow {
+    @apply min-w-[10px] text-center text-subtle;
+  }
+
+  .table-body {
+    @apply min-h-0 flex-1 overflow-auto;
+  }
+
+  .table-row {
+    @apply relative min-h-[38px] cursor-pointer border-b border-border px-3.5 transition-all;
+  }
+
+  .table-row::before {
+    content: "";
+    @apply absolute bottom-0 left-0 top-0 w-[3px] origin-center scale-y-0 bg-accent transition-transform;
+  }
+
+  .table-row:hover {
+    @apply bg-surface-2;
+    box-shadow: inset 3px 0 0 var(--color-border-strong);
+  }
+
+  /* Restrained selection: faint accent wash + solid accent edge bar + soft glow,
+     rather than a flat accent-soft block. */
+  .table-row.active {
+    background: rgb(var(--color-accent-rgb) / 0.07);
+    box-shadow: inset 3px 0 0 0 var(--color-accent), inset 0 1px 0 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .table-row.active::before {
+    @apply scale-y-100;
+    box-shadow: 0 0 12px -2px rgb(var(--color-accent-rgb) / 0.5);
+  }
+
+  /* selected (batch pick) -> warning wash so it reads apart from active */
+  .table-row.selected {
+    background: rgb(var(--color-warning-rgb) / 0.12);
+  }
+
+  .table-row.active:hover {
+    background: rgb(var(--color-accent-rgb) / 0.1);
+    box-shadow: inset 3px 0 0 0 var(--color-accent), inset 0 1px 0 0 rgba(255, 255, 255, 0.03);
+  }
+
+  /* ── Table foot ── */
+
+  .table-foot {
+    @apply flex min-h-[38px] items-center justify-between border-t border-border bg-surface-2 px-3.5;
+  }
+
+  /* ── Cells ── */
+
+  .checkbox-cell {
+    @apply flex items-center;
+  }
+
+  .cell-session,
+  .cell-seq,
+  .cell-time,
+  .cell-metric,
+  .cell-type,
+  .cell-status,
+  .cell-source {
+    @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap;
+  }
+
+  .cell-session {
+    @apply font-mono text-[11px] tabular-nums;
+  }
+
+  .cell-seq,
+  .cell-time {
+    @apply font-mono text-xs tabular-nums text-muted;
+  }
+
+  .cell-metric,
+  .cell-type,
+  .cell-status {
+    @apply text-xs text-muted;
+  }
+
+  .cell-metric {
+    @apply text-center font-mono tabular-nums;
+  }
+
+  .cell-source {
+    @apply text-[11px] text-muted;
+  }
+
+  .content-preview {
+    @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[13px];
+  }
+
+  .table-actions {
+    @apply flex justify-end gap-1;
+  }
+
+  /* ── Buttons ── */
+
+  .icon-btn,
+  .ghost,
+  .danger-ghost,
+  .primary {
+    @apply inline-flex cursor-pointer items-center gap-1.5 rounded px-3.5 py-1.5 text-[12.5px] font-medium transition-colors;
+  }
+
+  .icon-btn {
+    @apply border-none bg-transparent px-1 py-0.5 text-[13px] text-muted;
+  }
+
+  .icon-btn:hover {
+    @apply bg-surface-2 text-fg;
+  }
+
+  .btn-primary,
+  .primary {
+    @apply border-none bg-accent text-accent-ink;
+  }
+
+  .btn-primary:hover,
+  .primary:hover {
+    @apply bg-accent-deep;
+  }
+
+  .btn-ghost,
+  .ghost {
+    @apply border border-border bg-transparent text-muted;
+  }
+
+  .btn-ghost:hover,
+  .ghost:hover {
+    @apply border-border-strong bg-surface-2 text-fg;
+  }
+
+  .btn-ghost:disabled,
+  .ghost:disabled,
+  .primary:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  .btn-ghost:disabled:hover,
+  .ghost:disabled:hover {
+    @apply border-border bg-transparent text-muted;
+  }
+
+  .btn-ghost.danger,
+  .danger-ghost {
+    @apply border border-border bg-transparent text-danger;
+  }
+
+  .btn-ghost.danger:hover,
+  .danger-ghost:hover {
+    @apply border-danger;
+    background: rgb(var(--color-danger-rgb) / 0.12);
+  }
+
+  /* ── Pager ── */
+
+  .pager {
+    @apply flex items-center gap-2;
+  }
+
+  /* ── Detail pane ── */
+
+  .detail-empty {
+    @apply px-4 py-6;
+  }
+
+  .detail-empty-title,
+  .detail-title {
+    @apply text-[26px] font-semibold leading-tight tracking-tight text-fg;
+  }
+
+  .detail-empty-text,
+  .detail-subtext {
+    @apply mt-2 text-[13px] leading-relaxed text-muted;
+  }
+
+  .detail-wrap {
+    @apply p-4;
+  }
+
+  .detail-toolbar {
+    @apply flex items-center justify-between gap-2 border-b border-border pb-3;
+  }
+
+  .detail-callout {
+    @apply my-3 mb-4 rounded border border-border px-3 py-2.5 text-[12.5px] text-fg;
+    background: rgb(var(--color-warning-rgb) / 0.12);
+  }
+
+  .detail-callout.success {
+    @apply text-success;
+    background: rgb(var(--color-success-rgb) / 0.12);
+  }
+
+  .detail-block {
+    @apply mb-4;
+  }
+
+  .detail-label {
+    @apply mb-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;
+  }
+
+  .detail-content {
+    @apply rounded border border-border bg-surface-2 px-4 py-3 text-[13px] leading-[1.8] shadow-inset-hairline;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .detail-content p {
+    @apply mb-[0.6em] last:mb-0;
+  }
+
+  .detail-content ul,
+  .detail-content ol {
+    @apply my-[0.4em] pl-[18px];
+  }
+
+  .detail-content code {
+    @apply rounded-sm bg-surface-3 px-1 py-px font-mono text-xs;
+  }
+
+  .detail-grid {
+    @apply grid;
+  }
+
+  .detail-row {
+    @apply flex gap-3 border-b border-border py-2 last:border-b-0;
+  }
+
+  .detail-row-label {
+    @apply w-[120px] flex-shrink-0 text-xs text-muted;
+  }
+
+  .detail-row-val {
+    @apply min-w-0 flex-1 text-[12.5px];
+    word-break: break-all;
+  }
+
+  .detail-row-val code {
+    @apply font-mono tabular-nums;
+  }
+
+  /* ── JSON tree ── */
+
+  .json-tree {
+    @apply overflow-x-auto rounded border border-border bg-surface-2 px-4 py-3 font-mono text-xs leading-[1.75] shadow-inset-hairline;
+    word-break: break-all;
+  }
+
+  .jt-children {
+    @apply ml-1 border-l border-border pl-4;
+  }
+
+  .jt-row {
+    @apply block;
+  }
+
+  .jt-toggle {
+    @apply cursor-pointer select-none text-subtle;
+  }
+
+  .jt-key,
+  .jt-colon {
+    @apply text-muted;
+  }
+
+  .jt-str {
+    @apply text-success;
+  }
+
+  .jt-num {
+    @apply text-accent;
+  }
+
+  .jt-bool {
+    @apply text-warning;
+  }
+
+  .jt-null {
+    @apply italic text-subtle;
+  }
+
+  /* ── Similar memory items / tags ── */
+
+  .detail-similar-list {
+    @apply grid gap-2;
+  }
+
+  .detail-tag-list {
+    @apply flex flex-wrap gap-2;
+  }
+
+  .detail-chip {
+    @apply inline-flex items-center rounded-sm border border-border bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-fg;
+  }
+
+  /* ── Proactive board ── */
+
+  .proactive-board {
+    @apply grid gap-3 p-4;
+  }
+
+  .proactive-board-card {
+    @apply rounded-lg border border-border bg-surface p-4 shadow-lift-sm;
+  }
+
+  .proactive-metrics {
+    @apply mt-3 grid gap-3;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .proactive-metric {
+    @apply rounded border border-border bg-surface-2 p-3 shadow-inset-hairline;
+  }
+
+  .proactive-metric-label {
+    @apply font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;
+  }
+
+  .proactive-metric-value {
+    @apply mt-2 font-mono text-[20px] font-medium tabular-nums text-fg;
+  }
+
+  /* ── Tool chain ── */
+
+  .tool-chain {
+    @apply grid gap-3;
+  }
+
+  .tool-step {
+    @apply rounded-lg border border-border bg-surface p-4 shadow-lift-sm;
+  }
+
+  .tool-step-head {
+    @apply flex items-start justify-between gap-2;
+  }
+
+  .tool-step-title,
+  .tool-step-meta {
+    @apply flex flex-wrap items-center gap-1.5;
+  }
+
+  .tool-step-meta code {
+    @apply font-mono text-[11px] tabular-nums text-muted;
+  }
+
+  .tool-step-block + .tool-step-block {
+    @apply mt-3;
+  }
+
+  .tool-step-tags {
+    @apply mt-3 grid gap-3;
+  }
+
+  .tool-result {
+    @apply max-h-[220px] overflow-auto whitespace-pre-wrap;
+  }
+
+  /* ── Similar items ── */
+
+  .similar-item {
+    @apply cursor-pointer rounded border border-border bg-surface-2 px-3 py-2.5 transition-colors;
+  }
+
+  .similar-item:hover {
+    @apply border-border-strong bg-surface-3;
+  }
+
+  .similar-score {
+    @apply ml-auto font-mono text-[10.5px] tabular-nums text-subtle;
+  }
+
+  .similar-head {
+    @apply flex items-center gap-2;
+  }
+
+  .similar-summary {
+    @apply mt-1.5 text-[12.5px] leading-relaxed;
+  }
+
+  /* ── Modal ── */
+
+  .modal-backdrop {
+    @apply fixed inset-0 z-[400];
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(4px);
+  }
+
+  .modal {
+    @apply fixed left-1/2 top-1/2 z-[500] max-h-[calc(100vh-40px)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-lg border border-border-strong bg-surface-2 p-6 shadow-lift-md;
+    width: min(500px, calc(100vw - 24px));
+  }
+
+  .modal-title {
+    @apply text-[26px] font-semibold leading-tight tracking-tight text-fg;
+  }
+
+  .modal-sub {
+    @apply mt-2 text-[13px] text-muted;
+  }
+
+  .form-grid {
+    @apply mt-5 grid gap-4;
+  }
+
+  .form-label {
+    @apply grid gap-1.5 text-xs text-muted;
+  }
+
+  .modal-actions {
+    @apply mt-5 flex justify-end gap-2;
+  }
+
+  /* ── States ── */
+
+  .empty-state {
+    @apply px-4 py-12 text-center text-[13px] text-subtle;
+  }
+
+  /* ── Scrollbar ── */
+
+  .detail-pane::-webkit-scrollbar,
+  .explorer-nav::-webkit-scrollbar,
+  .table-body::-webkit-scrollbar,
+  .modal::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .detail-pane::-webkit-scrollbar-track,
+  .explorer-nav::-webkit-scrollbar-track,
+  .table-body::-webkit-scrollbar-track,
+  .modal::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .detail-pane::-webkit-scrollbar-thumb,
+  .explorer-nav::-webkit-scrollbar-thumb,
+  .table-body::-webkit-scrollbar-thumb,
+  .modal::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 999px;
+  }
+
+  .detail-pane::-webkit-scrollbar-thumb:hover,
+  .explorer-nav::-webkit-scrollbar-thumb:hover,
+  .table-body::-webkit-scrollbar-thumb:hover,
+  .modal::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  .detail-pane,
+  .plugin-workbench-pane,
+  .explorer-nav,
+  .table-body,
+  .modal {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+    scroll-behavior: smooth;
+    overscroll-behavior: contain;
+  }
+
+  /* ── Responsive ── */
+
+  @media (max-width: 1180px) {
+    .detail-pane {
+      display: none;
+    }
+  }
+
+  @media (max-width: 980px) {
+    .workspace {
+      @apply flex-col;
+    }
+
+    .sessions-pane {
+      @apply w-full border-b border-r-0 border-border;
+    }
+
+    .plugin-workbench-pane {
+      @apply min-h-0 w-full;
+    }
+
+    .detail-pane {
+      @apply block w-full border-l-0 border-t border-border;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .topbar {
+      @apply h-auto flex-wrap items-start px-4 py-3;
+    }
+
+    .brand {
+      @apply w-auto;
+    }
+
+    .topbar-filters,
+    .filter-row,
+    .search {
+      @apply w-full;
+    }
+
+    .filter-row {
+      @apply flex-wrap;
+    }
+
+    .table-head.mode-messages,
+    .table-row.mode-messages {
+      grid-template-columns: 34px 70px 50px 1fr 84px 70px 56px;
+    }
+
+    .table-head.mode-memory,
+    .table-row.mode-memory {
+      grid-template-columns: 34px 72px minmax(140px, 1.25fr) 48px 52px 64px 76px 76px 70px 56px;
+    }
+  }

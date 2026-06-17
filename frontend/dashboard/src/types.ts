@@ -28,7 +28,7 @@ export interface MessageRow {
   content: string;
   tool_chain: unknown;
   extra: Record<string, unknown>;
-  ts: string;
+  timestamp: string;
 }
 
 export interface ProactiveOverview {
@@ -141,6 +141,12 @@ export interface PluginConfig {
   emptyMessage?: string;
   renderMain?(container: HTMLElement, dispatch: PluginDispatch): void;
   renderDetail?(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: PluginDispatch): void;
+  // React-native detail panel (Option 2). Takes precedence over renderDetail;
+  // composes directly into the host React tree via the shared React instance.
+  Detail?: import("react").ComponentType<{ item: Record<string, unknown> | null; dispatch?: PluginDispatch }>;
+  // React-native full-width workbench (layout: "workbench"). Takes precedence
+  // over renderMain.
+  Main?: import("react").ComponentType<{ dispatch: PluginDispatch }>;
   renderNavBody?(container: HTMLElement, dispatch: PluginDispatch): void;
   renderFilters?(container: HTMLElement, dispatch: PluginDispatch): void;
   renderTopbarAction?(container: HTMLElement, dispatch: PluginDispatch): void;
@@ -161,9 +167,34 @@ export interface PluginState {
   selectedIds: Set<string>;
 }
 
+// Shared visual vocabulary exposed to runtime-injected plugin panels so they
+// render in the same industrial design system as the host (no third-party UI
+// library, no per-plugin class drift). Factories return DOM nodes; `cx` returns
+// the matching class strings for plugins that build HTML strings.
+export type UiTone = "neutral" | "success" | "warning" | "danger" | "muted" | "accent";
+export type UiBtnVariant = "primary" | "secondary" | "ghost" | "danger";
+export type UiBtnSize = "sm" | "md" | "lg";
+
+export interface DashboardUi {
+  badge(text: string, opts?: { tone?: UiTone; dot?: boolean }): HTMLSpanElement;
+  chip(text: string, opts?: { tone?: UiTone; dot?: boolean }): HTMLSpanElement;
+  btn(label: string, opts?: { variant?: UiBtnVariant; size?: UiBtnSize; onClick?: (e: MouseEvent) => void }): HTMLButtonElement;
+  tile(opts?: { label?: string; className?: string }): HTMLDivElement;
+  label(text: string): HTMLSpanElement;
+  cx: {
+    badge(tone?: UiTone): string;
+    btn(variant?: UiBtnVariant, size?: UiBtnSize): string;
+    input: string;
+    tile: string;
+    label: string;
+    mono: string;
+  };
+}
+
 export interface DashboardGlobal {
   _plugins: PluginConfig[];
   _formatters: Record<string, (value: unknown, item: Record<string, unknown>) => string>;
   registerPlugin(config: PluginConfig): void;
   registerFormatter(name: string, fn: (value: unknown, item: Record<string, unknown>) => string): void;
+  ui: DashboardUi;
 }

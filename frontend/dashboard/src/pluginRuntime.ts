@@ -1,6 +1,6 @@
 import { api } from "./api";
 import { encodePath, escapeHtml, formatSessionKeyForTable, renderMarkdown, shortTs, stripMarkdown } from "./format";
-import type { DashboardGlobal, PluginConfig } from "./types";
+import type { DashboardGlobal, DashboardUi, PluginConfig, UiBtnSize, UiBtnVariant, UiTone } from "./types";
 
 function parseMaybeJson(value: unknown): unknown {
   if (typeof value !== "string") return value;
@@ -103,6 +103,110 @@ export function attachJsonViewers(container: ParentNode): void {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Shared visual vocabulary (industrial design system) handed to plugin panels.
+// Class strings are full literals so Tailwind's content scanner keeps them.
+// ---------------------------------------------------------------------------
+
+// Tone -> background + text classes, mirroring design/ui.tsx Chip.
+const UI_TONES: Record<UiTone, string> = {
+  neutral: "bg-surface-2 text-fg",
+  success: "bg-success/15 text-success",
+  warning: "bg-warning/15 text-warning",
+  danger: "bg-danger/15 text-danger",
+  muted: "bg-surface-2 text-muted",
+  accent: "bg-accent-soft text-accent",
+};
+
+const UI_TONE_DOTS: Record<UiTone, string> = {
+  neutral: "bg-muted",
+  success: "bg-success",
+  warning: "bg-warning",
+  danger: "bg-danger",
+  muted: "bg-subtle",
+  accent: "bg-accent",
+};
+
+const UI_BTN_SIZES: Record<UiBtnSize, string> = {
+  sm: "h-7 px-2.5 text-[12px]",
+  md: "h-8 px-3 text-[13px]",
+  lg: "h-10 px-4 text-[14px]",
+};
+
+const UI_BTN_VARIANTS: Record<UiBtnVariant, string> = {
+  primary: "bg-accent text-accent-ink hover:brightness-110 active:brightness-95",
+  secondary: "bg-transparent text-fg border border-border hover:border-border-strong",
+  ghost: "bg-transparent text-fg hover:bg-surface-2",
+  danger: "bg-danger/20 text-danger hover:bg-danger/30 active:bg-danger/25",
+};
+
+const UI_BADGE_BASE = "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-mono text-[11px] tabular-nums";
+const UI_BTN_BASE = "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40";
+const UI_INPUT = "h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none";
+const UI_TILE = "relative rounded-lg border border-border bg-surface p-5";
+const UI_LABEL = "font-mono text-[10px] uppercase tracking-[0.2em] text-subtle";
+const UI_MONO = "font-mono tabular-nums";
+
+function badgeClass(tone: UiTone = "neutral"): string {
+  return `${UI_BADGE_BASE} ${UI_TONES[tone]}`;
+}
+
+function btnClass(variant: UiBtnVariant = "primary", size: UiBtnSize = "md"): string {
+  return `${UI_BTN_BASE} ${UI_BTN_SIZES[size]} ${UI_BTN_VARIANTS[variant]}`;
+}
+
+function createDashboardUi(): DashboardUi {
+  const makeBadge = (text: string, opts?: { tone?: UiTone; dot?: boolean }): HTMLSpanElement => {
+    const tone = opts?.tone ?? "neutral";
+    const span = document.createElement("span");
+    span.className = badgeClass(tone);
+    if (opts?.dot) {
+      const dot = document.createElement("span");
+      dot.className = `h-1.5 w-1.5 rounded-full ${UI_TONE_DOTS[tone]}`;
+      span.appendChild(dot);
+    }
+    span.appendChild(document.createTextNode(text));
+    return span;
+  };
+  return {
+    badge: makeBadge,
+    chip: makeBadge,
+    btn(text, opts) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = btnClass(opts?.variant ?? "primary", opts?.size ?? "md");
+      button.textContent = text;
+      if (opts?.onClick) button.addEventListener("click", opts.onClick);
+      return button;
+    },
+    tile(opts) {
+      const div = document.createElement("div");
+      div.className = opts?.className ? `${UI_TILE} ${opts.className}` : UI_TILE;
+      if (opts?.label) {
+        const label = document.createElement("div");
+        label.className = `mb-4 ${UI_LABEL}`;
+        label.textContent = opts.label;
+        div.appendChild(label);
+      }
+      return div;
+    },
+    label(text) {
+      const span = document.createElement("span");
+      span.className = UI_LABEL;
+      span.textContent = text;
+      return span;
+    },
+    cx: {
+      badge: badgeClass,
+      btn: btnClass,
+      input: UI_INPUT,
+      tile: UI_TILE,
+      label: UI_LABEL,
+      mono: UI_MONO,
+    },
+  };
+}
+
 export function installDashboardGlobals(onRegister: (plugin: PluginConfig) => void): DashboardGlobal {
   const dashboard: DashboardGlobal = {
     _plugins: [],
@@ -124,6 +228,7 @@ export function installDashboardGlobals(onRegister: (plugin: PluginConfig) => vo
     registerFormatter(name, fn) {
       this._formatters[name] = fn;
     },
+    ui: createDashboardUi(),
   };
 
   const target = window as Window & {
@@ -153,19 +258,20 @@ export async function loadPluginAssets(): Promise<void> {
     for (const panel of plugin.panels ?? []) {
       const v = panel.js_version ? `?v=${encodeURIComponent(panel.js_version)}` : "";
       if (panel.has_css) injectStylesheet(`/plugins/${plugin.id}/${panel.name}.css${v}`);
-      await injectScript(`/plugins/${plugin.id}/${panel.name}.js${v}`);
+      // ESM modules: bare react / @akashic/dashboard-ui specifiers resolve via
+      // the host import map to shared singletons. The module registers itself
+      // as a side-effect of import.
+      await importPanel(`/plugins/${plugin.id}/${panel.name}.js${v}`);
     }
   }
 }
 
-function injectScript(src: string): Promise<void> {
-  return new Promise((resolve) => {
-    const script = document.createElement("script");
-    script.src = src;
-    script.onload = () => resolve();
-    script.onerror = () => resolve();
-    document.head.appendChild(script);
-  });
+async function importPanel(src: string): Promise<void> {
+  try {
+    await import(/* @vite-ignore */ src);
+  } catch (error) {
+    console.error(`[dashboard] failed to load plugin panel ${src}`, error);
+  }
 }
 
 function injectStylesheet(href: string): void {
