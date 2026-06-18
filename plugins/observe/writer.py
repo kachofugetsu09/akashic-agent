@@ -52,7 +52,9 @@ class TraceWriter:
 
     # ── 公共接口 ─────────────────────────────────
 
-    def emit(self, event: TurnTrace | RagQueryLog | MemoryWriteTrace | GlobalErrorTrace) -> None:
+    def emit(
+        self, event: TurnTrace | RagQueryLog | MemoryWriteTrace | GlobalErrorTrace
+    ) -> None:
         """非阻塞 emit。Queue 满时 drop 并记录计数。"""
         try:
             self._queue.put_nowait(event)
@@ -97,7 +99,9 @@ class TraceWriter:
     # ── 内部写入 ─────────────────────────────────
 
     def _write_one(
-        self, conn, event: TurnTrace | RagQueryLog | MemoryWriteTrace | GlobalErrorTrace
+        self,
+        conn,
+        event: TurnTrace | RagQueryLog | MemoryWriteTrace | GlobalErrorTrace,
     ) -> None:
         ts = _now_iso()
         if isinstance(event, TurnTrace):
@@ -199,6 +203,80 @@ def _write_rag(conn, e: RagQueryLog, ts: str) -> None:
         )
 
 
+_SESSION_KEYS_CAP = 20
+
+
+# 按 (fingerprint, bucket) UPSERT：已存在则累加 count、推进 last_ts、合并 session_keys，
+# 沿用首次插入的代表样本（error_type / message / traceback_text 等）。
+def _write_global_error(conn, e: GlobalErrorTrace) -> None:
+    with conn:
+        existing = conn.execute(
+            "SELECT count, last_ts, session_keys FROM global_errors WHERE fingerprint = ? AND bucket = ?",
+            (e.fingerprint, e.bucket),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO global_errors (
+                    fingerprint, bucket, source, logger_name, error_type, message,
+                    traceback_text, level, first_ts, last_ts, count, session_keys, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                """,
+                (
+                    e.fingerprint,
+                    e.bucket,
+                    e.source,
+                    e.logger_name,
+                    e.error_type,
+                    e.message,
+                    e.traceback_text,
+                    e.level,
+                    e.first_ts,
+                    e.last_ts,
+                    e.count,
+                    _merge_session_keys([], e.session_keys),
+                ),
+            )
+            return
+        prev_count = int(existing[0] or 0)
+        prev_last_ts = str(existing[1] or e.last_ts)
+        prev_keys = _parse_session_keys(existing[2])
+        conn.execute(
+            """
+            UPDATE global_errors
+            SET count = ?, last_ts = ?, session_keys = ?
+            WHERE fingerprint = ? AND bucket = ?
+            """,
+            (
+                prev_count + e.count,
+                max(prev_last_ts, e.last_ts),
+                _merge_session_keys(prev_keys, e.session_keys),
+                e.fingerprint,
+                e.bucket,
+            ),
+        )
+
+
+def _parse_session_keys(raw: object) -> list[str]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(str(raw))
+    except (ValueError, TypeError):
+        return []
+    return [str(x) for x in data] if isinstance(data, list) else []
+
+
+def _merge_session_keys(prev: list[str], new: list[str]) -> str | None:
+    merged: list[str] = list(prev)
+    for key in new:
+        if key and key not in merged:
+            merged.append(key)
+        if len(merged) >= _SESSION_KEYS_CAP:
+            break
+    return json.dumps(merged[:_SESSION_KEYS_CAP], ensure_ascii=False) if merged else None
+
+
 def _write_memory_write(conn, e: MemoryWriteTrace, ts: str) -> None:
     import json as _json
     with conn:
@@ -219,67 +297,3 @@ def _write_memory_write(conn, e: MemoryWriteTrace, ts: str) -> None:
                 e.error,
             ),
         )
-
-
-def _write_global_error(conn, e: GlobalErrorTrace) -> None:
-    session_keys = _merge_session_keys([], e.session_keys)
-    with conn:
-        row = conn.execute(
-            "SELECT session_keys FROM global_errors WHERE fingerprint = ? AND bucket = ?",
-            (e.fingerprint, e.bucket),
-        ).fetchone()
-        if row is not None:
-            session_keys = _merge_session_keys(_json_loads_list(row[0]), e.session_keys)
-        conn.execute(
-            """
-            INSERT INTO global_errors (
-                fingerprint, bucket, source, logger_name, error_type, message,
-                traceback_text, level, first_ts, last_ts, count, session_keys,
-                flow, phase, turn, tick
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(fingerprint, bucket) DO UPDATE SET
-                count = global_errors.count + excluded.count,
-                last_ts = excluded.last_ts,
-                session_keys = excluded.session_keys,
-                status = global_errors.status
-            """,
-            (
-                e.fingerprint,
-                e.bucket,
-                e.source,
-                e.logger_name,
-                e.error_type,
-                e.message,
-                e.traceback_text,
-                e.level,
-                e.first_ts,
-                e.last_ts,
-                max(1, int(e.count)),
-                json.dumps(session_keys, ensure_ascii=False) if session_keys else None,
-                e.flow,
-                e.phase,
-                e.turn,
-                e.tick,
-            ),
-        )
-
-
-def _json_loads_list(raw: object) -> list[str]:
-    try:
-        value = json.loads(str(raw or "[]"))
-    except Exception:
-        return []
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value if str(item)]
-
-
-def _merge_session_keys(old: list[str], new: list[str]) -> list[str]:
-    seen: list[str] = []
-    for key in [*old, *new]:
-        text = str(key or "").strip()
-        if text and text not in seen:
-            seen.append(text)
-        if len(seen) >= 20:
-            break
-    return seen

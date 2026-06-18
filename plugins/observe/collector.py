@@ -1,3 +1,10 @@
+"""GlobalErrorCollector：零埋点地采集全局错误写入 observe.db。
+
+接管四个全局错误出口（root logging handler / sys.excepthook /
+asyncio loop exception handler / threading.excepthook），按 指纹 × 小时桶 在内存里
+去重计数，后台 flush task 周期性 emit 给 TraceWriter 落库。安装/还原与插件生命周期绑定。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,202 +14,321 @@ import re
 import sys
 import threading
 import traceback
+import types
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from types import TracebackType
-from typing import Any, Callable
-
-from core.common.diagnostic_log import current_diagnostic_context
+from pathlib import Path
+from typing import Protocol
 
 from .events import GlobalErrorTrace
 
-_SKIP_LOGGER_PREFIXES = ("plugin.observe", "observe.", "plugins.observe")
-_HEX_RE = re.compile(r"\b[0-9a-f]{8,}\b", re.IGNORECASE)
-_NUM_RE = re.compile(r"\b\d+\b")
-_MESSAGE_LIMIT = 500
-_TRACEBACK_LIMIT = 4000
+logger = logging.getLogger("observe.collector")
+
+# 当前正在处理的会话；由 AgentLoop / ProactiveLoop / passive turn 设置，logging 采集时读取。
+current_session_key: ContextVar[str | None] = ContextVar(
+    "observe_current_session_key", default=None
+)
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_FLUSH_INTERVAL = 10.0
+_MESSAGE_MAX = 500
+_TRACEBACK_MAX = 4000
+_SESSION_KEYS_CAP = 20
+
+# logging 采集跳过这些 logger（防自噬 + 避免 asyncio 双重计数：asyncio 任务异常走第 3 层）。
+_SKIP_LOGGER_PREFIXES = ("observe", "plugin.observe", "asyncio")
+
+# 指纹归一化：抹掉数字 / 十六进制 / 常见 id，使"同一个 bug"指纹稳定。
+_NORM_HEX = re.compile(r"0x[0-9a-fA-F]+")
+_NORM_NUM = re.compile(r"\d+")
+
+
+class _Emitter(Protocol):
+    def emit(self, event: GlobalErrorTrace) -> None: ...
+
+
+@dataclass
+class _BucketAgg:
+    fingerprint: str
+    bucket: str
+    source: str
+    logger_name: str
+    error_type: str
+    message: str
+    traceback_text: str
+    level: str
+    first_ts: str
+    last_ts: str
+    count: int = 0
+    session_keys: set[str] = field(default_factory=set)
 
 
 class GlobalErrorCollector:
-    def __init__(self, writer: Any) -> None:
+    def __init__(self, writer: _Emitter) -> None:
         self._writer = writer
-        self._handler = _GlobalErrorLogHandler(self)
-        self._old_sys_excepthook: Callable[..., object] | None = None
-        self._old_threading_excepthook: Callable[..., object] | None = None
-        self._old_asyncio_handler: Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object] | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()
+        self._buckets: dict[tuple[str, str], _BucketAgg] = {}
+        self._flush_task: asyncio.Task[None] | None = None
         self._installed = False
+        # 旧钩子，卸载时还原
+        self._log_handler: logging.Handler | None = None
+        self._prev_excepthook = None
+        self._prev_threadhook = None
+        self._prev_loop_handler = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    # ── 生命周期 ─────────────────────────────────
 
     def install(self) -> None:
         if self._installed:
             return
         self._installed = True
-        logging.getLogger().addHandler(self._handler)
-        self._old_sys_excepthook = sys.excepthook
-        sys.excepthook = self._handle_sys_exception
-        self._old_threading_excepthook = threading.excepthook
-        threading.excepthook = self._handle_thread_exception
+        # 1. root logging handler（level >= ERROR）
+        handler = _CollectorLogHandler(self)
+        logging.getLogger().addHandler(handler)
+        self._log_handler = handler
+        # 2. 同步未捕获异常
+        self._prev_excepthook = sys.excepthook
+        sys.excepthook = self._on_sys_except
+        # 3. 线程崩溃
+        self._prev_threadhook = threading.excepthook
+        threading.excepthook = self._on_thread_except
+        # 4. asyncio 任务异常 + flush task
         try:
-            self._loop = asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._loop = None
-        if self._loop is not None:
-            self._old_asyncio_handler = self._loop.get_exception_handler()
-            self._loop.set_exception_handler(self._handle_asyncio_exception)
+            loop = None
+        if loop is not None:
+            self._loop = loop
+            self._prev_loop_handler = loop.get_exception_handler()
+            loop.set_exception_handler(self._on_loop_except)
+            self._flush_task = loop.create_task(self._flush_loop(), name="observe_error_flush")
+        logger.info("global error collector installed")
 
-    def close(self) -> None:
+    async def uninstall(self) -> None:
         if not self._installed:
             return
         self._installed = False
-        logging.getLogger().removeHandler(self._handler)
-        if self._old_sys_excepthook is not None:
-            sys.excepthook = self._old_sys_excepthook
-        if self._old_threading_excepthook is not None:
-            threading.excepthook = self._old_threading_excepthook
+        # 1. 还原钩子
+        if self._log_handler is not None:
+            logging.getLogger().removeHandler(self._log_handler)
+            self._log_handler = None
+        if self._prev_excepthook is not None:
+            sys.excepthook = self._prev_excepthook
+        if self._prev_threadhook is not None:
+            threading.excepthook = self._prev_threadhook
         if self._loop is not None:
-            self._loop.set_exception_handler(self._old_asyncio_handler)
+            self._loop.set_exception_handler(self._prev_loop_handler)
+        # 2. 停 flush task 并最终 flush
+        if self._flush_task is not None:
+            _ = self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+            self._flush_task = None
+        self._flush()
+        logger.info("global error collector uninstalled")
 
-    def emit_log_record(self, record: logging.LogRecord) -> None:
-        if record.levelno < logging.ERROR or _skip_logger(record.name):
-            return
-        exc_type: type[BaseException] | None = None
-        exc_value: BaseException | None = None
-        exc_tb: TracebackType | None = None
-        if record.exc_info:
-            exc_type, exc_value, exc_tb = record.exc_info
-        message = record.getMessage()
-        self._emit(
-            source="log",
-            logger_name=record.name,
-            level=record.levelname,
-            message=message,
-            exc_type=exc_type,
-            exc_value=exc_value,
-            exc_tb=exc_tb,
-        )
+    # ── 采集入口 ─────────────────────────────────
 
-    def _handle_sys_exception(
-        self,
-        exc_type: type[BaseException],
-        exc_value: BaseException,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        self._emit(
-            source="uncaught",
-            logger_name="sys.excepthook",
-            level="CRITICAL",
-            message=str(exc_value),
-            exc_type=exc_type,
-            exc_value=exc_value,
-            exc_tb=exc_tb,
-        )
-        if self._old_sys_excepthook is not None:
-            self._old_sys_excepthook(exc_type, exc_value, exc_tb)
-
-    def _handle_thread_exception(self, args: threading.ExceptHookArgs) -> None:
-        self._emit(
-            source="thread",
-            logger_name=str(getattr(args.thread, "name", "") or "threading.excepthook"),
-            level="CRITICAL",
-            message=str(args.exc_value),
-            exc_type=args.exc_type,
-            exc_value=args.exc_value,
-            exc_tb=args.exc_traceback,
-        )
-        if self._old_threading_excepthook is not None:
-            self._old_threading_excepthook(args)
-
-    def _handle_asyncio_exception(
-        self,
-        loop: asyncio.AbstractEventLoop,
-        context: dict[str, Any],
-    ) -> None:
-        exc = context.get("exception")
-        message = str(context.get("message") or exc or "asyncio exception")
-        self._emit(
-            source="asyncio",
-            logger_name="asyncio",
-            level="ERROR",
-            message=message,
-            exc_type=type(exc) if isinstance(exc, BaseException) else None,
-            exc_value=exc if isinstance(exc, BaseException) else None,
-            exc_tb=exc.__traceback__ if isinstance(exc, BaseException) else None,
-        )
-        if self._old_asyncio_handler is not None:
-            self._old_asyncio_handler(loop, context)
-        else:
-            loop.default_exception_handler(context)
-
-    def _emit(
+    # 把一次错误折叠进内存的 (fingerprint, bucket) 桶。线程安全，绝不抛出。
+    def capture(
         self,
         *,
         source: str,
         logger_name: str,
-        level: str,
+        error_type: str,
         message: str,
+        traceback_text: str,
+        level: str,
+        top_frame: str,
+        session_key: str | None,
+    ) -> None:
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            bucket = now[:13]
+            fingerprint = _fingerprint(error_type, message, top_frame)
+            key = (fingerprint, bucket)
+            with self._lock:
+                agg = self._buckets.get(key)
+                if agg is None:
+                    agg = _BucketAgg(
+                        fingerprint=fingerprint,
+                        bucket=bucket,
+                        source=source,
+                        logger_name=logger_name,
+                        error_type=error_type,
+                        message=message[:_MESSAGE_MAX],
+                        traceback_text=traceback_text[:_TRACEBACK_MAX],
+                        level=level,
+                        first_ts=now,
+                        last_ts=now,
+                    )
+                    self._buckets[key] = agg
+                agg.count += 1
+                agg.last_ts = now
+                if session_key and len(agg.session_keys) < _SESSION_KEYS_CAP:
+                    agg.session_keys.add(session_key)
+        except Exception:
+            # 采集器自身绝不影响主流程
+            pass
+
+    # ── 钩子回调 ─────────────────────────────────
+
+    def _on_sys_except(self, exc_type, exc_value, tb) -> None:
+        self._capture_exc("uncaught", "root", exc_type, exc_value, tb, "ERROR")
+        if callable(self._prev_excepthook):
+            self._prev_excepthook(exc_type, exc_value, tb)
+
+    def _on_thread_except(self, args) -> None:
+        self._capture_exc(
+            "thread",
+            getattr(getattr(args, "thread", None), "name", "thread") or "thread",
+            args.exc_type,
+            args.exc_value,
+            args.exc_traceback,
+            "ERROR",
+        )
+        if callable(self._prev_threadhook):
+            self._prev_threadhook(args)
+
+    def _on_loop_except(self, loop, context: dict[str, object]) -> None:
+        exc = context.get("exception")
+        if isinstance(exc, BaseException):
+            self._capture_exc(
+                "asyncio", "asyncio", type(exc), exc, exc.__traceback__, "ERROR"
+            )
+        else:
+            msg = str(context.get("message", "asyncio error"))
+            self.capture(
+                source="asyncio",
+                logger_name="asyncio",
+                error_type="AsyncioError",
+                message=msg,
+                traceback_text=msg,
+                level="ERROR",
+                top_frame="asyncio",
+                session_key=None,
+            )
+        if callable(self._prev_loop_handler):
+            self._prev_loop_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    def _capture_exc(
+        self,
+        source: str,
+        logger_name: str,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
-        exc_tb: TracebackType | None,
+        tb: types.TracebackType | None,
+        level: str,
     ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        error_type = exc_type.__name__ if exc_type is not None else "LogError"
-        traceback_text = _format_traceback(exc_type, exc_value, exc_tb)
-        fingerprint = _fingerprint(error_type, message, traceback_text)
-        diag = current_diagnostic_context()
-        session = diag["session"]
-        self._writer.emit(
-            GlobalErrorTrace(
-                fingerprint=fingerprint,
-                bucket=now[:13],
-                source=source,
-                logger_name=logger_name,
-                error_type=error_type,
-                message=message[:_MESSAGE_LIMIT],
-                traceback_text=traceback_text[:_TRACEBACK_LIMIT],
-                level=level,
-                first_ts=now,
-                last_ts=now,
-                count=1,
-                session_keys=[session] if session else [],
-                flow=diag["flow"],
-                phase=diag["phase"],
-                turn=diag["turn"],
-                tick=diag["tick"],
-            )
+        type_name = exc_type.__name__ if exc_type else "Error"
+        message = str(exc_value) if exc_value else type_name
+        tb_text = "".join(traceback.format_exception(exc_type, exc_value, tb))
+        self.capture(
+            source=source,
+            logger_name=logger_name,
+            error_type=type_name,
+            message=message,
+            traceback_text=tb_text,
+            level=level,
+            top_frame=_top_app_frame(tb),
+            session_key=current_session_key.get(),
         )
 
+    # ── flush ────────────────────────────────────
 
-class _GlobalErrorLogHandler(logging.Handler):
+    async def _flush_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_FLUSH_INTERVAL)
+            self._flush()
+
+    # 把内存里累计的增量 emit 给 writer（writer 端 UPSERT 累加），随后清空。
+    def _flush(self) -> None:
+        with self._lock:
+            if not self._buckets:
+                return
+            pending = list(self._buckets.values())
+            self._buckets.clear()
+        for agg in pending:
+            self._writer.emit(
+                GlobalErrorTrace(
+                    fingerprint=agg.fingerprint,
+                    bucket=agg.bucket,
+                    source=agg.source,
+                    logger_name=agg.logger_name,
+                    error_type=agg.error_type,
+                    message=agg.message,
+                    traceback_text=agg.traceback_text,
+                    level=agg.level,
+                    first_ts=agg.first_ts,
+                    last_ts=agg.last_ts,
+                    count=agg.count,
+                    session_keys=list(agg.session_keys),
+                )
+            )
+
+
+class _CollectorLogHandler(logging.Handler):
     def __init__(self, collector: GlobalErrorCollector) -> None:
         super().__init__(level=logging.ERROR)
         self._collector = collector
 
     def emit(self, record: logging.LogRecord) -> None:
-        self._collector.emit_log_record(record)
+        try:
+            name = record.name or ""
+            if any(name.startswith(p) for p in _SKIP_LOGGER_PREFIXES):
+                return
+            exc_info = record.exc_info
+            if exc_info and exc_info[0] is not None:
+                exc_type, exc_value, tb = exc_info
+                error_type = exc_type.__name__
+                message = str(exc_value) if exc_value else record.getMessage()
+                tb_text = "".join(traceback.format_exception(exc_type, exc_value, tb))
+                top_frame = _top_app_frame(tb)
+            else:
+                error_type = "LogError"
+                message = record.getMessage()
+                tb_text = f"{name}: {message}\n  at {record.pathname}:{record.lineno}"
+                top_frame = f"{record.pathname}:{record.lineno}"
+            self._collector.capture(
+                source="log",
+                logger_name=name,
+                error_type=error_type,
+                message=message,
+                traceback_text=tb_text,
+                level=record.levelname,
+                top_frame=top_frame,
+                session_key=current_session_key.get(),
+            )
+        except Exception:
+            pass
 
 
-def _skip_logger(name: str) -> bool:
-    return any(name.startswith(prefix) for prefix in _SKIP_LOGGER_PREFIXES)
+# ── 辅助 ─────────────────────────────────────────
 
 
-def _format_traceback(
-    exc_type: type[BaseException] | None,
-    exc_value: BaseException | None,
-    exc_tb: TracebackType | None,
-) -> str:
-    if exc_type is None:
-        return ""
-    return "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+def _fingerprint(error_type: str, message: str, top_frame: str) -> str:
+    norm = _NORM_NUM.sub("#", _NORM_HEX.sub("#", message))
+    raw = f"{error_type}|{norm}|{top_frame}"
+    return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-def _fingerprint(error_type: str, message: str, traceback_text: str) -> str:
-    normalized = _NUM_RE.sub("<n>", _HEX_RE.sub("<hex>", message))
-    frame = _top_app_frame(traceback_text)
-    raw = f"{error_type}|{normalized}|{frame}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
-
-
-def _top_app_frame(traceback_text: str) -> str:
-    for line in traceback_text.splitlines():
-        if "/akasic-agent/" in line and "/plugins/observe/" not in line:
-            return line.strip()
-    return ""
+# 取 traceback 中第一个属于本项目的栈帧 "relpath:lineno"；没有则取最内层帧。
+def _top_app_frame(tb: types.TracebackType | None) -> str:
+    frames = traceback.extract_tb(tb) if tb else []
+    if not frames:
+        return "?"
+    chosen = frames[-1]
+    for frame in frames:
+        try:
+            rel = Path(frame.filename).resolve().relative_to(_PROJECT_ROOT)
+        except ValueError:
+            continue
+        chosen = frame
+        return f"{rel}:{frame.lineno}"
+    return f"{Path(chosen.filename).name}:{chosen.lineno}"

@@ -73,25 +73,24 @@ CREATE TABLE IF NOT EXISTS memory_writes (
 CREATE INDEX IF NOT EXISTS ix_mw_sk_ts ON memory_writes (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_mw_action ON memory_writes (action, ts);
 
+-- ─────────────────────────────────────────────
+-- 4. global_errors  全局错误采集（按 指纹 × 小时桶 聚合）
+-- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS global_errors (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    fingerprint    TEXT NOT NULL,
-    bucket         TEXT NOT NULL,
-    source         TEXT NOT NULL,
+    fingerprint    TEXT    NOT NULL,
+    bucket         TEXT    NOT NULL,         -- ts[:13] 小时桶
+    source         TEXT    NOT NULL,         -- log | uncaught | asyncio | thread
     logger_name    TEXT,
     error_type     TEXT,
     message        TEXT,
     traceback_text TEXT,
     level          TEXT,
-    first_ts       TEXT NOT NULL,
-    last_ts        TEXT NOT NULL,
+    first_ts       TEXT    NOT NULL,
+    last_ts        TEXT    NOT NULL,
     count          INTEGER NOT NULL DEFAULT 1,
-    session_keys   TEXT,
-    flow           TEXT,
-    phase          TEXT,
-    turn           TEXT,
-    tick           TEXT,
-    status         TEXT NOT NULL DEFAULT 'active'
+    session_keys   TEXT,                      -- JSON 数组（去重，上限 20）
+    status         TEXT    NOT NULL DEFAULT 'active'  -- active | acknowledged | ignored
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_gerr_fp_bucket ON global_errors (fingerprint, bucket);
 CREATE INDEX IF NOT EXISTS ix_gerr_last_ts ON global_errors (last_ts);
@@ -118,6 +117,7 @@ _TURNS_COLUMNS: dict[str, str] = {
     "react_cache_prompt_tokens": "INTEGER",
     "react_cache_hit_tokens": "INTEGER",
 }
+
 
 _GLOBAL_ERRORS_COLUMNS: dict[str, str] = {
     "flow": "TEXT",

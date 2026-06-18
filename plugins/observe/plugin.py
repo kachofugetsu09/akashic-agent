@@ -37,12 +37,12 @@ class ObservePlugin(Plugin):
             self._writer.run(),
             name="observe_writer",
         )
-        self._collector = GlobalErrorCollector(self._writer)
-        self._collector.install()
         self._retention_task = asyncio.create_task(
             run_retention_if_needed(workspace / "observe" / "observe.db"),
             name="observe_retention",
         )
+        self._collector = GlobalErrorCollector(self._writer)
+        self._collector.install()
         self.context.event_bus.on(TurnCommitted, self._observe_turn_committed)
         self.context.event_bus.on(RetrievalCompleted, self._observe_retrieval)
         self.context.event_bus.on(MemoryWritten, self._observe_memory_written)
@@ -50,7 +50,7 @@ class ObservePlugin(Plugin):
     async def terminate(self) -> None:
         collector = getattr(self, "_collector", None)
         if collector is not None:
-            collector.close()
+            await collector.uninstall()
         for task in (
             getattr(self, "_retention_task", None),
             getattr(self, "_writer_task", None),
