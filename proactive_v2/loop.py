@@ -442,8 +442,12 @@ class ProactiveLoop:
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
-        # 给本 tick 打上 session 归属，供 observe 全局错误采集关联。
-        _ = current_session_key.set(self._target_session_key())
+        # 给本 tick 打上 session 归属，供 observe 全局错误采集关联；
+        # 纯埋点，依赖未就绪时静默跳过，绝不影响 tick 主流程。
+        try:
+            _ = current_session_key.set(self._target_session_key())
+        except AttributeError:
+            pass
         # 主动回复全链路入口：Gate → Fetch → Judge → Resolve → Deliver。
         started = time.perf_counter()
         session_key = self._target_session_key()

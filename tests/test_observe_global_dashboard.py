@@ -1,4 +1,5 @@
 import importlib
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -8,7 +9,7 @@ _writer = importlib.import_module("plugins.observe.writer")
 _dash = importlib.import_module("plugins.observe.dashboard")
 _events = importlib.import_module("plugins.observe.events")
 
-open_db = cast(Callable[[Path], object], getattr(_db, "open_db"))
+open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_db, "open_db"))
 _write_global_error = getattr(_writer, "_write_global_error")
 GlobalErrorTrace = getattr(_events, "GlobalErrorTrace")
 ObserveDashboardReader = getattr(_dash, "ObserveDashboardReader")
