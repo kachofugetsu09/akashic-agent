@@ -15,13 +15,18 @@ import sys
 import threading
 import traceback
 import types
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from .events import GlobalErrorTrace
+
+_SysExceptHook = Callable[[type[BaseException], BaseException, "types.TracebackType | None"], object]
+_ThreadExceptHook = Callable[["threading.ExceptHookArgs"], object]
+_LoopExceptHandler = Callable[[asyncio.AbstractEventLoop, "dict[str, Any]"], object]
 
 logger = logging.getLogger("observe.collector")
 
@@ -44,6 +49,10 @@ _NORM_HEX = re.compile(r"0x[0-9a-fA-F]+")
 _NORM_NUM = re.compile(r"\d+")
 
 
+def _empty_str_set() -> set[str]:
+    return set()
+
+
 class _Emitter(Protocol):
     def emit(self, event: GlobalErrorTrace) -> None: ...
 
@@ -61,7 +70,7 @@ class _BucketAgg:
     first_ts: str
     last_ts: str
     count: int = 0
-    session_keys: set[str] = field(default_factory=set)
+    session_keys: set[str] = field(default_factory=_empty_str_set)
 
 
 class GlobalErrorCollector:
@@ -73,9 +82,9 @@ class GlobalErrorCollector:
         self._installed = False
         # 旧钩子，卸载时还原
         self._log_handler: logging.Handler | None = None
-        self._prev_excepthook = None
-        self._prev_threadhook = None
-        self._prev_loop_handler = None
+        self._prev_excepthook: _SysExceptHook | None = None
+        self._prev_threadhook: _ThreadExceptHook | None = None
+        self._prev_loop_handler: _LoopExceptHandler | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ── 生命周期 ─────────────────────────────────
@@ -177,24 +186,32 @@ class GlobalErrorCollector:
 
     # ── 钩子回调 ─────────────────────────────────
 
-    def _on_sys_except(self, exc_type, exc_value, tb) -> None:
+    def _on_sys_except(
+        self,
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        tb: types.TracebackType | None,
+    ) -> None:
         self._capture_exc("uncaught", "root", exc_type, exc_value, tb, "ERROR")
-        if callable(self._prev_excepthook):
-            self._prev_excepthook(exc_type, exc_value, tb)
+        if self._prev_excepthook is not None:
+            _ = self._prev_excepthook(exc_type, exc_value, tb)
 
-    def _on_thread_except(self, args) -> None:
+    def _on_thread_except(self, args: threading.ExceptHookArgs) -> None:
+        thread_name = args.thread.name if args.thread is not None else "thread"
         self._capture_exc(
             "thread",
-            getattr(getattr(args, "thread", None), "name", "thread") or "thread",
+            thread_name,
             args.exc_type,
             args.exc_value,
             args.exc_traceback,
             "ERROR",
         )
-        if callable(self._prev_threadhook):
-            self._prev_threadhook(args)
+        if self._prev_threadhook is not None:
+            _ = self._prev_threadhook(args)
 
-    def _on_loop_except(self, loop, context: dict[str, object]) -> None:
+    def _on_loop_except(
+        self, loop: asyncio.AbstractEventLoop, context: dict[str, Any]
+    ) -> None:
         exc = context.get("exception")
         if isinstance(exc, BaseException):
             self._capture_exc(
@@ -212,8 +229,8 @@ class GlobalErrorCollector:
                 top_frame="asyncio",
                 session_key=None,
             )
-        if callable(self._prev_loop_handler):
-            self._prev_loop_handler(loop, context)
+        if self._prev_loop_handler is not None:
+            _ = self._prev_loop_handler(loop, context)
         else:
             loop.default_exception_handler(context)
 
@@ -320,15 +337,14 @@ def _fingerprint(error_type: str, message: str, top_frame: str) -> str:
 
 # 取 traceback 中第一个属于本项目的栈帧 "relpath:lineno"；没有则取最内层帧。
 def _top_app_frame(tb: types.TracebackType | None) -> str:
-    frames = traceback.extract_tb(tb) if tb else []
+    frames: list[traceback.FrameSummary] = traceback.extract_tb(tb) if tb else []
     if not frames:
         return "?"
-    chosen = frames[-1]
+    chosen: traceback.FrameSummary = frames[-1]
     for frame in frames:
         try:
             rel = Path(frame.filename).resolve().relative_to(_PROJECT_ROOT)
         except ValueError:
             continue
-        chosen = frame
-        return f"{rel}:{frame.lineno}"
-    return f"{Path(chosen.filename).name}:{chosen.lineno}"
+        return f"{rel}:{frame.lineno or 0}"
+    return f"{Path(chosen.filename).name}:{chosen.lineno or 0}"
