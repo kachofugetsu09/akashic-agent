@@ -16,12 +16,12 @@ import threading
 import traceback
 import types
 from collections.abc import Callable
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from core.error_context import current_session_key as current_session_key
 from .events import GlobalErrorTrace
 
 _SysExceptHook = Callable[[type[BaseException], BaseException, "types.TracebackType | None"], object]
@@ -29,11 +29,6 @@ _ThreadExceptHook = Callable[["threading.ExceptHookArgs"], object]
 _LoopExceptHandler = Callable[[asyncio.AbstractEventLoop, "dict[str, Any]"], object]
 
 logger = logging.getLogger("observe.collector")
-
-# 当前正在处理的会话；由 AgentLoop / ProactiveLoop / passive turn 设置，logging 采集时读取。
-current_session_key: ContextVar[str | None] = ContextVar(
-    "observe_current_session_key", default=None
-)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _FLUSH_INTERVAL = 10.0

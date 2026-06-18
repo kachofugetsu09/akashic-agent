@@ -309,6 +309,20 @@ function App(): React.ReactElement {
     });
   };
 
+  // 插件面板（如 observe 错误排障台）通过 CustomEvent 请求跳到某个 session 的对话现场。
+  useEffect(() => {
+    const onGoto = (e: Event): void => {
+      const key = (e as CustomEvent<string>).detail;
+      if (!key) return;
+      setActiveSessionKey(key);
+      setActiveMessage(null);
+      setMessagePage(1);
+      selectView("sessions");
+    };
+    window.addEventListener("akashic:goto-session", onGoto);
+    return () => window.removeEventListener("akashic:goto-session", onGoto);
+  }, []);
+
   const sort = (scope: "messages" | "proactive", key: string): void => {
     const flip = (currentKey: string, currentOrder: SortOrder): SortOrder => currentKey === key && currentOrder === "desc" ? "asc" : "desc";
     if (scope === "messages") {

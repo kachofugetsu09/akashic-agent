@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, TypeAlias, cast
 
+from core.error_context import current_session_key
 from agent.context import ContextBuilder
 from agent.core.passive_turn import (
     AgentCore,
@@ -580,6 +581,8 @@ class AgentLoop:
     ) -> OutboundMessage:
         started = time.time()
         key = session_key or msg.session_key
+        # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
+        _ = current_session_key.set(key)
 
         # 1. 先处理可能存在的续跑态，并发布 turn started。
         msg, resumed_from_interrupt = self._resume_interrupted_message(msg, key)

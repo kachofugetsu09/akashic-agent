@@ -168,17 +168,6 @@ function _delta(values: number[]): number | null {
   return ((last - prev) / prev) * 100;
 }
 
-// 相对时间标签："刚刚" / "Xs 前" / "Xm 前"。
-function _ago(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "刚刚";
-  const s = Math.floor(ms / 1000);
-  if (s < 3) return "刚刚";
-  if (s < 60) return `${s}s 前`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m 前`;
-  return `${Math.floor(m / 60)}h 前`;
-}
-
 // 严重度配色：爆发或高频 -> danger，中频 -> warning，低频 -> muted。
 function _severity(count: number, spiking: boolean): ChartTone {
   if (spiking || count >= 20) return "danger";
@@ -188,12 +177,9 @@ function _severity(count: number, spiking: boolean): ChartTone {
 
 // A monitoring widget card with a hairline header — mirrors the superlog widget
 // chrome (uppercase mono title, bottom-bordered header, padded body).
-function Card({ title, children, bodyClass, style }: { title: string; children: ReactNode; bodyClass?: string; style?: React.CSSProperties }): ReactElement {
+function Card({ title, children, bodyClass }: { title: string; children: ReactNode; bodyClass?: string }): ReactElement {
   return (
-    <div
-      className="flex animate-fade-up flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-lift-sm transition-[box-shadow,border-color] duration-200 hover:border-border-strong hover:shadow-lift-md"
-      style={style}
-    >
+    <div className="flex flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-lift-sm">
       <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
         <h3 className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">{title}</h3>
       </div>
@@ -418,12 +404,9 @@ function ErrorRow({ g, active, onClick }: { g: GErrGroup; active: boolean; onCli
     <button
       type="button"
       onClick={onClick}
-      className={`grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-all duration-150 ${active ? "border-border-strong bg-accent-soft" : "border-transparent hover:border-border hover:bg-surface-2"}`}
+      className={`grid w-full grid-cols-[9px_1fr_auto] items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors ${active ? "border-border-strong bg-accent-soft" : "border-transparent hover:bg-surface-2"}`}
     >
-      <span className="relative flex h-2 w-2">
-        {g.is_spiking && <span className={`absolute inline-flex h-full w-full rounded-full ${TONE_BG[tone]} opacity-60 animate-ping`} />}
-        <span className={`relative inline-flex h-2 w-2 rounded-full ${TONE_BG[tone]} ${g.is_spiking ? "animate-pulse-dot" : ""}`} />
-      </span>
+      <span className={`h-2 w-2 rounded-full ${TONE_BG[tone]}`} />
       <div className="min-w-0">
         <div className="flex items-center gap-1.5 font-mono text-[12.5px]">
           <span className="truncate">{g.error_type}</span>
@@ -556,7 +539,7 @@ function ErrorDetail({
           type="button"
           onClick={() => detail.occurrences[0] && onGoto(detail.occurrences[0].session_key)}
           disabled={detail.occurrences.length === 0}
-          className="rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-[#dfe3ff] transition-all duration-150 hover:brightness-110 active:brightness-95 disabled:opacity-40"
+          className="rounded-md border border-accent-deep bg-accent-soft px-3 py-2 font-mono text-[11px] text-[#dfe3ff] disabled:opacity-40"
         >
           查看最近对话 ↗
         </button>
@@ -600,35 +583,6 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
   );
 }
 
-// 首屏骨架：发丝边框块 + scan 光流扫过，取代白屏 → 数据啪地弹出。
-function SkelBlock({ className }: { className: string }): ReactElement {
-  return (
-    <div className={`relative overflow-hidden rounded-2xl border border-border bg-surface ${className}`}>
-      <div className="absolute inset-0 -translate-x-full animate-scan bg-gradient-to-r from-transparent via-white/[0.04] to-transparent" />
-    </div>
-  );
-}
-
-function ObserveSkeleton(): ReactElement {
-  return (
-    <div className="flex flex-col gap-4 p-6">
-      <div className="flex items-end justify-between">
-        <div className="flex flex-col gap-2">
-          <SkelBlock className="h-7 w-48 rounded-lg" />
-          <SkelBlock className="h-3 w-64 rounded" />
-        </div>
-        <SkelBlock className="h-9 w-56 rounded-md" />
-      </div>
-      <div className="grid grid-cols-4 gap-4">
-        {[0, 1, 2, 3].map((i) => <SkelBlock key={i} className="h-[132px]" />)}
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        {[0, 1, 2, 3].map((i) => <SkelBlock key={i} className="h-[218px] rounded-lg" />)}
-      </div>
-    </div>
-  );
-}
-
 // ── 监测主面板 ────────────────────────────────────────────────────────────────
 
 // Grafana-style monitoring overview over observe.db agent-loop telemetry.
@@ -638,43 +592,28 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
   const [points, setPoints] = useState<SeriesPoint[]>([]);
   const [gErr, setGErr] = useState<GErrOverview | null>(null);
   const [drillOpen, setDrillOpen] = useState<boolean>(false);
-  const [updatedAt, setUpdatedAt] = useState<number>(0);
-  const [nowTs, setNowTs] = useState<number>(() => Date.now());
-  const [refreshing, setRefreshing] = useState<boolean>(false);
   const portalRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async () => {
-    setRefreshing(true);
-    try {
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
       const [ov, series, ge] = await Promise.all([
         api<Overview>(`/api/dashboard/observe/overview?range=${range}`),
         api<{ points: SeriesPoint[] }>(`/api/dashboard/observe/timeseries?range=${range}`),
         api<GErrOverview>(`/api/dashboard/observe/global_errors/overview?range=${range}`),
       ]);
+      if (!alive) return;
       setOverview(ov);
       setPoints(series.points ?? []);
       setGErr(ge);
-      setUpdatedAt(Date.now());
-    } finally {
-      setRefreshing(false);
-    }
-  }, [range]);
-
-  // 首次 + range 变化加载；并以 15s 心跳自动刷新，制造"活的"实时感。
-  useEffect(() => {
-    void load();
-    const id = window.setInterval(() => void load(), 15000);
-    return () => window.clearInterval(id);
-  }, [load]);
-
-  // 1s tick 驱动"更新于 Xs 前"的相对时间标签。
-  useEffect(() => {
-    const id = window.setInterval(() => setNowTs(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [range, drillOpen]);
 
   if (!overview) {
-    return <ObserveSkeleton />;
+    return <div className="p-6 text-[13px] text-muted">加载中…</div>;
   }
 
   const turnSeries = points.map((p) => p.turns);
@@ -697,81 +636,50 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
         {/* header + range switcher */}
         <div className="flex items-end justify-between">
           <div>
-            <div className="flex items-center gap-2.5">
-              <span className="detail-title">Observe · 监测</span>
-              <span className="flex items-center gap-1.5 rounded-full border border-success/25 bg-success/10 px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-success">
-                <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse-dot" />
-                Live
-              </span>
-            </div>
-            <div className="detail-subtext">
-              Agent 主循环遥测 · Token / 迭代 / 错误
-              <span className="ml-2 font-mono text-[11px] text-subtle">更新于 {_ago(nowTs - updatedAt)}</span>
-            </div>
+            <div className="detail-title">Observe · 监测</div>
+            <div className="detail-subtext">Agent 主循环遥测 · Token / 迭代 / 错误</div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => void load()}
-              className={`grid h-7 w-7 place-items-center rounded-md border border-border bg-surface-2 text-muted transition-colors hover:border-border-strong hover:text-fg ${refreshing ? "animate-spin" : ""}`}
-              title="刷新"
-            >
-              ↻
-            </button>
-            <div className="flex gap-1 rounded-md border border-border bg-surface-2 p-1">
-              {RANGES.map((r) => (
-                <button
-                  key={r.key}
-                  onClick={() => setRange(r.key)}
-                  className={`rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-all duration-150 active:brightness-95 ${range === r.key ? "bg-accent text-accent-ink hover:brightness-110" : "text-muted hover:bg-surface-3 hover:text-fg"}`}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
+          <div className="flex gap-1 rounded-md border border-border bg-surface-2 p-1">
+            {RANGES.map((r) => (
+              <button
+                key={r.key}
+                onClick={() => setRange(r.key)}
+                className={`rounded-[4px] px-2.5 py-1 font-mono text-[11px] transition-colors ${range === r.key ? "bg-accent text-accent-ink" : "text-muted hover:text-fg"}`}
+              >
+                {r.label}
+              </button>
+            ))}
           </div>
         </div>
 
         {/* KPI tiles */}
         <div className="grid grid-cols-4 gap-4">
-          <div className="animate-fade-up" style={{ animationDelay: "0ms" }}>
-            <MetricTile label="对话轮数" value={_compact(overview.turns)} delta={_delta(turnSeries)} sub={overview.last_ts ? `最近 ${_shortTs(overview.last_ts)}` : "无记录"} tone="accent" spark={turnSeries} />
-          </div>
+          <MetricTile label="对话轮数" value={_compact(overview.turns)} delta={_delta(turnSeries)} sub={overview.last_ts ? `最近 ${_shortTs(overview.last_ts)}` : "无记录"} tone="accent" spark={turnSeries} />
           {/* 错误卡 = 传送门：点击 FLIP 放大成排障台 */}
           <div
             ref={portalRef}
             onClick={() => setDrillOpen(true)}
-            className="group relative animate-fade-up cursor-pointer rounded-2xl transition-transform duration-200 hover:-translate-y-0.5"
-            style={{ animationDelay: "60ms" }}
+            className="group relative cursor-pointer rounded-2xl transition-transform duration-200 hover:-translate-y-0.5"
           >
-            {gErrTotal > 0 && (
-              <span className="absolute left-[68px] top-[18px] z-10 flex h-2 w-2">
-                {(gErr?.spiking_types ?? 0) > 0 && <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />}
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-danger animate-pulse-dot" />
-              </span>
-            )}
             <span className="pointer-events-none absolute right-4 top-4 z-10 font-mono text-[10px] text-danger opacity-0 transition-opacity group-hover:opacity-100">展开分析 →</span>
             <MetricTile label="错误" value={_compact(gErrTotal)} sub={`${gErr?.types ?? 0} 类型 · 点击展开`} tone="danger" spark={gErrSpark} />
           </div>
-          <div className="animate-fade-up" style={{ animationDelay: "120ms" }}>
-            <MetricTile label="KV 缓存命中率" value={_pct(overview.cache_hit_rate)} sub={`${_compact(overview.cache_hit_tokens)} / ${_compact(overview.cache_prompt_tokens)} tok`} tone="success" spark={hitSeries} />
-          </div>
-          <div className="animate-fade-up" style={{ animationDelay: "180ms" }}>
-            <MetricTile label="平均迭代" value={overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "—"} unit={`峰 ${overview.max_iteration}`} sub="每轮 LLM 调用次数" tone="warning" spark={iterSeries} />
-          </div>
+          <MetricTile label="KV 缓存命中率" value={_pct(overview.cache_hit_rate)} sub={`${_compact(overview.cache_hit_tokens)} / ${_compact(overview.cache_prompt_tokens)} tok`} tone="success" spark={hitSeries} />
+          <MetricTile label="平均迭代" value={overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "—"} unit={`峰 ${overview.max_iteration}`} sub="每轮 LLM 调用次数" tone="warning" spark={iterSeries} />
         </div>
 
         {/* trend charts */}
         <div className="grid grid-cols-2 gap-4">
-          <Card title="输入 Token 趋势" style={{ animationDelay: "220ms" }}>
+          <Card title="输入 Token 趋势">
             <TrendChart data={labelled(tokenSeries)} kind="area" tone="accent" valueFmt={_compact} />
           </Card>
-          <Card title="平均迭代趋势" style={{ animationDelay: "280ms" }}>
+          <Card title="平均迭代趋势">
             <TrendChart data={labelled(iterSeries)} kind="area" tone="warning" valueFmt={(n) => n.toFixed(1)} />
           </Card>
-          <Card title="KV 缓存命中率趋势" style={{ animationDelay: "340ms" }}>
+          <Card title="KV 缓存命中率趋势">
             <TrendChart data={labelled(hitSeries)} kind="area" tone="success" valueFmt={(n) => `${n.toFixed(0)}%`} />
           </Card>
-          <Card title="错误趋势" style={{ animationDelay: "400ms" }}>
+          <Card title="错误趋势">
             <TrendChart data={labelled(errorSeries)} kind="bar" tone="danger" valueFmt={(n) => String(n)} empty="区间内无错误 🎉" />
           </Card>
         </div>
