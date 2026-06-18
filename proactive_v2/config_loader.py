@@ -76,12 +76,10 @@ def _validate_ranges(config: dict[str, Any]) -> None:
                 f"anyaction_probability_max ({pmax})"
             )
 
-    # tick_interval_s0 >= s1 >= s2 >= s3 >= 1
+    # tick_interval_s0 >= s1 >= 1
     intervals = [
         config.get("tick_interval_s0"),
         config.get("tick_interval_s1"),
-        config.get("tick_interval_s2"),
-        config.get("tick_interval_s3"),
     ]
     if all(x is not None for x in intervals):
         interval_values = [int(cast(int, x)) for x in intervals]
@@ -92,7 +90,7 @@ def _validate_ranges(config: dict[str, Any]) -> None:
                 )
         if interval_values[-1] < 1:
             raise ProactiveConfigError(
-                f"tick_interval_s3 必须 >= 1，当前值: {interval_values[-1]}"
+                f"tick_interval_s1 必须 >= 1，当前值: {interval_values[-1]}"
             )
 
     # context_only_judge_threshold_with_evidence <= context_only_judge_threshold

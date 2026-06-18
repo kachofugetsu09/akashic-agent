@@ -246,12 +246,9 @@ class ProactiveLoop:
     def _trace_proactive_config_snapshot(self) -> None:
         payload = {
             "enabled": self._cfg.enabled,
-            "threshold": self._cfg.threshold,
             "score_llm_threshold": self._cfg.score_llm_threshold,
             "tick_interval_s0": self._cfg.tick_interval_s0,
             "tick_interval_s1": self._cfg.tick_interval_s1,
-            "tick_interval_s2": self._cfg.tick_interval_s2,
-            "tick_interval_s3": self._cfg.tick_interval_s3,
             "tick_jitter": self._cfg.tick_jitter,
             "anyaction_enabled": self._cfg.anyaction_enabled,
             "anyaction_min_interval_seconds": self._cfg.anyaction_min_interval_seconds,
@@ -275,12 +272,9 @@ class ProactiveLoop:
                 "mode": mode,
                 "base_score": round(base_score, 4) if base_score is not None else None,
                 "interval_seconds": int(interval),
-                "threshold": self._cfg.threshold,
                 "score_llm_threshold": self._cfg.score_llm_threshold,
                 "tick_interval_s0": self._cfg.tick_interval_s0,
                 "tick_interval_s1": self._cfg.tick_interval_s1,
-                "tick_interval_s2": self._cfg.tick_interval_s2,
-                "tick_interval_s3": self._cfg.tick_interval_s3,
                 "tick_jitter": self._cfg.tick_jitter,
             },
         )
@@ -336,7 +330,7 @@ class ProactiveLoop:
     async def run(self) -> None:
         self._running = True
         logger.info(
-            f"ProactiveLoop 已启动  阈值={self._cfg.threshold}  "
+            f"ProactiveLoop 已启动  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
         if not hasattr(self, "_mcp_pool"):
@@ -384,8 +378,6 @@ class ProactiveLoop:
             base_score = d_energy(energy) * self._cfg.score_weight_energy
         interval = next_tick_from_score(
             base_score,
-            tick_s3=self._cfg.tick_interval_s3,
-            tick_s2=self._cfg.tick_interval_s2,
             tick_s1=self._cfg.tick_interval_s1,
             tick_s0=self._cfg.tick_interval_s0,
             tick_jitter=self._cfg.tick_jitter,

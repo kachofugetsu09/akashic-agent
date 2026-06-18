@@ -223,24 +223,22 @@ d_energy = 1 - energy → "饥渴度"
     电量满 → 不饿 → d_energy 低
     电量空 → 饿了 → d_energy 高
     ↓
-base_score = w_e × d_energy + w_c × 新内容量 + w_r × 最近对话丰富度
+base_score = w_e × d_energy
     ↓
 next_tick_from_score(base_score)
-    base_score > 0.70 → s3（最快）
-    base_score > 0.40 → s2
     base_score > 0.20 → s1
     base_score ≤ 0.20 → s0（最慢）
 ```
 
-**直觉**：你刚说完话，agent 不想烦你，慢悠悠地查（8 分钟一次）。你半天没动静，agent 觉得"该找点东西了"，加速查到 1 分钟一次。
+**直觉**：你刚说完话，agent 不想烦你，慢悠悠地查（8 分钟一次）。你半天没动静，agent 觉得"该找点东西了"，加速查到 4 分钟一次。
 
 三种预设只是调整这张"饥渴→间隔"的映射表：
 
-| 预设 | s0（不饿） | s1 | s2 | s3（很饿） | 适用场景 |
-|------|-----------|-----|-----|-----|----------|
-| `daily` | 8 min | 4 min | 2 min | 1 min | 日常 |
-| `dev_verify` | 1 min | 30 s | 15 s | 10 s | 开发调试 |
-| `quiet` | 30 min | 15 min | 8 min | 4 min | 低打扰 |
+| 预设 | s0（不饿） | s1（很饿） | 适用场景 |
+|------|-----------|------------|----------|
+| `daily` | 8 min | 4 min | 日常 |
+| `dev_verify` | 1 min | 30 s | 开发调试 |
+| `quiet` | 30 min | 15 min | 低打扰 |
 
 每次 tick 后重新算，间隔持续变化——不是定时器，是自适应循环。
 
@@ -252,7 +250,7 @@ judge_send_threshold = 0.65    # 提高发送门槛
 
 [proactive.overrides.trigger]
 tick_interval_s0 = 600         # 不饿时 10 分钟
-tick_interval_s3 = 120         # 很饿时至少 2 分钟
+tick_interval_s1 = 180         # 很饿时至少 3 分钟
 ```
 
 ---

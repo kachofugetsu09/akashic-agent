@@ -169,7 +169,7 @@ class GenericAlertEvent(AlertEvent):
 class ContentEvent(ProactiveEvent, ABC):
     """内容流类事件的抽象基类。
 
-    共同特征：参与 d_content 评分、进 pending queue、进 compose 候选池。
+    共同特征：进 pending queue、进 compose 候选池。
     event_id 由 compute_item_id 确定性生成，始终可作为 ack_id。
     新内容类型（网页搜索、novel-kb 等）继承此类，只需实现 kind / from_xxx()。
     """

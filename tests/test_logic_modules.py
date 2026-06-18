@@ -90,8 +90,6 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     loop._cfg = SimpleNamespace(
         interval_seconds=10,
         score_weight_energy=0.5,
-        tick_interval_s3=1,
-        tick_interval_s2=2,
         tick_interval_s1=3,
         tick_interval_s0=4,
         tick_jitter=0.0,
@@ -348,12 +346,9 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     loop._cfg = SimpleNamespace(
         interval_seconds=10,
         score_weight_energy=0.5,
-        tick_interval_s3=1,
-        tick_interval_s2=2,
         tick_interval_s1=3,
         tick_interval_s0=4,
         tick_jitter=0.0,
-        threshold=0.5,
         default_channel="telegram",
         default_chat_id="42",
     )

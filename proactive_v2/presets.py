@@ -8,8 +8,6 @@ from typing import TypedDict
 class TriggerPreset(TypedDict):
     tick_interval_s0: int
     tick_interval_s1: int
-    tick_interval_s2: int
-    tick_interval_s3: int
     tick_jitter: float
 
 
@@ -57,8 +55,6 @@ PRESETS: dict[str, PresetConfig] = {
         "trigger": {
             "tick_interval_s0": 480,  # 8分钟
             "tick_interval_s1": 240,  # 4分钟
-            "tick_interval_s2": 120,  # 2分钟
-            "tick_interval_s3": 60,   # 1分钟
             "tick_jitter": 0.2,
         },
         "gate": {
@@ -92,8 +88,6 @@ PRESETS: dict[str, PresetConfig] = {
         "trigger": {
             "tick_interval_s0": 60,   # 1分钟
             "tick_interval_s1": 30,   # 30秒
-            "tick_interval_s2": 15,   # 15秒
-            "tick_interval_s3": 10,   # 10秒
             "tick_jitter": 0.0,       # 无抖动，精确触发
         },
         "gate": {
@@ -127,8 +121,6 @@ PRESETS: dict[str, PresetConfig] = {
         "trigger": {
             "tick_interval_s0": 1800,  # 30分钟
             "tick_interval_s1": 900,   # 15分钟
-            "tick_interval_s2": 480,   # 8分钟
-            "tick_interval_s3": 240,   # 4分钟
             "tick_jitter": 0.3,
         },
         "gate": {
@@ -192,7 +184,6 @@ STRATEGY_PARAMS = {
     # 去重细节
     "message_dedupe_enabled": True,
     # 其他
-    "threshold": 0.70,
     "recent_chat_messages": 20,
     "interval_seconds": 1800,
     "sleep_modifier_sleeping": 0.15,
@@ -204,8 +195,6 @@ ALLOWED_OVERRIDE_KEYS = {
     "trigger": {
         "tick_interval_s0",
         "tick_interval_s1",
-        "tick_interval_s2",
-        "tick_interval_s3",
         "tick_jitter",
     },
     "gate": {

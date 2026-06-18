@@ -155,8 +155,6 @@ class AnyActionGate:
         idle_factor = 1.0 - math.exp(
             -idle_min / max(self._cfg.anyaction_idle_scale_minutes, 1.0)
         )
-        local_hour = now_utc.astimezone(_safe_zone(self._cfg.anyaction_timezone)).hour
-        time_factor = self._time_factor(local_hour)
         p = (
             self._cfg.anyaction_probability_min
             + (
@@ -164,7 +162,6 @@ class AnyActionGate:
                 - self._cfg.anyaction_probability_min
             )
             * idle_factor
-            * time_factor
         )
         p = max(0.0, min(1.0, p))
         draw = (self._rng or _random_module).random()
@@ -173,7 +170,6 @@ class AnyActionGate:
             "used_today": snap.used,
             "remaining_today": remaining,
             "idle_minutes": idle_min,
-            "time_factor": time_factor,
             "p_act": p,
             "draw": draw,
         }
@@ -184,7 +180,3 @@ class AnyActionGate:
             reset_hour=self._cfg.anyaction_reset_hour_local,
             timezone_name=self._cfg.anyaction_timezone,
         )
-
-    @staticmethod
-    def _time_factor(local_hour: int) -> float:
-        return 1.0

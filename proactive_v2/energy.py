@@ -1,5 +1,5 @@
 """
-proactive/energy.py — 动态电量衰减与多维主动冲动计算。
+proactive/energy.py — 动态电量衰减与主动冲动计算。
 
 核心思路（多时间尺度指数衰减）：
   E(t) = α·exp(-t/τ₁) + β·exp(-t/τ₂) + γ·exp(-t/τ₃)
@@ -8,15 +8,11 @@ proactive/energy.py — 动态电量衰减与多维主动冲动计算。
   τ₂=240min 中时：同一天语境
   τ₃=2880min 长时：关系连续性（48h）
 
-多维打分模型（新）：
-  base_score = w_e·D_energy + w_c·D_content + w_r·D_recent
-
+贡献函数：
   D_energy  = 1 - energy            互动饥渴度（越久没说话越高）
-  D_content = 1 - exp(-n/halfsat)   信息流新鲜度（新条目越多越高）
   D_recent  = log(1+k)/log(1+scale) 对话语境丰富度（近期消息越多越高）
 
-  draw_score = base_score × random_weight()
-  draw_score > llm_threshold → 调 LLM 反思
+base_score 越高 → next_tick_from_score 给出的间隔越短 → 越快触发。
 """
 
 from __future__ import annotations
@@ -51,7 +47,7 @@ def compute_energy(
     )
 
 
-# ── 三维贡献函数 ───────────────────────────────────────────────────
+# ── 贡献函数 ───────────────────────────────────────────────────────
 
 
 def d_energy(energy: float) -> float:
@@ -61,17 +57,6 @@ def d_energy(energy: float) -> float:
     高电量（刚聊完）→ 贡献小但非零，不再作为硬闸。
     """
     return 1.0 - max(0.0, min(1.0, energy))
-
-
-def d_content(new_items: int, halfsat: float = 3.0) -> float:
-    """信息流新鲜度：新条目越多 → D_content 越高。
-
-    指数饱和曲线：D_content = 1 - exp(-new_items / halfsat)
-    halfsat=3 时：0条→0.00  1条→0.28  3条→0.63  5条→0.81  10条→0.96
-    """
-    if new_items <= 0:
-        return 0.0
-    return 1.0 - math.exp(-max(0, new_items) / max(halfsat, 0.1))
 
 
 def d_recent(msg_count: int, scale: float = 10.0) -> float:
@@ -85,27 +70,12 @@ def d_recent(msg_count: int, scale: float = 10.0) -> float:
     return min(1.0, math.log1p(max(0, msg_count)) / math.log1p(max(scale, 1.0)))
 
 
-def composite_score(
-    de: float,
-    dc: float,
-    dr: float,
-    w_e: float = 0.40,
-    w_c: float = 0.40,
-    w_r: float = 0.20,
-) -> float:
-    """三维加权合成，结果裁剪至 [0, 1]。"""
-    raw = w_e * de + w_c * dc + w_r * dr
-    return max(0.0, min(1.0, raw))
-
-
-# ── tick 间隔（由 base_score 驱动，替代旧的 energy 驱动）───────────
+# ── tick 间隔（由 base_score 驱动）──────────────────────────────────
 
 
 def next_tick_from_score(
     base_score: float,
     *,
-    tick_s3: int = 420,  # base_score > 0.70 → ~7 min
-    tick_s2: int = 1080,  # base_score > 0.40 → ~18 min
     tick_s1: int = 2400,  # base_score > 0.20 → ~40 min
     tick_s0: int = 4800,  # base_score ≤ 0.20 → ~80 min
     tick_jitter: float = 0.3,
@@ -115,27 +85,8 @@ def next_tick_from_score(
 
     base_score 越高 → 间隔越短 → 单位时间内抽签次数越多 → 越快触发。
     """
-    if base_score > 0.70:
-        base = tick_s3
-    elif base_score > 0.40:
-        base = tick_s2
-    elif base_score > 0.20:
-        base = tick_s1
-    else:
-        base = tick_s0
-
+    base = tick_s1 if base_score > 0.20 else tick_s0
     if tick_jitter <= 0:
         return base
     r = (rng or _random).uniform(1.0 - tick_jitter, 1.0 + tick_jitter)
     return max(1, int(base * r))
-
-
-def random_weight(rng: _random.Random | None = None) -> float:
-    """随机扰动系数，防止行为过于规律可预测。
-
-    从 Beta(2, 2) 采样（偏中间，极端少），线性映射到 [0.5, 1.5]。
-    均值 ≈ 1.0，标准差适中。
-    """
-    r = rng or _random
-    sample = r.betavariate(2, 2)  # [0, 1]，均值 0.5
-    return 0.5 + sample  # [0.5, 1.5]

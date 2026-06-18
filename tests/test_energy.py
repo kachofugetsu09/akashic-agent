@@ -3,7 +3,6 @@ TDD for proactive/energy.py
 
 测试覆盖：
   - compute_energy: 多时间尺度衰减
-  - random_weight: 随机扰动
 """
 
 from datetime import datetime, timezone, timedelta
@@ -67,35 +66,3 @@ def test_energy_accepts_custom_decay_params():
     last = now - timedelta(minutes=30)
     e = compute_energy(last, now, tau1_min=1.0, tau2_min=2.0, tau3_min=5.0)
     assert e < 0.01
-
-
-# ── random_weight ─────────────────────────────────────────────────
-
-from proactive_v2.energy import random_weight
-import random as _random_module
-
-
-def test_random_weight_is_in_valid_range():
-    for _ in range(200):
-        w = random_weight()
-        assert 0.5 <= w <= 1.5, f"random_weight out of range: {w}"
-
-
-def test_random_weight_is_deterministic_with_seed():
-    rng = _random_module.Random(42)
-    w1 = random_weight(rng=rng)
-    rng2 = _random_module.Random(42)
-    w2 = random_weight(rng=rng2)
-    assert w1 == w2
-
-
-def test_random_weight_varies_across_calls():
-    weights = [random_weight() for _ in range(50)]
-    assert len(set(weights)) > 1, "random_weight should not be constant"
-
-
-def test_random_weight_roughly_centered():
-    """均值应在 0.9 ~ 1.1 之间（Beta(2,2) 中心为 0.5，映射后中心为 1.0）。"""
-    weights = [random_weight() for _ in range(2000)]
-    mean = sum(weights) / len(weights)
-    assert 0.9 <= mean <= 1.1, f"mean={mean:.3f} unexpectedly off-center"

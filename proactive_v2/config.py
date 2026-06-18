@@ -23,8 +23,6 @@ class ProactiveConfig:
     # Trigger 配置
     tick_interval_s0: int = 4800
     tick_interval_s1: int = 2400
-    tick_interval_s2: int = 1080
-    tick_interval_s3: int = 420
     tick_jitter: float = 0.3
 
     # Gate 配置
@@ -88,7 +86,6 @@ class ProactiveConfig:
     message_dedupe_enabled: bool = True
 
     # 其他
-    threshold: float = 0.70
     recent_chat_messages: int = 20
     interval_seconds: int = 1800
     sleep_modifier_sleeping: float = 0.15
