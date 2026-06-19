@@ -282,7 +282,7 @@ class ShellTool(Tool):
             "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
             "- 输出超过 30000 字符时自动截断\n"
             "- 前台阻塞总超时默认 60 秒，普通命令最大 600 秒\n"
-            "- 命令超过 15 秒未完成时默认自动转为后台任务，返回 background_task_id；只有显式设置 timeout，后台才会继续沿用这个硬截止时间\n"
+            "- 命令超过 15 秒未完成时默认自动转为后台任务，返回 background_task_id；后台会沿用当前 timeout 作为硬截止时间\n"
             "- 只有用户明确说“阻塞”时，才设置 auto_promote=false；未显式传 timeout 时会默认阻塞 21600 秒\n"
             "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台模式只有显式传 timeout 时才会按 timeout 自动终止\n"
             "- 收到 background_task_id 后，由你负责用 task_output 主动查看进展和结果；不会有系统自动回传\n"
@@ -484,7 +484,7 @@ class ShellTool(Tool):
 
         wall_start_ms = int(time.time() * 1000)
         start_mono = time.monotonic()
-        hard_timeout_s = timeout if timeout_specified else None
+        hard_timeout_s = timeout
 
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -719,12 +719,26 @@ class ShellTaskOutputTool(Tool):
             return _err(f"任务 {task_id!r} 已超时（{task.timeout_s}s），已自动终止")
 
         if block and not pump_task.done():
+            if task.timeout_s is not None:
+                remaining_ms = int(
+                    max(task.timeout_s - (time.monotonic() - task.started_at), 0)
+                    * 1000
+                )
+                timeout_ms = min(timeout_ms, remaining_ms)
             try:
                 await asyncio.wait_for(
                     asyncio.shield(pump_task), timeout=timeout_ms / 1000
                 )
             except asyncio.TimeoutError:
                 pass
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+
+        if task.finish_reason == "timeout" or _is_background_timeout(task):
+            _bg_timeout(task_id)
+            return _err(f"任务 {task_id!r} 已超时（{task.timeout_s}s），已自动终止")
 
         done = pump_task.done()
         if done and time.monotonic() - task.started_at > _BG_TTL_S:
