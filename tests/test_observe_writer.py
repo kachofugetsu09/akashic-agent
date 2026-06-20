@@ -182,33 +182,8 @@ def test_open_db_creates_react_budget_columns(tmp_path):
     assert "react_cache_hit_tokens" in cols
 
 
-def test_open_db_migrates_global_error_context_columns(tmp_path):
+def test_open_db_creates_global_error_schema(tmp_path):
     db_path = tmp_path / "observe.db"
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(
-            """
-            CREATE TABLE global_errors (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fingerprint TEXT NOT NULL,
-                bucket TEXT NOT NULL,
-                source TEXT NOT NULL,
-                logger_name TEXT,
-                error_type TEXT,
-                message TEXT,
-                traceback_text TEXT,
-                level TEXT,
-                first_ts TEXT NOT NULL,
-                last_ts TEXT NOT NULL,
-                count INTEGER NOT NULL DEFAULT 1,
-                session_keys TEXT
-            )
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
     conn = open_db(db_path)
     try:
         cols = {
@@ -217,7 +192,22 @@ def test_open_db_migrates_global_error_context_columns(tmp_path):
     finally:
         conn.close()
 
-    assert {"flow", "phase", "turn", "tick", "status"} <= cols
+    assert {
+        "fingerprint",
+        "bucket",
+        "source",
+        "logger_name",
+        "error_type",
+        "message",
+        "traceback_text",
+        "level",
+        "first_ts",
+        "last_ts",
+        "count",
+        "session_keys",
+        "status",
+    } <= cols
+    assert not {"flow", "phase", "turn", "tick"} & cols
 
 
 def test_write_global_error_upserts_count_and_sessions(tmp_path):
@@ -237,16 +227,13 @@ def test_write_global_error_upserts_count_and_sessions(tmp_path):
             last_ts="2026-06-20T11:00:00+00:00",
             count=1,
             session_keys=["telegram:1"],
-            flow="passive",
-            phase="reasoner",
-            turn="turn-a",
         )
         _observe_writer._write_global_error(conn, event)
         event.last_ts = "2026-06-20T11:01:00+00:00"
         event.session_keys = ["telegram:2"]
         _observe_writer._write_global_error(conn, event)
         row = conn.execute(
-            "SELECT count, session_keys, flow, phase FROM global_errors WHERE fingerprint = ?",
+            "SELECT count, session_keys FROM global_errors WHERE fingerprint = ?",
             ("fp1",),
         ).fetchone()
     finally:
@@ -254,8 +241,6 @@ def test_write_global_error_upserts_count_and_sessions(tmp_path):
 
     assert row[0] == 2
     assert json.loads(row[1]) == ["telegram:1", "telegram:2"]
-    assert row[2] == "passive"
-    assert row[3] == "reasoner"
 
 
 @pytest.mark.asyncio

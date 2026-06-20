@@ -69,9 +69,8 @@ def _seed(workspace: Path) -> None:
         """
         INSERT INTO global_errors (
             fingerprint, bucket, source, logger_name, error_type, message,
-            traceback_text, level, first_ts, last_ts, count, session_keys,
-            flow, phase
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            traceback_text, level, first_ts, last_ts, count, session_keys
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             "fp1",
@@ -86,8 +85,6 @@ def _seed(workspace: Path) -> None:
             _iso(now - timedelta(hours=1)),
             3,
             '["telegram:1"]',
-            "passive",
-            "reasoner",
         ),
     )
     conn.commit()

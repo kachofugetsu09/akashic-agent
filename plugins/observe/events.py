@@ -77,10 +77,6 @@ class GlobalErrorTrace:
     last_ts: str
     count: int
     session_keys: list[str] = field(default_factory=list)  # 窗口内去重，上限 20
-    flow: str = ""
-    phase: str = ""
-    turn: str = ""
-    tick: str = ""
 
 
 @dataclass

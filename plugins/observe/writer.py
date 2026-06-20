@@ -219,9 +219,8 @@ def _write_global_error(conn, e: GlobalErrorTrace) -> None:
                 """
                 INSERT INTO global_errors (
                     fingerprint, bucket, source, logger_name, error_type, message,
-                    traceback_text, level, first_ts, last_ts, count, session_keys,
-                    flow, phase, turn, tick, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                    traceback_text, level, first_ts, last_ts, count, session_keys, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
                 """,
                 (
                     e.fingerprint,
@@ -236,10 +235,6 @@ def _write_global_error(conn, e: GlobalErrorTrace) -> None:
                     e.last_ts,
                     e.count,
                     _merge_session_keys([], e.session_keys),
-                    e.flow,
-                    e.phase,
-                    e.turn,
-                    e.tick,
                 ),
             )
             return

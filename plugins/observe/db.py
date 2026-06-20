@@ -119,15 +119,6 @@ _TURNS_COLUMNS: dict[str, str] = {
 }
 
 
-_GLOBAL_ERRORS_COLUMNS: dict[str, str] = {
-    "flow": "TEXT",
-    "phase": "TEXT",
-    "turn": "TEXT",
-    "tick": "TEXT",
-    "status": "TEXT NOT NULL DEFAULT 'active'",
-}
-
-
 def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
     cols = {
         row[1] for row in conn.execute("PRAGMA table_info(turns)").fetchall()
@@ -136,19 +127,6 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
         if col in cols:
             continue
         _ = conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {ddl}")
-
-
-def _ensure_global_errors_columns(conn: sqlite3.Connection) -> None:
-    cols = {
-        row[1] for row in conn.execute("PRAGMA table_info(global_errors)").fetchall()
-    }
-    if not cols:
-        return
-    for col, ddl in _GLOBAL_ERRORS_COLUMNS.items():
-        if col in cols:
-            continue
-        _ = conn.execute(f"ALTER TABLE global_errors ADD COLUMN {col} {ddl}")
-
 
 def _migrate_removed_proactive_observe(conn: sqlite3.Connection) -> None:
     _ = conn.execute("DELETE FROM turns WHERE source = 'proactive'")
@@ -161,7 +139,6 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     _ = conn.executescript(_SCHEMA_SQL)
     _ensure_turns_columns(conn)
-    _ensure_global_errors_columns(conn)
     _migrate_removed_proactive_observe(conn)
     conn.commit()
     return conn
