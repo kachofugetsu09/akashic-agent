@@ -65,6 +65,31 @@ def _seed(workspace: Path) -> None:
         session_key="telegram:1",
         react_input_sum_tokens=123,
     )
+    conn.execute(
+        """
+        INSERT INTO global_errors (
+            fingerprint, bucket, source, logger_name, error_type, message,
+            traceback_text, level, first_ts, last_ts, count, session_keys,
+            flow, phase
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "fp1",
+            _iso(now - timedelta(hours=1))[:13],
+            "log",
+            "agent.test",
+            "RuntimeError",
+            "provider failed",
+            "trace",
+            "ERROR",
+            _iso(now - timedelta(hours=1)),
+            _iso(now - timedelta(hours=1)),
+            3,
+            '["telegram:1"]',
+            "passive",
+            "reasoner",
+        ),
+    )
     conn.commit()
     conn.close()
 
@@ -115,6 +140,24 @@ def test_errors_list_and_groups(tmp_path) -> None:
     assert res["items"][0]["session_key"] == "cli:local"
     assert len(res["groups"]) == 1
     assert res["groups"][0]["count"] == 1
+
+
+def test_global_errors_overview_and_list(tmp_path) -> None:
+    _seed(tmp_path)
+    reader = ObserveDashboardReader(tmp_path)
+    ov = reader.get_global_overview("24h")
+    assert ov["total"] == 3
+    assert ov["types"] == 1
+    assert ov["spark"] == [3]
+    res = reader.get_global_list("24h", facet="type", q="")
+    assert len(res["sections"]) == 1
+    item = res["sections"][0]["items"][0]
+    assert item["fingerprint"] == "fp1"
+    assert item["count"] == 3
+    assert item["error_type"] == "RuntimeError"
+    detail = reader.get_global_detail("fp1", "24h")
+    assert detail["message"] == "provider failed"
+    assert detail["occurrences"][0]["session_key"] == "telegram:1"
 
 
 def test_missing_db_returns_empty(tmp_path) -> None:

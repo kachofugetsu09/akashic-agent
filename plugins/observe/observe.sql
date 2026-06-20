@@ -76,6 +76,33 @@ CREATE TABLE IF NOT EXISTS memory_writes (
 CREATE INDEX IF NOT EXISTS ix_mw_sk_ts ON memory_writes (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_mw_action ON memory_writes (action, ts);
 
+-- ─────────────────────────────────────────────
+-- 4. global_errors  全局异常聚合
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS global_errors (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint    TEXT NOT NULL,
+    bucket         TEXT NOT NULL,
+    source         TEXT NOT NULL,
+    logger_name    TEXT,
+    error_type     TEXT,
+    message        TEXT,
+    traceback_text TEXT,
+    level          TEXT,
+    first_ts       TEXT NOT NULL,
+    last_ts        TEXT NOT NULL,
+    count          INTEGER NOT NULL DEFAULT 1,
+    session_keys   TEXT,
+    flow           TEXT,
+    phase          TEXT,
+    turn           TEXT,
+    tick           TEXT,
+    status         TEXT NOT NULL DEFAULT 'active'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_gerr_fp_bucket ON global_errors (fingerprint, bucket);
+CREATE INDEX IF NOT EXISTS ix_gerr_last_ts ON global_errors (last_ts);
+CREATE INDEX IF NOT EXISTS ix_gerr_type ON global_errors (error_type, last_ts);
+
 -- 淘汰策略（由 retention.py 执行，不在 schema 里 enforce）
 -- turns:               180 天
 -- rag_queries:          90 天

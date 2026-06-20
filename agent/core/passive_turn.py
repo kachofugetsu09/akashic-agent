@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -76,8 +78,9 @@ if TYPE_CHECKING:
     from agent.looping.ports import LLMConfig, LLMServices, SessionServices
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tool_hooks.base import ToolHook
-    from session.manager import SessionManager
     from agent.tools.registry import ToolRegistry
+    from session.manager import SessionManager
+from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
 logger = logging.getLogger(__name__)
@@ -117,6 +120,11 @@ _INCOMPLETE_SUMMARY_PROMPT = """当前任务需要先暂停继续调用工具，
 4) 如果继续，下一步会怎么做。
 可以提到工具名称和关键结果，但不要暴露 tool_call_id、schema、内部 prompt 或原始参数 JSON。
 禁止输出"已达到最大迭代次数"这类模板句；不要输出 JSON。"""
+
+
+def _turn_log_id(key: str, msg: InboundMessage) -> str:
+    raw = f"{key}|{msg.timestamp.isoformat()}|{msg.content[:80]}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
 
 
 def _is_tool_loop_guard_denial(exec_result: object) -> bool:
@@ -353,77 +361,234 @@ class PassiveTurnPipeline:
         *,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
+        started = time.perf_counter()
+        turn_id = _turn_log_id(key, msg)
         state = TurnState(
             msg=msg,
             session_key=key,
             dispatch_outbound=dispatch_outbound,
         )
-        # try/except 只包前置模块链和 reasoning：在派发前兜底并返回错误提示。
-        try:
-            # Phase 1: BeforeTurn 模块链（会话、上下文、BeforeTurn 事件）。
-            before_turn = await self._before_turn.run(state)
-            # TurnState 存内部默认 metadata；BeforeTurnCtx 存插件导出，同名 key 以后者覆盖。
-            state.extra_metadata.update(before_turn.extra_metadata)
-            if before_turn.abort:
+        with diagnostic_context(session=key, flow="passive", turn=turn_id):
+            logger.info(
+                diagnostic_line(
+                    "PassiveTurnPipeline.run",
+                    event="start",
+                    flow="passive",
+                    phase="before_turn",
+                    session=key,
+                    turn=turn_id,
+                    action="run",
+                )
+            )
+            # try/except 只包前置模块链和 reasoning：在派发前兜底并返回错误提示。
+            try:
+                # Phase 1: BeforeTurn 模块链（会话、上下文、BeforeTurn 事件）。
+                with diagnostic_context(phase="before_turn"):
+                    before_turn = await self._before_turn.run(state)
+                # TurnState 存内部默认 metadata；BeforeTurnCtx 存插件导出，同名 key 以后者覆盖。
+                state.extra_metadata.update(before_turn.extra_metadata)
+                if before_turn.abort:
+                    logger.info(
+                        diagnostic_line(
+                            "PassiveTurnPipeline.run",
+                            event="gate_exit",
+                            flow="passive",
+                            phase="before_turn",
+                            session=key,
+                            turn=turn_id,
+                            action="abort",
+                            reason="before_turn_abort",
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                        )
+                    )
+                    return await self._control_outbound(
+                        state,
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=before_turn.abort_reply,
+                        ),
+                    )
+                logger.info(
+                    diagnostic_line(
+                        "PassiveTurnPipeline.run",
+                        event="end",
+                        flow="passive",
+                        phase="before_turn",
+                        session=key,
+                        turn=turn_id,
+                        action="continue",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                )
+
+                # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
+                with diagnostic_context(phase="before_reasoning"):
+                    before_reasoning = await self._before_reasoning.run(
+                        BeforeReasoningInput(state=state, before_turn=before_turn)
+                    )
+                if before_reasoning.abort:
+                    logger.info(
+                        diagnostic_line(
+                            "PassiveTurnPipeline.run",
+                            event="gate_exit",
+                            flow="passive",
+                            phase="before_reasoning",
+                            session=key,
+                            turn=turn_id,
+                            action="abort",
+                            reason="before_reasoning_abort",
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                        )
+                    )
+                    return await self._control_outbound(
+                        state,
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=before_reasoning.abort_reply,
+                        ),
+                    )
+                logger.info(
+                    diagnostic_line(
+                        "PassiveTurnPipeline.run",
+                        event="end",
+                        flow="passive",
+                        phase="before_reasoning",
+                        session=key,
+                        turn=turn_id,
+                        action="continue",
+                        counts=f"skills:{len(before_reasoning.skill_names)},hints:{len(before_reasoning.extra_hints)}",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                )
+
+                # Phase 3-4: Reasoning（BeforeStep/AfterStep 模块链在 Reasoner 内部执行）。
+                session = state.session
+                if session is None:
+                    raise RuntimeError("Passive turn requires TurnState.session")
+                with diagnostic_context(phase="reasoner"):
+                    turn_result = await self._reasoner.run_turn(
+                        msg=msg,
+                        skill_names=list(before_reasoning.skill_names) or None,
+                        session=session,
+                        base_history=None,
+                        retrieved_memory_block=before_reasoning.retrieved_memory_block,
+                        extra_hints=list(before_reasoning.extra_hints) or None,
+                    )
+                logger.info(
+                    diagnostic_line(
+                        "PassiveTurnPipeline.run",
+                        event="end",
+                        flow="passive",
+                        phase="reasoner",
+                        session=key,
+                        turn=turn_id,
+                        action="continue",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                )
+            except Exception as exc:
+                logger.exception(
+                    diagnostic_line(
+                        "PassiveTurnPipeline.run",
+                        event="phase_error",
+                        flow="passive",
+                        phase="reasoner",
+                        session=key,
+                        turn=turn_id,
+                        action="fail",
+                        reason="provider_error",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        error_type=type(exc).__name__,
+                        note=str(exc)[:160],
+                    )
+                )
                 return await self._control_outbound(
                     state,
                     OutboundMessage(
                         channel=msg.channel,
                         chat_id=msg.chat_id,
-                        content=before_turn.abort_reply,
+                        content="处理消息时出错，请稍后再试。",
                     ),
                 )
 
-            # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
-            before_reasoning = await self._before_reasoning.run(
-                BeforeReasoningInput(state=state, before_turn=before_turn)
-            )
-            if before_reasoning.abort:
-                return await self._control_outbound(
-                    state,
-                    OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=before_reasoning.abort_reply,
-                    ),
+            try:
+                # Phase 5: AfterReasoning 模块链（parse、AfterReasoning 事件、持久化、出站消息）。
+                with diagnostic_context(phase="after_reasoning"):
+                    after_reasoning = await self._after_reasoning.run(
+                        AfterReasoningInput(state=state, turn_result=turn_result)
+                    )
+            except Exception as exc:
+                logger.exception(
+                    diagnostic_line(
+                        "PassiveTurnPipeline.run",
+                        event="phase_error",
+                        flow="passive",
+                        phase="after_reasoning",
+                        session=key,
+                        turn=turn_id,
+                        action="fail",
+                        reason="invalid_output",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        error_type=type(exc).__name__,
+                        note=str(exc)[:160],
+                    )
                 )
-
-            # Phase 3-4: Reasoning（BeforeStep/AfterStep 模块链在 Reasoner 内部执行）。
-            session = state.session
-            if session is None:
-                raise RuntimeError("Passive turn requires TurnState.session")
-            turn_result = await self._reasoner.run_turn(
-                msg=msg,
-                skill_names=list(before_reasoning.skill_names) or None,
-                session=session,
-                base_history=None,
-                retrieved_memory_block=before_reasoning.retrieved_memory_block,
-                extra_hints=list(before_reasoning.extra_hints) or None,
-            )
-        except Exception:
-            logger.exception("PassiveTurnPipeline.run failed before dispatch session=%s", key)
-            return await self._control_outbound(
-                state,
-                OutboundMessage(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    content="处理消息时出错，请稍后再试。",
-                ),
+                raise
+            logger.info(
+                diagnostic_line(
+                    "PassiveTurnPipeline.run",
+                    event="end",
+                    flow="passive",
+                    phase="after_reasoning",
+                    session=key,
+                    turn=turn_id,
+                    action="continue",
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
             )
 
-        # Phase 5: AfterReasoning 模块链（parse、AfterReasoning 事件、持久化、出站消息）。
-        after_reasoning = await self._after_reasoning.run(
-            AfterReasoningInput(state=state, turn_result=turn_result)
-        )
-
-        # Phase 6: AfterTurn 模块链（TurnCommitted fanout、AfterTurn fanout、dispatch）。
-        return await self._after_turn.run(
-            TurnSnapshot(
-                state=state,
-                outbound=after_reasoning.outbound,
-                ctx=after_reasoning.ctx,
+            try:
+                # Phase 6: AfterTurn 模块链（TurnCommitted fanout、AfterTurn fanout、dispatch）。
+                with diagnostic_context(phase="after_turn"):
+                    outbound = await self._after_turn.run(
+                        TurnSnapshot(
+                            state=state,
+                            outbound=after_reasoning.outbound,
+                            ctx=after_reasoning.ctx,
+                        )
+                    )
+            except Exception as exc:
+                logger.exception(
+                    diagnostic_line(
+                        "PassiveTurnPipeline.run",
+                        event="phase_error",
+                        flow="passive",
+                        phase="after_turn",
+                        session=key,
+                        turn=turn_id,
+                        action="fail",
+                        reason="write_error",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        error_type=type(exc).__name__,
+                        note=str(exc)[:160],
+                    )
+                )
+                raise
+            logger.info(
+                diagnostic_line(
+                    "PassiveTurnPipeline.run",
+                    event="end",
+                    flow="passive",
+                    phase="after_turn",
+                    session=key,
+                    turn=turn_id,
+                    action="done",
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
             )
-        )
+            return outbound
 
     # 供外部调用方（如 spawn completion）复用 AfterReasoning + dispatch 流程。
     async def post_reasoning(

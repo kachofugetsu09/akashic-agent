@@ -20,6 +20,7 @@ logger = logging.getLogger("observe.retention")
 _RETENTION_DAYS = {
     "turns": 180,
     "rag_queries": 90,
+    "global_errors": 90,
 }
 _STAMP_FILE = ".last_cleanup"
 
@@ -45,8 +46,9 @@ def _run_cleanup(db_path: Path) -> None:
         with conn:
             for table, days in _RETENTION_DAYS.items():
                 cutoff = f"datetime('now', '-{days} days')"
+                status_clause = " AND status != 'ignored'" if table == "global_errors" else ""
                 cur = conn.execute(
-                    f"DELETE FROM {table} WHERE ts < {cutoff} AND error IS NULL"
+                    f"DELETE FROM {table} WHERE {_retention_ts_col(table)} < {cutoff}{status_clause} AND {_retention_error_clause(table)}"
                 )
                 deleted[table] = cur.rowcount
 
@@ -66,3 +68,11 @@ async def run_retention_if_needed(db_path: Path) -> None:
         return
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _run_cleanup, db_path)
+
+
+def _retention_ts_col(table: str) -> str:
+    return "last_ts" if table == "global_errors" else "ts"
+
+
+def _retention_error_clause(table: str) -> str:
+    return "1 = 1" if table == "global_errors" else "error IS NULL"

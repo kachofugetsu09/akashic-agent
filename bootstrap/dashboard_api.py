@@ -564,7 +564,7 @@ def _esbuild_command(project_root: Path) -> list[str] | None:
 
 def _build_plugin_panels_js(project_root: Path, plugin_dir: Path) -> None:
     esbuild_cmd: list[str] | None = None
-    for ts_path in sorted(plugin_dir.glob("dashboard_panel*.ts")):
+    for ts_path in _iter_plugin_panel_sources(plugin_dir):
         js_path = ts_path.with_suffix(".js")
         if js_path.exists() and js_path.stat().st_mtime >= ts_path.stat().st_mtime:
             continue
@@ -577,6 +577,14 @@ def _build_plugin_panels_js(project_root: Path, plugin_dir: Path) -> None:
         _run_esbuild(esbuild_cmd, ts_path, js_path, f"{plugin_dir.name}/{ts_path.stem}")
 
 
+def _iter_plugin_panel_sources(plugin_dir: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in plugin_dir.glob("dashboard_panel*")
+        if path.suffix in {".ts", ".tsx"}
+    )
+
+
 def _run_esbuild(cmd: list[str], ts_path: Path, js_path: Path, name: str) -> None:
     try:
         result = subprocess.run(
@@ -584,10 +592,16 @@ def _run_esbuild(cmd: list[str], ts_path: Path, js_path: Path, name: str) -> Non
                 *cmd,
                 str(ts_path),
                 f"--outfile={js_path}",
-                "--bundle=false",
+                "--bundle",
                 "--platform=browser",
                 "--target=es2020",
-                "--format=iife",
+                "--format=esm",
+                "--jsx=automatic",
+                "--external:react",
+                "--external:react-dom",
+                "--external:react-dom/client",
+                "--external:react/jsx-runtime",
+                "--external:@akashic/dashboard-ui",
             ],
             capture_output=True,
             text=True,
@@ -645,7 +659,7 @@ async def _compile_pending_plugins_async() -> None:
     version = stdout.decode("utf-8", errors="replace").strip()
     logger.info("npx esbuild 就绪 (%s)，开始编译插件面板...", version)
     for root, pdir in pending:
-        for ts_path in sorted(pdir.glob("dashboard_panel*.ts")):
+        for ts_path in _iter_plugin_panel_sources(pdir):
             js_path = ts_path.with_suffix(".js")
             if not (js_path.exists() and js_path.stat().st_mtime >= ts_path.stat().st_mtime):
                 _run_esbuild(esbuild_cmd, ts_path, js_path, f"{pdir.name}/{ts_path.stem}")

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import random as _random_module
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha1
@@ -35,6 +36,7 @@ from agent.prompting import (
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
+from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from core.memory.markdown import MemoryProfileApi
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
@@ -338,39 +340,115 @@ class ProactiveTurnPipeline:
 
     # 核心方法：处理一次主动 tick，串起 Gate → Fetch → Judge → Resolve → Deliver 五段链路。
     async def run(self) -> float | None:
+        started = time.perf_counter()
         # 1. Gate — 该不该动？
         ctx = AgentTickContext(
             session_key=self._session_key,
             now_utc=datetime.now(timezone.utc),
         )
+        with diagnostic_context(session=self._session_key, flow="proactive", tick=ctx.tick_id):
+            logger.info(
+                diagnostic_line(
+                    "ProactiveTurnPipeline.run",
+                    event="start",
+                    flow="proactive",
+                    phase="pregate",
+                    session=self._session_key,
+                    tick=ctx.tick_id,
+                    action="run",
+                )
+            )
+            try:
+                return await self._run_with_context(ctx, started)
+            except Exception as exc:
+                logger.exception(
+                    diagnostic_line(
+                        "ProactiveTurnPipeline.run",
+                        event="phase_error",
+                        flow="proactive",
+                        phase="tick",
+                        session=self._session_key,
+                        tick=ctx.tick_id,
+                        action="fail",
+                        reason="proactive_tick_error",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        error_type=type(exc).__name__,
+                        note=str(exc)[:160],
+                    )
+                )
+                raise
+
+    async def _run_with_context(self, ctx: AgentTickContext, started: float) -> float | None:
         gate = self._gate_check(ctx)
         if gate.blocked:
+            logger.info(
+                diagnostic_line(
+                    "ProactiveTurnPipeline.run",
+                    event="gate_exit",
+                    flow="proactive",
+                    phase="pregate",
+                    session=self._session_key,
+                    tick=ctx.tick_id,
+                    action="skip",
+                    reason=gate.reason,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
+            )
             self._record_tick_log_finish(ctx, gate_exit=gate.reason)
             return gate.base_score
 
         ctx.context_as_fallback_open = gate.context_as_fallback_open
         self.last_ctx = ctx
         self._record_tick_log_start(ctx)
+        logger.info(
+            diagnostic_line(
+                "ProactiveTurnPipeline.run",
+                event="end",
+                flow="proactive",
+                phase="pregate",
+                session=self._session_key,
+                tick=ctx.tick_id,
+                action="continue",
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+        )
 
         # 2. Fetch — 外面有什么新鲜事？
-        feed = await self._fetch_pull(ctx)
+        with diagnostic_context(phase="gateway"):
+            feed = await self._fetch_pull(ctx)
         if feed.drift_entered:
             self._finalize_after_drift(ctx)
             return feed.base_score
 
         # 3. Judge — LLM 评估哪些值得说
         if feed.messages and ctx.terminal_action is None:
-            await self._judge_evaluate(ctx, feed.messages)
+            with diagnostic_context(phase="agent_loop"):
+                await self._judge_evaluate(ctx, feed.messages)
 
         # 3.5 LLM 判定 reply 时记录 anyaction（drift 路径在 _finalize_after_drift 中处理）。
         if ctx.terminal_action == "reply" and self._any_action_gate is not None:
             self._any_action_gate.record_action(now_utc=ctx.now_utc)
 
         # 4. Resolve — 发还是不发？
-        decision = await self._resolve_decide(ctx)
+        with diagnostic_context(phase="resolve"):
+            decision = await self._resolve_decide(ctx)
 
         # 5. Deliver — 执行发送
         score = await self._deliver_execute(ctx, decision)
+        logger.info(
+            diagnostic_line(
+                "ProactiveTurnPipeline.run",
+                event="end",
+                flow="proactive",
+                phase="resolve",
+                session=self._session_key,
+                tick=ctx.tick_id,
+                action=decision.action,
+                reason=ctx.skip_reason or "-",
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
+            )
+        )
         ctx.content_store.clear()
         return score
 
@@ -456,6 +534,18 @@ class ProactiveTurnPipeline:
         gw_result = await gw.run()
         self._last_gateway_result = gw_result
         _log_content_candidates(gw_result)
+        logger.info(
+            diagnostic_line(
+                "ProactiveTurnPipeline._fetch_pull",
+                event="end",
+                flow="proactive",
+                phase="gateway",
+                session=self._session_key,
+                tick=ctx.tick_id,
+                action="fetched",
+                counts=f"alerts:{len(gw_result.alerts)},content:{len(gw_result.content_meta)},context:{len(gw_result.context)}",
+            )
+        )
 
         # 2.2 把拉取结果灌入 ctx。
         ctx.mark_alerts_prefetched(gw_result.alerts)
@@ -485,6 +575,19 @@ class ProactiveTurnPipeline:
                     and (ctx.now_utc - last_drift_at).total_seconds() < min_interval_hours * 3600
                 ):
                     logger.info(
+                        diagnostic_line(
+                            "ProactiveTurnPipeline._fetch_pull",
+                            event="skip",
+                            flow="proactive",
+                            phase="gateway",
+                            session=self._session_key,
+                            tick=ctx.tick_id,
+                            action="skip",
+                            reason="cooldown",
+                            counts="alerts:0,content:0,context:0",
+                        )
+                    )
+                    logger.info(
                         "[proactive_v2] fetch: drift blocked by interval last_drift_at=%s min_interval_hours=%d",
                         last_drift_at.isoformat(),
                         min_interval_hours,
@@ -502,6 +605,19 @@ class ProactiveTurnPipeline:
                     return FeedResult(drift_entered=True, base_score=0.0)
                 logger.info("[proactive_v2] fetch: drift not entered")
             logger.info("[proactive_v2] fetch: no data and fallback off → skip")
+            logger.info(
+                diagnostic_line(
+                    "ProactiveTurnPipeline._fetch_pull",
+                    event="skip",
+                    flow="proactive",
+                    phase="gateway",
+                    session=self._session_key,
+                    tick=ctx.tick_id,
+                    action="skip",
+                    reason="no_content",
+                    counts="alerts:0,content:0,context:0",
+                )
+            )
             ctx.terminal_action = "skip"
             ctx.skip_reason = "no_content"
             self.last_ctx = ctx
@@ -606,6 +722,20 @@ class ProactiveTurnPipeline:
         # 4.1 LLM 判定为 skip → 直接构建 skip 结果。
         if ctx.terminal_action != "reply":
             logger.info(
+                diagnostic_line(
+                    "ProactiveTurnPipeline._resolve_decide",
+                    event="resolve",
+                    flow="proactive",
+                    phase="resolve",
+                    session=self._session_key,
+                    tick=ctx.tick_id,
+                    action="skip",
+                    reason=ctx.skip_reason or "no_content",
+                    counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
+                    note=ctx.skip_note or "-",
+                )
+            )
+            logger.info(
                 "[proactive_v2] resolve: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
                 ctx.terminal_action or "none",
                 ctx.steps_taken,
@@ -639,6 +769,20 @@ class ProactiveTurnPipeline:
         if self._state_store.is_delivery_duplicate(
             self._session_key, delivery_key, self._cfg.delivery_dedupe_hours
         ):
+            logger.info(
+                diagnostic_line(
+                    "ProactiveTurnPipeline._resolve_decide",
+                    event="resolve",
+                    flow="proactive",
+                    phase="resolve",
+                    session=self._session_key,
+                    tick=ctx.tick_id,
+                    action="skip",
+                    reason="already_sent_similar",
+                    counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
+                    note="delivery_dedupe",
+                )
+            )
             logger.info("[proactive_v2] resolve: delivery_dedupe hit")
             return ResolveResult(
                 action="skip",
@@ -678,6 +822,20 @@ class ProactiveTurnPipeline:
                 new_state_summary_tag="none",
             )
             if is_dup:
+                logger.info(
+                    diagnostic_line(
+                        "ProactiveTurnPipeline._resolve_decide",
+                        event="resolve",
+                        flow="proactive",
+                        phase="resolve",
+                        session=self._session_key,
+                        tick=ctx.tick_id,
+                        action="skip",
+                        reason="already_sent_similar",
+                        counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
+                        note=str(reason or "message_dedupe")[:160],
+                    )
+                )
                 logger.info("[proactive_v2] resolve: message_dedupe hit: %s", reason)
                 return ResolveResult(
                     action="skip",
@@ -706,6 +864,19 @@ class ProactiveTurnPipeline:
                 )
 
         # 4.4 两层 guard 都通过 → 构建 send 结果。
+        logger.info(
+            diagnostic_line(
+                "ProactiveTurnPipeline._resolve_decide",
+                event="resolve",
+                flow="proactive",
+                phase="resolve",
+                session=self._session_key,
+                tick=ctx.tick_id,
+                action="send",
+                reason="-",
+                counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)},cited:{len(ctx.cited_item_ids)}",
+            )
+        )
         send_result = TurnResult(
             decision="reply",
             outbound=TurnOutbound(session_key=self._session_key, content=ctx.final_message),
@@ -813,6 +984,18 @@ class ProactiveTurnPipeline:
         tool_args = tool_call.get("input", {})
         arg_summary = json.dumps(tool_args, ensure_ascii=False)[:200]
         logger.info(
+            diagnostic_line(
+                "ProactiveTurnPipeline._run_tool_step",
+                event="tool_call",
+                flow="proactive",
+                phase="agent_loop",
+                session=self._session_key,
+                tick=ctx.tick_id,
+                action=str(tool_name or "-"),
+                counts=f"step:{ctx.steps_taken}",
+            )
+        )
+        logger.info(
             "[proactive_v2] %s step %d: %s  args=%s",
             loop_tag,
             ctx.steps_taken,
@@ -831,6 +1014,20 @@ class ProactiveTurnPipeline:
             lambda name, args: dispatch(name, args, ctx, self._tool_deps),
         )
         if exec_result.status == "error":
+            logger.warning(
+                diagnostic_line(
+                    "ProactiveTurnPipeline._run_tool_step",
+                    event="tool_result",
+                    flow="proactive",
+                    phase="agent_loop",
+                    session=self._session_key,
+                    tick=ctx.tick_id,
+                    action=str(tool_name or "-"),
+                    reason="tool_error",
+                    counts=f"step:{ctx.steps_taken}",
+                    note=str(exec_result.output)[:160],
+                )
+            )
             logger.warning("[proactive_v2] %s: tool error: %s", loop_tag, exec_result.output)
             result = str(exec_result.output)
             call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
@@ -851,6 +1048,19 @@ class ProactiveTurnPipeline:
             )
             return False
         result = str(exec_result.output)
+        logger.info(
+            diagnostic_line(
+                "ProactiveTurnPipeline._run_tool_step",
+                event="tool_result",
+                flow="proactive",
+                phase="agent_loop",
+                session=self._session_key,
+                tick=ctx.tick_id,
+                action=str(tool_name or "-"),
+                reason="-",
+                counts=f"step:{ctx.steps_taken}",
+            )
+        )
         call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
         self._record_tick_step(
             ctx,

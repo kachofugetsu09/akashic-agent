@@ -11,6 +11,7 @@ from agent.plugins import Plugin
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted
 
+from .collector import GlobalErrorCollector
 from .retention import run_retention_if_needed
 from .writer import TraceWriter
 
@@ -36,6 +37,8 @@ class ObservePlugin(Plugin):
             self._writer.run(),
             name="observe_writer",
         )
+        self._collector = GlobalErrorCollector(self._writer)
+        self._collector.install()
         self._retention_task = asyncio.create_task(
             run_retention_if_needed(workspace / "observe" / "observe.db"),
             name="observe_retention",
@@ -45,6 +48,9 @@ class ObservePlugin(Plugin):
         self.context.event_bus.on(MemoryWritten, self._observe_memory_written)
 
     async def terminate(self) -> None:
+        collector = getattr(self, "_collector", None)
+        if collector is not None:
+            collector.close()
         for task in (
             getattr(self, "_retention_task", None),
             getattr(self, "_writer_task", None),

@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import random as _random_module
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
@@ -30,6 +31,7 @@ from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import PushToolOutboundPort
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
+from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.anyaction import AnyActionGate, QuotaStore
 from proactive_v2.energy import (
     compute_energy,
@@ -391,7 +393,10 @@ class ProactiveLoop:
         return interval
 
     def _target_session_key(self) -> str:
-        return self._sense.target_session_key()
+        sense = getattr(self, "_sense", None)
+        if sense is None:
+            return "-"
+        return sense.target_session_key()
 
     def stop(self) -> None:
         self._running = False
@@ -437,7 +442,49 @@ class ProactiveLoop:
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
         # 主动回复全链路入口：Gate → Fetch → Judge → Resolve → Deliver。
-        return await self._proactive_pipeline.run()
+        started = time.perf_counter()
+        session_key = self._target_session_key()
+        with diagnostic_context(session=session_key, flow="proactive", phase="tick"):
+            logger.info(
+                diagnostic_line(
+                    "ProactiveLoop._tick",
+                    event="start",
+                    flow="proactive",
+                    phase="tick",
+                    session=session_key,
+                    action="run",
+                )
+            )
+            try:
+                score = await self._proactive_pipeline.run()
+            except Exception as exc:
+                logger.exception(
+                    diagnostic_line(
+                        "ProactiveLoop._tick",
+                        event="phase_error",
+                        flow="proactive",
+                        phase="tick",
+                        session=session_key,
+                        action="fail",
+                        reason="proactive_tick_error",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        error_type=type(exc).__name__,
+                        note=str(exc)[:160],
+                    )
+                )
+                raise
+            logger.info(
+                diagnostic_line(
+                    "ProactiveLoop._tick",
+                    event="end",
+                    flow="proactive",
+                    phase="tick",
+                    session=session_key,
+                    action="done",
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                )
+            )
+            return score
 
 
 def build_proactive_loop(**kwargs: Any) -> ProactiveLoop:

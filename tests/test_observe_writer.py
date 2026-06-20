@@ -2,6 +2,7 @@ import asyncio
 from contextlib import suppress
 import importlib
 import json
+import logging
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -14,15 +15,38 @@ _observe_events = importlib.import_module("plugins.observe.events")
 _observe_migration = importlib.import_module("plugins.observe.migrate_legacy_rag")
 _observe_retention = importlib.import_module("plugins.observe.retention")
 _observe_writer = importlib.import_module("plugins.observe.writer")
+_observe_collector = importlib.import_module("plugins.observe.collector")
+_diagnostic_log = importlib.import_module("core.common.diagnostic_log")
 
 open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
 RagHitLog = getattr(_observe_events, "RagHitLog")
 RagQueryLog = getattr(_observe_events, "RagQueryLog")
 TurnTrace = getattr(_observe_events, "TurnTrace")
+GlobalErrorTrace = getattr(_observe_events, "GlobalErrorTrace")
+GlobalErrorCollector = getattr(_observe_collector, "GlobalErrorCollector")
+diagnostic_context = getattr(_diagnostic_log, "diagnostic_context")
+diagnostic_line = getattr(_diagnostic_log, "diagnostic_line")
 migrate_legacy_rag_tables = getattr(_observe_migration, "migrate_legacy_rag_tables")
 _run_cleanup = cast(Callable[[Path], None], getattr(_observe_retention, "_run_cleanup"))
 _write_turn = getattr(_observe_writer, "_write_turn")
 TraceWriter = getattr(_observe_writer, "TraceWriter")
+
+
+def test_diagnostic_line_uses_fixed_field_order():
+    line = diagnostic_line(
+        "PassiveTurnPipeline.run",
+        event="start",
+        flow="passive",
+        phase="before_turn",
+        session="telegram:1",
+        turn="abc123",
+        action="run",
+    )
+    assert line == (
+        "[PassiveTurnPipeline.run] event=start flow=passive phase=before_turn "
+        "session=telegram:1 turn=abc123 tick=- action=run reason=- "
+        "duration_ms=- counts=- error_type=- error_fp=- note=\"-\""
+    )
 
 
 def test_write_turn_persists_raw_output_and_meme_fields(tmp_path):
@@ -157,6 +181,81 @@ def test_open_db_creates_react_budget_columns(tmp_path):
     assert "react_cache_hit_tokens" in cols
 
 
+def test_open_db_migrates_global_error_context_columns(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE global_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint TEXT NOT NULL,
+                bucket TEXT NOT NULL,
+                source TEXT NOT NULL,
+                logger_name TEXT,
+                error_type TEXT,
+                message TEXT,
+                traceback_text TEXT,
+                level TEXT,
+                first_ts TEXT NOT NULL,
+                last_ts TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 1,
+                session_keys TEXT
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = open_db(db_path)
+    try:
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(global_errors)").fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert {"flow", "phase", "turn", "tick", "status"} <= cols
+
+
+def test_write_global_error_upserts_count_and_sessions(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        event = GlobalErrorTrace(
+            fingerprint="fp1",
+            bucket="2026-06-20T11",
+            source="log",
+            logger_name="agent.test",
+            error_type="RuntimeError",
+            message="boom",
+            traceback_text="trace",
+            level="ERROR",
+            first_ts="2026-06-20T11:00:00+00:00",
+            last_ts="2026-06-20T11:00:00+00:00",
+            session_keys=["telegram:1"],
+            flow="passive",
+            phase="reasoner",
+            turn="turn-a",
+        )
+        _observe_writer._write_global_error(conn, event)
+        event.last_ts = "2026-06-20T11:01:00+00:00"
+        event.session_keys = ["telegram:2"]
+        _observe_writer._write_global_error(conn, event)
+        row = conn.execute(
+            "SELECT count, session_keys, flow, phase FROM global_errors WHERE fingerprint = ?",
+            ("fp1",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row[0] == 2
+    assert json.loads(row[1]) == ["telegram:1", "telegram:2"]
+    assert row[2] == "passive"
+    assert row[3] == "reasoner"
+
+
 @pytest.mark.asyncio
 async def test_trace_writer_drain_waits_for_rag_query(tmp_path):
     db_path = tmp_path / "observe.db"
@@ -209,6 +308,48 @@ async def test_trace_writer_drain_waits_for_rag_query(tmp_path):
     assert row[4] == 1
     assert row[5] == "RETRIEVE"
     assert '"id": "m1"' in row[6]
+
+
+@pytest.mark.asyncio
+async def test_global_error_collector_captures_error_log_with_context(tmp_path):
+    db_path = tmp_path / "observe.db"
+    writer = TraceWriter(db_path)
+    task = asyncio.create_task(writer.run())
+    collector = GlobalErrorCollector(writer)
+    test_logger = logging.getLogger("tests.observe.collector")
+    row = None
+    try:
+        collector.install()
+        with diagnostic_context(session="telegram:1", flow="passive", phase="reasoner", turn="turn-a"):
+            try:
+                raise RuntimeError("provider failed 123")
+            except RuntimeError:
+                test_logger.exception("provider failed 123")
+        await writer.drain()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                """
+                SELECT source, error_type, message, session_keys, flow, phase, turn
+                FROM global_errors
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+    finally:
+        collector.close()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    assert row is not None
+    assert row[0] == "log"
+    assert row[1] == "RuntimeError"
+    assert row[2] == "provider failed 123"
+    assert json.loads(row[3]) == ["telegram:1"]
+    assert row[4] == "passive"
+    assert row[5] == "reasoner"
+    assert row[6] == "turn-a"
 
 
 def test_open_db_does_not_create_legacy_rag_tables(tmp_path):

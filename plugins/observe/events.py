@@ -73,3 +73,25 @@ class MemoryWriteTrace:
     summary: str | None = None       # write: 写入的 summary
     superseded_ids: list[str] = field(default_factory=list)  # supersede: 被退休的 id 列表
     error: str | None = None
+
+
+@dataclass
+class GlobalErrorTrace:
+    """全局错误采集记录，按 fingerprint + bucket 聚合。"""
+
+    fingerprint: str
+    bucket: str
+    source: str
+    logger_name: str
+    error_type: str
+    message: str
+    traceback_text: str
+    level: str
+    first_ts: str
+    last_ts: str
+    count: int = 1
+    session_keys: list[str] = field(default_factory=list)
+    flow: str = ""
+    phase: str = ""
+    turn: str = ""
+    tick: str = ""
