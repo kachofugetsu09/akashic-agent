@@ -33,6 +33,7 @@ from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import BusOutboundPort, OutboundDispatch, PushToolOutboundPort
+from bootstrap.tools import build_core_runtime
 from bus.events import InboundMessage, OutboundMessage
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
@@ -48,6 +49,11 @@ from core.memory.engine import (
     MemoryQuery,
     MemoryQueryResult,
     MemoryToolProfile,
+)
+from core.net.http import (
+    SharedHttpResources,
+    clear_default_shared_http_resources,
+    configure_default_shared_http_resources,
 )
 from session.manager import SessionManager
 
@@ -204,6 +210,7 @@ class RaceHarness:
     ) -> None:
         self.timeout = timeout
         self._tmpdir = TemporaryDirectory(prefix="akashic-race-")
+        self._config_explicit = config_path is not None
         self.workspace = workspace or Path(self._tmpdir.name) / "workspace"
         self.config_path = config_path or Path(self._tmpdir.name) / "config.toml"
         self.bus = MessageBus()
@@ -216,8 +223,7 @@ class RaceHarness:
         self._started: dict[str, asyncio.Event] = {}
         self._ended: dict[str, asyncio.Event] = {}
         self._dispatch_task: asyncio.Task[None] | None = None
-        self.push_tool.register_channel(CHANNEL, text=self._send_text)
-        self.bus.subscribe_outbound(CHANNEL, self._send_outbound)
+        self.register_runtime_channel(CHANNEL, self.bus, self.push_tool)
 
     def load_config(self) -> Config:
         if not self.config_path.exists():
@@ -253,6 +259,24 @@ class RaceHarness:
                 encoding="utf-8",
             )
         return Config.load(self.config_path)
+
+    def load_repo_config(self) -> Config:
+        path = self.config_path if self._config_explicit else Path.cwd() / "config.toml"
+        if not path.exists():
+            raise AssertionError(f"config.toml not found: {path}")
+        return Config.load(path)
+
+    def register_runtime_channel(
+        self,
+        channel: str,
+        bus: MessageBus,
+        push_tool: MessagePushTool,
+    ) -> None:
+        async def _text(chat_id: str, message: str) -> None:
+            await self._send_text_for(channel, chat_id, message)
+
+        push_tool.register_channel(channel, text=_text)
+        bus.subscribe_outbound(channel, self._send_outbound)
 
     async def start(self) -> None:
         self._dispatch_task = asyncio.create_task(self.bus.dispatch_outbound())
@@ -352,13 +376,13 @@ class RaceHarness:
             )
         )
 
-    async def _send_text(self, chat_id: str, message: str) -> None:
-        await self._record("start", CHANNEL, chat_id, message)
+    async def _send_text_for(self, channel: str, chat_id: str, message: str) -> None:
+        await self._record("start", channel, chat_id, message)
         _ = self._started.setdefault(message, asyncio.Event()).set()
         release = self._blocked.get(message)
         if release is not None:
             _ = await asyncio.wait_for(release.wait(), timeout=self.timeout)
-        await self._record("end", CHANNEL, chat_id, message)
+        await self._record("end", channel, chat_id, message)
         _ = self._ended.setdefault(message, asyncio.Event()).set()
 
     async def _send_outbound(self, msg: OutboundMessage) -> None:
@@ -615,8 +639,131 @@ async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
             await loop_task
 
 
+async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
+    config = harness.load_repo_config()
+    channel = config.proactive.default_channel or CHANNEL
+    chat_id = config.proactive.default_chat_id or CHAT
+    resources = SharedHttpResources()
+    configure_default_shared_http_resources(resources)
+    core = None
+    loop_task: asyncio.Task[None] | None = None
+    dispatch_task: asyncio.Task[None] | None = None
+    try:
+        harness.workspace.mkdir(parents=True, exist_ok=True)
+        core = build_core_runtime(config, harness.workspace, resources)
+        harness.register_runtime_channel(channel, core.bus, core.push_tool)
+        await core.start()
+        loop_task = asyncio.create_task(core.loop.run())
+        dispatch_task = asyncio.create_task(core.bus.dispatch_outbound())
+
+        user = InboundMessage(
+            channel=channel,
+            sender="race-user",
+            chat_id=chat_id,
+            content="竞态验证：请只用一句中文回复，内容包含“收到竞态验证”。",
+        )
+        await core.bus.publish_inbound(user)
+
+        drift = asyncio.create_task(
+            core.push_tool.execute(
+                channel=channel,
+                chat_id=chat_id,
+                message="drift:config-runtime",
+                _commit_role="non_passive",
+            )
+        )
+        proactive = asyncio.create_task(
+            core.push_tool.execute(
+                channel=channel,
+                chat_id=chat_id,
+                message="proactive:config-runtime",
+                _commit_role="non_passive",
+            )
+        )
+
+        async def scheduler_soft() -> str:
+            _ = await core.loop.process_direct(
+                "竞态验证 scheduler soft：请只用一句中文回复，内容包含“scheduler done”。",
+                session_key="scheduler:config-runtime",
+                channel=channel,
+                chat_id=chat_id,
+                skip_post_memory=True,
+                skip_memory_retrieval=True,
+            )
+            result = await core.push_tool.execute(
+                channel=channel,
+                chat_id=chat_id,
+                message="scheduler:config-runtime",
+                _commit_role="non_passive",
+            )
+            return str(result)
+
+        scheduler = asyncio.create_task(scheduler_soft())
+        _ = await asyncio.wait_for(
+            asyncio.gather(drift, proactive, scheduler),
+            timeout=max(harness.timeout, 30.0),
+        )
+        await harness.wait_ended("scheduler:config-runtime")
+
+        ended = [record for record in harness.records if record.event == "end"]
+        non_passive_messages = {
+            "drift:config-runtime",
+            "proactive:config-runtime",
+            "scheduler:config-runtime",
+        }
+        passive_indexes = [
+            index
+            for index, record in enumerate(ended)
+            if record.channel == channel
+            and record.chat_id == chat_id
+            and record.message not in non_passive_messages
+        ]
+        if not passive_indexes:
+            raise AssertionError("real passive AgentLoop reply was not sent")
+        first_passive = passive_indexes[0]
+        for message in non_passive_messages:
+            indexes = [
+                index for index, record in enumerate(ended) if record.message == message
+            ]
+            if not indexes:
+                raise AssertionError(f"non-passive message missing: {message}")
+            if indexes[0] < first_passive:
+                raise AssertionError(
+                    f"non-passive sent before passive reply: {message}"
+                )
+    finally:
+        if core is not None:
+            core.loop.stop()
+            core.bus.stop()
+        for task in (loop_task, dispatch_task):
+            if task is not None:
+                _ = task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        if core is not None:
+            with suppress(Exception):
+                await core.stop()
+            with suppress(Exception):
+                await core.memory_runtime.aclose()
+        clear_default_shared_http_resources(resources)
+        await resources.aclose()
+
+
+DEFAULT_SCENARIOS = [
+    "agent-loop-runtime",
+    "a1-drift-before-push",
+    "a3-drift-sending-then-user",
+    "b1-scheduler-after-user",
+    "d1-fifo-passive-insert",
+    "c2-cross-chat-isolated",
+    "e1-silent-passive",
+    "e6-cancelled-nonpassive-ticket",
+]
+
+
 SCENARIOS: dict[str, ScenarioFn] = {
     "agent-loop-runtime": scenario_agent_loop_runtime,
+    "config-runtime-llm": scenario_config_runtime_llm,
     "a1-drift-before-push": scenario_drift_before_push,
     "a3-drift-sending-then-user": scenario_drift_sending_then_user,
     "b1-scheduler-after-user": scenario_scheduler_after_user,
@@ -628,7 +775,7 @@ SCENARIOS: dict[str, ScenarioFn] = {
 
 
 async def _run(args: argparse.Namespace) -> int:
-    names = list(SCENARIOS) if args.scenario == "all" else [args.scenario]
+    names = list(DEFAULT_SCENARIOS) if args.scenario == "all" else [args.scenario]
     results: list[ScenarioResult] = []
     for name in names:
         scenario = SCENARIOS.get(name)

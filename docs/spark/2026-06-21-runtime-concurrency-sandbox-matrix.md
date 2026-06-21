@@ -165,6 +165,7 @@ AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
 
 ```text
 agent-loop-runtime             真实 AgentLoop.run + RTL + ChatLane 联合验证
+config-runtime-llm             显式运行；真实 config.toml + 真实 LLM + fake channel
 a1-drift-before-push          A1
 a3-drift-sending-then-user    A3
 b1-scheduler-after-user       B1 / B4
@@ -172,6 +173,38 @@ d1-fifo-passive-insert        D1 + passive 插入
 c2-cross-chat-isolated        跨 chat 不互相阻塞
 e1-silent-passive             passive 无回复仍释放 lane
 e6-cancelled-nonpassive-ticket 取消等待中的 non-passive 不留下 ticket 洞
+```
+
+`config-runtime-llm` 不包含在默认 `--scenario all` 中，因为它会调用真实模型。它用于回答“接近线上 runtime 的真实 config 验证”：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/runtime_race_probe.py \
+    --scenario config-runtime-llm \
+    --config config.toml \
+    --timeout 120
+```
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ real config.toml                                             │
+│ real provider / model / memory / tools / plugins             │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ build_core_runtime                                           │
+│ no Telegram / QQ / CLI server start                          │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ real AgentLoop passive + real scheduler process_direct        │
+│ fake proactive/drift generation                              │
+│ fake channel sender                                          │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ assert passive reply before non-passive visible sends         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## A. Drift / Proactive 与用户消息

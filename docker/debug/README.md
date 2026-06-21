@@ -272,6 +272,33 @@ AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
 └─────────────────────────────────────────────────────────────┘
 ```
 
+`config-runtime-llm` 场景会读取真实 `config.toml` 并调用其中配置的 LLM。它通过 `build_core_runtime()` 构建真实 runtime，加载真实 provider、memory、tool、plugin、scheduler 接线，但不启动 Telegram / QQ / CLI server；外部 channel sender 用 fake 记录发送顺序，proactive / drift 生成也用 fake 直接提交到 `message_push(_commit_role="non_passive")`。
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/runtime_race_probe.py \
+    --scenario config-runtime-llm \
+    --config config.toml \
+    --timeout 120
+```
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ real config.toml + real LLM                                  │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ build_core_runtime                                           │
+│ provider + memory + tools + plugins + scheduler              │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ real AgentLoop.run + real process_direct                     │
+│ fake proactive/drift generation -> real message_push          │
+│ fake channel sender records order                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ## 完全清理
 
 ```bash
