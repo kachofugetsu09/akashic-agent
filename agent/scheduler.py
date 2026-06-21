@@ -478,6 +478,7 @@ class SchedulerService:
                 channel=job.channel,
                 chat_id=job.chat_id,
                 message=job.message,
+                _commit_role="non_passive",
             )
             logger.info(f"[scheduler] instant 推送完成 {label!r}: {result}")
         else:
@@ -508,6 +509,7 @@ class SchedulerService:
                     channel=job.channel,
                     chat_id=job.chat_id,
                     message=content,
+                    _commit_role="non_passive",
                 )
                 logger.info(f"[scheduler] soft 推送完成 {label!r}: {result}")
             else:

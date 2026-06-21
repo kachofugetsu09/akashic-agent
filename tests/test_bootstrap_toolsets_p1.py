@@ -103,7 +103,7 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
             config=cast(Any, SimpleNamespace(spawn_enabled=False, proactive=SimpleNamespace())),
             workspace=tmp_path,
             http_resources=cast(Any, SimpleNamespace()),
-            bus=cast(Any, SimpleNamespace()),
+            bus=cast(Any, SimpleNamespace(chat_lane=None)),
             provider=object(),
             light_provider=object(),
             session_store=object(),

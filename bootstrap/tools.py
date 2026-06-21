@@ -284,7 +284,7 @@ def build_registered_tools(
         http_resources, multimodal=multimodal, vl_available=vl_available
     )
     store = session_store or SessionStore(workspace / "sessions.db")
-    push_tool = MessagePushTool()
+    push_tool = MessagePushTool(chat_lane=bus.chat_lane)
     memory_result = resolve_memory_toolset_provider(wiring.memory).register(
         tools,
         ToolsetDeps(

@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from agent.tools.base import Tool
+from bus.queue import ChatLane
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,10 @@ class MessagePushTool(Tool):
         "required": ["channel", "chat_id"],
     }
 
-    def __init__(self) -> None:
+    def __init__(self, chat_lane: ChatLane | None = None) -> None:
         # channel -> {type: sender_fn}
         self._senders: dict[str, dict[str, Callable[..., Awaitable[None]]]] = {}
+        self._chat_lane = chat_lane
 
     def register_channel(
         self,
@@ -82,6 +84,7 @@ class MessagePushTool(Tool):
         message: str | None = kwargs.get("message")
         file: str | None = kwargs.get("file")
         image: str | None = kwargs.get("image")
+        commit_role = str(kwargs.get("_commit_role") or "").strip()
 
         if not message and not file and not image:
             return "错误：message、file、image 至少提供一个"
@@ -90,7 +93,32 @@ class MessagePushTool(Tool):
         if senders is None:
             return f"渠道 {channel!r} 未注册，可用渠道：{list(self._senders) or ['（无）']}"
 
-        results = []
+        async def _send() -> str:
+            return await self._send_now(
+                channel=channel,
+                chat_id=chat_id,
+                message=message,
+                file=file,
+                image=image,
+                senders=senders,
+            )
+
+        if self._chat_lane is not None and commit_role == "non_passive":
+            return await self._chat_lane.run_non_passive(channel, chat_id, _send)
+        return await _send()
+
+    async def _send_now(
+        self,
+        *,
+        channel: str,
+        chat_id: str,
+        message: str | None,
+        file: str | None,
+        image: str | None,
+        senders: dict[str, Callable[..., Awaitable[None]]],
+    ) -> str:
+
+        results: list[str] = []
         try:
             if message and "text" in senders:
                 sender_name = "stream_text" if "stream_text" in senders else "text"

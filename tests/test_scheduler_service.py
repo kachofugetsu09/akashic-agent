@@ -54,7 +54,10 @@ async def test_instant_push_receives_correct_args(
     await drain_tasks()
 
     mock_push.execute.assert_called_once_with(
-        channel="telegram", chat_id="999", message="喝水了"
+        channel="telegram",
+        chat_id="999",
+        message="喝水了",
+        _commit_role="non_passive",
     )
 
 
@@ -110,7 +113,10 @@ async def test_soft_sends_ai_response_via_push(
     await drain_tasks()
 
     mock_push.execute.assert_called_once_with(
-        channel=job.channel, chat_id=job.chat_id, message="北京今天晴，15°C"
+        channel=job.channel,
+        chat_id=job.chat_id,
+        message="北京今天晴，15°C",
+        _commit_role="non_passive",
     )
 
 

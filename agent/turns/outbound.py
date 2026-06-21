@@ -60,12 +60,14 @@ class PushToolOutboundPort:
                     chat_id=chat_id,
                     message=message,
                     image=media[0] if media else None,
+                    _commit_role="non_passive",
                 )
             for image in media[1:]:
                 result = await self._push.execute(
                     channel=channel,
                     chat_id=chat_id,
                     image=image,
+                    _commit_role="non_passive",
                 )
         except Exception:
             return False

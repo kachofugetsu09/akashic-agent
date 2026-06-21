@@ -10,8 +10,7 @@ compatibility shims are in place.
 
 Covers:
   Item 1 — tool_search exclusion behavior
-    Currently implemented via _excluded_names_ctx ContextVar in tool_search.py.
-    After refactoring: same exclusion, achieved through explicit interface.
+    Exclusion is passed per call so concurrent turns do not share tool state.
 
   Item 2a — session metadata update behavior
     Currently implemented via update_session_runtime_metadata in
@@ -56,10 +55,7 @@ async def test_tool_search_keyword_no_exclusion():
 
 @pytest.mark.asyncio
 async def test_tool_search_keyword_excludes_visible_names():
-    """Keyword search excludes tools that are already visible to the LLM.
-
-    The Reasoner calls set_excluded_names() before dispatching tool_search.
-    """
+    """Keyword search excludes tools that are already visible to the LLM."""
     from agent.tools.tool_search import ToolSearchTool
 
     registry = MagicMock()
@@ -73,9 +69,7 @@ async def test_tool_search_keyword_excludes_visible_names():
     raw_no_excl = await tool.execute(query="shell")
     assert any(m["name"] == "shell" for m in json.loads(raw_no_excl)["matched"])
 
-    # With exclusion via set_excluded_names — shell must NOT appear
-    tool.set_excluded_names({"shell"})
-    raw_excl = await tool.execute(query="shell")
+    raw_excl = await tool.execute(query="shell", excluded_names={"shell"})
     assert not any(m["name"] == "shell" for m in json.loads(raw_excl)["matched"]), (
         "Already-visible tools must be excluded from tool_search results"
     )
@@ -92,8 +86,7 @@ async def test_tool_search_select_excluded_reports_already_loaded():
     registry._documents = {}
     tool = ToolSearchTool(registry)
 
-    tool.set_excluded_names({"shell"})
-    raw = await tool.execute(query="select:shell")
+    raw = await tool.execute(query="select:shell", excluded_names={"shell"})
     result = json.loads(raw)
     assert result["matched"] == []
     assert "shell" in result.get("tip", ""), (
@@ -114,8 +107,7 @@ async def test_tool_search_select_not_excluded_returns_match():
     registry._documents = {"web_search": MagicMock(risk="read-only")}
     tool = ToolSearchTool(registry)
 
-    tool.set_excluded_names({"shell"})  # shell excluded, not web_search
-    raw = await tool.execute(query="select:web_search")
+    raw = await tool.execute(query="select:web_search", excluded_names={"shell"})
     assert any(m["name"] == "web_search" for m in json.loads(raw)["matched"])
 
 

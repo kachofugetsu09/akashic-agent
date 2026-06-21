@@ -26,7 +26,6 @@ from agent.tool_runtime import (
     tool_call_batch_snapshot,
 )
 from agent.tools.base import normalize_tool_result
-from agent.tools.tool_search import ToolSearchTool
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
@@ -805,12 +804,6 @@ class DefaultReasoner(Reasoner):
         self._prompt_render_plugin_modules: list[object] = []
         self._before_step_plugin_modules: list[object] = []
         self._after_step_plugin_modules: list[object] = []
-        # Direct reference to ToolSearchTool so we can pass excluded_names
-        # explicitly instead of routing through the ContextVar side-channel.
-        _ts = tools.get_tool("tool_search")
-        self._tool_search_tool: ToolSearchTool | None = (
-            _ts if isinstance(_ts, ToolSearchTool) else None
-        )
         self._tool_executor = ToolExecutor([])
         self._stream_sink_factory: Callable[
             [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
@@ -1389,16 +1382,17 @@ class DefaultReasoner(Reasoner):
                         continue
 
                     # 6.2 通过统一执行器跑 pre/post hooks + 真实工具。
-                    # For tool_search: pass visible_names explicitly via
-                    # set_excluded_names() instead of the old ContextVar channel.
-                    if (
-                        tool_call.name == "tool_search"
-                        and visible_names is not None
-                        and self._tool_search_tool is not None
-                    ):
-                        self._tool_search_tool.set_excluded_names(
-                            visible_names | disabled
-                        )
+                    async def _execute_tool(
+                        name: str,
+                        arguments: dict[str, Any],
+                    ) -> Any:
+                        if name == "tool_search" and visible_names is not None:
+                            arguments = {
+                                **arguments,
+                                "excluded_names": visible_names | disabled,
+                            }
+                        return await self._tools.execute(name, arguments)
+
                     _args_preview = support.log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
                     await self._observe_tool_call_started(
@@ -1431,9 +1425,8 @@ class DefaultReasoner(Reasoner):
                             tool_batch=tool_batch,
                             tool_batch_index=tool_batch_index,
                         ),
-                        # 真实工具执行入口仍是 ToolRegistry.execute；
                         # hook 只负责拦截与记录，不替代 registry。
-                        self._tools.execute,
+                        _execute_tool,
                     )
                     if exec_result.status == "success":
                         tools_used.append(tool_call.name)

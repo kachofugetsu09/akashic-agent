@@ -16,16 +16,6 @@ class ToolSearchTool(Tool):
 
     def __init__(self, registry: "ToolRegistry") -> None:
         self._registry = registry
-        self._excluded_names: set[str] | None = None
-
-    def set_excluded_names(self, names: set[str] | None) -> None:
-        """Explicitly set which tool names are already visible to the LLM.
-
-        Called by the Reasoner before dispatching each tool_search call.
-        Replaces the ContextVar mechanism (_excluded_names_ctx) which is now
-        kept only as a fallback for callers that have not yet migrated.
-        """
-        self._excluded_names = names
 
     @property
     def name(self) -> str:
@@ -82,11 +72,12 @@ class ToolSearchTool(Tool):
         query: str,
         top_k: int = 5,
         allowed_risk: list[str] | None = None,
+        excluded_names: set[str] | list[str] | tuple[str, ...] | None = None,
         **_: Any,
     ) -> str:
-        # Consume-once: Reasoner calls set_excluded_names() before each dispatch.
-        excluded_names = self._excluded_names
-        self._excluded_names = None
+        excluded: set[str] = (
+            set(excluded_names) if excluded_names is not None else set()
+        )
 
         query = (query or "").strip()
         if not query:
@@ -105,7 +96,7 @@ class ToolSearchTool(Tool):
             return self._handle_select(
                 query[7:],
                 allowed_risk=allowed_risk,
-                excluded_names=excluded_names,
+                excluded_names=excluded,
             )
 
         # ── 关键词搜索路径 ────────────────────────────────────────────────
@@ -114,7 +105,7 @@ class ToolSearchTool(Tool):
             query=query,
             top_k=top_k,
             allowed_risk=allowed_risk,
-            excluded_names=excluded_names,
+            excluded_names=excluded,
         )
         if not results:
             return json.dumps(
@@ -170,7 +161,9 @@ class ToolSearchTool(Tool):
                 ensure_ascii=False,
             )
 
-        excluded = _META_TOOLS | (set(excluded_names) if excluded_names else set())
+        excluded: set[str] = set(_META_TOOLS)
+        if excluded_names:
+            excluded.update(excluded_names)
         risk_filter = set(allowed_risk) if allowed_risk else None
 
         already_loaded: list[str] = []

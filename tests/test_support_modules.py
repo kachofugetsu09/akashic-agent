@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import suppress
 from typing import Any, cast
 
 import asyncio
@@ -20,7 +21,7 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolMeta, ToolRegistry
 from agent.tools.web_search import WebSearchTool
 from bus.events import InboundMessage, OutboundMessage
-from bus.queue import MessageBus
+from bus.queue import ChatLane, MessageBus
 from core.common import timekit
 from plugins.default_memory.engine import DefaultMemoryEngine
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
@@ -142,6 +143,198 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
 
     tool.register_channel("broken", text=broken)
     assert "发送失败" in await tool.execute(channel="broken", chat_id=1, message="x")
+
+
+@pytest.mark.asyncio
+async def test_message_push_non_passive_waits_for_passive_reply():
+    bus = MessageBus()
+    tool = MessagePushTool(chat_lane=bus.chat_lane)
+    events: list[str] = []
+    allow_passive_send = asyncio.Event()
+
+    async def on_outbound(msg: OutboundMessage) -> None:
+        events.append(f"passive:start:{msg.content}")
+        await allow_passive_send.wait()
+        events.append(f"passive:end:{msg.content}")
+
+    async def text(chat_id: str, message: str) -> None:
+        events.append(f"non_passive:{message}")
+
+    bus.subscribe_outbound("cli", on_outbound)
+    tool.register_channel("cli", text=text)
+    dispatch_task = asyncio.create_task(bus.dispatch_outbound())
+    try:
+        inbound = InboundMessage(
+            channel="cli",
+            sender="user",
+            chat_id="1",
+            content="hello",
+        )
+        await bus.publish_inbound(inbound)
+        await bus.publish_outbound(
+            OutboundMessage(channel="cli", chat_id="1", content="reply")
+        )
+        await bus.complete_inbound(inbound)
+        push_task = asyncio.create_task(
+            tool.execute(
+                channel="cli",
+                chat_id="1",
+                message="drift",
+                _commit_role="non_passive",
+            )
+        )
+
+        await asyncio.sleep(0.01)
+        assert events == ["passive:start:reply"]
+        assert not push_task.done()
+        allow_passive_send.set()
+
+        result = await asyncio.wait_for(push_task, timeout=1)
+
+        assert "文本已发送" in result
+        assert events == [
+            "passive:start:reply",
+            "passive:end:reply",
+            "non_passive:drift",
+        ]
+    finally:
+        bus.stop()
+        dispatch_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await dispatch_task
+
+
+@pytest.mark.asyncio
+async def test_message_push_non_passive_resumes_after_silent_passive_turn():
+    bus = MessageBus()
+    tool = MessagePushTool(chat_lane=bus.chat_lane)
+    events: list[str] = []
+
+    async def text(chat_id: str, message: str) -> None:
+        events.append(message)
+
+    tool.register_channel("cli", text=text)
+    inbound = InboundMessage(
+        channel="cli",
+        sender="user",
+        chat_id="1",
+        content="hello",
+    )
+    await bus.publish_inbound(inbound)
+    push_task = asyncio.create_task(
+        tool.execute(
+            channel="cli",
+            chat_id="1",
+            message="scheduler",
+            _commit_role="non_passive",
+        )
+    )
+
+    await asyncio.sleep(0.01)
+    assert not push_task.done()
+
+    await bus.complete_inbound(inbound)
+    result = await asyncio.wait_for(push_task, timeout=1)
+
+    assert "文本已发送" in result
+    assert events == ["scheduler"]
+
+
+@pytest.mark.asyncio
+async def test_message_push_non_passive_same_chat_keeps_fifo_order():
+    bus = MessageBus()
+    tool = MessagePushTool(chat_lane=bus.chat_lane)
+    events: list[str] = []
+    release_first = asyncio.Event()
+
+    async def text(chat_id: str, message: str) -> None:
+        events.append(f"start:{message}")
+        if message == "first":
+            await release_first.wait()
+        events.append(f"end:{message}")
+
+    tool.register_channel("cli", text=text)
+    first = asyncio.create_task(
+        tool.execute(
+            channel="cli",
+            chat_id="1",
+            message="first",
+            _commit_role="non_passive",
+        )
+    )
+    await asyncio.sleep(0)
+    second = asyncio.create_task(
+        tool.execute(
+            channel="cli",
+            chat_id="1",
+            message="second",
+            _commit_role="non_passive",
+        )
+    )
+
+    await asyncio.sleep(0.01)
+    assert events == ["start:first"]
+    assert not second.done()
+    release_first.set()
+
+    await asyncio.gather(first, second)
+
+    assert events == [
+        "start:first",
+        "end:first",
+        "start:second",
+        "end:second",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chat_lane_cancelled_non_passive_waiter_does_not_wedge_lane():
+    lane = ChatLane()
+    ran: list[str] = []
+
+    async def first_send() -> None:
+        ran.append("first")
+
+    async def second_send() -> None:
+        ran.append("second")
+
+    await lane.mark_passive_pending("cli", "1")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            lane.run_non_passive("cli", "1", first_send),
+            timeout=0.01,
+        )
+
+    await lane.mark_passive_done("cli", "1")
+    await asyncio.wait_for(
+        lane.run_non_passive("cli", "1", second_send),
+        timeout=1,
+    )
+
+    assert ran == ["second"]
+
+
+@pytest.mark.asyncio
+async def test_message_push_default_call_does_not_wait_for_passive_lane():
+    bus = MessageBus()
+    tool = MessagePushTool(chat_lane=bus.chat_lane)
+    events: list[str] = []
+
+    async def text(chat_id: str, message: str) -> None:
+        events.append(message)
+
+    tool.register_channel("cli", text=text)
+    await bus.publish_inbound(
+        InboundMessage(channel="cli", sender="user", chat_id="1", content="hello")
+    )
+
+    result = await asyncio.wait_for(
+        tool.execute(channel="cli", chat_id="1", message="inline"),
+        timeout=1,
+    )
+
+    assert "文本已发送" in result
+    assert events == ["inline"]
 
 
 @pytest.mark.asyncio

@@ -612,8 +612,10 @@ class TestToolSearchTool:
         tool = ToolSearchTool(reg)
 
         async def _run():
-            tool.set_excluded_names({"schedule"})
-            return await tool.execute(query="select:schedule")
+            return await tool.execute(
+                query="select:schedule",
+                excluded_names={"schedule"},
+            )
 
         data = json.loads(asyncio.run(_run()))
         assert all(r["name"] != "schedule" for r in data.get("matched", []))
