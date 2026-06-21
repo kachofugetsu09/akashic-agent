@@ -91,6 +91,60 @@ events = [
 
 需要制造精确交错时，必须在 fake generate / fake sender 中使用 `asyncio.Event` 或等价 barrier。不要只依赖 `asyncio.sleep(0)` 或调度运气来证明 t0/t1/t2 顺序。
 
+## 已落地 Docker 探针
+
+探针入口：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/runtime_race_probe.py --scenario all
+```
+
+可用控制开关：
+
+```text
+AKASHIC_RACE_SCENARIO  选择单个场景，默认 all
+AKASHIC_RACE_TIMEOUT   每个等待点的超时秒数，默认 2
+AKASHIC_RACE_TRACE     写出 JSON 结果的路径
+```
+
+探针只使用真实 runtime 排序组件，不连接真实 Telegram / QQ / LLM：
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ docker/debug/runtime_race_probe.py                          │
+└──────────────┬──────────────────────────────────────────────┘
+               │ fake inbound / fake sender
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ real MessageBus + ChatLane                                  │
+└──────────────┬──────────────────────────────────────────────┘
+               │
+      ┌────────┴────────┐
+      v                 v
+┌──────────────┐  ┌──────────────────────┐
+│ BusOutbound  │  │ PushToolOutbound     │
+│ passive path │  │ non-passive path     │
+└──────┬───────┘  └──────────┬───────────┘
+       │                     │
+       v                     v
+┌─────────────────────────────────────────────────────────────┐
+│ fake sender records start/end order                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+当前覆盖场景：
+
+```text
+a1-drift-before-push          A1
+a3-drift-sending-then-user    A3
+b1-scheduler-after-user       B1 / B4
+d1-fifo-passive-insert        D1 + passive 插入
+c2-cross-chat-isolated        跨 chat 不互相阻塞
+e1-silent-passive             passive 无回复仍释放 lane
+e6-cancelled-nonpassive-ticket 取消等待中的 non-passive 不留下 ticket 洞
+```
+
 ## A. Drift / Proactive 与用户消息
 
 ### A1. drift 已经开始生成，用户消息进入，然后 drift 才 message_push

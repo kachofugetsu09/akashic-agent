@@ -205,6 +205,53 @@ docker/debug/scenarios/
 }
 ```
 
+## Runtime 竞态探针
+
+`runtime_race_probe.py` 用于在 Docker 沙盒里制造 passive / scheduler / proactive / drift 的可见发送竞态。它复用真实 `MessageBus`、`ChatLane`、`BusOutboundPort`、`PushToolOutboundPort` 和 `message_push`，但 channel sender 和 LLM 都是 fake，所以不需要调试 bot 或模型 key。
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ runtime_race_probe.py                                       │
+└──────────────┬──────────────────────────────────────────────┘
+               │ fake user inbound
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ MessageBus + ChatLane                                       │
+└──────┬──────────────────────────────────────────────┬───────┘
+       │ passive reply                                │ non-passive send
+       v                                              v
+┌──────────────────────┐                     ┌──────────────────────┐
+│ BusOutboundPort      │                     │ PushToolOutboundPort │
+└──────────┬───────────┘                     └──────────┬───────────┘
+           │                                            │
+           v                                            v
+┌─────────────────────────────────────────────────────────────┐
+│ fake sender records start/end order                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+运行全部场景：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/runtime_race_probe.py --scenario all
+```
+
+运行单个场景：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/runtime_race_probe.py --scenario a1-drift-before-push
+```
+
+可用控制开关：
+
+```text
+AKASHIC_RACE_SCENARIO  选择单个场景，默认 all
+AKASHIC_RACE_TIMEOUT   每个等待点的超时秒数，默认 2
+AKASHIC_RACE_TRACE     写出 JSON 结果的路径
+```
+
 ## 完全清理
 
 ```bash
