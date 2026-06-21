@@ -106,6 +106,8 @@ docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
 AKASHIC_RACE_SCENARIO  选择单个场景，默认 all
 AKASHIC_RACE_TIMEOUT   每个等待点的超时秒数，默认 2
 AKASHIC_RACE_TRACE     写出 JSON 结果的路径
+AKASHIC_RACE_CONFIG    指定 config.toml；不指定时生成无外部 channel 的最小配置
+AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
 ```
 
 探针只使用真实 runtime 排序组件，不连接真实 Telegram / QQ / LLM：
@@ -133,9 +135,36 @@ AKASHIC_RACE_TRACE     写出 JSON 结果的路径
 └─────────────────────────────────────────────────────────────┘
 ```
 
+其中 `agent-loop-runtime` 会额外启动真实 `AgentLoop.run()`，但仍不启动 Telegram / QQ / CLI server：
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ generated or provided config.toml                           │
+│ channels.telegram disabled / channels.qq disabled            │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ real AgentLoop.run + CoreRunner + AgentCore                 │
+│ fake Reasoner blocks passive turn                           │
+└──────────────┬──────────────────────────────────────────────┘
+               │ same MessageBus / ChatLane
+       ┌───────┴──────────────────┐
+       v                          v
+┌──────────────┐          ┌───────────────────────────┐
+│ user inbound │          │ scheduler process_direct  │
+│ passive turn │          │ waits runtime lock        │
+└──────┬───────┘          └──────────┬────────────────┘
+       v                             v
+┌─────────────────────────────────────────────────────────────┐
+│ assert: passive reply -> drift send -> scheduler send        │
+│ assert: reasoner max_active == 1                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
 当前覆盖场景：
 
 ```text
+agent-loop-runtime             真实 AgentLoop.run + RTL + ChatLane 联合验证
 a1-drift-before-push          A1
 a3-drift-sending-then-user    A3
 b1-scheduler-after-user       B1 / B4

@@ -11,13 +11,45 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from agent.config_models import Config
+from agent.core.passive_turn import Reasoner
+from agent.core.runtime_support import TurnRunResult
+from agent.core.types import ReasonerResult
+from agent.looping.core import AgentLoop
+from agent.looping.ports import (
+    AgentLoopConfig,
+    AgentLoopDeps,
+    LLMConfig,
+    MemoryConfig,
+    MemoryServices,
+)
+from agent.provider import LLMResponse
+from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
 from agent.tools.message_push import MessagePushTool
+from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import BusOutboundPort, OutboundDispatch, PushToolOutboundPort
 from bus.events import InboundMessage, OutboundMessage
+from bus.event_bus import EventBus
+from bus.processing import ProcessingState
 from bus.queue import MessageBus
+from core.memory.engine import (
+    EngineProfile,
+    MemoryCapability,
+    MemoryEngineDescriptor,
+    MemoryIngestRequest,
+    MemoryIngestResult,
+    MemoryMutation,
+    MemoryMutationResult,
+    MemoryQuery,
+    MemoryQueryResult,
+    MemoryToolProfile,
+)
+from session.manager import SessionManager
 
 
 CHANNEL = "race"
@@ -43,9 +75,137 @@ class ScenarioResult:
     records: list[dict[str, object]]
 
 
-class RaceHarness:
+class _ProbeMemoryEngine:
+    def describe(self) -> MemoryEngineDescriptor:
+        return MemoryEngineDescriptor(
+            name="race_probe",
+            profile=EngineProfile.CLASSIC_MEMORY_SERVICE,
+            capabilities=frozenset({MemoryCapability.RETRIEVE_CONTEXT_BLOCK}),
+        )
+
+    def tool_profile(self) -> MemoryToolProfile:
+        return MemoryToolProfile()
+
+    async def query(self, request: MemoryQuery) -> MemoryQueryResult:
+        return MemoryQueryResult(text_block="")
+
+    async def mutate(self, request: MemoryMutation) -> MemoryMutationResult:
+        return MemoryMutationResult(accepted=True, item_id="race-memory")
+
+    def reinforce_items_batch(self, ids: list[str]) -> None:
+        return None
+
+    async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:
+        return MemoryIngestResult(accepted=True)
+
+    def read_long_term(self) -> str:
+        return ""
+
+    def read_self(self) -> str:
+        return ""
+
+    def read_recent_context(self) -> str:
+        return ""
+
+    def get_memory_context(self) -> str:
+        return ""
+
+    def read_history(self, max_chars: int = 0) -> str:
+        return ""
+
+    def read_recent_history(self, *, max_chars: int = 0) -> str:
+        return ""
+
+    def has_long_term_memory(self) -> bool:
+        return False
+
+
+class _NoopProvider:
+    async def chat(self, **kwargs: Any) -> LLMResponse:
+        return LLMResponse(content="noop", tool_calls=[])
+
+
+class _NoopRetrieval:
+    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
+        return RetrievalResult(block="")
+
+
+class _BlockingReasoner(Reasoner):
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
+        self.started: dict[str, asyncio.Event] = {}
+        self.release: dict[str, asyncio.Event] = {}
+        self.events: list[str] = []
+        self.active = 0
+        self.max_active = 0
+
+    def block(self, content: str) -> asyncio.Event:
+        release = asyncio.Event()
+        self.release[content] = release
+        _ = self.started.setdefault(content, asyncio.Event())
+        return release
+
+    async def wait_started(self, content: str) -> None:
+        event = self.started.setdefault(content, asyncio.Event())
+        _ = await asyncio.wait_for(event.wait(), timeout=self.timeout)
+
+    async def run(
+        self,
+        initial_messages: list[dict[str, Any]],
+        *,
+        request_time: Any = None,
+        preloaded_tools: set[str] | None = None,
+        preloaded_tool_order: list[str] | None = None,
+        preflight_injected: bool = True,
+        on_content_delta: Any = None,
+        tool_event_session_key: str = "",
+        tool_event_channel: str = "",
+        tool_event_chat_id: str = "",
+        disabled_tools: set[str] | None = None,
+    ) -> ReasonerResult:
+        return ReasonerResult(reply="agent-loop")
+
+    async def run_turn(
+        self,
+        *,
+        msg: Any,
+        session: Any,
+        skill_names: list[str] | None = None,
+        base_history: list[dict[str, Any]] | None = None,
+        retrieved_memory_block: str = "",
+        extra_hints: list[str] | None = None,
+    ) -> TurnRunResult:
+        content = str(getattr(msg, "content", ""))
+        key = str(getattr(session, "key", ""))
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.events.append(f"start:{key}:{content}")
+        _ = self.started.setdefault(content, asyncio.Event()).set()
+        try:
+            release = self.release.get(content)
+            if release is not None:
+                _ = await asyncio.wait_for(release.wait(), timeout=self.timeout)
+            return TurnRunResult(reply=f"passive:{content}")
+        finally:
+            self.events.append(f"end:{key}:{content}")
+            self.active -= 1
+
+    async def render_prompt(self, input: Any) -> Any:
+        raise NotImplementedError
+
+
+class RaceHarness:
+    def __init__(
+        self,
+        timeout: float,
+        *,
+        config_path: Path | None = None,
+        workspace: Path | None = None,
+    ) -> None:
+        self.timeout = timeout
+        self._tmpdir = TemporaryDirectory(prefix="akashic-race-")
+        self.workspace = workspace or Path(self._tmpdir.name) / "workspace"
+        self.config_path = config_path or Path(self._tmpdir.name) / "config.toml"
         self.bus = MessageBus()
         self.push_tool = MessagePushTool(chat_lane=self.bus.chat_lane)
         self.push_port = PushToolOutboundPort(self.push_tool)
@@ -59,16 +219,88 @@ class RaceHarness:
         self.push_tool.register_channel(CHANNEL, text=self._send_text)
         self.bus.subscribe_outbound(CHANNEL, self._send_outbound)
 
+    def load_config(self) -> Config:
+        if not self.config_path.exists():
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            _ = self.config_path.write_text(
+                "\n".join(
+                    [
+                        'provider = "openai"',
+                        'model = "race-model"',
+                        'api_key = ""',
+                        'system_prompt = "race probe"',
+                        "max_iterations = 3",
+                        "max_tokens = 128",
+                        "memory_window = 8",
+                        "",
+                        "[channels]",
+                        'socket = "/tmp/akashic-race.sock"',
+                        "",
+                        "[channels.telegram]",
+                        "enabled = false",
+                        'token = ""',
+                        "",
+                        "[channels.qq]",
+                        "enabled = false",
+                        'bot_uin = ""',
+                        "",
+                        "[proactive]",
+                        'profile = "quiet"',
+                        "enabled = false",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        return Config.load(self.config_path)
+
     async def start(self) -> None:
         self._dispatch_task = asyncio.create_task(self.bus.dispatch_outbound())
 
     async def close(self) -> None:
         self.bus.stop()
         if self._dispatch_task is None:
+            self._tmpdir.cleanup()
             return
-        _ = self._dispatch_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await self._dispatch_task
+        try:
+            _ = self._dispatch_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._dispatch_task
+        finally:
+            self._tmpdir.cleanup()
+
+    def make_agent_loop(self, reasoner: Reasoner) -> AgentLoop:
+        config = self.load_config()
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        session_manager = SessionManager(self.workspace)
+        return AgentLoop(
+            AgentLoopDeps(
+                bus=self.bus,
+                provider=cast(Any, _NoopProvider()),
+                tools=ToolRegistry(),
+                session_manager=session_manager,
+                workspace=self.workspace,
+                event_bus=EventBus(),
+                processing_state=ProcessingState(),
+                memory_services=MemoryServices(
+                    engine=cast(Any, _ProbeMemoryEngine()),
+                ),
+                retrieval_pipeline=_NoopRetrieval(),
+                reasoner=reasoner,
+            ),
+            AgentLoopConfig(
+                llm=LLMConfig(
+                    model=config.agent_model or config.model,
+                    light_model=config.light_model,
+                    max_iterations=config.max_iterations,
+                    max_tokens=config.max_tokens,
+                    tool_search_enabled=config.tool_search_enabled,
+                    multimodal=config.multimodal,
+                    vl_available=bool(config.vl_model),
+                ),
+                memory=MemoryConfig(window=config.memory_window),
+            ),
+        )
 
     def block_message(self, message: str) -> asyncio.Event:
         release = asyncio.Event()
@@ -190,8 +422,15 @@ async def _run_harness(
     name: str,
     timeout: float,
     scenario: ScenarioFn,
+    *,
+    config_path: Path | None = None,
+    workspace: Path | None = None,
 ) -> ScenarioResult:
-    harness = RaceHarness(timeout=timeout)
+    harness = RaceHarness(
+        timeout=timeout,
+        config_path=config_path,
+        workspace=workspace,
+    )
     try:
         await scenario(harness)
         return ScenarioResult(name=name, ok=True, records=harness.dump_records())
@@ -314,7 +553,70 @@ async def scenario_cancelled_non_passive_ticket(harness: RaceHarness) -> None:
     harness.assert_end_order(["scheduler:E6"])
 
 
+async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
+    config = harness.load_config()
+    if config.channels.telegram is not None or config.channels.qq is not None:
+        raise AssertionError("agent-loop runtime probe config must not enable telegram/qq")
+
+    await harness.start()
+    reasoner = _BlockingReasoner(timeout=harness.timeout)
+    loop = harness.make_agent_loop(reasoner)
+    loop_task = asyncio.create_task(loop.run())
+    release_passive = reasoner.block("user:same-chat")
+
+    async def scheduler_soft() -> None:
+        content = await loop.process_direct(
+            "scheduler-soft",
+            session_key="scheduler:job",
+            channel=CHANNEL,
+            chat_id=CHAT,
+            skip_post_memory=True,
+            skip_memory_retrieval=True,
+        )
+        if content != "passive:scheduler-soft":
+            raise AssertionError(f"scheduler soft content mismatch: {content!r}")
+        ok = await harness.non_passive("scheduler:agent-loop")
+        if not ok:
+            raise AssertionError("scheduler soft message_push failed")
+
+    try:
+        _ = await harness.publish_user()
+        await reasoner.wait_started("user:same-chat")
+
+        drift = asyncio.create_task(harness.non_passive("drift:agent-loop"))
+        scheduler = asyncio.create_task(scheduler_soft())
+        await asyncio.sleep(0.02)
+        if drift.done():
+            raise AssertionError("drift should wait for real AgentLoop passive turn")
+        if any(event.startswith("start:scheduler:job:") for event in reasoner.events):
+            raise AssertionError("scheduler entered reasoner while passive held RTL")
+
+        _ = release_passive.set()
+        _ = await asyncio.wait_for(
+            asyncio.gather(drift, scheduler),
+            timeout=harness.timeout,
+        )
+        harness.assert_end_order(
+            ["passive:user:same-chat", "drift:agent-loop", "scheduler:agent-loop"]
+        )
+        if reasoner.max_active != 1:
+            raise AssertionError(f"reasoner concurrent execution: {reasoner.max_active}")
+        if reasoner.events != [
+            "start:race:same-chat:user:same-chat",
+            "end:race:same-chat:user:same-chat",
+            "start:scheduler:job:scheduler-soft",
+            "end:scheduler:job:scheduler-soft",
+        ]:
+            raise AssertionError(f"reasoner event order mismatch: {reasoner.events!r}")
+    finally:
+        loop.stop()
+        _ = loop_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await loop_task
+
+
 SCENARIOS: dict[str, ScenarioFn] = {
+    "agent-loop-runtime": scenario_agent_loop_runtime,
     "a1-drift-before-push": scenario_drift_before_push,
     "a3-drift-sending-then-user": scenario_drift_sending_then_user,
     "b1-scheduler-after-user": scenario_scheduler_after_user,
@@ -333,7 +635,13 @@ async def _run(args: argparse.Namespace) -> int:
         if scenario is None:
             raise SystemExit(f"未知场景: {name}")
         try:
-            result = await _run_harness(name, args.timeout, scenario)
+            result = await _run_harness(
+                name,
+                args.timeout,
+                scenario,
+                config_path=args.config,
+                workspace=args.workspace,
+            )
         except Exception as exc:
             result = ScenarioResult(name=name, ok=False, records=[])
             results.append(result)
@@ -397,6 +705,24 @@ def _parse_args() -> argparse.Namespace:
         default=(
             Path(os.environ["AKASHIC_RACE_TRACE"])
             if os.environ.get("AKASHIC_RACE_TRACE")
+            else None
+        ),
+    )
+    _ = parser.add_argument(
+        "--config",
+        type=Path,
+        default=(
+            Path(os.environ["AKASHIC_RACE_CONFIG"])
+            if os.environ.get("AKASHIC_RACE_CONFIG")
+            else None
+        ),
+    )
+    _ = parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=(
+            Path(os.environ["AKASHIC_RACE_WORKSPACE"])
+            if os.environ.get("AKASHIC_RACE_WORKSPACE")
             else None
         ),
     )
