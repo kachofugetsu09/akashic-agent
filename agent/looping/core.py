@@ -579,10 +579,12 @@ class AgentLoop:
         self,
         msg: InboundItem,
         session_key: str | None = None,
+        busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         started = time.time()
         key = session_key or msg.session_key
+        busy_key = busy_session_key or key
         # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
         _ = current_session_key.set(key)
 
@@ -595,7 +597,7 @@ class AgentLoop:
 
         # 2. 再进入 busy 状态并执行核心处理。
         if self._processing_state:
-            self._processing_state.enter(key)
+            self._processing_state.enter(busy_key)
         try:
             outbound = await self._core_runner.process(
                 msg,
@@ -608,13 +610,14 @@ class AgentLoop:
         finally:
             # 3. 最后无论成功失败都直接释放 busy 状态。
             if self._processing_state:
-                self._processing_state.exit(key)
+                self._processing_state.exit(busy_key)
             _ = started
 
     async def _process_with_runtime_admission(
         self,
         msg: InboundItem,
         session_key: str | None = None,
+        busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         key = session_key or msg.session_key
@@ -624,6 +627,7 @@ class AgentLoop:
             return await self._process(
                 msg,
                 session_key=session_key,
+                busy_session_key=busy_session_key,
                 dispatch_outbound=dispatch_outbound,
             )
 
@@ -631,6 +635,7 @@ class AgentLoop:
         self,
         content: str,
         session_key: str = "cli:direct",
+        busy_session_key: str | None = None,
         channel: str = "cli",
         chat_id: str = "direct",
         omit_user_turn: bool = False,
@@ -660,6 +665,7 @@ class AgentLoop:
         response = await self._process_with_runtime_admission(
             msg,
             session_key=session_key,
+            busy_session_key=busy_session_key,
             dispatch_outbound=False,
         )
         return response.content if response else ""

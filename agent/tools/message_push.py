@@ -103,7 +103,7 @@ class MessagePushTool(Tool):
                 senders=senders,
             )
 
-        if self._chat_lane is not None and commit_role == "non_passive":
+        if self._chat_lane is not None and commit_role != "passive":
             return await self._chat_lane.run_non_passive(channel, chat_id, _send)
         return await _send()
 

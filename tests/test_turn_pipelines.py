@@ -160,6 +160,7 @@ async def test_process_direct_waits_for_passive_runtime_admission():
     async def _process(
         msg: InboundMessage,
         session_key: str | None = None,
+        busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         key = session_key or msg.session_key
@@ -202,6 +203,42 @@ async def test_process_direct_waits_for_passive_runtime_admission():
         "start:scheduler:job",
         "end:scheduler:job",
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    state = MagicMock()
+    loop._processing_state = state  # type: ignore[attr-defined]
+    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+        return_value=OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="ok",
+        )
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="天气",
+    )
+
+    outbound = await loop._process(
+        msg,
+        session_key="scheduler:job",
+        busy_session_key="telegram:123",
+        dispatch_outbound=False,
+    )
+
+    assert outbound.content == "ok"
+    state.enter.assert_called_once_with("telegram:123")
+    state.exit.assert_called_once_with("telegram:123")
+    loop._core_runner.process.assert_awaited_once_with(  # type: ignore[attr-defined]
+        msg,
+        "scheduler:job",
+        dispatch_outbound=False,
+    )
 
 
 def _make_loop(

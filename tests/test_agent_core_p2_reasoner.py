@@ -154,6 +154,46 @@ def test_default_reasoner_blocks_disabled_tool_even_if_model_calls_it():
     assert calls[0]["status"] == "blocked"
 
 
+def test_default_reasoner_forces_passive_message_push_role():
+    provider = _Provider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        "c1",
+                        "message_push",
+                        {"message": "hi", "_commit_role": "non_passive"},
+                    )
+                ],
+            ),
+            LLMResponse(content="done", tool_calls=[]),
+        ]
+    )
+    push = _DummyTool("message_push")
+    tools = ToolRegistry()
+    tools.register(push, always_on=True, risk="external-side-effect")
+    reasoner = DefaultReasoner(
+        llm=cast(
+            Any,
+            LLMServices(
+                provider=cast(Any, provider),
+                light_provider=cast(Any, provider),
+            ),
+        ),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "done"
+    assert push.calls == [{"message": "hi", "_commit_role": "passive"}]
+
+
 def test_default_reasoner_tool_search_cannot_reunlock_disabled_tool():
     provider = _Provider(
         [

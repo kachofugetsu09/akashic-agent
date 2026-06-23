@@ -180,7 +180,6 @@ async def test_message_push_non_passive_waits_for_passive_reply():
                 channel="cli",
                 chat_id="1",
                 message="drift",
-                _commit_role="non_passive",
             )
         )
 
@@ -226,7 +225,6 @@ async def test_message_push_non_passive_resumes_after_silent_passive_turn():
             channel="cli",
             chat_id="1",
             message="scheduler",
-            _commit_role="non_passive",
         )
     )
 
@@ -259,7 +257,6 @@ async def test_message_push_non_passive_same_chat_keeps_fifo_order():
             channel="cli",
             chat_id="1",
             message="first",
-            _commit_role="non_passive",
         )
     )
     await asyncio.sleep(0)
@@ -268,7 +265,6 @@ async def test_message_push_non_passive_same_chat_keeps_fifo_order():
             channel="cli",
             chat_id="1",
             message="second",
-            _commit_role="non_passive",
         )
     )
 
@@ -315,7 +311,36 @@ async def test_chat_lane_cancelled_non_passive_waiter_does_not_wedge_lane():
 
 
 @pytest.mark.asyncio
-async def test_message_push_default_call_does_not_wait_for_passive_lane():
+async def test_message_push_default_call_waits_for_passive_lane():
+    bus = MessageBus()
+    tool = MessagePushTool(chat_lane=bus.chat_lane)
+    events: list[str] = []
+
+    async def text(chat_id: str, message: str) -> None:
+        events.append(message)
+
+    tool.register_channel("cli", text=text)
+    await bus.publish_inbound(
+        InboundMessage(channel="cli", sender="user", chat_id="1", content="hello")
+    )
+    push_task = asyncio.create_task(
+        tool.execute(channel="cli", chat_id="1", message="inline")
+    )
+
+    await asyncio.sleep(0.01)
+    assert not push_task.done()
+
+    await bus.complete_inbound(
+        InboundMessage(channel="cli", sender="user", chat_id="1", content="hello")
+    )
+    result = await asyncio.wait_for(push_task, timeout=1)
+
+    assert "文本已发送" in result
+    assert events == ["inline"]
+
+
+@pytest.mark.asyncio
+async def test_message_push_passive_role_does_not_wait_for_passive_lane():
     bus = MessageBus()
     tool = MessagePushTool(chat_lane=bus.chat_lane)
     events: list[str] = []
@@ -329,7 +354,12 @@ async def test_message_push_default_call_does_not_wait_for_passive_lane():
     )
 
     result = await asyncio.wait_for(
-        tool.execute(channel="cli", chat_id="1", message="inline"),
+        tool.execute(
+            channel="cli",
+            chat_id="1",
+            message="inline",
+            _commit_role="passive",
+        ),
         timeout=1,
     )
 

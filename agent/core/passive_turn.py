@@ -1391,6 +1391,8 @@ class DefaultReasoner(Reasoner):
                                 **arguments,
                                 "excluded_names": visible_names | disabled,
                             }
+                        if name == "message_push":
+                            arguments = {**arguments, "_commit_role": "passive"}
                         return await self._tools.execute(name, arguments)
 
                     _args_preview = support.log_preview(tool_call.arguments, 120)

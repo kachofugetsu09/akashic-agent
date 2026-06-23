@@ -592,6 +592,7 @@ async def scenario_agent_loop_runtime(harness: RaceHarness) -> None:
         content = await loop.process_direct(
             "scheduler-soft",
             session_key="scheduler:job",
+            busy_session_key=f"{CHANNEL}:{CHAT}",
             channel=CHANNEL,
             chat_id=CHAT,
             skip_post_memory=True,
@@ -669,7 +670,6 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
                 channel=channel,
                 chat_id=chat_id,
                 message="drift:config-runtime",
-                _commit_role="non_passive",
             )
         )
         proactive = asyncio.create_task(
@@ -677,7 +677,6 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
                 channel=channel,
                 chat_id=chat_id,
                 message="proactive:config-runtime",
-                _commit_role="non_passive",
             )
         )
 
@@ -685,6 +684,7 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
             _ = await core.loop.process_direct(
                 "竞态验证 scheduler soft：请只用一句中文回复，内容包含“scheduler done”。",
                 session_key="scheduler:config-runtime",
+                busy_session_key=f"{channel}:{chat_id}",
                 channel=channel,
                 chat_id=chat_id,
                 skip_post_memory=True,
@@ -694,7 +694,6 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
                 channel=channel,
                 chat_id=chat_id,
                 message="scheduler:config-runtime",
-                _commit_role="non_passive",
             )
             return str(result)
 
