@@ -66,6 +66,7 @@ def test_global_list_type_facet(tmp_path):
     assert items[0]["error_type"] == "TimeoutError"
     assert items[0]["count"] == 13
     assert items[0]["sessions"] == 2
+    assert items[0]["spark"] == [5, 8]
     assert "_buckets" not in items[0]
 
 

@@ -433,6 +433,7 @@ def _aggregate_fingerprint(rows: list[sqlite3.Row]) -> dict[str, Any]:
         "channel": _channel_of(sessions),
         "is_new": _is_new(first_ts),
         "is_spiking": _is_spiking(spark),
+        "spark": spark,
         "_buckets": buckets,
     }
 

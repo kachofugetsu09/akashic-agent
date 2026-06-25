@@ -414,6 +414,7 @@ function ErrorDrill({
 
 function ErrorRow({ g, active, onClick }: { g: GErrGroup; active: boolean; onClick: () => void }): ReactElement {
   const tone = _severity(g.count, g.is_spiking);
+  const spark = g.spark ?? [];
   return (
     <button
       type="button"
@@ -437,7 +438,7 @@ function ErrorRow({ g, active, onClick }: { g: GErrGroup; active: boolean; onCli
         </div>
       </div>
       <div className="flex flex-col items-end gap-1.5">
-        <div className="h-[22px] w-[62px]">{g.spark.length > 1 && <Sparkline data={g.spark} tone={tone} height={22} />}</div>
+        <div className="h-[22px] w-[62px]">{spark.length > 1 && <Sparkline data={spark} tone={tone} height={22} />}</div>
         <span className="font-mono text-[10px] text-subtle">{_shortTs(g.last_ts)}</span>
       </div>
     </button>
