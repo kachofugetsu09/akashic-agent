@@ -120,8 +120,10 @@ function renderAkashaGraph(container: HTMLElement): void {
   let pollTimer: number | undefined;
   let tweenFrame: number | undefined;
   let lockedColor: string | null = null;
+  let bgEdgePaths: Path2D[] = [new Path2D(), new Path2D(), new Path2D(), new Path2D()];
   let hlInternalPath = new Path2D();
   let hlCrossPath = new Path2D();
+  const globalEdgeScaleLimit = 1.2;
 
   function updateHlPaths() {
     hlInternalPath = new Path2D();
@@ -217,18 +219,42 @@ function renderAkashaGraph(container: HTMLElement): void {
   function invY(py: number): number { return (py - ty) / scale; }
   function activeId(): number { return pinned; }
 
+  function edgeBin(w: number): number {
+    if (w > 0.15) return 3;
+    if (w > 0.1) return 2;
+    if (w > 0.05) return 1;
+    return 0;
+  }
+
   function recomputeAdj(): void {
     adj = NODES.map(() => []);
     adjEdges = NODES.map(() => []);
+    bgEdgePaths = [new Path2D(), new Path2D(), new Path2D(), new Path2D()];
     for (const edge of EDGES) {
-      const [a, b, , cc] = edge;
+      const [a, b, w, cc] = edge;
       if (cc >= ccThreshold) {
         adj[a].push(b);
         adj[b].push(a);
         adjEdges[a].push(edge);
         adjEdges[b].push(edge);
+        const bin = edgeBin(w);
+        bgEdgePaths[bin].moveTo(NODES[a].x, NODES[a].y);
+        bgEdgePaths[bin].lineTo(NODES[b].x, NODES[b].y);
       }
     }
+  }
+
+  function drawGlobalEdges(): void {
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.scale(scale, scale);
+    const alphas = [0.08, 0.12, 0.18, 0.25];
+    ctx.lineWidth = Math.max(0.3 / scale, 0.5);
+    for (let i = 0; i < 4; i++) {
+      ctx.strokeStyle = `rgba(120,130,150,${alphas[i]})`;
+      ctx.stroke(bgEdgePaths[i]);
+    }
+    ctx.restore();
   }
 
   function drawBase(): void {
@@ -253,7 +279,9 @@ function renderAkashaGraph(container: HTMLElement): void {
       ? new Set(NODES.map((n, i) => n.t.toLowerCase().includes(fil) ? i : -1).filter((i) => i >= 0))
       : null;
 
-    if (act >= 0) {
+    if (act < 0 && !match && scale <= globalEdgeScaleLimit) {
+      drawGlobalEdges();
+    } else if (act >= 0) {
       for (const [a, b] of adjEdges[act] || []) {
         const nA = NODES[a], nB = NODES[b];
         const cross = nA.g !== nB.g;
