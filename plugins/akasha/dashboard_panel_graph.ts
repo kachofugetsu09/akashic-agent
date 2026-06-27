@@ -26,6 +26,36 @@ interface GraphLegend {
   label: string;
 }
 
+interface CommunityView {
+  g: number;
+  c: string;
+  size: number;
+  label: string;
+  x: number;
+  y: number;
+  r: number;
+}
+
+interface SubIslandView {
+  id: number;
+  parent: number;
+  c: string;
+  size: number;
+  x: number;
+  y: number;
+  r: number;
+}
+
+interface IslandLink {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  color: string;
+  strength: number;
+  cross: boolean;
+}
+
 interface GraphPayload {
   nodes: GraphNode[];
   edges: GraphEdgeObject[];
@@ -65,7 +95,7 @@ function renderAkashaGraph(container: HTMLElement): void {
           <input type="range" id="cc_slider" min="1" max="10" value="2">
           <span style="font-size:11px">共现频次 &ge; <span id="cc_val" style="color:#fff;font-weight:bold;font-size:13px">2</span></span>
         </div>
-        <div class="hint">拖拽平移 · 滚轮缩放 · 点击节点看连线 · 调滑块看引力</div>
+        <div class="hint">远景看大岛 · 中景看子岛 · 近景看联想根系</div>
       </div>
       <div id="leg"></div>
       <div id="tip"></div>
@@ -98,6 +128,12 @@ function renderAkashaGraph(container: HTMLElement): void {
   let NODES: GraphNode[] = [];
   let EDGES: GraphEdge[] = [];
   let LEG: GraphLegend[] = [];
+  let COMMUNITIES: CommunityView[] = [];
+  let SUB_ISLANDS: SubIslandView[] = [];
+  let childByNode: number[] = [];
+  let nodeIsRepresentative: boolean[] = [];
+  let parentLinks: IslandLink[] = [];
+  let childLinks: IslandLink[] = [];
   let W = 1;
   let H = 1;
   let DPR = 1;
@@ -120,7 +156,6 @@ function renderAkashaGraph(container: HTMLElement): void {
   let pollTimer: number | undefined;
   let tweenFrame: number | undefined;
   let lockedColor: string | null = null;
-  let bgEdgePaths: Path2D[] = [new Path2D(), new Path2D(), new Path2D(), new Path2D()];
   let hlInternalPath = new Path2D();
   let hlCrossPath = new Path2D();
   const globalEdgeScaleLimit = 1.2;
@@ -219,41 +254,465 @@ function renderAkashaGraph(container: HTMLElement): void {
   function invY(py: number): number { return (py - ty) / scale; }
   function activeId(): number { return pinned; }
 
-  function edgeBin(w: number): number {
-    if (w > 0.15) return 3;
-    if (w > 0.1) return 2;
-    if (w > 0.05) return 1;
-    return 0;
+  function colorAlpha(color: string, alpha: number): string {
+    const safeAlpha = Math.max(0, Math.min(1, alpha));
+    if (color.startsWith("hsl(")) return color.replace("hsl(", "hsla(").replace(")", `,${safeAlpha})`);
+    const hex = color.startsWith("#") ? color.slice(1) : "";
+    if (hex.length === 6) {
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      return `rgba(${r},${g},${b},${safeAlpha})`;
+    }
+    return color;
+  }
+
+  function rebalanceFractalSpacing(): void {
+    const groups = new Map<number, { count: number; sx: number; sy: number }>();
+    for (const n of NODES) {
+      const old = groups.get(n.g);
+      if (old) {
+        old.count += 1;
+        old.sx += n.x;
+        old.sy += n.y;
+      } else {
+        groups.set(n.g, { count: 1, sx: n.x, sy: n.y });
+      }
+    }
+    const centers = new Map<number, { x: number; y: number; spread: number }>();
+    for (const [g, item] of groups.entries()) {
+      centers.set(g, {
+        x: item.sx / item.count,
+        y: item.sy / item.count,
+        spread: item.count >= 180 ? 1.55 : (item.count >= 70 ? 1.42 : 1.26),
+      });
+    }
+    const world = { x: 500, y: 500 };
+    NODES = NODES.map((node) => {
+      const center = centers.get(node.g);
+      if (!center) return node;
+      const cx = world.x + (center.x - world.x) * 0.74;
+      const cy = world.y + (center.y - world.y) * 0.74;
+      return {
+        ...node,
+        x: cx + (node.x - center.x) * center.spread,
+        y: cy + (node.y - center.y) * center.spread,
+      };
+    });
   }
 
   function recomputeAdj(): void {
     adj = NODES.map(() => []);
     adjEdges = NODES.map(() => []);
-    bgEdgePaths = [new Path2D(), new Path2D(), new Path2D(), new Path2D()];
     for (const edge of EDGES) {
-      const [a, b, w, cc] = edge;
+      const [a, b, , cc] = edge;
       if (cc >= ccThreshold) {
         adj[a].push(b);
         adj[b].push(a);
         adjEdges[a].push(edge);
         adjEdges[b].push(edge);
-        const bin = edgeBin(w);
-        bgEdgePaths[bin].moveTo(NODES[a].x, NODES[a].y);
-        bgEdgePaths[bin].lineTo(NODES[b].x, NODES[b].y);
+      }
+    }
+    recomputeLinks();
+  }
+
+  function recomputeCommunities(): void {
+    const groups = new Map<number, {
+      c: string;
+      label: string;
+      count: number;
+      sx: number;
+      sy: number;
+      minX: number;
+      minY: number;
+      maxX: number;
+      maxY: number;
+    }>();
+    const nodesByGroup = new Map<number, number[]>();
+    for (let i = 0; i < NODES.length; i += 1) {
+      const n = NODES[i];
+      const bucket = nodesByGroup.get(n.g);
+      if (bucket) bucket.push(i);
+      else nodesByGroup.set(n.g, [i]);
+      const old = groups.get(n.g);
+      const label = LEG[n.g]?.label || `社区 ${n.g}`;
+      if (!old) {
+        groups.set(n.g, {
+          c: n.c,
+          label,
+          count: 1,
+          sx: n.x,
+          sy: n.y,
+          minX: n.x,
+          minY: n.y,
+          maxX: n.x,
+          maxY: n.y,
+        });
+        continue;
+      }
+      old.count += 1;
+      old.sx += n.x;
+      old.sy += n.y;
+      old.minX = Math.min(old.minX, n.x);
+      old.minY = Math.min(old.minY, n.y);
+      old.maxX = Math.max(old.maxX, n.x);
+      old.maxY = Math.max(old.maxY, n.y);
+    }
+    COMMUNITIES = [...groups.entries()].map(([g, item]) => {
+      const x = item.sx / item.count;
+      const y = item.sy / item.count;
+      const dx = Math.max(x - item.minX, item.maxX - x);
+      const dy = Math.max(y - item.minY, item.maxY - y);
+      return {
+        g,
+        c: item.c,
+        size: item.count,
+        label: item.label,
+        x,
+        y,
+        r: Math.max(18, Math.hypot(dx, dy) + 10 + Math.sqrt(item.count) * 1.8),
+      };
+    }).sort((a, b) => b.size - a.size);
+    recomputeSubIslands(nodesByGroup);
+  }
+
+  function recomputeSubIslands(nodesByGroup: Map<number, number[]>): void {
+    SUB_ISLANDS = [];
+    childByNode = NODES.map(() => -1);
+    nodeIsRepresentative = NODES.map(() => false);
+    for (const comm of COMMUNITIES) {
+      const indexes = nodesByGroup.get(comm.g) || [];
+      const parts = splitSubIslands(indexes, comm);
+      for (const part of parts) {
+        const id = SUB_ISLANDS.length;
+        let sx = 0, sy = 0;
+        for (const nodeIndex of part) {
+          sx += NODES[nodeIndex].x;
+          sy += NODES[nodeIndex].y;
+        }
+        const x = sx / part.length;
+        const y = sy / part.length;
+        let far = 0;
+        for (const nodeIndex of part) {
+          const n = NODES[nodeIndex];
+          far = Math.max(far, Math.hypot(n.x - x, n.y - y));
+          childByNode[nodeIndex] = id;
+        }
+        const sub = {
+          id,
+          parent: comm.g,
+          c: comm.c,
+          size: part.length,
+          x,
+          y,
+          r: Math.max(7, far + 4 + Math.sqrt(part.length) * 0.9),
+        };
+        SUB_ISLANDS.push(sub);
+        markRepresentatives(part, sub);
       }
     }
   }
 
-  function drawGlobalEdges(): void {
+  function splitSubIslands(indexes: number[], comm: CommunityView): number[][] {
+    if (indexes.length < 32) return [indexes];
+    const k = Math.max(2, Math.min(8, Math.round(Math.sqrt(indexes.length) / 2.7)));
+    const centers: Array<{ x: number; y: number }> = [];
+    let first = indexes[0];
+    let far = -1;
+    for (const nodeIndex of indexes) {
+      const n = NODES[nodeIndex];
+      const d = Math.hypot(n.x - comm.x, n.y - comm.y);
+      if (d > far) {
+        far = d;
+        first = nodeIndex;
+      }
+    }
+    centers.push({ x: NODES[first].x, y: NODES[first].y });
+    while (centers.length < k) {
+      let next = indexes[0];
+      let best = -1;
+      for (const nodeIndex of indexes) {
+        const n = NODES[nodeIndex];
+        let nearest = Infinity;
+        for (const c of centers) nearest = Math.min(nearest, Math.hypot(n.x - c.x, n.y - c.y));
+        if (nearest > best) {
+          best = nearest;
+          next = nodeIndex;
+        }
+      }
+      centers.push({ x: NODES[next].x, y: NODES[next].y });
+    }
+    let buckets: number[][] = [];
+    for (let iter = 0; iter < 5; iter += 1) {
+      buckets = Array.from({ length: centers.length }, () => []);
+      for (const nodeIndex of indexes) {
+        const n = NODES[nodeIndex];
+        let pick = 0;
+        let best = Infinity;
+        for (let i = 0; i < centers.length; i += 1) {
+          const c = centers[i];
+          const d = Math.hypot(n.x - c.x, n.y - c.y);
+          if (d < best) {
+            best = d;
+            pick = i;
+          }
+        }
+        buckets[pick].push(nodeIndex);
+      }
+      for (let i = 0; i < buckets.length; i += 1) {
+        if (!buckets[i].length) continue;
+        let sx = 0, sy = 0;
+        for (const nodeIndex of buckets[i]) {
+          sx += NODES[nodeIndex].x;
+          sy += NODES[nodeIndex].y;
+        }
+        centers[i] = { x: sx / buckets[i].length, y: sy / buckets[i].length };
+      }
+    }
+    return buckets.filter((bucket) => bucket.length > 0);
+  }
+
+  function markRepresentatives(indexes: number[], sub: SubIslandView): void {
+    const limit = Math.min(5, Math.max(1, Math.round(Math.sqrt(indexes.length) / 3)));
+    const ranked = [...indexes].sort((a, b) => {
+      const na = NODES[a], nb = NODES[b];
+      return Math.hypot(na.x - sub.x, na.y - sub.y) - Math.hypot(nb.x - sub.x, nb.y - sub.y);
+    });
+    for (const nodeIndex of ranked.slice(0, limit)) nodeIsRepresentative[nodeIndex] = true;
+  }
+
+  function recomputeLinks(): void {
+    const commByGroup = new Map(COMMUNITIES.map((comm) => [comm.g, comm]));
+    const parentAgg = new Map<string, { a: number; b: number; cc: number; w: number }>();
+    const childAgg = new Map<string, { a: number; b: number; cc: number; w: number }>();
+    for (const [a, b, w, cc] of EDGES) {
+      if (cc < ccThreshold) continue;
+      const na = NODES[a], nb = NODES[b];
+      if (na.g !== nb.g && cc >= 5) {
+        addAgg(parentAgg, na.g, nb.g, cc, w);
+      }
+      const ca = childByNode[a], cb = childByNode[b];
+      if (ca >= 0 && cb >= 0 && ca !== cb && cc >= 3) {
+        const sameParent = SUB_ISLANDS[ca]?.parent === SUB_ISLANDS[cb]?.parent;
+        if (sameParent || cc >= 8) addAgg(childAgg, ca, cb, cc, w);
+      }
+    }
+    parentLinks = [...parentAgg.values()]
+      .map((item) => {
+        const a = commByGroup.get(item.a);
+        const b = commByGroup.get(item.b);
+        if (!a || !b) return null;
+        return linkFrom(a, b, item.cc, item.w, true);
+      })
+      .filter((item): item is IslandLink => item !== null)
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 240);
+    childLinks = [...childAgg.values()]
+      .map((item) => {
+        const a = SUB_ISLANDS[item.a];
+        const b = SUB_ISLANDS[item.b];
+        if (!a || !b) return null;
+        return linkFrom(a, b, item.cc, item.w, a.parent !== b.parent);
+      })
+      .filter((item): item is IslandLink => item !== null)
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 1100);
+  }
+
+  function addAgg(
+    map: Map<string, { a: number; b: number; cc: number; w: number }>,
+    a: number,
+    b: number,
+    cc: number,
+    w: number,
+  ): void {
+    const x = Math.min(a, b);
+    const y = Math.max(a, b);
+    const key = `${x}:${y}`;
+    const old = map.get(key);
+    if (old) {
+      old.cc += cc;
+      old.w = Math.max(old.w, w);
+    } else {
+      map.set(key, { a: x, b: y, cc, w });
+    }
+  }
+
+  function linkFrom(
+    a: CommunityView | SubIslandView,
+    b: CommunityView | SubIslandView,
+    cc: number,
+    w: number,
+    cross: boolean,
+  ): IslandLink {
+    return {
+      ax: a.x,
+      ay: a.y,
+      bx: b.x,
+      by: b.y,
+      color: cross ? "#d7e4ff" : a.c,
+      strength: Math.sqrt(cc) * Math.max(0.04, w),
+      cross,
+    };
+  }
+
+  function drawIslands(act: number): void {
     ctx.save();
     ctx.translate(tx, ty);
     ctx.scale(scale, scale);
-    const alphas = [0.08, 0.12, 0.18, 0.25];
-    ctx.lineWidth = Math.max(0.3 / scale, 0.5);
-    for (let i = 0; i < 4; i++) {
-      ctx.strokeStyle = `rgba(120,130,150,${alphas[i]})`;
-      ctx.stroke(bgEdgePaths[i]);
+    for (let i = COMMUNITIES.length - 1; i >= 0; i -= 1) {
+      const comm = COMMUNITIES[i];
+      const active = act >= 0 && NODES[act]?.g === comm.g;
+      const alpha = active ? 0.22 : (scale < 0.9 ? 0.12 : 0.06);
+      const radius = comm.r + (scale < 0.9 ? 10 : 4);
+      const gradient = ctx.createRadialGradient(
+        comm.x,
+        comm.y,
+        Math.max(4, radius * 0.12),
+        comm.x,
+        comm.y,
+        radius,
+      );
+      gradient.addColorStop(0, colorAlpha(comm.c, alpha));
+      gradient.addColorStop(0.72, colorAlpha(comm.c, alpha * 0.32));
+      gradient.addColorStop(1, colorAlpha(comm.c, 0));
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(comm.x, comm.y, radius, 0, Math.PI * 2);
+      ctx.fill();
     }
+    if (scale > 0.68) {
+      for (const sub of SUB_ISLANDS) {
+        const active = act >= 0 && childByNode[act] === sub.id;
+        const alpha = active ? 0.28 : (scale < 1.18 ? 0.15 : 0.08);
+        const radius = sub.r + (scale < 1.1 ? 3 : 1.5);
+        const gradient = ctx.createRadialGradient(sub.x, sub.y, 1, sub.x, sub.y, radius);
+        gradient.addColorStop(0, colorAlpha(sub.c, alpha));
+        gradient.addColorStop(0.68, colorAlpha(sub.c, alpha * 0.28));
+        gradient.addColorStop(1, colorAlpha(sub.c, 0));
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(sub.x, sub.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    if (scale < 0.95) {
+      ctx.textBaseline = "middle";
+      ctx.font = `${Math.max(9 / scale, 7)}px sans-serif`;
+      for (const comm of COMMUNITIES) {
+        if (comm.size < 60) continue;
+        const label = comm.label.split(" · ")[0] || `社区 ${comm.g}`;
+        ctx.fillStyle = "rgba(232,236,244,0.72)";
+        ctx.fillText(`[${comm.size}] ${label.slice(0, 16)}`, comm.x - comm.r * 0.32, comm.y - comm.r - 8 / scale);
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawGlobalEdges(): void {
+    drawIslandLinks(parentLinks, scale < 0.75 ? 0.42 : 0.24, 1.35);
+    if (scale > 0.72) drawIslandLinks(childLinks, scale < 1.08 ? 0.22 : 0.13, 0.78);
+  }
+
+  function drawIslandLinks(links: IslandLink[], alphaBase: number, widthBase: number): void {
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.scale(scale, scale);
+    for (const link of links) {
+      const dx = link.bx - link.ax;
+      const dy = link.by - link.ay;
+      const len = Math.max(1, Math.hypot(dx, dy));
+      const bend = Math.min(60, len * 0.12) * (link.cross ? 1 : -0.5);
+      const cx = (link.ax + link.bx) / 2 - dy / len * bend;
+      const cy = (link.ay + link.by) / 2 + dx / len * bend;
+      const alpha = Math.min(0.62, alphaBase * (0.65 + Math.log1p(link.strength) * 0.42));
+      ctx.strokeStyle = link.cross ? `rgba(210,224,255,${alpha})` : colorAlpha(link.color, alpha);
+      ctx.lineWidth = Math.max(0.45 / scale, widthBase * (0.55 + Math.log1p(link.strength) * 0.34) / scale);
+      ctx.beginPath();
+      ctx.moveTo(link.ax, link.ay);
+      ctx.quadraticCurveTo(cx, cy, link.bx, link.by);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawActiveEdges(act: number): void {
+    const n0 = NODES[act];
+    const items = [...(adjEdges[act] || [])]
+      .sort((a, b) => (b[3] - a[3]) || (b[2] - a[2]))
+      .slice(0, 180);
+    for (let i = 0; i < items.length; i += 1) {
+      const [a, b, w, cc] = items[i];
+      const target = a === act ? b : a;
+      const n1 = NODES[target];
+      const dx = n1.x - n0.x;
+      const dy = n1.y - n0.y;
+      const len = Math.max(1, Math.hypot(dx, dy));
+      const sign = ((a * 31 + b * 17 + i) % 2) === 0 ? 1 : -1;
+      const bend = Math.min(38, Math.max(8, len * 0.1)) * sign;
+      const cx = (n0.x + n1.x) / 2 - dy / len * bend;
+      const cy = (n0.y + n1.y) / 2 + dx / len * bend;
+      const cross = n0.g !== n1.g;
+      const alpha = Math.min(0.9, 0.26 + cc / 32 + w * 0.24);
+      ctx.strokeStyle = cross ? `rgba(255,99,130,${alpha})` : `rgba(142,205,255,${alpha * 0.82})`;
+      ctx.lineWidth = cross ? Math.max(1.3, 1.8 * scale) : Math.max(0.65, 0.95 * scale);
+      ctx.beginPath();
+      ctx.moveTo(X(n0.x), Y(n0.y));
+      ctx.quadraticCurveTo(X(cx), Y(cy), X(n1.x), Y(n1.y));
+      ctx.stroke();
+    }
+  }
+
+  function shouldDrawNode(index: number, act: number, match: Set<number> | null): boolean {
+    if (match) return match.has(index) || scale >= 1.35;
+    if (act >= 0) return index === act || (adj[act] || []).includes(index);
+    if (scale < 0.9) return false;
+    if (scale < 1.35) return nodeIsRepresentative[index] || (adj[index]?.length || 0) >= 40;
+    return true;
+  }
+
+  function representativeForColor(color: string): number {
+    const comm = COMMUNITIES.find((item) => item.c === color);
+    let best = -1;
+    let bestScore = -Infinity;
+    for (let i = 0; i < NODES.length; i += 1) {
+      const n = NODES[i];
+      if (n.c !== color) continue;
+      const degree = adj[i]?.length || 0;
+      if (degree <= 0) continue;
+      const distScore = comm
+        ? 1 - Math.min(1, Math.hypot(n.x - comm.x, n.y - comm.y) / Math.max(comm.r, 1))
+        : 0;
+      const degreeScore = Math.min(degree, 24) / 24;
+      const score = distScore * 2 + degreeScore + (nodeIsRepresentative[i] ? 1 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  function drawActiveNode(index: number): void {
+    const n = NODES[index];
+    const r = n.r * Math.max(0.6, Math.sqrt(scale)) * 1.65;
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = Math.min(64, Math.max(24, r * 3.1));
+    ctx.shadowColor = "rgba(255,220,128,0.95)";
+    ctx.fillStyle = "rgba(255,194,92,0.96)";
+    ctx.beginPath();
+    ctx.arc(X(n.x), Y(n.y), r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = Math.min(26, Math.max(10, r * 1.3));
+    ctx.shadowColor = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = Math.max(2.5, 1.4 * scale);
+    ctx.strokeStyle = "rgba(255,255,255,0.96)";
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = Math.max(1.2, 0.8 * scale);
+    ctx.strokeStyle = "rgba(255,126,80,0.95)";
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -279,32 +738,19 @@ function renderAkashaGraph(container: HTMLElement): void {
       ? new Set(NODES.map((n, i) => n.t.toLowerCase().includes(fil) ? i : -1).filter((i) => i >= 0))
       : null;
 
+    drawIslands(act);
     if (act < 0 && !match && scale <= globalEdgeScaleLimit) {
       drawGlobalEdges();
     } else if (act >= 0) {
-      for (const [a, b] of adjEdges[act] || []) {
-        const nA = NODES[a], nB = NODES[b];
-        const cross = nA.g !== nB.g;
-        ctx.strokeStyle = cross ? "rgba(255,90,120,0.85)" : "rgba(150,200,255,.6)";
-        ctx.lineWidth = cross ? Math.max(1.5, 2 * scale) : Math.max(0.6, scale);
-        if (cross) {
-          ctx.shadowBlur = Math.min(20, 6 * scale);
-          ctx.shadowColor = "rgba(255,90,120,0.9)";
-        } else {
-          ctx.shadowBlur = 0;
-        }
-        ctx.beginPath();
-        ctx.moveTo(X(nA.x), Y(nA.y));
-        ctx.lineTo(X(nB.x), Y(nB.y));
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-      }
+      drawActiveEdges(act);
     }
 
     for (let i = 0; i < NODES.length; i += 1) {
       const n = NODES[i];
       let r = n.r * Math.max(0.6, Math.sqrt(scale));
+      if (!shouldDrawNode(i, act, match)) continue;
       if (!inView(n.x, n.y, r * 1.5)) continue;
+      if (act === i) continue;
 
       let alpha = 1;
       if ((adj[i]?.length || 0) === 0 && ccThreshold > 1 && !match) alpha = 0.08;
@@ -314,14 +760,17 @@ function renderAkashaGraph(container: HTMLElement): void {
       const isNeighbor = act >= 0 && hl.has(i) && !isActive;
       const isMatch = match && match.has(i);
 
+      if (act < 0 && !match && scale < 1.35) {
+        alpha *= 0.82;
+        r *= 0.82;
+      }
       if (isMatch) r *= 1.5;
-      if (isActive) r *= 1.4;
-      else if (isNeighbor) r *= 1.1;
+      if (isNeighbor) r *= 1.1;
 
       ctx.globalAlpha = alpha;
       ctx.fillStyle = n.c;
 
-      if (isActive || isMatch) {
+      if (isMatch) {
         ctx.shadowBlur = Math.min(40, Math.max(12, r * 2.5));
         ctx.shadowColor = n.c;
       } else if (isNeighbor) {
@@ -336,9 +785,9 @@ function renderAkashaGraph(container: HTMLElement): void {
       ctx.fill();
       ctx.shadowBlur = 0;
 
-      if (isActive || isMatch || isNeighbor) {
+      if (isMatch || isNeighbor) {
         ctx.globalAlpha = 1;
-        if (isActive || isMatch) {
+        if (isMatch) {
           ctx.lineWidth = 2;
           ctx.strokeStyle = "#fff";
         } else {
@@ -352,6 +801,7 @@ function renderAkashaGraph(container: HTMLElement): void {
 
     if (act >= 0) {
       const n = NODES[act];
+      drawActiveNode(act);
       ctx.fillStyle = "#fff";
       ctx.font = "bold 14px sans-serif";
       ctx.shadowBlur = 4;
@@ -374,27 +824,13 @@ function renderAkashaGraph(container: HTMLElement): void {
       function inView(x: number, y: number, r: number) {
         return x + r >= viewLeft && x - r <= viewRight && y + r >= viewTop && y - r <= viewBottom;
       }
-      ctx.save();
-      ctx.translate(tx, ty);
-      ctx.scale(scale, scale);
-      ctx.lineWidth = Math.max(0.6 / scale, 1);
-
-      ctx.strokeStyle = "rgba(150,200,255,0.4)";
-      ctx.shadowBlur = 15 / scale;
-      ctx.shadowColor = "rgba(150,200,255,0.6)";
-      ctx.stroke(hlInternalPath);
-
-      ctx.strokeStyle = "rgba(255,90,120,0.6)";
-      ctx.shadowBlur = 20 / scale;
-      ctx.shadowColor = "rgba(255,90,120,0.8)";
-      ctx.stroke(hlCrossPath);
-
-      ctx.restore();
-      ctx.shadowBlur = 0;
+      drawIslands(-1);
       for (let i = 0; i < NODES.length; i += 1) {
         const n = NODES[i];
         let r = n.r * Math.max(0.6, Math.sqrt(scale));
         const on = n.c === hlColor;
+        if (!on && scale < 1.2) continue;
+        if (on && scale < 1.05 && !nodeIsRepresentative[i] && (adj[i]?.length || 0) < 40) continue;
         if (on) r *= 1.3;
         if (!inView(n.x, n.y, r * 1.5)) continue;
 
@@ -441,10 +877,10 @@ function renderAkashaGraph(container: HTMLElement): void {
       if (b === pinned) neighbors.push({ id: a, w, cc, sim });
     }
     neighbors.sort((x, y) => y.w - x.w);
-    const internal: Array<GraphNode & { w: number; cc: number; sim: number }> = [];
-    const external: Array<GraphNode & { w: number; cc: number; sim: number }> = [];
+    const internal: Array<GraphNode & { nodeIndex: number; w: number; cc: number; sim: number }> = [];
+    const external: Array<GraphNode & { nodeIndex: number; w: number; cc: number; sim: number }> = [];
     for (const nb of neighbors) {
-      const target = { ...NODES[nb.id], w: nb.w, cc: nb.cc, sim: nb.sim };
+      const target = { ...NODES[nb.id], nodeIndex: nb.id, w: nb.w, cc: nb.cc, sim: nb.sim };
       if (target.g === n.g) internal.push(target);
       else external.push(target);
     }
@@ -455,7 +891,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       html += `<div style="color:#ff5a78;font-weight:bold;margin-bottom:4px;border-bottom:1px solid rgba(255,90,120,0.3);padding-bottom:6px;">思想跳跃 / 跨界走神 (${external.length})</div>`;
       html += '<div style="font-size:11px;color:#737a88;margin-bottom:12px;line-height:1.4;">溯源：分属不同的话题岛屿，但在特定时间点被你跨界关联。</div>';
       for (const t of external) {
-        html += `<div class="detail-item" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px;">
+        html += `<div class="detail-item" data-node="${t.nodeIndex}" title="锁定这个记忆切片" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px; cursor:pointer;">
           <div style="display:flex;flex-direction:column;flex:1;"><span style="opacity:0.95">${ghEscape(t.t)}</span>${badgeHTML(t)}</div>
         </div>`;
       }
@@ -464,7 +900,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       html += `<div style="color:#96c8ff;font-weight:bold;margin-bottom:4px;margin-top:20px;border-bottom:1px solid rgba(150,200,255,0.3);padding-bottom:6px;">核心圈层 (${internal.length})</div>`;
       html += '<div style="font-size:11px;color:#737a88;margin-bottom:12px;line-height:1.4;">溯源：基于模块度算法，这些话题形成了高频同框的内聚孤岛。</div>';
       for (const t of internal) {
-        html += `<div class="detail-item" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px;">
+        html += `<div class="detail-item" data-node="${t.nodeIndex}" title="锁定这个记忆切片" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px; cursor:pointer;">
           <div style="display:flex;flex-direction:column;flex:1;"><span>${ghEscape(t.t)}</span>${badgeHTML(t)}</div>
         </div>`;
       }
@@ -476,8 +912,12 @@ function renderAkashaGraph(container: HTMLElement): void {
   function pick(px: number, py: number): number {
     let best = -1;
     let bd = Number.POSITIVE_INFINITY;
+    const match = filter
+      ? new Set(NODES.map((n, i) => n.t.toLowerCase().includes(filter) ? i : -1).filter((i) => i >= 0))
+      : null;
     for (let i = 0; i < NODES.length; i += 1) {
       if ((adj[i]?.length || 0) === 0 && !filter) continue;
+      if (!shouldDrawNode(i, pinned, match)) continue;
       const dx = X(NODES[i].x) - px;
       const dy = Y(NODES[i].y) - py;
       const d = dx * dx + dy * dy;
@@ -501,6 +941,14 @@ function renderAkashaGraph(container: HTMLElement): void {
       resEl.style.display = "none";
     }
   }
+
+  detailPanel.addEventListener("click", (event) => {
+    const target = (event.target as HTMLElement).closest<HTMLElement>(".detail-item[data-node]");
+    if (!target) return;
+    event.stopPropagation();
+    const next = Number(target.dataset.node);
+    if (Number.isInteger(next) && next >= 0 && next < NODES.length) selectNode(next);
+  });
 
   cv.addEventListener("mousedown", (event) => {
     if (tweenFrame) cancelAnimationFrame(tweenFrame);
@@ -634,7 +1082,7 @@ function renderAkashaGraph(container: HTMLElement): void {
   }
 
   function renderLegend(): void {
-    legEl.innerHTML = '<div class="grab">社区</div><div class="content" style="padding-top:4px;"><div style="margin-bottom:12px;"><b style="color:#fff;font-size:13px;">社区主题</b> <span style="color:#737a88;">(悬停或点击锁定)</span></div>'
+    legEl.innerHTML = '<div class="grab">岛屿</div><div class="content" style="padding-top:4px;"><div style="margin-bottom:12px;"><b style="color:#fff;font-size:13px;">记忆岛屿</b> <span style="color:#737a88;">(悬停预览 · 点击选代表记忆)</span></div>'
       + LEG.map((l) => `<div class="row" data-c="${ghEscape(l.c)}"><span class="dot" style="background:${ghEscape(l.c)}"></span><span><span style="color:#9aa3b5">[${l.size}]</span> ${ghEscape(l.label)}</span></div>`).join("")
       + "</div>";
     legEl.querySelectorAll<HTMLElement>(".row").forEach((row) => {
@@ -655,21 +1103,23 @@ function renderAkashaGraph(container: HTMLElement): void {
       });
       row.addEventListener("click", () => {
         const c = row.dataset.c || null;
-        if (lockedColor === c) {
-          lockedColor = null;
-          hlColor = c;
-          updateHlPaths();
+        if (!c) return;
+        lockedColor = null;
+        hlColor = null;
+        filter = "";
+        searchEl.value = "";
+        resEl.style.display = "none";
+        updateHlPaths();
+        const target = representativeForColor(c);
+        if (target >= 0) {
+          selectNode(target);
         } else {
-          lockedColor = c;
-          hlColor = c;
-          filter = "";
           pinned = -1;
-          updateHlPaths();
           updateDetailPanel();
-          if (c) flyToCommunity(c);
+          flyToCommunity(c);
         }
         legEl.querySelectorAll<HTMLElement>(".row").forEach(r => r.classList.remove("selected"));
-        if (lockedColor) row.classList.add("selected");
+        row.classList.add("selected");
         draw();
       });
     });
@@ -689,6 +1139,8 @@ function renderAkashaGraph(container: HTMLElement): void {
     NODES = payload.nodes || [];
     EDGES = ghEdges(payload.edges || []);
     LEG = payload.legend || [];
+    rebalanceFractalSpacing();
+    recomputeCommunities();
     ccThreshold = 2;
     slider.value = "2";
     ccVal.textContent = "2";
