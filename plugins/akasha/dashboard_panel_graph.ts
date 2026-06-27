@@ -65,7 +65,7 @@ function renderAkashaGraph(container: HTMLElement): void {
           <input type="range" id="cc_slider" min="1" max="10" value="2">
           <span style="font-size:11px">共现频次 &ge; <span id="cc_val" style="color:#fff;font-weight:bold;font-size:13px">2</span></span>
         </div>
-        <div class="hint">拖拽平移 · 滚轮缩放 · 悬停看邻居 · 调滑块看引力</div>
+        <div class="hint">拖拽平移 · 滚轮缩放 · 点击节点看连线 · 调滑块看引力</div>
       </div>
       <div id="leg"></div>
       <div id="tip"></div>
@@ -77,6 +77,7 @@ function renderAkashaGraph(container: HTMLElement): void {
   (container as HTMLElement & { __agDispose?: () => void }).__agDispose = () => {
     disposed = true;
     if (pollTimer !== undefined) window.clearInterval(pollTimer);
+    if (tweenFrame !== undefined) cancelAnimationFrame(tweenFrame);
     window.removeEventListener("resize", resize);
     window.removeEventListener("mouseup", onMouseUp);
     document.removeEventListener("click", onDocumentClick);
@@ -105,6 +106,7 @@ function renderAkashaGraph(container: HTMLElement): void {
   let ty = 0;
   let ccThreshold = 2;
   let adj: number[][] = [];
+  let adjEdges: GraphEdge[][] = [];
   let hover = -1;
   let pinned = -1;
   let filter = "";
@@ -118,6 +120,28 @@ function renderAkashaGraph(container: HTMLElement): void {
   let pollTimer: number | undefined;
   let tweenFrame: number | undefined;
   let lockedColor: string | null = null;
+  let hlInternalPath = new Path2D();
+  let hlCrossPath = new Path2D();
+
+  function updateHlPaths() {
+    hlInternalPath = new Path2D();
+    hlCrossPath = new Path2D();
+    if (!hlColor) return;
+    for (const [a, b, , cc] of EDGES) {
+      if (cc < ccThreshold) continue;
+      const nA = NODES[a], nB = NODES[b];
+      const aOn = nA.c === hlColor;
+      const bOn = nB.c === hlColor;
+      if (!aOn && !bOn) continue;
+      if (aOn !== bOn) {
+        hlCrossPath.moveTo(nA.x, nA.y);
+        hlCrossPath.lineTo(nB.x, nB.y);
+      } else {
+        hlInternalPath.moveTo(nA.x, nA.y);
+        hlInternalPath.lineTo(nB.x, nB.y);
+      }
+    }
+  }
 
   function flyTo(targetScale: number, targetTx: number, targetTy: number) {
     if (tweenFrame) cancelAnimationFrame(tweenFrame);
@@ -155,15 +179,11 @@ function renderAkashaGraph(container: HTMLElement): void {
     const cy = (minY + maxY) / 2;
     const w = maxX - minX;
     const h = maxY - minY;
-    
-    let targetScale = scale;
-    if (w > 0 && h > 0) {
-      const s = Math.min((W - 120) / w, (H - 120) / h);
-      targetScale = Math.max(0.2, Math.min(s, 2.5));
-    } else {
-      targetScale = Math.max(scale, 1.2);
-    }
-    
+
+    const targetScale = w > 0 && h > 0
+      ? Math.max(0.2, Math.min(Math.min((W - 120) / w, (H - 120) / h), 2.5))
+      : Math.max(scale, 1.2);
+
     const targetTx = W / 2 - cx * targetScale;
     const targetTy = H / 2 - cy * targetScale;
     flyTo(targetScale, targetTx, targetTy);
@@ -195,20 +215,33 @@ function renderAkashaGraph(container: HTMLElement): void {
   function Y(y: number): number { return y * scale + ty; }
   function invX(px: number): number { return (px - tx) / scale; }
   function invY(py: number): number { return (py - ty) / scale; }
-  function activeId(): number { return hover >= 0 ? hover : pinned; }
+  function activeId(): number { return pinned; }
 
   function recomputeAdj(): void {
     adj = NODES.map(() => []);
-    for (const [a, b, , cc] of EDGES) {
+    adjEdges = NODES.map(() => []);
+    for (const edge of EDGES) {
+      const [a, b, , cc] = edge;
       if (cc >= ccThreshold) {
         adj[a].push(b);
         adj[b].push(a);
+        adjEdges[a].push(edge);
+        adjEdges[b].push(edge);
       }
     }
   }
 
   function drawBase(): void {
     ctx.clearRect(0, 0, W, H);
+    const viewLeft = -tx / scale;
+    const viewRight = (W - tx) / scale;
+    const viewTop = -ty / scale;
+    const viewBottom = (H - ty) / scale;
+
+    function inView(x: number, y: number, r: number) {
+      return x + r >= viewLeft && x - r <= viewRight && y + r >= viewTop && y - r <= viewBottom;
+    }
+
     const act = activeId();
     const hl = new Set<number>();
     if (act >= 0) {
@@ -220,67 +253,70 @@ function renderAkashaGraph(container: HTMLElement): void {
       ? new Set(NODES.map((n, i) => n.t.toLowerCase().includes(fil) ? i : -1).filter((i) => i >= 0))
       : null;
 
-    ctx.lineWidth = Math.max(0.3, 0.5 * scale);
-    for (const [a, b, w, cc] of EDGES) {
-      if (cc < ccThreshold) continue;
-      const on = act >= 0 && (a === act || b === act);
-      if (act >= 0 && !on) continue;
-      if (on) {
-        const cross = NODES[a].g !== NODES[b].g;
+    if (act >= 0) {
+      for (const [a, b] of adjEdges[act] || []) {
+        const nA = NODES[a], nB = NODES[b];
+        const cross = nA.g !== nB.g;
         ctx.strokeStyle = cross ? "rgba(255,90,120,0.85)" : "rgba(150,200,255,.6)";
         ctx.lineWidth = cross ? Math.max(1.5, 2 * scale) : Math.max(0.6, scale);
         if (cross) {
-          ctx.shadowBlur = 6 * scale;
+          ctx.shadowBlur = Math.min(20, 6 * scale);
           ctx.shadowColor = "rgba(255,90,120,0.9)";
+        } else {
+          ctx.shadowBlur = 0;
         }
-      } else {
-        ctx.strokeStyle = `rgba(120,130,150,${Math.min(.22, .05 + w)})`;
-        ctx.lineWidth = Math.max(0.3, 0.5 * scale);
+        ctx.beginPath();
+        ctx.moveTo(X(nA.x), Y(nA.y));
+        ctx.lineTo(X(nB.x), Y(nB.y));
+        ctx.stroke();
         ctx.shadowBlur = 0;
       }
-      ctx.beginPath();
-      ctx.moveTo(X(NODES[a].x), Y(NODES[a].y));
-      ctx.lineTo(X(NODES[b].x), Y(NODES[b].y));
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-    }
-
-    if (act < 0) {
-      ctx.strokeStyle = "rgba(110,120,140,.10)";
-      ctx.lineWidth = Math.max(0.25, 0.35 * scale);
-      ctx.beginPath();
-      for (const [a, b, , cc] of EDGES) {
-        if (cc < ccThreshold) continue;
-        ctx.moveTo(X(NODES[a].x), Y(NODES[a].y));
-        ctx.lineTo(X(NODES[b].x), Y(NODES[b].y));
-      }
-      ctx.stroke();
     }
 
     for (let i = 0; i < NODES.length; i += 1) {
       const n = NODES[i];
-      let alpha = 1;
       let r = n.r * Math.max(0.6, Math.sqrt(scale));
+      if (!inView(n.x, n.y, r * 1.5)) continue;
+
+      let alpha = 1;
       if ((adj[i]?.length || 0) === 0 && ccThreshold > 1 && !match) alpha = 0.08;
-      if (act >= 0 && !hl.has(i)) alpha = 0.12;
+      if (act >= 0 && !hl.has(i)) alpha = 0.05;
       if (match && !match.has(i)) alpha = 0.06;
-      if (match && match.has(i)) r *= 1.5;
+      const isActive = act === i;
+      const isNeighbor = act >= 0 && hl.has(i) && !isActive;
+      const isMatch = match && match.has(i);
+
+      if (isMatch) r *= 1.5;
+      if (isActive) r *= 1.4;
+      else if (isNeighbor) r *= 1.1;
+
       ctx.globalAlpha = alpha;
       ctx.fillStyle = n.c;
-      if ((act >= 0 && hl.has(i)) || (match && match.has(i))) {
-        ctx.shadowBlur = Math.max(6, r * 1.5);
+
+      if (isActive || isMatch) {
+        ctx.shadowBlur = Math.min(40, Math.max(12, r * 2.5));
+        ctx.shadowColor = n.c;
+      } else if (isNeighbor) {
+        ctx.shadowBlur = Math.min(20, Math.max(4, r * 1));
         ctx.shadowColor = n.c;
       } else {
         ctx.shadowBlur = 0;
       }
+
       ctx.beginPath();
       ctx.arc(X(n.x), Y(n.y), r, 0, Math.PI * 2);
       ctx.fill();
       ctx.shadowBlur = 0;
-      if ((act >= 0 && hl.has(i)) || (match && match.has(i))) {
+
+      if (isActive || isMatch || isNeighbor) {
         ctx.globalAlpha = 1;
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = (act >= 0 && i !== act && NODES[i].g !== NODES[act].g) ? "#ff5a78" : "#fff";
+        if (isActive || isMatch) {
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = "#fff";
+        } else {
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = (NODES[i].g !== NODES[act].g) ? "#ff5a78" : "rgba(255, 255, 255, 0.6)";
+        }
         ctx.stroke();
       }
     }
@@ -290,50 +326,60 @@ function renderAkashaGraph(container: HTMLElement): void {
       const n = NODES[act];
       ctx.fillStyle = "#fff";
       ctx.font = "bold 14px sans-serif";
+      ctx.shadowBlur = 4;
+      ctx.shadowColor = "rgba(0,0,0,0.8)";
       const text = n.t.length > 25 ? `${n.t.slice(0, 25)}...` : n.t;
       ctx.fillText(text, X(n.x) + 12, Y(n.y) - 12);
+      ctx.shadowBlur = 0;
     }
   }
 
   function draw(): void {
     if (hlColor) {
       ctx.clearRect(0, 0, W, H);
-      ctx.lineWidth = Math.max(0.6, scale);
-      for (const [a, b, w, cc] of EDGES) {
-        if (cc < ccThreshold) continue;
-        const aOn = NODES[a].c === hlColor;
-        const bOn = NODES[b].c === hlColor;
-        if (!aOn && !bOn) continue;
-        
-        const cross = aOn !== bOn;
-        if (cross) {
-            ctx.strokeStyle = "rgba(255,90,120,0.6)";
-            ctx.shadowBlur = 4 * scale;
-            ctx.shadowColor = "rgba(255,90,120,0.8)";
-        } else {
-            ctx.strokeStyle = "rgba(150,200,255,0.4)";
-            ctx.shadowBlur = 2 * scale;
-            ctx.shadowColor = "rgba(150,200,255,0.6)";
-        }
-        ctx.beginPath();
-        ctx.moveTo(X(NODES[a].x), Y(NODES[a].y));
-        ctx.lineTo(X(NODES[b].x), Y(NODES[b].y));
-        ctx.stroke();
-        ctx.shadowBlur = 0;
+
+      const viewLeft = -tx / scale;
+      const viewRight = (W - tx) / scale;
+      const viewTop = -ty / scale;
+      const viewBottom = (H - ty) / scale;
+
+      function inView(x: number, y: number, r: number) {
+        return x + r >= viewLeft && x - r <= viewRight && y + r >= viewTop && y - r <= viewBottom;
       }
+      ctx.save();
+      ctx.translate(tx, ty);
+      ctx.scale(scale, scale);
+      ctx.lineWidth = Math.max(0.6 / scale, 1);
+
+      ctx.strokeStyle = "rgba(150,200,255,0.4)";
+      ctx.shadowBlur = 15 / scale;
+      ctx.shadowColor = "rgba(150,200,255,0.6)";
+      ctx.stroke(hlInternalPath);
+
+      ctx.strokeStyle = "rgba(255,90,120,0.6)";
+      ctx.shadowBlur = 20 / scale;
+      ctx.shadowColor = "rgba(255,90,120,0.8)";
+      ctx.stroke(hlCrossPath);
+
+      ctx.restore();
+      ctx.shadowBlur = 0;
       for (let i = 0; i < NODES.length; i += 1) {
         const n = NODES[i];
+        let r = n.r * Math.max(0.6, Math.sqrt(scale));
         const on = n.c === hlColor;
-        ctx.globalAlpha = on ? 1 : ((adj[i]?.length || 0) === 0 ? 0.03 : 0.08);
+        if (on) r *= 1.3;
+        if (!inView(n.x, n.y, r * 1.5)) continue;
+
+        ctx.globalAlpha = on ? 1 : ((adj[i]?.length || 0) === 0 ? 0.03 : 0.05);
         ctx.fillStyle = n.c;
         if (on) {
-          ctx.shadowBlur = n.r * 2 * Math.sqrt(scale);
+          ctx.shadowBlur = Math.min(30, r * 2);
           ctx.shadowColor = n.c;
         } else {
           ctx.shadowBlur = 0;
         }
         ctx.beginPath();
-        ctx.arc(X(n.x), Y(n.y), n.r * Math.max(0.6, Math.sqrt(scale)) * (on ? 1.3 : 1), 0, Math.PI * 2);
+        ctx.arc(X(n.x), Y(n.y), r, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
       }
@@ -432,6 +478,7 @@ function renderAkashaGraph(container: HTMLElement): void {
     if (tweenFrame) cancelAnimationFrame(tweenFrame);
     drag = true;
     moved = false;
+    hover = -1;
     lx = event.clientX;
     ly = event.clientY;
     cv.classList.add("drag");
@@ -454,7 +501,6 @@ function renderAkashaGraph(container: HTMLElement): void {
     const h = pick(mx, my);
     if (h !== hover) {
       hover = h;
-      draw();
     }
     if (h >= 0) {
       tip.style.display = "block";
@@ -470,6 +516,7 @@ function renderAkashaGraph(container: HTMLElement): void {
     if (lockedColor) {
       lockedColor = null;
       hlColor = null;
+      updateHlPaths();
       legEl.querySelectorAll<HTMLElement>(".row").forEach(r => r.classList.remove("selected"));
     }
     const rect = cv.getBoundingClientRect();
@@ -505,6 +552,7 @@ function renderAkashaGraph(container: HTMLElement): void {
     ccThreshold = Number(slider.value);
     ccVal.textContent = String(ccThreshold);
     recomputeAdj();
+    updateHlPaths();
     draw();
     updateDetailPanel();
   });
@@ -541,6 +589,7 @@ function renderAkashaGraph(container: HTMLElement): void {
     if (lockedColor) {
       lockedColor = null;
       hlColor = null;
+      updateHlPaths();
       legEl.querySelectorAll<HTMLElement>(".row").forEach(r => r.classList.remove("selected"));
     }
     pinned = i;
@@ -565,12 +614,14 @@ function renderAkashaGraph(container: HTMLElement): void {
         if (!lockedColor) {
           filter = "";
           hlColor = row.dataset.c || null;
+          updateHlPaths();
           draw();
         }
       });
       row.addEventListener("mouseleave", () => {
         if (!lockedColor) {
           hlColor = null;
+          updateHlPaths();
           draw();
         }
       });
@@ -579,11 +630,13 @@ function renderAkashaGraph(container: HTMLElement): void {
         if (lockedColor === c) {
           lockedColor = null;
           hlColor = c;
+          updateHlPaths();
         } else {
           lockedColor = c;
           hlColor = c;
           filter = "";
           pinned = -1;
+          updateHlPaths();
           updateDetailPanel();
           if (c) flyToCommunity(c);
         }
