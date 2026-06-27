@@ -98,6 +98,13 @@ function renderAkashaGraph(container: HTMLElement): void {
         <div class="hint">远景看大岛 · 中景看子岛 · 近景看联想根系</div>
       </div>
       <div id="leg"></div>
+      <div id="loading_card" class="ag-loading-card">
+        <div class="ag-loading-kicker">Akasha Graph</div>
+        <div class="ag-loading-title">正在生成全量记忆图</div>
+        <div class="ag-loading-copy">第一次进入需要构建 snapshot，之后会直接读取缓存。</div>
+        <div class="ag-loading-track"><div id="loading_bar"></div></div>
+        <div id="loading_note" class="ag-loading-note">启动后台布局任务...</div>
+      </div>
       <div id="tip"></div>
       <div id="node_detail"></div>
     </div>
@@ -119,6 +126,9 @@ function renderAkashaGraph(container: HTMLElement): void {
   const tip = root.querySelector<HTMLElement>("#tip")!;
   const stat = root.querySelector<HTMLElement>("#stat")!;
   const legEl = root.querySelector<HTMLElement>("#leg")!;
+  const loadingCard = root.querySelector<HTMLElement>("#loading_card")!;
+  const loadingBar = root.querySelector<HTMLElement>("#loading_bar")!;
+  const loadingNote = root.querySelector<HTMLElement>("#loading_note")!;
   const detailPanel = root.querySelector<HTMLElement>("#node_detail")!;
   const searchEl = root.querySelector<HTMLInputElement>("#search")!;
   const resEl = root.querySelector<HTMLElement>("#search_results")!;
@@ -159,6 +169,8 @@ function renderAkashaGraph(container: HTMLElement): void {
   let hlInternalPath = new Path2D();
   let hlCrossPath = new Path2D();
   const globalEdgeScaleLimit = 1.2;
+  const loadingStartedAt = Date.now();
+  let loadingTick = 0;
 
   function updateHlPaths() {
     hlInternalPath = new Path2D();
@@ -1125,9 +1137,21 @@ function renderAkashaGraph(container: HTMLElement): void {
     });
   }
 
+  function setLoadingCard(visible: boolean, payload?: GraphPayload): void {
+    loadingCard.classList.toggle("visible", visible);
+    if (!visible) return;
+    loadingTick += 1;
+    const elapsed = Math.max(0, Math.round((Date.now() - loadingStartedAt) / 1000));
+    const progress = Math.min(92, 18 + loadingTick * 7 + elapsed * 2);
+    loadingBar.style.width = `${progress}%`;
+    const state = payload?.meta?.rebuilding ? "后台布局计算中" : "等待布局任务启动";
+    loadingNote.textContent = `${state} · ${elapsed}s`;
+  }
+
   function applyPayload(payload: GraphPayload, refit: boolean): void {
     if (payload.meta?.missing) {
       stat.textContent = payload.meta.rebuilding ? "快照后台生成中..." : "等待快照生成...";
+      setLoadingCard(NODES.length === 0, payload);
       return;
     }
     const nextVersion = payload.meta?.version || "";
@@ -1139,6 +1163,7 @@ function renderAkashaGraph(container: HTMLElement): void {
     NODES = payload.nodes || [];
     EDGES = ghEdges(payload.edges || []);
     LEG = payload.legend || [];
+    setLoadingCard(false);
     rebalanceFractalSpacing();
     recomputeCommunities();
     ccThreshold = 2;
@@ -1152,7 +1177,10 @@ function renderAkashaGraph(container: HTMLElement): void {
   }
 
   async function load(refit: boolean): Promise<void> {
-    if (refit) stat.textContent = "加载全景快照...";
+    if (refit) {
+      stat.textContent = "加载全景快照...";
+      setLoadingCard(NODES.length === 0);
+    }
     const payload = await api<GraphPayload>("/api/dashboard/akasha-graph/global");
     if (disposed) return;
     applyPayload(payload, refit);

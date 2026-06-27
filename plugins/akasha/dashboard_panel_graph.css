@@ -243,6 +243,95 @@
   color: #737a88;
 }
 
+.ag-html .ag-loading-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 8;
+  display: none;
+  width: min(420px, calc(100vw - 48px));
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(150, 200, 255, 0.18);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(18, 22, 31, 0.88), rgba(10, 12, 18, 0.78));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  padding: 18px 20px;
+  overflow: hidden;
+}
+
+.ag-html .ag-loading-card.visible {
+  display: block;
+  animation: ag-loading-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ag-html .ag-loading-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(150, 200, 255, 0.08), transparent);
+  animation: ag-loading-scan 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.ag-html .ag-loading-kicker {
+  color: #96c8ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.ag-html .ag-loading-title {
+  margin-top: 8px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.ag-html .ag-loading-copy {
+  margin-top: 6px;
+  color: #9aa3b5;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ag-html .ag-loading-track {
+  height: 5px;
+  margin-top: 16px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ag-html .ag-loading-track #loading_bar {
+  width: 18%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #5d91d5, #96c8ff);
+  box-shadow: 0 0 18px rgba(150, 200, 255, 0.65);
+  transition: width 0.45s ease;
+}
+
+.ag-html .ag-loading-note {
+  margin-top: 10px;
+  color: #737a88;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+@keyframes ag-loading-in {
+  from { opacity: 0; transform: translate(-50%, -46%); }
+  to { opacity: 1; transform: translate(-50%, -50%); }
+}
+
+@keyframes ag-loading-scan {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
 .ag-html #tip {
   position: absolute;
   z-index: 6;
@@ -335,4 +424,3 @@
   border-color: rgba(255, 90, 120, 0.2);
   color: #ff5a78;
 }
-

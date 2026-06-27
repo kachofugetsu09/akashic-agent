@@ -67,10 +67,6 @@ def read_graph_signature(akasha_db_path: Path) -> GraphSnapshotSignature:
         max_node_updated_at=str(node_row[1] or ""),
         max_edge_last_used_ts=float(edge_row[1] or 0.0),
     )
-    try:
-        return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
-    except Exception:
-        return None
 
 
 def build_snapshot_to_file(
@@ -80,13 +76,16 @@ def build_snapshot_to_file(
     snapshot_path: Path,
     config: GraphSnapshotConfig | None = None,
 ) -> dict[str, Any]:
+    import uuid
+    prev_snapshot = load_snapshot(snapshot_path)
     payload = build_snapshot(
         akasha_db_path=akasha_db_path,
         sessions_db_path=sessions_db_path,
         config=config or GraphSnapshotConfig(),
+        prev_snapshot=prev_snapshot,
     )
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = snapshot_path.with_suffix(snapshot_path.suffix + ".tmp")
+    tmp_path = snapshot_path.with_name(snapshot_path.name + f".{uuid.uuid4().hex}.tmp")
     _ = tmp_path.write_text(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
@@ -100,6 +99,7 @@ def build_snapshot(
     akasha_db_path: Path,
     sessions_db_path: Path,
     config: GraphSnapshotConfig,
+    prev_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     signature = read_graph_signature(akasha_db_path)
@@ -126,8 +126,16 @@ def build_snapshot(
         layout_edge_limit=config.layout_edge_limit,
     )
     layout_graph = _graph_from_edges(layout_edges)
-    pos, node_to_comm, comms = _layout_graph(layout_graph)
-    _place_missing_nodes(pos, node_to_comm, comms, nodes_by_key, all_edges)
+
+    incremental = _incremental_layout_from_snapshot(prev_snapshot, nodes_by_key, all_edges)
+    if incremental is None:
+        pos, node_to_comm, comms = _layout_graph(layout_graph)
+        _place_missing_nodes(pos, node_to_comm, comms, nodes_by_key, all_edges)
+        coords = _normalize_positions(pos)
+        layout_mode = "full"
+    else:
+        coords, node_to_comm, comms = incremental
+        layout_mode = "incremental"
 
     full_graph = _graph_from_edges(all_edges)
     colors, legend = _community_legend(
@@ -137,7 +145,6 @@ def build_snapshot(
         nodes_by_key,
         texts,
     )
-    coords = _normalize_positions(pos)
     payload_nodes = _payload_nodes(nodes_by_key, texts, coords, node_to_comm, colors)
     node_id = {str(node["id"]): index for index, node in enumerate(payload_nodes)}
     payload_edges = _payload_edges(all_edges, node_id, nodes_by_key)
@@ -157,6 +164,7 @@ def build_snapshot(
             "min_co_count": config.min_co_count,
             "layout_min_co_count": config.layout_min_co_count,
             "layout_edge_limit": config.layout_edge_limit,
+            "layout_mode": layout_mode,
         },
     }
 
@@ -258,9 +266,8 @@ def _layout_graph(
         return {}, {}, []
     if graph.number_of_edges() == 0:
         nodes = [str(node) for node in graph.nodes()]
-        return _spiral_positions(nodes), {key: index for index, key in enumerate(nodes)}, [
-            {key} for key in nodes
-        ]
+        return _spiral_positions(nodes), {key: index for index, key in enumerate(nodes)}, [{key} for key in nodes]
+
     comms = [
         set(str(item) for item in comm)
         for comm in nx.algorithms.community.greedy_modularity_communities(graph, weight="weight")
@@ -291,6 +298,94 @@ def _layout_graph(
             lx, ly = local[node]
             pos[node] = (cx + lx * radius, cy + ly * radius)
     return pos, node_to_comm, comms
+
+
+def _incremental_layout_from_snapshot(
+    snapshot: dict[str, Any] | None,
+    nodes_by_key: dict[str, dict[str, object]],
+    edges: list[EdgeRow],
+) -> tuple[dict[str, tuple[float, float]], dict[str, int], list[set[str]]] | None:
+    if not snapshot:
+        return None
+    raw_nodes = snapshot.get("nodes")
+    if not isinstance(raw_nodes, list):
+        return None
+
+    coords: dict[str, tuple[float, float]] = {}
+    node_to_comm: dict[str, int] = {}
+    for raw_node_item in cast(list[object], raw_nodes):
+        if not isinstance(raw_node_item, dict):
+            continue
+        raw_node = cast(dict[str, object], raw_node_item)
+        key = str(raw_node.get("id") or "")
+        if key not in nodes_by_key:
+            continue
+        x = _as_float(raw_node.get("x"))
+        y = _as_float(raw_node.get("y"))
+        coords[key] = (x, y)
+        node_to_comm[key] = _as_int(raw_node.get("g"))
+    if not coords:
+        return None
+
+    comms = _communities_from_map(node_to_comm, nodes_by_key)
+    _place_incremental_nodes(coords, node_to_comm, comms, nodes_by_key, edges)
+    return coords, node_to_comm, comms
+
+
+def _communities_from_map(
+    node_to_comm: dict[str, int],
+    nodes_by_key: dict[str, dict[str, object]],
+) -> list[set[str]]:
+    max_comm = max(node_to_comm.values(), default=-1)
+    comms: list[set[str]] = [set() for _ in range(max_comm + 1)]
+    for key in nodes_by_key:
+        comm = node_to_comm.get(key)
+        if comm is None:
+            continue
+        if comm >= len(comms):
+            for _ in range(comm - len(comms) + 1):
+                comms.append(set())
+        comms[comm].add(key)
+    return comms
+
+
+def _place_incremental_nodes(
+    coords: dict[str, tuple[float, float]],
+    node_to_comm: dict[str, int],
+    comms: list[set[str]],
+    nodes_by_key: dict[str, dict[str, object]],
+    edges: list[EdgeRow],
+) -> None:
+    missing = [key for key in nodes_by_key if key not in coords]
+    if not missing:
+        return
+    neighbors: dict[str, list[tuple[str, EdgeRow]]] = {}
+    for edge in edges:
+        neighbors.setdefault(edge.src, []).append((edge.dst, edge))
+        neighbors.setdefault(edge.dst, []).append((edge.src, edge))
+
+    next_comm = len(comms)
+    for index, key in enumerate(missing):
+        parent = _best_positioned_neighbor(neighbors.get(key, []), coords)
+        if parent is None:
+            x, y = _normalized_spiral_point(index, len(missing))
+            comm_id = next_comm
+            next_comm += 1
+            comms.append({key})
+        else:
+            parent_key, rank = parent
+            base_x, base_y = coords[parent_key]
+            angle = (rank * 2.399963229728653) + index * 0.17
+            radius = 9.0 + 2.2 * math.sqrt(index % 23)
+            x = min(1000.0, max(0.0, base_x + math.cos(angle) * radius))
+            y = min(1000.0, max(0.0, base_y + math.sin(angle) * radius))
+            comm_id = node_to_comm.get(parent_key, next_comm)
+            if comm_id == next_comm:
+                next_comm += 1
+                comms.append(set())
+            comms[comm_id].add(key)
+        coords[key] = (round(x, 1), round(y, 1))
+        node_to_comm[key] = comm_id
 
 
 def _place_missing_nodes(
@@ -432,7 +527,7 @@ def _community_legend(
     texts: dict[str, str],
 ) -> tuple[dict[int, str], list[dict[str, object]]]:
     big_ids = [index for index, comm in enumerate(comms) if len(comm) >= BIG_COMMUNITY_SIZE]
-    colors = {comm_id: _hsl(rank, len(big_ids)) for rank, comm_id in enumerate(big_ids)}
+    colors = {comm_id: _community_color(rank) for rank, comm_id in enumerate(big_ids)}
     legend: list[dict[str, object]] = []
     for comm_id in big_ids[:30]:
         comm = comms[comm_id]
@@ -478,6 +573,13 @@ def _loose_spiral_point(index: int) -> tuple[float, float]:
     return radius * math.cos(angle), radius * math.sin(angle)
 
 
+def _normalized_spiral_point(index: int, total: int) -> tuple[float, float]:
+    golden = math.pi * (3 - math.sqrt(5))
+    radius = min(460.0, 30.0 + 430.0 * math.sqrt((index + 1) / max(1, total)))
+    angle = index * golden
+    return 500.0 + radius * math.cos(angle), 500.0 + radius * math.sin(angle)
+
+
 def _island_centers(sizes: list[int]) -> dict[int, tuple[float, float]]:
     golden = math.pi * (3 - math.sqrt(5))
     centers: dict[int, tuple[float, float]] = {}
@@ -509,9 +611,11 @@ def _normalize_positions(pos: dict[str, tuple[float, float]]) -> dict[str, tuple
     }
 
 
-def _hsl(index: int, total: int) -> str:
-    hue = int(360 * index / max(1, total))
-    return f"hsl({hue},65%,58%)"
+def _community_color(index: int) -> str:
+    hue = int((index * 137.508 + (index // 12) * 17) % 360)
+    saturation = [72, 62, 82, 68][index % 4]
+    lightness = [58, 66, 52, 72, 60, 48][(index // 4) % 6]
+    return f"hsl({hue},{saturation}%,{lightness}%)"
 
 
 def _node_radius(salience: float, min_sal: float, max_sal: float) -> float:
