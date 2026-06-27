@@ -114,7 +114,60 @@ function renderAkashaGraph(container: HTMLElement): void {
   let moved = false;
   let hlColor: string | null = null;
   let currentVersion = "";
+  // eslint-disable-next-line prefer-const
   let pollTimer: number | undefined;
+  let tweenFrame: number | undefined;
+  let lockedColor: string | null = null;
+
+  function flyTo(targetScale: number, targetTx: number, targetTy: number) {
+    if (tweenFrame) cancelAnimationFrame(tweenFrame);
+    const startScale = scale, startTx = tx, startTy = ty;
+    let progress = 0;
+    function step() {
+      progress += 0.08;
+      if (progress >= 1) {
+        scale = targetScale; tx = targetTx; ty = targetTy;
+        draw();
+        return;
+      }
+      const ease = 1 - Math.pow(1 - progress, 3);
+      scale = startScale + (targetScale - startScale) * ease;
+      tx = startTx + (targetTx - startTx) * ease;
+      ty = startTy + (targetTy - startTy) * ease;
+      draw();
+      tweenFrame = requestAnimationFrame(step);
+    }
+    step();
+  }
+
+  function flyToCommunity(c: string): void {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of NODES) {
+      if (n.c === c) {
+        if (n.x < minX) minX = n.x;
+        if (n.x > maxX) maxX = n.x;
+        if (n.y < minY) minY = n.y;
+        if (n.y > maxY) maxY = n.y;
+      }
+    }
+    if (minX === Infinity) return;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const w = maxX - minX;
+    const h = maxY - minY;
+    
+    let targetScale = scale;
+    if (w > 0 && h > 0) {
+      const s = Math.min((W - 120) / w, (H - 120) / h);
+      targetScale = Math.max(0.2, Math.min(s, 2.5));
+    } else {
+      targetScale = Math.max(scale, 1.2);
+    }
+    
+    const targetTx = W / 2 - cx * targetScale;
+    const targetTy = H / 2 - cy * targetScale;
+    flyTo(targetScale, targetTx, targetTy);
+  }
 
   function resize(): void {
     if (disposed) return;
@@ -176,14 +229,20 @@ function renderAkashaGraph(container: HTMLElement): void {
         const cross = NODES[a].g !== NODES[b].g;
         ctx.strokeStyle = cross ? "rgba(255,90,120,0.85)" : "rgba(150,200,255,.6)";
         ctx.lineWidth = cross ? Math.max(1.5, 2 * scale) : Math.max(0.6, scale);
+        if (cross) {
+          ctx.shadowBlur = 6 * scale;
+          ctx.shadowColor = "rgba(255,90,120,0.9)";
+        }
       } else {
         ctx.strokeStyle = `rgba(120,130,150,${Math.min(.22, .05 + w)})`;
         ctx.lineWidth = Math.max(0.3, 0.5 * scale);
+        ctx.shadowBlur = 0;
       }
       ctx.beginPath();
       ctx.moveTo(X(NODES[a].x), Y(NODES[a].y));
       ctx.lineTo(X(NODES[b].x), Y(NODES[b].y));
       ctx.stroke();
+      ctx.shadowBlur = 0;
     }
 
     if (act < 0) {
@@ -208,9 +267,16 @@ function renderAkashaGraph(container: HTMLElement): void {
       if (match && match.has(i)) r *= 1.5;
       ctx.globalAlpha = alpha;
       ctx.fillStyle = n.c;
+      if ((act >= 0 && hl.has(i)) || (match && match.has(i))) {
+        ctx.shadowBlur = Math.max(6, r * 1.5);
+        ctx.shadowColor = n.c;
+      } else {
+        ctx.shadowBlur = 0;
+      }
       ctx.beginPath();
       ctx.arc(X(n.x), Y(n.y), r, 0, Math.PI * 2);
       ctx.fill();
+      ctx.shadowBlur = 0;
       if ((act >= 0 && hl.has(i)) || (match && match.has(i))) {
         ctx.globalAlpha = 1;
         ctx.lineWidth = 1;
@@ -232,23 +298,44 @@ function renderAkashaGraph(container: HTMLElement): void {
   function draw(): void {
     if (hlColor) {
       ctx.clearRect(0, 0, W, H);
-      ctx.strokeStyle = "rgba(110,120,140,.08)";
-      ctx.lineWidth = 0.35 * scale;
-      ctx.beginPath();
-      for (const [a, b, , cc] of EDGES) {
+      ctx.lineWidth = Math.max(0.6, scale);
+      for (const [a, b, w, cc] of EDGES) {
         if (cc < ccThreshold) continue;
+        const aOn = NODES[a].c === hlColor;
+        const bOn = NODES[b].c === hlColor;
+        if (!aOn && !bOn) continue;
+        
+        const cross = aOn !== bOn;
+        if (cross) {
+            ctx.strokeStyle = "rgba(255,90,120,0.6)";
+            ctx.shadowBlur = 4 * scale;
+            ctx.shadowColor = "rgba(255,90,120,0.8)";
+        } else {
+            ctx.strokeStyle = "rgba(150,200,255,0.4)";
+            ctx.shadowBlur = 2 * scale;
+            ctx.shadowColor = "rgba(150,200,255,0.6)";
+        }
+        ctx.beginPath();
         ctx.moveTo(X(NODES[a].x), Y(NODES[a].y));
         ctx.lineTo(X(NODES[b].x), Y(NODES[b].y));
+        ctx.stroke();
+        ctx.shadowBlur = 0;
       }
-      ctx.stroke();
       for (let i = 0; i < NODES.length; i += 1) {
         const n = NODES[i];
         const on = n.c === hlColor;
         ctx.globalAlpha = on ? 1 : ((adj[i]?.length || 0) === 0 ? 0.03 : 0.08);
         ctx.fillStyle = n.c;
+        if (on) {
+          ctx.shadowBlur = n.r * 2 * Math.sqrt(scale);
+          ctx.shadowColor = n.c;
+        } else {
+          ctx.shadowBlur = 0;
+        }
         ctx.beginPath();
         ctx.arc(X(n.x), Y(n.y), n.r * Math.max(0.6, Math.sqrt(scale)) * (on ? 1.3 : 1), 0, Math.PI * 2);
         ctx.fill();
+        ctx.shadowBlur = 0;
       }
       ctx.globalAlpha = 1;
       return;
@@ -257,13 +344,13 @@ function renderAkashaGraph(container: HTMLElement): void {
   }
 
   function badgeHTML(t: GraphNode & { w: number; cc: number; sim: number }): string {
-    const simColor = t.sim > 0.65 ? "#4ade80" : (t.sim > 0.45 ? "#fbbf24" : "#ff5a78");
+    const simClass = t.sim > 0.65 ? "ag-badge-success" : (t.sim > 0.45 ? "ag-badge-warning" : "ag-badge-danger");
     const simText = t.sim > 0.65 ? "同义" : (t.sim > 0.45 ? "相关" : "潜意识跳跃");
     const simPct = `${(t.sim * 100).toFixed(0)}%`;
-    return `<div style="display:flex;gap:6px;font-size:10px;color:#9aa3b5;font-family:monospace;margin-top:5px;flex-wrap:wrap;">
-      <span style="background:rgba(255,255,255,0.08);padding:2px 5px;border-radius:4px;">同框:${t.cc}次</span>
-      <span style="background:rgba(255,255,255,0.08);padding:2px 5px;border-radius:4px;">引力:${t.w.toFixed(2)}</span>
-      <span style="background:rgba(255,255,255,0.08);padding:2px 5px;border-radius:4px;color:${simColor}">语义:${simPct} (${simText})</span>
+    return `<div style="display:flex;flex-wrap:wrap;margin-top:2px;">
+      <span class="ag-badge ag-badge-outline">同框:${t.cc}次</span>
+      <span class="ag-badge ag-badge-outline">引力:${t.w.toFixed(2)}</span>
+      <span class="ag-badge ${simClass}">语义:${simPct} (${simText})</span>
     </div>`;
   }
 
@@ -289,13 +376,12 @@ function renderAkashaGraph(container: HTMLElement): void {
     }
 
     let html = '<div style="font-size:13px;color:#8b9eb5;margin-bottom:6px;">选中记忆切片</div>';
-    html += `<div style="font-size:14px;padding:12px;background:rgba(255,255,255,0.06);border-radius:8px;margin-bottom:16px;">${ghEscape(n.t)}</div>`;
+    html += `<div style="font-size:14px;padding:12px;background:linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%); border: 1px solid rgba(255,255,255,0.05); border-radius:8px; margin-bottom:16px;">${ghEscape(n.t)}</div>`;
     if (external.length > 0) {
       html += `<div style="color:#ff5a78;font-weight:bold;margin-bottom:4px;border-bottom:1px solid rgba(255,90,120,0.3);padding-bottom:6px;">思想跳跃 / 跨界走神 (${external.length})</div>`;
       html += '<div style="font-size:11px;color:#737a88;margin-bottom:12px;line-height:1.4;">溯源：分属不同的话题岛屿，但在特定时间点被你跨界关联。</div>';
       for (const t of external) {
-        html += `<div style="margin-bottom:14px;display:flex;gap:8px;align-items:flex-start;">
-          <span style="width:8px;height:8px;border-radius:50%;background:${t.c};flex-shrink:0;margin-top:5px;box-shadow:0 0 5px ${t.c};"></span>
+        html += `<div class="detail-item" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px;">
           <div style="display:flex;flex-direction:column;flex:1;"><span style="opacity:0.95">${ghEscape(t.t)}</span>${badgeHTML(t)}</div>
         </div>`;
       }
@@ -304,7 +390,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       html += `<div style="color:#96c8ff;font-weight:bold;margin-bottom:4px;margin-top:20px;border-bottom:1px solid rgba(150,200,255,0.3);padding-bottom:6px;">核心圈层 (${internal.length})</div>`;
       html += '<div style="font-size:11px;color:#737a88;margin-bottom:12px;line-height:1.4;">溯源：基于模块度算法，这些话题形成了高频同框的内聚孤岛。</div>';
       for (const t of internal) {
-        html += `<div style="margin-bottom:14px;padding-left:10px;opacity:0.85;border-left:2px solid ${t.c};">
+        html += `<div class="detail-item" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px;">
           <div style="display:flex;flex-direction:column;flex:1;"><span>${ghEscape(t.t)}</span>${badgeHTML(t)}</div>
         </div>`;
       }
@@ -343,6 +429,7 @@ function renderAkashaGraph(container: HTMLElement): void {
   }
 
   cv.addEventListener("mousedown", (event) => {
+    if (tweenFrame) cancelAnimationFrame(tweenFrame);
     drag = true;
     moved = false;
     lx = event.clientX;
@@ -380,13 +467,27 @@ function renderAkashaGraph(container: HTMLElement): void {
   });
   cv.addEventListener("click", (event) => {
     if (moved) return;
+    if (lockedColor) {
+      lockedColor = null;
+      hlColor = null;
+      legEl.querySelectorAll<HTMLElement>(".row").forEach(r => r.classList.remove("selected"));
+    }
     const rect = cv.getBoundingClientRect();
     const h = pick(event.clientX - rect.left, event.clientY - rect.top);
     pinned = h === pinned ? -1 : h;
-    draw();
+    if (pinned >= 0) {
+      const n = NODES[pinned];
+      const targetScale = Math.max(scale, 1.2);
+      const targetTx = W / 2 - n.x * targetScale;
+      const targetTy = H / 2 - n.y * targetScale;
+      flyTo(targetScale, targetTx, targetTy);
+    } else {
+      draw();
+    }
     updateDetailPanel();
   });
   cv.addEventListener("wheel", (event) => {
+    if (tweenFrame) cancelAnimationFrame(tweenFrame);
     event.preventDefault();
     const rect = cv.getBoundingClientRect();
     const mx = event.clientX - rect.left;
@@ -437,31 +538,57 @@ function renderAkashaGraph(container: HTMLElement): void {
   document.addEventListener("click", onDocumentClick);
 
   function selectNode(i: number): void {
+    if (lockedColor) {
+      lockedColor = null;
+      hlColor = null;
+      legEl.querySelectorAll<HTMLElement>(".row").forEach(r => r.classList.remove("selected"));
+    }
     pinned = i;
     hover = -1;
     const n = NODES[i];
-    scale = Math.max(scale, 1.2);
-    tx = W / 2 - n.x * scale;
-    ty = H / 2 - n.y * scale;
+    const targetScale = Math.max(scale, 1.2);
+    const targetTx = W / 2 - n.x * targetScale;
+    const targetTy = H / 2 - n.y * targetScale;
+    flyTo(targetScale, targetTx, targetTy);
     searchEl.value = "";
     filter = "";
     resEl.style.display = "none";
-    draw();
     updateDetailPanel();
   }
 
   function renderLegend(): void {
-    legEl.innerHTML = '<div class="grab">社区</div><div class="content"><b style="color:#fff">社区主题</b>（按规模，悬停高亮）<br>'
+    legEl.innerHTML = '<div class="grab">社区</div><div class="content" style="padding-top:4px;"><div style="margin-bottom:12px;"><b style="color:#fff;font-size:13px;">社区主题</b> <span style="color:#737a88;">(悬停或点击锁定)</span></div>'
       + LEG.map((l) => `<div class="row" data-c="${ghEscape(l.c)}"><span class="dot" style="background:${ghEscape(l.c)}"></span><span><span style="color:#9aa3b5">[${l.size}]</span> ${ghEscape(l.label)}</span></div>`).join("")
       + "</div>";
     legEl.querySelectorAll<HTMLElement>(".row").forEach((row) => {
       row.addEventListener("mouseenter", () => {
-        filter = "";
-        hlColor = row.dataset.c || null;
-        draw();
+        if (!lockedColor) {
+          filter = "";
+          hlColor = row.dataset.c || null;
+          draw();
+        }
       });
       row.addEventListener("mouseleave", () => {
-        hlColor = null;
+        if (!lockedColor) {
+          hlColor = null;
+          draw();
+        }
+      });
+      row.addEventListener("click", () => {
+        const c = row.dataset.c || null;
+        if (lockedColor === c) {
+          lockedColor = null;
+          hlColor = c;
+        } else {
+          lockedColor = c;
+          hlColor = c;
+          filter = "";
+          pinned = -1;
+          updateDetailPanel();
+          if (c) flyToCommunity(c);
+        }
+        legEl.querySelectorAll<HTMLElement>(".row").forEach(r => r.classList.remove("selected"));
+        if (lockedColor) row.classList.add("selected");
         draw();
       });
     });
