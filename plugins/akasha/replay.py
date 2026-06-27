@@ -32,6 +32,7 @@ from plugins.akasha.core import (
     graph_seed_keys_from_snapshot,
     parse_turn_key,
     parse_ts_unix,
+    reinforced_activation_items,
     turn_key,
 )
 from plugins.akasha.engine import (
@@ -127,6 +128,7 @@ class AkashaReplayRuntime:
         self._message_turn_keys = dict(message_turn_keys)
         # turn_key -> gain_boost：来自 messages.extra["akasha_reinforce"]，重放时定向加厚该轮边。
         self._reinforce_boosts = dict(reinforce_boosts or {})
+        self._prev_activation_by_session: dict[str, list[AkashaCandidate]] = {}
 
     # 按线上状态机回放一轮：先激活旧图，再提交当前 turn。
     def replay_turn(
@@ -245,22 +247,30 @@ class AkashaReplayRuntime:
         if current_key and activation_items:
             trigger = next((item.message for item in items if item.message.role == "user"), items[0].message)
             ts = parse_ts_unix(trigger.ts)
-            reinforced = self._reinforce_boosts.get(current_key, 1.0) > 1.0
+            reinforce_boost = self._reinforce_boosts.get(current_key, 1.0)
             trigger_emb = next(
                 (item.embedding for item in items if item.message.role == "user"),
                 items[0].embedding,
             )
             query_residual = self._query_residual(trigger_emb, current_key)
+            edge_items = reinforced_activation_items(
+                activation_items,
+                self._prev_activation_by_session.get(trigger.session_key, []),
+                reinforce_boost,
+            )
             self._store.upsert_edges(
                 activation_edge_updates(
                     current_key,
-                    activation_items,
+                    edge_items,
                     ts,
                     query_residual=query_residual,
-                    reinforced=reinforced,
+                    reinforce_boost=reinforce_boost,
                 )
             )
             self._store.insert_activation_events(_activation_events(trigger, activation_items))
+        session_key = next((item.message.session_key for item in items if item.message.session_key), "")
+        if session_key and activation_items:
+            self._prev_activation_by_session[session_key] = list(activation_items)
         return current_key
 
     # ν_turn = 1 − max_{j<i} cos(query, prior_j)²；当前 turn 自身排除。

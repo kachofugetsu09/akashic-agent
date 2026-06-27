@@ -386,6 +386,89 @@ def test_replay_and_runtime_use_same_directional_stdp_edges(tmp_path: Path) -> N
         runtime_store.close()
 
 
+def test_replay_and_runtime_reinforce_previous_activation_cluster(tmp_path: Path) -> None:
+    prev = _candidate("s:0", 0.8)
+    current = _candidate("s:2", 0.7)
+    ts = QUERY_TS.timestamp()
+    replay_store = AkashaStore(tmp_path / "replay.db")
+    runtime_store = AkashaStore(tmp_path / "runtime.db")
+    try:
+        with closing(sqlite3.connect(":memory:")) as source_db:
+            replay = AkashaReplayRuntime(
+                store=replay_store,
+                config=AkashaConfig(),
+                source_db_path=tmp_path / "sessions.db",
+                source_cursor=source_db.cursor(),
+                message_embeddings={},
+                message_turn_keys={},
+                reinforce_boosts={"s:4": 3.0},
+            )
+            replay.commit_turn(
+                [ReplayMessage(SourceMessage("m2", "s", 2, "user", "beta", QUERY_TS.isoformat()), [1.0, 0.0])],
+                [prev],
+            )
+            replay.commit_turn(
+                [ReplayMessage(SourceMessage("m4", "s", 4, "user", "gamma", QUERY_TS.isoformat()), [1.0, 0.0])],
+                [current],
+            )
+
+        engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+        engine._store = runtime_store
+        engine._graph_lock = threading.RLock()
+        engine._edges = {}
+        engine._edges_meta = {}
+        engine._edges_by_src = {}
+        engine._fan = {}
+        engine._nodes = {}
+        engine._prev_activation_by_session = {}
+        first_key = runtime_store.upsert_message_node(
+            SourceMessage("m2", "s", 2, "user", "beta", QUERY_TS.isoformat()),
+            [1.0, 0.0],
+        )
+        first_node = runtime_store.get_node(first_key)
+        assert first_node is not None
+        engine._nodes[first_key] = first_node
+        engine._commit_pending_activation(
+            "s:2",
+            PendingActivation(
+                query_id="s:2",
+                seq=2,
+                ts=ts,
+                items=[prev],
+                query_vec=np.array([1.0, 0.0], dtype=np.float32),
+            ),
+            "s",
+        )
+        second_key = runtime_store.upsert_message_node(
+            SourceMessage("m4", "s", 4, "user", "gamma", QUERY_TS.isoformat()),
+            [1.0, 0.0],
+        )
+        second_node = runtime_store.get_node(second_key)
+        assert second_node is not None
+        engine._nodes[second_key] = second_node
+        engine._commit_pending_activation(
+            "s:4",
+            PendingActivation(
+                query_id="s:4",
+                seq=4,
+                ts=ts,
+                items=[current],
+                query_vec=np.array([1.0, 0.0], dtype=np.float32),
+            ),
+            "s",
+            3.0,
+        )
+
+        replay_edges = replay_store.load_edges()
+        runtime_edges = runtime_store.load_edges()
+        assert replay_edges == pytest.approx(runtime_edges)
+        assert ("s:0", "s:4") in replay_edges
+        assert ("s:4", "s:0") in replay_edges
+    finally:
+        replay_store.close()
+        runtime_store.close()
+
+
 def test_replay_writes_query_log_with_activation_items(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

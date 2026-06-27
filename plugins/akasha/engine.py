@@ -46,6 +46,7 @@ from plugins.akasha.core import (
     parse_turn_key as _parse_turn_key,
     bounded_add as _bounded_add,
     reinforce_boost_from_payload as _reinforce_boost_from_payload,
+    reinforced_activation_items as _reinforced_activation_items,
 )
 from agent.config_models import Config  # noqa: F401
 from bus.events_lifecycle import TurnCommitted
@@ -146,6 +147,7 @@ class AkashaMemoryEngine:
         )
         self._event_bus = event_publisher
         self._pending_by_session: dict[str, PendingActivation] = {}
+        self._prev_activation_by_session: dict[str, list[AkashaCandidate]] = {}
         self._graph_lock = threading.RLock()
         self._nodes: dict[str, AkashaNode] = {}
         self._edges: dict[tuple[str, str], float] = {}
@@ -651,31 +653,46 @@ class AkashaMemoryEngine:
         # 3. 用真实 current_key 建边，并记录激活诊断。
         #    reinforce 标记 = 本轮调用了 reinforce_memory 工具(记在 tool_chain)或 extra 回填；
         #    与离线重建(build._load_reinforce_boosts)读同一来源，live 与重放一致。
-        reinforced = _reinforce_boost_for_turn(
+        reinforce_boost = _reinforce_boost_for_turn(
             event.extra,
             event.tool_chain_raw,
-        ) > 1.0
+        )
         pending = self._pending_by_session.pop(event.session_key, None)
         if current_key and pending is not None:
-            self._commit_pending_activation(current_key, pending, reinforced=reinforced)
+            self._commit_pending_activation(
+                current_key,
+                pending,
+                session_key=event.session_key,
+                reinforce_boost=reinforce_boost,
+            )
 
     # 把 pending activation 转成边和事件。
     def _commit_pending_activation(
         self,
         current_key: str,
         pending: PendingActivation,
-        reinforced: bool = False,
+        session_key: str = "",
+        reinforce_boost: float = 1.0,
     ) -> None:
         query_residual = self._compute_query_residual(pending.query_vec, current_key)
+        prev_by_session = getattr(self, "_prev_activation_by_session", {})
+        edge_items = _reinforced_activation_items(
+            pending.items,
+            prev_by_session.get(session_key, []),
+            reinforce_boost,
+        )
         edge_updates = _activation_edge_updates(
             current_key,
-            pending.items,
+            edge_items,
             pending.ts,
             query_residual=query_residual,
-            reinforced=reinforced,
+            reinforce_boost=reinforce_boost,
         )
         self._store.upsert_edges(edge_updates)
         self._apply_edge_updates(edge_updates)
+        if session_key:
+            prev_by_session[session_key] = list(pending.items)
+            self._prev_activation_by_session = prev_by_session
 
         # 2. 记录本轮激活明细，便于之后诊断。
         self._store.insert_activation_events([

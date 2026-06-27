@@ -367,21 +367,23 @@ def activation_edge_updates(
     candidates: list[AkashaCandidate],
     ts: float,
     query_residual: float = 1.0,
-    reinforced: bool = False,
+    reinforce_boost: float = 1.0,
 ) -> list[EdgeUpdate]:
     # Residual Hebb：右脑只对预测误差产生可塑性。
-    # gain = max(ν_turn, REINFORCE_NU_FLOOR if reinforced else 0)
+    # gain = max(ν_turn, REINFORCE_NU_FLOOR if reinforce_boost > 1 else 0)
     # 完全重复输入 ν=0：本轮所有边写入权重为 0，反馈环数学上断开。
     # reinforce 重新解释：用户标记 = 给 ν 设下界，相当于一次弱新 episode 的 surprise，
     # 比普通复读厚但不超过自然 episode。
-    floor = REINFORCE_NU_FLOOR if reinforced else 0.0
+    floor = REINFORCE_NU_FLOOR if reinforce_boost > 1.0 else 0.0
     gain = max(0.0, min(1.0, max(query_residual, floor)))
-    if gain <= 0.0:
-        return []
     updates: list[EdgeUpdate] = []
+
+    if gain <= 0.0:
+        return updates
+
     key_to_score = {item.key: item.score for item in candidates}
     for item in candidates:
-        edge_strength = key_to_score.get(item.key, 1.0)
+        edge_strength = key_to_score.get(item.key, 1.0) * reinforce_boost
         updates.append(
             EdgeUpdate(item.key, current_key, edge_strength * STDP_CAUSAL_EDGE_GAIN * gain, ts)
         )
@@ -395,6 +397,23 @@ def activation_edge_updates(
             updates.append(EdgeUpdate(left.key, right.key, edge_strength, ts))
             updates.append(EdgeUpdate(right.key, left.key, edge_strength, ts))
     return updates
+
+
+def reinforced_activation_items(
+    current_items: list[AkashaCandidate],
+    previous_items: list[AkashaCandidate],
+    reinforce_boost: float,
+) -> list[AkashaCandidate]:
+    if reinforce_boost <= 1.0 or not previous_items:
+        return current_items
+    combined = list(current_items)
+    seen_keys = {item.key for item in combined}
+    for item in previous_items:
+        if item.key in seen_keys:
+            continue
+        combined.append(item)
+        seen_keys.add(item.key)
+    return combined
 
 
 def local_residual(query_vec: np.ndarray, prior_vecs: np.ndarray) -> float:
