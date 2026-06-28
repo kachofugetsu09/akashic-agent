@@ -25,8 +25,7 @@ import random as _random_module
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from hashlib import sha1
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from agent.plugins.proactive_effects import (
     ProactiveEffect,
@@ -35,7 +34,7 @@ from agent.plugins.proactive_effects import (
 )
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
-from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
+from agent.turns.result import TurnResult
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
@@ -43,16 +42,27 @@ from agent.core.drift_turn import DriftTurnPipeline
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
 from proactive_v2.modules_gate import GateResult, ProactiveGateChain
 from proactive_v2.modules_prompt import ProactivePromptBuilder
+from proactive_v2.modules_resolve import (
+    ProactiveResolver,
+    ResolveResult,
+    ack_discarded,
+    ack_on_success,
+    ack_post_guard_fail,
+    build_delivery_key,
+)
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, dispatch
 
 logger = logging.getLogger(__name__)
 
-# ── ACK TTL 常量 ──────────────────────────────────────────────────────────
-_CITED_ACK_TTL = 168
-_UNCITED_ACK_TTL = 24
-_POST_GUARD_ACK_TTL = 24
-_DISCARDED_ACK_TTL = 720
-
+__all__ = [
+    "ProactiveTurnPipeline",
+    "ProactiveTurnPipelineDeps",
+    "ResolveResult",
+    "ack_discarded",
+    "ack_on_success",
+    "ack_post_guard_fail",
+    "build_delivery_key",
+]
 
 # ── Fetch 步骤的输出 ──────────────────────────────────────────────────────
 
@@ -62,152 +72,6 @@ class FeedResult:
     drift_entered: bool
     base_score: float | None
     messages: list[dict] = field(default_factory=list)
-
-
-# ── Resolve 步骤的输出 ─────────────────────────────────────────────────────
-
-@dataclass
-class ResolveResult:
-    """最终裁定结果。action="send" 时 outbound 非空。"""
-    action: str  # "send" | "skip"
-    result: TurnResult
-
-
-# ── 副作用回调（复刻原 AgentTick._CallbackSideEffect）─────────────────────
-
-@dataclass
-class _CallbackSideEffect:
-    callback: Callable[[], Awaitable[None]]
-    name: str = "callback"
-
-    async def run(self) -> None:
-        await self.callback()
-
-
-# ── delivery key 构建 ─────────────────────────────────────────────────────
-
-def _normalize_delivery_url(raw: str) -> str:
-    from urllib.parse import urlsplit, urlunsplit
-    text = str(raw or "").strip()
-    if not text:
-        return ""
-    parts = urlsplit(text)
-    path = parts.path.rstrip("/") or parts.path
-    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
-
-
-def _build_delivery_refs(ctx: AgentTickContext) -> list[str]:
-    if not ctx.cited_item_ids:
-        return []
-    content_map = {
-        f"{e.get('ack_server', '')}:{e.get('event_id') or e.get('id', '')}": e
-        for e in ctx.fetched_contents
-        if e.get("ack_server") and (e.get("event_id") or e.get("id"))
-    }
-    refs: list[str] = []
-    for key in sorted(set(ctx.cited_item_ids)):
-        meta = content_map.get(key)
-        if meta is None:
-            refs.append(f"id:{key}")
-            continue
-        url = _normalize_delivery_url(str(meta.get("url") or ""))
-        if url:
-            refs.append(f"url:{url}")
-            continue
-        source = str(meta.get("source") or meta.get("source_name") or "").strip().lower()
-        title = str(meta.get("title") or "").strip().lower()
-        if title:
-            refs.append(f"title:{source}|{title}")
-            continue
-        refs.append(f"id:{key}")
-    return sorted(set(refs))
-
-
-def build_delivery_key(ctx: AgentTickContext) -> str:
-    refs = _build_delivery_refs(ctx)
-    if refs and any(not ref.startswith("id:") for ref in refs):
-        key_src = json.dumps(refs)
-    elif ctx.cited_item_ids:
-        key_src = json.dumps(sorted(ctx.cited_item_ids))
-    else:
-        key_src = ctx.final_message[:500]
-    return sha1(key_src.encode()).hexdigest()[:16]
-
-
-# ── ACK 副作用函数 ──────────────────────────────────────────────────────
-
-async def ack_discarded(ctx: AgentTickContext, ack_fn) -> None:
-    if ack_fn is None:
-        return
-    for key in ctx.discarded_item_ids:
-        await ack_fn(key, _DISCARDED_ACK_TTL)
-
-
-async def ack_post_guard_fail(ctx: AgentTickContext, ack_fn, *, alert_ack_fn=None) -> None:
-    if ack_fn is None:
-        return
-    fetched_alert_keys = {
-        f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
-        for e in ctx.fetched_alerts
-    }
-    cited_set = set(ctx.cited_item_ids)
-
-    async def _ack_alert(key: str) -> None:
-        if alert_ack_fn is not None:
-            await alert_ack_fn(key)
-        else:
-            await ack_fn(key, _POST_GUARD_ACK_TTL)
-
-    for key in cited_set - fetched_alert_keys:
-        await ack_fn(key, _POST_GUARD_ACK_TTL)
-    for key in cited_set & fetched_alert_keys:
-        await _ack_alert(key)
-    for key in fetched_alert_keys - cited_set:
-        await _ack_alert(key)
-    for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
-        await ack_fn(key, _POST_GUARD_ACK_TTL)
-    for key in ctx.discarded_item_ids:
-        await ack_fn(key, _DISCARDED_ACK_TTL)
-
-
-async def ack_on_success(ctx: AgentTickContext, ack_fn, *, alert_ack_fn=None) -> None:
-    if ack_fn is None:
-        return
-    fetched_alert_keys = {
-        f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
-        for e in ctx.fetched_alerts
-    }
-    fetched_content_keys = {
-        f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
-        for e in ctx.fetched_contents
-    }
-    cited_set = set(ctx.cited_item_ids)
-    for key in cited_set & fetched_content_keys:
-        await ack_fn(key, _CITED_ACK_TTL)
-    for key in cited_set & fetched_alert_keys:
-        if alert_ack_fn is not None:
-            await alert_ack_fn(key)
-        else:
-            await ack_fn(key, _CITED_ACK_TTL)
-    for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
-        await ack_fn(key, _UNCITED_ACK_TTL)
-    for key in ctx.discarded_item_ids:
-        await ack_fn(key, _DISCARDED_ACK_TTL)
-
-
-async def _mark_delivery(*, state_store: Any, session_key: str, delivery_key: str) -> None:
-    state_store.mark_delivery(session_key, delivery_key)
-
-
-async def _mark_context_only_send(
-    *,
-    state_store: Any,
-    session_key: str,
-    context_as_fallback_open: bool,
-    has_cited: bool,
-) -> None:
-    if context_as_fallback_open and not has_cited:
-        state_store.mark_context_only_send(session_key)
 
 
 def _log_content_candidates(gw: GatewayResult) -> None:
@@ -304,6 +168,15 @@ class ProactiveTurnPipeline:
             cfg=self._cfg,
             memory=self._tool_deps.memory,
             workspace_context_fn=self._workspace_context_fn,
+        )
+        self._resolver = ProactiveResolver(
+            cfg=self._cfg,
+            session_key=self._session_key,
+            state_store=self._state_store,
+            deduper=self._deduper,
+            recent_proactive_fn=self._recent_proactive_fn,
+            ack_fn=self._tool_deps.ack_fn,
+            alert_ack_fn=self._tool_deps.alert_ack_fn,
         )
 
         # 1. drift_pipeline 的 step_recorder 指向本 pipeline 的记录方法。
@@ -685,215 +558,7 @@ class ProactiveTurnPipeline:
     # ── 4. Resolve ────────────────────────────────────────────────────
 
     async def _resolve_decide(self, ctx: AgentTickContext) -> ResolveResult:
-        """最终裁定：skip/reply + delivery 去重 + message 去重。"""
-
-        ack_fn = self._tool_deps.ack_fn
-
-        # 4.1 LLM 判定为 skip → 直接构建 skip 结果。
-        if ctx.terminal_action != "reply":
-            logger.info(
-                diagnostic_line(
-                    "ProactiveTurnPipeline._resolve_decide",
-                    event="resolve",
-                    flow="proactive",
-                    phase="resolve",
-                    session=self._session_key,
-                    tick=ctx.tick_id,
-                    action="skip",
-                    reason=ctx.skip_reason or "no_content",
-                    counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
-                    note=ctx.skip_note or "-",
-                )
-            )
-            logger.info(
-                "[proactive_v2] resolve: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
-                ctx.terminal_action or "none",
-                ctx.steps_taken,
-                len(ctx.discarded_item_ids),
-                len(ctx.interesting_item_ids),
-                ctx.skip_reason,
-                ctx.skip_note,
-            )
-            skip_result = TurnResult(
-                decision="skip",
-                outbound=None,
-                trace=TurnTrace(
-                    source="proactive",
-                    extra={
-                        "steps_taken": ctx.steps_taken,
-                        "skip_reason": ctx.skip_reason,
-                        "skip_note": ctx.skip_note,
-                    },
-                ),
-                side_effects=[
-                    _CallbackSideEffect(
-                        callback=lambda: ack_discarded(ctx, ack_fn),
-                        name="ack_discarded_skip",
-                    )
-                ],
-            )
-            return ResolveResult(action="skip", result=skip_result)
-
-        # 4.2 delivery 去重：同一批来源内容短时间内不重复发。
-        delivery_key = build_delivery_key(ctx)
-        if self._state_store.is_delivery_duplicate(
-            self._session_key, delivery_key, self._cfg.delivery_dedupe_hours
-        ):
-            logger.info(
-                diagnostic_line(
-                    "ProactiveTurnPipeline._resolve_decide",
-                    event="resolve",
-                    flow="proactive",
-                    phase="resolve",
-                    session=self._session_key,
-                    tick=ctx.tick_id,
-                    action="skip",
-                    reason="already_sent_similar",
-                    counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
-                    note="delivery_dedupe",
-                )
-            )
-            logger.info("[proactive_v2] resolve: delivery_dedupe hit")
-            return ResolveResult(
-                action="skip",
-                result=TurnResult(
-                    decision="skip",
-                    outbound=None,
-                    evidence=list(ctx.cited_item_ids),
-                    trace=TurnTrace(
-                        source="proactive",
-                        extra={
-                            "steps_taken": ctx.steps_taken,
-                            "skip_reason": "already_sent_similar",
-                            "dedupe": "delivery",
-                        },
-                    ),
-                    side_effects=[
-                        _CallbackSideEffect(
-                            callback=lambda: ack_post_guard_fail(
-                                ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn
-                            ),
-                            name="ack_post_guard_delivery",
-                        )
-                    ],
-                ),
-            )
-
-        # 4.3 message 语义去重：和最近主动消息实质重复也跳过。
-        if self._cfg.message_dedupe_enabled and self._deduper is not None:
-            recent_proactive = (
-                self._recent_proactive_fn()
-                if self._recent_proactive_fn is not None
-                else []
-            )
-            is_dup, reason = await self._deduper.is_duplicate(
-                new_message=ctx.final_message,
-                recent_proactive=recent_proactive,
-                new_state_summary_tag="none",
-            )
-            if is_dup:
-                logger.info(
-                    diagnostic_line(
-                        "ProactiveTurnPipeline._resolve_decide",
-                        event="resolve",
-                        flow="proactive",
-                        phase="resolve",
-                        session=self._session_key,
-                        tick=ctx.tick_id,
-                        action="skip",
-                        reason="already_sent_similar",
-                        counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
-                        note=str(reason or "message_dedupe")[:160],
-                    )
-                )
-                logger.info("[proactive_v2] resolve: message_dedupe hit: %s", reason)
-                return ResolveResult(
-                    action="skip",
-                    result=TurnResult(
-                        decision="skip",
-                        outbound=None,
-                        evidence=list(ctx.cited_item_ids),
-                        trace=TurnTrace(
-                            source="proactive",
-                            extra={
-                                "steps_taken": ctx.steps_taken,
-                                "skip_reason": "already_sent_similar",
-                                "dedupe": "message",
-                                "dedupe_note": str(reason or ""),
-                            },
-                        ),
-                        side_effects=[
-                            _CallbackSideEffect(
-                                callback=lambda: ack_post_guard_fail(
-                                    ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn
-                                ),
-                                name="ack_post_guard_message",
-                            )
-                        ],
-                    ),
-                )
-
-        # 4.4 两层 guard 都通过 → 构建 send 结果。
-        logger.info(
-            diagnostic_line(
-                "ProactiveTurnPipeline._resolve_decide",
-                event="resolve",
-                flow="proactive",
-                phase="resolve",
-                session=self._session_key,
-                tick=ctx.tick_id,
-                action="send",
-                reason="-",
-                counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)},cited:{len(ctx.cited_item_ids)}",
-            )
-        )
-        send_result = TurnResult(
-            decision="reply",
-            outbound=TurnOutbound(session_key=self._session_key, content=ctx.final_message),
-            evidence=list(ctx.cited_item_ids),
-            trace=TurnTrace(
-                source="proactive",
-                extra={
-                    "steps_taken": ctx.steps_taken,
-                    "skip_reason": "",
-                    "state_summary_tag": "none",
-                },
-            ),
-            success_side_effects=[
-                _CallbackSideEffect(
-                    callback=lambda: _mark_delivery(
-                        state_store=self._state_store,
-                        session_key=self._session_key,
-                        delivery_key=delivery_key,
-                    ),
-                    name="mark_delivery",
-                ),
-                _CallbackSideEffect(
-                    callback=lambda: _mark_context_only_send(
-                        state_store=self._state_store,
-                        session_key=self._session_key,
-                        context_as_fallback_open=ctx.context_as_fallback_open,
-                        has_cited=bool(ctx.cited_item_ids),
-                    ),
-                    name="mark_context_only_send",
-                ),
-                _CallbackSideEffect(
-                    callback=lambda: ack_on_success(
-                        ctx,
-                        ack_fn,
-                        alert_ack_fn=self._tool_deps.alert_ack_fn,
-                    ),
-                    name="ack_on_success",
-                ),
-            ],
-            failure_side_effects=[
-                _CallbackSideEffect(
-                    callback=lambda: ack_discarded(ctx, ack_fn),
-                    name="ack_discarded_send_fail",
-                )
-            ],
-        )
-        return ResolveResult(action="send", result=send_result)
+        return await self._resolver.resolve(ctx)
 
     # ── 5. Deliver ────────────────────────────────────────────────────
 
