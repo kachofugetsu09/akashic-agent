@@ -109,12 +109,6 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
     loop._engine = SimpleNamespace(tick=AsyncMock(return_value=0.2))
-    loop._feed_poll_lock = asyncio.Lock()
-    loop._mcp_pool = SimpleNamespace(
-        connect_all=AsyncMock(return_value=None),
-        disconnect_all=AsyncMock(return_value=None),
-    )
-    loop._poll_feeds_once = AsyncMock(return_value=None)
 def test_session_get_history_returns_empty_when_window_is_zero():
     session = Session("cli:1")
     session.add_message("user", "hello")
@@ -356,10 +350,10 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
     loop._proactive_pipeline = SimpleNamespace(run=AsyncMock(return_value=0.2))
-    loop._feed_poll_lock = asyncio.Lock()
-    loop._mcp_pool = SimpleNamespace(
-        connect_all=AsyncMock(return_value=None),
-        disconnect_all=AsyncMock(return_value=None),
+    loop._proactive_kernel = SimpleNamespace(
+        run_tick=AsyncMock(return_value=0.2),
+        start=AsyncMock(return_value=None),
+        stop=AsyncMock(return_value=None),
     )
     loop._run_loop = AsyncMock(return_value=None)
 
@@ -370,6 +364,6 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
         mp.setattr("proactive_v2.loop.next_tick_from_score", lambda *args, **kwargs: 7)
         assert loop._next_interval() == 7
     await loop.run()
-    loop._mcp_pool.connect_all.assert_awaited_once()
+    loop._proactive_kernel.start.assert_awaited_once()
     loop._run_loop.assert_awaited_once()
-    loop._mcp_pool.disconnect_all.assert_awaited_once()
+    loop._proactive_kernel.stop.assert_awaited_once()

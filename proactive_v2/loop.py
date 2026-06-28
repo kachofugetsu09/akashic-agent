@@ -43,6 +43,7 @@ from proactive_v2.energy import (
 from proactive_v2.judge import MessageDeduper
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.modules_pipeline import LegacyPipelineModule
+from proactive_v2.modules_source import McpRuntimeModule
 from proactive_v2.presence import PresenceStore
 from proactive_v2.sensor import Sensor
 from proactive_v2.state import ProactiveStateStore
@@ -104,11 +105,7 @@ class ProactiveLoop:
         self._init_runtime_components()
 
     def _init_runtime_state(self, config: ProactiveConfig) -> None:
-        from proactive_v2.mcp_sources import McpClientPool
         self._running = False
-        self._feed_poll_lock = asyncio.Lock()
-        workspace = getattr(self._sessions, "workspace", None)
-        self._mcp_pool = McpClientPool(Path(workspace) if workspace else None)
 
     def _build_state_store(
         self,
@@ -167,16 +164,24 @@ class ProactiveLoop:
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
                 shared_tools=self._shared_tools,
-                pool=self._mcp_pool,
+                pool=self._mcp_runtime.pool,
                 tool_hooks=self._tool_hooks,
                 proactive_effect_providers=self._proactive_effect_providers,
             )
         ).build()
 
+    def _build_mcp_runtime(self) -> McpRuntimeModule:
+        workspace = getattr(self._sessions, "workspace", None)
+        return McpRuntimeModule(
+            workspace=Path(workspace) if workspace else None,
+            cfg=self._cfg,
+        )
+
     def _build_kernel(self) -> ProactiveKernel:
         pipeline = self._build_agent_tick()
         self._proactive_pipeline = pipeline
         modules = [
+            self._mcp_runtime,
             LegacyPipelineModule(pipeline),
             *self._plugin_proactive_modules,
         ]
@@ -203,6 +208,7 @@ class ProactiveLoop:
         self._anyaction = self._build_anyaction_gate()
         self._sense = self._build_sense()
         self._message_deduper = self._build_message_deduper()
+        self._mcp_runtime = self._build_mcp_runtime()
         self._proactive_kernel = self._build_kernel()
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
@@ -294,41 +300,12 @@ class ProactiveLoop:
         except Exception as exc:
             logger.warning("[proactive] write trace failed %s: %s", filename, exc)
 
-    async def _poll_feeds_once(self) -> None:
-        """执行一次 feed 轮询,加锁保证不并发。
-        MCP tool 层已将系统级失败序列化为 "error: ..." 字符串返回,
-        此处统一检测并 warning 记录,不阻断 loop 主流程。
-        """
-        if self._feed_poll_lock.locked():
-            logger.debug("[proactive] feed poll 仍在进行,跳过本次")
-            return
-        async with self._feed_poll_lock:
-            try:
-                from proactive_v2 import mcp_sources
-                await mcp_sources.poll_content_feeds_async(self._mcp_pool)
-                logger.info("[proactive] feed poll 完成")
-            except Exception as e:
-                logger.warning("[proactive] feed poll 系统级失败: %s", e)
-
-    async def _poll_loop(self) -> None:
-        """每配置间隔秒周期性触发 feed 轮询。"""
-        while self._running:
-            await asyncio.sleep(max(1, int(self._cfg.feed_poller_interval_seconds)))
-            if not self._running:
-                break
-            await self._poll_feeds_once()
-
     async def run(self) -> None:
         self._running = True
         logger.info(
             f"ProactiveLoop 已启动  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
-        if not hasattr(self, "_mcp_pool"):
-            from proactive_v2.mcp_sources import McpClientPool
-            workspace = getattr(self._sessions, "workspace", None)
-            self._mcp_pool = McpClientPool(Path(workspace) if workspace else None)
-        await self._mcp_pool.connect_all()
         if hasattr(self, "_proactive_kernel"):
             await self._proactive_kernel.start()
         try:
@@ -336,14 +313,8 @@ class ProactiveLoop:
         finally:
             if hasattr(self, "_proactive_kernel"):
                 await self._proactive_kernel.stop()
-            await self._mcp_pool.disconnect_all()
-            logger.info("[proactive] mcp pool 已关闭")
 
     async def _run_loop(self) -> None:
-        # 启动时先同步完成首次 feed 轮询,保证首次 tick 能拿到新鲜数据
-        await self._poll_feeds_once()
-        # 后台周期轮询
-        asyncio.create_task(self._poll_loop())
         last_base_score: float | None = None
         while self._running:
             interval = self._next_interval(last_base_score)

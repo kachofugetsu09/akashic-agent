@@ -16,13 +16,12 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
-from proactive_v2 import mcp_sources
 from proactive_v2.mcp_sources import McpClientPool
+from proactive_v2.modules_source import McpGatewaySource
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
 from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
 from proactive_v2.drift_state import DriftStateStore
 from proactive_v2.drift_tools import DriftToolDeps
-from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 
 
@@ -30,12 +29,7 @@ BUILTIN_DRIFT_SKILLS_DIR = BUILTIN_SKILLS_DIR
 BUILTIN_DRIFT_SKILL_NAMES = {"meme-manage", "create-drift-skill"}
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
-AlertFn = Callable[[], Awaitable[list[dict]]]
-FeedFn = Callable[[int], Awaitable[list[dict]]]
-ContextFn = Callable[[], Awaitable[list[dict]]]
 RecentChatFn = Callable[[int], Awaitable[list[dict]]]
-AckFn = Callable[[str, int], Awaitable[None]]
-AlertAckFn = Callable[[str], Awaitable[None]]
 RecentProactiveFn = Callable[[], list[dict]] | None
 
 
@@ -74,8 +68,12 @@ class AgentTickFactory:
         # 2. 再把 tick 运行期依赖逐项组装好：
         #    最近用户时间 / 工具依赖 / gateway 数据依赖 / 近期主动消息读取函数。
         last_user_at_fn = self._build_last_user_at_fn(session_key)
-        tool_deps = self._build_tool_deps()
-        gateway_deps = self._build_gateway_deps(tool_deps)
+        source = self._build_mcp_source()
+        tool_deps = self._build_tool_deps(source)
+        gateway_deps = source.build_gateway_deps(
+            web_fetch_tool=tool_deps.web_fetch_tool,
+            max_chars=tool_deps.max_chars,
+        )
         recent_proactive_fn = self._build_recent_proactive_fn()
         drift_pipeline = self._build_drift_pipeline(tool_deps)
 
@@ -146,36 +144,13 @@ class AgentTickFactory:
 
         return llm_fn
 
-    def _build_alert_fn(self) -> AlertFn:
+    def _build_mcp_source(self) -> McpGatewaySource:
         pool = self._deps.pool
         assert pool is not None
-
-        async def alert_fn() -> list[dict]:
-            return await mcp_sources.fetch_alert_events_async(pool)
-
-        return alert_fn
-
-    def _build_feed_fn(self) -> FeedFn:
-        pool = self._deps.pool
-        assert pool is not None
-
-        async def feed_fn(limit: int = 5) -> list[dict]:
-            events = await mcp_sources.fetch_content_events_async(pool)
-            return events[:limit]
-
-        return feed_fn
-
-    def _build_context_fn(self) -> ContextFn:
-        pool = self._deps.pool
-        assert pool is not None
-
-        async def context_fn() -> list[dict]:
-            rows = await mcp_sources.fetch_context_data_async(pool)
-            if not isinstance(rows, list):
-                rows = []
-            return rows
-
-        return context_fn
+        return McpGatewaySource(
+            pool,
+            content_limit=getattr(self._deps.cfg, "agent_tick_content_limit", 5),
+        )
 
     def _build_recent_chat_fn(self) -> RecentChatFn:
         sense = self._deps.sense
@@ -188,40 +163,7 @@ class AgentTickFactory:
 
         return recent_chat_fn
 
-    def _build_ack_fn(self) -> AckFn:
-        pool = self._deps.pool
-        assert pool is not None
-
-        async def ack_fn(compound_key: str, ttl_hours: int) -> None:
-            """compound_key 格式："{ack_server}:{id}"，如 "feed-mcp:c1"."""
-            parts = compound_key.split(":", 1)
-            if len(parts) != 2:
-                return
-            ack_server, item_id = parts
-            source_key = f"mcp:{ack_server}"
-            await mcp_sources.acknowledge_content_entries_async(
-                pool, [(source_key, item_id)], ttl_hours=ttl_hours
-            )
-
-        return ack_fn
-
-    def _build_alert_ack_fn(self) -> AlertAckFn:
-        pool = self._deps.pool
-        assert pool is not None
-
-        async def alert_ack_fn(compound_key: str) -> None:
-            """Alert 专用通道，走 acknowledge_events（非 content entries）。"""
-            import types as _types
-            parts = compound_key.split(":", 1)
-            if len(parts) != 2:
-                return
-            ack_server, ack_id = parts
-            event_proxy = _types.SimpleNamespace(_ack_server=ack_server, ack_id=ack_id)
-            await mcp_sources.acknowledge_events_async(pool, [event_proxy])
-
-        return alert_ack_fn
-
-    def _build_tool_deps(self) -> ToolDeps:
+    def _build_tool_deps(self, source: McpGatewaySource) -> ToolDeps:
         web_fetch_tool = None
         try:
             web_fetch_tool = WebFetchTool()
@@ -231,19 +173,9 @@ class AgentTickFactory:
             web_fetch_tool=web_fetch_tool,
             memory=self._deps.memory,
             recent_chat_fn=self._build_recent_chat_fn(),
-            ack_fn=self._build_ack_fn(),
-            alert_ack_fn=self._build_alert_ack_fn(),
+            ack_fn=source.ack_fn,
+            alert_ack_fn=source.alert_ack_fn,
             max_chars=self._deps.cfg.agent_tick_web_fetch_max_chars,
-        )
-
-    def _build_gateway_deps(self, tool_deps: ToolDeps) -> GatewayDeps:
-        return GatewayDeps(
-            alert_fn=self._build_alert_fn(),
-            feed_fn=self._build_feed_fn(),
-            context_fn=self._build_context_fn(),
-            web_fetch_tool=tool_deps.web_fetch_tool,
-            max_chars=tool_deps.max_chars,
-            content_limit=getattr(self._deps.cfg, "agent_tick_content_limit", 5),
         )
 
     def _build_recent_proactive_fn(self) -> RecentProactiveFn:
