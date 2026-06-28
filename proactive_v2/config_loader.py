@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import sys
 from typing import Any, cast
 
 from proactive_v2.config import ProactiveConfig
@@ -51,10 +50,7 @@ def _validate_ranges(config: dict[str, Any]) -> None:
     """验证参数范围"""
     # 阈值类必须 0~1
     threshold_keys = [
-        "score_llm_threshold",
         "judge_send_threshold",
-        "context_only_judge_threshold",
-        "context_only_judge_threshold_with_evidence",
         "anyaction_probability_min",
         "anyaction_probability_max",
     ]
@@ -92,17 +88,6 @@ def _validate_ranges(config: dict[str, Any]) -> None:
             raise ProactiveConfigError(
                 f"tick_interval_s1 必须 >= 1，当前值: {interval_values[-1]}"
             )
-
-    # context_only_judge_threshold_with_evidence <= context_only_judge_threshold
-    if "context_only_judge_threshold" in config and "context_only_judge_threshold_with_evidence" in config:
-        with_ev = config["context_only_judge_threshold_with_evidence"]
-        without_ev = config["context_only_judge_threshold"]
-        if with_ev > without_ev:
-            raise ProactiveConfigError(
-                f"context_only_judge_threshold_with_evidence ({with_ev}) "
-                f"不能大于 context_only_judge_threshold ({without_ev})"
-            )
-
 
 def _check_forbidden_keys(p: dict[str, Any]) -> None:
     """检查是否有旧的平铺键直接出现在 proactive 根下"""

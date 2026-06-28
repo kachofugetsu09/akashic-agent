@@ -167,30 +167,12 @@ class AgentTickFactory:
 
     def _build_context_fn(self) -> ContextFn:
         pool = self._deps.pool
-        sense = self._deps.sense
         assert pool is not None
 
         async def context_fn() -> list[dict]:
             rows = await mcp_sources.fetch_context_data_async(pool)
             if not isinstance(rows, list):
                 rows = []
-            try:
-                sleep_ctx = sense.sleep_context()
-            except Exception:
-                sleep_ctx = None
-            if sleep_ctx is not None:
-                fitbit_context = {
-                    "_source": "fitbit_sleep",
-                    "available": bool(getattr(sleep_ctx, "available", False)),
-                    "sleep_state": str(getattr(sleep_ctx, "state", "unknown")),
-                    "sleep_prob": getattr(sleep_ctx, "prob", None),
-                    "sleep_prob_source": str(
-                        getattr(sleep_ctx, "prob_source", "unavailable")
-                    ),
-                    "data_lag_min": getattr(sleep_ctx, "data_lag_min", None),
-                    "sleep_24h": getattr(sleep_ctx, "sleep_24h", {}) or {},
-                }
-                rows.insert(0, fitbit_context)
             return rows
 
         return context_fn

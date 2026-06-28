@@ -118,19 +118,16 @@ def test_build_proactive_runtime_accepts_light_agent_loop_stub(tmp_path):
         proactive=SimpleNamespace(
             enabled=False,
         ),
-        fitbit=SimpleNamespace(enabled=False),
         memory_optimizer_enabled=False,
         memory_optimizer_interval_seconds=3600,
         model="m",
         max_tokens=128,
-        light_model="lm",
     )
     tasks, loop = build_proactive_runtime(
         cast(Any, cfg),
         tmp_path,
         session_manager=cast(Any, SimpleNamespace()),
         provider=cast(Any, SimpleNamespace()),
-        light_provider=None,
         push_tool=cast(Any, SimpleNamespace()),
         memory_store=None,
         presence=cast(Any, SimpleNamespace()),

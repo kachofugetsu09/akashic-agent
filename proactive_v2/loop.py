@@ -17,11 +17,10 @@ import random as _random_module
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryRetrievalApi
-    from core.memory.markdown import MemoryProfileApi
 
 from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
@@ -42,7 +41,6 @@ from proactive_v2.energy import (
 )
 from proactive_v2.judge import MessageDeduper
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.memory_sampler import sample_memory_chunks
 from proactive_v2.presence import PresenceStore
 from proactive_v2.sensor import Sensor
 from proactive_v2.state import ProactiveStateStore
@@ -74,16 +72,11 @@ class ProactiveLoop:
         max_tokens: int = 1024,
         state_store: ProactiveStateStore | None = None,
         state_path: Path | None = None,
-        memory_store: "MemoryProfileApi | MemoryRetrievalApi | None" = None,
+        memory_store: "MemoryRetrievalApi | None" = None,
         presence: PresenceStore | None = None,
         rng: _random_module.Random | None = None,
-        light_provider: LLMProvider | None = None,
-        light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
         shared_tools: ToolRegistry | None = None,
-        fitbit_enabled: bool = False,
-        fitbit_url: str = "http://127.0.0.1:18765",
-        fitbit_poll_interval: int = 300,
         tool_hooks: list[ToolHook] | None = None,
         proactive_effect_providers: list[ProactiveEffectProvider] | None = None,
     ) -> None:
@@ -97,15 +90,10 @@ class ProactiveLoop:
         self._memory = memory_store
         self._presence = presence
         self._rng = rng
-        self._light_provider = light_provider or provider
-        self._light_model = light_model or (config.model or model)
         self._passive_busy_fn = passive_busy_fn
         self._shared_tools = shared_tools
         self._tool_hooks = tool_hooks or []
         self._proactive_effect_providers = proactive_effect_providers or []
-        self._fitbit_enabled = bool(fitbit_enabled)
-        self._fitbit_url = str(fitbit_url or "http://127.0.0.1:18765")
-        self._fitbit_poll_interval = max(1, int(fitbit_poll_interval))
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -127,17 +115,6 @@ class ProactiveLoop:
             return state_store
         return ProactiveStateStore(state_path or Path("proactive.db"))
 
-    def _build_fitbit_provider(self):
-        if not self._fitbit_enabled:
-            return None
-        from proactive_v2.fitbit_sleep import FitbitSleepProvider
-
-        return FitbitSleepProvider(
-            url=self._fitbit_url,
-            poll_interval=self._fitbit_poll_interval,
-            sleeping_modifier=self._cfg.sleep_modifier_sleeping,
-        )
-
     def _build_turn_orchestrator(self) -> TurnOrchestrator:
         return TurnOrchestrator(
             TurnOrchestratorDeps(
@@ -157,15 +134,11 @@ class ProactiveLoop:
             rng=self._rng,
         )
 
-    def _build_sense(self, fitbit_provider) -> Sensor:
+    def _build_sense(self) -> Sensor:
         return Sensor(
             cfg=self._cfg,
             sessions=self._sessions,
-            state=self._state,
-            memory=cast("MemoryProfileApi | None", self._memory),
             presence=self._presence,
-            rng=self._rng,
-            fitbit=fitbit_provider,
         )
 
     def _build_agent_tick(self):
@@ -213,7 +186,7 @@ class ProactiveLoop:
         # 3. 构建发送编排器、前置 gate、传感器、去重器和主动链路 pipeline。
         self._turn_orchestrator = self._build_turn_orchestrator()
         self._anyaction = self._build_anyaction_gate()
-        self._sense = self._build_sense(self._build_fitbit_provider())
+        self._sense = self._build_sense()
         self._message_deduper = self._build_message_deduper()
         self._proactive_pipeline = self._build_agent_tick()
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
@@ -253,7 +226,6 @@ class ProactiveLoop:
     def _trace_proactive_config_snapshot(self) -> None:
         payload = {
             "enabled": self._cfg.enabled,
-            "score_llm_threshold": self._cfg.score_llm_threshold,
             "tick_interval_s0": self._cfg.tick_interval_s0,
             "tick_interval_s1": self._cfg.tick_interval_s1,
             "tick_jitter": self._cfg.tick_jitter,
@@ -261,8 +233,6 @@ class ProactiveLoop:
             "anyaction_min_interval_seconds": self._cfg.anyaction_min_interval_seconds,
             "anyaction_probability_min": self._cfg.anyaction_probability_min,
             "anyaction_probability_max": self._cfg.anyaction_probability_max,
-            "memory_history_gate_enabled": self._cfg.memory_history_gate_enabled,
-            "sleep_modifier_sleeping": self._cfg.sleep_modifier_sleeping,
         }
         self._append_trace_line("proactive_config_trace.jsonl", payload)
 
@@ -279,7 +249,6 @@ class ProactiveLoop:
                 "mode": mode,
                 "base_score": round(base_score, 4) if base_score is not None else None,
                 "interval_seconds": int(interval),
-                "score_llm_threshold": self._cfg.score_llm_threshold,
                 "tick_interval_s0": self._cfg.tick_interval_s0,
                 "tick_interval_s1": self._cfg.tick_interval_s1,
                 "tick_jitter": self._cfg.tick_jitter,
@@ -405,42 +374,6 @@ class ProactiveLoop:
 
     def stop(self) -> None:
         self._running = False
-
-    def _sample_random_memory(self, n: int = 2) -> list[str]:
-        """随机抽取 n 条记忆片段,无记忆时返回 []。"""
-        if not self._memory:
-            return []
-        try:
-            memory = cast("MemoryProfileApi", self._memory)
-            raw = str(memory.read_long_term() or "").strip()
-            return sample_memory_chunks(raw, n=n)
-        except Exception as e:
-            logger.warning("[proactive] 随机记忆抽取失败: %s", e)
-            return []
-
-    def _has_global_memory(self) -> bool:
-        return self._sense.has_global_memory()
-
-    def _read_memory_text(self) -> str:
-        return self._sense.read_memory_text()
-
-    def _compute_energy(self) -> float:
-        """计算目标 session 的当前电量(取目标与全局较高值)。"""
-        return self._sense.compute_energy()
-
-    def _compute_interruptibility(
-        self,
-        *,
-        now_hour: int,
-        now_utc: datetime,
-        recent_msg_count: int,
-    ) -> tuple[float, dict[str, float]]:
-        """计算软打扰系数(0~1),并注入随机探索,避免长期锁死。"""
-        return self._sense.compute_interruptibility(
-            now_hour=now_hour,
-            now_utc=now_utc,
-            recent_msg_count=recent_msg_count,
-        )
 
     # ── internal ──────────────────────────────────────────────────
 

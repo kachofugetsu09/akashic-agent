@@ -10,9 +10,7 @@ from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
 from bootstrap.dashboard_api import build_dashboard_server
-from bootstrap.memory import build_memory_runtime
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
-from bootstrap.providers import build_providers
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bus.event_bus import EventBus
 from core.net.http import (
@@ -155,7 +153,6 @@ class AppRuntime:
                 self.workspace,
                 session_manager=self.session_manager,
                 provider=self.provider,
-                light_provider=self.light_provider,
                 push_tool=self.push_tool,
                 memory_store=self.memory_runtime,
                 presence=self.presence,

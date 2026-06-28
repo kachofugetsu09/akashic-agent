@@ -17,7 +17,6 @@ from agent.tools.shell import ShellTool, _MAX_OUTPUT, _truncate, _validate_netwo
 from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text, _validate_url_target
 from memory2.procedure_tagger import ProcedureTagger, _validate
 from memory2.store import MemoryStore2
-from proactive_v2.event import GenericContentEvent
 
 
 class _ReasonerHarness:

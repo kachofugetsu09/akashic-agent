@@ -1,5 +1,5 @@
 """
-proactive/mcp_sources.py — 从 MCP server 拉取 ProactiveEvent 的通用客户端。
+proactive/mcp_sources.py — 从 MCP server 拉取主动链路数据的通用客户端。
 
 读取 ~/.akashic/workspace/proactive_sources.json 中的配置，
 动态调用各 MCP server 的 get_tool / ack_tool。
@@ -13,10 +13,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from proactive_v2.event import AlertEvent
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -48,38 +45,6 @@ def _get_server_cfg(server_name: str, workspace: Path) -> dict | None:
     except Exception as e:
         logger.warning("[mcp_sources] mcp_servers.json 读取失败: %s", e)
         return None
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def poll_content_feeds() -> None:
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 poll_content_feeds_async + McpClientPool")
-
-
-def fetch_alert_events() -> list[dict]:
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 fetch_alert_events_async + McpClientPool")
-
-
-def fetch_content_events() -> list[dict]:
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 fetch_content_events_async + McpClientPool")
-
-
-def fetch_context_data() -> list[dict]:
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 fetch_context_data_async + McpClientPool")
-
-
-def acknowledge_events(events: list[AlertEvent]) -> None:
-    _ = events
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 acknowledge_events_async + McpClientPool")
-
-
-def acknowledge_content_entries(entries: list[tuple[str, str]], ttl_hours: int | None = None) -> None:
-    _ = (entries, ttl_hours)
-    raise RuntimeError(
-        "mcp_sources.sync API 已移除，请使用 acknowledge_content_entries_async + McpClientPool"
-    )
 
 
 # ── Persistent connection pool ────────────────────────────────────────────────

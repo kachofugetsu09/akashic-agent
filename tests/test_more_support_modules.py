@@ -25,7 +25,6 @@ from infra.channels.cli import CLIClient, _print_banner
 from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 from memory2.models import MemoryItem
 from proactive_v2.anyaction import AnyActionGate, QuotaStore
-from proactive_v2.memory_sampler import sample_memory_chunks, split_memory_chunks
 from bootstrap.app import AppRuntime
 from bootstrap.providers import build_providers, build_vl_provider
 from bus.event_bus import EventBus
@@ -694,14 +693,6 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
     assert meta["reason"] == "probability"
     gate.record_action(now_utc=now)
 
-    text = "## A\n\n第一段\n\n- 一\n- 二\n\n## B\n\n很长内容 " + ("句子。" * 80)
-    chunks = split_memory_chunks(text, max_chunk_chars=30)
-    assert chunks
-    sampled = sample_memory_chunks(text, 2, rng=__import__("random").Random(1))
-    assert len(sampled) == 2
-    assert sample_memory_chunks("", 2) == []
-
-
 @pytest.mark.asyncio
 async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -889,19 +880,16 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         proactive=SimpleNamespace(
             enabled=False,
         ),
-        fitbit=SimpleNamespace(enabled=False),
         memory_optimizer_enabled=False,
         memory_optimizer_interval_seconds=3600,
         model="m",
         max_tokens=128,
-        light_model="lm",
     )
     tasks, loop = build_proactive_runtime(
         cast(Any, cfg),
         tmp_path,
         session_manager=MagicMock(),
         provider=MagicMock(),
-        light_provider=None,
         push_tool=MagicMock(),
         memory_store=None,
         presence=MagicMock(),
@@ -938,19 +926,16 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         proactive=SimpleNamespace(
             enabled=True,
         ),
-        fitbit=SimpleNamespace(enabled=True),
         memory_optimizer_enabled=True,
         memory_optimizer_interval_seconds=7200,
         model="m",
         max_tokens=128,
-        light_model="lm",
     )
     tasks, loop = build_proactive_runtime(
         cast(Any, cfg),
         tmp_path,
         session_manager=MagicMock(),
         provider=MagicMock(),
-        light_provider=MagicMock(),
         push_tool=MagicMock(),
         memory_store=MagicMock(),
         presence=MagicMock(),

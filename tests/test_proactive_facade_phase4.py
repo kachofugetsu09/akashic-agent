@@ -9,7 +9,6 @@ from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipeli
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
 from proactive_v2.gateway import GatewayDeps, GatewayResult
-from proactive_v2.sensor import Sensor
 
 
 def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
@@ -19,12 +18,10 @@ def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
     proactive_cfg.default_chat_id = "1"
     cfg = SimpleNamespace(
         proactive=proactive_cfg,
-        fitbit=SimpleNamespace(enabled=False),
         memory_optimizer_enabled=False,
         memory_optimizer_interval_seconds=3600,
         model="m",
         max_tokens=128,
-        light_model="lm",
     )
     facade = MagicMock()
 
@@ -33,7 +30,6 @@ def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
         tmp_path,
         session_manager=cast(Any, SimpleNamespace(workspace=tmp_path)),
         provider=cast(Any, SimpleNamespace()),
-        light_provider=None,
         push_tool=cast(Any, SimpleNamespace()),
         memory_store=facade,
         presence=cast(Any, SimpleNamespace()),
@@ -62,20 +58,6 @@ def test_build_proactive_provider_strips_enable_thinking():
     assert proactive_provider is not provider
     assert proactive_provider._extra_body == {"foo": "bar"}
     assert proactive_provider._force_disable_thinking is True
-
-
-def test_sensor_reads_long_term_from_facade():
-    facade = SimpleNamespace(read_long_term=lambda: "MEMORY")
-    sensor = Sensor(
-        cfg=SimpleNamespace(default_channel="telegram", default_chat_id="1"),
-        sessions=cast(Any, SimpleNamespace()),
-        state=cast(Any, SimpleNamespace()),
-        memory=cast(Any, facade),
-        presence=None,
-        rng=SimpleNamespace(),
-    )
-
-    assert sensor.read_memory_text() == "MEMORY"
 
 
 def test_agent_tick_prompt_keeps_self_block_with_facade():

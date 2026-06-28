@@ -12,9 +12,7 @@ class TriggerPreset(TypedDict):
 
 
 class GatePreset(TypedDict):
-    score_llm_threshold: float
     judge_send_threshold: float
-    judge_balance_daily_max: int
 
 
 class AnyActionPreset(TypedDict):
@@ -36,8 +34,6 @@ class SafetyPreset(TypedDict):
 class ContextPreset(TypedDict):
     context_only_daily_max: int
     context_only_min_interval_hours: int
-    context_only_judge_threshold: float
-    context_only_judge_threshold_with_evidence: float
 
 
 class PresetConfig(TypedDict):
@@ -58,9 +54,7 @@ PRESETS: dict[str, PresetConfig] = {
             "tick_jitter": 0.2,
         },
         "gate": {
-            "score_llm_threshold": 0.14,
             "judge_send_threshold": 0.60,
-            "judge_balance_daily_max": 48,
         },
         "anyaction": {
             "anyaction_enabled": True,
@@ -79,8 +73,6 @@ PRESETS: dict[str, PresetConfig] = {
         "context": {
             "context_only_daily_max": 1,
             "context_only_min_interval_hours": 12,
-            "context_only_judge_threshold": 0.72,
-            "context_only_judge_threshold_with_evidence": 0.68,
         },
     },
     "dev_verify": {
@@ -91,9 +83,7 @@ PRESETS: dict[str, PresetConfig] = {
             "tick_jitter": 0.0,       # 无抖动，精确触发
         },
         "gate": {
-            "score_llm_threshold": 0.08,  # 极低门槛
             "judge_send_threshold": 0.28,
-            "judge_balance_daily_max": 48,
         },
         "anyaction": {
             "anyaction_enabled": True,
@@ -112,8 +102,6 @@ PRESETS: dict[str, PresetConfig] = {
         "context": {
             "context_only_daily_max": 20,
             "context_only_min_interval_hours": 1,
-            "context_only_judge_threshold": 0.30,
-            "context_only_judge_threshold_with_evidence": 0.25,
         },
     },
     "quiet": {
@@ -124,9 +112,7 @@ PRESETS: dict[str, PresetConfig] = {
             "tick_jitter": 0.3,
         },
         "gate": {
-            "score_llm_threshold": 0.35,
             "judge_send_threshold": 0.75,
-            "judge_balance_daily_max": 12,
         },
         "anyaction": {
             "anyaction_enabled": True,
@@ -145,8 +131,6 @@ PRESETS: dict[str, PresetConfig] = {
         "context": {
             "context_only_daily_max": 1,
             "context_only_min_interval_hours": 24,
-            "context_only_judge_threshold": 0.80,
-            "context_only_judge_threshold_with_evidence": 0.75,
         },
     },
 }
@@ -154,39 +138,12 @@ PRESETS: dict[str, PresetConfig] = {
 
 # 策略内置参数（不对外暴露）
 STRATEGY_PARAMS = {
-    # 评分权重（使用旧配置的实际值）
     "score_weight_energy": 0.35,
-    "score_recent_scale": 8.0,
-    # 打断权重（使用旧配置的实际值）
-    "interrupt_weight_reply": 0.35,
-    "interrupt_weight_activity": 0.25,
-    "interrupt_weight_fatigue": 0.20,
-    "interrupt_activity_decay_minutes": 180.0,
-    "interrupt_reply_decay_minutes": 120.0,
-    "interrupt_no_reply_decay_minutes": 180.0,
-    "interrupt_fatigue_window_hours": 24,
-    "interrupt_fatigue_soft_cap": 4.0,
-    "interrupt_random_strength": 0.16,
-    "interrupt_min_floor": 0.06,
-    # Judge 权重
-    "judge_weight_urgency": 0.15,
-    "judge_weight_balance": 0.10,
-    "judge_weight_dynamics": 0.10,
-    "judge_weight_information_gap": 0.25,
-    "judge_weight_relevance": 0.20,
-    "judge_weight_expected_impact": 0.20,
-    "judge_urgency_horizon_hours": 36.0,
-    # judge_balance_daily_max 已移到预设配置
-    "judge_veto_balance_min": 0.1,
-    "judge_veto_llm_dim_min": 2,
-    # Memory retrieval 细节
-    "memory_history_gate_enabled": True,
     # 去重细节
     "message_dedupe_enabled": True,
     # 其他
     "recent_chat_messages": 20,
     "interval_seconds": 1800,
-    "sleep_modifier_sleeping": 0.15,
 }
 
 
@@ -198,9 +155,7 @@ ALLOWED_OVERRIDE_KEYS = {
         "tick_jitter",
     },
     "gate": {
-        "score_llm_threshold",
         "judge_send_threshold",
-        "judge_balance_daily_max",
     },
     "anyaction": {
         "anyaction_enabled",
@@ -219,7 +174,5 @@ ALLOWED_OVERRIDE_KEYS = {
     "context": {
         "context_only_daily_max",
         "context_only_min_interval_hours",
-        "context_only_judge_threshold",
-        "context_only_judge_threshold_with_evidence",
     },
 }
