@@ -39,6 +39,7 @@ from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
 from agent.core.drift_turn import DriftTurnPipeline
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
+from proactive_v2.modules_deliver import ProactiveDeliverer
 from proactive_v2.modules_gate import GateResult, ProactiveGateChain
 from proactive_v2.modules_judge import ProactiveJudge
 from proactive_v2.modules_prompt import ProactivePromptBuilder
@@ -185,6 +186,12 @@ class ProactiveTurnPipeline:
             tool_deps=self._tool_deps,
             tool_executor=self._tool_executor,
             record_step_fn=self._record_tick_step,
+        )
+        self._deliverer = ProactiveDeliverer(
+            cfg=self._cfg,
+            session_key=self._session_key,
+            turn_orchestrator=self._turn_orchestrator,
+            record_finish_fn=self._record_tick_log_finish,
         )
 
         # 1. drift_pipeline 的 step_recorder 指向本 pipeline 的记录方法。
@@ -508,19 +515,7 @@ class ProactiveTurnPipeline:
     # ── 5. Deliver ────────────────────────────────────────────────────
 
     async def _deliver_execute(self, ctx: AgentTickContext, decision: ResolveResult) -> float | None:
-        """执行发送：记日志 → 通过 TurnOrchestrator 落会话、发消息、执行副作用。"""
-        # 5.1 先记 tick 日志。
-        self._record_tick_log_finish(ctx, result=decision.result)
-        if self._turn_orchestrator is None:
-            raise RuntimeError("proactive turn_orchestrator is required")
-        # 5.2 再统一交给 TurnOrchestrator。
-        await self._turn_orchestrator.handle_proactive_turn(
-            result=decision.result,
-            session_key=self._session_key,
-            channel=str(self._cfg.default_channel or "").strip(),
-            chat_id=str(self._cfg.default_chat_id or "").strip(),
-        )
-        return 0.0
+        return await self._deliverer.deliver(ctx, decision)
 
     # ── drift 收尾 ────────────────────────────────────────────────────
 
