@@ -47,6 +47,9 @@ class Plugin(ABC):
     def after_turn_modules(self) -> list[object]:
         return []
 
+    def proactive_modules(self) -> list[object]:
+        return []
+
     def proactive_effect_providers(self) -> list["ProactiveEffectProvider"]:
         return []
 

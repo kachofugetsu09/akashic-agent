@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
+from agent.core.proactive_kernel import ProactiveKernel
 from agent.plugins.proactive_effects import ProactiveEffectProvider
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
@@ -41,6 +42,7 @@ from proactive_v2.energy import (
 )
 from proactive_v2.judge import MessageDeduper
 from proactive_v2.config import ProactiveConfig
+from proactive_v2.modules_pipeline import LegacyPipelineModule
 from proactive_v2.presence import PresenceStore
 from proactive_v2.sensor import Sensor
 from proactive_v2.state import ProactiveStateStore
@@ -79,6 +81,7 @@ class ProactiveLoop:
         shared_tools: ToolRegistry | None = None,
         tool_hooks: list[ToolHook] | None = None,
         proactive_effect_providers: list[ProactiveEffectProvider] | None = None,
+        proactive_modules: list[object] | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -94,6 +97,7 @@ class ProactiveLoop:
         self._shared_tools = shared_tools
         self._tool_hooks = tool_hooks or []
         self._proactive_effect_providers = proactive_effect_providers or []
+        self._plugin_proactive_modules = proactive_modules or []
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -169,6 +173,17 @@ class ProactiveLoop:
             )
         ).build()
 
+    def _build_kernel(self) -> ProactiveKernel:
+        pipeline = self._build_agent_tick()
+        self._proactive_pipeline = pipeline
+        modules = [
+            LegacyPipelineModule(pipeline),
+            *self._plugin_proactive_modules,
+        ]
+        kernel = ProactiveKernel(modules)
+        logger.info("[proactive] phase graph:\n%s", kernel.inspect())
+        return kernel
+
     def _build_message_deduper(self) -> MessageDeduper | None:
         if not self._cfg.message_dedupe_enabled:
             return None
@@ -188,7 +203,7 @@ class ProactiveLoop:
         self._anyaction = self._build_anyaction_gate()
         self._sense = self._build_sense()
         self._message_deduper = self._build_message_deduper()
-        self._proactive_pipeline = self._build_agent_tick()
+        self._proactive_kernel = self._build_kernel()
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
 
@@ -314,9 +329,13 @@ class ProactiveLoop:
             workspace = getattr(self._sessions, "workspace", None)
             self._mcp_pool = McpClientPool(Path(workspace) if workspace else None)
         await self._mcp_pool.connect_all()
+        if hasattr(self, "_proactive_kernel"):
+            await self._proactive_kernel.start()
         try:
             await self._run_loop()
         finally:
+            if hasattr(self, "_proactive_kernel"):
+                await self._proactive_kernel.stop()
             await self._mcp_pool.disconnect_all()
             logger.info("[proactive] mcp pool 已关闭")
 
@@ -400,7 +419,10 @@ class ProactiveLoop:
                 )
             )
             try:
-                score = await self._proactive_pipeline.run()
+                if hasattr(self, "_proactive_kernel"):
+                    score = await self._proactive_kernel.run_tick(session_key)
+                else:
+                    score = await self._proactive_pipeline.run()
             except Exception as exc:
                 logger.exception(
                     diagnostic_line(

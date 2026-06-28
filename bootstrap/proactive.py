@@ -51,6 +51,7 @@ def build_proactive_runtime(
     agent_loop: AgentLoop,
     tool_hooks: list[ToolHook] | None = None,
     proactive_effect_providers: list[ProactiveEffectProvider] | None = None,
+    proactive_modules: list[object] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -81,6 +82,7 @@ def build_proactive_runtime(
         shared_tools=getattr(agent_loop, "tools", None),
         tool_hooks=tool_hooks,
         proactive_effect_providers=proactive_effect_providers,
+        proactive_modules=proactive_modules,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。
