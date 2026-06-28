@@ -59,12 +59,6 @@ interface AkashaOverview {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Prefix all helpers with ai_ to avoid collisions with other panels.
-function ai_fmt2(v: number | null | undefined): string {
-  if (v == null) return "-";
-  return v.toFixed(2);
-}
-
 function ai_fmtScore(v: number | null | undefined): string {
   if (v == null) return "-";
   const n = Number(v);
