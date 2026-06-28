@@ -5,16 +5,30 @@ from pathlib import Path
 from typing import Any
 
 from agent.plugins import Plugin, tool
-from agent.plugins.proactive_effects import (
-    ProactiveEffect,
-    ProactiveEffectContext,
-    ProactiveEffectProvider,
-)
+from proactive_v2.frame import ProactiveFrame
 from plugins.proactive_feedback.events import ProactiveFeedbackRecorded
 
 from .db import apply_feedback, build_effect, get_state, open_db
 
 logger = logging.getLogger("plugin.emotion")
+
+
+class EmotionProactivePromptModule:
+    slot = "proactive.prompt.emotion"
+    phase = "proactive.prompt"
+
+    def __init__(self, plugin: "EmotionPlugin") -> None:
+        self._plugin = plugin
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        effect = self._plugin.build_proactive_prompt_effect(frame)
+        if effect is None:
+            return frame
+        frame.slots["proactive:prompt:system_bottom:emotion"] = str(
+            effect.get("prompt_section") or ""
+        )
+        frame.slots["proactive:effect:emotion"] = effect
+        return frame
 
 
 class EmotionPlugin(Plugin):
@@ -33,13 +47,13 @@ class EmotionPlugin(Plugin):
     async def terminate(self) -> None:
         return None
 
-    def proactive_effect_providers(self) -> list[ProactiveEffectProvider]:
-        return [self]
+    def proactive_modules(self) -> list[object]:
+        return [EmotionProactivePromptModule(self)]
 
-    def build_proactive_effect(
+    def build_proactive_prompt_effect(
         self,
-        ctx: ProactiveEffectContext,
-    ) -> ProactiveEffect | None:
+        frame: ProactiveFrame,
+    ) -> dict[str, Any] | None:
         db_path = getattr(self, "_db_path", None)
         if db_path is None:
             return None
@@ -47,11 +61,16 @@ class EmotionPlugin(Plugin):
         try:
             return build_effect(
                 conn,
-                tick_id=ctx.tick_id,
-                session_key=ctx.session_key,
-                now_utc=ctx.now_utc,
-                last_user_at=ctx.last_user_at,
-                base_threshold=ctx.base_judge_send_threshold,
+                tick_id=f"frame:{frame.input.started_at.isoformat()}",
+                session_key=str(
+                    frame.slots.get("proactive:session_key")
+                    or frame.input.session_key
+                ),
+                now_utc=frame.input.started_at,
+                last_user_at=frame.slots.get("proactive:last_user_at"),
+                base_threshold=float(
+                    frame.slots.get("proactive:base_judge_send_threshold") or 0.60
+                ),
             )
         finally:
             conn.close()

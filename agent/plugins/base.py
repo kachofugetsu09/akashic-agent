@@ -7,7 +7,6 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
     from infra.channels.contract import Channel
     from agent.plugins.context import PluginContext
-    from agent.plugins.proactive_effects import ProactiveEffectProvider
 
 
 class Plugin(ABC):
@@ -48,9 +47,6 @@ class Plugin(ABC):
         return []
 
     def proactive_modules(self) -> list[object]:
-        return []
-
-    def proactive_effect_providers(self) -> list["ProactiveEffectProvider"]:
         return []
 
     def channels(self) -> list["Channel"]:

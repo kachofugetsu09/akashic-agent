@@ -1,37 +1,16 @@
 from __future__ import annotations
 
-from agent.plugins.proactive_effects import (
-    ProactiveEffect,
-    ProactiveEffectContext,
-)
 from proactive_v2.gateway import GatewayDeps
 from tests.proactive_v2.conftest import FakeLLM, make_proactive_pipeline
 from unittest.mock import AsyncMock
 
 
-class _EffectProvider:
-    def build_proactive_effect(
-        self,
-        ctx: ProactiveEffectContext,
-    ) -> ProactiveEffect:
-        return ProactiveEffect(
-            provider_name="emotion",
-            prompt_section="当前 VAD: valence=0.10, arousal=0.20, dominance=-0.30。",
-            threshold_delta=0.04,
-            metadata={
-                "final_threshold": ctx.base_judge_send_threshold + 0.04,
-                "expected_effect": "raise_send_bar",
-            },
-        )
-
-
-async def test_proactive_effect_injects_prompt_and_tick_log():
+async def test_proactive_prompt_slot_injects_prompt_and_tick_log():
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "no_content"})])
     state_store = None
     tick = make_proactive_pipeline(
         llm_fn=llm,
         state_store=state_store,
-        proactive_effect_providers=[_EffectProvider()],
         gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(
@@ -47,10 +26,21 @@ async def test_proactive_effect_injects_prompt_and_tick_log():
             context_fn=AsyncMock(return_value=[]),
         ),
     )
+    tick.set_proactive_slots({
+        "proactive:prompt:system_bottom:emotion": "当前 VAD: valence=0.10, arousal=0.20, dominance=-0.30。",
+        "proactive:effect:emotion": {
+            "provider_name": "emotion",
+            "threshold_delta": 0.04,
+            "metadata": {
+                "final_threshold": 0.64,
+                "expected_effect": "raise_send_bar",
+            },
+        },
+    })
 
     await tick.run()
 
-    assert "【主动情绪状态】" in llm.calls[0][0]["content"]
+    assert "【主动插件状态】" in llm.calls[0][0]["content"]
     assert "当前 VAD" in llm.calls[0][0]["content"]
     effects = tick._state_store.tick_log_finishes[0]["proactive_effects"]
     assert effects[0]["provider_name"] == "emotion"

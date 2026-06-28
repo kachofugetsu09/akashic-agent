@@ -26,11 +26,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from agent.plugins.proactive_effects import (
-    ProactiveEffect,
-    ProactiveEffectContext,
-    ProactiveEffectProvider,
-)
 from agent.tool_hooks import ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnResult
@@ -114,7 +109,6 @@ class ProactiveTurnPipelineDeps:
     recent_proactive_fn: Callable[[], list] | None
     drift_pipeline: DriftTurnPipeline | None
     tool_hooks: list[ToolHook] | None = None
-    proactive_effect_providers: list[ProactiveEffectProvider] | None = None
 
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
@@ -154,8 +148,9 @@ class ProactiveTurnPipeline:
         self._recent_proactive_fn = deps.recent_proactive_fn
         self._drift_pipeline = deps.drift_pipeline
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
-        self._proactive_effect_providers = deps.proactive_effect_providers or []
-        self._proactive_effects: list[ProactiveEffect] = []
+        self._proactive_slots: dict[str, Any] = {}
+        self._proactive_prompt_sections: list[str] = []
+        self._proactive_effect_logs: list[dict[str, Any]] = []
         self._gate_chain = ProactiveGateChain(
             cfg=self._cfg,
             session_key=self._session_key,
@@ -211,6 +206,9 @@ class ProactiveTurnPipeline:
 
         self.last_ctx: AgentTickContext | None = None
         self._last_gateway_result: GatewayResult | None = None
+
+    def set_proactive_slots(self, slots: dict[str, Any]) -> None:
+        self._proactive_slots = slots
 
     # ── 入口 ──────────────────────────────────────────────────────────
 
@@ -276,7 +274,7 @@ class ProactiveTurnPipeline:
         ctx.context_as_fallback_open = gate.context_as_fallback_open
         self.last_ctx = ctx
         self._record_tick_log_start(ctx)
-        self._apply_proactive_effects(ctx)
+        self._collect_proactive_plugin_state()
         logger.info(
             diagnostic_line(
                 "ProactiveTurnPipeline.run",
@@ -334,30 +332,19 @@ class ProactiveTurnPipeline:
     def _gate_check(self, ctx: AgentTickContext) -> GateResult:
         return self._gate_chain.check(ctx)
 
-    def _apply_proactive_effects(self, ctx: AgentTickContext) -> None:
-        last_user_at = self._last_user_at_fn()
-        effect_ctx = ProactiveEffectContext(
-            session_key=self._session_key,
-            tick_id=ctx.tick_id,
-            now_utc=ctx.now_utc,
-            base_judge_send_threshold=float(
-                getattr(self._cfg, "judge_send_threshold", 0.60)
-            ),
-            last_user_at=last_user_at,
-        )
-        effects: list[ProactiveEffect] = []
-        for provider in self._proactive_effect_providers:
-            try:
-                effect = provider.build_proactive_effect(effect_ctx)
-            except Exception:
-                logger.exception(
-                    "[proactive_v2] proactive effect provider failed: %s",
-                    type(provider).__name__,
-                )
-                continue
-            if effect is not None:
-                effects.append(effect)
-        self._proactive_effects = effects
+    def _collect_proactive_plugin_state(self) -> None:
+        self._proactive_prompt_sections = [
+            str(self._proactive_slots[key])
+            for key in sorted(self._proactive_slots)
+            if key.startswith("proactive:prompt:system_bottom:")
+            and str(self._proactive_slots[key]).strip()
+        ]
+        self._proactive_effect_logs = [
+            dict(value)
+            for key, value in sorted(self._proactive_slots.items())
+            if key.startswith("proactive:effect:")
+            and isinstance(value, dict)
+        ]
 
     # ── 2. Fetch ──────────────────────────────────────────────────────
 
@@ -482,7 +469,7 @@ class ProactiveTurnPipeline:
         system_msg = {
             "role": "system",
             "content": self._prompt_builder.build_system_prompt(
-                self._proactive_effects
+                self._proactive_prompt_sections
             ),
         }
         runtime_context_msg = self._prompt_builder.build_runtime_context_message(
@@ -576,12 +563,8 @@ class ProactiveTurnPipeline:
             drift_entered=ctx.drift_entered,
             final_message=final_message,
             proactive_effects=[
-                {
-                    "provider_name": effect.provider_name,
-                    "threshold_delta": effect.threshold_delta,
-                    "metadata": effect.metadata,
-                }
-                for effect in self._proactive_effects
+                dict(effect)
+                for effect in self._proactive_effect_logs
             ],
         )
         self._last_log_result = result

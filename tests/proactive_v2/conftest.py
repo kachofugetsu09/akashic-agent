@@ -217,7 +217,6 @@ def make_proactive_pipeline(
     recent_proactive_fn: Any = None,
     workspace_context_fn: Any = None,
     drift_pipeline: Any = None,
-    proactive_effect_providers: Any = None,
 ):
     from agent.core.proactive_turn import (
         ProactiveTurnPipeline,
@@ -297,6 +296,5 @@ def make_proactive_pipeline(
             workspace_context_fn=workspace_context_fn,
             drift_pipeline=drift_pipeline,
             tool_hooks=None,
-            proactive_effect_providers=proactive_effect_providers,
         )
     )

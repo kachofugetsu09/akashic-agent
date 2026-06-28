@@ -158,11 +158,6 @@ class AppRuntime:
                 presence=self.presence,
                 agent_loop=self.agent_loop,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
-                proactive_effect_providers=(
-                    list(plugin_manager.proactive_effect_providers)
-                    if plugin_manager
-                    else None
-                ),
                 proactive_modules=(
                     list(plugin_manager.proactive_modules)
                     if plugin_manager

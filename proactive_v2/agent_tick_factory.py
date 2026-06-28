@@ -10,7 +10,6 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 from agent.skills import BUILTIN_SKILLS_DIR
-from agent.plugins.proactive_effects import ProactiveEffectProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
@@ -20,8 +19,10 @@ from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.modules_source import McpGatewaySource
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
 from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
+from proactive_v2.anyaction import AnyActionGate, QuotaStore
 from proactive_v2.drift_state import DriftStateStore
 from proactive_v2.drift_tools import DriftToolDeps
+from proactive_v2.judge import MessageDeduper
 from proactive_v2.tools import ToolDeps
 
 
@@ -43,7 +44,7 @@ class AgentTickDeps:
     max_tokens: int
     memory: Any | None
     state_store: Any
-    any_action_gate: Any
+    any_action_gate: Any | None
     passive_busy_fn: Any | None
     deduper: Any | None
     rng: Any
@@ -52,7 +53,6 @@ class AgentTickDeps:
     turn_orchestrator: TurnOrchestrator | None = None
     pool: McpClientPool | None = None
     tool_hooks: list[ToolHook] = field(default_factory=list)
-    proactive_effect_providers: list[ProactiveEffectProvider] = field(default_factory=list)
 
 
 class AgentTickFactory:
@@ -76,6 +76,10 @@ class AgentTickFactory:
         )
         recent_proactive_fn = self._build_recent_proactive_fn()
         drift_pipeline = self._build_drift_pipeline(tool_deps)
+        any_action_gate = self._deps.any_action_gate or self._build_anyaction_gate()
+        deduper = self._deps.deduper
+        if deduper is None:
+            deduper = self._build_message_deduper()
 
         # 3. 产出 ProactiveTurnPipeline。后续每次 proactive loop 触发时调用 pipeline.run()。
         return ProactiveTurnPipeline(
@@ -83,11 +87,11 @@ class AgentTickFactory:
                 cfg=self._deps.cfg,
                 session_key=session_key,
                 state_store=self._deps.state_store,
-                any_action_gate=self._deps.any_action_gate,
+                any_action_gate=any_action_gate,
                 last_user_at_fn=last_user_at_fn,
                 passive_busy_fn=self._deps.passive_busy_fn,
                 turn_orchestrator=self._deps.turn_orchestrator,
-                deduper=self._deps.deduper,
+                deduper=deduper,
                 tool_deps=tool_deps,
                 gateway_deps=gateway_deps,
                 workspace_context_fn=self._deps.workspace_context_fn,
@@ -96,7 +100,6 @@ class AgentTickFactory:
                 recent_proactive_fn=recent_proactive_fn,
                 drift_pipeline=drift_pipeline,
                 tool_hooks=self._deps.tool_hooks,
-                proactive_effect_providers=self._deps.proactive_effect_providers,
             )
         )
 
@@ -150,6 +153,23 @@ class AgentTickFactory:
         return McpGatewaySource(
             pool,
             content_limit=getattr(self._deps.cfg, "agent_tick_content_limit", 5),
+        )
+
+    def _build_anyaction_gate(self) -> AnyActionGate:
+        quota_path = Path(self._deps.state_store.workspace_dir) / "proactive_quota.json"
+        return AnyActionGate(
+            cfg=self._deps.cfg,
+            quota_store=QuotaStore(quota_path),
+            rng=self._deps.rng,
+        )
+
+    def _build_message_deduper(self) -> MessageDeduper | None:
+        if not bool(getattr(self._deps.cfg, "message_dedupe_enabled", False)):
+            return None
+        return MessageDeduper(
+            provider=self._deps.provider,
+            model=self._deps.model,
+            max_tokens=self._deps.max_tokens,
         )
 
     def _build_recent_chat_fn(self) -> RecentChatFn:

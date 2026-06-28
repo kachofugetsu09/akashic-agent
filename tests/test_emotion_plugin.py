@@ -11,7 +11,7 @@ import pytest
 from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
 from agent.tools.registry import ToolRegistry
-from agent.plugins.proactive_effects import ProactiveEffectContext
+from proactive_v2.frame import new_proactive_frame
 from plugins.emotion.db import get_state, open_db
 from plugins.emotion.plugin import EmotionPlugin
 from plugins.proactive_feedback.db import FeedbackEvent
@@ -62,20 +62,17 @@ def test_emotion_effect_records_threshold_and_prompt(tmp_path: Path):
         ProactiveFeedbackRecorded(event_id=1, feedback=_feedback("explicit_quote", "gold"))
     )
 
-    effect = plugin.build_proactive_effect(
-        ProactiveEffectContext(
-            session_key="cli:test",
-            tick_id="tick-1",
-            now_utc=datetime.now(timezone.utc),
-            base_judge_send_threshold=0.60,
-            last_user_at=None,
-        )
-    )
+    frame = new_proactive_frame("cli:test")
+    frame.slots["proactive:started_at"] = datetime.now(timezone.utc)
+    frame.slots["proactive:base_judge_send_threshold"] = 0.60
+    frame.slots["proactive:last_user_at"] = None
+
+    effect = plugin.build_proactive_prompt_effect(frame)
 
     assert effect is not None
-    assert effect.provider_name == "emotion"
-    assert "当前 VAD" in effect.prompt_section
-    assert "final_threshold" in effect.metadata
+    assert effect["provider_name"] == "emotion"
+    assert "当前 VAD" in str(effect["prompt_section"])
+    assert "final_threshold" in effect["metadata"]
 
 
 async def test_emotion_plugin_listens_to_feedback_event(tmp_path: Path):
@@ -114,7 +111,7 @@ async def test_emotion_and_feedback_plugins_load_together(tmp_path: Path):
 
     await manager.load_all()
 
-    assert len(manager.proactive_effect_providers) == 1
+    assert len(manager.proactive_modules) == 1
     assert tools.get_tool("get_emotion_state") is not None
     assert tools.get_tool("get_proactive_feedback_summary") is not None
     await manager.terminate_all()

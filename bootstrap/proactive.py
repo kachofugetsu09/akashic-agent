@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 from agent.config_models import Config
 from agent.looping.core import AgentLoop
 from agent.provider import LLMProvider
-from agent.plugins.proactive_effects import ProactiveEffectProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
 from proactive_v2.loop import ProactiveLoop
@@ -50,7 +49,6 @@ def build_proactive_runtime(
     presence: PresenceStore,
     agent_loop: AgentLoop,
     tool_hooks: list[ToolHook] | None = None,
-    proactive_effect_providers: list[ProactiveEffectProvider] | None = None,
     proactive_modules: list[object] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
@@ -81,7 +79,6 @@ def build_proactive_runtime(
         ),
         shared_tools=getattr(agent_loop, "tools", None),
         tool_hooks=tool_hooks,
-        proactive_effect_providers=proactive_effect_providers,
         proactive_modules=proactive_modules,
     )
 

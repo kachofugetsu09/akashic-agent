@@ -5,7 +5,6 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
-from agent.plugins.proactive_effects import ProactiveEffect
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
@@ -29,21 +28,21 @@ class ProactivePromptBuilder:
         self._memory = memory
         self._workspace_context_fn = workspace_context_fn
 
-    def build_system_prompt(self, effects: list[ProactiveEffect]) -> str:
-        proactive_effect_sections = "\n\n".join(
-            effect.prompt_section.strip()
-            for effect in effects
-            if effect.prompt_section.strip()
+    def build_system_prompt(self, plugin_sections: list[str] | None = None) -> str:
+        proactive_plugin_sections = "\n\n".join(
+            section.strip()
+            for section in (plugin_sections or [])
+            if section.strip()
         )
-        proactive_effect_block = (
-            f"\n\n【主动情绪状态】\n{proactive_effect_sections}\n"
-            if proactive_effect_sections
+        proactive_plugin_block = (
+            f"\n\n【主动插件状态】\n{proactive_plugin_sections}\n"
+            if proactive_plugin_sections
             else ""
         )
         return (
             f"{AKASHIC_IDENTITY}\n\n"
             f"{PERSONALITY_RULES}\n\n"
-            f"{proactive_effect_block}"
+            f"{proactive_plugin_block}"
             "你现在处于主动推送决策模式：判断现在是否该给用户发一条消息，以及发什么。\n"
             "数据已预取完毕，会在后续 system context frame 里提供；基于那些数据直接决策。\n\n"
             "【优先级】Alert > Content > Context-fallback（本轮是否允许以 context frame 为准）\n\n"

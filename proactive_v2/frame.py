@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -27,10 +28,14 @@ class ProactiveFrame:
     output: ProactiveTickResult | None = None
 
 
-def new_proactive_frame(session_key: str) -> ProactiveFrame:
+def new_proactive_frame(
+    session_key: str,
+    slots: Mapping[str, Any] | None = None,
+) -> ProactiveFrame:
     return ProactiveFrame(
         input=ProactiveTickInput(
             session_key=session_key,
             started_at=datetime.now(UTC),
-        )
+        ),
+        slots=dict(slots or {}),
     )

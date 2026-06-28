@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agent.plugins.proactive_effects import ProactiveEffect
 from proactive_v2.energy import compute_energy
 
 
@@ -169,7 +168,7 @@ def build_effect(
     now_utc: datetime,
     last_user_at: datetime | None,
     base_threshold: float,
-) -> ProactiveEffect:
+) -> dict[str, Any]:
     stored = _decay(get_state(conn), now_utc.isoformat())
     energy = compute_energy(last_user_at, now_utc)
     arousal = _clamp((1.0 - energy) * 2.0 - 1.0)
@@ -236,12 +235,12 @@ def build_effect(
         ),
     )
     conn.commit()
-    return ProactiveEffect(
-        provider_name="emotion",
-        prompt_section=prompt_section,
-        threshold_delta=threshold_delta,
-        metadata=metadata,
-    )
+    return {
+        "provider_name": "emotion",
+        "prompt_section": prompt_section,
+        "threshold_delta": threshold_delta,
+        "metadata": metadata,
+    }
 
 
 def get_state(conn: sqlite3.Connection) -> EmotionState:

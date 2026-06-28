@@ -7,12 +7,14 @@ from proactive_v2.frame import ProactiveFrame, ProactiveTickResult
 
 class LegacyPipelineModule:
     slot = "proactive.tick.legacy_pipeline"
-    phase = "proactive.tick"
+    phase = "proactive.deliver"
 
     def __init__(self, pipeline: Any) -> None:
         self._pipeline = pipeline
 
     async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        if getattr(type(self._pipeline), "set_proactive_slots", None) is not None:
+            self._pipeline.set_proactive_slots(frame.slots)
         frame.output = ProactiveTickResult(
             base_score=await self._pipeline.run()
         )

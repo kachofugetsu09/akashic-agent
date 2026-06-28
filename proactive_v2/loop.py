@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
 from agent.core.proactive_kernel import ProactiveKernel
-from agent.plugins.proactive_effects import ProactiveEffectProvider
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
@@ -34,8 +33,6 @@ from agent.turns.outbound import PushToolOutboundPort
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
-from proactive_v2.anyaction import AnyActionGate, QuotaStore
-from proactive_v2.judge import MessageDeduper
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.modules_pipeline import LegacyPipelineModule
 from proactive_v2.modules_schedule import ProactiveScheduler
@@ -77,7 +74,6 @@ class ProactiveLoop:
         passive_busy_fn: Callable[[str], bool] | None = None,
         shared_tools: ToolRegistry | None = None,
         tool_hooks: list[ToolHook] | None = None,
-        proactive_effect_providers: list[ProactiveEffectProvider] | None = None,
         proactive_modules: list[object] | None = None,
     ) -> None:
         self._sessions = session_manager
@@ -93,7 +89,6 @@ class ProactiveLoop:
         self._passive_busy_fn = passive_busy_fn
         self._shared_tools = shared_tools
         self._tool_hooks = tool_hooks or []
-        self._proactive_effect_providers = proactive_effect_providers or []
         self._plugin_proactive_modules = proactive_modules or []
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
@@ -123,14 +118,6 @@ class ProactiveLoop:
             )
         )
 
-    def _build_anyaction_gate(self) -> AnyActionGate:
-        quota_path = Path(self._state.workspace_dir) / "proactive_quota.json"
-        return AnyActionGate(
-            cfg=self._cfg,
-            quota_store=QuotaStore(quota_path),
-            rng=self._rng,
-        )
-
     def _build_sense(self) -> Sensor:
         return Sensor(
             cfg=self._cfg,
@@ -153,16 +140,15 @@ class ProactiveLoop:
                 max_tokens=self._max_tokens,
                 memory=self._memory,
                 state_store=self._state,
-                any_action_gate=self._anyaction,
+                any_action_gate=None,
                 passive_busy_fn=self._passive_busy_fn,
                 turn_orchestrator=self._turn_orchestrator,
-                deduper=self._message_deduper,
+                deduper=None,
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
                 shared_tools=self._shared_tools,
                 pool=self._mcp_runtime.pool,
                 tool_hooks=self._tool_hooks,
-                proactive_effect_providers=self._proactive_effect_providers,
             )
         ).build()
 
@@ -181,29 +167,37 @@ class ProactiveLoop:
             LegacyPipelineModule(pipeline),
             *self._plugin_proactive_modules,
         ]
-        kernel = ProactiveKernel(modules)
+        kernel = ProactiveKernel(
+            modules,
+            initial_slots_fn=self._build_initial_slots,
+        )
         logger.info("[proactive] phase graph:\n%s", kernel.inspect())
         return kernel
 
-    def _build_message_deduper(self) -> MessageDeduper | None:
-        if not self._cfg.message_dedupe_enabled:
-            return None
-        return MessageDeduper(
-            provider=self._provider,
-            model=self._model,
-            max_tokens=self._max_tokens,
+    def _build_initial_slots(self, session_key: str) -> dict[str, Any]:
+        last_user_at = (
+            self._presence.get_last_user_at(session_key)
+            if self._presence is not None
+            else None
         )
+        return {
+            "proactive:cfg": self._cfg,
+            "proactive:session_key": session_key,
+            "proactive:started_at": datetime.now(timezone.utc),
+            "proactive:last_user_at": last_user_at,
+            "proactive:base_judge_send_threshold": float(
+                getattr(self._cfg, "judge_send_threshold", 0.60)
+            ),
+        }
 
     def _init_runtime_components(self) -> None:
         # 1. 准备主动规则面板文件（PROACTIVE_CONTEXT.md）。
         self._ensure_workspace_proactive_context_file()
         # 2. 预读规则面板内容并做缓存。
         self._read_workspace_proactive_context()
-        # 3. 构建发送编排器、前置 gate、传感器、去重器和主动链路 pipeline。
+        # 3. 构建发送编排器、传感器、MCP runtime 和主动链路 kernel。
         self._turn_orchestrator = self._build_turn_orchestrator()
-        self._anyaction = self._build_anyaction_gate()
         self._sense = self._build_sense()
-        self._message_deduper = self._build_message_deduper()
         self._mcp_runtime = self._build_mcp_runtime()
         self._scheduler = ProactiveScheduler(
             cfg=self._cfg,
