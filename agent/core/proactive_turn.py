@@ -52,6 +52,7 @@ from proactive_v2.contracts import (
 )
 from agent.core.drift_turn import DriftTurnPipeline
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
+from proactive_v2.modules_gate import GateResult, ProactiveGateChain
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, dispatch
 
 logger = logging.getLogger(__name__)
@@ -61,17 +62,6 @@ _CITED_ACK_TTL = 168
 _UNCITED_ACK_TTL = 24
 _POST_GUARD_ACK_TTL = 24
 _DISCARDED_ACK_TTL = 720
-
-
-# ── Gate 步骤的输出 ───────────────────────────────────────────────────────
-
-@dataclass
-class GateResult:
-    """准入检查结果。blocked=True 时应直接 return，不进后续步骤。"""
-    blocked: bool
-    reason: str          # no_target / busy / cooldown / presence / passed
-    base_score: float | None
-    context_as_fallback_open: bool = False
 
 
 # ── Fetch 步骤的输出 ──────────────────────────────────────────────────────
@@ -325,6 +315,15 @@ class ProactiveTurnPipeline:
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
         self._proactive_effect_providers = deps.proactive_effect_providers or []
         self._proactive_effects: list[ProactiveEffect] = []
+        self._gate_chain = ProactiveGateChain(
+            cfg=self._cfg,
+            session_key=self._session_key,
+            state_store=self._state_store,
+            any_action_gate=self._any_action_gate,
+            last_user_at_fn=self._last_user_at_fn,
+            passive_busy_fn=self._passive_busy_fn,
+            rng=self._rng,
+        )
 
         # 1. drift_pipeline 的 step_recorder 指向本 pipeline 的记录方法。
         if self._drift_pipeline is not None and getattr(self._drift_pipeline, "step_recorder", None) is None:
@@ -464,59 +463,7 @@ class ProactiveTurnPipeline:
     # ── 1. Gate ───────────────────────────────────────────────────────
 
     def _gate_check(self, ctx: AgentTickContext) -> GateResult:
-        """准入检查：逐条件判断本轮是否应该启动主动处理。"""
-
-        # 1.1 没有目标 chat_id → 跳过。
-        if not str(self._cfg.default_chat_id or "").strip():
-            logger.debug("[proactive_v2] gate: no chat_id → blocked")
-            return GateResult(blocked=True, reason="no_target", base_score=None)
-
-        # 1.2 被动链路忙 → 不打扰。
-        if self._passive_busy_fn and self._passive_busy_fn(self._session_key):
-            logger.debug("[proactive_v2] gate: passive_busy → blocked")
-            return GateResult(blocked=True, reason="busy", base_score=None)
-
-        # 1.3 发送冷却期内 → 跳过。
-        if self._state_store.count_deliveries_in_window(
-            self._session_key,
-            self._cfg.agent_tick_delivery_cooldown_hours,
-        ) > 0:
-            logger.debug("[proactive_v2] gate: delivery_cooldown → blocked")
-            return GateResult(blocked=True, reason="cooldown", base_score=None)
-
-        # 1.4 活跃度 gate（AnyAction）。
-        if self._any_action_gate is not None:
-            should_act, meta = self._any_action_gate.should_act(
-                now_utc=ctx.now_utc,
-                last_user_at=self._last_user_at_fn(),
-            )
-            if not should_act:
-                logger.debug("[proactive_v2] gate: anyaction → blocked meta=%s", meta)
-                return GateResult(blocked=True, reason="presence", base_score=None)
-
-        # 1.5 context-fallback 概率 + 配额计算。
-        context_as_fallback_open = self._rng.random() < self._cfg.agent_tick_context_prob
-        if context_as_fallback_open:
-            last_at = self._state_store.get_last_context_only_at(self._session_key)
-            count_24h = self._state_store.count_context_only_in_window(
-                self._session_key, window_hours=24
-            )
-            if (
-                (
-                    last_at is not None
-                    and (ctx.now_utc - last_at).total_seconds()
-                    < self._cfg.context_only_min_interval_hours * 3600
-                )
-                or count_24h >= self._cfg.context_only_daily_max
-            ):
-                context_as_fallback_open = False
-
-        return GateResult(
-            blocked=False,
-            reason="passed",
-            base_score=None,
-            context_as_fallback_open=context_as_fallback_open,
-        )
+        return self._gate_chain.check(ctx)
 
     def _apply_proactive_effects(self, ctx: AgentTickContext) -> None:
         last_user_at = self._last_user_at_fn()
