@@ -35,14 +35,10 @@ from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.anyaction import AnyActionGate, QuotaStore
-from proactive_v2.energy import (
-    compute_energy,
-    d_energy,
-    next_tick_from_score,
-)
 from proactive_v2.judge import MessageDeduper
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.modules_pipeline import LegacyPipelineModule
+from proactive_v2.modules_schedule import ProactiveScheduler
 from proactive_v2.modules_source import McpRuntimeModule
 from proactive_v2.presence import PresenceStore
 from proactive_v2.sensor import Sensor
@@ -209,6 +205,13 @@ class ProactiveLoop:
         self._sense = self._build_sense()
         self._message_deduper = self._build_message_deduper()
         self._mcp_runtime = self._build_mcp_runtime()
+        self._scheduler = ProactiveScheduler(
+            cfg=self._cfg,
+            presence=self._presence,
+            rng=self._rng,
+            target_session_key_fn=self._target_session_key,
+            trace_fn=self._trace_proactive_rate_decision,
+        )
         self._proactive_kernel = self._build_kernel()
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
@@ -327,34 +330,7 @@ class ProactiveLoop:
                 last_base_score = None
 
     def _next_interval(self, base_score: float | None = None) -> int:
-        """根据 base_score 返回自适应等待秒数。无 presence 时回退固定间隔。"""
-        if not self._presence:
-            interval = self._cfg.interval_seconds
-            self._trace_proactive_rate_decision(
-                base_score=base_score,
-                interval=interval,
-                mode="fixed_no_presence",
-            )
-            return interval
-        # base_score 由 _tick 传入;首次启动时用电量估算一个初始值
-        if base_score is None:
-            session_key = self._target_session_key()
-            last_user_at = self._presence.get_last_user_at(session_key)
-            energy = compute_energy(last_user_at)
-            base_score = d_energy(energy) * self._cfg.score_weight_energy
-        interval = next_tick_from_score(
-            base_score,
-            tick_s1=self._cfg.tick_interval_s1,
-            tick_s0=self._cfg.tick_interval_s0,
-            tick_jitter=self._cfg.tick_jitter,
-            rng=self._rng,
-        )
-        self._trace_proactive_rate_decision(
-            base_score=base_score,
-            interval=interval,
-            mode="adaptive",
-        )
-        return interval
+        return self._scheduler.next_interval(base_score)
 
     def _target_session_key(self) -> str:
         sense = getattr(self, "_sense", None)
