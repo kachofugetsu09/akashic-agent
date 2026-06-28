@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 from agent.skills import BUILTIN_SKILLS_DIR
+from agent.plugins.proactive_effects import ProactiveEffectProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
@@ -57,6 +58,7 @@ class AgentTickDeps:
     turn_orchestrator: TurnOrchestrator | None = None
     pool: McpClientPool | None = None
     tool_hooks: list[ToolHook] = field(default_factory=list)
+    proactive_effect_providers: list[ProactiveEffectProvider] = field(default_factory=list)
 
 
 class AgentTickFactory:
@@ -96,6 +98,7 @@ class AgentTickFactory:
                 recent_proactive_fn=recent_proactive_fn,
                 drift_pipeline=drift_pipeline,
                 tool_hooks=self._deps.tool_hooks,
+                proactive_effect_providers=self._deps.proactive_effect_providers,
             )
         )
 

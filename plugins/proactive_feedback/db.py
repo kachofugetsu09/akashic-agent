@@ -58,12 +58,12 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def insert_feedback(conn: sqlite3.Connection, event: FeedbackEvent) -> None:
+def insert_feedback(conn: sqlite3.Connection, event: FeedbackEvent) -> int:
     _ = conn.execute(
         "DELETE FROM proactive_feedback_events WHERE user_message_id = ?",
         (event.user_message_id,),
     )
-    _ = conn.execute(
+    cursor = conn.execute(
         """
         INSERT INTO proactive_feedback_events (
             session_key,
@@ -97,3 +97,7 @@ def insert_feedback(conn: sqlite3.Connection, event: FeedbackEvent) -> None:
         ),
     )
     conn.commit()
+    row_id = cursor.lastrowid
+    if row_id is None:
+        raise RuntimeError("feedback insert failed")
+    return int(row_id)

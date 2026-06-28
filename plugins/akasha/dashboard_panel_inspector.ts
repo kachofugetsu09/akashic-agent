@@ -117,6 +117,38 @@ function ai_shortTs(value: unknown): string {
   return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+function ai_renderFilters(container: HTMLElement, dispatch: PluginDispatch): void {
+  const q = dispatch.filters["q"] ?? "";
+  const existing = container.querySelector<HTMLInputElement>("[data-ai-search]");
+  if (existing) {
+    if (document.activeElement !== existing && existing.value !== q) {
+      existing.value = q;
+    }
+    return;
+  }
+  container.innerHTML = `
+    <div class="filter-row">
+      <label class="search"><span>⌕</span><input type="text" placeholder="搜索 query / session" value="${escapeHtml(q)}" data-ai-search /></label>
+      <button class="ghost" type="button" data-ai-clear ${q ? "" : "disabled"}>清空</button>
+    </div>
+  `;
+  const input = container.querySelector<HTMLInputElement>("[data-ai-search]")!;
+  const clear = container.querySelector<HTMLButtonElement>("[data-ai-clear]")!;
+  let debounceTimer = 0;
+  input.addEventListener("input", () => {
+    window.clearTimeout(debounceTimer);
+    debounceTimer = window.setTimeout(() => {
+      const value = input.value.trim();
+      if (value) dispatch.setFilter("q", value);
+      else dispatch.clearFilter("q");
+    }, 250);
+  });
+  clear.addEventListener("click", () => {
+    input.value = "";
+    dispatch.clearFilter("q");
+  });
+}
+
 // ── Activation table ───────────────────────────────────────────────────────
 
 function ai_renderActivationTable(items: AkashaCandidate[]): string {
@@ -310,6 +342,8 @@ window.AkashicDashboard.registerPlugin({
     { key: "ripple_count", label: "Ripple", width: 60, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
     { key: "inject_chars", label: "Chars", width: 70, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
   ],
+
+  renderFilters: ai_renderFilters,
 
   async getCount(): Promise<number | null> {
     try {

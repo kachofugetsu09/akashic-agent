@@ -100,16 +100,18 @@ class ProactiveStateStore:
         cited_ids: list[str],
         drift_entered: bool,
         final_message: str,
+        proactive_effects: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._lock:
+            self._ensure_tick_log_effects_column()
             self._db.execute(
                 """
                 INSERT INTO tick_log(
                     tick_id, session_key, started_at, finished_at, gate_exit,
                     terminal_action, skip_reason, steps_taken, alert_count,
                     content_count, context_count, interesting_ids, discarded_ids,
-                    cited_ids, drift_entered, final_message
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cited_ids, drift_entered, final_message, proactive_effects_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(tick_id) DO UPDATE SET
                     session_key = excluded.session_key,
                     started_at = excluded.started_at,
@@ -125,7 +127,8 @@ class ProactiveStateStore:
                     discarded_ids = excluded.discarded_ids,
                     cited_ids = excluded.cited_ids,
                     drift_entered = excluded.drift_entered,
-                    final_message = excluded.final_message
+                    final_message = excluded.final_message,
+                    proactive_effects_json = excluded.proactive_effects_json
                 """,
                 (
                     tick_id,
@@ -144,6 +147,7 @@ class ProactiveStateStore:
                     json.dumps(cited_ids, ensure_ascii=False),
                     int(drift_entered),
                     final_message,
+                    json.dumps(proactive_effects or [], ensure_ascii=False),
                 ),
             )
             self._db.commit()
@@ -649,7 +653,8 @@ class ProactiveStateStore:
                 discarded_ids TEXT,
                 cited_ids TEXT,
                 drift_entered INTEGER DEFAULT 0,
-                final_message TEXT
+                final_message TEXT,
+                proactive_effects_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_tick_log_session_started
             ON tick_log(session_key, started_at);
@@ -674,6 +679,14 @@ class ProactiveStateStore:
             ON tick_step_log(tick_id, step_index);
             """)
         self._db.commit()
+
+    def _ensure_tick_log_effects_column(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._db.execute("PRAGMA table_info(tick_log)").fetchall()
+        }
+        if "proactive_effects_json" not in columns:
+            self._db.execute("ALTER TABLE tick_log ADD COLUMN proactive_effects_json TEXT")
 
     def _get_kv_datetime(self, key: str) -> datetime | None:
         with self._lock:

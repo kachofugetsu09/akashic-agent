@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
+from agent.plugins.proactive_effects import ProactiveEffectProvider
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
@@ -84,6 +85,7 @@ class ProactiveLoop:
         fitbit_url: str = "http://127.0.0.1:18765",
         fitbit_poll_interval: int = 300,
         tool_hooks: list[ToolHook] | None = None,
+        proactive_effect_providers: list[ProactiveEffectProvider] | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -100,6 +102,7 @@ class ProactiveLoop:
         self._passive_busy_fn = passive_busy_fn
         self._shared_tools = shared_tools
         self._tool_hooks = tool_hooks or []
+        self._proactive_effect_providers = proactive_effect_providers or []
         self._fitbit_enabled = bool(fitbit_enabled)
         self._fitbit_url = str(fitbit_url or "http://127.0.0.1:18765")
         self._fitbit_poll_interval = max(1, int(fitbit_poll_interval))
@@ -189,6 +192,7 @@ class ProactiveLoop:
                 shared_tools=self._shared_tools,
                 pool=self._mcp_pool,
                 tool_hooks=self._tool_hooks,
+                proactive_effect_providers=self._proactive_effect_providers,
             )
         ).build()
 

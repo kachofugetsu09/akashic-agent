@@ -33,6 +33,11 @@ from agent.prompting import (
     build_context_frame_content,
     build_context_frame_message,
 )
+from agent.plugins.proactive_effects import (
+    ProactiveEffect,
+    ProactiveEffectContext,
+    ProactiveEffectProvider,
+)
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
@@ -278,6 +283,7 @@ class ProactiveTurnPipelineDeps:
     recent_proactive_fn: Callable[[], list] | None
     drift_pipeline: DriftTurnPipeline | None
     tool_hooks: list[ToolHook] | None = None
+    proactive_effect_providers: list[ProactiveEffectProvider] | None = None
 
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
@@ -317,6 +323,8 @@ class ProactiveTurnPipeline:
         self._recent_proactive_fn = deps.recent_proactive_fn
         self._drift_pipeline = deps.drift_pipeline
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
+        self._proactive_effect_providers = deps.proactive_effect_providers or []
+        self._proactive_effects: list[ProactiveEffect] = []
 
         # 1. drift_pipeline 的 step_recorder 指向本 pipeline 的记录方法。
         if self._drift_pipeline is not None and getattr(self._drift_pipeline, "step_recorder", None) is None:
@@ -400,6 +408,7 @@ class ProactiveTurnPipeline:
         ctx.context_as_fallback_open = gate.context_as_fallback_open
         self.last_ctx = ctx
         self._record_tick_log_start(ctx)
+        self._apply_proactive_effects(ctx)
         logger.info(
             diagnostic_line(
                 "ProactiveTurnPipeline.run",
@@ -508,6 +517,31 @@ class ProactiveTurnPipeline:
             base_score=None,
             context_as_fallback_open=context_as_fallback_open,
         )
+
+    def _apply_proactive_effects(self, ctx: AgentTickContext) -> None:
+        last_user_at = self._last_user_at_fn()
+        effect_ctx = ProactiveEffectContext(
+            session_key=self._session_key,
+            tick_id=ctx.tick_id,
+            now_utc=ctx.now_utc,
+            base_judge_send_threshold=float(
+                getattr(self._cfg, "judge_send_threshold", 0.60)
+            ),
+            last_user_at=last_user_at,
+        )
+        effects: list[ProactiveEffect] = []
+        for provider in self._proactive_effect_providers:
+            try:
+                effect = provider.build_proactive_effect(effect_ctx)
+            except Exception:
+                logger.exception(
+                    "[proactive_v2] proactive effect provider failed: %s",
+                    type(provider).__name__,
+                )
+                continue
+            if effect is not None:
+                effects.append(effect)
+        self._proactive_effects = effects
 
     # ── 2. Fetch ──────────────────────────────────────────────────────
 
@@ -1110,9 +1144,20 @@ class ProactiveTurnPipeline:
 
     def _build_system_prompt(self) -> str:
         from agent.persona import AKASHIC_IDENTITY, PERSONALITY_RULES
+        proactive_effect_sections = "\n\n".join(
+            effect.prompt_section.strip()
+            for effect in self._proactive_effects
+            if effect.prompt_section.strip()
+        )
+        proactive_effect_block = (
+            f"\n\n【主动情绪状态】\n{proactive_effect_sections}\n"
+            if proactive_effect_sections
+            else ""
+        )
         return (
             f"{AKASHIC_IDENTITY}\n\n"
             f"{PERSONALITY_RULES}\n\n"
+            f"{proactive_effect_block}"
             "你现在处于主动推送决策模式：判断现在是否该给用户发一条消息，以及发什么。\n"
             "数据已预取完毕，会在后续 system context frame 里提供；基于那些数据直接决策。\n\n"
             "【优先级】Alert > Content > Context-fallback（本轮是否允许以 context frame 为准）\n\n"
@@ -1358,6 +1403,14 @@ class ProactiveTurnPipeline:
             cited_ids=list(ctx.cited_item_ids),
             drift_entered=ctx.drift_entered,
             final_message=final_message,
+            proactive_effects=[
+                {
+                    "provider_name": effect.provider_name,
+                    "threshold_delta": effect.threshold_delta,
+                    "metadata": effect.metadata,
+                }
+                for effect in self._proactive_effects
+            ],
         )
         self._last_log_result = result
 

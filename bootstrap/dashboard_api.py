@@ -351,7 +351,7 @@ class ProactiveDashboardReader:
                 "tick_id, session_key, started_at, finished_at, gate_exit, "
                 "terminal_action, skip_reason, steps_taken, alert_count, "
                 "content_count, context_count, interesting_ids, discarded_ids, "
-                "cited_ids, drift_entered, final_message"
+                "cited_ids, drift_entered, final_message, proactive_effects_json"
             ),
             row_mapper=self._row_to_tick_log,
         )
@@ -364,7 +364,7 @@ class ProactiveDashboardReader:
                 SELECT tick_id, session_key, started_at, finished_at, gate_exit,
                        terminal_action, skip_reason, steps_taken, alert_count,
                        content_count, context_count, interesting_ids, discarded_ids,
-                       cited_ids, drift_entered, final_message
+                       cited_ids, drift_entered, final_message, proactive_effects_json
                 FROM tick_log
                 WHERE tick_id = ?
                 """,
@@ -510,8 +510,24 @@ class ProactiveDashboardReader:
         )
         payload["discarded_ids"] = self._decode_json_list(payload.get("discarded_ids"))
         payload["cited_ids"] = self._decode_json_list(payload.get("cited_ids"))
+        payload["proactive_effects"] = self._decode_json_object_list(
+            payload.pop("proactive_effects_json", "")
+        )
         payload["drift_entered"] = bool(payload.get("drift_entered"))
         return payload
+
+    @staticmethod
+    def _decode_json_object_list(raw: Any) -> list[dict[str, Any]]:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        try:
+            value = json.loads(text)
+        except Exception:
+            return []
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
 
     def _row_to_tick_step(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)

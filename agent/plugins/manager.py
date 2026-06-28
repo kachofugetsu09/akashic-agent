@@ -8,7 +8,7 @@ import logging
 import sys
 from pathlib import Path
 from collections.abc import Callable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -31,6 +31,9 @@ from bus.event_bus import EventBus
 from infra.channels.contract import Channel
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from agent.plugins.proactive_effects import ProactiveEffectProvider
 
 _EVENT_TYPE_MAP: dict[PluginEventType, type] = {
     PluginEventType.BEFORE_TURN: BeforeTurnCtx,
@@ -74,6 +77,7 @@ class PluginManager:
         self._after_step_modules: list[object] = []
         self._after_reasoning_modules: list[object] = []
         self._after_turn_modules: list[object] = []
+        self._proactive_effect_providers: list[ProactiveEffectProvider] = []
 
     @property
     def loaded_count(self) -> int:
@@ -114,6 +118,10 @@ class PluginManager:
     @property
     def after_turn_modules(self) -> list[object]:
         return list(self._after_turn_modules)
+
+    @property
+    def proactive_effect_providers(self) -> list["ProactiveEffectProvider"]:
+        return list(self._proactive_effect_providers)
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
@@ -227,6 +235,8 @@ class PluginManager:
         self._collect_after_reasoning_modules(instance)
         after_turn_count_before = len(self._after_turn_modules)
         self._collect_after_turn_modules(instance)
+        proactive_effect_count_before = len(self._proactive_effect_providers)
+        self._collect_proactive_effect_providers(instance)
         # 5. 给插件机会做异步初始化；失败时回滚所有注册
         try:
             if hasattr(instance, "initialize"):
@@ -245,6 +255,7 @@ class PluginManager:
             del self._after_step_modules[after_step_count_before:]
             del self._after_reasoning_modules[after_reasoning_count_before:]
             del self._after_turn_modules[after_turn_count_before:]
+            del self._proactive_effect_providers[proactive_effect_count_before:]
             return
         self._loaded.add(mp)
         self._collect_channels(instance)
@@ -381,6 +392,14 @@ class PluginManager:
         for channel in _load_module_list(instance, "channels"):
             self._channels.append(cast(Channel, channel))
 
+    def _collect_proactive_effect_providers(self, instance: Any) -> None:
+        self._proactive_effect_providers.extend(
+            cast(
+                "list[ProactiveEffectProvider]",
+                _load_module_list(instance, "proactive_effect_providers"),
+            )
+        )
+
     def _collect_phase_modules(
         self,
         instance: Any,
@@ -411,6 +430,7 @@ class PluginManager:
         self._after_step_modules.clear()
         self._after_reasoning_modules.clear()
         self._after_turn_modules.clear()
+        self._proactive_effect_providers.clear()
         self._channels.clear()
 
 

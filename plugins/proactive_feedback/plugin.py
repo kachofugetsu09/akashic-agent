@@ -14,6 +14,7 @@ from bus.events_lifecycle import TurnCommitted
 from memory2.embedder import Embedder
 
 from .db import FeedbackEvent, insert_feedback, open_db
+from .events import ProactiveFeedbackRecorded
 from .scorer import latest_turn_messages, recent_proactive_messages, score_followup
 
 logger = logging.getLogger("plugin.proactive_feedback")
@@ -112,49 +113,51 @@ class ProactiveFeedbackPlugin(Plugin):
             if candidates:
                 sink = open_db(self._db_path)
                 try:
-                    insert_feedback(
-                        sink,
-                        FeedbackEvent(
-                            session_key=event.session_key,
-                            user_message_id=user.id,
-                            assistant_message_id=assistant.id,
-                            proactive_message_id=candidates[0].id,
-                            feedback_type="unscored",
-                            confidence="low",
-                            pa_score=None,
-                            pua_score=None,
-                            lag_seconds=None,
-                            candidate_count=len(candidates),
-                            matched_by="recent_pua",
-                            reason="scoring_failed",
-                        ),
+                    feedback = FeedbackEvent(
+                        session_key=event.session_key,
+                        user_message_id=user.id,
+                        assistant_message_id=assistant.id,
+                        proactive_message_id=candidates[0].id,
+                        feedback_type="unscored",
+                        confidence="low",
+                        pa_score=None,
+                        pua_score=None,
+                        lag_seconds=None,
+                        candidate_count=len(candidates),
+                        matched_by="recent_pua",
+                        reason="scoring_failed",
                     )
+                    event_id = insert_feedback(sink, feedback)
                 finally:
                     sink.close()
+                await self.context.event_bus.fanout(
+                    ProactiveFeedbackRecorded(event_id=event_id, feedback=feedback)
+                )
         if scored is None:
             return
 
         sink = open_db(self._db_path)
         try:
-            insert_feedback(
-                sink,
-                FeedbackEvent(
-                    session_key=event.session_key,
-                    user_message_id=user.id,
-                    assistant_message_id=assistant.id,
-                    proactive_message_id=scored.proactive.id,
-                    feedback_type=scored.feedback_type,
-                    confidence=scored.confidence,
-                    pa_score=scored.pa_score,
-                    pua_score=scored.pua_score,
-                    lag_seconds=scored.lag_seconds,
-                    candidate_count=scored.candidate_count,
-                    matched_by=scored.matched_by,
-                    reason=scored.reason,
-                ),
+            feedback = FeedbackEvent(
+                session_key=event.session_key,
+                user_message_id=user.id,
+                assistant_message_id=assistant.id,
+                proactive_message_id=scored.proactive.id,
+                feedback_type=scored.feedback_type,
+                confidence=scored.confidence,
+                pa_score=scored.pa_score,
+                pua_score=scored.pua_score,
+                lag_seconds=scored.lag_seconds,
+                candidate_count=scored.candidate_count,
+                matched_by=scored.matched_by,
+                reason=scored.reason,
             )
+            event_id = insert_feedback(sink, feedback)
         finally:
             sink.close()
+        await self.context.event_bus.fanout(
+            ProactiveFeedbackRecorded(event_id=event_id, feedback=feedback)
+        )
 
     def _get_embedder(self) -> Embedder:
         if self._embedder is None:
