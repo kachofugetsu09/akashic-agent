@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 from bootstrap.proactive import _build_proactive_provider, build_proactive_runtime
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
+from core.memory.markdown import MemoryProfileApi
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
 from proactive_v2.gateway import GatewayDeps, GatewayResult
@@ -73,10 +74,10 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
             turn_orchestrator=None,
             deduper=MagicMock(),
             tool_deps=ToolDeps(
-                memory=SimpleNamespace(
+                memory=cast(MemoryProfileApi, SimpleNamespace(
                     read_long_term_context=lambda: "MEMORY",
                     read_self=lambda: "SELF",
-                ),
+                )),
                 recent_chat_fn=None,
             ),
             gateway_deps=GatewayDeps(

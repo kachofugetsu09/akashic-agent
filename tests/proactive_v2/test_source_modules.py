@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from proactive_v2.config import ProactiveConfig
 from proactive_v2.modules_source import McpGatewaySource, McpRuntimeModule
 
 
@@ -14,7 +15,7 @@ async def test_mcp_runtime_module_manages_pool_lifecycle(monkeypatch):
         "proactive_v2.modules_source.mcp_sources.poll_content_feeds_async",
         poll,
     )
-    module = McpRuntimeModule(workspace=None, cfg=object())
+    module = McpRuntimeModule(workspace=None, cfg=ProactiveConfig())
     module.pool.connect_all = AsyncMock(return_value=None)  # type: ignore[method-assign]
     module.pool.disconnect_all = AsyncMock(return_value=None)  # type: ignore[method-assign]
 

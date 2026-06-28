@@ -49,7 +49,8 @@ def test_parse_quote_parts_extracts_current_message():
 
 @pytest.mark.asyncio
 async def test_explicit_quote_writes_gold_without_embedding():
-    async def fail_embed(_: list[str]) -> list[list[float]]:
+    async def fail_embed(texts: list[str]) -> list[list[float]]:
+        _ = texts
         raise AssertionError("explicit quote should not call embedding")
 
     user = _message(
@@ -78,7 +79,8 @@ async def test_explicit_quote_writes_gold_without_embedding():
 
 @pytest.mark.asyncio
 async def test_explicit_quote_matches_markdown_render_difference():
-    async def fail_embed(_: list[str]) -> list[list[float]]:
+    async def fail_embed(texts: list[str]) -> list[list[float]]:
+        _ = texts
         raise AssertionError("explicit quote should not call embedding")
 
     user = _message(
@@ -116,7 +118,8 @@ async def test_explicit_quote_matches_markdown_render_difference():
 
 @pytest.mark.asyncio
 async def test_pua_score_controls_feedback_type():
-    async def embed_batch(_: list[str]) -> list[list[float]]:
+    async def embed_batch(texts: list[str]) -> list[list[float]]:
+        _ = texts
         return [
             [1.0, 0.0],
             [0.0, 1.0],
