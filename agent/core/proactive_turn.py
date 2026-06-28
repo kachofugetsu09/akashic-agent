@@ -53,6 +53,7 @@ from proactive_v2.contracts import (
 from agent.core.drift_turn import DriftTurnPipeline
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
 from proactive_v2.modules_gate import GateResult, ProactiveGateChain
+from proactive_v2.modules_prompt import ProactivePromptBuilder
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, dispatch
 
 logger = logging.getLogger(__name__)
@@ -323,6 +324,11 @@ class ProactiveTurnPipeline:
             last_user_at_fn=self._last_user_at_fn,
             passive_busy_fn=self._passive_busy_fn,
             rng=self._rng,
+        )
+        self._prompt_builder = ProactivePromptBuilder(
+            cfg=self._cfg,
+            memory=self._tool_deps.memory,
+            workspace_context_fn=self._workspace_context_fn,
         )
 
         # 1. drift_pipeline 的 step_recorder 指向本 pipeline 的记录方法。
@@ -610,8 +616,16 @@ class ProactiveTurnPipeline:
             return FeedResult(drift_entered=False, base_score=None)
 
         # 2.5 构造本轮 proactive 输入 messages。
-        system_msg = {"role": "system", "content": self._build_system_prompt()}
-        runtime_context_msg = self._build_runtime_context_message(ctx, gw_result)
+        system_msg = {
+            "role": "system",
+            "content": self._prompt_builder.build_system_prompt(
+                self._proactive_effects
+            ),
+        }
+        runtime_context_msg = self._prompt_builder.build_runtime_context_message(
+            ctx,
+            gw_result,
+        )
         kickoff_msg = {
             "role": "user",
             "content": (
