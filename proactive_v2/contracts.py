@@ -160,7 +160,7 @@ def normalize_content(item: dict[str, Any]) -> ContentContract:
     return ContentContract(
         item_id=str(item.get("id") or "").strip(),
         title=str(item.get("title") or "").strip(),
-        source=str(item.get("source") or item.get("source_name") or "").strip(),
+        source=str(item.get("source") or "").strip(),
         url=str(item.get("url") or "").strip(),
         raw=item,
     )

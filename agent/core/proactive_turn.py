@@ -32,6 +32,7 @@ from agent.turns.result import TurnResult
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
+from proactive_v2.frame import ProactiveFrame, ProactiveTickResult
 from agent.core.drift_turn import DriftTurnPipeline
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
 from proactive_v2.modules_deliver import ProactiveDeliverer
@@ -130,6 +131,8 @@ class ProactiveTurnPipelineDeps:
 # └─ done
 
 class ProactiveTurnPipeline:
+    slot = "proactive.tick.pipeline"
+    phase = "proactive.deliver"
 
     def __init__(self, deps: ProactiveTurnPipelineDeps) -> None:
         self._cfg = deps.cfg
@@ -190,7 +193,7 @@ class ProactiveTurnPipeline:
         )
 
         # 1. drift_pipeline 的 step_recorder 指向本 pipeline 的记录方法。
-        if self._drift_pipeline is not None and getattr(self._drift_pipeline, "step_recorder", None) is None:
+        if self._drift_pipeline is not None and self._drift_pipeline.step_recorder is None:
             self._drift_pipeline.step_recorder = (
                 lambda ctx, phase, tool_name, tool_call_id, tool_args, tool_result_text: (
                     self._record_tick_step(
@@ -207,18 +210,16 @@ class ProactiveTurnPipeline:
         self.last_ctx: AgentTickContext | None = None
         self._last_gateway_result: GatewayResult | None = None
 
-    def set_proactive_slots(self, slots: dict[str, Any]) -> None:
-        self._proactive_slots = slots
-
     # ── 入口 ──────────────────────────────────────────────────────────
 
     # 核心方法：处理一次主动 tick，串起 Gate → Fetch → Judge → Resolve → Deliver 五段链路。
-    async def run(self) -> float | None:
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
         started = time.perf_counter()
+        self._proactive_slots = frame.slots
         # 1. Gate — 该不该动？
         ctx = AgentTickContext(
-            session_key=self._session_key,
-            now_utc=datetime.now(timezone.utc),
+            session_key=frame.input.session_key,
+            now_utc=frame.input.started_at,
         )
         with diagnostic_context(session=self._session_key, flow="proactive", tick=ctx.tick_id):
             logger.info(
@@ -232,25 +233,10 @@ class ProactiveTurnPipeline:
                     action="run",
                 )
             )
-            try:
-                return await self._run_with_context(ctx, started)
-            except Exception as exc:
-                logger.exception(
-                    diagnostic_line(
-                        "ProactiveTurnPipeline.run",
-                        event="phase_error",
-                        flow="proactive",
-                        phase="tick",
-                        session=self._session_key,
-                        tick=ctx.tick_id,
-                        action="fail",
-                        reason="proactive_tick_error",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
-                        error_type=type(exc).__name__,
-                        note=str(exc)[:160],
-                    )
-                )
-                raise
+            frame.output = ProactiveTickResult(
+                base_score=await self._run_with_context(ctx, started)
+            )
+            return frame
 
     async def _run_with_context(self, ctx: AgentTickContext, started: float) -> float | None:
         gate = self._gate_check(ctx)
@@ -405,7 +391,7 @@ class ProactiveTurnPipeline:
         if not gw_result.alerts and not gw_result.content_meta and not ctx.context_as_fallback_open:
             if self._drift_pipeline is not None and self._cfg.drift_enabled:
                 last_drift_at = self._state_store.get_last_drift_at(self._session_key)
-                min_interval_hours = max(0, int(getattr(self._cfg, "drift_min_interval_hours", 0) or 0))
+                min_interval_hours = max(0, int(self._cfg.drift_min_interval_hours or 0))
                 if (
                     last_drift_at is not None
                     and min_interval_hours > 0

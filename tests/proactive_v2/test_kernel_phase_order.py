@@ -3,8 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent.core.proactive_kernel import ProactiveKernel
-from proactive_v2.frame import ProactiveFrame
-from proactive_v2.modules_pipeline import LegacyPipelineModule
+from proactive_v2.frame import ProactiveFrame, ProactiveTickResult
 from proactive_v2.phases import ProactivePhaseRunner
 
 
@@ -27,16 +26,18 @@ class _Module:
 
 
 class _Pipeline:
+    slot = "proactive.tick.pipeline"
+    phase = "proactive.deliver"
+
     def __init__(self) -> None:
         self.slots: dict[str, object] | None = None
         self.run_count = 0
 
-    def set_proactive_slots(self, slots: dict[str, object]) -> None:
-        self.slots = slots
-
-    async def run(self) -> float:
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
         self.run_count += 1
-        return 0.42
+        self.slots = frame.slots
+        frame.output = ProactiveTickResult(base_score=0.42)
+        return frame
 
 
 @pytest.mark.asyncio
@@ -63,9 +64,9 @@ async def test_proactive_phase_runner_orders_phase_and_requires():
 
 
 @pytest.mark.asyncio
-async def test_proactive_kernel_runs_legacy_pipeline_module():
+async def test_proactive_kernel_runs_pipeline_module():
     pipeline = _Pipeline()
-    kernel = ProactiveKernel([LegacyPipelineModule(pipeline)])
+    kernel = ProactiveKernel([pipeline])
 
     assert await kernel.run_tick("telegram:1") == 0.42
     assert pipeline.run_count == 1

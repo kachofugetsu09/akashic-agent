@@ -120,7 +120,7 @@ class DataGateway:
             content_meta.append({
                 "id": compound_key,
                 "title": event.get("title") or "",
-                "source": event.get("source_name") or "",
+                "source": event.get("source") or "",
                 "url": event.get("url") or "",
                 "published_at": event.get("published_at") or "",
             })

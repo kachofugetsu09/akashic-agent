@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import types
 from pathlib import Path
 from typing import cast
 
 from proactive_v2 import mcp_sources
+from proactive_v2.config import ProactiveConfig
 from proactive_v2.frame import ProactiveFrame
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.mcp_sources import McpClientPool
@@ -22,7 +22,7 @@ class McpRuntimeModule:
         self,
         *,
         workspace: Path | None,
-        cfg: object,
+        cfg: ProactiveConfig,
     ) -> None:
         self._cfg = cfg
         self._pool = McpClientPool(workspace)
@@ -69,7 +69,7 @@ class McpRuntimeModule:
         while self._running:
             interval = max(
                 1,
-                int(getattr(self._cfg, "feed_poller_interval_seconds", 60)),
+                int(self._cfg.feed_poller_interval_seconds),
             )
             await asyncio.sleep(interval)
             if not self._running:
@@ -135,5 +135,4 @@ class McpGatewaySource:
         if len(parts) != 2:
             return
         ack_server, ack_id = parts
-        event_proxy = types.SimpleNamespace(_ack_server=ack_server, ack_id=ack_id)
-        await mcp_sources.acknowledge_events_async(self._pool, [event_proxy])
+        await mcp_sources.acknowledge_events_async(self._pool, [(ack_server, ack_id)])

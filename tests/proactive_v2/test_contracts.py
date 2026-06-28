@@ -49,7 +49,7 @@ def test_normalize_content_source_alias_and_url_validation():
     item = {
         "id": "feed:item-1",
         "title": "新闻标题",
-        "source_name": "HLTV",
+        "source": "HLTV",
         "url": "",
     }
 

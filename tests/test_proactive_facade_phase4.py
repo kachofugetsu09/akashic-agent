@@ -9,6 +9,7 @@ from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipeli
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
 from proactive_v2.gateway import GatewayDeps, GatewayResult
+from proactive_v2.tools import ToolDeps
 
 
 def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
@@ -71,13 +72,13 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
             passive_busy_fn=None,
             turn_orchestrator=None,
             deduper=MagicMock(),
-            tool_deps=cast(Any, SimpleNamespace(
+            tool_deps=ToolDeps(
                 memory=SimpleNamespace(
                     read_long_term_context=lambda: "MEMORY",
                     read_self=lambda: "SELF",
                 ),
                 recent_chat_fn=None,
-            )),
+            ),
             gateway_deps=GatewayDeps(
                 alert_fn=MagicMock(),
                 feed_fn=MagicMock(),
@@ -91,7 +92,7 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
         ),
     )
 
-    runtime_context = tick._build_runtime_context_message(
+    runtime_context = tick._prompt_builder.build_runtime_context_message(
         AgentTickContext(session_key="test"),
         GatewayResult(),
     )

@@ -86,7 +86,7 @@ async def test_fetch_content_events_async_keeps_default_compat_channel_filter(mo
 
 
 @pytest.mark.asyncio
-async def test_fetch_context_data_async_accepts_dict_and_list(monkeypatch):
+async def test_fetch_context_data_async_accepts_list(monkeypatch):
     monkeypatch.setattr(
         mcp_sources,
         "_load_sources",
@@ -97,7 +97,7 @@ async def test_fetch_context_data_async_accepts_dict_and_list(monkeypatch):
     )
     pool = _FakePool(
         {
-            ("ctx1", "get_context"): {"available": True},
+            ("ctx1", "get_context"): [{"available": True}],
             ("ctx2", "get_context"): [{"available": False}, "bad_item"],
         }
     )
@@ -188,17 +188,11 @@ async def test_acknowledge_events_async_groups_by_ack_server(monkeypatch):
         }
     )
 
-    class _Evt:
-        def __init__(self, ack_server, ack_id, source_name=""):
-            self._ack_server = ack_server
-            self.ack_id = ack_id
-            self.source_name = source_name
-
     events = [
-        _Evt("fitbit", "a1"),
-        _Evt("fitbit", "a2"),
-        _Evt("", "a3", source_name="feed"),
-        _Evt("unknown", "x"),
+        ("fitbit", "a1"),
+        ("fitbit", "a2"),
+        ("feed", "a3"),
+        ("unknown", "x"),
     ]
     await mcp_sources.acknowledge_events_async(cast(Any, pool), events)
 

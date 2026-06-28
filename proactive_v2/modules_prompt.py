@@ -11,6 +11,7 @@ from agent.prompting import (
     build_context_frame_message,
 )
 from core.memory.markdown import MemoryProfileApi
+from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
 from proactive_v2.contracts import normalize_alert, normalize_content, normalize_context
 from proactive_v2.gateway import GatewayResult
@@ -20,7 +21,7 @@ class ProactivePromptBuilder:
     def __init__(
         self,
         *,
-        cfg: Any,
+        cfg: ProactiveConfig,
         memory: Any | None,
         workspace_context_fn: Callable[[], str] | None,
     ) -> None:
@@ -232,7 +233,7 @@ class ProactivePromptBuilder:
     def render_context_block(self, context: list[dict[str, object]]) -> str:
         if not context:
             return ""
-        local_tz = getattr(self._cfg, "anyaction_timezone", None)
+        local_tz = self._cfg.anyaction_timezone
         annotated_context = [
             normalize_context(item, local_tz=local_tz).to_prompt_item()
             for item in context

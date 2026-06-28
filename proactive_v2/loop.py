@@ -34,7 +34,6 @@ from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.modules_pipeline import LegacyPipelineModule
 from proactive_v2.modules_schedule import ProactiveScheduler
 from proactive_v2.modules_source import McpRuntimeModule
 from proactive_v2.presence import PresenceStore
@@ -153,19 +152,17 @@ class ProactiveLoop:
         ).build()
 
     def _build_mcp_runtime(self) -> McpRuntimeModule:
-        workspace = getattr(self._sessions, "workspace", None)
         return McpRuntimeModule(
-            workspace=Path(workspace) if workspace else None,
+            workspace=Path(self._sessions.workspace),
             cfg=self._cfg,
         )
 
     def _build_kernel(self) -> ProactiveKernel:
         pipeline = self._build_agent_tick()
-        self._proactive_pipeline = pipeline
         modules = [
             self._mcp_runtime,
-            LegacyPipelineModule(pipeline),
             *self._plugin_proactive_modules,
+            pipeline,
         ]
         kernel = ProactiveKernel(
             modules,
@@ -185,9 +182,7 @@ class ProactiveLoop:
             "proactive:session_key": session_key,
             "proactive:started_at": datetime.now(timezone.utc),
             "proactive:last_user_at": last_user_at,
-            "proactive:base_judge_send_threshold": float(
-                getattr(self._cfg, "judge_send_threshold", 0.60)
-            ),
+            "proactive:base_judge_send_threshold": self._cfg.judge_send_threshold,
         }
 
     def _init_runtime_components(self) -> None:
@@ -210,23 +205,18 @@ class ProactiveLoop:
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
 
-    def _workspace_proactive_context_path(self) -> Path | None:
-        workspace = getattr(self._sessions, "workspace", None)
-        if workspace is None:
-            return None
-        return Path(workspace) / self._PROACTIVE_CONTEXT_FILE
+    def _workspace_proactive_context_path(self) -> Path:
+        return Path(self._sessions.workspace) / self._PROACTIVE_CONTEXT_FILE
 
     def _ensure_workspace_proactive_context_file(self) -> None:
         path = self._workspace_proactive_context_path()
-        if path is None or path.exists():
+        if path.exists():
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self._PROACTIVE_CONTEXT_TEMPLATE, encoding="utf-8")
 
     def _read_workspace_proactive_context(self) -> str:
         path = self._workspace_proactive_context_path()
-        if path is None:
-            return ""
         self._ensure_workspace_proactive_context_file()
         try:
             stat = path.stat()
@@ -303,13 +293,11 @@ class ProactiveLoop:
             f"ProactiveLoop 已启动  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
-        if hasattr(self, "_proactive_kernel"):
-            await self._proactive_kernel.start()
+        await self._proactive_kernel.start()
         try:
             await self._run_loop()
         finally:
-            if hasattr(self, "_proactive_kernel"):
-                await self._proactive_kernel.stop()
+            await self._proactive_kernel.stop()
 
     async def _run_loop(self) -> None:
         last_base_score: float | None = None
@@ -327,10 +315,7 @@ class ProactiveLoop:
         return self._scheduler.next_interval(base_score)
 
     def _target_session_key(self) -> str:
-        sense = getattr(self, "_sense", None)
-        if sense is None:
-            return "-"
-        return sense.target_session_key()
+        return self._sense.target_session_key()
 
     def stop(self) -> None:
         self._running = False
@@ -341,10 +326,7 @@ class ProactiveLoop:
         """执行一次 proactive v2 tick。"""
         # 给本 tick 打上 session 归属，供 observe 全局错误采集关联；
         # 纯埋点，依赖未就绪时静默跳过，绝不影响 tick 主流程。
-        try:
-            _ = current_session_key.set(self._target_session_key())
-        except AttributeError:
-            pass
+        _ = current_session_key.set(self._target_session_key())
         # 主动回复全链路入口：Gate → Fetch → Judge → Resolve → Deliver。
         started = time.perf_counter()
         session_key = self._target_session_key()
@@ -360,10 +342,7 @@ class ProactiveLoop:
                 )
             )
             try:
-                if hasattr(self, "_proactive_kernel"):
-                    score = await self._proactive_kernel.run_tick(session_key)
-                else:
-                    score = await self._proactive_pipeline.run()
+                score = await self._proactive_kernel.run_tick(session_key)
             except Exception as exc:
                 logger.exception(
                     diagnostic_line(

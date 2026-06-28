@@ -63,7 +63,7 @@ def _build_delivery_refs(ctx: AgentTickContext) -> list[str]:
         if url:
             refs.append(f"url:{url}")
             continue
-        source = str(meta.get("source") or meta.get("source_name") or "").strip().lower()
+        source = str(meta.get("source") or "").strip().lower()
         title = str(meta.get("title") or "").strip().lower()
         if title:
             refs.append(f"title:{source}|{title}")

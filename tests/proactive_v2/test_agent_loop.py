@@ -11,7 +11,7 @@ TDD — Phase 5: proactive_v2/ProactiveTurnPipeline — Agent Loop
   - mark_not_interesting 在 loop 内写 discarded_set
   - skip(user_busy) 路径
   - LLM 消息历史：工具结果追加到 messages
-  - tool_choice="auto"：主 loop 兼容 thinking 模式供应商
+  - tool_choice="auto"：主 loop 适配 thinking 模式供应商
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import pytest
 from agent.prompting import is_context_frame
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
-from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_proactive_pipeline
+from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_proactive_pipeline, run_proactive_pipeline
 
 
 # ── max_steps 保护 ────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ async def test_loop_stops_at_max_steps():
         cfg=cfg_with(agent_tick_max_steps=20),
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.steps_taken == 20
     assert tick.last_ctx.terminal_action is None
 
@@ -51,7 +51,7 @@ async def test_loop_max_steps_configurable():
         cfg=cfg_with(agent_tick_max_steps=5),
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.steps_taken == 5
 
 
@@ -61,7 +61,7 @@ async def test_loop_max_steps_configurable():
 async def test_loop_stops_when_llm_returns_none():
     llm = FakeLLM([])  # 空序列，第一次就返回 None
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.steps_taken == 0
     assert tick.last_ctx.terminal_action is None
 
@@ -79,7 +79,7 @@ async def test_loop_puts_runtime_context_frame_before_kickoff():
                         "event_id": "c1",
                         "ack_server": "feed",
                         "title": "测试内容",
-                        "source_name": "feed",
+                        "source": "feed",
                         "url": "https://example.com/a",
                     }
                 ]
@@ -88,7 +88,7 @@ async def test_loop_puts_runtime_context_frame_before_kickoff():
         ),
     )
 
-    await tick.run()
+    await run_proactive_pipeline(tick)
 
     messages = llm.calls[0]
     assert messages[0]["role"] == "system"
@@ -112,7 +112,7 @@ async def test_loop_stops_after_partial_sequence_then_none():
             feed_fn=AsyncMock(return_value=[]),
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.steps_taken == 2
     assert tick.last_ctx.terminal_action is None
 
@@ -122,7 +122,7 @@ async def test_loop_stops_after_partial_sequence_then_none():
 @pytest.mark.asyncio
 async def test_loop_with_no_llm_fn_executes_nothing():
     tick = make_proactive_pipeline(llm_fn=None)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.steps_taken == 0
     assert len(tick._state_store.tick_log_starts) == 1
     assert len(tick._state_store.tick_log_finishes) == 1
@@ -142,7 +142,7 @@ async def test_send_message_stops_loop_immediately():
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     # message_push + finish_turn 是前 2 步，之后 loop 停止
     assert tick.last_ctx.steps_taken == 2
     assert tick.last_ctx.terminal_action == "reply"
@@ -158,7 +158,7 @@ async def test_skip_stops_loop_immediately():
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.steps_taken == 1
     assert tick.last_ctx.terminal_action == "skip"
 
@@ -172,7 +172,7 @@ async def test_only_first_terminal_counts():
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.terminal_action == "reply"
     assert tick.last_ctx.steps_taken == 2
 
@@ -186,7 +186,7 @@ async def test_send_message_writes_final_message():
         ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.final_message == "Hello world!"
 
 
@@ -197,7 +197,7 @@ async def test_tool_chain_step_logs_capture_args_and_results():
         ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert len(tick._state_store.tick_step_logs) == 2
     first = tick._state_store.tick_step_logs[0]
     second = tick._state_store.tick_step_logs[1]
@@ -223,7 +223,7 @@ async def test_send_message_writes_cited_ids():
             feed_fn=AsyncMock(return_value=[{"id": "1", "ack_server": "feed-mcp", "title": "t"}]),
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.cited_item_ids == ["feed-mcp:1", "alert-mcp:2"]
 
 
@@ -239,7 +239,7 @@ async def test_send_message_cited_added_to_interesting():
             feed_fn=AsyncMock(return_value=[{"id": "1", "ack_server": "feed-mcp", "title": "t"}]),
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert "feed-mcp:1" in tick.last_ctx.interesting_item_ids
 
 
@@ -249,7 +249,7 @@ async def test_send_message_cited_added_to_interesting():
 async def test_skip_writes_reason():
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "user_busy"})])
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.skip_reason == "user_busy"
 
 
@@ -257,7 +257,7 @@ async def test_skip_writes_reason():
 async def test_skip_writes_note():
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "other", "note": "debug"})])
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.skip_note == "debug"
 
 
@@ -276,7 +276,7 @@ async def test_alert_path_send_sets_terminal():
         llm_fn=llm,
         gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[alert])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.terminal_action == "reply"
     assert tick.last_ctx.cited_item_ids == ["alert-mcp:a1"]
 
@@ -293,7 +293,7 @@ async def test_alert_stored_in_ctx_fetched_alerts():
         llm_fn=llm,
         gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[alert])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.fetched_alerts == [alert]
 
 
@@ -309,7 +309,7 @@ async def test_alert_fn_called_once_even_if_llm_calls_twice():
         llm_fn=llm,
         gateway_deps=GatewayDeps(alert_fn=alert_fn),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert alert_fn.call_count == 1
 
 
@@ -318,7 +318,7 @@ async def test_alert_fn_called_once_even_if_llm_calls_twice():
 @pytest.mark.asyncio
 async def test_content_stored_in_ctx_fetched_contents():
     event = {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com",
-             "title": "T", "source_name": "S", "published_at": "2026-01-01T00:00:00Z"}
+             "title": "T", "source": "S", "published_at": "2026-01-01T00:00:00Z"}
     llm = FakeLLM([
         ("get_alert_events", {}),
         ("get_content_events", {}),
@@ -331,7 +331,7 @@ async def test_content_stored_in_ctx_fetched_contents():
             feed_fn=AsyncMock(return_value=[event]),
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.fetched_contents == [{
         "id": "c1",
         "event_id": "c1",
@@ -355,7 +355,7 @@ async def test_content_fn_called_with_configured_limit():
         cfg=cfg_with(agent_tick_content_limit=3),
         gateway_deps=GatewayDeps(feed_fn=feed_fn, content_limit=3),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     # limit 来自工具调用参数
     feed_fn.assert_called_once_with(limit=3)
 
@@ -364,7 +364,7 @@ async def test_content_fn_called_with_configured_limit():
 async def test_content_path_send_interesting_tracked():
     """send_message 中的 cited_ids 自动加入 interesting_set"""
     event = {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com",
-             "title": "T", "source_name": "S", "published_at": "2026-01-01T00:00:00Z"}
+             "title": "T", "source": "S", "published_at": "2026-01-01T00:00:00Z"}
     llm = FakeLLM([
         ("get_alert_events", {}),
         ("get_content_events", {}),
@@ -378,7 +378,7 @@ async def test_content_path_send_interesting_tracked():
             feed_fn=AsyncMock(return_value=[event]),
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert "feed-mcp:c1" in tick.last_ctx.interesting_item_ids
     assert tick.last_ctx.terminal_action == "reply"
 
@@ -388,7 +388,7 @@ async def test_content_path_send_interesting_tracked():
 @pytest.mark.asyncio
 async def test_mark_not_interesting_in_loop_writes_discarded():
     event = {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com",
-             "title": "T", "source_name": "S", "published_at": "2026-01-01T00:00:00Z"}
+             "title": "T", "source": "S", "published_at": "2026-01-01T00:00:00Z"}
     llm = FakeLLM([
         ("get_content_events", {}),
         ("mark_not_interesting", {"item_ids": ["feed-mcp:c1"]}),
@@ -398,7 +398,7 @@ async def test_mark_not_interesting_in_loop_writes_discarded():
         llm_fn=llm,
         gateway_deps=GatewayDeps(feed_fn=AsyncMock(return_value=[event])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert "feed-mcp:c1" in tick.last_ctx.discarded_item_ids
 
 
@@ -409,7 +409,7 @@ async def test_mark_not_interesting_multiple_items():
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert "feed-mcp:1" in tick.last_ctx.discarded_item_ids
     assert "feed-mcp:2" in tick.last_ctx.discarded_item_ids
 
@@ -428,7 +428,7 @@ async def test_context_data_fn_called_only_once_in_loop():
         llm_fn=llm,
         gateway_deps=GatewayDeps(context_fn=context_fn),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert context_fn.call_count == 1
 
 
@@ -452,7 +452,7 @@ async def test_recall_memory_in_loop():
         llm_fn=llm,
         tool_deps=ToolDeps(memory=memory),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.terminal_action == "reply"
     memory.query.assert_awaited_once()
 
@@ -471,7 +471,7 @@ async def test_user_busy_skip():
             {"role": "user", "content": "我现在很忙"}
         ])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.terminal_action == "skip"
     assert tick.last_ctx.skip_reason == "user_busy"
 
@@ -489,7 +489,7 @@ async def test_llm_receives_growing_message_history():
         llm_fn=llm,
         gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     # 第一次调用：messages 可能只有 system prompt（无工具历史）
     # 第二次调用：messages 应包含 get_alert_events 的 tool_use + tool_result
     assert len(llm.calls) == 2
@@ -503,7 +503,7 @@ async def test_llm_receives_system_message():
     """第一次调用时 messages 应包含 system prompt"""
     llm = FakeLLM([("finish_turn", {"decision": "skip", "reason": "no_content"})])
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert llm.calls  # 至少调用了一次
     first_messages = llm.calls[0]
     roles = [m.get("role") for m in first_messages]
@@ -519,7 +519,7 @@ async def test_unknown_tool_breaks_loop_gracefully():
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),  # 不应执行
     ])
     tick = make_proactive_pipeline(llm_fn=llm)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     # execute() 在分发前就递增 steps_taken，所以是 1；但 terminal_action 不变
     assert tick.last_ctx.terminal_action is None
     assert tick.last_ctx.steps_taken == 1   # unknown tool 被调用了，只是分发失败
@@ -543,12 +543,12 @@ async def test_steps_taken_counts_all_tool_calls():
             feed_fn=AsyncMock(return_value=[]),
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.steps_taken == 4
 
 
 # ── tool_choice="auto" ────────────────────────────────────────────────────
-# 兼容性：当前 proactive 使用的上游在 thinking 模式下不支持 required/object。
+# 当前 proactive 使用的上游在 thinking 模式下不支持 required/object。
 # 因此主 loop 改回 auto，避免整轮 proactive 因 400 直接退出。
 
 @pytest.mark.asyncio
@@ -562,7 +562,7 @@ async def test_main_loop_uses_auto_tool_choice():
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
 
     assert all(tc == "auto" for tc in llm.tool_choices), (
         f"expected all tool_choices to be 'auto', got {llm.tool_choices}"
@@ -593,7 +593,7 @@ async def test_alert_present_llm_called_with_auto_tool_choice():
             context_fn=AsyncMock(return_value=[]),
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
 
     # 消息被正常发出
     assert tick.last_ctx.terminal_action == "reply"
@@ -613,7 +613,7 @@ async def test_main_loop_stops_when_auto_tool_call_is_empty():
         return None
 
     tick = make_proactive_pipeline(llm_fn=llm_fn)
-    await tick.run()
+    await run_proactive_pipeline(tick)
 
     assert tick.last_ctx.terminal_action is None
     assert tick.last_ctx.steps_taken == 0
@@ -631,7 +631,7 @@ async def test_finish_turn_error_stops_under_auto_tool_choice():
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
 
-    await tick.run()
+    await run_proactive_pipeline(tick)
 
     assert tick.last_ctx.terminal_action is None
     assert tick.last_ctx.steps_taken == 2

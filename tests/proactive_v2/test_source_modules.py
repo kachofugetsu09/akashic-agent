@@ -84,6 +84,4 @@ async def test_mcp_gateway_source_ack_routes(monkeypatch):
         [("mcp:feed-mcp", "item-1")],
         ttl_hours=720,
     )
-    event_proxy = alert_ack.await_args.args[1][0]
-    assert event_proxy._ack_server == "calendar"
-    assert event_proxy.ack_id == "alert-1"
+    assert alert_ack.await_args.args[1] == [("calendar", "alert-1")]

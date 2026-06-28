@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from proactive_v2.gateway import GatewayDeps
-from tests.proactive_v2.conftest import FakeLLM, make_proactive_pipeline
+from tests.proactive_v2.conftest import FakeLLM, make_proactive_pipeline, run_proactive_pipeline
 from unittest.mock import AsyncMock
 
 
@@ -19,14 +19,14 @@ async def test_proactive_prompt_slot_injects_prompt_and_tick_log():
                         "event_id": "c1",
                         "ack_server": "feed",
                         "title": "测试内容",
-                        "source_name": "feed",
+                        "source": "feed",
                     }
                 ]
             ),
             context_fn=AsyncMock(return_value=[]),
         ),
     )
-    tick.set_proactive_slots({
+    slots = {
         "proactive:prompt:system_bottom:emotion": "当前 VAD: valence=0.10, arousal=0.20, dominance=-0.30。",
         "proactive:effect:emotion": {
             "provider_name": "emotion",
@@ -36,9 +36,9 @@ async def test_proactive_prompt_slot_injects_prompt_and_tick_log():
                 "expected_effect": "raise_send_bar",
             },
         },
-    })
+    }
 
-    await tick.run()
+    await run_proactive_pipeline(tick, slots=slots)
 
     assert "【主动插件状态】" in llm.calls[0][0]["content"]
     assert "当前 VAD" in llm.calls[0][0]["content"]

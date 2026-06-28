@@ -149,7 +149,7 @@ class AgentTickFactory:
         assert pool is not None
         return McpGatewaySource(
             pool,
-            content_limit=getattr(self._deps.cfg, "agent_tick_content_limit", 5),
+            content_limit=self._deps.cfg.agent_tick_content_limit,
         )
 
     def _build_anyaction_gate(self) -> AnyActionGate:
@@ -161,7 +161,7 @@ class AgentTickFactory:
         )
 
     def _build_message_deduper(self) -> MessageDeduper | None:
-        if not bool(getattr(self._deps.cfg, "message_dedupe_enabled", False)):
+        if not self._deps.cfg.message_dedupe_enabled:
             return None
         return MessageDeduper(
             provider=self._deps.provider,
@@ -196,11 +196,11 @@ class AgentTickFactory:
         )
 
     def _build_recent_proactive_fn(self) -> RecentProactiveFn:
-        recent_n = getattr(self._deps.cfg, "message_dedupe_recent_n", 5)
+        recent_n = self._deps.cfg.message_dedupe_recent_n
         return lambda: self._deps.sense.collect_recent_proactive(recent_n)
 
     def _build_drift_pipeline(self, tool_deps: ToolDeps) -> DriftTurnPipeline | None:
-        if not getattr(self._deps.cfg, "drift_enabled", False):
+        if not self._deps.cfg.drift_enabled:
             return None
         drift_dir = Path(self._deps.state_store.workspace_dir) / "drift"
         store = DriftStateStore(
@@ -221,7 +221,7 @@ class AgentTickFactory:
                     send_message_fn=self._build_drift_send_message_fn(),
                     max_web_fetch_chars=tool_deps.max_chars,
                 ),
-                max_steps=getattr(self._deps.cfg, "drift_max_steps", 20),
+                max_steps=self._deps.cfg.drift_max_steps,
                 tool_hooks=self._deps.tool_hooks,
             )
         )

@@ -25,7 +25,7 @@ from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.tools import ToolDeps
-from tests.proactive_v2.conftest import FakeLLM, FakeRng, cfg_with, make_proactive_pipeline
+from tests.proactive_v2.conftest import FakeLLM, FakeRng, cfg_with, make_proactive_pipeline, run_proactive_pipeline
 
 
 def _write_skill(root: Path, name: str = "explore-curiosity") -> Path:
@@ -550,7 +550,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
             max_steps=5,
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.drift_entered is True
     gate.record_action.assert_called_once()
     assert len(tick._state_store.tick_step_logs) == 2
@@ -673,7 +673,7 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
         )
     )
 
-    await tick.run()
+    await run_proactive_pipeline(tick)
 
     sender.assert_awaited_once_with("hello from drift")
     gate.record_action.assert_called_once()

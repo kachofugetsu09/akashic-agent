@@ -535,7 +535,7 @@ async def test_get_alert_events_returns_json_list():
 @pytest.mark.asyncio
 async def test_get_content_events_caches_on_second_call():
     events = [
-        {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com", "title": "T", "source_name": "S", "published_at": "2026-01-01T00:00:00Z"}
+        {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com", "title": "T", "source": "S", "published_at": "2026-01-01T00:00:00Z"}
     ]
     ctx = AgentTickContext()
     ctx.mark_contents_prefetched(events, {})
@@ -546,7 +546,7 @@ async def test_get_content_events_caches_on_second_call():
 
 @pytest.mark.asyncio
 async def test_get_content_events_stores_in_ctx():
-    event = {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com", "title": "T", "source_name": "S", "published_at": "2026-01-01T00:00:00Z"}
+    event = {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com", "title": "T", "source": "S", "published_at": "2026-01-01T00:00:00Z"}
     ctx = AgentTickContext()
     ctx.mark_contents_prefetched([event], {})
     await _get_content_events(ctx, {})

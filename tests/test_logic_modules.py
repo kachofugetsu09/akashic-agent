@@ -96,6 +96,7 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     )
     loop._presence = None
     loop._trace_proactive_rate_decision = MagicMock()
+    loop._scheduler = SimpleNamespace(next_interval=lambda base_score: 10)
     assert loop._next_interval() == 10
     loop._presence = SimpleNamespace(
         get_last_user_at=lambda session_key: datetime.now(timezone.utc)
@@ -349,7 +350,6 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     loop._sessions = SimpleNamespace(workspace=tmp_path)
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
-    loop._proactive_pipeline = SimpleNamespace(run=AsyncMock(return_value=0.2))
     loop._proactive_kernel = SimpleNamespace(
         run_tick=AsyncMock(return_value=0.2),
         start=AsyncMock(return_value=None),
@@ -358,11 +358,8 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     loop._run_loop = AsyncMock(return_value=None)
 
     assert await loop._tick() == 0.2
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("proactive_v2.loop.compute_energy", lambda last_user_at: 0.8)
-        mp.setattr("proactive_v2.loop.d_energy", lambda energy: 0.5)
-        mp.setattr("proactive_v2.loop.next_tick_from_score", lambda *args, **kwargs: 7)
-        assert loop._next_interval() == 7
+    loop._scheduler = SimpleNamespace(next_interval=lambda base_score: 7)
+    assert loop._next_interval() == 7
     await loop.run()
     loop._proactive_kernel.start.assert_awaited_once()
     loop._run_loop.assert_awaited_once()
