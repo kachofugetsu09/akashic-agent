@@ -201,14 +201,6 @@ def _seed_workspace(tmp_path) -> None:
     memory_store.close()
 
     proactive_store = ProactiveStateStore(tmp_path / "proactive.db")
-    proactive_store.mark_items_seen(
-        [
-            ("mcp:feed:event-1", "feed-1"),
-            ("mcp:feed:event-2", "feed-2"),
-            ("rss:news", "rss-1"),
-        ],
-        now=datetime.fromisoformat("2026-04-19T02:00:00+00:00"),
-    )
     proactive_store.mark_delivery(
         "telegram:100",
         "delivery-a",
@@ -218,29 +210,6 @@ def _seed_workspace(tmp_path) -> None:
         "cli:local",
         "delivery-b",
         now=datetime.fromisoformat("2026-04-19T02:06:00+00:00"),
-    )
-    proactive_store.mark_rejection_cooldown(
-        [("mcp:feed:event-3", "feed-3")],
-        hours=24,
-        now=datetime.fromisoformat("2026-04-19T02:10:00+00:00"),
-    )
-    proactive_store.mark_semantic_items(
-        [
-            {
-                "source_key": "rss:news",
-                "item_id": "rss-1",
-                "text": "今天有新游戏资讯",
-            },
-            {
-                "source_key": "mcp:feed",
-                "item_id": "feed-2",
-                "text": "用户昨天提到过奶茶",
-            },
-        ],
-        now=datetime.fromisoformat("2026-04-19T02:20:00+00:00"),
-    )
-    proactive_store.mark_bg_context_main_send(
-        now=datetime.fromisoformat("2026-04-19T02:30:00+00:00")
     )
     proactive_store.mark_context_only_send(
         "telegram:100",
@@ -742,7 +711,6 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
         overview_resp = client.get("/api/dashboard/proactive/overview")
         assert overview_resp.status_code == 200
         overview = overview_resp.json()
-        assert overview["counts"]["seen_items"] == 3
         assert overview["counts"]["deliveries"] == 2
         assert overview["counts"]["tick_logs"] == 2
         assert overview["flow_counts"]["drift"] == 1
@@ -758,20 +726,6 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
         assert deliveries_resp.status_code == 200
         assert deliveries_resp.json()["total"] == 1
         assert deliveries_resp.json()["items"][0]["delivery_key"] == "delivery-a"
-
-        seen_resp = client.get(
-            "/api/dashboard/proactive/seen_items",
-            params={"source_key": "mcp:feed"},
-        )
-        assert seen_resp.status_code == 200
-        assert seen_resp.json()["total"] == 2
-
-        semantic_resp = client.get(
-            "/api/dashboard/proactive/semantic_items",
-            params={"window_hours": 100000},
-        )
-        assert semantic_resp.status_code == 200
-        assert semantic_resp.json()["total"] == 2
 
         tick_logs_resp = client.get(
             "/api/dashboard/proactive/tick_logs",
@@ -861,61 +815,6 @@ def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> N
         assert payload["total"] == 1
         assert payload["items"][0]["session_key"] == "telegram:100"
         assert payload["items"][0]["user_preview"] == "again"
-
-
-def test_proactive_dashboard_batch_delete(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    with TestClient(create_dashboard_app(tmp_path)) as client:
-        seen_delete_resp = client.request(
-            "DELETE",
-            "/api/dashboard/proactive/seen_items/batch",
-            json={"source_key": "mcp:feed", "item_ids": ["feed-1"]},
-        )
-        assert seen_delete_resp.status_code == 200
-        assert seen_delete_resp.json()["deleted_count"] == 1
-
-        seen_resp = client.get(
-            "/api/dashboard/proactive/seen_items",
-            params={"source_key": "mcp:feed"},
-        )
-        assert seen_resp.json()["total"] == 1
-
-        cooldown_delete_resp = client.request(
-            "DELETE",
-            "/api/dashboard/proactive/rejection_cooldown/batch",
-            json={"source_key": "mcp:feed", "item_ids": ["feed-3"]},
-        )
-        assert cooldown_delete_resp.status_code == 200
-        assert cooldown_delete_resp.json()["deleted_count"] == 1
-
-        cooldown_resp = client.get(
-            "/api/dashboard/proactive/rejection_cooldown",
-            params={"source_key": "mcp:feed"},
-        )
-        assert cooldown_resp.status_code == 200
-        assert cooldown_resp.json()["total"] == 0
-
-
-def test_proactive_dashboard_batch_delete_rejects_empty_payload(tmp_path) -> None:
-    _seed_workspace(tmp_path)
-    with TestClient(create_dashboard_app(tmp_path)) as client:
-        seen_delete_resp = client.request(
-            "DELETE",
-            "/api/dashboard/proactive/seen_items/batch",
-            json={},
-        )
-        assert seen_delete_resp.status_code == 400
-        assert seen_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
-
-        cooldown_delete_resp = client.request(
-            "DELETE",
-            "/api/dashboard/proactive/rejection_cooldown/batch",
-            json={},
-        )
-        assert cooldown_delete_resp.status_code == 400
-        assert (
-            cooldown_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
-        )
 
 
 def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:

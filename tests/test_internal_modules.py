@@ -3,9 +3,7 @@ from typing import Any, cast
 
 import asyncio
 import json
-import time
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,13 +18,8 @@ from core.memory.markdown import (
     _select_consolidation_window,
 )
 from memory2.post_response_worker import PostResponseMemoryWorker
-from proactive_v2.fitbit_sleep import (
-    FitbitSleepProvider,
-    SleepContext,
-    _bootstrap_monitor_data,
-    _monitor_wait_ready_and_refresh,
-    run_fitbit_monitor,
-)
+
+
 class _Resp:
     def __init__(self, content: str) -> None:
         self.content = content
@@ -284,126 +277,3 @@ async def test_consolidation_long_term_prompt_contains_conversation():
     assert len(captured_prompts) == 1
     assert "fitbit" in captured_prompts[0].lower()
     harness._memory_port.save_item.assert_not_awaited()
-
-@pytest.mark.asyncio
-async def test_fitbit_sleep_provider_and_bootstrap_paths(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    assert SleepContext("sleeping", 0.9, "ml", 1, time.time(), True).sleep_modifier == 0.15
-    assert SleepContext("uncertain", 0.7, "ml", 5, time.time(), True).sleep_modifier == 0.20
-    assert SleepContext("uncertain", 0.2, "ml", 20, time.time(), True).sleep_modifier == 0.50
-    assert SleepContext("awake", 0.1, "ml", 1, time.time(), True).sleep_modifier == 1.0
-    assert SleepContext("unknown", None, "x", None, time.time(), True).sleep_modifier == 0.88
-    assert SleepContext("unknown", None, "x", None, time.time(), False).sleep_modifier == 1.0
-    assert SleepContext("unknown", None, "x", None, time.time(), True, health_events=[{"severity": "high"}]).has_urgent_health_event is True
-
-    monkeypatch.setattr("threading.Thread.start", lambda self: None)
-    provider = FitbitSleepProvider(url="http://x", poll_interval=60, sleeping_modifier=2)
-    provider._cached = SleepContext("awake", 0.1, "ml", 1, 0.0, True)
-    assert provider.get().available is False
-    provider._cached = SleepContext("sleeping", 0.9, "ml", 1, time.time(), True)
-    assert provider.get().state == "sleeping"
-
-    class _Req:
-        def __init__(self):
-            self.calls = []
-            self.fail_post = False
-
-        def get(self, url: str, timeout: float):
-            self.calls.append(("get", url, timeout))
-            if url.endswith("/api/refresh"):
-                raise RuntimeError("refresh failed")
-            return SimpleNamespace(
-                raise_for_status=lambda: None,
-                json=lambda: {
-                    "sleep": {
-                        "state": "sleeping",
-                        "prob": 0.9,
-                        "prob_source": "ml",
-                        "data_lag_min": 2,
-                    },
-                    "health_events": {"bad": True},
-                },
-            )
-
-        def post(self, url: str, timeout: float):
-            self.calls.append(("post", url, timeout))
-            if self.fail_post:
-                raise RuntimeError("ack failed")
-            return SimpleNamespace(raise_for_status=lambda: None)
-
-    req = _Req()
-    monkeypatch.setitem(__import__("sys").modules, "requests", req)
-    provider._fetch_once(timeout=1)
-    assert provider.get().health_events == []
-    assert provider.refresh_now() is True
-    req.fail_post = True
-    provider.acknowledge_events(["e1"])
-    _monitor_wait_ready_and_refresh("http://x", 1)
-    assert any(call[0] == "post" for call in req.calls)
-
-    sleep_calls = []
-    provider2 = FitbitSleepProvider(url="http://x", poll_interval=5)
-    provider2.STARTUP_GRACE_SECONDS = 0
-    provider2._fetch_once = MagicMock(side_effect=[RuntimeError("boom"), None])
-
-    def _sleep(sec: float):
-        sleep_calls.append(sec)
-        if len(sleep_calls) >= 2:
-            raise RuntimeError("stop loop")
-
-    monkeypatch.setattr("proactive_v2.fitbit_sleep.time.sleep", _sleep)
-    with pytest.raises(RuntimeError, match="stop loop"):
-        provider2._loop()
-    assert sleep_calls[0] == 5
-
-    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.to_thread", AsyncMock(return_value=None))
-    await _bootstrap_monitor_data("http://x", max_wait_sec=1)
-
-    async def _fail_to_thread(*args, **kwargs):
-        raise RuntimeError("not ready")
-
-    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.to_thread", _fail_to_thread)
-    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.sleep", AsyncMock(return_value=None))
-    monotonic_values = [0.0, 0.2, 1.2]
-    monkeypatch.setattr(
-        "proactive_v2.fitbit_sleep.time.monotonic",
-        lambda: monotonic_values.pop(0) if monotonic_values else 1.2,
-    )
-    await _bootstrap_monitor_data("http://x", max_wait_sec=1)
-
-    assert await run_fitbit_monitor(tmp_path / "missing") is None
-
-
-@pytest.mark.asyncio
-async def test_run_fitbit_monitor_restart_loop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    server_dir = tmp_path / "monitor"
-    server_dir.mkdir()
-    (server_dir / "server.py").write_text("print('ok')", encoding="utf-8")
-
-    rc_values = iter([1, 0])
-    created = []
-
-    class _Proc:
-        def __init__(self, rc: int):
-            self._rc = rc
-
-        async def wait(self):
-            return self._rc
-
-    async def _create_proc(*args, **kwargs):
-        created.append((args, kwargs))
-        return _Proc(next(rc_values))
-
-    async def _never_done(*args, **kwargs):
-        await asyncio.sleep(10)
-
-    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.create_subprocess_exec", _create_proc)
-    monkeypatch.setattr("proactive_v2.fitbit_sleep._bootstrap_monitor_data", _never_done)
-    monkeypatch.setattr("proactive_v2.fitbit_sleep.asyncio.sleep", AsyncMock(return_value=None))
-
-    await run_fitbit_monitor(server_dir)
-
-    assert len(created) == 2
-    assert (server_dir / "monitor.runtime.log").exists()

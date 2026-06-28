@@ -11,6 +11,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from proactive_v2.config import ProactiveConfig
+from proactive_v2.frame import new_proactive_frame
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 from agent.looping.ports import SessionServices
@@ -298,3 +299,15 @@ def make_proactive_pipeline(
             tool_hooks=None,
         )
     )
+
+
+async def run_proactive_pipeline(
+    tick: Any,
+    *,
+    session_key: str = "test_session",
+    slots: dict[str, Any] | None = None,
+) -> float | None:
+    frame = await tick.run(new_proactive_frame(session_key, slots))
+    if frame.output is None:
+        return None
+    return frame.output.base_score

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import sys
 from typing import Any, cast
 
 from proactive_v2.config import ProactiveConfig
@@ -51,10 +50,7 @@ def _validate_ranges(config: dict[str, Any]) -> None:
     """验证参数范围"""
     # 阈值类必须 0~1
     threshold_keys = [
-        "score_llm_threshold",
         "judge_send_threshold",
-        "context_only_judge_threshold",
-        "context_only_judge_threshold_with_evidence",
         "anyaction_probability_min",
         "anyaction_probability_max",
     ]
@@ -93,17 +89,6 @@ def _validate_ranges(config: dict[str, Any]) -> None:
                 f"tick_interval_s1 必须 >= 1，当前值: {interval_values[-1]}"
             )
 
-    # context_only_judge_threshold_with_evidence <= context_only_judge_threshold
-    if "context_only_judge_threshold" in config and "context_only_judge_threshold_with_evidence" in config:
-        with_ev = config["context_only_judge_threshold_with_evidence"]
-        without_ev = config["context_only_judge_threshold"]
-        if with_ev > without_ev:
-            raise ProactiveConfigError(
-                f"context_only_judge_threshold_with_evidence ({with_ev}) "
-                f"不能大于 context_only_judge_threshold ({without_ev})"
-            )
-
-
 def _check_forbidden_keys(p: dict[str, Any]) -> None:
     """检查是否有旧的平铺键直接出现在 proactive 根下"""
     # 允许的根级键
@@ -122,8 +107,6 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
         "features",
         "overrides",
         "feed_poller_interval_seconds",
-        # v2 Agent Tick（独立子系统）
-        "agent_tick",
     }
 
     forbidden = set(p.keys()) - allowed_root_keys
@@ -141,26 +124,6 @@ def _validate_feature_keys(features: dict[str, Any]) -> None:
         raise ProactiveConfigError(
             f"proactive.features 出现非法键: {', '.join(sorted(forbidden))}。"
             "当前已无允许键。"
-        )
-
-
-def _validate_agent_tick_keys(agent_tick: dict[str, Any]) -> None:
-    allowed = {
-        "model",
-        "max_steps",
-        "content_limit",
-        "web_fetch_max_chars",
-        "context_prob",
-        "delivery_cooldown_hours",
-        "drift_enabled",
-        "drift_max_steps",
-        "drift_min_interval_hours",
-    }
-    forbidden = set(agent_tick.keys()) - allowed
-    if forbidden:
-        raise ProactiveConfigError(
-            f"proactive.agent_tick 出现非法键: {', '.join(sorted(forbidden))}。"
-            f"允许键: {', '.join(sorted(allowed))}"
         )
 
 
@@ -222,12 +185,6 @@ def _validate_drift_keys(drift: dict[str, Any]) -> None:
             f"proactive.drift 出现非法键: {', '.join(sorted(forbidden))}。"
             f"允许键: {', '.join(sorted(allowed))}"
         )
-
-
-def _pick(primary: dict[str, Any], primary_key: str, legacy: dict[str, Any], legacy_key: str):
-    if primary_key in primary:
-        return primary[primary_key]
-    return legacy.get(legacy_key)
 
 
 def _as_int(value: Any, field_name: str) -> int:
@@ -345,9 +302,6 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         **final_config,
     )
 
-    # v2 Agent Tick 配置（独立子系统）
-    at = p.get("agent_tick") or {}
-    _validate_agent_tick_keys(at)
     agent = p.get("agent") or {}
     if not isinstance(agent, dict):
         raise ProactiveConfigError("proactive.agent 必须是字典")
@@ -357,68 +311,63 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         raise ProactiveConfigError("proactive.drift 必须是字典")
     _validate_drift_keys(drift)
 
-    agent_model = agent.get("model", at.get("model"))
+    agent_model = agent.get("model")
     if agent_model:
         config.agent_tick_model = str(agent_model)
-    if "max_steps" in agent or "max_steps" in at:
+    if "max_steps" in agent:
         config.agent_tick_max_steps = max(
             1,
-            _as_int(_pick(agent, "max_steps", at, "max_steps"), "agent.max_steps"),
+            _as_int(agent.get("max_steps"), "agent.max_steps"),
         )
-    if "content_limit" in agent or "content_limit" in at:
+    if "content_limit" in agent:
         config.agent_tick_content_limit = max(
             1,
             _as_int(
-                _pick(agent, "content_limit", at, "content_limit"),
+                agent.get("content_limit"),
                 "agent.content_limit",
             ),
         )
-    if "web_fetch_max_chars" in agent or "web_fetch_max_chars" in at:
+    if "web_fetch_max_chars" in agent:
         config.agent_tick_web_fetch_max_chars = max(
             1000,
             _as_int(
-                _pick(agent, "web_fetch_max_chars", at, "web_fetch_max_chars"),
+                agent.get("web_fetch_max_chars"),
                 "agent.web_fetch_max_chars",
             ),
         )
-    if "context_prob" in agent or "context_prob" in at:
+    if "context_prob" in agent:
         config.agent_tick_context_prob = max(
             0.0,
             min(
                 1.0,
                 _as_float(
-                    _pick(agent, "context_prob", at, "context_prob"),
+                    agent.get("context_prob"),
                     "agent.context_prob",
                 ),
             ),
         )
-    if "delivery_cooldown_hours" in agent or "delivery_cooldown_hours" in at:
+    if "delivery_cooldown_hours" in agent:
         config.agent_tick_delivery_cooldown_hours = max(
             0,
             int(
                 _as_int(
-                    _pick(
-                        agent,
-                        "delivery_cooldown_hours",
-                        at,
-                        "delivery_cooldown_hours",
-                    ),
+                    agent.get("delivery_cooldown_hours"),
                     "agent.delivery_cooldown_hours",
                 )
             ),
         )
-    if "enabled" in drift or "drift_enabled" in at:
-        config.drift_enabled = bool(drift.get("enabled", at.get("drift_enabled")))
-    if "max_steps" in drift or "drift_max_steps" in at:
+    if "enabled" in drift:
+        config.drift_enabled = bool(drift.get("enabled"))
+    if "max_steps" in drift:
         config.drift_max_steps = max(
             3,
-            _as_int(_pick(drift, "max_steps", at, "drift_max_steps"), "drift.max_steps"),
+            _as_int(drift.get("max_steps"), "drift.max_steps"),
         )
-    if "min_interval_hours" in drift or "drift_min_interval_hours" in at:
+    if "min_interval_hours" in drift:
         config.drift_min_interval_hours = max(
             0,
             _as_int(
-                _pick(drift, "min_interval_hours", at, "drift_min_interval_hours"),
+                drift.get("min_interval_hours"),
                 "drift.min_interval_hours",
             ),
         )

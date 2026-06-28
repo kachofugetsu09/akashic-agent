@@ -614,7 +614,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       for (const comm of COMMUNITIES) {
         if (comm.size < 60) continue;
         const label = comm.label.split(" · ")[0] || `社区 ${comm.g}`;
-        ctx.fillStyle = "rgba(232,236,244,0.72)";
+        ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--color-muted");
         ctx.fillText(`[${comm.size}] ${label.slice(0, 16)}`, comm.x - comm.r * 0.32, comm.y - comm.r - 8 / scale);
       }
     }
@@ -814,7 +814,7 @@ function renderAkashaGraph(container: HTMLElement): void {
     if (act >= 0) {
       const n = NODES[act];
       drawActiveNode(act);
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--color-muted");
       ctx.font = "bold 14px sans-serif";
       ctx.shadowBlur = 4;
       ctx.shadowColor = "rgba(0,0,0,0.8)";

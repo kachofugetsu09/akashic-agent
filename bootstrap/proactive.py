@@ -15,7 +15,6 @@ from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.engine import MemoryEngine
     from core.memory.markdown import MarkdownMemoryStore
     from core.memory.runtime import MemoryRuntime
 
@@ -45,12 +44,12 @@ def build_proactive_runtime(
     *,
     session_manager: SessionManager,
     provider: LLMProvider,
-    light_provider: LLMProvider | None,
     push_tool: MessagePushTool,
     memory_store: "MemoryRuntime | None",
     presence: PresenceStore,
     agent_loop: AgentLoop,
     tool_hooks: list[ToolHook] | None = None,
+    proactive_modules: list[object] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -75,13 +74,12 @@ def build_proactive_runtime(
         state_store=proactive_state,
         memory_store=memory_store,
         presence=presence,
-        light_provider=light_provider,
-        light_model=config.light_model,
         passive_busy_fn=(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
         shared_tools=getattr(agent_loop, "tools", None),
         tool_hooks=tool_hooks,
+        proactive_modules=proactive_modules,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。

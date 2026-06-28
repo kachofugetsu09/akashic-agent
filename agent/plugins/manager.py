@@ -74,6 +74,7 @@ class PluginManager:
         self._after_step_modules: list[object] = []
         self._after_reasoning_modules: list[object] = []
         self._after_turn_modules: list[object] = []
+        self._proactive_modules: list[object] = []
 
     @property
     def loaded_count(self) -> int:
@@ -114,6 +115,10 @@ class PluginManager:
     @property
     def after_turn_modules(self) -> list[object]:
         return list(self._after_turn_modules)
+
+    @property
+    def proactive_modules(self) -> list[object]:
+        return list(self._proactive_modules)
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
@@ -227,6 +232,8 @@ class PluginManager:
         self._collect_after_reasoning_modules(instance)
         after_turn_count_before = len(self._after_turn_modules)
         self._collect_after_turn_modules(instance)
+        proactive_module_count_before = len(self._proactive_modules)
+        self._collect_proactive_modules(instance)
         # 5. 给插件机会做异步初始化；失败时回滚所有注册
         try:
             if hasattr(instance, "initialize"):
@@ -245,6 +252,7 @@ class PluginManager:
             del self._after_step_modules[after_step_count_before:]
             del self._after_reasoning_modules[after_reasoning_count_before:]
             del self._after_turn_modules[after_turn_count_before:]
+            del self._proactive_modules[proactive_module_count_before:]
             return
         self._loaded.add(mp)
         self._collect_channels(instance)
@@ -377,6 +385,13 @@ class PluginManager:
             self._after_turn_modules,
         )
 
+    def _collect_proactive_modules(self, instance: Any) -> None:
+        self._collect_phase_modules(
+            instance,
+            "proactive_modules",
+            self._proactive_modules,
+        )
+
     def _collect_channels(self, instance: Any) -> None:
         for channel in _load_module_list(instance, "channels"):
             self._channels.append(cast(Channel, channel))
@@ -411,6 +426,7 @@ class PluginManager:
         self._after_step_modules.clear()
         self._after_reasoning_modules.clear()
         self._after_turn_modules.clear()
+        self._proactive_modules.clear()
         self._channels.clear()
 
 

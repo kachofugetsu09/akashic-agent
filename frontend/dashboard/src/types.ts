@@ -113,6 +113,7 @@ export interface PluginDispatch {
   setSort(key: string): void;
   refresh(): void;
   activate(): void;
+  closePane?(): void;
 }
 
 export interface PluginBatchAction {

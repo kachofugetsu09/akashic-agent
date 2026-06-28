@@ -27,7 +27,6 @@ class _ProactiveTraceLoop(ProactiveLoop):
         self._sessions = SimpleNamespace(workspace=workspace)
         self._cfg = SimpleNamespace(
             enabled=True,
-            score_llm_threshold=0.6,
             tick_interval_s0=30,
             tick_interval_s1=60,
             tick_jitter=0.1,
@@ -35,7 +34,6 @@ class _ProactiveTraceLoop(ProactiveLoop):
             anyaction_min_interval_seconds=60,
             anyaction_probability_min=0.1,
             anyaction_probability_max=0.5,
-            memory_history_gate_enabled=True,
         )
 
 

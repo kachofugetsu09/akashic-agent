@@ -96,35 +96,20 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     )
     loop._presence = None
     loop._trace_proactive_rate_decision = MagicMock()
+    loop._scheduler = SimpleNamespace(next_interval=lambda base_score: 10)
     assert loop._next_interval() == 10
     loop._presence = SimpleNamespace(
         get_last_user_at=lambda session_key: datetime.now(timezone.utc)
     )
     loop._sense = SimpleNamespace(
         target_session_key=lambda: "telegram:1",
-        has_global_memory=lambda: True,
-        read_memory_text=lambda: "mem",
-        compute_energy=lambda: 0.5,
-        compute_interruptibility=lambda **kwargs: (0.5, {"x": 1}),
     )
     loop._rng = None
-    loop._memory = SimpleNamespace(
-        read_long_term=lambda: "remember",
-        get_memory_context=lambda: "ctx",
-    )
+    loop._memory = SimpleNamespace(get_memory_context=lambda: "ctx")
     loop._sessions = SimpleNamespace(workspace=tmp_path)
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
     loop._engine = SimpleNamespace(tick=AsyncMock(return_value=0.2))
-    loop._feed_poll_lock = asyncio.Lock()
-    loop._mcp_pool = SimpleNamespace(
-        connect_all=AsyncMock(return_value=None),
-        disconnect_all=AsyncMock(return_value=None),
-    )
-    loop._poll_feeds_once = AsyncMock(return_value=None)
-    assert loop._sample_random_memory(1)
-
-
 def test_session_get_history_returns_empty_when_window_is_zero():
     session = Session("cli:1")
     session.add_message("user", "hello")
@@ -359,39 +344,23 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     )
     loop._sense = SimpleNamespace(
         target_session_key=lambda: "telegram:1",
-        has_global_memory=lambda: True,
-        read_memory_text=lambda: "mem",
-        compute_energy=lambda: 0.5,
-        compute_interruptibility=lambda **kwargs: (0.5, {"x": 1}),
     )
     loop._rng = None
-    loop._memory = SimpleNamespace(read_long_term=lambda: "remember", get_memory_context=lambda: "ctx")
+    loop._memory = SimpleNamespace(get_memory_context=lambda: "ctx")
     loop._sessions = SimpleNamespace(workspace=tmp_path)
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
-    loop._proactive_pipeline = SimpleNamespace(run=AsyncMock(return_value=0.2))
-    loop._feed_poll_lock = asyncio.Lock()
-    loop._mcp_pool = SimpleNamespace(
-        connect_all=AsyncMock(return_value=None),
-        disconnect_all=AsyncMock(return_value=None),
+    loop._proactive_kernel = SimpleNamespace(
+        run_tick=AsyncMock(return_value=0.2),
+        start=AsyncMock(return_value=None),
+        stop=AsyncMock(return_value=None),
     )
     loop._run_loop = AsyncMock(return_value=None)
 
-    assert loop._has_global_memory() is True
-    assert loop._read_memory_text() == "mem"
-    assert loop._compute_energy() == 0.5
-    assert loop._compute_interruptibility(
-        now_hour=10,
-        now_utc=datetime.now(timezone.utc),
-        recent_msg_count=0,
-    ) == (0.5, {"x": 1})
     assert await loop._tick() == 0.2
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("proactive_v2.loop.compute_energy", lambda last_user_at: 0.8)
-        mp.setattr("proactive_v2.loop.d_energy", lambda energy: 0.5)
-        mp.setattr("proactive_v2.loop.next_tick_from_score", lambda *args, **kwargs: 7)
-        assert loop._next_interval() == 7
+    loop._scheduler = SimpleNamespace(next_interval=lambda base_score: 7)
+    assert loop._next_interval() == 7
     await loop.run()
-    loop._mcp_pool.connect_all.assert_awaited_once()
+    loop._proactive_kernel.start.assert_awaited_once()
     loop._run_loop.assert_awaited_once()
-    loop._mcp_pool.disconnect_all.assert_awaited_once()
+    loop._proactive_kernel.stop.assert_awaited_once()

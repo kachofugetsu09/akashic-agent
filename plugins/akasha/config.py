@@ -13,7 +13,7 @@ class AkashaConfig:
     ripple_top_k: int = 10
     activate_limit: int = 8
     inject_max_chars: int = 6000
-    assistant_preview_chars: int = 15
+    assistant_preview_chars: int = 0
     dense_seed_threshold: float = 0.675
     nearby_time_seconds: int = 1800
     nearby_dense_threshold: float = 0.28
@@ -39,7 +39,7 @@ def load_akasha_config(
         ripple_top_k=_int_value(payload.get("ripple_top_k"), 10),
         activate_limit=_int_value(payload.get("activate_limit"), 8),
         inject_max_chars=_int_value(payload.get("inject_max_chars"), 6000),
-        assistant_preview_chars=_int_value(payload.get("assistant_preview_chars"), 15),
+        assistant_preview_chars=_int_value(payload.get("assistant_preview_chars"), 0),
         dense_seed_threshold=_float_value(payload.get("dense_seed_threshold"), 0.675),
         nearby_time_seconds=_int_value(payload.get("nearby_time_seconds"), 1800),
         nearby_dense_threshold=_float_value(payload.get("nearby_dense_threshold"), 0.28),

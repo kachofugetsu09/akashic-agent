@@ -59,12 +59,6 @@ interface AkashaOverview {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Prefix all helpers with ai_ to avoid collisions with other panels.
-function ai_fmt2(v: number | null | undefined): string {
-  if (v == null) return "-";
-  return v.toFixed(2);
-}
-
 function ai_fmtScore(v: number | null | undefined): string {
   if (v == null) return "-";
   const n = Number(v);
@@ -117,94 +111,140 @@ function ai_shortTs(value: unknown): string {
   return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-// ── Activation table ───────────────────────────────────────────────────────
+function ai_renderFilters(container: HTMLElement, dispatch: PluginDispatch): void {
+  const q = dispatch.filters["q"] ?? "";
+  const existing = container.querySelector<HTMLInputElement>("[data-ai-search]");
+  if (existing) {
+    if (document.activeElement !== existing && existing.value !== q) {
+      existing.value = q;
+    }
+    return;
+  }
+  container.innerHTML = `
+    <div class="filter-row">
+      <label class="search"><span>⌕</span><input type="text" placeholder="搜索 query / session" value="${escapeHtml(q)}" data-ai-search /></label>
+      <button class="ghost" type="button" data-ai-clear ${q ? "" : "disabled"}>清空</button>
+    </div>
+  `;
+  const input = container.querySelector<HTMLInputElement>("[data-ai-search]")!;
+  const clear = container.querySelector<HTMLButtonElement>("[data-ai-clear]")!;
+  let debounceTimer = 0;
+  input.addEventListener("input", () => {
+    window.clearTimeout(debounceTimer);
+    debounceTimer = window.setTimeout(() => {
+      const value = input.value.trim();
+      if (value) dispatch.setFilter("q", value);
+      else dispatch.clearFilter("q");
+    }, 250);
+  });
+  clear.addEventListener("click", () => {
+    input.value = "";
+    dispatch.clearFilter("q");
+  });
+}
+
+let _expanderId = 0;
+
+function ai_textExpander(text: string | null | undefined, isAssistant: boolean = false): string {
+  if (!text) return "-";
+  const size = isAssistant ? "11.5px" : "13px";
+  const lineH = isAssistant ? "1.4" : "1.5";
+  if (text.length < 60 && !text.includes('\n')) {
+    return `<div style="font-size:${size}; color:var(--color-${isAssistant ? 'muted' : 'fg'}); padding:4px 0; line-height:${lineH};">${escapeHtml(text)}</div>`;
+  }
+  const id = `ai-exp-${++_expanderId}`;
+  return `
+    <div class="ai-expander ${isAssistant ? 'ai-exp-asst' : ''}">
+      <input type="checkbox" id="${id}" class="ai-exp-cb" style="display:none;" />
+      <label for="${id}" class="ai-exp-header">
+        <span class="ai-exp-icon">▶</span>
+        <span class="ai-exp-text-closed" style="font-size:${size}">${escapeHtml(text.replace(/\n/g, ' '))}</span>
+        <span class="ai-exp-text-open">Collapse</span>
+      </label>
+      <div class="ai-exp-full">
+        <div class="ai-exp-full-inner" style="font-size:${size}">${escapeHtml(text)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function ai_assistantPreview(text: string | null | undefined): string {
+  if (!text) return "";
+  const prefixedText = `ASST: ${text}`;
+  return `<div class="ai-asst-expander-wrap">${ai_textExpander(prefixedText, true)}</div>`;
+}
+
+function ai_sparkbar(label: string, v: number | null | undefined): string {
+  if (v == null) return "";
+  const percent = Math.min(100, Math.max(0, v * 100));
+  return `
+    <div class="ai-act-metric">
+      <span class="ai-act-m-k">${label}</span>
+      <div class="ai-spark-track"><div class="ai-spark-fill" style="width: ${percent}%;"></div></div>
+    </div>
+  `;
+}
 
 function ai_renderActivationTable(items: AkashaCandidate[]): string {
   if (!items.length) {
     return '<div class="ai-empty">无激活节点</div>';
   }
   const rows = items.map((item) => `
-    <tr class="${item.suppressed ? "ai-row-suppressed" : ""}">
-      <td class="ai-cell-msg" title="${escapeHtml(item.user_message)}">${escapeHtml(item.user_message || "-")}</td>
-      <td class="ai-cell-preview" title="${escapeHtml(item.assistant_preview)}">${escapeHtml(item.assistant_preview || "-")}</td>
-      <td class="ai-cell-num">${ai_fmtScore(item.score)}</td>
-      <td>${ai_sourceTag(item.source)}</td>
-      <td>${ai_pathTag(item.path_type)}${ai_suppressedTag(item.suppressed)}</td>
-      <td class="ai-cell-num mono">${item.fan}</td>
-      <td class="ai-cell-num mono">${ai_fmt2(item.direct)}</td>
-      <td class="ai-cell-num mono">${ai_fmt2(item.state)}</td>
-      <td class="ai-cell-num mono">${ai_fmt2(item.edge)}</td>
-      <td class="ai-cell-num mono">${ai_fmt2(item.long)}</td>
-      <td class="ai-cell-num mono">${ai_fmt2(item.resource)}</td>
-    </tr>
-  `).join("");
-  return `
-    <div class="ai-table-wrap">
-      <table class="ai-table ai-table-cards">
-        <thead>
-          <tr>
-            <th class="ai-th-msg">user</th>
-            <th class="ai-th-preview">assistant</th>
-            <th>score</th><th>source</th><th>path</th>
-            <th>fan</th><th>direct</th><th>state</th><th>edge</th><th>long</th><th>resource</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
+    <div class="ai-act-card ${item.suppressed ? "ai-row-suppressed" : ""}">
+      <div class="ai-act-head">
+        ${ai_fmtScore(item.score)}
+        ${ai_sourceTag(item.source)}
+        ${ai_pathTag(item.path_type)}${ai_suppressedTag(item.suppressed)}
+      </div>
+      <div class="ai-act-body">
+        ${ai_textExpander(item.user_message)}
+        ${ai_assistantPreview(item.assistant_preview)}
+      </div>
+      <div class="ai-act-metrics">
+        <div class="ai-act-metric"><span class="ai-act-m-k">FAN</span><span class="ai-act-m-v mono">${item.fan}</span></div>
+        ${ai_sparkbar('DIR', item.direct)}
+        ${ai_sparkbar('STA', item.state)}
+        ${ai_sparkbar('EDG', item.edge)}
+        ${ai_sparkbar('LNG', item.long)}
+        ${ai_sparkbar('RES', item.resource)}
+      </div>
     </div>
-  `;
+  `).join("");
+  return `<div class="ai-act-list">${rows}</div>`;
 }
 
 // ── Dense / Ripple card table ─────────────────────────────────────────────
 
-function ai_renderCardTable(items: AkashaCard[], showPath: boolean): string {
+function ai_renderCardTable(items: AkashaCard[], type: 'dense' | 'ripple'): string {
   if (!items.length) {
     return '<div class="ai-empty">无记录</div>';
   }
-  const extraHeaders = showPath
-    ? "<th>path</th><th>seed</th><th>bridge</th>"
-    : "";
-  const rows = items.map((item) => {
+  const showPath = type === 'ripple';
+
+  const cards = items.map((item) => {
     const srcRefIds: string[] = (() => {
       try { return JSON.parse(item.source_ref) as string[]; }
       catch { return []; }
     })();
-    const srcRefLink = srcRefIds.length
-      ? `<span class="ai-source-ref" title="${escapeHtml(item.source_ref)}">${srcRefIds.length} msg</span>`
-      : "-";
-    const extraCells = showPath
-      ? `<td>${ai_pathTag(item.path_type)}${ai_suppressedTag(item.suppressed)}</td>
-         <td class="mono ai-cell-key" title="${escapeHtml(item.seed_key)}">${escapeHtml(ai_shortKey(item.seed_key))}</td>
-         <td class="mono ai-cell-key" title="${escapeHtml(item.bridge_key)}">${escapeHtml(ai_shortKey(item.bridge_key))}</td>`
-      : "";
+    const refCount = srcRefIds.length;
     return `
-      <tr>
-        <td class="ai-cell-msg">${escapeHtml(item.user_message)}</td>
-        <td class="ai-cell-preview">${escapeHtml(item.assistant_preview)}</td>
-        <td class="ai-cell-num">${ai_fmtScore(item.score)}</td>
-        <td>${ai_sourceTag(item.source)}</td>
-        ${extraCells}
-        <td>${srcRefLink}</td>
-      </tr>
+      <div class="ai-mem-card">
+        <div class="ai-mem-card-head">
+          ${ai_fmtScore(item.score)}
+          ${ai_sourceTag(item.source)}
+          ${showPath ? ai_pathTag(item.path_type) + ai_suppressedTag(item.suppressed) : ""}
+          <div style="flex:1"></div>
+          ${refCount > 0 ? `<span class="ai-source-ref" title="${escapeHtml(item.source_ref)}">${refCount} refs</span>` : ""}
+        </div>
+        <div class="ai-mem-card-body">
+          ${ai_textExpander(item.user_message)}
+          ${ai_assistantPreview(item.assistant_preview)}
+        </div>
+        ${showPath ? `<div class="ai-mem-card-foot"><div class="ai-mem-foot-item"><span>SEED</span> <span class="mono">${escapeHtml(ai_shortKey(item.seed_key))}</span></div><div class="ai-mem-foot-item"><span>BRIDGE</span> <span class="mono">${escapeHtml(ai_shortKey(item.bridge_key))}</span></div></div>` : ""}
+      </div>
     `;
   }).join("");
-  return `
-    <div class="ai-table-wrap">
-      <table class="ai-table ai-table-cards">
-        <thead>
-          <tr>
-            <th class="ai-th-msg">user</th>
-            <th class="ai-th-preview">assistant</th>
-            <th>score</th>
-            <th>source</th>
-            ${extraHeaders}
-            <th>ref</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-  `;
+  return `<div class="ai-cards-list">${cards}</div>`;
 }
 
 // ── Detail renderer ───────────────────────────────────────────────────────
@@ -218,69 +258,81 @@ function ai_renderEmpty(): string {
   `;
 }
 
-function ai_renderDetail(item: AkashaQueryDetail): string {
+function ai_renderDetail(item: AkashaQueryDetail, dispatch?: import("../../frontend/dashboard/src/types").PluginDispatch): string {
   const threshold = (item.activation_threshold ?? 0).toFixed(3);
   return `
-    <div class="detail-wrap ai-inspector">
-      <div class="detail-toolbar">
-        <div>
-          <div class="detail-title">Akasha 检索记录</div>
-          <div class="detail-subtext mono">${escapeHtml(item.session_key)} · seq ${item.seq}</div>
+    <div class="ai-inspector">
+      <div class="ai-query-block">
+        <div class="detail-title" style="display:flex; justify-content:space-between; align-items:flex-start;">
+          <span>Akasha 检索记录 <span class="detail-subtext mono">(${escapeHtml(item.session_key)} · seq ${item.seq})</span></span>
+          ${dispatch?.closePane ? `<button class="ai-close-btn" type="button" title="关闭详情面板">✕</button>` : ""}
         </div>
-      </div>
-
-      <!-- 1. User Query -->
-      <div class="detail-block">
-        <div class="detail-label">User Query</div>
         <div class="ai-query-text">${escapeHtml(item.query_text)}</div>
         <div class="ai-meta-row">
-          <span class="ai-meta-kv"><span class="ai-meta-k">intent</span><span class="ai-meta-v">${escapeHtml(item.intent)}</span></span>
-          <span class="ai-meta-kv"><span class="ai-meta-k">ts</span><span class="ai-meta-v mono">${escapeHtml(ai_shortTs(item.ts))}</span></span>
+          <span class="ai-meta-kv"><span class="ai-meta-k">Intent</span><span class="ai-meta-v">${escapeHtml(item.intent)}</span></span>
+          <span class="ai-meta-kv"><span class="ai-meta-k">Time</span><span class="ai-meta-v">${escapeHtml(ai_shortTs(item.ts))}</span></span>
         </div>
       </div>
 
-      <!-- 2. Activation 激活 -->
-      <div class="detail-block">
-        <div class="detail-label">Activation 激活</div>
-        <div class="ai-stats-row">
-          <div class="ai-stat"><span class="ai-stat-val">${item.seed_count}</span><span class="ai-stat-k">seeds</span></div>
-          <div class="ai-stat-sep">→</div>
-          <div class="ai-stat"><span class="ai-stat-val">${item.pool_count}</span><span class="ai-stat-k">pool</span></div>
-          <div class="ai-stat-sep">→</div>
-          <div class="ai-stat"><span class="ai-stat-val">${item.activated_count}</span><span class="ai-stat-k">activated</span></div>
-          <div class="ai-stat-sep"> / </div>
-          <div class="ai-stat"><span class="ai-stat-val ai-threshold">${threshold}</span><span class="ai-stat-k">threshold</span></div>
+      <!-- KPI Grid -->
+      <div class="ai-kpi-grid">
+        <div class="ai-kpi-card">
+          <div class="ai-kpi-val">${item.seed_count}</div>
+          <div class="ai-kpi-label">SEEDS IGNITED</div>
+        </div>
+        <div class="ai-kpi-card">
+          <div class="ai-kpi-val">${item.pool_count}</div>
+          <div class="ai-kpi-label">POOL SIZE</div>
+        </div>
+        <div class="ai-kpi-card">
+          <div class="ai-kpi-val">${item.activated_count}</div>
+          <div class="ai-kpi-label">ACTIVATED</div>
+        </div>
+        <div class="ai-kpi-card">
+          <div class="ai-kpi-val">${threshold}</div>
+          <div class="ai-kpi-label">THRESHOLD</div>
+        </div>
+      </div>
+
+      <!-- Activation -->
+      <div class="ai-section-container ai-container-act">
+        <div class="ai-section-header">
+          <div class="ai-sh-text">ACTIVATION MATRIX <span class="ai-sh-sub">Neural Graph Propagation</span></div>
+          <div class="ai-sh-count">${item.activation_items?.length || 0}</div>
         </div>
         ${ai_renderActivationTable(item.activation_items || [])}
       </div>
 
-      <!-- 3. Dense 左脑记忆 -->
-      <div class="detail-block">
-        <div class="detail-label">左脑记忆：精确回忆 <span class="ai-count-badge">${item.dense_count}</span></div>
-        ${ai_renderCardTable(item.dense_items || [], false)}
+      <!-- Left Brain -->
+      <div class="ai-section-container ai-container-dense">
+        <div class="ai-section-header">
+          <div class="ai-sh-text">LEFT BRAIN <span class="ai-sh-sub">Precise Retrieval (Dense)</span></div>
+          <div class="ai-sh-count">${item.dense_count}</div>
+        </div>
+        ${ai_renderCardTable(item.dense_items || [], 'dense')}
       </div>
 
-      <!-- 4. Ripple 右脑联想 -->
-      <div class="detail-block">
-        <div class="detail-label">右脑联想：潜意识第一反应 <span class="ai-count-badge">${item.ripple_count}</span></div>
-        ${ai_renderCardTable(item.ripple_items || [], true)}
+      <!-- Right Brain -->
+      <div class="ai-section-container ai-container-ripple">
+        <div class="ai-section-header">
+          <div class="ai-sh-text">RIGHT BRAIN <span class="ai-sh-sub">Associative Leaps (Ripple)</span></div>
+          <div class="ai-sh-count">${item.ripple_count}</div>
+        </div>
+        ${ai_renderCardTable(item.ripple_items || [], 'ripple')}
       </div>
 
-      <!-- 5. Prompt 注入 -->
+      <!-- Prompt Synthesis -->
       <div class="detail-block">
-        <div class="detail-label">Prompt 注入</div>
-        <div class="ai-stats-row">
-          <div class="ai-stat"><span class="ai-stat-val">${item.dense_count}</span><span class="ai-stat-k">dense</span></div>
-          <div class="ai-stat-sep">+</div>
-          <div class="ai-stat"><span class="ai-stat-val">${item.ripple_count}</span><span class="ai-stat-k">ripple</span></div>
-          <div class="ai-stat-sep">·</div>
-          <div class="ai-stat"><span class="ai-stat-val">${item.inject_chars}</span><span class="ai-stat-k">chars</span></div>
-          <div class="ai-stat-sep">·</div>
-          <div class="ai-stat"><span class="ai-stat-val">${item.source_ref_count}</span><span class="ai-stat-k">refs</span></div>
+        <div class="detail-title" style="margin-bottom:12px; font-size:14px; text-transform:uppercase; color:var(--color-subtle);">Synthesis (Prompt Injection)</div>
+        <div class="ai-meta-row" style="margin-bottom:12px;">
+          <span class="ai-meta-kv"><span class="ai-meta-k">Dense</span><span class="ai-meta-v">${item.dense_count}</span></span>
+          <span class="ai-meta-kv"><span class="ai-meta-k">Ripple</span><span class="ai-meta-v">${item.ripple_count}</span></span>
+          <span class="ai-meta-kv"><span class="ai-meta-k">Total Chars</span><span class="ai-meta-v">${item.inject_chars}</span></span>
+          <span class="ai-meta-kv"><span class="ai-meta-k">Refs</span><span class="ai-meta-v">${item.source_ref_count}</span></span>
         </div>
         ${item.text_block_preview
-          ? `<details class="ai-preview-block"><summary>注入文本预览</summary><pre class="ai-preview-pre">${escapeHtml(item.text_block_preview)}</pre></details>`
-          : '<div class="ai-empty">本轮无注入（非 context intent）</div>'}
+          ? `<details class="ai-preview-block"><summary>View Injected Context</summary><pre class="ai-preview-pre">${escapeHtml(item.text_block_preview)}</pre></details>`
+          : '<div class="ai-empty">No context injected in this turn.</div>'}
       </div>
     </div>
   `;
@@ -304,12 +356,9 @@ window.AkashicDashboard.registerPlugin({
     { key: "ts", label: "Time", width: 96, fmt: "mono-time", cellClass: "mono cell-time", rawTitle: true,
       renderCell(value) { return escapeHtml(ai_shortTs(value)); } },
     { key: "query_text", label: "Query", flex: true, fmt: "text-preview", cellClass: "content-preview" },
-    { key: "seed_count", label: "Seeds", width: 60, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
-    { key: "activated_count", label: "Active", width: 60, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
-    { key: "dense_count", label: "Dense", width: 60, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
-    { key: "ripple_count", label: "Ripple", width: 60, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
-    { key: "inject_chars", label: "Chars", width: 70, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
   ],
+
+  renderFilters: ai_renderFilters,
 
   async getCount(): Promise<number | null> {
     try {
@@ -337,11 +386,18 @@ window.AkashicDashboard.registerPlugin({
     return api(`/api/dashboard/akasha-inspector/turns/${encodePath(queryId)}`);
   },
 
-  renderDetail(item: Record<string, unknown> | null, container: HTMLElement): void {
+  renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: import("../../frontend/dashboard/src/types").PluginDispatch): void {
     if (!item) {
       container.innerHTML = ai_renderEmpty();
       return;
     }
-    container.innerHTML = ai_renderDetail(item as unknown as AkashaQueryDetail);
+    container.innerHTML = ai_renderDetail(item as unknown as AkashaQueryDetail, dispatch);
+    
+    if (dispatch?.closePane) {
+      const closeBtn = container.querySelector(".ai-close-btn");
+      if (closeBtn) {
+        closeBtn.addEventListener("click", () => dispatch.closePane!());
+      }
+    }
   },
 });

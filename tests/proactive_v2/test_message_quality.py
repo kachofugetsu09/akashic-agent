@@ -135,7 +135,7 @@ async def test_get_recent_chat_mixed_passive_and_proactive():
 
 def _make_system_prompt() -> str:
     tick = make_proactive_pipeline(llm_fn=None)
-    return tick._build_system_prompt()
+    return tick._prompt_builder.build_system_prompt(tick._proactive_prompt_sections)
 
 
 def test_system_prompt_contains_no_hallucination_rule():

@@ -23,6 +23,7 @@ from tests.proactive_v2.conftest import (
     FakeStateStore,
     cfg_with,
     make_proactive_pipeline,
+    run_proactive_pipeline,
 )
 
 
@@ -32,7 +33,7 @@ from tests.proactive_v2.conftest import (
 async def test_passive_busy_returns_none():
     state = FakeStateStore()
     tick = make_proactive_pipeline(passive_busy_fn=lambda sk: True, state_store=state)
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is None
     assert len(state.tick_log_finishes) == 1
     assert state.tick_log_finishes[0]["gate_exit"] == "busy"
@@ -42,14 +43,14 @@ async def test_passive_busy_returns_none():
 @pytest.mark.asyncio
 async def test_passive_busy_false_does_not_block():
     tick = make_proactive_pipeline(passive_busy_fn=lambda sk: False)
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is not None  # 进入 loop（loop 返回 stub，不是 None）
 
 
 @pytest.mark.asyncio
 async def test_passive_busy_none_fn_does_not_block():
     tick = make_proactive_pipeline(passive_busy_fn=None)
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is not None
 
 
@@ -60,7 +61,7 @@ async def test_passive_busy_receives_session_key():
         session_key="my_session",
         passive_busy_fn=lambda sk: received.append(sk) or False,
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert received == ["my_session"]
 
 
@@ -71,7 +72,7 @@ async def test_delivery_cooldown_blocks_when_count_gt_zero():
     state = FakeStateStore()
     state.set_delivery_count(1)
     tick = make_proactive_pipeline(state_store=state)
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is None
     assert len(state.tick_log_finishes) == 1
     assert state.tick_log_finishes[0]["gate_exit"] == "cooldown"
@@ -82,7 +83,7 @@ async def test_delivery_cooldown_passes_when_count_zero():
     state = FakeStateStore()
     state.set_delivery_count(0)
     tick = make_proactive_pipeline(state_store=state)
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is not None
 
 
@@ -102,8 +103,46 @@ async def test_delivery_cooldown_uses_configured_window():
         state_store=state,
         cfg=cfg_with(agent_tick_delivery_cooldown_hours=3),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert received_window[0] == 3
+
+
+# ── 插件 gate 概率 ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_plugin_gate_probability_blocks_when_draw_fails():
+    state = FakeStateStore()
+    tick = make_proactive_pipeline(
+        state_store=state,
+        rng=FakeRng(value=0.9),
+    )
+    result = await run_proactive_pipeline(
+        tick,
+        slots={
+            "proactive:gate:pass_probability": 0.15,
+            "proactive:gate:reason": "quiet_hours",
+        },
+    )
+    assert result is None
+    assert state.tick_log_finishes[0]["gate_exit"] == "quiet_hours"
+
+
+@pytest.mark.asyncio
+async def test_plugin_gate_probability_passes_when_draw_succeeds():
+    state = FakeStateStore()
+    tick = make_proactive_pipeline(
+        state_store=state,
+        rng=FakeRng(value=0.1),
+    )
+    result = await run_proactive_pipeline(
+        tick,
+        slots={
+            "proactive:gate:pass_probability": 0.15,
+            "proactive:gate:reason": "quiet_hours",
+        },
+    )
+    assert result is not None
+    assert state.tick_log_starts
 
 
 # ── AnyAction gate ────────────────────────────────────────────────────────
@@ -114,7 +153,7 @@ async def test_anyaction_gate_blocks_when_should_act_false():
     gate.should_act.return_value = (False, {"reason": "quota_exhausted"})
     state = FakeStateStore()
     tick = make_proactive_pipeline(any_action_gate=gate, state_store=state)
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is None
     assert len(state.tick_log_finishes) == 1
     assert state.tick_log_finishes[0]["gate_exit"] == "presence"
@@ -125,7 +164,7 @@ async def test_anyaction_gate_passes_when_should_act_true():
     gate = MagicMock()
     gate.should_act.return_value = (True, {})
     tick = make_proactive_pipeline(any_action_gate=gate)
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is not None
 
 
@@ -133,7 +172,7 @@ async def test_anyaction_gate_passes_when_should_act_true():
 async def test_anyaction_gate_none_skips_check():
     """gate=None 时跳过检查，不阻断"""
     tick = make_proactive_pipeline(any_action_gate=None)
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is not None
 
 
@@ -142,7 +181,7 @@ async def test_anyaction_gate_called_with_now_utc():
     gate = MagicMock()
     gate.should_act.return_value = (True, {})
     tick = make_proactive_pipeline(any_action_gate=gate)
-    await tick.run()
+    await run_proactive_pipeline(tick)
     call_kwargs = gate.should_act.call_args[1]
     assert "now_utc" in call_kwargs
     assert isinstance(call_kwargs["now_utc"], datetime)
@@ -157,7 +196,7 @@ async def test_anyaction_gate_called_with_last_user_at():
         any_action_gate=gate,
         last_user_at_fn=lambda: last_user_at,
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     call_kwargs = gate.should_act.call_args[1]
     assert call_kwargs["last_user_at"] == last_user_at
 
@@ -174,7 +213,7 @@ async def test_context_gate_prob_zero_always_closed():
         state_store=state,
         rng=FakeRng(value=0.0),
     )
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is not None  # 不阻断，只是 context_as_fallback_open=False
     # 验证 ctx.context_as_fallback_open — 通过 loop_ctx 回调暴露
     ctx = tick.last_ctx
@@ -189,7 +228,7 @@ async def test_empty_candidates_and_closed_fallback_skip_without_llm():
         llm_fn=llm,
         rng=FakeRng(value=1.0),
     )
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result == 0.0
     assert llm.calls == []
     assert tick.last_ctx.skip_reason == "no_content"
@@ -209,7 +248,7 @@ async def test_context_gate_prob_one_opens_when_quota_ok():
         state_store=state,
         rng=FakeRng(value=0.0),  # 0.0 < 1.0 → 开
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.context_as_fallback_open is True
 
 
@@ -228,7 +267,7 @@ async def test_context_gate_quota_exceeded_closes():
         state_store=state,
         rng=FakeRng(value=0.0),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.context_as_fallback_open is False
 
 
@@ -249,7 +288,7 @@ async def test_context_gate_min_interval_closes():
         state_store=state,
         rng=FakeRng(value=0.0),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.context_as_fallback_open is False
 
 
@@ -270,7 +309,7 @@ async def test_context_gate_interval_satisfied_opens():
         state_store=state,
         rng=FakeRng(value=0.0),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.context_as_fallback_open is True
 
 
@@ -286,7 +325,7 @@ async def test_drift_interval_blocks_recent_drift():
         llm_fn=AsyncMock(return_value=None),
         drift_pipeline=drift_pipeline,
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert tick.last_ctx.drift_entered is False
     assert tick.last_ctx.skip_reason == "no_content"
     drift_pipeline.run.assert_not_called()
@@ -342,7 +381,7 @@ async def test_drift_interval_allows_after_window():
                 )
             ),
         )
-        await tick.run()
+        await run_proactive_pipeline(tick)
         assert tick.last_ctx.drift_entered is True
         assert state.drift_run_marked is True
 
@@ -361,7 +400,7 @@ async def test_passive_busy_checked_before_delivery_cooldown():
         passive_busy_fn=lambda sk: True,
         state_store=state,
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     assert "delivery" not in called
 
 
@@ -382,7 +421,7 @@ async def test_pregate_fail_does_not_call_alert_fn():
             feed_fn=AsyncMock(return_value=[]),
         ),
     )
-    await tick.run()
+    await run_proactive_pipeline(tick)
     alert_fn.assert_not_called()
 
 
@@ -399,5 +438,5 @@ async def test_all_gates_pass_returns_non_none():
         state_store=state,
         any_action_gate=gate,
     )
-    result = await tick.run()
+    result = await run_proactive_pipeline(tick)
     assert result is not None

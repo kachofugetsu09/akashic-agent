@@ -1,5 +1,5 @@
 """
-proactive/mcp_sources.py — 从 MCP server 拉取 ProactiveEvent 的通用客户端。
+proactive/mcp_sources.py — 从 MCP server 拉取主动链路数据的通用客户端。
 
 读取 ~/.akashic/workspace/proactive_sources.json 中的配置，
 动态调用各 MCP server 的 get_tool / ack_tool。
@@ -13,10 +13,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from proactive_v2.event import AlertEvent
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -48,38 +45,6 @@ def _get_server_cfg(server_name: str, workspace: Path) -> dict | None:
     except Exception as e:
         logger.warning("[mcp_sources] mcp_servers.json 读取失败: %s", e)
         return None
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def poll_content_feeds() -> None:
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 poll_content_feeds_async + McpClientPool")
-
-
-def fetch_alert_events() -> list[dict]:
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 fetch_alert_events_async + McpClientPool")
-
-
-def fetch_content_events() -> list[dict]:
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 fetch_content_events_async + McpClientPool")
-
-
-def fetch_context_data() -> list[dict]:
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 fetch_context_data_async + McpClientPool")
-
-
-def acknowledge_events(events: list[AlertEvent]) -> None:
-    _ = events
-    raise RuntimeError("mcp_sources.sync API 已移除，请使用 acknowledge_events_async + McpClientPool")
-
-
-def acknowledge_content_entries(entries: list[tuple[str, str]], ttl_hours: int | None = None) -> None:
-    _ = (entries, ttl_hours)
-    raise RuntimeError(
-        "mcp_sources.sync API 已移除，请使用 acknowledge_content_entries_async + McpClientPool"
-    )
 
 
 # ── Persistent connection pool ────────────────────────────────────────────────
@@ -231,23 +196,16 @@ def _extract_proactive_events(data: Any, *, server: str, kind: str) -> list[dict
 
 
 def _extract_context_items(data: Any, *, server: str) -> list[dict]:
-    # context 源兼容两种返回形态：
-    # 1. 单个 dict：包装成长度为 1 的列表
-    # 2. list[dict]：逐条补 _source 后原样返回
-    if isinstance(data, dict):
-        item = dict(data)
-        item.setdefault("_source", server)
-        return [item]
-    if isinstance(data, list):
-        result: list[dict] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            enriched = dict(item)
-            enriched.setdefault("_source", server)
-            result.append(enriched)
-        return result
-    return []
+    if not isinstance(data, list):
+        return []
+    result: list[dict] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        enriched = dict(item)
+        enriched.setdefault("_source", server)
+        result.append(enriched)
+    return result
 
 
 async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[dict]:
@@ -344,13 +302,12 @@ async def poll_content_feeds_async(pool: McpClientPool) -> None:
         raise RuntimeError(f"poll_content_feeds 以下源失败: {failed_servers}")
 
 
-async def acknowledge_events_async(pool: McpClientPool, events: list) -> None:
+async def acknowledge_events_async(
+    pool: McpClientPool,
+    events: list[tuple[str, str]],
+) -> None:
     ack_map = _build_ack_map(_load_sources(pool._workspace))
-    for e in events:
-        ack_server: str = getattr(e, "_ack_server", None) or ""
-        if not ack_server:
-            ack_server = getattr(e, "source_name", "") or ""
-        ack_id: str | None = getattr(e, "ack_id", None)
+    for ack_server, ack_id in events:
         if ack_server in ack_map and ack_id:
             ack_map[ack_server][1].append(ack_id)
     for server, (ack_tool, ids) in ack_map.items():

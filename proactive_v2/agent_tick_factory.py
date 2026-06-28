@@ -15,13 +15,14 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
-from proactive_v2 import mcp_sources
 from proactive_v2.mcp_sources import McpClientPool
+from proactive_v2.modules_source import McpGatewaySource
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
 from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
+from proactive_v2.anyaction import AnyActionGate, QuotaStore
 from proactive_v2.drift_state import DriftStateStore
 from proactive_v2.drift_tools import DriftToolDeps
-from proactive_v2.gateway import GatewayDeps
+from proactive_v2.judge import MessageDeduper
 from proactive_v2.tools import ToolDeps
 
 
@@ -29,12 +30,7 @@ BUILTIN_DRIFT_SKILLS_DIR = BUILTIN_SKILLS_DIR
 BUILTIN_DRIFT_SKILL_NAMES = {"meme-manage", "create-drift-skill"}
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
-AlertFn = Callable[[], Awaitable[list[dict]]]
-FeedFn = Callable[[int], Awaitable[list[dict]]]
-ContextFn = Callable[[], Awaitable[list[dict]]]
 RecentChatFn = Callable[[int], Awaitable[list[dict]]]
-AckFn = Callable[[str, int], Awaitable[None]]
-AlertAckFn = Callable[[str], Awaitable[None]]
 RecentProactiveFn = Callable[[], list[dict]] | None
 
 
@@ -48,7 +44,7 @@ class AgentTickDeps:
     max_tokens: int
     memory: Any | None
     state_store: Any
-    any_action_gate: Any
+    any_action_gate: Any | None
     passive_busy_fn: Any | None
     deduper: Any | None
     rng: Any
@@ -72,10 +68,18 @@ class AgentTickFactory:
         # 2. 再把 tick 运行期依赖逐项组装好：
         #    最近用户时间 / 工具依赖 / gateway 数据依赖 / 近期主动消息读取函数。
         last_user_at_fn = self._build_last_user_at_fn(session_key)
-        tool_deps = self._build_tool_deps()
-        gateway_deps = self._build_gateway_deps(tool_deps)
+        source = self._build_mcp_source()
+        tool_deps = self._build_tool_deps(source)
+        gateway_deps = source.build_gateway_deps(
+            web_fetch_tool=tool_deps.web_fetch_tool,
+            max_chars=tool_deps.max_chars,
+        )
         recent_proactive_fn = self._build_recent_proactive_fn()
         drift_pipeline = self._build_drift_pipeline(tool_deps)
+        any_action_gate = self._deps.any_action_gate or self._build_anyaction_gate()
+        deduper = self._deps.deduper
+        if deduper is None:
+            deduper = self._build_message_deduper()
 
         # 3. 产出 ProactiveTurnPipeline。后续每次 proactive loop 触发时调用 pipeline.run()。
         return ProactiveTurnPipeline(
@@ -83,11 +87,11 @@ class AgentTickFactory:
                 cfg=self._deps.cfg,
                 session_key=session_key,
                 state_store=self._deps.state_store,
-                any_action_gate=self._deps.any_action_gate,
+                any_action_gate=any_action_gate,
                 last_user_at_fn=last_user_at_fn,
                 passive_busy_fn=self._deps.passive_busy_fn,
                 turn_orchestrator=self._deps.turn_orchestrator,
-                deduper=self._deps.deduper,
+                deduper=deduper,
                 tool_deps=tool_deps,
                 gateway_deps=gateway_deps,
                 workspace_context_fn=self._deps.workspace_context_fn,
@@ -100,10 +104,7 @@ class AgentTickFactory:
         )
 
     def _get_session_key(self) -> str:
-        try:
-            return self._deps.sense.target_session_key()
-        except Exception:
-            return self._deps.cfg.default_chat_id or ""
+        return self._deps.sense.target_session_key()
 
     def _build_last_user_at_fn(self, session_key: str) -> Callable[[], Any | None]:
         presence = self._deps.presence
@@ -143,54 +144,30 @@ class AgentTickFactory:
 
         return llm_fn
 
-    def _build_alert_fn(self) -> AlertFn:
+    def _build_mcp_source(self) -> McpGatewaySource:
         pool = self._deps.pool
         assert pool is not None
+        return McpGatewaySource(
+            pool,
+            content_limit=self._deps.cfg.agent_tick_content_limit,
+        )
 
-        async def alert_fn() -> list[dict]:
-            return await mcp_sources.fetch_alert_events_async(pool)
+    def _build_anyaction_gate(self) -> AnyActionGate:
+        quota_path = Path(self._deps.state_store.workspace_dir) / "proactive_quota.json"
+        return AnyActionGate(
+            cfg=self._deps.cfg,
+            quota_store=QuotaStore(quota_path),
+            rng=self._deps.rng,
+        )
 
-        return alert_fn
-
-    def _build_feed_fn(self) -> FeedFn:
-        pool = self._deps.pool
-        assert pool is not None
-
-        async def feed_fn(limit: int = 5) -> list[dict]:
-            events = await mcp_sources.fetch_content_events_async(pool)
-            return events[:limit]
-
-        return feed_fn
-
-    def _build_context_fn(self) -> ContextFn:
-        pool = self._deps.pool
-        sense = self._deps.sense
-        assert pool is not None
-
-        async def context_fn() -> list[dict]:
-            rows = await mcp_sources.fetch_context_data_async(pool)
-            if not isinstance(rows, list):
-                rows = []
-            try:
-                sleep_ctx = sense.sleep_context()
-            except Exception:
-                sleep_ctx = None
-            if sleep_ctx is not None:
-                fitbit_context = {
-                    "_source": "fitbit_sleep",
-                    "available": bool(getattr(sleep_ctx, "available", False)),
-                    "sleep_state": str(getattr(sleep_ctx, "state", "unknown")),
-                    "sleep_prob": getattr(sleep_ctx, "prob", None),
-                    "sleep_prob_source": str(
-                        getattr(sleep_ctx, "prob_source", "unavailable")
-                    ),
-                    "data_lag_min": getattr(sleep_ctx, "data_lag_min", None),
-                    "sleep_24h": getattr(sleep_ctx, "sleep_24h", {}) or {},
-                }
-                rows.insert(0, fitbit_context)
-            return rows
-
-        return context_fn
+    def _build_message_deduper(self) -> MessageDeduper | None:
+        if not self._deps.cfg.message_dedupe_enabled:
+            return None
+        return MessageDeduper(
+            provider=self._deps.provider,
+            model=self._deps.model,
+            max_tokens=self._deps.max_tokens,
+        )
 
     def _build_recent_chat_fn(self) -> RecentChatFn:
         sense = self._deps.sense
@@ -203,40 +180,7 @@ class AgentTickFactory:
 
         return recent_chat_fn
 
-    def _build_ack_fn(self) -> AckFn:
-        pool = self._deps.pool
-        assert pool is not None
-
-        async def ack_fn(compound_key: str, ttl_hours: int) -> None:
-            """compound_key 格式："{ack_server}:{id}"，如 "feed-mcp:c1"."""
-            parts = compound_key.split(":", 1)
-            if len(parts) != 2:
-                return
-            ack_server, item_id = parts
-            source_key = f"mcp:{ack_server}"
-            await mcp_sources.acknowledge_content_entries_async(
-                pool, [(source_key, item_id)], ttl_hours=ttl_hours
-            )
-
-        return ack_fn
-
-    def _build_alert_ack_fn(self) -> AlertAckFn:
-        pool = self._deps.pool
-        assert pool is not None
-
-        async def alert_ack_fn(compound_key: str) -> None:
-            """Alert 专用通道，走 acknowledge_events（非 content entries）。"""
-            import types as _types
-            parts = compound_key.split(":", 1)
-            if len(parts) != 2:
-                return
-            ack_server, ack_id = parts
-            event_proxy = _types.SimpleNamespace(_ack_server=ack_server, ack_id=ack_id)
-            await mcp_sources.acknowledge_events_async(pool, [event_proxy])
-
-        return alert_ack_fn
-
-    def _build_tool_deps(self) -> ToolDeps:
+    def _build_tool_deps(self, source: McpGatewaySource) -> ToolDeps:
         web_fetch_tool = None
         try:
             web_fetch_tool = WebFetchTool()
@@ -246,27 +190,17 @@ class AgentTickFactory:
             web_fetch_tool=web_fetch_tool,
             memory=self._deps.memory,
             recent_chat_fn=self._build_recent_chat_fn(),
-            ack_fn=self._build_ack_fn(),
-            alert_ack_fn=self._build_alert_ack_fn(),
+            ack_fn=source.ack_fn,
+            alert_ack_fn=source.alert_ack_fn,
             max_chars=self._deps.cfg.agent_tick_web_fetch_max_chars,
         )
 
-    def _build_gateway_deps(self, tool_deps: ToolDeps) -> GatewayDeps:
-        return GatewayDeps(
-            alert_fn=self._build_alert_fn(),
-            feed_fn=self._build_feed_fn(),
-            context_fn=self._build_context_fn(),
-            web_fetch_tool=tool_deps.web_fetch_tool,
-            max_chars=tool_deps.max_chars,
-            content_limit=getattr(self._deps.cfg, "agent_tick_content_limit", 5),
-        )
-
     def _build_recent_proactive_fn(self) -> RecentProactiveFn:
-        recent_n = getattr(self._deps.cfg, "message_dedupe_recent_n", 5)
+        recent_n = self._deps.cfg.message_dedupe_recent_n
         return lambda: self._deps.sense.collect_recent_proactive(recent_n)
 
     def _build_drift_pipeline(self, tool_deps: ToolDeps) -> DriftTurnPipeline | None:
-        if not getattr(self._deps.cfg, "drift_enabled", False):
+        if not self._deps.cfg.drift_enabled:
             return None
         drift_dir = Path(self._deps.state_store.workspace_dir) / "drift"
         store = DriftStateStore(
@@ -287,7 +221,7 @@ class AgentTickFactory:
                     send_message_fn=self._build_drift_send_message_fn(),
                     max_web_fetch_chars=tool_deps.max_chars,
                 ),
-                max_steps=getattr(self._deps.cfg, "drift_max_steps", 20),
+                max_steps=self._deps.cfg.drift_max_steps,
                 tool_hooks=self._deps.tool_hooks,
             )
         )

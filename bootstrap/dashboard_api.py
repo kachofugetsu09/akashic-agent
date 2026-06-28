@@ -11,7 +11,6 @@ import sys
 import threading
 import os
 import shutil
-from datetime import timedelta
 from types import ModuleType
 from typing import Any, Protocol, cast
 
@@ -26,7 +25,6 @@ from pydantic import BaseModel
 from agent.memory import MemoryStore
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
-from core.common.timekit import utcnow
 from core.memory.engine import MemoryAdminApi
 from session.store import SessionStore
 
@@ -117,11 +115,6 @@ class MemoryBatchDeletePayload(BaseModel):
     ids: list[str]
 
 
-class ProactiveDeletePayload(BaseModel):
-    source_key: str | None = None
-    item_ids: list[str] | None = None
-
-
 class ManualConsolidator(Protocol):
     async def trigger_memory_consolidation(
         self,
@@ -155,11 +148,7 @@ class ProactiveDashboardReader:
 
     def get_overview(self) -> dict[str, Any]:
         counts = {
-            "seen_items": self._count("seen_items"),
             "deliveries": self._count("deliveries"),
-            "rejection_cooldown": self._count("rejection_cooldown"),
-            "semantic_items": self._count("semantic_items"),
-            "kv_state": self._count("kv_state"),
             "session_state": self._count("session_state"),
             "context_only_timestamps": self._count("context_only_timestamps"),
             "tick_logs": self._count("tick_log"),
@@ -240,61 +229,6 @@ class ProactiveDashboardReader:
             columns="session_key, delivery_key, sent_at",
         )
 
-    def list_seen_items(
-        self,
-        *,
-        source_key: str = "",
-        page: int = 1,
-        page_size: int = 50,
-    ) -> tuple[list[dict[str, Any]], int]:
-        where, params = self._build_filters(("source_key = ?", source_key))
-        return self._list_rows(
-            table="seen_items",
-            where=where,
-            params=params,
-            order_by="seen_at DESC, source_key ASC, item_id ASC",
-            page=page,
-            page_size=page_size,
-            columns="source_key, item_id, seen_at",
-        )
-
-    def list_rejection_cooldown(
-        self,
-        *,
-        source_key: str = "",
-        page: int = 1,
-        page_size: int = 50,
-    ) -> tuple[list[dict[str, Any]], int]:
-        where, params = self._build_filters(("source_key = ?", source_key))
-        return self._list_rows(
-            table="rejection_cooldown",
-            where=where,
-            params=params,
-            order_by="rejected_at DESC, source_key ASC, item_id ASC",
-            page=page,
-            page_size=page_size,
-            columns="source_key, item_id, rejected_at",
-        )
-
-    def list_semantic_items(
-        self,
-        *,
-        window_hours: int = 168,
-        page: int = 1,
-        page_size: int = 50,
-    ) -> tuple[list[dict[str, Any]], int]:
-        cutoff = (utcnow() - timedelta(hours=max(window_hours, 1))).isoformat()
-        where, params = self._build_filters(("ts >= ?", cutoff))
-        return self._list_rows(
-            table="semantic_items",
-            where=where,
-            params=params,
-            order_by="ts DESC, id DESC",
-            page=page,
-            page_size=page_size,
-            columns="id, source_key, item_id, text, ts",
-        )
-
     def list_tick_logs(
         self,
         *,
@@ -351,7 +285,7 @@ class ProactiveDashboardReader:
                 "tick_id, session_key, started_at, finished_at, gate_exit, "
                 "terminal_action, skip_reason, steps_taken, alert_count, "
                 "content_count, context_count, interesting_ids, discarded_ids, "
-                "cited_ids, drift_entered, final_message"
+                "cited_ids, drift_entered, final_message, proactive_effects_json"
             ),
             row_mapper=self._row_to_tick_log,
         )
@@ -364,7 +298,7 @@ class ProactiveDashboardReader:
                 SELECT tick_id, session_key, started_at, finished_at, gate_exit,
                        terminal_action, skip_reason, steps_taken, alert_count,
                        content_count, context_count, interesting_ids, discarded_ids,
-                       cited_ids, drift_entered, final_message
+                       cited_ids, drift_entered, final_message, proactive_effects_json
                 FROM tick_log
                 WHERE tick_id = ?
                 """,
@@ -387,53 +321,6 @@ class ProactiveDashboardReader:
                 (tick_id,),
             ).fetchall()
         return [self._row_to_tick_step(row) for row in rows]
-
-    def delete_seen_items(
-        self,
-        *,
-        source_key: str = "",
-        item_ids: list[str] | None = None,
-    ) -> int:
-        return self._delete_rows("seen_items", source_key=source_key, item_ids=item_ids)
-
-    def delete_rejection_cooldown(
-        self,
-        *,
-        source_key: str = "",
-        item_ids: list[str] | None = None,
-    ) -> int:
-        return self._delete_rows(
-            "rejection_cooldown",
-            source_key=source_key,
-            item_ids=item_ids,
-        )
-
-    def _delete_rows(
-        self,
-        table: str,
-        *,
-        source_key: str = "",
-        item_ids: list[str] | None = None,
-    ) -> int:
-        if not source_key and not item_ids:
-            raise ValueError("至少提供 source_key 或 item_ids")
-        clauses: list[str] = []
-        params: list[Any] = []
-        if source_key:
-            clauses.append("source_key = ?")
-            params.append(source_key)
-        if item_ids:
-            placeholders = ", ".join("?" for _ in item_ids)
-            clauses.append(f"item_id IN ({placeholders})")
-            params.extend(item_ids)
-        where_sql = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self._lock:
-            result = self._db.execute(
-                f"DELETE FROM {table}{where_sql}",
-                tuple(params),
-            )
-            self._db.commit()
-        return int(result.rowcount or 0)
 
     def _list_rows(
         self,
@@ -510,8 +397,24 @@ class ProactiveDashboardReader:
         )
         payload["discarded_ids"] = self._decode_json_list(payload.get("discarded_ids"))
         payload["cited_ids"] = self._decode_json_list(payload.get("cited_ids"))
+        payload["proactive_effects"] = self._decode_json_object_list(
+            payload.pop("proactive_effects_json", "")
+        )
         payload["drift_entered"] = bool(payload.get("drift_entered"))
         return payload
+
+    @staticmethod
+    def _decode_json_object_list(raw: Any) -> list[dict[str, Any]]:
+        text = str(raw or "").strip()
+        if not text:
+            return []
+        try:
+            value = json.loads(text)
+        except Exception:
+            return []
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
 
     def _row_to_tick_step(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = self._row_to_dict(row)
@@ -1273,61 +1176,6 @@ def create_dashboard_app(
             "page_size": max(1, min(page_size, 200)),
         }
 
-    @app.get("/api/dashboard/proactive/seen_items")
-    def list_proactive_seen_items(
-        source_key: str = "",
-        page: int = 1,
-        page_size: int = 50,
-    ) -> dict[str, Any]:
-        items, total = get_proactive_reader().list_seen_items(
-            source_key=source_key,
-            page=page,
-            page_size=page_size,
-        )
-        return {
-            "items": items,
-            "total": total,
-            "page": max(1, page),
-            "page_size": max(1, min(page_size, 200)),
-        }
-
-    @app.get("/api/dashboard/proactive/rejection_cooldown")
-    def list_proactive_rejection_cooldown(
-        source_key: str = "",
-        page: int = 1,
-        page_size: int = 50,
-    ) -> dict[str, Any]:
-        items, total = get_proactive_reader().list_rejection_cooldown(
-            source_key=source_key,
-            page=page,
-            page_size=page_size,
-        )
-        return {
-            "items": items,
-            "total": total,
-            "page": max(1, page),
-            "page_size": max(1, min(page_size, 200)),
-        }
-
-    @app.get("/api/dashboard/proactive/semantic_items")
-    def list_proactive_semantic_items(
-        page: int = 1,
-        page_size: int = 50,
-        window_hours: int = 168,
-    ) -> dict[str, Any]:
-        items, total = get_proactive_reader().list_semantic_items(
-            page=page,
-            page_size=page_size,
-            window_hours=window_hours,
-        )
-        return {
-            "items": items,
-            "total": total,
-            "page": max(1, page),
-            "page_size": max(1, min(page_size, 200)),
-            "window_hours": max(1, window_hours),
-        }
-
     @app.get("/api/dashboard/proactive/tick_logs")
     def list_proactive_tick_logs(
         session_key: str = "",
@@ -1378,30 +1226,6 @@ def create_dashboard_app(
             "total": len(steps),
             "tick_id": tick_id,
         }
-
-    @app.delete("/api/dashboard/proactive/seen_items/batch")
-    def delete_proactive_seen_items(payload: ProactiveDeletePayload) -> dict[str, Any]:
-        try:
-            deleted_count = get_proactive_reader().delete_seen_items(
-                source_key=str(payload.source_key or "").strip(),
-                item_ids=payload.item_ids,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"deleted_count": deleted_count}
-
-    @app.delete("/api/dashboard/proactive/rejection_cooldown/batch")
-    def delete_proactive_rejection_cooldown(
-        payload: ProactiveDeletePayload,
-    ) -> dict[str, Any]:
-        try:
-            deleted_count = get_proactive_reader().delete_rejection_cooldown(
-                source_key=str(payload.source_key or "").strip(),
-                item_ids=payload.item_ids,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"deleted_count": deleted_count}
 
     return app
 

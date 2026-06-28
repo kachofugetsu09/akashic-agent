@@ -21,7 +21,7 @@ async def test_system_prompt_contains_training_data_warning():
     # 构建一个最小化的 pipeline 来获取系统提示
     tick = make_proactive_pipeline(llm_fn=None)
 
-    prompt = tick._build_system_prompt()
+    prompt = tick._prompt_builder.build_system_prompt(tick._proactive_prompt_sections)
 
     assert "训练数据" in prompt, (
         "系统提示应包含'训练数据'相关的规则，防止 LLM 用训练记忆跳过 web_fetch 验证"
@@ -37,7 +37,7 @@ async def test_system_prompt_rule8_covers_ranking_verification():
     验证规则第8条明确说明排名/赛况等时效性数据必须 web_fetch，不能用训练记忆。
     """
     tick = make_proactive_pipeline(llm_fn=None)
-    prompt = tick._build_system_prompt()
+    prompt = tick._prompt_builder.build_system_prompt(tick._proactive_prompt_sections)
 
     # 规则8的核心断言
     assert "训练数据记忆" in prompt, "规则8应明确提到训练数据记忆不等于常识"
