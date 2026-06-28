@@ -111,6 +111,54 @@ function makeDispatch(
   };
 }
 
+function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | null>; activeSelector: string; deps: React.DependencyList }) {
+  const [style, setStyle] = useState<React.CSSProperties>({ opacity: 0 });
+
+  useEffect(() => {
+    let animationFrameId: number;
+
+    const update = () => {
+      animationFrameId = requestAnimationFrame(() => {
+        if (!props.containerRef.current) return;
+        const activeEl = props.containerRef.current.querySelector(props.activeSelector) as HTMLElement;
+        if (!activeEl) {
+          setStyle((prev) => ({ ...prev, opacity: 0 }));
+          return;
+        }
+
+        const top = activeEl.offsetTop;
+        const left = activeEl.offsetLeft;
+        const width = activeEl.offsetWidth;
+        const height = activeEl.offsetHeight;
+        const radius = window.getComputedStyle(activeEl).borderRadius;
+
+        setStyle({
+          opacity: 1,
+          transform: `translate(${left}px, ${top}px)`,
+          width: `${width}px`,
+          height: `${height}px`,
+          borderRadius: radius,
+        });
+      });
+    };
+
+    update();
+    const observer = new MutationObserver(update);
+    if (props.containerRef.current) {
+      observer.observe(props.containerRef.current, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    }
+    window.addEventListener("resize", update);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      observer.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, props.deps);
+
+  return <div className="magic-indicator" style={style} />;
+}
+
 function App(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
   const [plugins, setPlugins] = useState<PluginConfig[]>([]);
@@ -142,6 +190,9 @@ function App(): React.ReactElement {
   const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
   const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+
+  const explorerBodyRef = useRef<HTMLDivElement>(null);
+  const tableBodyRef = useRef<HTMLDivElement>(null);
 
   const messagePageSize = 25;
   const proactivePageSize = 25;
@@ -470,7 +521,8 @@ function App(): React.ReactElement {
             ))}
           </div>
 
-          <div className="explorer-body">
+          <div className="explorer-body" ref={explorerBodyRef} style={{ position: "relative" }}>
+            <MagicIndicator containerRef={explorerBodyRef} activeSelector=".active" deps={[viewMode, activeSessionKey, proactiveSection, currentPluginState?.activeRowKey]} />
             {viewMode === "sessions" && (
               <>
                 <div className="filters-stack">
@@ -576,7 +628,8 @@ function App(): React.ReactElement {
                 </div>
               )}
               <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
-              <div className="table-body">
+              <div className="table-body" ref={tableBodyRef} style={{ position: "relative" }}>
+                <MagicIndicator containerRef={tableBodyRef} activeSelector=".active" deps={[viewMode, activeMessage?.id, activeProactiveKey, currentPluginState?.activeRowKey]} />
                 <Rows
                   viewMode={viewMode}
                   messages={messages}
