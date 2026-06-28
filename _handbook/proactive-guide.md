@@ -11,20 +11,28 @@ akashic 不只是被动回复——它每 N 秒/分钟跑一轮 tick，检查你
 Proactive 本质上是：
 
 1. **一套固定工具**：`recall_memory`、`get_content`、`web_fetch`、`mark_interesting`、`mark_not_interesting`、`get_recent_chat`、`message_push`、`finish_turn`
-2. **一段固定 system prompt**（硬编码在 `proactive_v2/agent_tick.py:_build_system_prompt()`）
-3. **一个 MCP 数据源池**：从你配置的 server 拉 alert / content / context
+2. **一组内建 phase module**：gate、source、prompt、judge、resolve、deliver、schedule 各自负责一段
+3. **一个 MCP 数据源模块**：从你配置的 server 拉 alert / content / context
 
 每次 tick 做的事非常机械：**把 MCP server 返回的数据灌进 prompt → LLM 按 prompt 指令逐条判断 → 调用工具写分类结果 → 如果有内容值得推就 message_push 完事**。
 
-```
-[外部 MCP server 数据] + [你的 PROACTIVE_CONTEXT.md 规则] + [长期记忆]
-        ↓
-   灌进 system prompt
-        ↓
-   LLM 调工具做 mark_interesting / mark_not_interesting
-        ↓
-   有 interesting → 写一条消息 → message_push → 发给你
-   没有 → finish_turn(skip)
+```text
+┌─ 外部 MCP server 数据
+├─ PROACTIVE_CONTEXT.md 规则
+└─ 长期记忆
+   │
+   ▼
+┌─ ProactivePromptBuilder
+│  └─ 构建 system prompt + runtime context
+│
+▼
+┌─ ProactiveJudge
+│  └─ LLM 调工具做 mark_interesting / mark_not_interesting
+│
+▼
+┌─ ProactiveResolver
+│  ├─ 有 interesting → message_push → 去重 → 发给你
+│  └─ 没有内容 → finish_turn(skip)
 ```
 
 **决策逻辑在哪里？都在 prompt 里。** 你没有写代码，你写的是 `PROACTIVE_CONTEXT.md` 里的白名单/黑名单/过滤规则，以及 `proactive_sources.json` 里告诉它去哪拉数据。剩下的"这条内容发不发"的判断，全是 LLM 自己根据 prompt 做的。
@@ -52,11 +60,13 @@ Drift 跟 proactive 的**根本区别在于控制方式**：
 
 ### 两者的关系
 
-```
-proactive tick
-  └── DataGateway 拉数据
-       ├── 有 alert/content → 跑 proactive agent loop（prompt 驱动）
-       └── 啥都没有 → 跑 drift（SKILL.md 驱动）
+```text
+┌─ proactive tick
+│  └─ DataGateway 拉数据
+│     ├─ 有 alert/content
+│     │  └─ 跑 proactive judge（prompt 驱动）
+│     └─ 啥都没有
+│        └─ 跑 drift（SKILL.md 驱动）
 ```
 
 就这么简单。下面展开讲怎么配、怎么跑。
@@ -211,23 +221,19 @@ MCP server 通过 stdio 与 agent 通信，启动时 `McpClientPool.connect_all(
 
 tick 不是一个 cron，它是一个**根据你上次说话时间动态变化**的间隔。
 
-```
-你上次发消息的时间
-    ↓
-compute_energy(last_user_at) → 当前"电量" [0, 1]
-    三条衰减曲线叠加（30分钟/4小时/48小时）
-    刚聊完 → 电量 ≈ 1.0（满）
-    半天没聊 → 电量 ≈ 0.0（空）
-    ↓
-d_energy = 1 - energy → "饥渴度"
-    电量满 → 不饿 → d_energy 低
-    电量空 → 饿了 → d_energy 高
-    ↓
-base_score = w_e × d_energy
-    ↓
-next_tick_from_score(base_score)
-    base_score > 0.20 → s1
-    base_score ≤ 0.20 → s0（最慢）
+```text
+┌─ 你上次发消息的时间
+│
+▼
+┌─ ProactiveScheduler
+│  ├─ compute_energy(last_user_at) → 当前"电量" [0, 1]
+│  │  ├─ 刚聊完 → 电量 ≈ 1.0（满）
+│  │  └─ 半天没聊 → 电量 ≈ 0.0（空）
+│  ├─ d_energy = 1 - energy → "饥渴度"
+│  ├─ base_score = w_e × d_energy
+│  └─ next_tick_from_score(base_score)
+│     ├─ base_score > 0.20 → s1
+│     └─ base_score ≤ 0.20 → s0（最慢）
 ```
 
 **直觉**：你刚说完话，agent 不想烦你，慢悠悠地查（8 分钟一次）。你半天没动静，agent 觉得"该找点东西了"，加速查到 4 分钟一次。
@@ -257,27 +263,37 @@ tick_interval_s1 = 180         # 很饿时至少 3 分钟
 
 ## 系统怎么跑的（技术展开）
 
-```
-ProactiveLoop.run()
-  ├── McpClientPool.connect_all()         # 启动时连接所有 MCP server（常驻连接）
-  ├── feed poll loop（后台）               # 周期性调用 poll_feeds 拉新内容
-  └── tick loop（自适应频率）
-       ├── _next_interval(score)           # 电量模型 → 下次 tick 间隔
-       ├── DataGateway.run()               # 三路并行预取（alert / content / context）
-       │    ├── _fetch_alerts()            # 调 MCP tool: get_proactive_events(kind=alert)
-       │    ├── _fetch_content()           # 调 MCP tool: get_proactive_events(kind=content) → 并行 web_fetch 正文
-       │    └── _fetch_context()           # 调 MCP tool: get_context / get_sleep_context / get_steam_context
-       ├── AgentTick.tick()
-       │    ├── Pre-gate（冷却 / busy / AnyAction 概率门 / context gate）
-       │    ├── agent loop（LLM 逐条评分分类 → mark_interesting/mark_not_interesting → message_push → finish_turn）
-       │    ├── Classification completeness check（未分类条目强制补完）
-       │    └── Reflection pass（有 interesting 但没收尾时注入提示）
-       ├── Post-loop（delivery 去重 / 消息语义去重 → 发送或跳过）
-       └── ACK（已消费事件标记为已处理，设置 TTL 防止重复拉取）
+```text
+┌─ ProactiveLoop.run()
+│  ├─ ProactiveKernel.start()
+│  │  └─ McpRuntimeModule.start()
+│  │     ├─ McpClientPool.connect_all()
+│  │     └─ feed poll loop（后台调用 poll_feeds）
+│  │
+│  └─ tick loop（自适应频率）
+│     ├─ ProactiveScheduler.next_interval(score)
+│     └─ ProactiveKernel.run_tick()
+│        └─ LegacyPipelineModule.run()
+│           └─ ProactiveTurnPipeline.run()
+│              ├─ ProactiveGateChain
+│              │  └─ target / busy / cooldown / AnyAction / context gate
+│              ├─ DataGateway.run()
+│              │  ├─ alert
+│              │  ├─ content
+│              │  └─ context
+│              ├─ ProactivePromptBuilder
+│              │  └─ system prompt + runtime context
+│              ├─ ProactiveJudge
+│              │  └─ LLM 工具循环 + 补分类 + 反思收尾
+│              ├─ ProactiveResolver
+│              │  └─ skip / delivery 去重 / message 去重 / ACK side effects
+│              └─ ProactiveDeliverer
+│                 └─ tick log + TurnOrchestrator 发送
 ```
 
 关键设计点：
-- **常驻 MCP 连接**：启动时 `connect_all()`，整个生命周期不复连，避免每次 tick 重启子进程
+- **ProactiveLoop 保持薄**：只负责 start/stop、sleep、run_tick，不直接管理 MCP 或 energy 算法
+- **常驻 MCP 连接**：由 `McpRuntimeModule` 生命周期管理，避免每次 tick 重启子进程
 - **数据先到齐再决策**：三路预取在 agent loop 之前完成，单源失败不影响其他源
 - **去重分层**：delivery 级（同一批内容不重复发）+ message 级（语义去重，新消息和最近主动消息如果实质重复也跳过）
 - **ACK 机制**：每个被消费的事件都要 ACK，带不同 TTL（cited 168h / interesting uncited 24h / discarded 720h）
@@ -446,17 +462,20 @@ def get_proactive_events() -> list[dict[str, Any]]:
    └── 检测到静息心率异常 → 写入内部事件队列
 
 2. proactive loop tick
-   └── DataGateway._fetch_alerts()
-       └── pool.call("fitbit", "get_proactive_events", {})
-       └── 返回 [{"event_id":"fb_001","kind":"alert","title":"hr_elevated_rest",...}]
+   └── McpRuntimeModule 已持有 pool
+       └── DataGateway._fetch_alerts()
+           └── pool.call("fitbit", "get_proactive_events", {})
+           └── 返回 [{"event_id":"fb_001","kind":"alert","title":"hr_elevated_rest",...}]
 
-3. agent loop（LLM 决策）
+3. ProactiveJudge（LLM 决策）
    └── system prompt："本轮如有 Alert → 整合所有 Alert → message_push → finish_turn"
    └── LLM 调 message_push: "你的静息心率在过去15分钟异常升高（92 bpm，基线68）。建议留意。"
    └── evidence: ["fitbit:fb_001"]
    └── finish_turn(decision=reply)
 
-4. Post-loop → delivery 去重通过 → 消息语义去重通过 → Telegram 发送
+4. ProactiveResolver → delivery 去重通过 → 消息语义去重通过
 
-5. ACK: acknowledge_events(event_ids=["fb_001"]) → fitbit-mcp 标记已处理
+5. ProactiveDeliverer → Telegram 发送
+
+6. ACK: acknowledge_events(event_ids=["fb_001"]) → fitbit-mcp 标记已处理
 ```
