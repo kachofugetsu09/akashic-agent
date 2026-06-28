@@ -40,6 +40,7 @@ function makeDispatch(
   getState: () => PluginState | null,
   onSetState: (updater: (s: PluginState) => PluginState) => void,
   onActivate?: () => void,
+  onClosePane?: () => void,
 ): PluginDispatch {
   const fetchAndApply = async (
     nextFilters: Record<string, string>,
@@ -103,6 +104,9 @@ function makeDispatch(
     },
     activate(): void {
       onActivate?.();
+    },
+    closePane(): void {
+      onClosePane?.();
     },
   };
 }
@@ -388,6 +392,7 @@ function App(): React.ReactElement {
         () => pluginState[currentPlugin.id] ?? null,
         (updater) => setPluginState((c) => ({ ...c, [currentPlugin.id]: updater(c[currentPlugin.id]) })),
         () => focusView(`plugin:${currentPlugin.id}`),
+        () => setPluginState((c) => ({ ...c, [currentPlugin.id]: { ...c[currentPlugin.id], activeRowKey: null, activeDetail: null } }))
       )
     : undefined;
   const isPluginWorkbench = Boolean(
@@ -581,9 +586,12 @@ function App(): React.ReactElement {
                   selectedMessageIds={selectedMessageIds}
                   activeMessage={activeMessage}
                   activeProactiveKey={activeProactiveKey}
-                  onSelectMessage={setActiveMessage}
+                  onSelectMessage={(msg) => setActiveMessage((current) => current?.id === msg.id ? null : msg)}
                   onSelectProactive={(item) => void run(async () => {
-                    setActiveProactiveKey(item.tick_id);
+                    setActiveProactiveKey((current) => {
+                      if (current === item.tick_id) return null;
+                      return item.tick_id;
+                    });
                     const [detail, steps] = await Promise.all([
                       api<ProactiveTick>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}`),
                       api<PageResult<ProactiveStep>>(`/api/dashboard/proactive/tick_logs/${encodePath(item.tick_id)}/steps`),
@@ -592,12 +600,19 @@ function App(): React.ReactElement {
                     setActiveProactiveSteps(steps.items ?? []);
                   })}
                   onSelectPluginRow={(row) => {
-                    if (!currentPlugin || !currentPluginState) return;
+                    if (!currentPlugin) return;
                     const key = String(row[currentPlugin.rowKey] ?? "");
-                    void run(async () => {
-                      const detail = currentPlugin.fetchDetail ? await currentPlugin.fetchDetail(row) : row;
-                      setPluginState((current) => ({ ...current, [currentPlugin.id]: { ...current[currentPlugin.id], activeRowKey: key, activeDetail: detail } }));
+                    setPluginState((c) => {
+                      const ps = c[currentPlugin.id];
+                      if (!ps) return c;
+                      return { ...c, [currentPlugin.id]: { ...ps, activeRowKey: ps.activeRowKey === key ? null : key, activeDetail: ps.activeRowKey === key ? null : ps.activeDetail } };
                     });
+                    if (currentPluginState?.activeRowKey !== key) {
+                      void run(async () => {
+                        const detail = currentPlugin.fetchDetail ? await currentPlugin.fetchDetail(row) : row;
+                        setPluginState((current) => ({ ...current, [currentPlugin.id]: { ...current[currentPlugin.id], activeDetail: detail } }));
+                      });
+                    }
                   }}
                   onTogglePluginRow={(id) => {
                     if (!currentPlugin) return;
@@ -634,6 +649,18 @@ function App(): React.ReactElement {
                 pluginState={currentPluginState}
                 dispatch={currentDispatch}
                 setProactiveSessionFilter={(key) => { setProactiveSessionFilter(key); setProactivePage(1); selectView("proactive"); }}
+                onClose={() => {
+                  setActiveSession(null);
+                  setActiveMessage(null);
+                  setActiveProactiveKey(null);
+                  if (currentPlugin) {
+                    setPluginState(c => {
+                      const ps = c[currentPlugin.id];
+                      if (!ps) return c;
+                      return { ...c, [currentPlugin.id]: { ...ps, activeRowKey: null, activeDetail: null } };
+                    });
+                  }
+                }}
               />
             </aside>
           </>
@@ -876,6 +903,7 @@ function DetailPane(props: {
   pluginState: PluginState | null;
   dispatch?: PluginDispatch;
   setProactiveSessionFilter(key: string): void;
+  onClose: () => void;
 }): React.ReactElement {
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
     return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} dispatch={props.dispatch} />;
@@ -884,7 +912,7 @@ function DetailPane(props: {
     const item = props.activeProactiveDetail;
     if (!item) return <EmptyDetail text="点开 tick 后，这里会显示 proactive 执行详情和工具链。" />;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">Tick 详情</div><div className="detail-subtext">{item.tick_id}</div></div></div>
+      <div className="detail-toolbar"><div><div className="detail-title">Tick 详情</div><div className="detail-subtext">{item.tick_id}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
       <button className="ghost" type="button" onClick={() => props.setProactiveSessionFilter(item.session_key)}>只看这个 session</button>
       <div className="detail-grid">
         {detailRow("session", <code>{item.session_key}</code>)}
@@ -899,7 +927,7 @@ function DetailPane(props: {
   if (props.activeMessage) {
     const message = props.activeMessage;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">消息详情</div><div className="detail-subtext">{message.session_key} · #{message.seq}</div></div></div>
+      <div className="detail-toolbar"><div><div className="detail-title">消息详情</div><div className="detail-subtext">{message.session_key} · #{message.seq}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
       <div className="detail-grid">
         {detailRow("role", <span className={`role-pill ${roleClass(message.role)}`}>{message.role}</span>)}
         {detailRow("time", <code>{message.timestamp}</code>)}
@@ -913,7 +941,7 @@ function DetailPane(props: {
   if (props.activeSession) {
     const session = props.activeSession;
     return <div className="detail-wrap">
-      <div className="detail-toolbar"><div><div className="detail-title">Session 详情</div><div className="detail-subtext">{session.key}</div></div></div>
+      <div className="detail-toolbar"><div><div className="detail-title">Session 详情</div><div className="detail-subtext">{session.key}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
       <div className="detail-grid">
         {detailRow("messages", <code>{session.message_count}</code>)}
         {detailRow("updated", <code>{session.updated_at}</code>)}
