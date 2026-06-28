@@ -104,6 +104,15 @@ allow_from = []
 # 私有化部署改 domain，如 https://open.larksuite.com（Lark 国际版）。
 # domain = "https://open.feishu.cn"
 
+[plugins.daynight_gate]
+# 默认在北京时间凌晨降低主动 tick 过 gate 概率。
+enabled = true
+timezone = "Asia/Shanghai"
+start = "00:00"
+end = "06:00"
+pass_probability = 0.15
+reason = "quiet_hours"
+
 # =============================================================================
 # 语义记忆
 # default memory 的检索阈值在 plugins/default_memory/config.local.toml。

@@ -107,6 +107,44 @@ async def test_delivery_cooldown_uses_configured_window():
     assert received_window[0] == 3
 
 
+# ── 插件 gate 概率 ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_plugin_gate_probability_blocks_when_draw_fails():
+    state = FakeStateStore()
+    tick = make_proactive_pipeline(
+        state_store=state,
+        rng=FakeRng(value=0.9),
+    )
+    result = await run_proactive_pipeline(
+        tick,
+        slots={
+            "proactive:gate:pass_probability": 0.15,
+            "proactive:gate:reason": "quiet_hours",
+        },
+    )
+    assert result is None
+    assert state.tick_log_finishes[0]["gate_exit"] == "quiet_hours"
+
+
+@pytest.mark.asyncio
+async def test_plugin_gate_probability_passes_when_draw_succeeds():
+    state = FakeStateStore()
+    tick = make_proactive_pipeline(
+        state_store=state,
+        rng=FakeRng(value=0.1),
+    )
+    result = await run_proactive_pipeline(
+        tick,
+        slots={
+            "proactive:gate:pass_probability": 0.15,
+            "proactive:gate:reason": "quiet_hours",
+        },
+    )
+    assert result is not None
+    assert state.tick_log_starts
+
+
 # ── AnyAction gate ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -316,7 +316,17 @@ class ProactiveTurnPipeline:
     # ── 1. Gate ───────────────────────────────────────────────────────
 
     def _gate_check(self, ctx: AgentTickContext) -> GateResult:
-        return self._gate_chain.check(ctx)
+        gate = self._gate_chain.check(ctx)
+        if gate.blocked:
+            return gate
+
+        pass_probability = self._proactive_slots.get("proactive:gate:pass_probability")
+        if pass_probability is None:
+            return gate
+        if self._rng.random() < float(pass_probability):
+            return gate
+        reason = str(self._proactive_slots.get("proactive:gate:reason") or "plugin_gate")
+        return GateResult(blocked=True, reason=reason, base_score=None)
 
     def _collect_proactive_plugin_state(self) -> None:
         self._proactive_prompt_sections = [
