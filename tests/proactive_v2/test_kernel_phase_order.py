@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from agent.core.proactive_kernel import ProactiveKernel
@@ -26,6 +24,19 @@ class _Module:
     async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
         self.calls.append(self.slot)
         return frame
+
+
+class _Pipeline:
+    def __init__(self) -> None:
+        self.slots: dict[str, object] | None = None
+        self.run_count = 0
+
+    def set_proactive_slots(self, slots: dict[str, object]) -> None:
+        self.slots = slots
+
+    async def run(self) -> float:
+        self.run_count += 1
+        return 0.42
 
 
 @pytest.mark.asyncio
@@ -53,9 +64,9 @@ async def test_proactive_phase_runner_orders_phase_and_requires():
 
 @pytest.mark.asyncio
 async def test_proactive_kernel_runs_legacy_pipeline_module():
-    pipeline = AsyncMock()
-    pipeline.run = AsyncMock(return_value=0.42)
+    pipeline = _Pipeline()
     kernel = ProactiveKernel([LegacyPipelineModule(pipeline)])
 
     assert await kernel.run_tick("telegram:1") == 0.42
-    pipeline.run.assert_awaited_once_with()
+    assert pipeline.run_count == 1
+    assert pipeline.slots is not None

@@ -104,10 +104,7 @@ class AgentTickFactory:
         )
 
     def _get_session_key(self) -> str:
-        try:
-            return self._deps.sense.target_session_key()
-        except Exception:
-            return self._deps.cfg.default_chat_id or ""
+        return self._deps.sense.target_session_key()
 
     def _build_last_user_at_fn(self, session_key: str) -> Callable[[], Any | None]:
         presence = self._deps.presence
