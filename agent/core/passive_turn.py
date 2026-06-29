@@ -700,9 +700,15 @@ class DefaultContextStore(ContextStore):
             )
 
         # 3. 最后补齐 ContextBundle，把主链正式字段直接收进显式合同。
+        skill_names = [
+            record.name
+            for record in self._context.skills.list_skill_records(
+                filter_unavailable=False
+            )
+        ]
         skill_mentions = support.collect_skill_mentions(
             msg.content,
-            self._context.skills.list_skills(filter_unavailable=False),
+            skill_names,
         )
         return ContextBundle(
             history=support.to_chat_messages(raw_history),

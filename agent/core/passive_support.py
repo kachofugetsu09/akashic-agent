@@ -23,11 +23,11 @@ context_logger = logging.getLogger("agent.core.passive_turn.context_store")
 _LOG_PREVIEW_LIMIT = 160
 
 
-def collect_skill_mentions(content: str, skills: list[dict]) -> list[str]:
-    raw_names = re.findall(r"\$([a-zA-Z0-9_-]+)", content)
+def collect_skill_mentions(content: str, skill_names: list[str]) -> list[str]:
+    raw_names = re.findall(r"\$([a-zA-Z0-9_:-]+)", content)
     if not raw_names:
         return []
-    available = {s["name"] for s in skills if isinstance(s.get("name"), str)}
+    available = set(skill_names)
     seen: set[str] = set()
     result: list[str] = []
     for name in raw_names:
@@ -227,5 +227,4 @@ def predict_current_user_source_ref(
         if last_id:
             return last_id
     return ""
-
 

@@ -857,8 +857,8 @@ def test_build_memory_runtime_exposes_default_memory_engine(
         def __init__(self, workspace):
             self.workspace = workspace
 
-        def list_skills(self, filter_unavailable=False):
-            return [{"name": "demo"}]
+        def list_skill_records(self, filter_unavailable=False):
+            return [SimpleNamespace(name="demo")]
 
     class _WriteFileTool:
         pass
