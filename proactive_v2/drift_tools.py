@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from agent.tools.base import Tool, ToolResult
-from agent.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
+from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.registry import ToolRegistry
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_state import DriftStateStore
@@ -23,7 +23,6 @@ class DriftToolDeps:
     memory: Any = None
     shared_tools: ToolRegistry | None = None
     send_message_fn: Any = None
-    max_web_fetch_chars: int = 8_000
 
 
 class SendMessageTool(Tool):
@@ -69,12 +68,13 @@ class SendMessageTool(Tool):
     async def execute(
         self,
         message: str = "",
-        content: str = "",
         image: str = "",
         media: list[str] | str | None = None,
-        **_: Any,
+        channel: str = "",
+        chat_id: str = "",
     ) -> str:
-        text = normalize_outbound_text(message or content or "").strip()
+        _ = (channel, chat_id)
+        text = normalize_outbound_text(message or "").strip()
         media_paths = self._normalize_media(image=image, media=media)
         if self._send_message_fn is None:
             logger.info("[drift_tools] message_push unavailable")
@@ -123,7 +123,7 @@ class FinishDriftTool(Tool):
 
     @property
     def description(self) -> str:
-        return "【终止工具】结束本次 Drift，保存进度状态。调用后 loop 立即结束。"
+        return "【终止工具】结束本次 Drift，保存本轮摘要和连续性前情。调用后 loop 立即结束。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -131,8 +131,16 @@ class FinishDriftTool(Tool):
             "type": "object",
             "properties": {
                 "skill_used": {"type": "string"},
-                "one_line": {"type": "string"},
-                "next": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["completed", "paused", "waiting"],
+                    "description": (
+                        "completed 表示本轮小闭环完成；"
+                        "paused 表示本轮未完成但可下次继续；"
+                        "waiting 表示正在等待用户回复或外部条件。"
+                    ),
+                },
+                "briefing": {"type": "string", "description": "本轮做了什么的一句话摘要"},
                 "message_result": {
                     "type": "string",
                     "enum": ["sent", "silent"],
@@ -141,19 +149,28 @@ class FinishDriftTool(Tool):
                         "silent 表示本轮确认不该打扰用户，静默结束。"
                     ),
                 },
-                "note": {"type": "string"},
+                "scratchpad_update": {
+                    "type": "string",
+                    "description": "下次进入本 skill 时需要注入的自然语言前情",
+                },
+                "state_update": {
+                    "type": "object",
+                    "description": "可选轻量结构化接续状态，例如章节、锚点、当前阶段",
+                },
+                "global_note_update": {"type": "string"},
             },
-            "required": ["skill_used", "one_line", "next", "message_result"],
+            "required": ["skill_used", "status", "briefing", "message_result"],
         }
 
     async def execute(
         self,
         skill_used: str,
-        one_line: str,
-        next: str,
+        status: str = "",
+        briefing: str = "",
         message_result: str = "",
-        note: str | None = None,
-        **_: Any,
+        scratchpad_update: str | None = None,
+        state_update: dict[str, Any] | None = None,
+        global_note_update: str | None = None,
     ) -> str:
         skill_name = str(skill_used or "").strip()
         if skill_name not in self._store.valid_skill_names():
@@ -162,12 +179,32 @@ class FinishDriftTool(Tool):
                 {"error": f"unknown skill: {skill_name}"},
                 ensure_ascii=False,
             )
-        summary = str(one_line or "").strip()
-        next_action = str(next or "").strip()
+        selected = str(self._ctx.drift_selected_skill or "").strip()
+        if selected and skill_name != selected:
+            return json.dumps(
+                {"error": f"skill_used must match selected skill: {selected}"},
+                ensure_ascii=False,
+            )
+        status_value = str(status or "").strip()
+        if status_value not in {"completed", "paused", "waiting"}:
+            return json.dumps(
+                {"error": "status must be one of: completed, paused, waiting"},
+                ensure_ascii=False,
+            )
+        summary = str(briefing or "").strip()
         if not summary:
-            return json.dumps({"error": "one_line is required"}, ensure_ascii=False)
-        if not next_action:
-            return json.dumps({"error": "next is required"}, ensure_ascii=False)
+            return json.dumps({"error": "briefing is required"}, ensure_ascii=False)
+        scratchpad_text = str(scratchpad_update or "").strip()
+        if status_value in {"paused", "waiting"} and not scratchpad_text:
+            return json.dumps(
+                {
+                    "error": (
+                        "scratchpad_update is required when "
+                        "status is paused or waiting"
+                    )
+                },
+                ensure_ascii=False,
+            )
         message_result_value = str(message_result or "").strip()
         if message_result_value not in {"sent", "silent"}:
             return json.dumps(
@@ -184,31 +221,99 @@ class FinishDriftTool(Tool):
                 {"error": "message_result=silent conflicts with successful message_push"},
                 ensure_ascii=False,
             )
-        note_text = str(note).strip() if note is not None else None
+        if state_update is not None and not isinstance(state_update, dict):
+            return json.dumps(
+                {"error": "state_update must be an object"},
+                ensure_ascii=False,
+            )
+        note_text = (
+            str(global_note_update).strip()
+            if global_note_update is not None
+            else None
+        )
+        if not selected:
+            self._ctx.drift_selected_skill = skill_name
         self._store.save_finish(
             skill_used=skill_name,
-            one_line=summary,
-            next_action=next_action,
+            status=status_value,
+            briefing=summary,
             message_result=message_result_value,
-            note=note_text,
+            scratchpad_update=scratchpad_text or None,
+            state_update=state_update,
+            global_note_update=note_text,
             now_utc=self._ctx.now_utc,
         )
         self._ctx.drift_finished = True
         logger.info(
-            "[drift_tools] finish_drift ok: skill=%s one_line=%s next=%s",
+            "[drift_tools] finish_drift ok: skill=%s status=%s briefing=%s",
             skill_name,
+            status_value,
             summary[:120],
-            next_action[:100],
         )
         return json.dumps({"ok": True}, ensure_ascii=False)
+
+
+class SelectSkillTool(Tool):
+    def __init__(self, ctx: AgentTickContext, store: DriftStateStore) -> None:
+        self._ctx = ctx
+        self._store = store
+
+    @property
+    def name(self) -> str:
+        return "select_skill"
+
+    @property
+    def description(self) -> str:
+        return "声明本轮 Drift 选中的 skill，并返回该 skill 的 SKILL.md 内容。"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "本轮要执行的 drift skill 名称",
+                },
+            },
+            "required": ["skill_name"],
+        }
+
+    async def execute(self, skill_name: str) -> str:
+        name = str(skill_name or "").strip()
+        if name not in self._store.valid_skill_names():
+            return json.dumps({"error": f"unknown skill: {name}"}, ensure_ascii=False)
+        selected = str(self._ctx.drift_selected_skill or "").strip()
+        if selected and selected != name:
+            return json.dumps(
+                {"error": f"selected skill already fixed: {selected}"},
+                ensure_ascii=False,
+            )
+        skill_dir = self._store.skill_dir_for(name)
+        if skill_dir is None:
+            return json.dumps({"error": f"skill not mounted: {name}"}, ensure_ascii=False)
+        skill_file = skill_dir / "SKILL.md"
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        self._ctx.drift_selected_skill = name
+        return json.dumps(
+            {
+                "ok": True,
+                "skill": name,
+                "content": content,
+            },
+            ensure_ascii=False,
+        )
 
 
 class MountServerTool(Tool):
     """挂载一个已连接的 MCP server，使其工具在本次 drift 中可用。"""
 
-    def __init__(self, shared_tools: ToolRegistry, mounted: set[str]) -> None:
+    def __init__(self, shared_tools: ToolRegistry, target_tools: ToolRegistry) -> None:
         self._shared = shared_tools
-        self._mounted = mounted
+        self._target = target_tools
 
     @property
     def name(self) -> str:
@@ -234,7 +339,7 @@ class MountServerTool(Tool):
             "required": ["server"],
         }
 
-    async def execute(self, server: str, **_: Any) -> str:
+    async def execute(self, server: str) -> str:
         server = str(server or "").strip()
         if not server:
             return json.dumps({"error": "server is required"}, ensure_ascii=False)
@@ -244,13 +349,21 @@ class MountServerTool(Tool):
                 {"error": f"MCP server '{server}' 不存在或未连接"},
                 ensure_ascii=False,
             )
-        new = names - self._mounted
+        new = names - self._target.get_registered_names()
         if not new:
             return json.dumps(
                 {"ok": True, "message": f"'{server}' 已挂载，无新增工具", "tools": sorted(names)},
                 ensure_ascii=False,
             )
-        self._mounted |= new
+        for name in sorted(new):
+            tool = self._shared.get_tool(name)
+            if tool is not None:
+                self._target.register(
+                    tool,
+                    risk="external-side-effect",
+                    source_type="mcp",
+                    source_name=server,
+                )
         logger.info("[drift_tools] mount_server ok: server=%s new=%s", server, sorted(new))
         return json.dumps(
             {"ok": True, "tools": sorted(names), "new": sorted(new)},
@@ -258,10 +371,10 @@ class MountServerTool(Tool):
         )
 
 
-class DriftWebFetchTool(Tool):
-    def __init__(self, wrapped: Tool, max_chars: int) -> None:
+class DriftRecallMemoryTool(Tool):
+    def __init__(self, wrapped: Tool, ctx: AgentTickContext) -> None:
         self._wrapped = wrapped
-        self._max_chars = max(1, int(max_chars))
+        self._ctx = ctx
 
     @property
     def name(self) -> str:
@@ -276,32 +389,69 @@ class DriftWebFetchTool(Tool):
         return self._wrapped.parameters
 
     async def execute(self, **kwargs: Any) -> str | ToolResult:
-        result = await self._wrapped.execute(**kwargs)
-        if not isinstance(result, str):
-            return result
-        try:
-            payload = json.loads(result)
-        except Exception:
-            return result
-        text = payload.get("text")
-        if not isinstance(text, str) or len(text) <= self._max_chars:
-            return result
-        payload["text"] = text[: self._max_chars]
-        payload["length"] = len(payload["text"])
-        payload["truncated"] = True
-        payload["note"] = (
-            f"内容已截断至 {self._max_chars} 字符，"
-            "如需更多内容请缩小范围或改用更精确的读取方式"
-        )
-        return json.dumps(payload, ensure_ascii=False)
+        args = dict(kwargs)
+        args.setdefault("current_timestamp", self._ctx.now_utc.isoformat())
+        if ":" in self._ctx.session_key:
+            channel, chat_id = self._ctx.session_key.split(":", 1)
+            args.setdefault("channel", channel)
+            args.setdefault("chat_id", chat_id)
+        return await self._wrapped.execute(**args)
+
+
+class DriftShellTool(Tool):
+    def __init__(self, wrapped: Tool, drift_dir: Path) -> None:
+        self._wrapped = wrapped
+        self._drift_dir = drift_dir
+
+    @property
+    def name(self) -> str:
+        return self._wrapped.name
+
+    @property
+    def description(self) -> str:
+        return self._wrapped.description + "\nDrift 中默认工作目录是 drift 工作区。"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self._wrapped.parameters
+
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
+        args = dict(kwargs)
+        raw_cwd = str(args.get("cwd") or "").strip()
+        if raw_cwd:
+            cwd = Path(raw_cwd).expanduser()
+            if not cwd.is_absolute():
+                cwd = self._drift_dir / cwd
+        else:
+            cwd = self._drift_dir
+        args["cwd"] = str(cwd)
+        return await self._wrapped.execute(**args)
+
+
+class DriftPathResolver:
+    def __init__(self, drift_dir: Path, store: DriftStateStore) -> None:
+        self._drift_dir = drift_dir
+        self._store = store
+
+    def resolve(self, path: str) -> Path | None:
+        raw = str(path or "").strip()
+        if not raw:
+            return None
+        raw_path = Path(raw).expanduser()
+        if raw_path.is_absolute():
+            return raw_path
+        parts = PurePosixPath(raw).parts
+        if len(parts) >= 2 and parts[0] == "skills":
+            skill_dir = self._store.skill_dir_for(parts[1])
+            if skill_dir is not None:
+                return skill_dir.joinpath(*parts[2:])
+        return self._drift_dir / raw
 
 
 class DriftReadFileTool(Tool):
-    def __init__(self, drift_dir: Path, builtin_skills_dir: Path | None = None) -> None:
-        self._drift_dir = drift_dir
-        self._builtin_skills_dir = builtin_skills_dir
-        self._relative_reader = ReadFileTool(allowed_dir=drift_dir)
-        self._absolute_reader = ReadFileTool()
+    def __init__(self, resolver: DriftPathResolver) -> None:
+        self._resolver = resolver
+        self._reader = ReadFileTool()
 
     @property
     def name(self) -> str:
@@ -309,37 +459,58 @@ class DriftReadFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return self._absolute_reader.description
+        return self._reader.description
 
     @property
     def parameters(self) -> dict[str, Any]:
-        return self._absolute_reader.parameters
+        return self._reader.parameters
 
     async def execute(self, path: str, **kwargs: Any) -> Any:
-        raw = str(path or "").strip()
-        if not raw:
-            return await self._absolute_reader.execute(path=path, **kwargs)
-        raw_path = Path(raw).expanduser()
-        if raw_path.is_absolute():
-            return await self._absolute_reader.execute(path=path, **kwargs)
-        if raw.startswith("skills/") and self._builtin_skills_dir is not None:
-            builtin_path = self._builtin_skills_dir / raw.removeprefix("skills/")
-            if builtin_path.exists():
-                return await self._absolute_reader.execute(path=str(builtin_path), **kwargs)
-        reader = self._relative_reader
-        return await reader.execute(path=path, **kwargs)
+        resolved = self._resolver.resolve(path)
+        if resolved is None:
+            return await self._reader.execute(path=path, **kwargs)
+        return await self._reader.execute(path=str(resolved), **kwargs)
+
+
+class DriftListDirTool(Tool):
+    def __init__(self, resolver: DriftPathResolver) -> None:
+        self._resolver = resolver
+        self._lister = ListDirTool()
+
+    @property
+    def name(self) -> str:
+        return "list_dir"
+
+    @property
+    def description(self) -> str:
+        return self._lister.description
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self._lister.parameters
+
+    async def execute(self, path: str, **kwargs: Any) -> Any:
+        resolved = self._resolver.resolve(path)
+        if resolved is None:
+            return await self._lister.execute(path=path, **kwargs)
+        return await self._lister.execute(path=str(resolved), **kwargs)
 
 
 def build_drift_tool_registry(
     *,
     ctx: AgentTickContext,
     deps: DriftToolDeps,
-    mounted_tool_names: set[str] | None = None,
 ) -> ToolRegistry:
     tools = ToolRegistry()
     drift_dir = deps.drift_dir
+    resolver = DriftPathResolver(drift_dir, deps.store)
+    tools.register(SelectSkillTool(ctx, deps.store), risk="read-only")
     tools.register(
-        DriftReadFileTool(drift_dir, deps.builtin_skills_dir),
+        DriftReadFileTool(resolver),
+        risk="read-only",
+    )
+    tools.register(
+        DriftListDirTool(resolver),
         risk="read-only",
     )
     tools.register(WriteFileTool(allowed_dir=drift_dir), risk="write")
@@ -358,15 +529,16 @@ def build_drift_tool_registry(
             continue
         tool = shared.get_tool(name)
         if tool is not None:
-            if name == "web_fetch":
-                tool = DriftWebFetchTool(tool, deps.max_web_fetch_chars)
+            if name == "recall_memory":
+                tool = DriftRecallMemoryTool(tool, ctx)
+            elif name == "shell":
+                tool = DriftShellTool(tool, drift_dir)
             risk = "external-side-effect" if name == "shell" else "read-only"
             tools.register(tool, risk=risk)
 
     # mount_server: 只有 shared registry 里有 MCP 工具时才注册
     if shared is not None and shared.get_mcp_server_names():
-        mounted = mounted_tool_names if mounted_tool_names is not None else set()
-        tools.register(MountServerTool(shared, mounted), risk="read-only")
+        tools.register(MountServerTool(shared, tools), risk="read-only")
 
     tools.register(
         SendMessageTool(ctx, deps.send_message_fn),

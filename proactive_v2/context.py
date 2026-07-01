@@ -39,6 +39,7 @@ class AgentTickContext:
     drift_entered: bool = False
     drift_finished: bool = False
     drift_message_sent: bool = False
+    drift_selected_skill: str = ""
 
     def mark_alerts_prefetched(self, alerts: list[dict]) -> None:
         self.fetched_alerts = alerts

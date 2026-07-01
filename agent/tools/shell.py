@@ -332,6 +332,10 @@ class ShellTool(Tool):
                         "只有用户明确说“阻塞”时才设为 false；不传 timeout 时默认等待 21600 秒。"
                     ),
                 },
+                "cwd": {
+                    "type": "string",
+                    "description": "可选工作目录；相对路径按当前进程工作目录解析。",
+                },
             },
             "required": ["command", "description"],
         }
@@ -359,6 +363,9 @@ class ShellTool(Tool):
             return _err("命令不能为空")
 
         cwd = self._working_dir
+        cwd_arg = kwargs.get("cwd")
+        if cwd_arg not in (None, ""):
+            cwd = Path(str(cwd_arg)).expanduser()
         env = _shell_env()
         if self._spawn_hook is not None:
             hooked = self._spawn_hook(

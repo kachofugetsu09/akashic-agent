@@ -346,8 +346,8 @@ async def test_drift_interval_allows_after_window():
             "finish_drift",
             {
                 "skill_used": "explore-curiosity",
-                "one_line": "x",
-                "next": "y",
+                "status": "completed",
+                "briefing": "x",
                 "message_result": "silent",
             },
         ),

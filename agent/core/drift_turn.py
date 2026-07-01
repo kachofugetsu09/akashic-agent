@@ -45,6 +45,10 @@ if TYPE_CHECKING:
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 StepRecorder = Callable[[AgentTickContext, str, str, str, dict[str, Any], str], None]
 logger = logging.getLogger(__name__)
+_WRAP_UP_MAX_ATTEMPTS = 2
+_BEFORE_SELECT_TOOLS = frozenset({"select_skill"})
+_AFTER_SEND_TOOLS = frozenset({"finish_drift"})
+_TOOL_CONSTRAINT_RETRY_LIMIT = 2
 
 
 # ── Pipeline 依赖容器 ─────────────────────────────────────────────────────
@@ -70,7 +74,7 @@ class DriftTurnPipelineDeps:
 # │     │  └─ 设置 ctx drift flags → build_drift_tool_registry → 构建 messages
 # │     ├─ 3. Execute ── _execute_loop
 # │     │  └─ while steps < max_steps: llm_fn → tool execute → append → record
-# │     │     message_push 后约束 schema 为 write_file/edit_file/finish_drift
+# │     │     message_push 后约束 schema 为 finish_drift
 # │     └─ 4. Finish ── _finish
 # │        └─ 记录退出状态日志
 # └─ done
@@ -99,10 +103,10 @@ class DriftTurnPipeline:
             return False
 
         # 3. Prepare — 构建 tool registry 与初始 messages。
-        tools, messages, mounted_tool_names = self._prepare(ctx, skills)
+        tools, messages = self._prepare(ctx, skills)
 
         # 4. Execute — LLM 工具调用循环。
-        await self._execute_loop(ctx, llm_fn, tools, messages, mounted_tool_names)
+        await self._execute_loop(ctx, llm_fn, tools, messages)
 
         # 5. Finish — 记录退出。
         self._finish(ctx)
@@ -142,20 +146,19 @@ class DriftTurnPipeline:
         self,
         ctx: AgentTickContext,
         skills: list[SkillMeta],
-    ) -> tuple[Any, list[dict], set[str]]:
+    ) -> tuple[Any, list[dict]]:
         """设置 ctx drift 标志、构建 tool registry 与初始 messages。"""
 
         # 2.1 设置 ctx 标志位。
         ctx.drift_entered = True
         ctx.drift_finished = False
         ctx.drift_message_sent = False
+        ctx.drift_selected_skill = ""
 
         # 2.2 构建 drift tool registry。
-        mounted_tool_names: set[str] = set()
         tools = build_drift_tool_registry(
             ctx=ctx,
             deps=self._tool_deps,
-            mounted_tool_names=mounted_tool_names,
         )
 
         # 2.3 确定 MCP 已连接 server 列表。
@@ -168,7 +171,7 @@ class DriftTurnPipeline:
             self._build_runtime_context_message(skills, connected_servers),
         ]
 
-        return tools, messages, mounted_tool_names
+        return tools, messages
 
     # ── 3. Execute ────────────────────────────────────────────────────
 
@@ -178,35 +181,39 @@ class DriftTurnPipeline:
         llm_fn: LlmFn,
         tools: Any,
         messages: list[dict],
-        mounted_tool_names: set[str],
     ) -> None:
         """LLM 工具调用循环：调模型 → 执行工具 → 追加 messages → 重复。"""
 
-        shared = self._tool_deps.shared_tools
-        base_schemas = tools.get_schemas()
         steps = 0
+        constraint_rejections = 0
 
         while steps < self._max_steps and not ctx.drift_finished:
             tool_choice: str | dict = "required"
-            schemas = list(base_schemas)
+            schemas = tools.get_schemas()
+            allowed_tool_names: set[str] | None = None
+            before_select = not str(ctx.drift_selected_skill or "").strip()
 
-            # 3.1 拼接已挂载 MCP 工具的 schema。
-            if mounted_tool_names and shared:
-                schemas += shared.get_schemas(names=mounted_tool_names)
-
-            # 3.2 message_push 后约束工具集。
-            if ctx.drift_message_sent:
-                allowed_after_send = {"write_file", "edit_file", "finish_drift"}
+            # 3.1 必须先用 select_skill 声明本轮执行对象。
+            if before_select:
+                allowed_tool_names = set(_BEFORE_SELECT_TOOLS)
+                tool_choice = {"type": "function", "function": {"name": "select_skill"}}
                 schemas = [
                     s for s in schemas
-                    if s["function"]["name"] in allowed_after_send
+                    if s["function"]["name"] in allowed_tool_names
+                ]
+                logger.info("[drift] selected_skill missing, forcing select_skill")
+            elif ctx.drift_message_sent:
+                allowed_tool_names = set(_AFTER_SEND_TOOLS)
+                schemas = [
+                    s for s in schemas
+                    if s["function"]["name"] in allowed_tool_names
                 ]
                 logger.info(
                     "[drift] message_push already used, "
-                    "restricting schema to write_file/edit_file/finish_drift"
+                    "restricting schema to finish_drift"
                 )
 
-            # 3.3 调 LLM 拿工具调用。
+            # 3.2 调 LLM 拿工具调用。
             if "disable_thinking" in inspect.signature(llm_fn).parameters:
                 tool_call = await cast(Any, llm_fn)(
                     messages, schemas, tool_choice,
@@ -230,15 +237,48 @@ class DriftTurnPipeline:
             steps += 1
             ctx.steps_taken += 1
 
-            # 3.4 双路分发：本地 drift registry → shared registry（mounted MCP tools）。
-            if tools.has_tool(tool_name):
-                exec_fn = tools.execute
-            elif tool_name in mounted_tool_names and shared:
-                exec_fn = shared.execute
-            else:
-                exec_fn = tools.execute
+            if allowed_tool_names is not None and tool_name not in allowed_tool_names:
+                constraint_rejections += 1
+                allowed_text = ", ".join(sorted(allowed_tool_names))
+                output = (
+                    f"错误：当前阶段不能调用 {tool_name}。"
+                    f"当前只允许调用：{allowed_text}。"
+                )
+                if "finish_drift" in allowed_tool_names:
+                    output += "请调用 finish_drift 保存 completed、paused 或 waiting 状态。"
+                logger.warning("[drift] tool constraint rejected tool=%s", tool_name)
+                self._store.append_step(
+                    step_index=steps,
+                    tool_name=tool_name,
+                    input_preview=json.dumps(tool_args, ensure_ascii=False),
+                    output_preview=output,
+                    now_utc=ctx.now_utc,
+                )
+                if self.step_recorder is not None:
+                    self.step_recorder(
+                        ctx,
+                        "drift:error",
+                        tool_name,
+                        str(tool_call.get("id") or f"drift_{steps}"),
+                        tool_args,
+                        output,
+                    )
+                self._append_tool_messages(
+                    messages,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_call_id=str(tool_call.get("id") or f"drift_{steps}"),
+                    result=output,
+                )
+                if constraint_rejections >= _TOOL_CONSTRAINT_RETRY_LIMIT:
+                    if "finish_drift" in allowed_tool_names:
+                        await self._wrap_up(ctx, llm_fn, tools, messages)
+                    else:
+                        logger.warning("[drift] selection rejected repeatedly, aborting drift")
+                    return
+                continue
 
-            # 3.5 执行工具。
+            # 3.3 执行工具。
             result = await self._tool_executor.execute(
                 ToolExecutionRequest(
                     call_id=str(tool_call.get("id") or f"drift_{steps}"),
@@ -247,12 +287,19 @@ class DriftTurnPipeline:
                     source="proactive",
                     session_key=ctx.session_key,
                 ),
-                exec_fn,
+                tools.execute,
             )
 
-            # 3.6 错误处理。
+            # 3.4 错误处理。
             if result.status == "error":
                 logger.warning("[drift] tool executor error at step=%d: %s", steps, result.output)
+                self._store.append_step(
+                    step_index=steps,
+                    tool_name=tool_name,
+                    input_preview=json.dumps(tool_args, ensure_ascii=False),
+                    output_preview=str(result.output),
+                    now_utc=ctx.now_utc,
+                )
                 if self.step_recorder is not None:
                     self.step_recorder(
                         ctx,
@@ -264,7 +311,14 @@ class DriftTurnPipeline:
                     )
                 break
 
-            # 3.7 记录步骤。
+            # 3.5 记录步骤。
+            self._store.append_step(
+                step_index=steps,
+                tool_name=tool_name,
+                input_preview=json.dumps(tool_args, ensure_ascii=False),
+                output_preview=str(result.output),
+                now_utc=ctx.now_utc,
+            )
             if self.step_recorder is not None:
                 self.step_recorder(
                     ctx,
@@ -290,15 +344,146 @@ class DriftTurnPipeline:
                 tool_call_id=str(tool_call.get("id") or f"drift_{steps}"),
                 result=str(result.output),
             )
+            constraint_rejections = 0
+
+        if steps >= self._max_steps and not ctx.drift_finished:
+            await self._wrap_up(ctx, llm_fn, tools, messages)
+
+    async def _wrap_up(
+        self,
+        ctx: AgentTickContext,
+        llm_fn: LlmFn,
+        tools: Any,
+        messages: list[dict],
+    ) -> None:
+        finish_schemas = [
+            schema
+            for schema in tools.get_schemas()
+            if schema["function"]["name"] == "finish_drift"
+        ]
+        if not finish_schemas:
+            logger.warning("[drift] wrap-up skipped: finish_drift schema missing")
+            return
+
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "【系统强制收尾】本轮 Drift 可用步数已耗尽。"
+                    "不要继续推进任务，只根据上方已发生的工具结果调用 finish_drift。"
+                    "如果本轮小闭环已完成，status 写 completed。"
+                    "如果没做完，status 写 paused，并在 scratchpad_update 写清下次从哪里继续。"
+                    "如果正在等待用户回复或外部条件，status 写 waiting，并写清等待条件。"
+                    "不要编造额外下一步。"
+                ),
+            }
+        )
+
+        rejection = ""
+        for attempt in range(1, _WRAP_UP_MAX_ATTEMPTS + 1):
+            if rejection:
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "【系统强制收尾重试】上一次收尾无效："
+                            f"{rejection}。你已经可以看到本轮完整工具历史，"
+                            "现在只能调用 finish_drift，不能调用任何其他工具。"
+                        ),
+                    }
+                )
+
+            tool_choice = {"type": "function", "function": {"name": "finish_drift"}}
+            if "disable_thinking" in inspect.signature(llm_fn).parameters:
+                tool_call = await cast(Any, llm_fn)(
+                    messages, finish_schemas, tool_choice, disable_thinking=True
+                )
+            else:
+                tool_call = await cast(Any, llm_fn)(messages, finish_schemas, tool_choice)
+            if tool_call is None:
+                rejection = "没有返回工具调用"
+                logger.warning("[drift] wrap-up llm returned no tool call attempt=%d", attempt)
+                continue
+
+            tool_name = tool_call.get("name", "")
+            tool_args = tool_call.get("input", {})
+            if tool_name != "finish_drift":
+                rejection = f"返回了非 finish_drift 工具 {tool_name}"
+                logger.warning(
+                    "[drift] wrap-up rejected non-finish tool=%s attempt=%d",
+                    tool_name,
+                    attempt,
+                )
+                continue
+
+            result = await self._tool_executor.execute(
+                ToolExecutionRequest(
+                    call_id=str(tool_call.get("id") or "drift_wrap_up"),
+                    tool_name=tool_name,
+                    arguments=tool_args,
+                    source="proactive",
+                    session_key=ctx.session_key,
+                ),
+                tools.execute,
+            )
+            self._store.append_step(
+                step_index=ctx.steps_taken + attempt,
+                tool_name=tool_name,
+                input_preview=json.dumps(tool_args, ensure_ascii=False),
+                output_preview=str(result.output),
+                now_utc=ctx.now_utc,
+            )
+            if self.step_recorder is not None:
+                self.step_recorder(
+                    ctx,
+                    "drift",
+                    tool_name,
+                    str(tool_call.get("id") or "drift_wrap_up"),
+                    tool_args,
+                    str(result.output),
+                )
+            self._append_tool_messages(
+                messages,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_call_id=str(tool_call.get("id") or "drift_wrap_up"),
+                result=str(result.output),
+            )
+            if result.status == "error":
+                rejection = f"finish_drift 执行失败：{result.output}"
+                logger.warning("[drift] wrap-up finish error: %s", result.output)
+                continue
+            if ctx.drift_finished:
+                return
+            rejection = f"finish_drift 未完成：{result.output}"
+
+        logger.warning("[drift] wrap-up exhausted, fallback pause: %s", rejection)
+        self._fallback_pause(ctx)
+
+    def _fallback_pause(self, ctx: AgentTickContext) -> None:
+        skill_name = str(ctx.drift_selected_skill or "").strip() or "unknown"
+        message_result = "sent" if ctx.drift_message_sent else "silent"
+        self._store.save_finish(
+            skill_used=skill_name,
+            status="paused",
+            briefing="达到步数上限后模型未按要求调用 finish_drift，runtime 自动保存为 paused。",
+            message_result=message_result,
+            scratchpad_update="下次先阅读 Drift Briefing，再根据上一轮已执行的工具结果继续或改选更合适的 skill。",
+            state_update=None,
+            global_note_update=None,
+            now_utc=ctx.now_utc,
+        )
+        ctx.drift_finished = True
 
     # ── 4. Finish ──────────────────────────────────────────────────────
 
     def _finish(self, ctx: AgentTickContext) -> None:
         """记录 drift 退出状态。"""
         logger.info(
-            "[drift] exit: finished=%s message_sent=%s",
+            "[drift] exit: finished=%s message_sent=%s selected_skill=%s",
             ctx.drift_finished,
             ctx.drift_message_sent,
+            ctx.drift_selected_skill,
         )
 
     # ── Prompt 构建 ────────────────────────────────────────────────────
@@ -314,31 +499,27 @@ class DriftTurnPipeline:
         recent_context_text = ""
         if self._tool_deps.memory is not None:
             memory = cast("MemoryProfileApi", self._tool_deps.memory)
-            try:
-                raw = str(memory.read_long_term() or "").strip()
-                if raw:
-                    memory_text = raw
-            except Exception:
-                memory_text = ""
-            try:
-                rc = str(memory.read_recent_context() or "").strip()
-                if rc:
-                    recent_context_text = rc
-            except Exception:
-                pass
+            raw = str(memory.read_long_term() or "").strip()
+            if raw:
+                memory_text = raw
+            rc = str(memory.read_recent_context() or "").strip()
+            if rc:
+                recent_context_text = rc
 
+        display_skills = sorted(skills[:8], key=lambda item: item.name)
         lines = []
-        for skill in skills[:8]:
-            next_text = skill.next[:80] if skill.next else ""
-            line = f"- {skill.name}/   {skill.run_count}次运行"
+        for skill in display_skills:
+            line = (
+                f"- {skill.name}/   {skill.run_count}次运行   "
+                f"status: {skill.status}   {skill.description[:80]}"
+            )
             if skill.builtin:
                 line += "   [builtin]"
-            if next_text:
-                line += f'   next: "{next_text}"'
             if skill.requires_mcp:
                 line += f"   [需要: {', '.join(skill.requires_mcp)}]"
             lines.append(line)
         skill_block = "\n".join(lines) if lines else "- (none)"
+        selection_context = self._build_selection_context(display_skills)
 
         recent_rows = []
         for row in self._store.load_drift().get("recent_runs", [])[-5:][::-1]:
@@ -346,17 +527,17 @@ class DriftTurnPipeline:
             try:
                 dt = datetime.fromisoformat(run_at).astimezone(timezone.utc)
                 time_text = dt.strftime("%Y-%m-%d %H:%M")
-            except Exception:
+            except ValueError:
                 time_text = run_at[:16]
             recent_rows.append(
                 f"- {time_text}  {row.get('skill', '')}   "
                 f"[{row.get('message_result', 'silent')}] "
-                f"{str(row.get('one_line', ''))[:150]}"
+                f"{str(row.get('briefing', ''))[:150]}"
             )
         recent_block = "\n".join(recent_rows) if recent_rows else "- (none)"
 
         drift_note = str(self._store.load_drift().get("note") or "")[:150]
-
+        drift_briefing = self._store.load_briefing(skills)
         mcp_block = ""
         shared = self._tool_deps.shared_tools
         if connected_servers and shared:
@@ -372,8 +553,13 @@ class DriftTurnPipeline:
 
         sections = [
             PromptSectionRender(
-                name="drift_runtime_state",
-                content=f"【Drift 工作区绝对路径】\n{self._store.drift_dir}",
+                name="drift_selection_context",
+                content=selection_context,
+                is_static=False,
+            ),
+            PromptSectionRender(
+                name="drift_skills",
+                content=skill_block,
                 is_static=False,
             ),
             PromptSectionRender(
@@ -387,8 +573,8 @@ class DriftTurnPipeline:
                 is_static=False,
             ),
             PromptSectionRender(
-                name="drift_skills",
-                content=skill_block,
+                name="drift_briefing",
+                content=drift_briefing,
                 is_static=False,
             ),
             PromptSectionRender(
@@ -412,6 +598,40 @@ class DriftTurnPipeline:
             )
         return build_context_frame_message(build_context_frame_content(sections))
 
+    def _build_selection_context(self, skills: list[SkillMeta]) -> str:
+        if not skills:
+            return "- （无）"
+
+        lines = [
+            "下面按 skill 名称排列，顺序不代表优先级，也不是强制首选。",
+            "选择依据：status、上次 finish 时间、上次摘要、前情、结构化状态、recent_context 和最近 runs。",
+            "completed 表示上次小闭环已完成；paused 表示可接续；waiting 表示等待外部条件。",
+            "local_context 只在 select_skill 后作为执行上下文参考。",
+        ]
+        for skill in skills:
+            continuum = self._store._load_continuum(skill.name)
+            briefing = str(continuum.get("last_briefing") or "").strip()[:120]
+            scratchpad = str(continuum.get("scratchpad") or "").strip()[:160]
+            finished_at = str(continuum.get("updated_at") or continuum.get("last_run_at") or "").strip()
+            state = continuum.get("state_json")
+            state_text = ""
+            if isinstance(state, dict) and state:
+                state_text = (
+                    " state="
+                    + json.dumps(state, ensure_ascii=False, sort_keys=True)[:160]
+                )
+            local_context = (
+                "local_context=completed"
+                if skill.status == "completed"
+                else f"scratchpad={scratchpad or '（空）'}{state_text}"
+            )
+            lines.append(
+                f"- {skill.name}: status={skill.status} run_count={skill.run_count} "
+                f"last_finish={finished_at or 'never'} briefing={briefing or '（空）'} "
+                f"{local_context}"
+            )
+        return "\n".join(lines)
+
     def _build_system_prompt(self) -> str:
         return (
             f"{AKASHIC_IDENTITY}\n\n"
@@ -419,34 +639,18 @@ class DriftTurnPipeline:
             "你现在有一段空闲时间（Drift 模式）。没有外部内容需要推送，\n"
             "你可以自主决定做一件有意义的事。本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
             "【执行规则】\n"
-            "1. 每次进入 Drift 都先重新比较所有可用 skill，不要因为某个 skill 最近刚运行过，"
-            "或它的 next 很明确，就默认继续它。\n"
-            "   只有当它仍然是当前最值得做的事时，才继续它；如果别的 skill 更久没运行、"
-            "更有价值、或更适合当前空档时间，优先选别的 skill。\n"
-            "2. 自主选择一个 skill，read_file 读它的 SKILL.md 了解细节。\n"
-            "   标准路径格式是 skills/<skill_name>/...，例如 skills/explore-curiosity/SKILL.md。\n"
-            "   这个路径同时适用于 drift 工作区 skill 和内建 drift builtin skill。\n"
-            "3. read_file 读该 skill 的 working files 了解当前进度。\n"
-            "   working file 也优先使用 skills/<skill_name>/... 或 drift 工作区下的绝对路径。\n"
-            "4. 读完 skill 和 working files 后，要执行这个 skill 当前最直接的下一步动作，"
-            "不要只因为看到了 queue、next 或等待描述，就立刻 finish_drift。\n"
-            "   如果这个 skill 当前明显处于“等待用户回复/等待外部条件”的状态，"
-            "就不要选它，改选别的 skill。\n"
-            "5. 只有在本轮已经完成了一个明确动作后，或确认该 skill 当前确实无事可做时，"
-            "才允许 finish_drift。\n"
-            "6. 有价值的发现必须立即 write_file 或 edit_file，不要积累到最后再写。\n"
-            "7. 如果你决定 message_push，对用户的表达要像此刻自然想到的一句聊天，"
-            "而不是像在执行队列、候选列表、记忆检索或内部流程。\n"
-            "   先把内部依据转写成自然联想，再说出口：像突然想到、顺着刚才的感觉延伸、"
-            "隐约记得用户会偏好什么、或此刻真的有点好奇。\n"
-            "   目标是让用户感受到你是真想聊这个，而不是在汇报你为什么会想到它。\n"
-            "8. 单次 run 最多只能 message_push 一次。\n"
-            "9. message_push 成功后不要再调用 recall_memory / web_fetch / web_search / fetch_messages / search_messages / shell，"
-            "后续只允许 write_file、edit_file 和 finish_drift 收尾。\n"
-            "10. 执行结束前必须调用 finish_drift 保存状态，并用 message_result 标注本轮是 sent 还是 silent。\n"
-            "    如果本轮已经成功 message_push，message_result 必须是 sent；否则必须是 silent。\n\n"
+            "1. 先根据 context frame 比较所有可用 skill，然后调用 select_skill(skill_name)。"
+            "select_skill 会记录本轮 selected_skill，并返回该 skill 的 SKILL.md。\n"
+            "2. 选中后执行一个原子动作；需要更多上下文时，只读取 SKILL.md 声明的 working files。"
+            "路径由 drift mount resolver 解析，skills/<skill_name>/... 同时适用于工作区和内建 skill。\n"
+            "3. 有用户价值且适合打扰时可调用 message_push，单次 run 最多一次；"
+            "message_push 成功后只能调用 finish_drift。\n"
+            "4. 结束前必须调用 finish_drift；skill_used 必须等于 selected_skill，"
+            "message_result 必须如实标注 sent 或 silent。\n"
+            "5. finish_drift.status 为 completed、paused 或 waiting。"
+            "completed 表示小闭环已完成；paused 或 waiting 必须写 scratchpad_update。\n\n"
             "【可用工具】\n"
-            "read_file, write_file, edit_file, recall_memory, web_fetch, web_search, "
+            "select_skill, read_file, list_dir, write_file, edit_file, recall_memory, web_fetch, web_search, "
             "fetch_messages, search_messages, shell, message_push, finish_drift；"
             "若 context frame 里列出了可挂载外部能力，可用 mount_server 挂载。"
         )

@@ -219,7 +219,6 @@ class AgentTickFactory:
                     memory=self._deps.memory,
                     shared_tools=self._deps.shared_tools,
                     send_message_fn=self._build_drift_send_message_fn(),
-                    max_web_fetch_chars=tool_deps.max_chars,
                 ),
                 max_steps=self._deps.cfg.drift_max_steps,
                 tool_hooks=self._deps.tool_hooks,
