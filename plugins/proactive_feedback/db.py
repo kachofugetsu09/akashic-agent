@@ -52,13 +52,30 @@ def open_db(path: Path) -> sqlite3.Connection:
 
         CREATE INDEX IF NOT EXISTS idx_pfe_proactive
         ON proactive_feedback_events(proactive_message_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pfe_one_user_per_proactive
+        ON proactive_feedback_events(proactive_message_id)
+        WHERE proactive_message_id IS NOT NULL;
         """
     )
     conn.commit()
     return conn
 
 
-def insert_feedback(conn: sqlite3.Connection, event: FeedbackEvent) -> int:
+def insert_feedback(conn: sqlite3.Connection, event: FeedbackEvent) -> int | None:
+    if event.proactive_message_id is not None:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM proactive_feedback_events
+            WHERE proactive_message_id = ?
+              AND user_message_id <> ?
+            LIMIT 1
+            """,
+            (event.proactive_message_id, event.user_message_id),
+        ).fetchone()
+        if existing is not None:
+            return None
     _ = conn.execute(
         "DELETE FROM proactive_feedback_events WHERE user_message_id = ?",
         (event.user_message_id,),

@@ -21,10 +21,9 @@ from core.net.http import (  # noqa: E402
 from plugins.proactive_feedback.db import FeedbackEvent, insert_feedback, open_db
 from plugins.proactive_feedback.scorer import (
     EmbedBatch,
-    MessageRow,
     iter_user_assistant_turns,
-    is_proactive,
     parse_quote_parts,
+    proactive_since_previous_user,
     recent_proactive_messages,
     score_followup,
 )
@@ -62,14 +61,12 @@ async def run_backfill(
 
     resources = SharedHttpResources()
     configure_default_shared_http_resources(resources)
+    if clear and not dry_run:
+        _reset_feedback_db(feedback_db)
     source = sqlite3.connect(sessions_db)
     source.row_factory = sqlite3.Row
     sink = open_db(feedback_db)
     try:
-        if clear and not dry_run:
-            _ = sink.execute("DELETE FROM proactive_feedback_events")
-            sink.commit()
-
         embedder = None
         stats = BackfillStats()
         turns = iter_user_assistant_turns(source)
@@ -92,7 +89,7 @@ async def run_backfill(
                 skipped += 1
                 continue
             else:
-                candidates = _proactive_since_previous_user(
+                candidates = proactive_since_previous_user(
                     source,
                     session_key=session_key,
                     before_seq=user.seq,
@@ -122,8 +119,9 @@ async def run_backfill(
             if scored is None:
                 skipped += 1
                 continue
+            written = True
             if not dry_run:
-                insert_feedback(
+                event_id = insert_feedback(
                     sink,
                     FeedbackEvent(
                         session_key=session_key,
@@ -140,7 +138,11 @@ async def run_backfill(
                         reason=scored.reason,
                     ),
                 )
-            inserted += 1
+                written = event_id is not None
+            if written:
+                inserted += 1
+            else:
+                skipped += 1
         stats = BackfillStats(
             scanned=scanned,
             with_candidates=with_candidates,
@@ -190,50 +192,13 @@ def main() -> None:
     )
 
 
-def _proactive_since_previous_user(
-    conn: sqlite3.Connection,
-    *,
-    session_key: str,
-    before_seq: int,
-) -> list[MessageRow]:
-    previous = conn.execute(
-        """
-        SELECT seq
-        FROM messages
-        WHERE session_key = ?
-          AND role = 'user'
-          AND seq < ?
-        ORDER BY seq DESC
-        LIMIT 1
-        """,
-        (session_key, before_seq),
-    ).fetchone()
-    after_seq = int(previous["seq"]) if previous is not None else -1
-    rows = conn.execute(
-        """
-        SELECT id, seq, role, content, extra, ts
-        FROM messages
-        WHERE session_key = ?
-          AND role = 'assistant'
-          AND seq > ?
-          AND seq < ?
-          AND content IS NOT NULL
-        ORDER BY seq DESC
-        """,
-        (session_key, after_seq, before_seq),
-    ).fetchall()
-    return [
-        MessageRow(
-            id=str(row["id"]),
-            seq=int(row["seq"]),
-            role=str(row["role"]),
-            content=str(row["content"] or ""),
-            extra=row["extra"],
-            ts=str(row["ts"]),
-        )
-        for row in rows
-        if is_proactive(row["extra"])
-    ]
+def _reset_feedback_db(db_path: Path) -> None:
+    for path in (
+        db_path,
+        Path(f"{db_path}-wal"),
+        Path(f"{db_path}-shm"),
+    ):
+        path.unlink(missing_ok=True)
 
 
 def _build_embedder(root: Path) -> Embedder:
