@@ -1,0 +1,4 @@
+drift_skills:
+  enabled_when:
+    kind: memory_engine
+    engine: default

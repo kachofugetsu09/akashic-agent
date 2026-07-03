@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from agent.tools.base import Tool, ToolResult
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -14,6 +14,12 @@ from proactive_v2.drift_state import DriftStateStore
 from proactive_v2.outbound_text import normalize_outbound_text
 
 logger = logging.getLogger(__name__)
+
+
+def _clip_text(text: object, limit: int) -> str:
+    value = str(text or "").strip()
+    return value[:limit]
+
 
 @dataclass
 class DriftToolDeps:
@@ -153,9 +159,22 @@ class FinishDriftTool(Tool):
                     "type": "string",
                     "description": "下次进入本 skill 时需要注入的自然语言前情",
                 },
-                "state_update": {
+                "cursor_update": {
                     "type": "object",
-                    "description": "可选轻量结构化接续状态，例如章节、锚点、当前阶段",
+                    "description": "结构化游标，供下轮脚本或流程直接决定下一步",
+                },
+                "journal_append": {
+                    "type": "array",
+                    "description": "追加本轮已完成事实，例如已问过、已生成、已审计",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "entry_type": {"type": "string"},
+                            "key": {"type": "string"},
+                            "payload": {"type": "object"},
+                        },
+                        "required": ["entry_type"],
+                    },
                 },
                 "global_note_update": {"type": "string"},
             },
@@ -170,6 +189,8 @@ class FinishDriftTool(Tool):
         message_result: str = "",
         scratchpad_update: str | None = None,
         state_update: dict[str, Any] | None = None,
+        cursor_update: dict[str, Any] | None = None,
+        journal_append: list[dict[str, Any]] | dict[str, Any] | None = None,
         global_note_update: str | None = None,
     ) -> str:
         skill_name = str(skill_used or "").strip()
@@ -226,6 +247,14 @@ class FinishDriftTool(Tool):
                 {"error": "state_update must be an object"},
                 ensure_ascii=False,
             )
+        if cursor_update is not None and not isinstance(cursor_update, dict):
+            return json.dumps(
+                {"error": "cursor_update must be an object"},
+                ensure_ascii=False,
+            )
+        journal_entries, journal_error = self._normalize_journal_append(journal_append)
+        if journal_error:
+            return json.dumps({"error": journal_error}, ensure_ascii=False)
         note_text = (
             str(global_note_update).strip()
             if global_note_update is not None
@@ -242,6 +271,8 @@ class FinishDriftTool(Tool):
             state_update=state_update,
             global_note_update=note_text,
             now_utc=self._ctx.now_utc,
+            cursor_update=cursor_update,
+            journal_append=journal_entries,
         )
         self._ctx.drift_finished = True
         logger.info(
@@ -251,6 +282,33 @@ class FinishDriftTool(Tool):
             summary[:120],
         )
         return json.dumps({"ok": True}, ensure_ascii=False)
+
+    @staticmethod
+    def _normalize_journal_append(
+        raw: list[dict[str, Any]] | dict[str, Any] | None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        if raw is None:
+            return [], ""
+        items: list[Any] = raw if isinstance(raw, list) else [raw]
+        result: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                return [], "journal_append items must be objects"
+            data = cast(dict[str, Any], item)
+            entry_type = str(data.get("entry_type") or "").strip()
+            if not entry_type:
+                return [], "journal_append.entry_type is required"
+            payload = data.get("payload")
+            if payload is not None and not isinstance(payload, dict):
+                return [], "journal_append.payload must be an object"
+            result.append(
+                {
+                    "entry_type": entry_type,
+                    "key": str(data.get("key") or "").strip(),
+                    "payload": payload if isinstance(payload, dict) else {},
+                }
+            )
+        return result, ""
 
 
 class SelectSkillTool(Tool):
@@ -264,7 +322,7 @@ class SelectSkillTool(Tool):
 
     @property
     def description(self) -> str:
-        return "声明本轮 Drift 选中的 skill，并返回该 skill 的 SKILL.md 内容。"
+        return "声明本轮 Drift 选中的 skill，并返回该 skill 的 SKILL.md 内容和 local_context。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -298,11 +356,23 @@ class SelectSkillTool(Tool):
         except OSError as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
         self._ctx.drift_selected_skill = name
+        continuum = self._store.load_skill_continuum(name)
+        journal_recent = self._store.load_skill_journal(name, limit=8)
         return json.dumps(
             {
                 "ok": True,
                 "skill": name,
                 "content": content,
+                "local_context": {
+                    "run_count": int(continuum.get("run_count") or 0),
+                    "last_status": _clip_text(continuum.get("last_status"), 40),
+                    "last_run_at": _clip_text(continuum.get("last_run_at"), 80),
+                    "updated_at": _clip_text(continuum.get("updated_at"), 80),
+                    "last_briefing": _clip_text(continuum.get("last_briefing"), 500),
+                    "scratchpad": _clip_text(continuum.get("scratchpad"), 2000),
+                    "cursor": continuum.get("cursor") or {},
+                    "journal_recent": journal_recent,
+                },
             },
             ensure_ascii=False,
         )

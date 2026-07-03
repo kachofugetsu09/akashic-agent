@@ -36,24 +36,57 @@ class PluginSkillLinker:
         memory_engine: object | None,
     ) -> None:
         self._workspace_skills = workspace / "skills"
+        self._workspace_drift_skills = workspace / "drift" / "skills"
         self._plugin_roots = [root.resolve(strict=False) for root in plugin_roots]
         self._memory_engine = memory_engine
 
-    # 将已生效插件的 skills/ 目录同步成 workspace/skills 下的软链接。
+    # 将已生效插件的普通 skill 和 drift skill 同步成 workspace 下的软链接。
     def sync(
         self,
         active_plugins: Sequence[ActivePluginInfo],
     ) -> PluginSkillSyncResult:
-        expected = self._build_expected_links(active_plugins)
+        normal = self._sync_links(
+            workspace_skills=self._workspace_skills,
+            expected=self._build_expected_links(
+                active_plugins,
+                plugin_subpath=("skills",),
+                manifest_key="skills",
+            ),
+            managed_subpath=("skills",),
+        )
+        drift = self._sync_links(
+            workspace_skills=self._workspace_drift_skills,
+            expected=self._build_expected_links(
+                active_plugins,
+                plugin_subpath=("drift", "skills"),
+                manifest_key="drift_skills",
+            ),
+            managed_subpath=("drift", "skills"),
+        )
+        return PluginSkillSyncResult(
+            expected=normal.expected + drift.expected,
+            created=normal.created + drift.created,
+            repaired=normal.repaired + drift.repaired,
+            removed=normal.removed + drift.removed,
+            skipped=normal.skipped + drift.skipped,
+        )
+
+    def _sync_links(
+        self,
+        *,
+        workspace_skills: Path,
+        expected: Mapping[str, Path],
+        managed_subpath: Sequence[str],
+    ) -> PluginSkillSyncResult:
         created = 0
         repaired = 0
         skipped = 0
 
         if expected:
-            self._workspace_skills.mkdir(parents=True, exist_ok=True)
+            workspace_skills.mkdir(parents=True, exist_ok=True)
 
         for link_name, target in expected.items():
-            link = self._workspace_skills / link_name
+            link = workspace_skills / link_name
             action = self._ensure_link(link, target)
             if action == "created":
                 created += 1
@@ -62,7 +95,11 @@ class PluginSkillLinker:
             elif action == "skipped":
                 skipped += 1
 
-        removed = self._cleanup_stale_links(expected)
+        removed = self._cleanup_stale_links(
+            workspace_skills,
+            expected,
+            managed_subpath,
+        )
         return PluginSkillSyncResult(
             expected=len(expected),
             created=created,
@@ -74,16 +111,19 @@ class PluginSkillLinker:
     def _build_expected_links(
         self,
         active_plugins: Sequence[ActivePluginInfo],
+        *,
+        plugin_subpath: Sequence[str],
+        manifest_key: str,
     ) -> dict[str, Path]:
         expected: dict[str, Path] = {}
         for plugin in active_plugins:
             if not _is_safe_name(plugin.plugin_id):
                 logger.warning("插件 skill 跳过非法 plugin_id: %s", plugin.plugin_id)
                 continue
-            policy = parse_skill_policy(plugin.plugin_id, plugin.manifest)
+            policy = parse_skill_policy(plugin.plugin_id, plugin.manifest, manifest_key)
             if not self._policy_enabled(plugin.plugin_id, policy):
                 continue
-            for skill_dir in _iter_plugin_skill_dirs(plugin):
+            for skill_dir in _iter_plugin_skill_dirs(plugin, plugin_subpath):
                 if not _is_safe_name(skill_dir.name):
                     logger.warning(
                         "插件 skill 跳过非法 skill 名称: %s/%s",
@@ -146,15 +186,17 @@ class PluginSkillLinker:
 
     def _cleanup_stale_links(
         self,
+        workspace_skills: Path,
         expected: Mapping[str, Path],
+        managed_subpath: Sequence[str],
     ) -> int:
-        if not self._workspace_skills.exists():
+        if not workspace_skills.exists():
             return 0
         removed = 0
-        for item in list(self._workspace_skills.iterdir()):
+        for item in list(workspace_skills.iterdir()):
             if item.name in expected:
                 continue
-            if not self._is_managed_link(item):
+            if not self._is_managed_link(item, managed_subpath):
                 continue
             try:
                 item.unlink()
@@ -167,20 +209,25 @@ class PluginSkillLinker:
     def _is_managed_link(
         self,
         path: Path,
+        managed_subpath: Sequence[str],
     ) -> bool:
         if ":" not in path.name or not path.is_symlink():
             return False
         target = _readlink_target(path)
         if target is None:
             return False
-        return any(_is_under_plugin_skills(target, root) for root in self._plugin_roots)
+        return any(
+            _is_under_plugin_skills(target, root, managed_subpath)
+            for root in self._plugin_roots
+        )
 
 
 def parse_skill_policy(
     plugin_id: str,
     manifest: Mapping[str, object],
+    section: str = "skills",
 ) -> PluginSkillPolicy:
-    raw_skills = manifest.get("skills")
+    raw_skills = manifest.get(section)
     if not isinstance(raw_skills, dict):
         return PluginSkillPolicy(kind="plugin_loaded")
     skills = cast(Mapping[str, object], raw_skills)
@@ -197,12 +244,19 @@ def parse_skill_policy(
         if engine:
             return PluginSkillPolicy(kind="memory_engine", engine=engine)
 
-    logger.warning("插件 %s 的 skills.enabled_when 无效，使用 plugin_loaded", plugin_id)
+    logger.warning(
+        "插件 %s 的 %s.enabled_when 无效，使用 plugin_loaded",
+        plugin_id,
+        section,
+    )
     return PluginSkillPolicy(kind="plugin_loaded")
 
 
-def _iter_plugin_skill_dirs(plugin: ActivePluginInfo) -> list[Path]:
-    skills_dir = plugin.plugin_dir / "skills"
+def _iter_plugin_skill_dirs(
+    plugin: ActivePluginInfo,
+    plugin_subpath: Sequence[str],
+) -> list[Path]:
+    skills_dir = plugin.plugin_dir.joinpath(*plugin_subpath)
     if not skills_dir.is_dir():
         return []
     result: list[Path] = []
@@ -255,6 +309,7 @@ def _same_path(left: Path, right: Path) -> bool:
 def _is_under_plugin_skills(
     target: Path,
     plugin_root: Path,
+    managed_subpath: Sequence[str],
 ) -> bool:
     normalized_target = target.resolve(strict=False)
     normalized_root = plugin_root.resolve(strict=False)
@@ -263,4 +318,5 @@ def _is_under_plugin_skills(
     except ValueError:
         return False
     parts = relative.parts
-    return len(parts) >= 3 and parts[1] == "skills"
+    expected = tuple(managed_subpath)
+    return len(parts) >= 1 + len(expected) + 1 and parts[1:1 + len(expected)] == expected

@@ -604,26 +604,26 @@ class DriftTurnPipeline:
 
         lines = [
             "下面按 skill 名称排列，顺序不代表优先级，也不是强制首选。",
-            "选择依据：status、上次 finish 时间、上次摘要、前情、结构化状态、recent_context 和最近 runs。",
+            "选择依据：status、上次 finish 时间、上次摘要、scratchpad、cursor、recent_context 和最近 runs。",
             "completed 表示上次小闭环已完成；paused 表示可接续；waiting 表示等待外部条件。",
-            "local_context 只在 select_skill 后作为执行上下文参考。",
+            "local_context 只在 select_skill 后作为执行上下文参考，其中 scratchpad 是自然语言前情，cursor 是结构化游标。",
         ]
         for skill in skills:
-            continuum = self._store._load_continuum(skill.name)
+            continuum = self._store.load_skill_continuum(skill.name)
             briefing = str(continuum.get("last_briefing") or "").strip()[:120]
             scratchpad = str(continuum.get("scratchpad") or "").strip()[:160]
             finished_at = str(continuum.get("updated_at") or continuum.get("last_run_at") or "").strip()
-            state = continuum.get("state_json")
-            state_text = ""
-            if isinstance(state, dict) and state:
-                state_text = (
-                    " state="
-                    + json.dumps(state, ensure_ascii=False, sort_keys=True)[:160]
+            cursor = continuum.get("cursor")
+            cursor_text = ""
+            if isinstance(cursor, dict) and cursor:
+                cursor_text = (
+                    " cursor="
+                    + json.dumps(cursor, ensure_ascii=False, sort_keys=True)[:160]
                 )
             local_context = (
-                "local_context=completed"
+                f"local_context=completed{cursor_text}"
                 if skill.status == "completed"
-                else f"scratchpad={scratchpad or '（空）'}{state_text}"
+                else f"scratchpad={scratchpad or '（空）'}{cursor_text}"
             )
             lines.append(
                 f"- {skill.name}: status={skill.status} run_count={skill.run_count} "
@@ -648,7 +648,8 @@ class DriftTurnPipeline:
             "4. 结束前必须调用 finish_drift；skill_used 必须等于 selected_skill，"
             "message_result 必须如实标注 sent 或 silent。\n"
             "5. finish_drift.status 为 completed、paused 或 waiting。"
-            "completed 表示小闭环已完成；paused 或 waiting 必须写 scratchpad_update。\n\n"
+            "completed 表示小闭环已完成；paused 或 waiting 必须写 scratchpad_update。"
+            "结构化接续写 cursor_update；已经完成的事实追加到 journal_append。\n\n"
             "【可用工具】\n"
             "select_skill, read_file, list_dir, write_file, edit_file, recall_memory, web_fetch, web_search, "
             "fetch_messages, search_messages, shell, message_push, finish_drift；"

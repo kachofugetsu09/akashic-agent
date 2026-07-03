@@ -277,6 +277,7 @@ def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Path):
         state_update=None,
         global_note_update=None,
         now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        cursor_update={"next_mode": "create_category"},
     )
     pipeline = _make_drift_pipeline(
         store=store,
@@ -298,7 +299,7 @@ def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Path):
     assert "上次 finish：2026-01-01T00:00:00+00:00" in runtime
     assert "briefing=没有自然切口" in runtime
     assert "briefing=刚生成表情" in runtime
-    assert "next_mode" not in runtime
+    assert 'cursor={"next_mode": "create_category"}' in runtime
     assert "本轮首选" not in runtime
     assert "首个工具调用" not in runtime
     assert runtime.index("drift_selection_context") < runtime.index("long_term_memory")
@@ -401,17 +402,43 @@ async def test_drift_readfile_accepts_skill_shorthand_path(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_path: Path):
     _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    now = datetime.now(timezone.utc)
+    store.save_finish(
+        skill_used="explore-curiosity",
+        status="completed",
+        briefing="刚问过音乐偏好",
+        message_result="silent",
+        scratchpad_update="短期避免继续问音乐，优先换成食物口味。",
+        state_update=None,
+        global_note_update=None,
+        now_utc=now,
+        cursor_update={"last_topic": "音乐", "waiting_for_answer": True},
+        journal_append=[
+            {
+                "entry_type": "curiosity_asked",
+                "key": "music",
+                "payload": {"question": "你平时听什么音乐？"},
+            }
+        ],
+    )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
     raw = await _exec_drift_tool(
         tmp_path,
         ctx,
         "select_skill",
         {"skill_name": "explore-curiosity"},
+        store=store,
     )
     payload = json.loads(cast(Any, raw))
     assert payload["ok"] is True
     assert payload["skill"] == "explore-curiosity"
     assert "test skill" in payload["content"]
+    assert payload["local_context"]["last_status"] == "completed"
+    assert payload["local_context"]["last_briefing"] == "刚问过音乐偏好"
+    assert payload["local_context"]["scratchpad"] == "短期避免继续问音乐，优先换成食物口味。"
+    assert payload["local_context"]["cursor"]["last_topic"] == "音乐"
+    assert payload["local_context"]["journal_recent"][0]["entry_type"] == "curiosity_asked"
     assert ctx.drift_selected_skill == "explore-curiosity"
 
 
@@ -540,6 +567,41 @@ async def test_finish_drift_saves_silent_message_result(tmp_path: Path):
     assert json.loads(cast(Any, raw))["ok"] is True
     assert store.load_drift()["recent_runs"][-1]["message_result"] == "silent"
     assert not (tmp_path / "skills" / "explore-curiosity" / "state.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "问了音乐偏好",
+            "message_result": "silent",
+            "cursor_update": {"last_topic": "music", "waiting_for_answer": True},
+            "journal_append": [
+                {
+                    "entry_type": "curiosity_asked",
+                    "key": "music",
+                    "payload": {"question": "最近常听什么？"},
+                }
+            ],
+        },
+        store=store,
+    )
+
+    assert json.loads(cast(Any, raw))["ok"] is True
+    continuum = store.load_skill_continuum("explore-curiosity")
+    journal = store.load_skill_journal("explore-curiosity")
+    assert continuum["cursor"]["last_topic"] == "music"
+    assert continuum["cursor"]["waiting_for_answer"] is True
+    assert journal[0]["entry_type"] == "curiosity_asked"
+    assert journal[0]["key"] == "music"
 
 
 @pytest.mark.asyncio

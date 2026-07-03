@@ -113,6 +113,56 @@ class DriftStateStore:
             "note": _clip(note, 150),
         }
 
+    def load_skill_continuum(self, skill_name: str) -> dict[str, Any]:
+        return self._load_continuum(skill_name)
+
+    def load_skill_journal(
+        self,
+        skill_name: str,
+        *,
+        entry_type: str = "",
+        key: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        clean_skill = str(skill_name or "").strip()
+        clean_type = str(entry_type or "").strip()
+        clean_key = str(key or "").strip()
+        if not clean_skill:
+            return []
+        clauses = ["skill_name = ?"]
+        params: list[Any] = [clean_skill]
+        if clean_type:
+            clauses.append("entry_type = ?")
+            params.append(clean_type)
+        if clean_key:
+            clauses.append("key = ?")
+            params.append(clean_key)
+        params.append(max(1, int(limit)))
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, entry_type, key, payload_json, run_id, created_at
+                FROM skill_journal
+                WHERE {" AND ".join(clauses)}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            result.append(
+                {
+                    "id": int(row["id"] or 0),
+                    "entry_type": str(row["entry_type"] or ""),
+                    "key": str(row["key"] or ""),
+                    "payload": self._decode_json_object(row["payload_json"]),
+                    "run_id": int(row["run_id"] or 0) if row["run_id"] is not None else None,
+                    "created_at": str(row["created_at"] or ""),
+                }
+            )
+        return result
+
     def load_briefing(self, skills: list[SkillMeta]) -> str:
         recent_rows = self._load_recent_runs_from_db(limit=5)
         note = self._load_global_note()
@@ -133,7 +183,7 @@ class DriftStateStore:
             finished_at = str(continuum.get("updated_at") or continuum.get("last_run_at") or "").strip()
             briefing = str(continuum.get("last_briefing") or "").strip()
             scratchpad = str(continuum.get("scratchpad") or "").strip()
-            state = continuum.get("state_json")
+            cursor = continuum.get("cursor")
             lines.append(f"- {skill.name}")
             lines.append(f"  运行：{skill.run_count} 次")
             if skill.builtin:
@@ -147,10 +197,10 @@ class DriftStateStore:
                 lines.append("  前情：已闭环；内部续航便签只在选中该 skill 后参考，不作为待办。")
             else:
                 lines.append(f"  前情：{_clip(scratchpad, 240) or '（空）'}")
-            if status != "completed" and isinstance(state, dict) and state:
+            if isinstance(cursor, dict) and cursor:
                 lines.append(
-                    "  结构化状态："
-                    + _clip(json.dumps(state, ensure_ascii=False, sort_keys=True), 240)
+                    "  cursor："
+                    + _clip(json.dumps(cursor, ensure_ascii=False, sort_keys=True), 240)
                 )
 
         lines.append("")
@@ -190,6 +240,8 @@ class DriftStateStore:
         state_update: dict[str, Any] | None,
         global_note_update: str | None,
         now_utc: datetime,
+        cursor_update: dict[str, Any] | None = None,
+        journal_append: list[dict[str, Any]] | None = None,
     ) -> None:
         skill_name = str(skill_used or "").strip()
         logger.info(
@@ -231,7 +283,7 @@ class DriftStateStore:
                 )
             row = conn.execute(
                 """
-                SELECT run_count, scratchpad, state_json
+                SELECT run_count, scratchpad, state_json, cursor_json
                 FROM skill_continuum
                 WHERE skill_name = ?
                 """,
@@ -239,10 +291,12 @@ class DriftStateStore:
             ).fetchone()
             old_count = int(row["run_count"] or 0) if row is not None else 0
             old_scratchpad = str(row["scratchpad"] or "") if row is not None else ""
-            old_state = self._decode_state(row["state_json"]) if row is not None else {}
+            old_state = self._decode_json_object(row["state_json"]) if row is not None else {}
+            old_cursor = self._decode_json_object(row["cursor_json"]) if row is not None else {}
             merged_state = dict(old_state)
             if state_update:
                 merged_state.update(state_update)
+            merged_cursor = self._merge_cursor(old_cursor, cursor_update)
             scratchpad = (
                 _clip(scratchpad_update or "", 2000)
                 if scratchpad_update is not None and str(scratchpad_update).strip()
@@ -252,9 +306,9 @@ class DriftStateStore:
                 """
                 INSERT INTO skill_continuum (
                     skill_name, run_count, last_run_at, last_status,
-                    last_briefing, scratchpad, state_json, updated_at
+                    last_briefing, scratchpad, state_json, cursor_json, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(skill_name) DO UPDATE SET
                     run_count = excluded.run_count,
                     last_run_at = excluded.last_run_at,
@@ -262,6 +316,7 @@ class DriftStateStore:
                     last_briefing = excluded.last_briefing,
                     scratchpad = excluded.scratchpad,
                     state_json = excluded.state_json,
+                    cursor_json = excluded.cursor_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -272,8 +327,16 @@ class DriftStateStore:
                     _clip(briefing, 500),
                     scratchpad,
                     json.dumps(merged_state, ensure_ascii=False, sort_keys=True),
+                    json.dumps(merged_cursor, ensure_ascii=False, sort_keys=True),
                     now_utc.isoformat(),
                 ),
+            )
+            self._append_journal_entries(
+                conn=conn,
+                skill_name=skill_name,
+                run_id=run_id or None,
+                entries=journal_append or [],
+                created_at=now_utc.isoformat(),
             )
             if global_note_update is not None and str(global_note_update).strip():
                 _ = conn.execute(
@@ -400,8 +463,25 @@ class DriftStateStore:
                     last_briefing TEXT NOT NULL DEFAULT '',
                     scratchpad TEXT NOT NULL DEFAULT '',
                     state_json TEXT NOT NULL DEFAULT '{}',
+                    cursor_json TEXT NOT NULL DEFAULT '{}',
                     updated_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS skill_journal (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    skill_name TEXT NOT NULL,
+                    entry_type TEXT NOT NULL,
+                    key TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    run_id INTEGER,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_skill_journal_skill_type_key
+                    ON skill_journal(skill_name, entry_type, key);
+
+                CREATE INDEX IF NOT EXISTS idx_skill_journal_run_id
+                    ON skill_journal(run_id);
 
                 CREATE TABLE IF NOT EXISTS global_note (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -420,6 +500,7 @@ class DriftStateStore:
                 );
                 """
             )
+            self._ensure_skill_continuum_columns(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_file))
@@ -471,7 +552,7 @@ class DriftStateStore:
             row = conn.execute(
                 """
                 SELECT run_count, last_run_at, last_status, last_briefing,
-                       scratchpad, state_json, updated_at
+                       scratchpad, state_json, cursor_json, updated_at
                 FROM skill_continuum
                 WHERE skill_name = ?
                 """,
@@ -485,12 +566,13 @@ class DriftStateStore:
             "last_status": str(row["last_status"] or "idle"),
             "last_briefing": str(row["last_briefing"] or ""),
             "scratchpad": str(row["scratchpad"] or ""),
-            "state_json": self._decode_state(row["state_json"]),
+            "state_json": self._decode_json_object(row["state_json"]),
+            "cursor": self._decode_json_object(row["cursor_json"]),
             "updated_at": str(row["updated_at"] or ""),
         }
 
     @staticmethod
-    def _decode_state(raw: Any) -> dict[str, Any]:
+    def _decode_json_object(raw: Any) -> dict[str, Any]:
         if isinstance(raw, dict):
             return cast(dict[str, Any], raw)
         try:
@@ -498,3 +580,58 @@ class DriftStateStore:
         except json.JSONDecodeError:
             return {}
         return cast(dict[str, Any], data) if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _merge_cursor(
+        old_cursor: dict[str, Any],
+        cursor_update: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        merged = dict(old_cursor)
+        if not cursor_update:
+            return merged
+        for key, value in cursor_update.items():
+            clean_key = str(key)
+            if value is None:
+                merged.pop(clean_key, None)
+            else:
+                merged[clean_key] = value
+        return merged
+
+    @staticmethod
+    def _ensure_skill_continuum_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(skill_continuum)").fetchall()
+        columns = {str(row["name"]) for row in rows}
+        if "cursor_json" not in columns:
+            _ = conn.execute(
+                "ALTER TABLE skill_continuum ADD COLUMN cursor_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+    @staticmethod
+    def _append_journal_entries(
+        *,
+        conn: sqlite3.Connection,
+        skill_name: str,
+        run_id: int | None,
+        entries: list[dict[str, Any]],
+        created_at: str,
+    ) -> None:
+        for entry in entries:
+            entry_type = str(entry.get("entry_type") or "").strip()
+            if not entry_type:
+                continue
+            key = str(entry.get("key") or "").strip()
+            payload = entry.get("payload")
+            payload_json = json.dumps(
+                payload if isinstance(payload, dict) else {},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            _ = conn.execute(
+                """
+                INSERT INTO skill_journal (
+                    skill_name, entry_type, key, payload_json, run_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (skill_name, entry_type, key, payload_json, run_id, created_at),
+            )
