@@ -346,6 +346,22 @@ async def test_manifest_overrides_class_attributes():
 
 
 @pytest.mark.asyncio
+async def test_active_plugins_exposes_loaded_manifest():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(FIXTURES_DIR / "manifested", Path(tmp) / "manifested")
+        mgr = _make_manager([Path(tmp)], event_bus=bus)
+
+        await mgr.load_all()
+
+        active = mgr.active_plugins()
+        assert len(active) == 1
+        assert active[0].plugin_id == "manifest_name"
+        assert active[0].plugin_dir == Path(tmp) / "manifested"
+        assert active[0].manifest["name"] == "manifest_name"
+
+
+@pytest.mark.asyncio
 async def test_no_manifest_uses_class_attributes():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:

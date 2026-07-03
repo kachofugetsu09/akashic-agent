@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, Mapping, Sequence, cast
+
+from agent.plugins.manager import ActivePluginInfo
+
+logger = logging.getLogger(__name__)
+
+PluginSkillPolicyKind = Literal["plugin_loaded", "memory_engine"]
+
+
+@dataclass(frozen=True)
+class PluginSkillPolicy:
+    kind: PluginSkillPolicyKind
+    engine: str = ""
+
+
+@dataclass(frozen=True)
+class PluginSkillSyncResult:
+    expected: int = 0
+    created: int = 0
+    repaired: int = 0
+    removed: int = 0
+    skipped: int = 0
+
+
+class PluginSkillLinker:
+    def __init__(
+        self,
+        *,
+        workspace: Path,
+        plugin_roots: Sequence[Path],
+        memory_engine: object | None,
+    ) -> None:
+        self._workspace_skills = workspace / "skills"
+        self._plugin_roots = [root.resolve(strict=False) for root in plugin_roots]
+        self._memory_engine = memory_engine
+
+    # 将已生效插件的 skills/ 目录同步成 workspace/skills 下的软链接。
+    def sync(
+        self,
+        active_plugins: Sequence[ActivePluginInfo],
+    ) -> PluginSkillSyncResult:
+        expected = self._build_expected_links(active_plugins)
+        created = 0
+        repaired = 0
+        skipped = 0
+
+        if expected:
+            self._workspace_skills.mkdir(parents=True, exist_ok=True)
+
+        for link_name, target in expected.items():
+            link = self._workspace_skills / link_name
+            action = self._ensure_link(link, target)
+            if action == "created":
+                created += 1
+            elif action == "repaired":
+                repaired += 1
+            elif action == "skipped":
+                skipped += 1
+
+        removed = self._cleanup_stale_links(expected)
+        return PluginSkillSyncResult(
+            expected=len(expected),
+            created=created,
+            repaired=repaired,
+            removed=removed,
+            skipped=skipped,
+        )
+
+    def _build_expected_links(
+        self,
+        active_plugins: Sequence[ActivePluginInfo],
+    ) -> dict[str, Path]:
+        expected: dict[str, Path] = {}
+        for plugin in active_plugins:
+            if not _is_safe_name(plugin.plugin_id):
+                logger.warning("插件 skill 跳过非法 plugin_id: %s", plugin.plugin_id)
+                continue
+            policy = parse_skill_policy(plugin.plugin_id, plugin.manifest)
+            if not self._policy_enabled(plugin.plugin_id, policy):
+                continue
+            for skill_dir in _iter_plugin_skill_dirs(plugin):
+                if not _is_safe_name(skill_dir.name):
+                    logger.warning(
+                        "插件 skill 跳过非法 skill 名称: %s/%s",
+                        plugin.plugin_id,
+                        skill_dir.name,
+                    )
+                    continue
+                link_name = f"{plugin.plugin_id}:{skill_dir.name}"
+                target = skill_dir.resolve(strict=False)
+                existing = expected.get(link_name)
+                if existing is not None and existing != target:
+                    logger.warning("插件 skill 名称重复，保留第一项: %s", link_name)
+                    continue
+                expected[link_name] = target
+        return expected
+
+    def _policy_enabled(
+        self,
+        plugin_id: str,
+        policy: PluginSkillPolicy,
+    ) -> bool:
+        if policy.kind == "plugin_loaded":
+            return True
+        engine_name = _memory_engine_name(self._memory_engine, plugin_id)
+        return bool(policy.engine and engine_name == policy.engine)
+
+    def _ensure_link(
+        self,
+        link: Path,
+        target: Path,
+    ) -> str:
+        if link.is_symlink():
+            current = _readlink_target(link)
+            if current is not None and _same_path(current, target):
+                return "unchanged"
+            try:
+                link.unlink()
+            except OSError as e:
+                logger.warning("插件 skill 软链接删除失败 (%s): %s", link, e)
+                return "skipped"
+            return "repaired" if self._create_link(link, target) else "skipped"
+
+        if link.exists():
+            logger.warning("插件 skill 软链接冲突，目标已存在: %s", link)
+            return "skipped"
+
+        return "created" if self._create_link(link, target) else "skipped"
+
+    def _create_link(
+        self,
+        link: Path,
+        target: Path,
+    ) -> bool:
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as e:
+            logger.warning("插件 skill 软链接创建失败 (%s -> %s): %s", link, target, e)
+            return False
+        return True
+
+    def _cleanup_stale_links(
+        self,
+        expected: Mapping[str, Path],
+    ) -> int:
+        if not self._workspace_skills.exists():
+            return 0
+        removed = 0
+        for item in list(self._workspace_skills.iterdir()):
+            if item.name in expected:
+                continue
+            if not self._is_managed_link(item):
+                continue
+            try:
+                item.unlink()
+            except OSError as e:
+                logger.warning("插件 skill stale 软链接删除失败 (%s): %s", item, e)
+                continue
+            removed += 1
+        return removed
+
+    def _is_managed_link(
+        self,
+        path: Path,
+    ) -> bool:
+        if ":" not in path.name or not path.is_symlink():
+            return False
+        target = _readlink_target(path)
+        if target is None:
+            return False
+        return any(_is_under_plugin_skills(target, root) for root in self._plugin_roots)
+
+
+def parse_skill_policy(
+    plugin_id: str,
+    manifest: Mapping[str, object],
+) -> PluginSkillPolicy:
+    raw_skills = manifest.get("skills")
+    if not isinstance(raw_skills, dict):
+        return PluginSkillPolicy(kind="plugin_loaded")
+    skills = cast(Mapping[str, object], raw_skills)
+    raw_policy = skills.get("enabled_when")
+    if not isinstance(raw_policy, dict):
+        return PluginSkillPolicy(kind="plugin_loaded")
+    policy = cast(Mapping[str, object], raw_policy)
+
+    kind = str(policy.get("kind") or "plugin_loaded").strip()
+    if kind == "plugin_loaded":
+        return PluginSkillPolicy(kind="plugin_loaded")
+    if kind == "memory_engine":
+        engine = str(policy.get("engine") or "").strip()
+        if engine:
+            return PluginSkillPolicy(kind="memory_engine", engine=engine)
+
+    logger.warning("插件 %s 的 skills.enabled_when 无效，使用 plugin_loaded", plugin_id)
+    return PluginSkillPolicy(kind="plugin_loaded")
+
+
+def _iter_plugin_skill_dirs(plugin: ActivePluginInfo) -> list[Path]:
+    skills_dir = plugin.plugin_dir / "skills"
+    if not skills_dir.is_dir():
+        return []
+    result: list[Path] = []
+    for child in sorted(skills_dir.iterdir(), key=lambda item: item.name):
+        if not child.is_dir():
+            continue
+        if not (child / "SKILL.md").exists():
+            continue
+        result.append(child)
+    return result
+
+
+def _memory_engine_name(
+    memory_engine: object | None,
+    plugin_id: str,
+) -> str:
+    if memory_engine is None:
+        return ""
+    describe = getattr(memory_engine, "describe", None)
+    if not callable(describe):
+        return ""
+    try:
+        descriptor = describe()
+    except Exception as e:
+        logger.warning("插件 %s 读取 memory engine 描述失败: %s", plugin_id, e)
+        return ""
+    return str(getattr(descriptor, "name", "") or "")
+
+
+def _is_safe_name(name: str) -> bool:
+    value = name.strip()
+    return bool(value) and "/" not in value and "\\" not in value and ".." not in value
+
+
+def _readlink_target(link: Path) -> Path | None:
+    try:
+        raw = link.readlink()
+    except OSError as e:
+        logger.warning("读取软链接失败 (%s): %s", link, e)
+        return None
+    if raw.is_absolute():
+        return raw.resolve(strict=False)
+    return (link.parent / raw).resolve(strict=False)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def _is_under_plugin_skills(
+    target: Path,
+    plugin_root: Path,
+) -> bool:
+    normalized_target = target.resolve(strict=False)
+    normalized_root = plugin_root.resolve(strict=False)
+    try:
+        relative = normalized_target.relative_to(normalized_root)
+    except ValueError:
+        return False
+    parts = relative.parts
+    return len(parts) >= 3 and parts[1] == "skills"

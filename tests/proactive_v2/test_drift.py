@@ -1161,13 +1161,12 @@ def test_drift_state_store_includes_builtin_skills_when_enabled(tmp_path: Path):
         tmp_path,
         builtin_skills_dir=Path("skills"),
         include_builtin_skills=True,
-        builtin_skill_names={"meme-manage", "create-drift-skill"},
+        builtin_skill_names={"create-drift-skill"},
     )
     skills = store.scan_skills()
     names = {skill.name for skill in skills}
-    assert "meme-manage" in names
     assert "create-drift-skill" in names
-    assert next(skill for skill in skills if skill.name == "meme-manage").builtin is True
+    assert next(skill for skill in skills if skill.name == "create-drift-skill").builtin is True
 
 
 @pytest.mark.asyncio
@@ -1177,16 +1176,16 @@ async def test_drift_readfile_accepts_builtin_skill_shorthand_path(tmp_path: Pat
         tmp_path,
         builtin_skills_dir=Path("skills"),
         include_builtin_skills=True,
-        builtin_skill_names={"meme-manage", "create-drift-skill"},
+        builtin_skill_names={"create-drift-skill"},
     )
     raw = await _exec_drift_tool(
         tmp_path,
         ctx,
         "read_file",
-        {"path": "skills/meme-manage/SKILL.md"},
+        {"path": "skills/create-drift-skill/SKILL.md"},
         store=store,
     )
-    assert "表情包库管理" in str(raw)
+    assert "创建 Drift Skill" in str(raw)
 
 
 @pytest.mark.asyncio

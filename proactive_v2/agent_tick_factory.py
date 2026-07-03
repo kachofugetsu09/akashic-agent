@@ -27,7 +27,7 @@ from proactive_v2.tools import ToolDeps
 
 
 BUILTIN_DRIFT_SKILLS_DIR = BUILTIN_SKILLS_DIR
-BUILTIN_DRIFT_SKILL_NAMES = {"meme-manage", "create-drift-skill"}
+BUILTIN_DRIFT_SKILL_NAMES = {"create-drift-skill"}
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 RecentChatFn = Callable[[int], Awaitable[list[dict]]]

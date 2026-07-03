@@ -83,6 +83,7 @@ class CoreRuntime:
     peer_poller: PeerAgentPoller | None
     agent_provider: LLMProvider | None = None
     plugin_manager: "PluginManager | None" = None
+    workspace: Path | None = None
 
     async def start(self) -> None:
         self.mcp_registry.start_connect_all_background()
@@ -107,6 +108,22 @@ class CoreRuntime:
             self.peer_poller.start()
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
+            if self.workspace is not None:
+                from agent.plugins.skill_links import PluginSkillLinker
+
+                link_result = PluginSkillLinker(
+                    workspace=self.workspace,
+                    plugin_roots=self.plugin_manager.plugin_dirs,
+                    memory_engine=getattr(self.memory_runtime, "engine", None),
+                ).sync(self.plugin_manager.active_plugins())
+                logger.info(
+                    "插件 skill 同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
+                    link_result.expected,
+                    link_result.created,
+                    link_result.repaired,
+                    link_result.removed,
+                    link_result.skipped,
+                )
             logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
             self.loop.add_before_turn_plugin_modules(
                 self.plugin_manager.before_turn_modules,
@@ -507,6 +524,7 @@ def build_core_runtime(
 
     return CoreRuntime(
         config=config,
+        workspace=workspace,
         http_resources=http_resources,
         loop=loop,
         bus=bus,

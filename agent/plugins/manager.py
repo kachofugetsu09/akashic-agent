@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any, cast
@@ -45,6 +46,14 @@ _EVENT_TYPE_MAP: dict[PluginEventType, type] = {
 }
 
 
+@dataclass(frozen=True)
+class ActivePluginInfo:
+    plugin_id: str
+    plugin_dir: Path
+    manifest: dict[str, object]
+    module_path: str
+
+
 class PluginManager:
     def __init__(
         self,
@@ -75,6 +84,7 @@ class PluginManager:
         self._after_reasoning_modules: list[object] = []
         self._after_turn_modules: list[object] = []
         self._proactive_modules: list[object] = []
+        self._active_plugins: dict[str, ActivePluginInfo] = {}
 
     @property
     def loaded_count(self) -> int:
@@ -119,6 +129,13 @@ class PluginManager:
     @property
     def proactive_modules(self) -> list[object]:
         return list(self._proactive_modules)
+
+    @property
+    def plugin_dirs(self) -> list[Path]:
+        return list(self._dirs)
+
+    def active_plugins(self) -> list[ActivePluginInfo]:
+        return list(self._active_plugins.values())
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
@@ -190,7 +207,7 @@ class PluginManager:
         # 4. 实例化，读 manifest 覆盖元信息，注入 PluginContext
         instance = cls()
         plugin_dir = Path(mod["module_path"]).parent
-        _apply_manifest(instance, plugin_dir)
+        manifest = _apply_manifest(instance, plugin_dir)
         plugin_id = str(instance.name) if instance.name else mod["name"]
         try:
             plugin_config = _load_plugin_config(
@@ -255,6 +272,12 @@ class PluginManager:
             del self._proactive_modules[proactive_module_count_before:]
             return
         self._loaded.add(mp)
+        self._active_plugins[mp] = ActivePluginInfo(
+            plugin_id=plugin_id,
+            plugin_dir=plugin_dir,
+            manifest=manifest,
+            module_path=mp,
+        )
         self._collect_channels(instance)
         logger.info("插件已加载: %s", mod["name"])
 
@@ -417,7 +440,9 @@ class PluginManager:
                 if md.kind == MetadataKind.TOOL and self._tool_registry is not None:
                     self._tool_registry.unregister(md.tool_name or md.handler_name)
             plugin_registry.remove_plugin(mp)
+            _ = self._active_plugins.pop(mp, None)
         self._loaded.clear()
+        self._active_plugins.clear()
         self._tool_hooks.clear()
         self._before_turn_modules.clear()
         self._before_reasoning_modules.clear()
@@ -516,25 +541,26 @@ def _load_module_list(instance: Any, method_name: str) -> list[object]:
 _MANIFEST_FIELDS = ("name", "version", "desc", "author")
 
 
-def _apply_manifest(instance: Any, plugin_dir: Path) -> None:
+def _apply_manifest(instance: Any, plugin_dir: Path) -> dict[str, object]:
     manifest_path = plugin_dir / "manifest.yaml"
     if not manifest_path.exists():
-        return
+        return {}
     try:
         import yaml
         loaded = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning("manifest.yaml 读取失败 (%s): %s", plugin_dir, e)
-        return
+        return {}
     if not isinstance(loaded, dict):
         logger.warning("manifest.yaml 格式错误，期望 dict (%s)", plugin_dir)
-        return
+        return {}
     raw: dict[str, object] = cast("dict[str, object]", loaded)
     # 逐字段覆盖实例属性，非字符串值转 str，缺失字段跳过
     for field in _MANIFEST_FIELDS:
         val = raw.get(field)
         if val is not None:
             setattr(instance, field, str(val))
+    return raw
 
 
 def _make_execute(bound: Any) -> Any:
