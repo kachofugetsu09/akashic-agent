@@ -63,21 +63,21 @@ sample
 ```
 
 3. 如果 `found=false`，用 `finish_drift(status="waiting", message_result="silent")` 静默结束，不推进 cursor。
-4. 有样本时读取 `../proactive_pending.md`；文件不存在就用空内容处理。
+4. 有样本时先读取 `../proactive_pending.md`，确认现有文件内容和末尾位置；文件不存在就用空内容处理。
    - 必须使用路径 `../proactive_pending.md`。
    - 禁止使用 `proactive_pending.md` 或 `./proactive_pending.md`，那会写到 drift 目录而不是 workspace 根目录。
 5. 读取 `../memory/MEMORY.md` 作为长期偏好参考；文件不存在就用空内容处理。
 6. 不要调用 `fetch_messages`。
 7. 本轮只允许使用三类输入：固定脚本返回的 chunk、`../proactive_pending.md`、`../memory/MEMORY.md`。其他 workspace 文档不是证据来源，不要读取。
 8. `shell` 只用于运行固定脚本；不要用它执行 `cat`、`cp`、`ls`、`sed`、`grep` 或读取/复制文件。
-9. 只处理当前 chunk 的 `events`，自己追加 `../proactive_pending.md`。
+9. 只处理当前 chunk 的 `events`，自己追加到 `../proactive_pending.md` 尾部。
 10. 每个 chunk 写一次：写完当前 chunk 的 pending section 后，才能读取下一个 chunk。
 11. 如果当前 chunk 没有合格候选，也写一个 `no_candidate` section，说明这个 chunk 已审核。
 12. 如果 `has_more=true`，按 `next_chunk_index` 调同一个脚本读取下一段，再重复“判断 -> 追加 pending section”。
 13. 如果当前 chunk 返回 `has_more=true`，禁止调用 `finish_drift`。
 14. 只有处理并写入所有 chunk，直到某个 chunk 返回 `has_more=false` 后，才能调用 `finish_drift`。
 15. 不要等 50 条全部看完再写，也不要为每条 event 单独写文件。
-16. 只追加新候选，不修改、不删除已有队列项。
+16. 只追加新候选，不修改、不删除已有队列项；写文件时必须保留原文完整前缀，只在末尾增加新 batch/chunk 内容。
 17. 只看 proactive 消息和 user 回复这一对文本。assistant 后续回答不是证据来源。
 18. MEMORY 只用于理解长期兴趣边界和查重；新增候选必须由当前 chunk 的 feedback 证据支撑。
 19. `signal_hints` 只是弱提示；最终 topic 粒度、用户态度、effect 都必须由你结合当前 chunk 和 MEMORY 推断。
@@ -184,7 +184,8 @@ sample
 
 - 一次最多处理 50 条反馈。
 - `explicit_quote` 必须包含，且视为更强证据，但不是自动规则。
-- 只有 `proactive_pending.md` 成功写入后才能推进 `last_feedback_id`。
+- 只有 `proactive_pending.md` 成功尾部追加后才能推进 `last_feedback_id`。
+- 写入前必须检查旧内容；禁止用新生成内容覆盖整个 pending 文件。
 - 不打扰用户，不调用 `message_push`。
 - 不读取或写入 `state_json`、`state.json`、`history.json`。
 - 不修改 proactive_feedback 数据库。
