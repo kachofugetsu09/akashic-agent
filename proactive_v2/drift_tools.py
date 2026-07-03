@@ -25,6 +25,7 @@ def _clip_text(text: object, limit: int) -> str:
 class DriftToolDeps:
     drift_dir: Path
     store: DriftStateStore
+    workspace_dir: Path | None = None
     builtin_skills_dir: Path | None = None
     memory: Any = None
     shared_tools: ToolRegistry | None = None
@@ -566,6 +567,74 @@ class DriftListDirTool(Tool):
         return await self._lister.execute(path=str(resolved), **kwargs)
 
 
+class DriftWriteFileTool(Tool):
+    def __init__(self, resolver: DriftPathResolver, allowed_dir: Path) -> None:
+        self._resolver = resolver
+        self._writer = WriteFileTool(allowed_dir=allowed_dir)
+
+    @property
+    def name(self) -> str:
+        return "write_file"
+
+    @property
+    def description(self) -> str:
+        return self._writer.description
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self._writer.parameters
+
+    async def execute(self, path: str, content: str, **kwargs: Any) -> Any:
+        resolved = self._resolver.resolve(path)
+        if resolved is None:
+            return await self._writer.execute(path=path, content=content, **kwargs)
+        return await self._writer.execute(
+            path=str(resolved),
+            content=content,
+            **kwargs,
+        )
+
+
+class DriftEditFileTool(Tool):
+    def __init__(self, resolver: DriftPathResolver, allowed_dir: Path) -> None:
+        self._resolver = resolver
+        self._editor = EditFileTool(allowed_dir=allowed_dir)
+
+    @property
+    def name(self) -> str:
+        return "edit_file"
+
+    @property
+    def description(self) -> str:
+        return self._editor.description
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return self._editor.parameters
+
+    async def execute(
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        **kwargs: Any,
+    ) -> Any:
+        resolved = self._resolver.resolve(path)
+        if resolved is None:
+            return await self._editor.execute(
+                path=path,
+                old_text=old_text,
+                new_text=new_text,
+                **kwargs,
+            )
+        return await self._editor.execute(
+            path=str(resolved),
+            old_text=old_text,
+            new_text=new_text,
+            **kwargs,
+        )
+
+
 def build_drift_tool_registry(
     *,
     ctx: AgentTickContext,
@@ -583,8 +652,9 @@ def build_drift_tool_registry(
         DriftListDirTool(resolver),
         risk="read-only",
     )
-    tools.register(WriteFileTool(allowed_dir=drift_dir), risk="write")
-    tools.register(EditFileTool(allowed_dir=drift_dir), risk="write")
+    write_allowed_dir = deps.workspace_dir or drift_dir
+    tools.register(DriftWriteFileTool(resolver, write_allowed_dir), risk="write")
+    tools.register(DriftEditFileTool(resolver, write_allowed_dir), risk="write")
 
     shared = deps.shared_tools
     for name in (

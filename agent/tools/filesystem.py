@@ -16,6 +16,14 @@ from agent.tools.base import Tool, ToolResult
 logger = logging.getLogger(__name__)
 _FILE_MUTATION_LOCKS: dict[str, asyncio.Lock] = {}
 
+def _is_inside(path: Path, allowed_dir: Path) -> bool:
+    try:
+        _ = path.relative_to(allowed_dir)
+    except ValueError:
+        return False
+    return True
+
+
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     """解析路径（展开 ~ 并取绝对路径），可选限制在允许目录内。
 
@@ -28,7 +36,7 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
         resolved = (allowed_dir / p).resolve()
     else:
         resolved = p.resolve()
-    if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
+    if allowed_dir and not _is_inside(resolved, allowed_dir.resolve()):
         raise PermissionError(f"路径 {path} 超出允许目录 {allowed_dir}")
     return resolved
 

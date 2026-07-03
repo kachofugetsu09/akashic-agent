@@ -1336,6 +1336,54 @@ async def test_mount_server_idempotent(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_drift_write_file_can_update_workspace_context(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    drift_dir = workspace / "drift"
+    store = DriftStateStore(drift_dir)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(
+            drift_dir=drift_dir,
+            workspace_dir=workspace,
+            store=store,
+        ),
+    )
+
+    raw = await reg.execute(
+        "write_file",
+        {"path": "../PROACTIVE_CONTEXT.md", "content": "规则"},
+    )
+
+    assert "已写入" in str(raw)
+    assert (workspace / "PROACTIVE_CONTEXT.md").read_text(encoding="utf-8") == "规则"
+
+
+@pytest.mark.asyncio
+async def test_drift_write_file_rejects_paths_outside_workspace(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    drift_dir = workspace / "drift"
+    store = DriftStateStore(drift_dir)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(
+            drift_dir=drift_dir,
+            workspace_dir=workspace,
+            store=store,
+        ),
+    )
+
+    raw = await reg.execute(
+        "write_file",
+        {"path": "../../outside.txt", "content": "no"},
+    )
+
+    assert "超出允许目录" in str(raw)
+    assert not (tmp_path / "outside.txt").exists()
+
+
+@pytest.mark.asyncio
 async def test_mount_server_rejects_unknown_server(tmp_path: Path):
     shared = _build_shared_tools()  # no MCP
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))

@@ -326,6 +326,31 @@ def test_default_memory_audit_drift_skill_is_gated_by_memory_engine(tmp_path: Pa
     assert not link.is_symlink()
 
 
+def test_emotion_feedback_drift_skill_is_exposed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    plugin_root = Path(__file__).parents[1] / "plugins"
+    plugin_dir = plugin_root / "emotion"
+    plugin = _plugin_info("emotion", plugin_dir)
+
+    result = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[plugin_root],
+        memory_engine=None,
+    ).sync([plugin])
+    skills = DriftStateStore(workspace / "drift").scan_skills()
+    skill_dir = DriftStateStore(workspace / "drift").skill_dir_for(
+        "emotion:feedback-preference-context"
+    )
+
+    assert result.expected >= 1
+    assert (workspace / "drift" / "skills" / "emotion:feedback-preference-context").is_symlink()
+    assert "emotion:feedback-preference-context" in {skill.name for skill in skills}
+    assert skill_dir is not None
+    assert (
+        skill_dir / "scripts" / "sample_feedback_context.py"
+    ).exists()
+
+
 def test_default_memory_audit_script_uses_drift_journal(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     drift_dir = workspace / "drift"

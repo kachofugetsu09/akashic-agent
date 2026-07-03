@@ -215,6 +215,7 @@ class AgentTickFactory:
                 tool_deps=DriftToolDeps(
                     drift_dir=drift_dir,
                     store=store,
+                    workspace_dir=Path(self._deps.state_store.workspace_dir),
                     builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
                     memory=self._deps.memory,
                     shared_tools=self._deps.shared_tools,
