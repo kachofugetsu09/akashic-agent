@@ -66,6 +66,29 @@ def test_skills_summary_hides_file_locations(tmp_path: Path):
     assert str(skill_dir / "SKILL.md") not in summary
 
 
+def test_skill_frontmatter_uses_yaml_parser(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    _write_skill(
+        workspace / "skills",
+        "memory",
+        description="处理记忆任务时使用。",
+        body="body",
+        extra_frontmatter=(
+            "when_to_use: |\n"
+            "  用户询问记忆时。\n"
+            "metadata:\n"
+            "  akashic:\n"
+            "    always: true"
+        ),
+    )
+
+    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
+    record = loader.list_skill_records()[0]
+
+    assert record.when_to_use == "用户询问记忆时。\n"
+    assert record.always is True
+
+
 @pytest.mark.asyncio
 async def test_load_skill_tool_returns_body_and_base_directory(tmp_path: Path):
     workspace = tmp_path / "workspace"

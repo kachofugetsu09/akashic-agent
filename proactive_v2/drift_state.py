@@ -237,7 +237,6 @@ class DriftStateStore:
         briefing: str,
         message_result: str,
         scratchpad_update: str | None,
-        state_update: dict[str, Any] | None,
         global_note_update: str | None,
         now_utc: datetime,
         cursor_update: dict[str, Any] | None = None,
@@ -283,7 +282,7 @@ class DriftStateStore:
                 )
             row = conn.execute(
                 """
-                SELECT run_count, scratchpad, state_json, cursor_json
+                SELECT run_count, scratchpad, cursor_json
                 FROM skill_continuum
                 WHERE skill_name = ?
                 """,
@@ -291,11 +290,7 @@ class DriftStateStore:
             ).fetchone()
             old_count = int(row["run_count"] or 0) if row is not None else 0
             old_scratchpad = str(row["scratchpad"] or "") if row is not None else ""
-            old_state = self._decode_json_object(row["state_json"]) if row is not None else {}
             old_cursor = self._decode_json_object(row["cursor_json"]) if row is not None else {}
-            merged_state = dict(old_state)
-            if state_update:
-                merged_state.update(state_update)
             merged_cursor = self._merge_cursor(old_cursor, cursor_update)
             scratchpad = (
                 _clip(scratchpad_update or "", 2000)
@@ -306,16 +301,15 @@ class DriftStateStore:
                 """
                 INSERT INTO skill_continuum (
                     skill_name, run_count, last_run_at, last_status,
-                    last_briefing, scratchpad, state_json, cursor_json, updated_at
+                    last_briefing, scratchpad, cursor_json, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(skill_name) DO UPDATE SET
                     run_count = excluded.run_count,
                     last_run_at = excluded.last_run_at,
                     last_status = excluded.last_status,
                     last_briefing = excluded.last_briefing,
                     scratchpad = excluded.scratchpad,
-                    state_json = excluded.state_json,
                     cursor_json = excluded.cursor_json,
                     updated_at = excluded.updated_at
                 """,
@@ -326,7 +320,6 @@ class DriftStateStore:
                     status,
                     _clip(briefing, 500),
                     scratchpad,
-                    json.dumps(merged_state, ensure_ascii=False, sort_keys=True),
                     json.dumps(merged_cursor, ensure_ascii=False, sort_keys=True),
                     now_utc.isoformat(),
                 ),
@@ -462,7 +455,6 @@ class DriftStateStore:
                     last_status TEXT NOT NULL DEFAULT 'idle',
                     last_briefing TEXT NOT NULL DEFAULT '',
                     scratchpad TEXT NOT NULL DEFAULT '',
-                    state_json TEXT NOT NULL DEFAULT '{}',
                     cursor_json TEXT NOT NULL DEFAULT '{}',
                     updated_at TEXT
                 );
@@ -552,7 +544,7 @@ class DriftStateStore:
             row = conn.execute(
                 """
                 SELECT run_count, last_run_at, last_status, last_briefing,
-                       scratchpad, state_json, cursor_json, updated_at
+                       scratchpad, cursor_json, updated_at
                 FROM skill_continuum
                 WHERE skill_name = ?
                 """,
@@ -566,7 +558,6 @@ class DriftStateStore:
             "last_status": str(row["last_status"] or "idle"),
             "last_briefing": str(row["last_briefing"] or ""),
             "scratchpad": str(row["scratchpad"] or ""),
-            "state_json": self._decode_json_object(row["state_json"]),
             "cursor": self._decode_json_object(row["cursor_json"]),
             "updated_at": str(row["updated_at"] or ""),
         }

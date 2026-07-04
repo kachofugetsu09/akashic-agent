@@ -127,7 +127,7 @@ def test_plugin_skill_linker_removes_broken_plugin_link(tmp_path: Path) -> None:
     assert not link.is_symlink()
 
 
-def test_plugin_skill_linker_does_not_overwrite_user_skill(tmp_path: Path) -> None:
+def test_plugin_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     plugin_dir = _write_plugin_skill(plugin_root, "foo", "bar")
@@ -141,9 +141,9 @@ def test_plugin_skill_linker_does_not_overwrite_user_skill(tmp_path: Path) -> No
         memory_engine=None,
     ).sync([_plugin_info("foo", plugin_dir)])
 
-    assert result.skipped == 1
-    assert not user_skill.is_symlink()
-    assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "user body"
+    assert result.repaired == 1
+    assert user_skill.is_symlink()
+    assert "plugin skill body" in (user_skill / "SKILL.md").read_text(encoding="utf-8")
 
 
 def test_plugin_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
@@ -241,7 +241,7 @@ def test_plugin_drift_skill_linker_removes_stale_link(tmp_path: Path) -> None:
     assert not (workspace / "drift" / "skills" / "foo:daily").exists()
 
 
-def test_plugin_drift_skill_linker_does_not_overwrite_user_skill(tmp_path: Path) -> None:
+def test_plugin_drift_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     plugin_dir = _write_plugin_drift_skill(plugin_root, "foo", "daily")
@@ -255,9 +255,9 @@ def test_plugin_drift_skill_linker_does_not_overwrite_user_skill(tmp_path: Path)
         memory_engine=None,
     ).sync([_plugin_info("foo", plugin_dir)])
 
-    assert result.skipped == 1
-    assert not user_skill.is_symlink()
-    assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "user body"
+    assert result.repaired == 1
+    assert user_skill.is_symlink()
+    assert "plugin drift skill body" in (user_skill / "SKILL.md").read_text(encoding="utf-8")
 
 
 def test_plugin_drift_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
@@ -409,7 +409,6 @@ def test_default_memory_audit_script_uses_drift_journal(tmp_path: Path) -> None:
         briefing=f"审计 memory_id={memory_id}，结果 clean",
         message_result="silent",
         scratchpad_update="下次继续随机抽样。",
-        state_update=None,
         global_note_update=None,
         now_utc=datetime.now(timezone.utc),
         cursor_update={

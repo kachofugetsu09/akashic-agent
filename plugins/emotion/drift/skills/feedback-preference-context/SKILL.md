@@ -187,5 +187,5 @@ sample
 - 只有 `proactive_pending.md` 成功尾部追加后才能推进 `last_feedback_id`。
 - 写入前必须检查旧内容；禁止用新生成内容覆盖整个 pending 文件。
 - 不打扰用户，不调用 `message_push`。
-- 不读取或写入 `state_json`、`state.json`、`history.json`。
+- 不读取或写入 `state.json`、`history.json`。
 - 不修改 proactive_feedback 数据库。

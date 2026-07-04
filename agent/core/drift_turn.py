@@ -477,7 +477,6 @@ class DriftTurnPipeline:
             briefing="达到步数上限后模型未按要求调用 finish_drift，runtime 自动保存为 paused。",
             message_result=message_result,
             scratchpad_update="下次先阅读 Drift Briefing，再根据上一轮已执行的工具结果继续或改选更合适的 skill。",
-            state_update=None,
             global_note_update=None,
             now_utc=ctx.now_utc,
         )

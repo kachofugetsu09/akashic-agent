@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
@@ -167,8 +168,9 @@ class PluginSkillLinker:
             return "repaired" if self._create_link(link, target) else "skipped"
 
         if link.exists():
-            logger.warning("插件 skill 软链接冲突，目标已存在: %s", link)
-            return "skipped"
+            if not _remove_existing_path(link):
+                return "skipped"
+            return "repaired" if self._create_link(link, target) else "skipped"
 
         return "created" if self._create_link(link, target) else "skipped"
 
@@ -304,6 +306,18 @@ def _readlink_target(link: Path) -> Path | None:
 
 def _same_path(left: Path, right: Path) -> bool:
     return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def _remove_existing_path(path: Path) -> bool:
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except OSError as e:
+        logger.warning("插件 skill 覆盖旧路径失败 (%s): %s", path, e)
+        return False
+    return True
 
 
 def _is_under_plugin_skills(

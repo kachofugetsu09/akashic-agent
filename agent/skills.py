@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import yaml
+
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 SkillSource = Literal["workspace", "builtin", "plugin"]
 
@@ -181,20 +183,17 @@ class SkillsLoader:
             missing=missing,
         )
 
-    def _parse_frontmatter(self, content: str) -> dict[str, str] | None:
+    def _parse_frontmatter(self, content: str) -> dict[str, Any]:
         if not content.startswith("---"):
-            return None
-        match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-        if not match:
-            return None
-
-        metadata: dict[str, str] = {}
-        for line in match.group(1).split("\n"):
-            if ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            metadata[key.strip()] = value.strip().strip("\"'")
-        return metadata
+            return {}
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            return {}
+        loaded = cast(object, yaml.safe_load(parts[1]) or {})
+        if not isinstance(loaded, dict):
+            return {}
+        data = cast(dict[object, Any], loaded)
+        return {str(key): value for key, value in data.items()}
 
     def _strip_frontmatter(self, content: str) -> str:
         if content.startswith("---"):

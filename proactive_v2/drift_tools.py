@@ -194,7 +194,6 @@ class FinishDriftTool(Tool):
         briefing: str = "",
         message_result: str = "",
         scratchpad_update: str | None = None,
-        state_update: dict[str, Any] | None = None,
         cursor_update: dict[str, Any] | None = None,
         journal_append: list[dict[str, Any]] | dict[str, Any] | None = None,
         global_note_update: str | None = None,
@@ -248,11 +247,6 @@ class FinishDriftTool(Tool):
                 {"error": "message_result=silent conflicts with successful message_push"},
                 ensure_ascii=False,
             )
-        if state_update is not None and not isinstance(state_update, dict):
-            return json.dumps(
-                {"error": "state_update must be an object"},
-                ensure_ascii=False,
-            )
         if cursor_update is not None and not isinstance(cursor_update, dict):
             return json.dumps(
                 {"error": "cursor_update must be an object"},
@@ -274,7 +268,6 @@ class FinishDriftTool(Tool):
             briefing=summary,
             message_result=message_result_value,
             scratchpad_update=scratchpad_text or None,
-            state_update=state_update,
             global_note_update=note_text,
             now_utc=self._ctx.now_utc,
             cursor_update=cursor_update,
@@ -439,7 +432,6 @@ class IdleDriftTool(Tool):
             briefing=_clip_text(f"空闲不行动：{reason_text}", 500),
             message_result="silent",
             scratchpad_update=None,
-            state_update=None,
             global_note_update=None,
             now_utc=self._ctx.now_utc,
         )

@@ -31,7 +31,6 @@ default_memory:audit-dirty-memories
 - `local_context.journal_recent` 只用于快速了解最近审计结果。
 - 已审计去重由固定脚本读取 Drift `skill_journal` 完成。
 - 不读取、不创建 `history.json`、`state.json`、`audited.md`。
-- 不读取或写入 `drift.db.skill_continuum.state_json`。
 
 ## 固定脚本
 
@@ -169,7 +168,6 @@ paused：
 - 一次只抽检 1 条记忆。
 - 不使用 `list_dir`。
 - 不读取或写入 `history.json`、`audited.md`、`state.json`。
-- 不读取或写入 `state_json`。
 - 不临时查询 `memory2.db`；只能运行固定脚本。
 - 不扩大 `fetch_messages.context`，固定为 10。
 - 只审计带 `source_ref` 的记忆。

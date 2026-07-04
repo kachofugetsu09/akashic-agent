@@ -267,7 +267,6 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
         briefing="没有自然切口",
         message_result="silent",
         scratchpad_update=None,
-        state_update=None,
         global_note_update=None,
         now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
@@ -277,7 +276,6 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
         briefing="刚生成表情",
         message_result="sent",
         scratchpad_update=None,
-        state_update=None,
         global_note_update=None,
         now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
         cursor_update={"next_mode": "create_category"},
@@ -475,7 +473,6 @@ async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_pat
         briefing="刚问过音乐偏好",
         message_result="silent",
         scratchpad_update="短期避免继续问音乐，优先换成食物口味。",
-        state_update=None,
         global_note_update=None,
         now_utc=now,
         cursor_update={"last_topic": "音乐", "waiting_for_answer": True},
@@ -731,7 +728,6 @@ def test_drift_state_store_links_steps_to_finished_run(tmp_path: Path):
         briefing="done",
         message_result="silent",
         scratchpad_update=None,
-        state_update=None,
         global_note_update=None,
         now_utc=now,
     )
