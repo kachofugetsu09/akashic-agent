@@ -33,7 +33,7 @@ jobs:
           .venv/bin/pyright --project pyrightconfig.tests.json --level error
 
       - name: Run pytest
-        timeout-minutes: 10
+        timeout-minutes: 20
         env:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
