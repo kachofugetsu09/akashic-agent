@@ -52,6 +52,7 @@ from bootstrap.wiring import (
     resolve_toolset_provider,
 )
 from agent.lifecycle.facade import TurnLifecycle
+from agent.plugins.jobs import ProviderPluginLlmService
 from bootstrap.providers import build_providers, build_vl_provider
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
@@ -519,6 +520,11 @@ def build_core_runtime(
         workspace=workspace,
         session_manager=session_manager,
         memory_engine=memory_runtime.engine,
+        llm=ProviderPluginLlmService(
+            provider=provider,
+            model=config.model,
+            max_tokens=config.max_tokens,
+        ),
         plugin_configs=config.plugins,
     )
 

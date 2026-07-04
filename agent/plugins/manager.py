@@ -26,6 +26,7 @@ from agent.lifecycle.types import (
     PromptRenderCtx,
 )
 from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
+from agent.plugins.jobs import PluginJobSpec, PluginLlmService, RegisteredPluginJob
 from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
 from bus.event_bus import EventBus
@@ -64,6 +65,7 @@ class PluginManager:
         workspace: Path | None = None,
         session_manager: Any = None,
         memory_engine: Any = None,
+        llm: PluginLlmService | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._dirs = plugin_dirs
@@ -72,6 +74,7 @@ class PluginManager:
         self._workspace = workspace
         self._session_manager = session_manager
         self._memory_engine = memory_engine
+        self._llm = llm
         self._plugin_configs = plugin_configs or {}
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
@@ -84,6 +87,7 @@ class PluginManager:
         self._after_reasoning_modules: list[object] = []
         self._after_turn_modules: list[object] = []
         self._proactive_modules: list[object] = []
+        self._jobs: list[RegisteredPluginJob] = []
         self._active_plugins: dict[str, ActivePluginInfo] = {}
 
     @property
@@ -129,6 +133,14 @@ class PluginManager:
     @property
     def proactive_modules(self) -> list[object]:
         return list(self._proactive_modules)
+
+    @property
+    def jobs(self) -> list[RegisteredPluginJob]:
+        return list(self._jobs)
+
+    @property
+    def llm(self) -> PluginLlmService | None:
+        return self._llm
 
     @property
     def plugin_dirs(self) -> list[Path]:
@@ -229,6 +241,7 @@ class PluginManager:
             workspace=self._workspace,
             session_manager=self._session_manager,
             memory_engine=self._memory_engine,
+            llm=self._llm,
         )
         plugin_registry.register_instance(mp, instance)
         self._bind_handlers(instance, mp)
@@ -251,6 +264,8 @@ class PluginManager:
         self._collect_after_turn_modules(instance)
         proactive_module_count_before = len(self._proactive_modules)
         self._collect_proactive_modules(instance)
+        job_count_before = len(self._jobs)
+        self._collect_jobs(instance, plugin_id)
         # 5. 给插件机会做异步初始化；失败时回滚所有注册
         try:
             if hasattr(instance, "initialize"):
@@ -270,6 +285,7 @@ class PluginManager:
             del self._after_reasoning_modules[after_reasoning_count_before:]
             del self._after_turn_modules[after_turn_count_before:]
             del self._proactive_modules[proactive_module_count_before:]
+            del self._jobs[job_count_before:]
             return
         self._loaded.add(mp)
         self._active_plugins[mp] = ActivePluginInfo(
@@ -419,6 +435,23 @@ class PluginManager:
         for channel in _load_module_list(instance, "channels"):
             self._channels.append(cast(Channel, channel))
 
+    def _collect_jobs(self, instance: Any, plugin_id: str) -> None:
+        for spec in _load_module_list(instance, "jobs"):
+            if not isinstance(spec, PluginJobSpec):
+                logger.warning("插件 %s.jobs 返回值不是 PluginJobSpec", type(instance).__name__)
+                continue
+            job_id = str(getattr(spec, "id", "") or "").strip()
+            if not job_id:
+                logger.warning("插件 %s.jobs 返回了缺少 id 的任务", type(instance).__name__)
+                continue
+            self._jobs.append(
+                RegisteredPluginJob(
+                    plugin_id=plugin_id,
+                    plugin_context=instance.context,
+                    spec=spec,
+                )
+            )
+
     def _collect_phase_modules(
         self,
         instance: Any,
@@ -452,6 +485,7 @@ class PluginManager:
         self._after_reasoning_modules.clear()
         self._after_turn_modules.clear()
         self._proactive_modules.clear()
+        self._jobs.clear()
         self._channels.clear()
 
 

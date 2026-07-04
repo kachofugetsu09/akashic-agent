@@ -17,6 +17,8 @@ from plugins.emotion.plugin import EmotionPlugin
 from plugins.proactive_feedback.db import FeedbackEvent
 from plugins.proactive_feedback.events import ProactiveFeedbackRecorded
 from bus.event_bus import EventBus
+from bus.events_lifecycle import DriftFinished
+from agent.plugins.jobs import PluginJobContext
 
 
 def _feedback(feedback_type: str = "topic_follow", confidence: str = "medium") -> FeedbackEvent:
@@ -34,6 +36,12 @@ def _feedback(feedback_type: str = "topic_follow", confidence: str = "medium") -
         matched_by="recent_pua",
         reason="test",
     )
+
+
+class _FakeLlm:
+    async def generate_text(self, **kwargs: Any) -> str:
+        assert "effect=boost" in str(kwargs["prompt"])
+        return "# Proactive Context\n\n- 提高模型发布解读类推送优先级。\n"
 
 
 def test_emotion_updates_dominance_from_feedback(tmp_path: Path):
@@ -89,6 +97,46 @@ async def test_emotion_plugin_listens_to_feedback_event(tmp_path: Path):
     finally:
         conn.close()
     assert state.dominance > 0
+
+
+@pytest.mark.asyncio
+async def test_emotion_merges_pending_after_feedback_drift_finished(tmp_path: Path):
+    pending_path = tmp_path / "proactive_pending.md"
+    context_path = tmp_path / "PROACTIVE_CONTEXT.md"
+    pending_path.write_text(
+        '# Proactive Pending\n\n'
+        '## Batch feedback#1-feedback#1\n\n'
+        '- [ ] effect=boost confidence=medium topic="模型发布" '
+        'granularity="不扩大到所有科技新闻" inference="用户追问细节" '
+        'action="提高优先级" evidence=feedback#1 user_message_id=u1\n',
+        encoding="utf-8",
+    )
+    context_path.write_text("# Proactive Context\n\n- 旧规则。\n", encoding="utf-8")
+    plugin = EmotionPlugin()
+    plugin.context = cast(Any, SimpleNamespace(workspace=tmp_path))
+
+    await plugin.merge_proactive_pending(
+        PluginJobContext(
+            plugin_id="emotion",
+            event=DriftFinished(
+                session_key="cli:test",
+                skill_name="emotion:feedback-preference-context",
+                status="completed",
+                briefing="done",
+                message_result="silent",
+                timestamp=datetime.now(timezone.utc),
+            ),
+            reason="event",
+            llm=_FakeLlm(),
+            plugin_context=plugin.context,
+            triggered_at=datetime.now(timezone.utc),
+        )
+    )
+
+    assert context_path.read_text(encoding="utf-8") == (
+        "# Proactive Context\n\n- 提高模型发布解读类推送优先级。\n"
+    )
+    assert pending_path.read_text(encoding="utf-8") == ""
 
 
 @pytest.mark.asyncio

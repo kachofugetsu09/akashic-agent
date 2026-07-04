@@ -9,6 +9,7 @@ from typing import Any, cast
 from agent.tools.base import Tool, ToolResult
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.registry import ToolRegistry
+from bus.events_lifecycle import DriftFinished
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_state import DriftStateStore
 from proactive_v2.outbound_text import normalize_outbound_text
@@ -31,6 +32,7 @@ class DriftToolDeps:
     recent_chat_fn: Any = None
     shared_tools: ToolRegistry | None = None
     send_message_fn: Any = None
+    event_bus: Any = None
 
 
 class SendMessageTool(Tool):
@@ -121,9 +123,11 @@ class FinishDriftTool(Tool):
         self,
         ctx: AgentTickContext,
         store: DriftStateStore,
+        event_bus: Any = None,
     ) -> None:
         self._ctx = ctx
         self._store = store
+        self._event_bus = event_bus
 
     @property
     def name(self) -> str:
@@ -277,6 +281,17 @@ class FinishDriftTool(Tool):
             journal_append=journal_entries,
         )
         self._ctx.drift_finished = True
+        if self._event_bus is not None:
+            self._event_bus.enqueue(
+                DriftFinished(
+                    session_key=self._ctx.session_key,
+                    skill_name=skill_name,
+                    status=status_value,
+                    briefing=summary,
+                    message_result=message_result_value,
+                    timestamp=self._ctx.now_utc,
+                )
+            )
         logger.info(
             "[drift_tools] finish_drift ok: skill=%s status=%s briefing=%s",
             skill_name,
@@ -739,5 +754,5 @@ def build_drift_tool_registry(
         SendMessageTool(ctx, deps.send_message_fn),
         risk="external-side-effect",
     )
-    tools.register(FinishDriftTool(ctx, deps.store), risk="write")
+    tools.register(FinishDriftTool(ctx, deps.store, deps.event_bus), risk="write")
     return tools

@@ -103,6 +103,16 @@ class ProactiveFinished:
 
 
 @dataclass(frozen=True)
+class DriftFinished:
+    session_key: str
+    skill_name: str
+    status: str
+    briefing: str
+    message_result: str
+    timestamp: datetime
+
+
+@dataclass(frozen=True)
 class ToolCallStarted:
     session_key: str
     channel: str

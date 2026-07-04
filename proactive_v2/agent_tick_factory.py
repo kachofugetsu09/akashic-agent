@@ -230,6 +230,7 @@ class AgentTickFactory:
                     recent_chat_fn=self._build_recent_chat_fn(),
                     shared_tools=self._deps.shared_tools,
                     send_message_fn=self._build_drift_send_message_fn(),
+                    event_bus=self._deps.event_bus,
                 ),
                 max_steps=self._deps.cfg.drift_max_steps,
                 tool_hooks=self._deps.tool_hooks,

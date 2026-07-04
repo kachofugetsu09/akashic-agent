@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import shlex
@@ -18,6 +19,7 @@ import pytest
 from agent.core.passive_turn import ContextStore as _  # noqa: F401
 from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCallCtx, BeforeTurnCtx
 from agent.plugins.manager import PluginManager
+from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.registry import plugin_registry
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
@@ -48,6 +50,11 @@ def _clean_registry():
 
 def _make_manager(plugin_dirs: list[Path], *, event_bus: EventBus, tools: ToolRegistry | None = None) -> PluginManager:
     return PluginManager(plugin_dirs=plugin_dirs, event_bus=event_bus, tool_registry=tools)
+
+
+class _FakePluginLlm:
+    async def generate_text(self, **kwargs: Any) -> str:
+        return f"generated:{kwargs.get('prompt')}"
 
 
 def _before_turn_ctx(**overrides: object) -> BeforeTurnCtx:
@@ -218,6 +225,47 @@ async def test_duplicate_plugin_name_first_wins():
     await mgr.load_all()
     # discover 跨两个同名目录，seen_names 跨目录共享 → 只加载一次
     assert mgr.loaded_count == len({m["name"] for m in mgr.discover()})
+
+
+@pytest.mark.asyncio
+async def test_plugin_job_runtime_runs_event_job():
+    bus = EventBus()
+    llm = _FakePluginLlm()
+    mgr = PluginManager(
+        plugin_dirs=[FIXTURES_DIR],
+        event_bus=bus,
+        llm=llm,
+    )
+    await mgr.load_all()
+    job = next(job for job in mgr.jobs if job.plugin_id == "jobber")
+    runtime = PluginJobRuntime(
+        event_bus=bus,
+        llm=llm,
+        jobs=[job],
+    )
+    task = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0)
+    await bus.fanout(
+        TurnCommitted(
+            session_key="cli:test",
+            channel="cli",
+            chat_id="test",
+            input_message="hi",
+            persisted_user_message="hi",
+            assistant_response="ok",
+            tools_used=[],
+        )
+    )
+    await asyncio.sleep(0.05)
+    runtime.stop()
+    await task
+
+    assert job.plugin_context.kv_store.get("last_job") == {
+        "text": "generated:hello",
+        "reason": "event",
+        "has_event": True,
+        "context_llm": True,
+    }
 
 
 # ── lifecycle hook 触发测试 ────────────────────────────────────────────────────
