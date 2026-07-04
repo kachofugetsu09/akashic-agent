@@ -28,6 +28,7 @@ class DriftToolDeps:
     workspace_dir: Path | None = None
     builtin_skills_dir: Path | None = None
     memory: Any = None
+    recent_chat_fn: Any = None
     shared_tools: ToolRegistry | None = None
     send_message_fn: Any = None
 
@@ -379,6 +380,59 @@ class SelectSkillTool(Tool):
         )
 
 
+class IdleDriftTool(Tool):
+    def __init__(self, ctx: AgentTickContext, store: DriftStateStore) -> None:
+        self._ctx = ctx
+        self._store = store
+
+    @property
+    def name(self) -> str:
+        return "idle_drift"
+
+    @property
+    def description(self) -> str:
+        return "【终止工具】不选择 skill，静默结束本次 Drift；reason 必填。"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "为什么本轮什么都不做，例如气氛不合适、没有足够价值或刚刚发过消息。",
+                },
+            },
+            "required": ["reason"],
+        }
+
+    async def execute(self, reason: str = "") -> str:
+        reason_text = str(reason or "").strip()
+        if not reason_text:
+            return json.dumps({"error": "reason is required"}, ensure_ascii=False)
+        selected = str(self._ctx.drift_selected_skill or "").strip()
+        if selected:
+            return json.dumps(
+                {"error": "idle_drift must be called before select_skill"},
+                ensure_ascii=False,
+            )
+
+        self._ctx.drift_selected_skill = "idle"
+        self._store.save_finish(
+            skill_used="idle",
+            status="completed",
+            briefing=_clip_text(f"空闲不行动：{reason_text}", 500),
+            message_result="silent",
+            scratchpad_update=None,
+            state_update=None,
+            global_note_update=None,
+            now_utc=self._ctx.now_utc,
+        )
+        self._ctx.drift_finished = True
+        logger.info("[drift_tools] idle_drift ok reason=%s", reason_text[:120])
+        return json.dumps({"ok": True}, ensure_ascii=False)
+
+
 class MountServerTool(Tool):
     """挂载一个已连接的 MCP server，使其工具在本次 drift 中可用。"""
 
@@ -644,6 +698,7 @@ def build_drift_tool_registry(
     drift_dir = deps.drift_dir
     resolver = DriftPathResolver(drift_dir, deps.store)
     tools.register(SelectSkillTool(ctx, deps.store), risk="read-only")
+    tools.register(IdleDriftTool(ctx, deps.store), risk="write")
     tools.register(
         DriftReadFileTool(resolver),
         risk="read-only",

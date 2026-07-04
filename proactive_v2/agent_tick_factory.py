@@ -218,6 +218,7 @@ class AgentTickFactory:
                     workspace_dir=Path(self._deps.state_store.workspace_dir),
                     builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
                     memory=self._deps.memory,
+                    recent_chat_fn=self._build_recent_chat_fn(),
                     shared_tools=self._deps.shared_tools,
                     send_message_fn=self._build_drift_send_message_fn(),
                 ),

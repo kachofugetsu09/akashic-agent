@@ -46,7 +46,7 @@ LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | No
 StepRecorder = Callable[[AgentTickContext, str, str, str, dict[str, Any], str], None]
 logger = logging.getLogger(__name__)
 _WRAP_UP_MAX_ATTEMPTS = 2
-_BEFORE_SELECT_TOOLS = frozenset({"select_skill"})
+_BEFORE_SELECT_TOOLS = frozenset({"select_skill", "idle_drift"})
 _AFTER_SEND_TOOLS = frozenset({"finish_drift"})
 _TOOL_CONSTRAINT_RETRY_LIMIT = 2
 
@@ -103,7 +103,7 @@ class DriftTurnPipeline:
             return False
 
         # 3. Prepare — 构建 tool registry 与初始 messages。
-        tools, messages = self._prepare(ctx, skills)
+        tools, messages = await self._prepare(ctx, skills)
 
         # 4. Execute — LLM 工具调用循环。
         await self._execute_loop(ctx, llm_fn, tools, messages)
@@ -142,7 +142,7 @@ class DriftTurnPipeline:
 
     # ── 2. Prepare ────────────────────────────────────────────────────
 
-    def _prepare(
+    async def _prepare(
         self,
         ctx: AgentTickContext,
         skills: list[SkillMeta],
@@ -168,7 +168,7 @@ class DriftTurnPipeline:
         # 2.4 构建初始 messages。
         messages: list[dict] = [
             {"role": "system", "content": self._build_system_prompt()},
-            self._build_runtime_context_message(skills, connected_servers),
+            await self._build_runtime_context_message(skills, connected_servers),
         ]
 
         return tools, messages
@@ -193,15 +193,15 @@ class DriftTurnPipeline:
             allowed_tool_names: set[str] | None = None
             before_select = not str(ctx.drift_selected_skill or "").strip()
 
-            # 3.1 必须先用 select_skill 声明本轮执行对象。
+            # 3.1 必须先声明执行对象，或说明本轮为什么空闲。
             if before_select:
                 allowed_tool_names = set(_BEFORE_SELECT_TOOLS)
-                tool_choice = {"type": "function", "function": {"name": "select_skill"}}
+                tool_choice = "required"
                 schemas = [
                     s for s in schemas
                     if s["function"]["name"] in allowed_tool_names
                 ]
-                logger.info("[drift] selected_skill missing, forcing select_skill")
+                logger.info("[drift] selected_skill missing, forcing select_skill or idle_drift")
             elif ctx.drift_message_sent:
                 allowed_tool_names = set(_AFTER_SEND_TOOLS)
                 schemas = [
@@ -488,7 +488,7 @@ class DriftTurnPipeline:
 
     # ── Prompt 构建 ────────────────────────────────────────────────────
 
-    def _build_runtime_context_message(
+    async def _build_runtime_context_message(
         self,
         skills: list[SkillMeta],
         connected_servers: set[str] | None = None,
@@ -496,15 +496,12 @@ class DriftTurnPipeline:
         """构建 runtime context frame，包含记忆、skill 列表、近期 run 记录。"""
 
         memory_text = ""
-        recent_context_text = ""
         if self._tool_deps.memory is not None:
             memory = cast("MemoryProfileApi", self._tool_deps.memory)
             raw = str(memory.read_long_term() or "").strip()
             if raw:
                 memory_text = raw
-            rc = str(memory.read_recent_context() or "").strip()
-            if rc:
-                recent_context_text = rc
+        recent_chat_text = await self._build_recent_raw_chat(limit=5)
 
         display_skills = sorted(skills[:8], key=lambda item: item.name)
         lines = []
@@ -568,8 +565,8 @@ class DriftTurnPipeline:
                 is_static=False,
             ),
             PromptSectionRender(
-                name="recent_context",
-                content=recent_context_text or "（空）",
+                name="recent_raw_chat",
+                content=recent_chat_text or "（空）",
                 is_static=False,
             ),
             PromptSectionRender(
@@ -604,7 +601,7 @@ class DriftTurnPipeline:
 
         lines = [
             "下面按 skill 名称排列，顺序不代表优先级，也不是强制首选。",
-            "选择依据：status、上次 finish 时间、上次摘要、scratchpad、cursor、recent_context 和最近 runs。",
+            "选择依据：status、上次 finish 时间、上次摘要、scratchpad、cursor、recent_raw_chat 和最近 runs。",
             "completed 表示上次小闭环已完成；paused 表示可接续；waiting 表示等待外部条件。",
             "local_context 只在 select_skill 后作为执行上下文参考，其中 scratchpad 是自然语言前情，cursor 是结构化游标。",
         ]
@@ -632,6 +629,29 @@ class DriftTurnPipeline:
             )
         return "\n".join(lines)
 
+    async def _build_recent_raw_chat(self, *, limit: int) -> str:
+        recent_chat_fn = self._tool_deps.recent_chat_fn
+        if recent_chat_fn is None:
+            return "（空）"
+        try:
+            rows = await recent_chat_fn(limit)
+        except Exception as exc:
+            logger.warning("[drift] recent_raw_chat read failed: %s", exc)
+            return "（读取失败）"
+
+        lines: list[str] = []
+        for row in list(rows or [])[-limit:]:
+            if not isinstance(row, dict):
+                continue
+            role = str(row.get("role") or "unknown").strip() or "unknown"
+            content = str(row.get("content") or "").strip()
+            if not content:
+                continue
+            marker = " proactive=true" if row.get("proactive") else ""
+            compact = " ".join(content.split())
+            lines.append(f"- {role}{marker}: {compact[:500]}")
+        return "\n".join(lines) if lines else "（空）"
+
     def _build_system_prompt(self) -> str:
         return (
             f"{AKASHIC_IDENTITY}\n\n"
@@ -639,9 +659,10 @@ class DriftTurnPipeline:
             "你现在有一段空闲时间（Drift 模式）。没有外部内容需要推送，\n"
             "你可以自主决定做一件有意义的事。本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
             "【执行规则】\n"
-            "1. 先根据 context frame 比较所有可用 skill，然后调用 select_skill(skill_name)。"
-            "select_skill 会记录本轮 selected_skill，并返回该 skill 的 SKILL.md。\n"
-            "2. 选中后执行一个原子动作；需要更多上下文时，只读取 SKILL.md 声明的 working files。"
+            "1. 先根据 context frame 比较所有可用 skill 和最近聊天气氛。"
+            "如果没有值得做的事、刚刚打扰过用户或当前气氛不适合主动行动，调用 idle_drift(reason) 静默结束；"
+            "否则调用 select_skill(skill_name)。select_skill 会记录本轮 selected_skill，并返回该 skill 的 SKILL.md。\n"
+            "2. 选中 skill 后执行一个原子动作；需要更多上下文时，只读取 SKILL.md 声明的 working files。"
             "路径由 drift mount resolver 解析，skills/<skill_name>/... 同时适用于工作区和内建 skill。\n"
             "3. 有用户价值且适合打扰时可调用 message_push，单次 run 最多一次；"
             "message_push 成功后只能调用 finish_drift。\n"
@@ -651,7 +672,7 @@ class DriftTurnPipeline:
             "completed 表示小闭环已完成；paused 或 waiting 必须写 scratchpad_update。"
             "结构化接续写 cursor_update；已经完成的事实追加到 journal_append。\n\n"
             "【可用工具】\n"
-            "select_skill, read_file, list_dir, write_file, edit_file, recall_memory, web_fetch, web_search, "
+            "select_skill, idle_drift, read_file, list_dir, write_file, edit_file, recall_memory, web_fetch, web_search, "
             "fetch_messages, search_messages, shell, message_push, finish_drift；"
             "若 context frame 里列出了可挂载外部能力，可用 mount_server 挂载。"
         )

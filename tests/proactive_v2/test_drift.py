@@ -230,7 +230,8 @@ async def test_drift_message_push_sends_media(tmp_path: Path):
     send_message.assert_awaited_once_with("新表情来啦", ["/tmp/one.png", "/tmp/two.png"])
 
 
-def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     pipeline = _make_drift_pipeline(
@@ -242,11 +243,12 @@ def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_pat
         ),
     )
     prompt = pipeline._build_system_prompt()
-    runtime = str(pipeline._build_runtime_context_message(store.scan_skills())["content"])
+    runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
     assert "select_skill 会记录本轮 selected_skill" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
     assert "message_result" in prompt
     assert "select_skill" in prompt
+    assert "idle_drift" in prompt
     assert "fetch_messages" in prompt
     assert "search_messages" in prompt
     assert "shell" in prompt
@@ -254,7 +256,8 @@ def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(tmp_pat
     assert "drift_skills" in runtime
 
 
-def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Path):
     _write_skill(tmp_path, name="explore-curiosity")
     _write_skill(tmp_path, name="meme-auto-generate")
     store = DriftStateStore(tmp_path)
@@ -287,10 +290,11 @@ def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Path):
             shared_tools=_build_shared_tools(),
         ),
     )
-    runtime = str(pipeline._build_runtime_context_message(store.scan_skills())["content"])
+    runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
     assert "drift_selection_context" in runtime
     assert "按 skill 名称排列，顺序不代表优先级" in runtime
     assert "选择依据：status、上次 finish 时间" in runtime
+    assert "recent_raw_chat" in runtime
     assert "local_context 只在 select_skill 后作为执行上下文参考" in runtime
     assert "explore-curiosity: status=completed" in runtime
     assert "meme-auto-generate: status=completed" in runtime
@@ -305,7 +309,8 @@ def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Path):
     assert runtime.index("drift_selection_context") < runtime.index("long_term_memory")
 
 
-def test_drift_runtime_context_does_not_expose_memory_file_path(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_drift_runtime_context_does_not_expose_memory_file_path(tmp_path: Path):
     _write_skill(tmp_path)
     memory_file = tmp_path / "memory" / "MEMORY.md"
     memory_file.parent.mkdir()
@@ -324,10 +329,70 @@ def test_drift_runtime_context_does_not_expose_memory_file_path(tmp_path: Path):
             ),
         ),
     )
-    runtime = str(pipeline._build_runtime_context_message(store.scan_skills())["content"])
+    runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
     assert "drift_runtime_state" not in runtime
     assert "长期记忆文件 MEMORY.md" not in runtime
     assert str(memory_file) not in runtime
+
+
+@pytest.mark.asyncio
+async def test_drift_runtime_context_uses_recent_five_raw_chat_messages(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+
+    async def recent_chat_fn(n: int = 20) -> list[dict]:
+        return [
+            {"role": "user", "content": f"消息 {idx}", "proactive": idx % 2 == 0}
+            for idx in range(1, 8)
+        ]
+
+    pipeline = _make_drift_pipeline(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            recent_chat_fn=recent_chat_fn,
+            shared_tools=_build_shared_tools(),
+        ),
+    )
+    runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
+    assert "recent_raw_chat" in runtime
+    assert "recent_context" not in runtime
+    assert "消息 1" not in runtime
+    assert "消息 2" not in runtime
+    assert "消息 3" in runtime
+    assert "消息 7" in runtime
+    assert "proactive=true" in runtime
+
+
+@pytest.mark.asyncio
+async def test_drift_pipeline_can_idle_before_selecting_skill(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    captured: list[tuple[list[str], str | dict]] = []
+
+    async def llm(messages: list[dict], schemas: list[dict], tool_choice: str | dict = "auto"):
+        captured.append(([s["function"]["name"] for s in schemas], tool_choice))
+        return {"name": "idle_drift", "input": {"reason": "最近对话刚结束，主动打扰价值不高"}}
+
+    pipeline = _make_drift_pipeline(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=_build_shared_tools(),
+        ),
+        max_steps=3,
+    )
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
+    await pipeline.run(ctx, cast(Any, llm))
+    recent = store.load_drift()["recent_runs"][-1]
+    assert captured == [(["select_skill", "idle_drift"], "required")]
+    assert ctx.drift_finished is True
+    assert ctx.drift_selected_skill == "idle"
+    assert recent["skill"] == "idle"
+    assert recent["message_result"] == "silent"
+    assert "主动打扰价值不高" in recent["briefing"]
 
 
 @pytest.mark.asyncio
@@ -722,7 +787,7 @@ async def test_drift_pipeline_runs_and_finishes(tmp_path: Path):
     assert drift["recent_runs"][-1]["skill"] == "explore-curiosity"
     assert ctx.drift_selected_skill == "explore-curiosity"
     assert llm.tool_choices[:2] == [
-        {"type": "function", "function": {"name": "select_skill"}},
+        "required",
         "required",
     ]
     conn = sqlite3.connect(store.db_file)
@@ -870,8 +935,8 @@ async def test_drift_pipeline_does_not_restrict_before_step_limit(tmp_path: Path
     )
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
     await pipeline.run(ctx, cast(Any, llm))
-    assert captured[0][0] == ["select_skill"]
-    assert captured[0][1] == {"type": "function", "function": {"name": "select_skill"}}
+    assert captured[0][0] == ["select_skill", "idle_drift"]
+    assert captured[0][1] == "required"
     for schemas, tool_choice in captured[1:6]:
         assert tool_choice == "required"
         assert "read_file" in schemas
@@ -1450,7 +1515,8 @@ async def test_drift_pipeline_executes_mounted_mcp_tool(tmp_path: Path):
     assert "mcp_calendar__tool_a" not in captured_schemas[0]
 
 
-def test_system_prompt_includes_mcp_directory(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_system_prompt_includes_mcp_directory(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     shared = _build_shared_tools_with_mcp("calendar")
@@ -1459,9 +1525,9 @@ def test_system_prompt_includes_mcp_directory(tmp_path: Path):
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
     )
     content = str(
-        pipeline._build_runtime_context_message(
+        (await pipeline._build_runtime_context_message(
             store.scan_skills(), shared.get_mcp_server_names()
-        )["content"]
+        ))["content"]
     )
     assert "可挂载的外部能力" in content
     assert "calendar" in content
@@ -1472,19 +1538,21 @@ def test_system_prompt_includes_mcp_directory(tmp_path: Path):
     assert "2 个工具" in content
 
 
-def test_system_prompt_no_mcp_block_without_servers(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_system_prompt_no_mcp_block_without_servers(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     pipeline = _make_drift_pipeline(
         store=store,
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=_build_shared_tools()),
     )
-    content = str(pipeline._build_runtime_context_message(store.scan_skills(), set())["content"])
+    content = str((await pipeline._build_runtime_context_message(store.scan_skills(), set()))["content"])
     assert "可挂载的外部能力" not in content
     assert "mount_server" not in content
 
 
-def test_system_prompt_skill_requires_mcp_annotation(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_system_prompt_skill_requires_mcp_annotation(tmp_path: Path):
     _write_skill_with_mcp(tmp_path, "cal-skill", "calendar")
     store = DriftStateStore(tmp_path)
     shared = _build_shared_tools_with_mcp("calendar")
@@ -1493,9 +1561,9 @@ def test_system_prompt_skill_requires_mcp_annotation(tmp_path: Path):
         tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store, shared_tools=shared),
     )
     content = str(
-        pipeline._build_runtime_context_message(
+        (await pipeline._build_runtime_context_message(
             store.scan_skills(), shared.get_mcp_server_names()
-        )["content"]
+        ))["content"]
     )
     assert "[需要: calendar]" in content
 
