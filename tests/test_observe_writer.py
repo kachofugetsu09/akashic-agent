@@ -361,7 +361,7 @@ def test_open_db_does_not_create_legacy_rag_tables(tmp_path):
     assert "rag_items" not in tables
 
 
-def test_open_db_removes_legacy_proactive_observe_data(tmp_path):
+def test_open_db_keeps_proactive_turns_and_removes_legacy_table(tmp_path):
     db_path = tmp_path / "observe.db"
     conn = sqlite3.connect(str(db_path))
     try:
@@ -408,7 +408,7 @@ def test_open_db_removes_legacy_proactive_observe_data(tmp_path):
         conn.close()
 
     assert "proactive_decisions" not in tables
-    assert rows == [("agent", "ok")]
+    assert rows == [("agent", "ok"), ("proactive", "push")]
 
 
 def test_migrate_legacy_rag_tables_moves_events_into_rag_queries(tmp_path):

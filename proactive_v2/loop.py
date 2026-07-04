@@ -31,6 +31,7 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import PushToolOutboundPort
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
+from bus.event_bus import EventBus
 from core.common.strategy_trace import build_strategy_trace_envelope
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.config import ProactiveConfig
@@ -72,6 +73,7 @@ class ProactiveLoop:
         rng: _random_module.Random | None = None,
         passive_busy_fn: Callable[[str], bool] | None = None,
         shared_tools: ToolRegistry | None = None,
+        event_bus: EventBus | None = None,
         tool_hooks: list[ToolHook] | None = None,
         proactive_modules: list[object] | None = None,
     ) -> None:
@@ -87,6 +89,7 @@ class ProactiveLoop:
         self._rng = rng
         self._passive_busy_fn = passive_busy_fn
         self._shared_tools = shared_tools
+        self._event_bus = event_bus
         self._tool_hooks = tool_hooks or []
         self._plugin_proactive_modules = proactive_modules or []
         self._workspace_context_mtime_ns: int | None = None
@@ -146,6 +149,7 @@ class ProactiveLoop:
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
                 shared_tools=self._shared_tools,
+                event_bus=self._event_bus,
                 pool=self._mcp_runtime.pool,
                 tool_hooks=self._tool_hooks,
             )

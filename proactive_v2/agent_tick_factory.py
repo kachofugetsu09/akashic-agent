@@ -15,6 +15,7 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
+from bus.event_bus import EventBus
 from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.modules_source import McpGatewaySource
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
@@ -52,6 +53,7 @@ class AgentTickDeps:
     shared_tools: ToolRegistry | None = None
     turn_orchestrator: TurnOrchestrator | None = None
     pool: McpClientPool | None = None
+    event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] = field(default_factory=list)
 
 
@@ -99,6 +101,7 @@ class AgentTickFactory:
                 rng=self._deps.rng,
                 recent_proactive_fn=recent_proactive_fn,
                 drift_pipeline=drift_pipeline,
+                event_bus=self._deps.event_bus,
                 tool_hooks=self._deps.tool_hooks,
             )
         )
@@ -140,7 +143,13 @@ class AgentTickFactory:
                 )
                 return None
             tc = resp.tool_calls[0]
-            return {"id": tc.id, "name": tc.name, "input": tc.arguments}
+            return {
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.arguments,
+                "_cache_prompt_tokens": resp.cache_prompt_tokens,
+                "_cache_hit_tokens": resp.cache_hit_tokens,
+            }
 
         return llm_fn
 

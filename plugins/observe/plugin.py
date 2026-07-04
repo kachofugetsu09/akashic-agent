@@ -8,7 +8,7 @@ from contextlib import suppress
 from typing import Protocol, cast, runtime_checkable
 
 from agent.plugins import Plugin
-from bus.events_lifecycle import TurnCommitted
+from bus.events_lifecycle import ProactiveFinished, TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted
 
 from .collector import GlobalErrorCollector
@@ -44,6 +44,7 @@ class ObservePlugin(Plugin):
         self._collector = GlobalErrorCollector(self._writer)
         self._collector.install()
         self.context.event_bus.on(TurnCommitted, self._observe_turn_committed)
+        self.context.event_bus.on(ProactiveFinished, self._observe_proactive_finished)
         self.context.event_bus.on(RetrievalCompleted, self._observe_retrieval)
         self.context.event_bus.on(MemoryWritten, self._observe_memory_written)
 
@@ -72,6 +73,12 @@ class ObservePlugin(Plugin):
         if not isinstance(writer, _ObserveWriter):
             return
         writer.emit(_to_rag_query_log(event))
+
+    def _observe_proactive_finished(self, event: ProactiveFinished) -> None:
+        writer = getattr(self, "_writer", None)
+        if not isinstance(writer, _ObserveWriter):
+            return
+        writer.emit(_to_proactive_turn_trace(event))
 
     def _observe_memory_written(self, event: MemoryWritten) -> None:
         writer = getattr(self, "_writer", None)
@@ -123,6 +130,25 @@ def _emit_turn_trace(writer: _ObserveWriter, event: TurnCommitted) -> None:
         "[observe] turn_trace 已入队 session=%s tool_calls=%d",
         event.session_key,
         len(tool_calls),
+    )
+
+
+def _to_proactive_turn_trace(event: ProactiveFinished):
+    from .events import TurnTrace as TurnTraceEvent
+
+    summary = event.final_message or event.skip_reason or event.gate_exit or ""
+    return TurnTraceEvent(
+        source=event.mode,
+        session_key=event.session_key,
+        user_msg=None,
+        llm_output=summary,
+        raw_llm_output=None,
+        react_iteration_count=event.llm_call_count,
+        react_input_sum_tokens=None,
+        react_input_peak_tokens=None,
+        react_final_input_tokens=None,
+        react_cache_prompt_tokens=event.cache_prompt_tokens,
+        react_cache_hit_tokens=event.cache_hit_tokens,
     )
 
 

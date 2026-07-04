@@ -36,7 +36,7 @@ class RagQueryLog:
 class TurnTrace:
     """一轮 agent 对话的完整记录。"""
 
-    source: Literal["agent"]
+    source: Literal["agent", "proactive", "drift"]
     session_key: str
     user_msg: str | None            # 用户原文
     llm_output: str                 # LLM 最终输出完整文本

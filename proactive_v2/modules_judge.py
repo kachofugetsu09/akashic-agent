@@ -120,6 +120,10 @@ class ProactiveJudge:
                 ctx.steps_taken,
             )
             return False
+        ctx.record_llm_cache(
+            cache_prompt_tokens=tool_call.get("_cache_prompt_tokens"),
+            cache_hit_tokens=tool_call.get("_cache_hit_tokens"),
+        )
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("input", {})
         arg_summary = json.dumps(tool_args, ensure_ascii=False)[:200]

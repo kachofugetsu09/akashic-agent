@@ -157,6 +157,7 @@ class AppRuntime:
                 memory_store=self.memory_runtime,
                 presence=self.presence,
                 agent_loop=self.agent_loop,
+                event_bus=event_bus,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
                 proactive_modules=(
                     list(plugin_manager.proactive_modules)

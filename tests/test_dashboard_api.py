@@ -800,6 +800,23 @@ def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> N
                 260,
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO turns(
+                ts, source, session_key, user_msg, llm_output,
+                react_cache_prompt_tokens, react_cache_hit_tokens
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-04-19T03:21:00+00:00",
+                "proactive",
+                "telegram:100",
+                "",
+                "skip",
+                200,
+                50,
+            ),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -808,13 +825,15 @@ def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> N
         turns = client.get("/api/dashboard/status-commands/kvcache/turns")
 
         assert overview.status_code == 200
-        assert overview.json()["tracked_turn_count"] == 1
-        assert overview.json()["hit_rate"] == 260 / 300
+        assert overview.json()["tracked_turn_count"] == 2
+        assert overview.json()["hit_rate"] == 310 / 500
+        assert overview.json()["passive"]["hit_rate"] == 260 / 300
+        assert overview.json()["proactive"]["hit_rate"] == 50 / 200
         assert turns.status_code == 200
         payload = turns.json()
-        assert payload["total"] == 1
-        assert payload["items"][0]["session_key"] == "telegram:100"
-        assert payload["items"][0]["user_preview"] == "again"
+        assert payload["total"] == 2
+        assert payload["items"][0]["source"] == "proactive"
+        assert payload["items"][1]["user_preview"] == "again"
 
 
 def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:

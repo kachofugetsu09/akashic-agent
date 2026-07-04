@@ -29,6 +29,8 @@ from typing import Any, Callable
 from agent.tool_hooks import ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnResult
+from bus.event_bus import EventBus
+from bus.events_lifecycle import ProactiveFinished
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
@@ -109,6 +111,7 @@ class ProactiveTurnPipelineDeps:
     rng: Any | None
     recent_proactive_fn: Callable[[], list] | None
     drift_pipeline: DriftTurnPipeline | None
+    event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] | None = None
 
 
@@ -150,6 +153,7 @@ class ProactiveTurnPipeline:
         self._rng = deps.rng if deps.rng is not None else _random_module.Random()
         self._recent_proactive_fn = deps.recent_proactive_fn
         self._drift_pipeline = deps.drift_pipeline
+        self._event_bus = deps.event_bus
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
         self._proactive_slots: dict[str, Any] = {}
         self._proactive_prompt_sections: list[str] = []
@@ -563,7 +567,47 @@ class ProactiveTurnPipeline:
                 for effect in self._proactive_effect_logs
             ],
         )
+        self._emit_proactive_finished(
+            ctx,
+            gate_exit=gate_exit,
+            terminal_action=decision,
+            skip_reason=skip_reason,
+            final_message=final_message,
+        )
         self._last_log_result = result
+
+    def _emit_proactive_finished(
+        self,
+        ctx: AgentTickContext,
+        *,
+        gate_exit: str | None,
+        terminal_action: str | None,
+        skip_reason: str,
+        final_message: str,
+    ) -> None:
+        if self._event_bus is None:
+            return
+        self._event_bus.enqueue(
+            ProactiveFinished(
+                session_key=self._session_key,
+                tick_id=ctx.tick_id,
+                mode="drift" if ctx.drift_entered else "proactive",
+                terminal_action=terminal_action,
+                gate_exit=gate_exit,
+                skip_reason=skip_reason,
+                steps_taken=ctx.steps_taken,
+                alert_count=len(ctx.fetched_alerts),
+                content_count=len(ctx.fetched_contents),
+                context_count=len(ctx.fetched_context),
+                final_message=final_message,
+                llm_call_count=ctx.llm_call_count,
+                cache_prompt_tokens=(
+                    ctx.cache_prompt_tokens if ctx.cache_seen else None
+                ),
+                cache_hit_tokens=ctx.cache_hit_tokens if ctx.cache_seen else None,
+                timestamp=ctx.now_utc,
+            )
+        )
 
     def _record_tick_step(
         self,

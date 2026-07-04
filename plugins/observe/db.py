@@ -129,7 +129,6 @@ def _ensure_turns_columns(conn: sqlite3.Connection) -> None:
         _ = conn.execute(f"ALTER TABLE turns ADD COLUMN {col} {ddl}")
 
 def _migrate_removed_proactive_observe(conn: sqlite3.Connection) -> None:
-    _ = conn.execute("DELETE FROM turns WHERE source = 'proactive'")
     _ = conn.execute("DROP TABLE IF EXISTS proactive_decisions")
 
 

@@ -57,6 +57,10 @@ class ObserveDashboardReader:
                     COALESCE(SUM(COALESCE(react_input_sum_tokens, prompt_tokens, 0)), 0) AS input_tokens,
                     COALESCE(SUM(react_cache_prompt_tokens), 0) AS cache_prompt_tokens,
                     COALESCE(SUM(react_cache_hit_tokens), 0) AS cache_hit_tokens,
+                    COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_prompt_tokens ELSE 0 END), 0) AS passive_cache_prompt_tokens,
+                    COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_hit_tokens ELSE 0 END), 0) AS passive_cache_hit_tokens,
+                    COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_prompt_tokens ELSE 0 END), 0) AS proactive_cache_prompt_tokens,
+                    COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_hit_tokens ELSE 0 END), 0) AS proactive_cache_hit_tokens,
                     AVG(react_iteration_count) AS avg_iteration,
                     MAX(react_iteration_count) AS max_iteration,
                     MAX(ts) AS last_ts
@@ -83,6 +87,10 @@ class ObserveDashboardReader:
                     COALESCE(SUM(COALESCE(react_input_sum_tokens, prompt_tokens, 0)), 0) AS input_tokens,
                     COALESCE(SUM(react_cache_prompt_tokens), 0) AS cache_prompt_tokens,
                     COALESCE(SUM(react_cache_hit_tokens), 0) AS cache_hit_tokens,
+                    COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_prompt_tokens ELSE 0 END), 0) AS passive_cache_prompt_tokens,
+                    COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_hit_tokens ELSE 0 END), 0) AS passive_cache_hit_tokens,
+                    COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_prompt_tokens ELSE 0 END), 0) AS proactive_cache_prompt_tokens,
+                    COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_hit_tokens ELSE 0 END), 0) AS proactive_cache_hit_tokens,
                     AVG(react_iteration_count) AS avg_iteration
                 FROM turns
                 WHERE {where}
@@ -300,11 +308,12 @@ def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> None:
         return reader.set_global_status(fingerprint, value)
 
 
-# Build the shared WHERE clause: agent turns, optionally bounded by cutoff.
+# Build the shared WHERE clause: LLM-driven flows, optionally bounded by cutoff.
 def _agent_window(cutoff: str | None) -> tuple[str, tuple[Any, ...]]:
+    sources = "source IN ('agent', 'proactive', 'drift')"
     if cutoff is None:
-        return "source = 'agent'", ()
-    return "source = 'agent' AND ts >= ?", (cutoff,)
+        return sources, ()
+    return f"{sources} AND ts >= ?", (cutoff,)
 
 
 def _bucket_name(bucket_len: int) -> str:
@@ -322,6 +331,10 @@ def _overview_from_row(row: sqlite3.Row | None, range_token: str) -> dict[str, A
     errors = int(row["errors"] or 0)
     cache_prompt = int(row["cache_prompt_tokens"] or 0)
     cache_hit = int(row["cache_hit_tokens"] or 0)
+    passive_cache_prompt = int(row["passive_cache_prompt_tokens"] or 0)
+    passive_cache_hit = int(row["passive_cache_hit_tokens"] or 0)
+    proactive_cache_prompt = int(row["proactive_cache_prompt_tokens"] or 0)
+    proactive_cache_hit = int(row["proactive_cache_hit_tokens"] or 0)
     return {
         "range": range_token,
         "turns": turns,
@@ -331,6 +344,12 @@ def _overview_from_row(row: sqlite3.Row | None, range_token: str) -> dict[str, A
         "cache_prompt_tokens": cache_prompt,
         "cache_hit_tokens": cache_hit,
         "cache_hit_rate": _rate(cache_hit, cache_prompt),
+        "passive_cache_prompt_tokens": passive_cache_prompt,
+        "passive_cache_hit_tokens": passive_cache_hit,
+        "passive_cache_hit_rate": _rate(passive_cache_hit, passive_cache_prompt),
+        "proactive_cache_prompt_tokens": proactive_cache_prompt,
+        "proactive_cache_hit_tokens": proactive_cache_hit,
+        "proactive_cache_hit_rate": _rate(proactive_cache_hit, proactive_cache_prompt),
         "avg_iteration": float(row["avg_iteration"]) if row["avg_iteration"] is not None else None,
         "max_iteration": int(row["max_iteration"] or 0),
         "last_ts": row["last_ts"],
@@ -347,6 +366,12 @@ def _empty_overview(range_token: str) -> dict[str, Any]:
         "cache_prompt_tokens": 0,
         "cache_hit_tokens": 0,
         "cache_hit_rate": None,
+        "passive_cache_prompt_tokens": 0,
+        "passive_cache_hit_tokens": 0,
+        "passive_cache_hit_rate": None,
+        "proactive_cache_prompt_tokens": 0,
+        "proactive_cache_hit_tokens": 0,
+        "proactive_cache_hit_rate": None,
         "avg_iteration": None,
         "max_iteration": 0,
         "last_ts": None,
@@ -356,12 +381,18 @@ def _empty_overview(range_token: str) -> dict[str, Any]:
 def _point_from_row(row: sqlite3.Row) -> dict[str, Any]:
     cache_prompt = int(row["cache_prompt_tokens"] or 0)
     cache_hit = int(row["cache_hit_tokens"] or 0)
+    passive_cache_prompt = int(row["passive_cache_prompt_tokens"] or 0)
+    passive_cache_hit = int(row["passive_cache_hit_tokens"] or 0)
+    proactive_cache_prompt = int(row["proactive_cache_prompt_tokens"] or 0)
+    proactive_cache_hit = int(row["proactive_cache_hit_tokens"] or 0)
     return {
         "bucket": row["bucket"],
         "turns": int(row["turns"] or 0),
         "errors": int(row["errors"] or 0),
         "input_tokens": int(row["input_tokens"] or 0),
         "cache_hit_rate": _rate(cache_hit, cache_prompt),
+        "passive_cache_hit_rate": _rate(passive_cache_hit, passive_cache_prompt),
+        "proactive_cache_hit_rate": _rate(proactive_cache_hit, proactive_cache_prompt),
         "avg_iteration": float(row["avg_iteration"]) if row["avg_iteration"] is not None else None,
     }
 
