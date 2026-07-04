@@ -22,6 +22,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.prompting import is_context_frame
+from bus.event_bus import EventBus
+from bus.events_lifecycle import ProactiveFinished
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_proactive_pipeline, run_proactive_pipeline
@@ -127,6 +129,37 @@ async def test_loop_with_no_llm_fn_executes_nothing():
     assert len(tick._state_store.tick_log_starts) == 1
     assert len(tick._state_store.tick_log_finishes) == 1
     assert tick._state_store.tick_log_finishes[0]["terminal_action"] == "skip"
+
+
+@pytest.mark.asyncio
+async def test_loop_emits_proactive_finished_with_cache_stats():
+    calls = 0
+
+    async def llm(messages, schemas, tool_choice="auto"):
+        nonlocal calls
+        calls += 1
+        return {
+            "name": "finish_turn",
+            "input": {"decision": "skip", "reason": "no_content"},
+            "_cache_prompt_tokens": 100,
+            "_cache_hit_tokens": 80,
+        }
+
+    bus = EventBus()
+    events: list[ProactiveFinished] = []
+    bus.on(ProactiveFinished, lambda event: events.append(event))
+    tick = make_proactive_pipeline(llm_fn=llm, event_bus=bus)
+
+    await run_proactive_pipeline(tick)
+    await bus.drain()
+    await bus.aclose()
+
+    assert calls == 1
+    assert len(events) == 1
+    assert events[0].mode == "proactive"
+    assert events[0].llm_call_count == 1
+    assert events[0].cache_prompt_tokens == 100
+    assert events[0].cache_hit_tokens == 80
 
 
 # ── 终止工具立即结束 loop ─────────────────────────────────────────────────

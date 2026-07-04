@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from agent.core.types import ToolCallGroup
@@ -81,6 +81,35 @@ class TurnCommitted:
     post_reply_budget: dict[str, int] = field(default_factory=_empty_int_metadata)
     react_stats: dict[str, int] = field(default_factory=_empty_int_metadata)
     extra: dict[str, Any] = field(default_factory=_empty_metadata)
+
+
+@dataclass(frozen=True)
+class ProactiveFinished:
+    session_key: str
+    tick_id: str
+    mode: Literal["proactive", "drift"]
+    terminal_action: str | None
+    gate_exit: str | None
+    skip_reason: str
+    steps_taken: int
+    alert_count: int
+    content_count: int
+    context_count: int
+    final_message: str
+    llm_call_count: int
+    cache_prompt_tokens: int | None = None
+    cache_hit_tokens: int | None = None
+    timestamp: datetime | None = None
+
+
+@dataclass(frozen=True)
+class DriftFinished:
+    session_key: str
+    skill_name: str
+    status: str
+    briefing: str
+    message_result: str
+    timestamp: datetime
 
 
 @dataclass(frozen=True)

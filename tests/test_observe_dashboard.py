@@ -57,13 +57,16 @@ def _seed(workspace: Path) -> None:
         react_input_sum_tokens=9999,
         react_iteration_count=1,
     )
-    # A non-agent row — must never be counted.
+    # Proactive rows are part of the same LLM observability window.
     _insert_turn(
         conn,
         ts=_iso(now - timedelta(hours=1)),
         source="proactive",
         session_key="telegram:1",
         react_input_sum_tokens=123,
+        react_cache_prompt_tokens=200,
+        react_cache_hit_tokens=50,
+        react_iteration_count=1,
     )
     conn.execute(
         """
@@ -95,15 +98,16 @@ def test_overview_aggregates_within_window(tmp_path) -> None:
     _seed(tmp_path)
     reader = ObserveDashboardReader(tmp_path)
     ov = reader.get_overview("24h")
-    # Only the two recent agent turns count.
-    assert ov["turns"] == 2
+    assert ov["turns"] == 3
     assert ov["errors"] == 1
-    assert ov["error_rate"] == 0.5
-    assert ov["input_tokens"] == 1500
-    assert ov["cache_prompt_tokens"] == 800
-    assert ov["cache_hit_tokens"] == 600
-    assert ov["cache_hit_rate"] == 0.75
-    assert ov["avg_iteration"] == 3.5
+    assert ov["error_rate"] == 1 / 3
+    assert ov["input_tokens"] == 1623
+    assert ov["cache_prompt_tokens"] == 1000
+    assert ov["cache_hit_tokens"] == 650
+    assert ov["cache_hit_rate"] == 0.65
+    assert ov["passive_cache_hit_rate"] == 0.75
+    assert ov["proactive_cache_hit_rate"] == 0.25
+    assert ov["avg_iteration"] == (2 + 5 + 1) / 3
     assert ov["max_iteration"] == 5
 
 
@@ -111,9 +115,8 @@ def test_overview_all_range_includes_old(tmp_path) -> None:
     _seed(tmp_path)
     reader = ObserveDashboardReader(tmp_path)
     ov = reader.get_overview("all")
-    # All three agent turns (recent two + ancient one); proactive still excluded.
-    assert ov["turns"] == 3
-    assert ov["input_tokens"] == 1500 + 9999
+    assert ov["turns"] == 4
+    assert ov["input_tokens"] == 1623 + 9999
 
 
 def test_timeseries_buckets_by_hour(tmp_path) -> None:
@@ -121,9 +124,9 @@ def test_timeseries_buckets_by_hour(tmp_path) -> None:
     reader = ObserveDashboardReader(tmp_path)
     ts = reader.get_timeseries("24h")
     assert ts["bucket"] == "hour"
-    # Two recent turns fall in two distinct hour buckets.
+    # Three recent turns fall in two distinct hour buckets.
     assert len(ts["points"]) == 2
-    assert sum(p["turns"] for p in ts["points"]) == 2
+    assert sum(p["turns"] for p in ts["points"]) == 3
     assert sum(p["errors"] for p in ts["points"]) == 1
 
 

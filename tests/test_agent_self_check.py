@@ -42,8 +42,8 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
 
 def test_collect_skill_mentions_returns_unique_existing_names(tmp_path):
     skills = [
-        {"name": "feed-manage"},
-        {"name": "refactor"},
+        "feed-manage",
+        "refactor",
     ]
 
     got = collect_skill_mentions(
@@ -55,7 +55,7 @@ def test_collect_skill_mentions_returns_unique_existing_names(tmp_path):
 
 
 def test_collect_skill_mentions_ignores_unknown_skill(tmp_path):
-    skills = [{"name": "known"}]
+    skills = ["known"]
 
     got = collect_skill_mentions("$known $unknown", skills)
 

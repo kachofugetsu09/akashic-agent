@@ -25,6 +25,12 @@ class KVCacheDashboardReader:
                         SUM(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS tracked_turn_count,
                         COALESCE(SUM(react_cache_prompt_tokens), 0) AS prompt_tokens,
                         COALESCE(SUM(react_cache_hit_tokens), 0) AS hit_tokens,
+                        COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_prompt_tokens ELSE 0 END), 0) AS passive_prompt_tokens,
+                        COALESCE(SUM(CASE WHEN source = 'agent' THEN react_cache_hit_tokens ELSE 0 END), 0) AS passive_hit_tokens,
+                        SUM(CASE WHEN source = 'agent' AND react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS passive_tracked_turn_count,
+                        COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_prompt_tokens ELSE 0 END), 0) AS proactive_prompt_tokens,
+                        COALESCE(SUM(CASE WHEN source IN ('proactive', 'drift') THEN react_cache_hit_tokens ELSE 0 END), 0) AS proactive_hit_tokens,
+                        SUM(CASE WHEN source IN ('proactive', 'drift') AND react_cache_prompt_tokens IS NOT NULL THEN 1 ELSE 0 END) AS proactive_tracked_turn_count,
                         MAX(CASE WHEN react_cache_prompt_tokens IS NOT NULL THEN ts ELSE NULL END) AS last_tracked_at
                     FROM turns
                     """).fetchone()
@@ -123,6 +129,8 @@ def _summary_from_row(row: sqlite3.Row | None) -> dict[str, Any]:
     prompt_tokens = int(row["prompt_tokens"] or 0) if row is not None else 0
     hit_tokens = int(row["hit_tokens"] or 0) if row is not None else 0
     miss_tokens = max(0, prompt_tokens - hit_tokens)
+    passive = _source_summary_from_row(row, "passive")
+    proactive = _source_summary_from_row(row, "proactive")
     return {
         "turn_count": int(row["turn_count"] or 0) if row is not None else 0,
         "tracked_turn_count": (
@@ -133,6 +141,23 @@ def _summary_from_row(row: sqlite3.Row | None) -> dict[str, Any]:
         "miss_tokens": miss_tokens,
         "hit_rate": (hit_tokens / prompt_tokens) if prompt_tokens > 0 else None,
         "last_tracked_at": row["last_tracked_at"] if row is not None else None,
+        "passive": passive,
+        "proactive": proactive,
+    }
+
+
+def _source_summary_from_row(row: sqlite3.Row | None, prefix: str) -> dict[str, Any]:
+    prompt_tokens = int(row[f"{prefix}_prompt_tokens"] or 0) if row is not None else 0
+    hit_tokens = int(row[f"{prefix}_hit_tokens"] or 0) if row is not None else 0
+    miss_tokens = max(0, prompt_tokens - hit_tokens)
+    return {
+        "tracked_turn_count": (
+            int(row[f"{prefix}_tracked_turn_count"] or 0) if row is not None else 0
+        ),
+        "prompt_tokens": prompt_tokens,
+        "hit_tokens": hit_tokens,
+        "miss_tokens": miss_tokens,
+        "hit_rate": (hit_tokens / prompt_tokens) if prompt_tokens > 0 else None,
     }
 
 

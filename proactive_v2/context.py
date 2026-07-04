@@ -39,6 +39,24 @@ class AgentTickContext:
     drift_entered: bool = False
     drift_finished: bool = False
     drift_message_sent: bool = False
+    drift_selected_skill: str = ""
+    llm_call_count: int = 0
+    cache_prompt_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_seen: bool = False
+
+    def record_llm_cache(
+        self,
+        *,
+        cache_prompt_tokens: int | None,
+        cache_hit_tokens: int | None,
+    ) -> None:
+        self.llm_call_count += 1
+        if cache_prompt_tokens is None:
+            return
+        self.cache_seen = True
+        self.cache_prompt_tokens += int(cache_prompt_tokens)
+        self.cache_hit_tokens += int(cache_hit_tokens or 0)
 
     def mark_alerts_prefetched(self, alerts: list[dict]) -> None:
         self.fetched_alerts = alerts

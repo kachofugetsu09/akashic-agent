@@ -13,6 +13,7 @@ from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bus.event_bus import EventBus
+from agent.plugins.jobs import PluginJobRuntime
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -51,6 +52,14 @@ async def _noop_async() -> None:
     return None
 
 
+def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitable[None]]:
+    async def stop() -> None:
+        if runtime is not None:
+            runtime.stop()
+
+    return stop
+
+
 class AppRuntime:
     def __init__(self, config: Config, workspace: Path) -> None:
         self.config = config
@@ -76,6 +85,7 @@ class AppRuntime:
         self.peer_poller = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
+        self.plugin_job_runtime: PluginJobRuntime | None = None
         self.tasks: list[Awaitable[None]] = []
         self._memory_optimizer = None
         self._shutdown = False
@@ -131,6 +141,17 @@ class AppRuntime:
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
+            plugin_jobs = plugin_manager.jobs if plugin_manager else []
+            if plugin_jobs:
+                assert self.core.plugin_manager is not None
+                llm = self.core.plugin_manager.llm
+                if llm is not None:
+                    self.plugin_job_runtime = PluginJobRuntime(
+                        event_bus=event_bus,
+                        llm=llm,
+                        jobs=plugin_jobs,
+                    )
+                    self.tasks.append(self.plugin_job_runtime.run())
             optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
                 self.config,
                 provider=self.provider,
@@ -157,6 +178,7 @@ class AppRuntime:
                 memory_store=self.memory_runtime,
                 presence=self.presence,
                 agent_loop=self.agent_loop,
+                event_bus=event_bus,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
                 proactive_modules=(
                     list(plugin_manager.proactive_modules)
@@ -193,6 +215,10 @@ class AppRuntime:
                 except asyncio.CancelledError:
                     pass
             await _run_cleanup_steps(
+                (
+                    "plugin_jobs.stop",
+                    _stop_plugin_jobs(self.plugin_job_runtime),
+                ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
                 (

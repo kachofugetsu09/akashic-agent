@@ -8,6 +8,7 @@ from agent.looping.core import AgentLoop
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
+from bus.event_bus import EventBus
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
 from proactive_v2.presence import PresenceStore
@@ -48,6 +49,7 @@ def build_proactive_runtime(
     memory_store: "MemoryRuntime | None",
     presence: PresenceStore,
     agent_loop: AgentLoop,
+    event_bus: EventBus | None = None,
     tool_hooks: list[ToolHook] | None = None,
     proactive_modules: list[object] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
@@ -78,6 +80,7 @@ def build_proactive_runtime(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
         shared_tools=getattr(agent_loop, "tools", None),
+        event_bus=event_bus,
         tool_hooks=tool_hooks,
         proactive_modules=proactive_modules,
     )

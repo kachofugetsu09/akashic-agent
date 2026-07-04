@@ -15,7 +15,13 @@ from memory2.embedder import Embedder
 
 from .db import FeedbackEvent, insert_feedback, open_db
 from .events import ProactiveFeedbackRecorded
-from .scorer import latest_turn_messages, recent_proactive_messages, score_followup
+from .scorer import (
+    latest_turn_messages,
+    parse_quote_parts,
+    proactive_since_previous_user,
+    recent_proactive_messages,
+    score_followup,
+)
 
 logger = logging.getLogger("plugin.proactive_feedback")
 
@@ -90,22 +96,34 @@ class ProactiveFeedbackPlugin(Plugin):
             if turn is None:
                 return
             user, assistant = turn
-            candidates = recent_proactive_messages(
-                source,
-                session_key=event.session_key,
-                before_seq=user.seq,
-                limit=8,
-            )
+            quote = parse_quote_parts(user.content)
+            allow_pua = not bool(quote.quoted_text)
+            if quote.quoted_text:
+                candidates = recent_proactive_messages(
+                    source,
+                    session_key=event.session_key,
+                    before_seq=user.seq,
+                    limit=64,
+                )
+            else:
+                candidates = proactive_since_previous_user(
+                    source,
+                    session_key=event.session_key,
+                    before_seq=user.seq,
+                    limit=8,
+                )
         finally:
             source.close()
+        if not candidates:
+            return
 
         try:
-            embedder = self._get_embedder()
             scored = await score_followup(
-                embed_batch=embedder.embed_batch,
+                embed_batch=self._get_embedder().embed_batch if allow_pua else _no_embed,
                 user=user,
                 assistant=assistant,
                 candidates=candidates,
+                allow_pua=allow_pua,
             )
         except Exception:
             logger.exception("proactive_feedback scoring failed")
@@ -130,9 +148,10 @@ class ProactiveFeedbackPlugin(Plugin):
                     event_id = insert_feedback(sink, feedback)
                 finally:
                     sink.close()
-                await self.context.event_bus.fanout(
-                    ProactiveFeedbackRecorded(event_id=event_id, feedback=feedback)
-                )
+                if event_id is not None:
+                    await self.context.event_bus.fanout(
+                        ProactiveFeedbackRecorded(event_id=event_id, feedback=feedback)
+                    )
         if scored is None:
             return
 
@@ -155,9 +174,10 @@ class ProactiveFeedbackPlugin(Plugin):
             event_id = insert_feedback(sink, feedback)
         finally:
             sink.close()
-        await self.context.event_bus.fanout(
-            ProactiveFeedbackRecorded(event_id=event_id, feedback=feedback)
-        )
+        if event_id is not None:
+            await self.context.event_bus.fanout(
+                ProactiveFeedbackRecorded(event_id=event_id, feedback=feedback)
+            )
 
     def _get_embedder(self) -> Embedder:
         if self._embedder is None:
@@ -215,6 +235,11 @@ def _build_embedder(root: Path) -> Embedder:
         model=str(embedding.get("model", "text-embedding-v3")),
         output_dimensionality=embedding.get("output_dimensionality"),
     )
+
+
+async def _no_embed(texts: list[str]) -> list[list[float]]:
+    _ = texts
+    raise RuntimeError("quoted feedback must not call embedding")
 
 
 def _rows(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:

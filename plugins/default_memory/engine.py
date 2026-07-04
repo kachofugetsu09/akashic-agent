@@ -614,7 +614,10 @@ class DefaultMemoryEngine:
             provider=self._light_provider,
             model=self._light_model,
             skills_fn=lambda: [
-                s["name"] for s in skills_loader.list_skills(filter_unavailable=False)
+                record.name
+                for record in skills_loader.list_skill_records(
+                    filter_unavailable=False
+                )
             ],
         )
         self._post_response_worker = PostResponseMemoryWorker(

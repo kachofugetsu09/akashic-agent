@@ -101,7 +101,8 @@ class KVCacheCommandModule:
             try:
                 cursor = conn.execute(
                     """SELECT llm_output, ts, react_cache_prompt_tokens, react_cache_hit_tokens
-                       FROM turns WHERE session_key=? AND source='agent'
+                       FROM turns
+                       WHERE session_key=? AND react_cache_prompt_tokens IS NOT NULL
                        ORDER BY id DESC LIMIT ?""",
                     [state.session_key, limit],
                 )

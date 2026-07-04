@@ -14,12 +14,22 @@ from agent.plugins.decorators import (
     on_tool_result,
     tool,
 )
+from agent.plugins.jobs import (
+    EventTrigger,
+    IntervalTrigger,
+    PluginJobContext,
+    PluginJobSpec,
+)
 
 __all__ = [
     "Plugin",
     "PluginConfig",
     "PluginContext",
     "PluginKVStore",
+    "EventTrigger",
+    "IntervalTrigger",
+    "PluginJobContext",
+    "PluginJobSpec",
     "on_before_turn",
     "on_before_reasoning",
     "on_before_step",

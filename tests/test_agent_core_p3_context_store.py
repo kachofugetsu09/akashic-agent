@@ -61,8 +61,11 @@ async def test_default_context_store_prepare_returns_bundle_with_legacy_metadata
     )
     context = SimpleNamespace(
         skills=SimpleNamespace(
-            list_skills=MagicMock(
-                return_value=[{"name": "refactor"}, {"name": "known"}]
+            list_skill_records=MagicMock(
+                return_value=[
+                    SimpleNamespace(name="refactor"),
+                    SimpleNamespace(name="known"),
+                ]
             )
         )
     )
@@ -105,7 +108,7 @@ async def test_default_context_store_prepare_uses_explicit_session_key_for_retri
         )
     )
     context = SimpleNamespace(
-        skills=SimpleNamespace(list_skills=MagicMock(return_value=[]))
+        skills=SimpleNamespace(list_skill_records=MagicMock(return_value=[]))
     )
     store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
     session = _DummySession()
@@ -134,7 +137,7 @@ async def test_default_context_store_prepare_skips_retrieval_when_requested():
         )
     )
     context = SimpleNamespace(
-        skills=SimpleNamespace(list_skills=MagicMock(return_value=[]))
+        skills=SimpleNamespace(list_skill_records=MagicMock(return_value=[]))
     )
     store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
     session = _DummySession()
@@ -169,7 +172,7 @@ async def test_default_context_store_uses_cli_context_override_for_retrieval():
         )
     )
     context = SimpleNamespace(
-        skills=SimpleNamespace(list_skills=MagicMock(return_value=[]))
+        skills=SimpleNamespace(list_skill_records=MagicMock(return_value=[]))
     )
     store = DefaultContextStore(retrieval=cast(Any, retrieval), context=cast(Any, context))
     session = _DummySession()

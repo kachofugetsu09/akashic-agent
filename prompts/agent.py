@@ -195,11 +195,12 @@ def build_skills_catalog_prompt(skills_summary: str) -> str:
 
 **触发规则（强制，不可跳过）**
 - 用户消息中出现技能名称（含 `$技能名` 语法），或任务明显与某技能描述匹配 → 该轮**必须**使用该技能
-- 使用方式：先 `read_file` 读取 `<location>` 中的完整 SKILL.md 指令，再执行；不得在未读取指令的情况下执行
+- 使用方式：先调用 `load_skill(skill="技能名")` 读取完整 SKILL.md 指令，再执行；不得在未读取指令的情况下执行
+- 不要自己猜测或 `read_file` 读取 SKILL.md 路径；skill 的根目录由 `load_skill` 返回
 - 同时匹配多个技能时，全部使用，说明执行顺序
 - 跳过了明显匹配的技能时，必须说明理由
 - 技能不跨轮沿用，除非用户再次提及
-- `available="false"` 的技能表示依赖未安装，先按技能指令安装依赖，再执行
+- `available="false"` 的技能表示依赖未安装，不要加载正文；先根据 `<requires>` 排查依赖
 
 {skills_summary}"""
 

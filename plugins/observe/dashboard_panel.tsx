@@ -18,6 +18,12 @@ interface Overview {
   cache_prompt_tokens: number;
   cache_hit_tokens: number;
   cache_hit_rate: number | null;
+  passive_cache_prompt_tokens: number;
+  passive_cache_hit_tokens: number;
+  passive_cache_hit_rate: number | null;
+  proactive_cache_prompt_tokens: number;
+  proactive_cache_hit_tokens: number;
+  proactive_cache_hit_rate: number | null;
   avg_iteration: number | null;
   max_iteration: number;
   last_ts: string | null;
@@ -29,6 +35,8 @@ interface SeriesPoint {
   errors: number;
   input_tokens: number;
   cache_hit_rate: number | null;
+  passive_cache_hit_rate: number | null;
+  proactive_cache_hit_rate: number | null;
   avg_iteration: number | null;
 }
 
@@ -681,7 +689,8 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
   const turnSeries = points.map((p) => p.turns);
   const errorSeries = points.map((p) => p.errors);
   const tokenSeries = points.map((p) => p.input_tokens);
-  const hitSeries = points.map((p) => (p.cache_hit_rate ?? 0) * 100);
+  const passiveHitSeries = points.map((p) => (p.passive_cache_hit_rate ?? 0) * 100);
+  const proactiveHitSeries = points.map((p) => (p.proactive_cache_hit_rate ?? 0) * 100);
   const iterSeries = points.map((p) => p.avg_iteration ?? 0);
   const labelled = (vals: number[]) => points.map((p, i) => ({ label: _bucketLabel(p.bucket), value: vals[i] }));
 
@@ -754,7 +763,7 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
             <MetricTile label="错误" value={_compact(gErrTotal)} sub={`${gErr?.types ?? 0} 类型 · 点击展开`} tone="danger" spark={gErrSpark} />
           </div>
           <div className="animate-fade-up" style={{ animationDelay: "120ms" }}>
-            <MetricTile label="KV 缓存命中率" value={_pct(overview.cache_hit_rate)} sub={`${_compact(overview.cache_hit_tokens)} / ${_compact(overview.cache_prompt_tokens)} tok`} tone="success" spark={hitSeries} />
+            <MetricTile label="被动 KV 命中率" value={_pct(overview.passive_cache_hit_rate)} sub={`主动 ${_pct(overview.proactive_cache_hit_rate)}`} tone="success" spark={passiveHitSeries} />
           </div>
           <div className="animate-fade-up" style={{ animationDelay: "180ms" }}>
             <MetricTile label="平均迭代" value={overview.avg_iteration != null ? overview.avg_iteration.toFixed(1) : "—"} unit={`峰 ${overview.max_iteration}`} sub="每轮 LLM 调用次数" tone="warning" spark={iterSeries} />
@@ -769,10 +778,13 @@ function ObserveMain(_props: { dispatch: PluginDispatch }): ReactElement {
           <Card title="平均迭代趋势" style={{ animationDelay: "280ms" }}>
             <TrendChart data={labelled(iterSeries)} kind="area" tone="warning" valueFmt={(n) => n.toFixed(1)} />
           </Card>
-          <Card title="KV 缓存命中率趋势" style={{ animationDelay: "340ms" }}>
-            <TrendChart data={labelled(hitSeries)} kind="area" tone="success" valueFmt={(n) => `${n.toFixed(0)}%`} />
+          <Card title="全局被动链路命中率趋势" style={{ animationDelay: "340ms" }}>
+            <TrendChart data={labelled(passiveHitSeries)} kind="area" tone="success" valueFmt={(n) => `${n.toFixed(0)}%`} />
           </Card>
-          <Card title="错误趋势" style={{ animationDelay: "400ms" }}>
+          <Card title="全局主动链路命中率趋势" style={{ animationDelay: "400ms" }}>
+            <TrendChart data={labelled(proactiveHitSeries)} kind="area" tone="accent" valueFmt={(n) => `${n.toFixed(0)}%`} />
+          </Card>
+          <Card title="错误趋势" style={{ animationDelay: "460ms" }}>
             <TrendChart data={labelled(errorSeries)} kind="bar" tone="danger" valueFmt={(n) => String(n)} empty="区间内无错误 🎉" />
           </Card>
         </div>

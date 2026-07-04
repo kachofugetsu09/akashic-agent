@@ -212,6 +212,45 @@ def recent_proactive_messages(
     return proactive[:limit]
 
 
+def proactive_since_previous_user(
+    conn: sqlite3.Connection,
+    *,
+    session_key: str,
+    before_seq: int,
+    limit: int | None = None,
+) -> list[MessageRow]:
+    previous = conn.execute(
+        """
+        SELECT seq
+        FROM messages
+        WHERE session_key = ?
+          AND role = 'user'
+          AND seq < ?
+        ORDER BY seq DESC
+        LIMIT 1
+        """,
+        (session_key, before_seq),
+    ).fetchone()
+    after_seq = int(previous["seq"]) if previous is not None else -1
+    rows = conn.execute(
+        """
+        SELECT id, seq, role, content, extra, ts
+        FROM messages
+        WHERE session_key = ?
+          AND role = 'assistant'
+          AND seq > ?
+          AND seq < ?
+          AND content IS NOT NULL
+        ORDER BY seq DESC
+        """,
+        (session_key, after_seq, before_seq),
+    ).fetchall()
+    proactive = [_row(row) for row in rows if is_proactive(row["extra"])]
+    if limit is None:
+        return proactive
+    return proactive[:limit]
+
+
 async def score_followup(
     *,
     embed_batch: EmbedBatch,

@@ -125,7 +125,8 @@ class MessageEnvelopeBuilder:
         if not self._multimodal:
             return self._build_text_with_media_refs(text, media)
 
-        images = []
+        images: list[dict[str, Any]] = []
+        file_refs: list[str] = []
         for item in media:
             item = str(item)
             if item.startswith(("http://", "https://")):
@@ -134,7 +135,10 @@ class MessageEnvelopeBuilder:
 
             p = Path(item)
             mime, _ = mimetypes.guess_type(p)
-            if not p.is_file() or not mime or not mime.startswith("image/"):
+            if not p.is_file():
+                continue
+            if not mime or not mime.startswith("image/"):
+                file_refs.append(f"- 文件路径: {item}")
                 continue
             with p.open("rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
@@ -145,6 +149,8 @@ class MessageEnvelopeBuilder:
                 }
             )
 
+        if file_refs:
+            text = "\n".join([text, "", "[附加媒体]", *file_refs])
         if not images:
             return text
         return images + [{"type": "text", "text": text}]
@@ -160,7 +166,10 @@ class MessageEnvelopeBuilder:
 
             p = Path(value)
             mime, _ = mimetypes.guess_type(p)
-            if not p.is_file() or (mime and not mime.startswith("image/")):
+            if not p.is_file():
+                continue
+            if not mime or not mime.startswith("image/"):
+                refs.append(f"- 文件路径: {value}")
                 continue
             refs.append(f"- 图片路径: {value}")
             local_image_paths.append(value)

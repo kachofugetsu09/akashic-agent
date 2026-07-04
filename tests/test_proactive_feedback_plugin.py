@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from plugins.proactive_feedback.scorer import (
     MessageRow,
     classify_pua,
     parse_quote_parts,
+    proactive_since_previous_user,
     score_followup,
 )
 
@@ -171,6 +174,70 @@ def test_insert_feedback_is_idempotent(tmp_path):
     assert count == 1
 
 
+def test_insert_feedback_keeps_one_user_per_proactive(tmp_path):
+    db_path = tmp_path / "proactive_feedback.db"
+    conn = open_db(db_path)
+    first = _feedback_event(user_message_id="u1", proactive_message_id="p1")
+    second = _feedback_event(user_message_id="u2", proactive_message_id="p1")
+
+    try:
+        first_id = insert_feedback(conn, first)
+        second_id = insert_feedback(conn, second)
+        rows = conn.execute(
+            """
+            SELECT user_message_id, proactive_message_id
+            FROM proactive_feedback_events
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert first_id is not None
+    assert second_id is None
+    assert [tuple(row) for row in rows] == [("u1", "p1")]
+
+
+def test_proactive_since_previous_user_only_returns_current_gap():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _ = conn.executescript(
+        """
+        CREATE TABLE messages (
+            id TEXT,
+            session_key TEXT,
+            seq INTEGER,
+            role TEXT,
+            content TEXT,
+            extra TEXT,
+            ts TEXT
+        );
+        """
+    )
+    proactive_extra = json.dumps({"proactive": True})
+    rows = [
+        ("p1", "s1", 1, "assistant", "主动消息", proactive_extra, "2026-07-01T14:00:00+08:00"),
+        ("u1", "s1", 2, "user", "第一条用户回复", None, "2026-07-01T14:01:00+08:00"),
+        ("a1", "s1", 3, "assistant", "普通助手回复", None, "2026-07-01T14:01:30+08:00"),
+        ("u2", "s1", 4, "user", "第二条用户回复", None, "2026-07-01T14:02:00+08:00"),
+    ]
+    _ = conn.executemany(
+        """
+        INSERT INTO messages(id, session_key, seq, role, content, extra, ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+    try:
+        first = proactive_since_previous_user(conn, session_key="s1", before_seq=2)
+        second = proactive_since_previous_user(conn, session_key="s1", before_seq=4)
+    finally:
+        conn.close()
+
+    assert [message.id for message in first] == ["p1"]
+    assert second == []
+
+
 @pytest.mark.asyncio
 async def test_plugin_load_registers_summary_tool(tmp_path):
     root = tmp_path / "plugins"
@@ -218,4 +285,25 @@ def _message(
         content=content,
         extra=None,
         ts="2026-06-28T00:00:00+08:00",
+    )
+
+
+def _feedback_event(
+    *,
+    user_message_id: str,
+    proactive_message_id: str,
+) -> FeedbackEvent:
+    return FeedbackEvent(
+        session_key="telegram:1",
+        user_message_id=user_message_id,
+        assistant_message_id=f"a-{user_message_id}",
+        proactive_message_id=proactive_message_id,
+        feedback_type="topic_follow",
+        confidence="high",
+        pa_score=0.61,
+        pua_score=0.65,
+        lag_seconds=12,
+        candidate_count=1,
+        matched_by="recent_pua",
+        reason="pua_high",
     )

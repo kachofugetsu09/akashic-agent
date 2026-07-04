@@ -9,11 +9,22 @@ interface KVCacheSummary {
   miss_tokens: number;
   hit_rate: number | null;
   last_tracked_at: string | null;
+  passive: KVCacheSourceSummary;
+  proactive: KVCacheSourceSummary;
+}
+
+interface KVCacheSourceSummary {
+  tracked_turn_count: number;
+  prompt_tokens: number;
+  hit_tokens: number;
+  miss_tokens: number;
+  hit_rate: number | null;
 }
 
 interface KVCacheTurn {
   id: number;
   ts: string;
+  source: string;
   session_key: string;
   user_preview: string;
   prompt_tokens: number;
@@ -51,8 +62,6 @@ function _shortTs(value: string): string {
 
 const TABLE_GRID = "128px 92px 60px 92px 92px 1fr";
 
-// Workbench layout: two hit-rate pies (global + recent-10) side by side on top,
-// the full-width turns table below.
 function KvMain(_props: { dispatch: PluginDispatch }): ReactElement {
   const [overview, setOverview] = useState<KVCacheSummary | null>(null);
   const [turns, setTurns] = useState<KVCacheTurn[]>([]);
@@ -77,28 +86,41 @@ function KvMain(_props: { dispatch: PluginDispatch }): ReactElement {
   if (!overview) {
     return <div className="p-5 text-[13px] text-muted">加载中…</div>;
   }
-  const recent = turns.slice(0, 10);
-  const rHit = recent.reduce((s, t) => s + (t.hit_tokens || 0), 0);
-  const rMiss = recent.reduce((s, t) => s + (t.miss_tokens || 0), 0);
-  const rRate = rHit + rMiss > 0 ? rHit / (rHit + rMiss) : 0;
+  const passive = overview.passive ?? overview;
+  const recentPassive = turns.filter((turn) => turn.source === "agent").slice(0, 10);
+  const recentPassiveHit = recentPassive.reduce((sum, turn) => sum + (turn.hit_tokens || 0), 0);
+  const recentPassiveMiss = recentPassive.reduce((sum, turn) => sum + (turn.miss_tokens || 0), 0);
+  const recentPassiveRate = (
+    recentPassiveHit + recentPassiveMiss > 0
+      ? recentPassiveHit / (recentPassiveHit + recentPassiveMiss)
+      : null
+  );
+  const proactive = overview.proactive ?? {
+    tracked_turn_count: 0,
+    prompt_tokens: 0,
+    hit_tokens: 0,
+    miss_tokens: 0,
+    hit_rate: null,
+  };
 
   return (
     <div className="p-5">
       <div className="detail-title">KV Cache</div>
-      <div className="detail-subtext">命中率概览 · token 复用</div>
+      <div className="detail-subtext">最近几次 KVCache 调用 · token 复用</div>
 
-      {/* top: two pies side by side, staggered entrance */}
-      <div className="mt-6 grid grid-cols-2 gap-4">
-        <div className="animate-fade-up rounded-lg border border-border bg-surface p-5 shadow-lift-sm">
-          <Pie title={`全局命中率 · ${overview.tracked_turn_count} 轮`} rate={overview.hit_rate} hit={overview.hit_tokens} miss={overview.miss_tokens} />
+      <div className="mt-5 grid gap-3" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+        <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-surface p-3 shadow-lift-sm animate-fade-up">
+          <Pie title={`最近 10 次被动链路 · ${recentPassive.length} 轮`} rate={recentPassiveRate} hit={recentPassiveHit} miss={recentPassiveMiss} />
         </div>
-        <div className="animate-fade-up rounded-lg border border-border bg-surface p-5 shadow-lift-sm" style={{ animationDelay: "80ms" }}>
-          <Pie title={`最近 10 次 · ${recent.length} 轮`} rate={rRate} hit={rHit} miss={rMiss} />
+        <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-surface p-3 shadow-lift-sm animate-fade-up" style={{ animationDelay: "80ms" }}>
+          <Pie title={`全局被动链路 · ${passive.tracked_turn_count} 轮`} rate={passive.hit_rate} hit={passive.hit_tokens} miss={passive.miss_tokens} />
+        </div>
+        <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-surface p-3 shadow-lift-sm animate-fade-up" style={{ animationDelay: "160ms" }}>
+          <Pie title={`全局主动链路 · ${proactive.tracked_turn_count} 轮`} rate={proactive.hit_rate} hit={proactive.hit_tokens} miss={proactive.miss_tokens} />
         </div>
       </div>
 
-      {/* bottom: full-width turns table */}
-      <div className="animate-fade-up mt-5 overflow-hidden rounded-lg border border-border" style={{ animationDelay: "160ms" }}>
+      <div className="animate-fade-up mt-5 overflow-hidden rounded-lg border border-border" style={{ animationDelay: "220ms" }}>
         <div
           className="grid items-center border-b border-border-strong bg-surface-2 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle"
           style={{ gridTemplateColumns: TABLE_GRID, columnGap: "10px" }}

@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent.skills import SkillsLoader
 from agent.background.subagent_manager import SubagentManager
 from agent.config_models import Config
 from agent.policies.delegation import DelegationPolicy
+from agent.provider import LLMProvider
 from agent.tool_bundles import build_readonly_research_tools
 from agent.tools.base import Tool
 from agent.tools.meta import register_common_meta_tools
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from agent.tools.skill_loader import LoadSkillTool
 from agent.tools.spawn import SpawnManageTool, SpawnTool
 from bus.queue import MessageBus
 from bootstrap.toolsets.protocol import (
@@ -26,12 +29,18 @@ class CommonMetaToolsetProvider(ToolsetProvider):
         self._readonly_tools = readonly_tools
 
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
-        before = set(registry._tools.keys())
+        before = registry.get_registered_names()
         push_tool = register_common_meta_tools(
             registry,
             self._readonly_tools,
             deps.session_store,
             push_tool=deps.push_tool,
+        )
+        registry.register(
+            LoadSkillTool(SkillsLoader(deps.workspace)),
+            always_on=True,
+            risk="read-only",
+            search_hint="技能 skill SKILL.md 使用能力",
         )
 
         # 主模型不支持多模态时，注册视觉工具供模型调用
@@ -58,7 +67,7 @@ class CommonMetaToolsetProvider(ToolsetProvider):
 
 class SpawnToolsetProvider(ToolsetProvider):
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
-        before = set(registry._tools.keys())
+        before = registry.get_registered_names()
         config = deps.config
         bus = deps.bus
         http_resources = deps.http_resources
@@ -114,7 +123,7 @@ def build_readonly_tools(
 def register_meta_and_common_tools(
     tools: ToolRegistry,
     readonly_tools: dict[str, Tool],
-    session_store,
+    session_store: object,
     push_tool: MessagePushTool | None = None,
 ) -> MessagePushTool:
     result = CommonMetaToolsetProvider(readonly_tools).register(
@@ -134,7 +143,7 @@ def register_spawn_tool(
     config: Config,
     workspace: Path,
     bus: MessageBus,
-    provider,
+    provider: LLMProvider,
     http_resources: SharedHttpResources,
     memory_engine: MemoryEngine | None = None,
 ) -> SubagentManager:

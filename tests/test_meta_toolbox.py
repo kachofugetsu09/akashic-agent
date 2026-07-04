@@ -12,6 +12,8 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
+from bootstrap.toolsets.meta import CommonMetaToolsetProvider
+from bootstrap.toolsets.protocol import ToolsetDeps
 from core.memory.engine import MemoryToolProfile, MemoryToolSpec
 
 
@@ -83,6 +85,28 @@ def test_register_meta_tool_helpers_mark_expected_tools_always_on():
     assert isinstance(push_tool, MessagePushTool)
     assert set(META_TOOLBOX_NAMES) - {"memorize"} <= always_on
     assert "reinforce_memory" in always_on
+
+
+def test_common_meta_toolset_registers_load_skill(tmp_path):
+    tools = ToolRegistry()
+    readonly_tools = {
+        "web_search": WebSearchTool(),
+        "web_fetch": WebFetchTool(requester=cast(Any, object())),
+        "read_file": ReadFileTool(),
+        "list_dir": ListDirTool(),
+    }
+
+    result = CommonMetaToolsetProvider(readonly_tools).register(
+        tools,
+        ToolsetDeps(
+            config=None,
+            workspace=tmp_path,
+            session_store=object(),
+        ),
+    )
+
+    assert tools.has_tool("load_skill")
+    assert "load_skill" in result.always_on_names
 
 
 def test_register_memory_meta_tools_rejects_duplicate_names():

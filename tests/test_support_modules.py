@@ -719,6 +719,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
     image = tmp_path / "a.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    document = tmp_path / "view.pdf"
+    document.write_bytes(b"%PDF-1.4\n")
     now = datetime.now(timezone.utc)
 
     builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
@@ -765,7 +767,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[{"role": "assistant", "content": "hi"}],
             current_message="hello",
-            media=["https://img", str(image), str(tmp_path / "bad.txt")],
+            media=["https://img", str(image), str(document), str(tmp_path / "bad.txt")],
             skill_names=["extra"],
             channel="telegram",
             chat_id="42",
@@ -778,6 +780,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert len(messages[-1]["content"]) == 3
     stamped_message = messages[-1]["content"][-1]["text"]
     assert stamped_message.startswith("[当前消息时间:")
+    assert "[附加媒体]" in stamped_message
+    assert f"- 文件路径: {document}" in stamped_message
     assert "request_time=" in stamped_message
     assert "今天=" in stamped_message
     assert "昨天=" in stamped_message
@@ -791,7 +795,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[{"role": "assistant", "content": "hi"}],
             current_message="hello",
-            media=["https://img", str(image), str(tmp_path / "bad.txt")],
+            media=["https://img", str(image), str(document), str(tmp_path / "bad.txt")],
             skill_names=["extra"],
             channel="telegram",
             chat_id="42",
@@ -841,7 +845,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[],
             current_message="看看这张图",
-            media=[str(image)],
+            media=[str(image), str(document)],
             skill_names=["extra"],
             message_timestamp=now,
         )
@@ -849,6 +853,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     text_media_content = text_media_messages[-1]["content"]
     assert isinstance(text_media_content, str)
     assert str(image) in text_media_content
+    assert str(document) in text_media_content
     assert "read_image_vision" in text_media_content
     assert "image_url" not in text_media_content
 

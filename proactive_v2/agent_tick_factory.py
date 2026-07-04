@@ -15,6 +15,7 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
+from bus.event_bus import EventBus
 from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.modules_source import McpGatewaySource
 from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
@@ -27,7 +28,7 @@ from proactive_v2.tools import ToolDeps
 
 
 BUILTIN_DRIFT_SKILLS_DIR = BUILTIN_SKILLS_DIR
-BUILTIN_DRIFT_SKILL_NAMES = {"meme-manage", "create-drift-skill"}
+BUILTIN_DRIFT_SKILL_NAMES = {"create-drift-skill"}
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 RecentChatFn = Callable[[int], Awaitable[list[dict]]]
@@ -52,6 +53,7 @@ class AgentTickDeps:
     shared_tools: ToolRegistry | None = None
     turn_orchestrator: TurnOrchestrator | None = None
     pool: McpClientPool | None = None
+    event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] = field(default_factory=list)
 
 
@@ -99,6 +101,7 @@ class AgentTickFactory:
                 rng=self._deps.rng,
                 recent_proactive_fn=recent_proactive_fn,
                 drift_pipeline=drift_pipeline,
+                event_bus=self._deps.event_bus,
                 tool_hooks=self._deps.tool_hooks,
             )
         )
@@ -140,7 +143,13 @@ class AgentTickFactory:
                 )
                 return None
             tc = resp.tool_calls[0]
-            return {"id": tc.id, "name": tc.name, "input": tc.arguments}
+            return {
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.arguments,
+                "_cache_prompt_tokens": resp.cache_prompt_tokens,
+                "_cache_hit_tokens": resp.cache_hit_tokens,
+            }
 
         return llm_fn
 
@@ -215,11 +224,13 @@ class AgentTickFactory:
                 tool_deps=DriftToolDeps(
                     drift_dir=drift_dir,
                     store=store,
+                    workspace_dir=Path(self._deps.state_store.workspace_dir),
                     builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
                     memory=self._deps.memory,
+                    recent_chat_fn=self._build_recent_chat_fn(),
                     shared_tools=self._deps.shared_tools,
                     send_message_fn=self._build_drift_send_message_fn(),
-                    max_web_fetch_chars=tool_deps.max_chars,
+                    event_bus=self._deps.event_bus,
                 ),
                 max_steps=self._deps.cfg.drift_max_steps,
                 tool_hooks=self._deps.tool_hooks,

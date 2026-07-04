@@ -177,6 +177,18 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     monkeypatch.setattr(
         bootstrap_app, "build_dashboard_server", lambda **_: _FakeDashboardServer()
     )
+
+    class _FakePluginJobRuntime:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def run(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(bootstrap_app, "PluginJobRuntime", _FakePluginJobRuntime)
     monkeypatch.setattr(main.Path, "home", lambda: tmp_path)
 
     await main.serve(str(config_path))

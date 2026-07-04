@@ -14,10 +14,6 @@
   - 管理和查询 RSS/信息来源订阅，支持列订阅、查最新、查概况、关键词搜索。
   - 文件：`skills/feed-manage/SKILL.md`
 
-- `meme-manage`
-  - 维护工作区表情包库，支持新增图片、整理类别和更新 manifest。
-  - 文件：`skills/meme-manage/SKILL.md`
-
 - `create-drift-skill`
   - 在工作区 drift/skills 下创建或更新 drift skill。
   - 文件：`skills/create-drift-skill/SKILL.md`

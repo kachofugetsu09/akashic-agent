@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pydantic import BaseModel
     from agent.plugins.config import PluginConfig
+    from agent.plugins.jobs import PluginLlmService
 
 
 @dataclass
@@ -21,6 +22,7 @@ class PluginContext:
     workspace: Path | None = None
     session_manager: Any = None
     memory_engine: Any = None
+    llm: "PluginLlmService | None" = None
 
 
 class PluginKVStore:
