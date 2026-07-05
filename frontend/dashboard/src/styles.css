@@ -199,8 +199,19 @@ body {
   }
 
   .brand-mark {
-    @apply grid h-8 w-8 place-items-center rounded-full bg-accent font-sans text-[16px] font-bold text-accent-ink;
-    box-shadow: 0 0 15px rgba(255, 255, 255, 0.2);
+    @apply relative grid h-10 w-10 place-items-center rounded-[14px] text-fg;
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.04));
+    box-shadow: inset 0 0 0 1px var(--color-border-strong), 0 14px 34px rgba(0, 0, 0, 0.36);
+  }
+
+  .brand-mark-book {
+    @apply h-[27px] w-[27px];
+    stroke-width: 1.65;
+  }
+
+  .brand-mark-spark {
+    @apply absolute right-[5px] top-[5px] h-[11px] w-[11px] text-muted;
+    filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.12));
   }
 
   .brand-title {

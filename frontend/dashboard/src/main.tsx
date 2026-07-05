@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { BookOpenText, Sparkles } from "lucide-react";
 import "./styles.css";
 import { api, asPageResult, pageCount } from "./api";
 import {
@@ -458,7 +459,10 @@ function App(): React.ReactElement {
     <div className="shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark">A</div>
+          <div className="brand-mark" aria-hidden="true">
+            <BookOpenText className="brand-mark-book" />
+            <Sparkles className="brand-mark-spark" />
+          </div>
           <div>
             <div className="brand-title">Akashic Dashboard</div>
             <div className="brand-sub">Session / Memory Explorer</div>
