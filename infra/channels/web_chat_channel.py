@@ -30,6 +30,7 @@ class WebChatChannel:
         self._attachments = AttachmentStore()
         self._connections: dict[str, set[WebSocket]] = {}
         self._active_turn_ids: dict[str, str] = {}
+        self._media_paths: set[str] = set()
         self._connection_lock = asyncio.Lock()
         self._events_bound = False
         self._outbound_bound = False
@@ -104,6 +105,19 @@ class WebChatChannel:
             Path("/tmp") / "akashic_uploads",
         ]
 
+    def remember_media(self, paths: list[str]) -> None:
+        for path in paths:
+            text = str(path or "").strip()
+            if not text or text.startswith(("http://", "https://")):
+                continue
+            try:
+                self._media_paths.add(str(Path(text).expanduser().resolve()))
+            except OSError:
+                continue
+
+    def has_media(self, path: Path) -> bool:
+        return str(path.resolve()) in self._media_paths
+
     async def send(self, chat_id: str, message: str) -> None:
         await self._broadcast(self._session_key(chat_id), {
             "type": "message.final",
@@ -123,6 +137,7 @@ class WebChatChannel:
         file_path: str,
         name: str | None = None,
     ) -> None:
+        self.remember_media([file_path])
         await self._broadcast(self._session_key(chat_id), {
             "type": "message.final",
             "session_id": self._session_key(chat_id),
@@ -133,6 +148,7 @@ class WebChatChannel:
         })
 
     async def send_image(self, chat_id: str, image: str) -> None:
+        self.remember_media([image])
         await self._broadcast(self._session_key(chat_id), {
             "type": "message.final",
             "session_id": self._session_key(chat_id),
@@ -290,13 +306,15 @@ class WebChatChannel:
 
     async def _on_response(self, msg: OutboundMessage) -> None:
         session_key = self._session_key(msg.chat_id)
+        media = list(msg.media or [])
+        self.remember_media(media)
         await self._broadcast(session_key, {
             "type": "message.final",
             "session_id": session_key,
             "turn_id": self._current_turn_id(session_key),
             "content": msg.content,
             "thinking": msg.thinking or "",
-            "media": list(msg.media or []),
+            "media": media,
             "metadata": dict(msg.metadata or {}),
         })
         _ = self._active_turn_ids.pop(session_key, None)

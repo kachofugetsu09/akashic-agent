@@ -86,8 +86,7 @@ def create_chat_app(
     @app.get("/api/chat/media")
     def read_media(path: str = Query(...)) -> FileResponse:
         requested = Path(path).expanduser().resolve()
-        roots = [root.resolve() for root in channel.upload_roots()]
-        if not any(_is_relative_to(requested, root) for root in roots):
+        if not _can_read_media(channel, requested):
             raise HTTPException(status_code=404, detail="文件不存在")
         if not requested.is_file():
             raise HTTPException(status_code=404, detail="文件不存在")
@@ -122,3 +121,19 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _can_read_media(channel: WebChatChannel, path: Path) -> bool:
+    if any(_is_relative_to(path, root.resolve()) for root in channel.upload_roots()):
+        return True
+    if channel.has_media(path):
+        return True
+    try:
+        ctx = channel._require_ctx()
+    except RuntimeError:
+        return False
+    store = ctx.session_manager._store
+    media_path_exists = getattr(store, "media_path_exists", None)
+    if callable(media_path_exists):
+        return bool(media_path_exists(path))
+    return False

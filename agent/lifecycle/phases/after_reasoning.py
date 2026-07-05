@@ -151,7 +151,12 @@ class _PersistAssistantMessageModule:
         if ctx.thinking is not None:
             assistant_kwargs["reasoning_content"] = ctx.thinking
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
-        session.add_message("assistant", ctx.reply, **assistant_kwargs)
+        session.add_message(
+            "assistant",
+            ctx.reply,
+            media=ctx.media if ctx.media else None,
+            **assistant_kwargs,
+        )
         return frame
 
 

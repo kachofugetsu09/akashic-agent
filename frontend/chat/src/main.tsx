@@ -141,10 +141,15 @@ function App() {
   const [error, setError] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
   const activeSessionRef = useRef("");
+  const statusRef = useRef<ChatStatus>("idle");
 
   useEffect(() => {
     activeSessionRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   const loadSessions = useCallback(async () => {
     const response = await fetch("/api/chat/sessions?page=1&page_size=80");
@@ -178,10 +183,10 @@ function App() {
       });
     };
     socket.onclose = () => {
-      if (status !== "idle") setStatus("error");
+      if (statusRef.current !== "idle") setStatus("error");
     };
     return socket;
-  }, [loadSessions, status]);
+  }, [loadSessions]);
 
   useEffect(() => {
     void loadSessions();
@@ -418,6 +423,7 @@ function ChatMessageView({ message }: { message: ChatMessage }) {
             ? <ThinkingView key={`thinking-${index}`} block={block} streaming={message.streaming} />
             : <ToolView key={block.callId} block={block} />
         ))}
+        {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
         {message.content && <MessageResponse>{message.content}</MessageResponse>}
       </MessageContent>
     </Message>
@@ -552,6 +558,7 @@ function handleFrame(
     ctx.setMessages((messages) => updateLastAssistant(messages, (message) => ({
       ...message,
       content: frame.content || message.content,
+      attachments: frame.media ? mediaToAttachments(frame.media) : message.attachments,
       streaming: false,
     })));
     void ctx.loadSessions();

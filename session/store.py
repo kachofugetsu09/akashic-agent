@@ -5,7 +5,17 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+
+def _resolve_path_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.startswith(("http://", "https://")):
+        return ""
+    try:
+        return str(Path(text).expanduser().resolve())
+    except OSError:
+        return ""
 
 
 class SessionStore:
@@ -701,6 +711,31 @@ class SessionStore:
             ).fetchall()
         total = int((count_row["c"] if count_row else 0) or 0)
         return [self._row_to_message(row) for row in rows], total
+
+    def media_path_exists(self, path: str | Path) -> bool:
+        target = _resolve_path_text(path)
+        if not target:
+            return False
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT extra FROM messages WHERE extra LIKE ?",
+                ('%"media"%',),
+            ).fetchall()
+        for row in rows:
+            try:
+                loaded = json.loads(row["extra"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(loaded, dict):
+                continue
+            extra = cast(dict[str, object], loaded)
+            media = extra.get("media")
+            if not isinstance(media, list):
+                continue
+            for item in cast(list[object], media):
+                if _resolve_path_text(item) == target:
+                    return True
+        return False
 
     def get_message(self, message_id: str) -> dict[str, Any] | None:
         with self._lock:

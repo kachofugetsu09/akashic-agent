@@ -182,6 +182,22 @@ def test_chat_media_rejects_outside_upload_root(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
+def test_chat_media_reads_registered_outbound_file(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    channel._attachments = AttachmentStore(tmp_path / "uploads")
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+    outside = tmp_path / "outside" / "meme.png"
+    outside.parent.mkdir()
+    outside.write_bytes(b"image")
+    channel.remember_media([str(outside)])
+
+    with TestClient(app) as client:
+        response = client.get("/api/chat/media", params={"path": str(outside)})
+
+    assert response.status_code == 200
+    assert response.content == b"image"
+
+
 def test_chat_messages_default_to_turn_order(tmp_path: Path) -> None:
     channel = WebChatChannel()
     session_manager = _SessionManager()
