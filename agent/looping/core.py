@@ -4,7 +4,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from core.error_context import current_session_key
 from agent.context import ContextBuilder
@@ -527,7 +527,7 @@ class AgentLoop:
                 )
         raise TypeError(f"unsupported inbound item: {type(item).__name__}")
 
-    def _resume_interrupted_message(
+    async def _resume_interrupted_message(
         self,
         msg: InboundItem,
         key: str,
@@ -539,12 +539,13 @@ class AgentLoop:
         if interrupted is None:
             return msg, False
 
-        # 2. 有中断态时，把上一轮进度和本轮补充拼成新的用户消息。
+        # 2. 有中断态时，补一段结构化历史；当前用户消息保持原文。
+        await self._persist_interrupted_turn_marker(key, interrupted)
         resumed = InboundMessage(
             channel=msg.channel,
             sender=msg.sender,
             chat_id=msg.chat_id,
-            content=_build_resume_content(interrupted, msg.content),
+            content=msg.content,
             timestamp=msg.timestamp,
             media=msg.media,
             metadata={**(msg.metadata or {}), "resumed_from_interrupt": True},
@@ -552,10 +553,36 @@ class AgentLoop:
         logger.info(f"Resuming interrupted turn for {key}")
         self._active_turn_states[key] = TurnInterruptState(
             session_key=key,
-            original_user_message=resumed.content,
+            original_user_message=msg.content,
             original_metadata=dict(resumed.metadata or {}),
         )
         return resumed, True
+
+    async def _persist_interrupted_turn_marker(
+        self,
+        key: str,
+        state: TurnInterruptState,
+    ) -> None:
+        if not state.original_user_message.strip():
+            return
+        session = self.session_manager.get_or_create(key)
+        start = len(getattr(session, "messages", []))
+        session.add_message(
+            "user",
+            state.original_user_message,
+        )
+        tool_chain = (
+            cast(list[dict[str, Any]], list(state.tool_chain_partial))
+            if state.tool_chain_partial
+            else None
+        )
+        session.add_message(
+            "assistant",
+            "[interrupted]",
+            tools_used=list(state.tools_used) if state.tools_used else None,
+            tool_chain=tool_chain,
+        )
+        await self.session_manager.append_messages(session, session.messages[start:])
 
     async def _observe_turn_started(
         self,
@@ -589,7 +616,7 @@ class AgentLoop:
         _ = current_session_key.set(key)
 
         # 1. 先处理可能存在的续跑态，并发布 turn started。
-        msg, resumed_from_interrupt = self._resume_interrupted_message(msg, key)
+        msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
         await self._observe_turn_started(msg, key)
         content = _item_content(msg)
         preview = content[:60] + "..." if len(content) > 60 else content
@@ -755,22 +782,3 @@ class AgentLoop:
 
 
 # ── 模块级辅助 ────────────────────────────────────────────────────
-
-
-def _build_resume_content(state: TurnInterruptState, new_message: str) -> str:
-    """将中断态 + 用户补充消息拼装为续跑输入。"""
-    parts = [
-        "【上一轮任务（被用户中断）】",
-        state.original_user_message,
-        "",
-        "【上一轮已生成但未完成的中间结果】",
-        state.partial_reply or "（无）",
-    ]
-    if state.tools_used:
-        parts.append(f"已使用工具：{', '.join(state.tools_used)}")
-    parts += [
-        "",
-        "【用户补充要求】",
-        new_message,
-    ]
-    return "\n".join(parts)
