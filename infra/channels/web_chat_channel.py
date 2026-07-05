@@ -95,7 +95,14 @@ class WebChatChannel:
         return {
             "filename": filename,
             "upload_path": str(path),
+            "upload_url": f"/api/chat/media?path={str(path)}",
         }
+
+    def upload_roots(self) -> list[Path]:
+        return [
+            self._attachments.root,
+            Path("/tmp") / "akashic_uploads",
+        ]
 
     async def send(self, chat_id: str, message: str) -> None:
         await self._broadcast(self._session_key(chat_id), {
@@ -155,12 +162,8 @@ class WebChatChannel:
         return ""
 
     async def _create_session(self, websocket: WebSocket, request_id: str) -> str:
-        ctx = self._require_ctx()
         chat_id = uuid4().hex
         session_key = self._session_key(chat_id)
-        session = ctx.session_manager.get_or_create(session_key)
-        session.metadata["channel"] = self.name
-        await ctx.session_manager.save_async(session)
         await self._add_connection(session_key, websocket)
         await websocket.send_json({
             "type": "session.created",
@@ -178,8 +181,7 @@ class WebChatChannel:
         ctx = self._require_ctx()
         session_key = self._normalize_session_id(payload.get("session_id"))
         if not session_key:
-            await self._send_error(websocket, request_id, "session_id 缺失或无效")
-            return ""
+            session_key = self._session_key(uuid4().hex)
         text = str(payload.get("text") or "")
         media = [
             str(item)

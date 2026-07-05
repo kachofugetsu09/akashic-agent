@@ -293,6 +293,7 @@ class SessionStore:
                 s.metadata,
                 s.last_user_at,
                 s.last_proactive_at,
+                first_user.content AS first_message_content,
                 COALESCE(msg.message_count, 0) AS message_count
             FROM sessions s
             LEFT JOIN (
@@ -300,6 +301,16 @@ class SessionStore:
                 FROM messages
                 GROUP BY session_key
             ) msg ON msg.session_key = s.key
+            LEFT JOIN (
+                SELECT m.session_key, m.content
+                FROM messages m
+                INNER JOIN (
+                    SELECT session_key, MIN(seq) AS first_user_seq
+                    FROM messages
+                    WHERE role = 'user' AND TRIM(COALESCE(content, '')) != ''
+                    GROUP BY session_key
+                ) first ON first.session_key = m.session_key AND first.first_user_seq = m.seq
+            ) first_user ON first_user.session_key = s.key
             {where_sql}
             ORDER BY s.{safe_sort_by} {safe_sort_order}, s.key ASC
             LIMIT ? OFFSET ?
@@ -320,6 +331,7 @@ class SessionStore:
                 "metadata": json.loads(row["metadata"] or "{}"),
                 "last_user_at": row["last_user_at"],
                 "last_proactive_at": row["last_proactive_at"],
+                "first_message_content": row["first_message_content"],
                 "message_count": int(row["message_count"] or 0),
             }
             for row in rows
