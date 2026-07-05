@@ -26,6 +26,10 @@
   - 创建或改写技能 `SKILL.md`，用于新增技能与结构迁移。
   - 文件：`skills/skill-creater/SKILL.md`
 
+- `plugin-system`
+  - 说明并执行 Akashic 插件系统的安装、加载、启停、配置、MCP、skill、lifecycle 与 registry。
+  - 文件：`skills/plugin-system/SKILL.md`
+
 - `summarize`
   - 总结 URL/文件/YouTube 内容，支持提取转写。
   - 文件：`skills/summarize/SKILL.md`

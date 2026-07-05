@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 
 from agent.plugins.aka_descriptor import PluginDescriptor, load_plugin_descriptor
+from agent.plugins.global_registry import upsert_plugin_registry_entry
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,34 @@ def install_git_plugin(
             clone_root=clone_root,
             cache_root=cache_root,
             data_root=data_root,
+        )
+        plugin_id = f"{descriptor.name}@{marketplace}"
+        _ = upsert_plugin_registry_entry(
+            plugin_id,
+            {
+                "plugin_id": plugin_id,
+                "name": descriptor.name,
+                "marketplace": marketplace,
+                "source_type": "installed",
+                "version": descriptor.version,
+                "description": descriptor.description,
+                "enabled": True,
+                "local_disabled": False,
+                "active": False,
+                "plugin_root": str(install_result.installed_path),
+                "data_dir": str(install_result.data_path),
+                "lifecycle_entry": str(descriptor.lifecycle_entry or ""),
+                "capabilities": {
+                    "lifecycle": bool(descriptor.lifecycle_entry),
+                    "skills": bool(descriptor.skill_roots or descriptor.drift_skill_roots),
+                    "mcp": bool(descriptor.mcp_servers),
+                },
+                "skills": _collect_skill_names(descriptor.skill_roots),
+                "drift_skills": _collect_skill_names(descriptor.drift_skill_roots),
+                "mcp_servers": sorted(descriptor.mcp_servers.keys()),
+                "install_source": source,
+            },
+            plugins_home=home,
         )
     return install_result
 
@@ -290,6 +319,22 @@ def _venv_python_path(venv_dir: Path) -> Path:
 def _is_python_command(value: str) -> bool:
     name = Path(value).name.lower()
     return name in {"python", "python3", "python.exe"}
+
+
+def _collect_skill_names(skill_roots: tuple[Path, ...]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for root in skill_roots:
+        if not root.is_dir():
+            continue
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or not (child / "SKILL.md").exists():
+                continue
+            if child.name in seen:
+                continue
+            seen.add(child.name)
+            names.append(child.name)
+    return names
 
 
 def _run_git(args: list[str], cwd: Path | None = None) -> None:

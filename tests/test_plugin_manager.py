@@ -473,6 +473,50 @@ async def test_loads_installed_aka_plugin_descriptor_without_lifecycle():
 
 
 @pytest.mark.asyncio
+async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_path: Path):
+    bus = EventBus()
+    builtin_root = tmp_path / "plugins"
+    shutil.copytree(FIXTURES_DIR / "hello", builtin_root / "hello")
+
+    cache_root = tmp_path / "cache"
+    installed_root = cache_root / "lab" / "feed" / "0.1.0"
+    (installed_root / ".aka-plugin").mkdir(parents=True)
+    (installed_root / "skills" / "feed-manage").mkdir(parents=True)
+    (installed_root / "skills" / "feed-manage" / "SKILL.md").write_text(
+        "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (installed_root / ".aka-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "feed",
+                "version": "0.1.0",
+                "description": "feed plugin",
+                "paths": {"skills": ["skills"]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = PluginManager(
+        plugin_dirs=[builtin_root],
+        installed_cache_root=cache_root,
+        event_bus=bus,
+    )
+    await mgr.load_all()
+
+    registry_path = mgr.sync_global_registry(plugins_home=tmp_path / ".akashic-plugin")
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert set(registry["plugins"]) == {"feed@lab", "hello"}
+    assert registry["plugins"]["feed@lab"]["source_type"] == "installed"
+    assert registry["plugins"]["feed@lab"]["skills"] == ["feed-manage"]
+    assert registry["plugins"]["feed@lab"]["active"] is True
+    assert registry["plugins"]["hello"]["source_type"] == "builtin"
+
+
+@pytest.mark.asyncio
 async def test_no_manifest_uses_class_attributes():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:

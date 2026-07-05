@@ -14,6 +14,7 @@ from typing import Any, cast
 from pydantic import BaseModel, ValidationError
 
 from agent.plugins.aka_descriptor import PluginDescriptor, load_plugin_descriptor
+from agent.plugins.global_registry import replace_plugin_registry
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterStepCtx,
@@ -156,6 +157,46 @@ class PluginManager:
 
     def active_plugins(self) -> list[ActivePluginInfo]:
         return list(self._active_plugins.values())
+
+    def sync_global_registry(self, *, plugins_home: Path | None = None) -> Path:
+        entries: dict[str, dict[str, object]] = {}
+        for mod in self.discover():
+            plugin_dir = Path(mod["plugin_root"])
+            descriptor = load_plugin_descriptor(plugin_dir)
+            plugin_id = _resolve_plugin_id(mod, descriptor)
+            plugin_policy = self._plugin_configs.get(plugin_id, {})
+            local_disabled = _is_plugin_disabled(plugin_dir)
+            skill_roots = _skill_roots_for_policy(plugin_policy, descriptor)
+            drift_skill_roots = _drift_skill_roots_for_policy(plugin_policy, descriptor)
+            mcp_servers = _mcp_servers_for_policy(plugin_policy, descriptor)
+            lifecycle_entry = (
+                _resolve_lifecycle_module_path(plugin_dir, descriptor)
+                if _capability_enabled(plugin_policy, "lifecycle")
+                else None
+            )
+            entries[plugin_id] = {
+                "plugin_id": plugin_id,
+                "name": descriptor.name if descriptor is not None else mod["name"],
+                "marketplace": mod.get("marketplace", "").strip(),
+                "source_type": mod.get("source_type", "builtin"),
+                "version": descriptor.version if descriptor is not None else "",
+                "description": descriptor.description if descriptor is not None else "",
+                "enabled": _plugin_enabled(plugin_policy),
+                "local_disabled": local_disabled,
+                "active": mod["import_path"] in self._active_plugins,
+                "plugin_root": str(plugin_dir),
+                "data_dir": str(_resolve_plugin_data_dir(descriptor, mod) or ""),
+                "lifecycle_entry": str(lifecycle_entry or ""),
+                "capabilities": {
+                    "lifecycle": bool(lifecycle_entry),
+                    "skills": bool(skill_roots or drift_skill_roots),
+                    "mcp": bool(mcp_servers),
+                },
+                "skills": _collect_skill_names(skill_roots),
+                "drift_skills": _collect_skill_names(drift_skill_roots),
+                "mcp_servers": sorted(mcp_servers.keys()),
+            }
+        return replace_plugin_registry(entries, plugins_home=plugins_home)
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
@@ -738,6 +779,22 @@ def _resolve_plugin_data_dir(
     if descriptor is None or not marketplace:
         return None
     return Path.home() / ".akashic-plugin" / "data" / f"{descriptor.name}-{marketplace}"
+
+
+def _collect_skill_names(skill_roots: tuple[Path, ...]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for root in skill_roots:
+        if not root.is_dir():
+            continue
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or not (child / "SKILL.md").exists():
+                continue
+            if child.name in seen:
+                continue
+            seen.add(child.name)
+            names.append(child.name)
+    return names
 
 
 def _make_execute(bound: Any) -> Any:

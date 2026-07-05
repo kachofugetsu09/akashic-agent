@@ -53,6 +53,12 @@ def test_install_git_plugin_installs_into_cache_and_preserves_data(tmp_path: Pat
     assert (result.installed_path / ".aka-plugin" / "plugin.json").exists()
     assert (result.installed_path / "skills" / "feed-manage" / "SKILL.md").exists()
     assert (result.data_path / "state.json").read_text(encoding="utf-8").strip() == '{"keep":true}'
+    registry = json.loads((home / "registry.json").read_text(encoding="utf-8"))
+    entry = registry["plugins"]["feed@lab"]
+    assert entry["plugin_id"] == "feed@lab"
+    assert entry["install_source"] == str(repo)
+    assert entry["skills"] == ["feed-manage"]
+    assert entry["active"] is False
 
 
 def test_install_git_plugin_prepares_mcp_venv_and_rewrites_python_command(
@@ -129,6 +135,10 @@ def test_install_git_plugin_prepares_mcp_venv_and_rewrites_python_command(
         ("feed venv", result.installed_path / "mcp"),
         ("feed pip install", result.installed_path / "mcp"),
     ]
+    registry = json.loads(
+        ((tmp_path / "plugins-home") / "registry.json").read_text(encoding="utf-8")
+    )
+    assert registry["plugins"]["feed@lab"]["mcp_servers"] == ["feed"]
 
 
 def _run_git(args: list[str], cwd: Path) -> None:
