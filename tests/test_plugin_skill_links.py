@@ -417,26 +417,48 @@ def test_default_memory_audit_drift_skill_is_gated_by_memory_engine(tmp_path: Pa
 
 def test_emotion_feedback_drift_skill_is_exposed(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    plugin_root = Path(__file__).parents[1] / "plugins"
-    plugin_dir = plugin_root / "emotion"
-    plugin = _plugin_info("emotion", plugin_dir)
+    cache_root = tmp_path / "cache"
+    plugin_dir = cache_root / "github" / "emotion" / "0.1.0"
+    skill_dir = plugin_dir / "drift" / "skills" / "feedback-preference-context"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: emotion:feedback-preference-context\n"
+        "description: 情绪反馈 drift skill\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "sample_feedback_context.py").write_text(
+        "print('ok')\n",
+        encoding="utf-8",
+    )
+    plugin = ActivePluginInfo(
+        plugin_id="emotion@github",
+        plugin_dir=plugin_dir,
+        manifest={},
+        module_path="emotion",
+        declares_aka_plugin=True,
+        drift_skill_roots=(plugin_dir / "drift" / "skills",),
+    )
 
     result = PluginSkillLinker(
         workspace=workspace,
-        plugin_roots=[plugin_root],
+        plugin_roots=[cache_root],
         memory_engine=None,
     ).sync([plugin])
     skills = DriftStateStore(workspace / "drift").scan_skills()
-    skill_dir = DriftStateStore(workspace / "drift").skill_dir_for(
+    linked_skill_dir = DriftStateStore(workspace / "drift").skill_dir_for(
         "emotion:feedback-preference-context"
     )
 
     assert result.expected >= 1
     assert (workspace / "drift" / "skills" / "emotion:feedback-preference-context").is_symlink()
     assert "emotion:feedback-preference-context" in {skill.name for skill in skills}
-    assert skill_dir is not None
+    assert linked_skill_dir is not None
     assert (
-        skill_dir / "scripts" / "sample_feedback_context.py"
+        linked_skill_dir / "scripts" / "sample_feedback_context.py"
     ).exists()
 
 

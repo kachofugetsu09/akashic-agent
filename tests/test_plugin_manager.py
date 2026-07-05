@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import shlex
 import shutil
 import tempfile
-import sqlite3
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,10 +23,6 @@ from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
-
-_observe_db = importlib.import_module("plugins.observe.db")
-open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
-
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -101,120 +94,6 @@ async def test_load_hello_plugin():
     assert mgr.loaded_count >= 1
     loaded_names = {m["name"] for m in mgr.discover()}
     assert "hello" in loaded_names
-
-
-@pytest.mark.asyncio
-async def test_observe_plugin_writes_turn_trace(tmp_path: Path):
-    source = Path(__file__).parents[1] / "plugins" / "observe"
-    plugin_root = tmp_path / "plugins"
-    shutil.copytree(source, plugin_root / "observe")
-    bus = EventBus()
-    mgr = PluginManager(
-        plugin_dirs=[plugin_root],
-        event_bus=bus,
-        workspace=tmp_path,
-    )
-
-    await mgr.load_all()
-    await bus.emit(
-        TurnCommitted(
-            session_key="telegram:observe",
-            channel="telegram",
-            chat_id="observe",
-            input_message="你好",
-            persisted_user_message="你好",
-            assistant_response="收到",
-            tools_used=[],
-            thinking=None,
-            raw_reply="收到",
-            meme_tag=None,
-            meme_media_count=0,
-            tool_chain_raw=[],
-            tool_call_groups=[],
-            post_reply_budget={"prompt_tokens": 8},
-            react_stats={"cache_prompt_tokens": 8, "cache_hit_tokens": 6},
-        )
-    )
-    await mgr.terminate_all()
-    await bus.aclose()
-
-    conn = open_db(tmp_path / "observe" / "observe.db")
-    try:
-        row = conn.execute(
-            """SELECT session_key, user_msg, llm_output, react_cache_hit_tokens
-               FROM turns WHERE source='agent'"""
-        ).fetchone()
-    finally:
-        conn.close()
-    assert row == ("telegram:observe", "你好", "收到", 6)
-
-
-@pytest.mark.asyncio
-async def test_observe_plugin_writes_memory_domain_events(tmp_path: Path):
-    source = Path(__file__).parents[1] / "plugins" / "observe"
-    plugin_root = tmp_path / "plugins"
-    shutil.copytree(source, plugin_root / "observe")
-    bus = EventBus()
-    mgr = PluginManager(
-        plugin_dirs=[plugin_root],
-        event_bus=bus,
-        workspace=tmp_path,
-    )
-
-    await mgr.load_all()
-    await bus.fanout(
-        RetrievalCompleted(
-            session_key="telegram:memory",
-            channel="telegram",
-            chat_id="memory",
-            query="改写问题",
-            orig_query="原始问题",
-            hits=[
-                RetrievalHitSummary(
-                    item_id="mem_1",
-                    memory_type="event",
-                    score=0.9,
-                    summary="命中的记忆",
-                    injected=True,
-                )
-            ],
-            injected_count=1,
-            route_decision="RETRIEVE",
-            aux_queries=["假想问题"],
-        )
-    )
-    await bus.fanout(
-        MemoryWritten(
-            session_key="telegram:memory",
-            channel="telegram",
-            chat_id="memory",
-            action="supersede",
-            source_ref="telegram:memory@post_response",
-            superseded_ids=["mem_1"],
-        )
-    )
-    await mgr.terminate_all()
-    await bus.aclose()
-
-    conn = open_db(tmp_path / "observe" / "observe.db")
-    try:
-        rag = conn.execute(
-            """SELECT session_key, query, orig_query, injected_count
-               FROM rag_queries"""
-        ).fetchone()
-        memory_write = conn.execute(
-            """SELECT session_key, action, source_ref, superseded_ids
-               FROM memory_writes"""
-        ).fetchone()
-    finally:
-        conn.close()
-    assert rag == ("telegram:memory", "改写问题", "原始问题", 1)
-    assert memory_write == (
-        "telegram:memory",
-        "supersede",
-        "telegram:memory@post_response",
-        '["mem_1"]',
-    )
 
 
 @pytest.mark.asyncio
