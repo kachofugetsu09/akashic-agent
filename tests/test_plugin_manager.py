@@ -410,6 +410,69 @@ async def test_active_plugins_exposes_loaded_manifest():
 
 
 @pytest.mark.asyncio
+async def test_loads_installed_aka_plugin_descriptor_without_lifecycle():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_root = Path(tmp) / "cache"
+        plugin_root = cache_root / "lab" / "feed" / "0.1.0"
+        (plugin_root / ".aka-plugin").mkdir(parents=True)
+        (plugin_root / "skills" / "feed-manage").mkdir(parents=True)
+        (plugin_root / "skills" / "feed-manage" / "SKILL.md").write_text(
+            "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
+            encoding="utf-8",
+        )
+        (plugin_root / "mcp").mkdir()
+        (plugin_root / ".aka-plugin" / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "feed",
+                    "version": "0.1.0",
+                    "description": "feed plugin",
+                    "paths": {
+                        "skills": ["skills"],
+                        "mcp_servers": ["mcp/servers.json"],
+                    },
+                    "akashic": {
+                        "runtime": {"supports": ["skills", "mcp"]},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / "mcp" / "servers.json").write_text(
+            json.dumps(
+                {
+                    "servers": {
+                        "feed": {
+                            "command": ["run_mcp.py"],
+                            "env": {"A": "1"},
+                            "cwd": ".",
+                        }
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
+
+        mgr = PluginManager(
+            plugin_dirs=[],
+            installed_cache_root=cache_root,
+            event_bus=bus,
+        )
+        await mgr.load_all()
+
+        active = mgr.active_plugins()
+        assert len(active) == 1
+        assert active[0].plugin_id == "feed@lab"
+        assert active[0].skill_roots == (plugin_root / "skills",)
+        assert "feed" in active[0].mcp_servers
+        assert mgr.loaded_count == 1
+
+
+@pytest.mark.asyncio
 async def test_no_manifest_uses_class_attributes():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:

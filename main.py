@@ -15,6 +15,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from agent.config import Config
+from agent.plugins.install import install_git_plugin
 from bootstrap.app import build_app_runtime
 from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
@@ -55,6 +56,12 @@ def _print_init_summary(summary: InitSummary) -> None:
         print("\n下一步：")
         for step in summary.next_steps:
             print(f"  {step}")
+
+
+def _parse_csv_flag(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def connect_cli(config_path: str = "config.toml") -> None:
@@ -154,6 +161,10 @@ if __name__ == "__main__":
         workspace_value = _get_flag_value(args, "--workspace")
         host_value = _get_flag_value(args, "--host")
         port_value = _get_flag_value(args, "--port")
+        source_value = _get_flag_value(args, "--source")
+        marketplace_value = _get_flag_value(args, "--marketplace")
+        ref_value = _get_flag_value(args, "--ref")
+        sparse_value = _get_flag_value(args, "--sparse")
     except ValueError as exc:
         print(str(exc))
         sys.exit(1)
@@ -182,6 +193,23 @@ if __name__ == "__main__":
             force=force,
         )
         _print_init_summary(summary)
+        sys.exit(0)
+
+    if args and args[0] == "plugin-install":
+        if not source_value:
+            print("plugin-install 缺少 --source")
+            sys.exit(1)
+        marketplace = marketplace_value or "local"
+        result = install_git_plugin(
+            source=source_value,
+            marketplace=marketplace,
+            ref_name=ref_value or "",
+            sparse_paths=_parse_csv_flag(sparse_value),
+        )
+        print(f"已安装插件: {result.plugin_name}@{result.marketplace}")
+        print(f"版本: {result.plugin_version}")
+        print(f"代码: {result.installed_path}")
+        print(f"数据: {result.data_path}")
         sys.exit(0)
 
     if args and args[0] == "gateway":

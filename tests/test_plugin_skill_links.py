@@ -199,6 +199,78 @@ def test_meme_plugin_skill_is_exposed_with_plugin_prefix(tmp_path: Path) -> None
     assert "表情包库管理" in (loader.load_skill_body("meme:meme-manage") or "")
 
 
+def test_aka_plugin_skill_is_exposed_with_bare_name(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    cache_root = tmp_path / "cache"
+    plugin_dir = cache_root / "lab" / "feed" / "0.1.0"
+    skill_dir = plugin_dir / "skills" / "feed-manage"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: feed-manage\n"
+        "description: feed skill\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    plugin = ActivePluginInfo(
+        plugin_id="feed@lab",
+        plugin_dir=plugin_dir,
+        manifest={},
+        module_path="feed",
+        declares_aka_plugin=True,
+        skill_roots=(plugin_dir / "skills",),
+    )
+
+    result = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[cache_root],
+        memory_engine=None,
+    ).sync([plugin])
+
+    assert result.expected == 1
+    assert (workspace / "skills" / "feed-manage").is_symlink()
+    assert not (workspace / "skills" / "feed@lab:feed-manage").exists()
+
+
+def test_aka_plugin_skill_sync_removes_old_prefixed_link(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    cache_root = tmp_path / "cache"
+    plugin_dir = cache_root / "lab" / "feed" / "0.1.0"
+    skill_dir = plugin_dir / "skills" / "feed-manage"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: feed-manage\n"
+        "description: feed skill\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    old_link = workspace / "skills" / "feed@lab:feed-manage"
+    old_link.parent.mkdir(parents=True)
+    old_link.symlink_to(skill_dir, target_is_directory=True)
+    plugin = ActivePluginInfo(
+        plugin_id="feed@lab",
+        plugin_dir=plugin_dir,
+        manifest={},
+        module_path="feed",
+        declares_aka_plugin=True,
+        skill_roots=(plugin_dir / "skills",),
+    )
+
+    result = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[cache_root],
+        memory_engine=None,
+    ).sync([plugin])
+
+    assert result.created == 1
+    assert result.removed == 1
+    assert (workspace / "skills" / "feed-manage").is_symlink()
+    assert not old_link.exists()
+
+
 def test_plugin_drift_skill_linker_creates_workspace_symlink(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"

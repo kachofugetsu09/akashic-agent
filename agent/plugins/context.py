@@ -17,6 +17,7 @@ class PluginContext:
     tool_registry: Any
     plugin_id: str
     plugin_dir: Path
+    data_dir: Path | None
     kv_store: "PluginKVStore"
     config: "BaseModel | PluginConfig | None" = None
     workspace: Path | None = None

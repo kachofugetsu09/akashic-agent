@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent.config_models import Config
 from agent.looping.core import AgentLoop
@@ -52,6 +52,7 @@ def build_proactive_runtime(
     event_bus: EventBus | None = None,
     tool_hooks: list[ToolHook] | None = None,
     proactive_modules: list[object] | None = None,
+    plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -83,6 +84,7 @@ def build_proactive_runtime(
         event_bus=event_bus,
         tool_hooks=tool_hooks,
         proactive_modules=proactive_modules,
+        plugin_mcp_servers=plugin_mcp_servers,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。
