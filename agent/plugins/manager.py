@@ -6,13 +6,15 @@ import inspect
 import json
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
+from agent.plugins.aka_descriptor import PluginDescriptor, load_plugin_descriptor
+from agent.plugins.global_registry import replace_plugin_registry
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterStepCtx,
@@ -26,6 +28,7 @@ from agent.lifecycle.types import (
     PromptRenderCtx,
 )
 from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
+from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.plugins.jobs import PluginJobSpec, PluginLlmService, RegisteredPluginJob
 from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
@@ -53,6 +56,10 @@ class ActivePluginInfo:
     plugin_dir: Path
     manifest: dict[str, object]
     module_path: str
+    declares_aka_plugin: bool = False
+    skill_roots: tuple[Path, ...] = ()
+    drift_skill_roots: tuple[Path, ...] = ()
+    mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class PluginManager:
@@ -67,6 +74,7 @@ class PluginManager:
         memory_engine: Any = None,
         llm: PluginLlmService | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
+        installed_cache_root: Path | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -76,6 +84,7 @@ class PluginManager:
         self._memory_engine = memory_engine
         self._llm = llm
         self._plugin_configs = plugin_configs or {}
+        self._installed_cache_root = installed_cache_root
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
@@ -149,6 +158,71 @@ class PluginManager:
     def active_plugins(self) -> list[ActivePluginInfo]:
         return list(self._active_plugins.values())
 
+    def _plugin_policy(self, plugin_id: str) -> dict[str, Any]:
+        exact = self._plugin_configs.get(plugin_id)
+        if isinstance(exact, dict):
+            return exact
+        base_name = plugin_id.split("@", 1)[0]
+        fallback = self._plugin_configs.get(base_name)
+        if isinstance(fallback, dict):
+            return fallback
+        return {}
+
+    def sync_global_registry(self, *, plugins_home: Path | None = None) -> Path:
+        entries: dict[str, dict[str, object]] = {}
+        for mod in self.discover():
+            plugin_dir = Path(mod["plugin_root"])
+            descriptor = load_plugin_descriptor(plugin_dir)
+            plugin_id = _resolve_plugin_id(mod, descriptor)
+            plugin_policy = self._plugin_policy(plugin_id)
+            local_disabled = _is_plugin_disabled(plugin_dir)
+            skill_roots = _skill_roots_for_policy(plugin_policy, descriptor)
+            drift_skill_roots = _drift_skill_roots_for_policy(plugin_policy, descriptor)
+            mcp_servers = _mcp_servers_for_policy(plugin_policy, descriptor)
+            lifecycle_entry = (
+                _resolve_lifecycle_module_path(plugin_dir, descriptor)
+                if _capability_enabled(plugin_policy, "lifecycle")
+                else None
+            )
+            entries[plugin_id] = {
+                "plugin_id": plugin_id,
+                "name": descriptor.name if descriptor is not None else mod["name"],
+                "marketplace": mod.get("marketplace", "").strip(),
+                "source_type": mod.get("source_type", "builtin"),
+                "version": descriptor.version if descriptor is not None else "",
+                "description": descriptor.description if descriptor is not None else "",
+                "enabled": _plugin_enabled(plugin_policy),
+                "local_disabled": local_disabled,
+                "active": self._registry_active(mod["import_path"]),
+                "plugin_root": str(plugin_dir),
+                "data_dir": str(_resolve_plugin_data_dir(descriptor, mod) or ""),
+                "lifecycle_entry": str(lifecycle_entry or ""),
+                "capabilities": {
+                    "lifecycle": bool(lifecycle_entry),
+                    "skills": bool(skill_roots or drift_skill_roots),
+                    "mcp": bool(mcp_servers),
+                },
+                "skills": _collect_skill_names(skill_roots),
+                "drift_skills": _collect_skill_names(drift_skill_roots),
+                "mcp_servers": sorted(mcp_servers.keys()),
+            }
+        return replace_plugin_registry(entries, plugins_home=plugins_home)
+
+    def _registry_active(self, module_path: str) -> bool:
+        if module_path not in self._active_plugins:
+            return False
+        instance = plugin_registry.get_instance(module_path)
+        if instance is None:
+            return True
+        checker = getattr(instance, "is_active", None)
+        if not callable(checker):
+            return True
+        try:
+            return bool(checker())
+        except Exception as e:
+            logger.warning("插件 active 状态检查失败 (%s): %s", module_path, e)
+            return True
+
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
         commands: list[tuple[str, str]] = []
@@ -168,28 +242,27 @@ class PluginManager:
     def discover(self) -> list[dict[str, str]]:
         mods: list[dict[str, str]] = []
         seen_names: set[str] = set()
-        for d in self._dirs:
-            if not d.is_dir():
+        for source in resolve_plugin_sources(
+            self._dirs,
+            installed_cache_root=self._installed_cache_root,
+        ):
+            descriptor = load_plugin_descriptor(source.plugin_root)
+            name = descriptor.name if descriptor is not None else source.plugin_root.name
+            if name in seen_names and source.source_type == "builtin":
+                logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
                 continue
-            source = d.name
-            for child in sorted(d.iterdir()):
-                # 1. 跳过非目录和没有 plugin.py 的目录
-                if not child.is_dir():
-                    continue
-                main = child / "plugin.py"
-                if not main.exists():
-                    continue
-                # 2. 同名插件 first-wins，后续同名打 warning 跳过
-                if child.name in seen_names:
-                    logger.warning("插件名重复，跳过: %s (%s)", child.name, main)
-                    continue
-                seen_names.add(child.name)
-                # 3. import_path 带上 source 避免不同目录同名插件覆盖 sys.modules
-                mods.append({
-                    "name": child.name,
-                    "module_path": str(main),
-                    "import_path": f"akasic_plugin_{source}_{child.name}",
-                })
+            seen_names.add(name)
+            import_suffix = name.replace("-", "_").replace("@", "_")
+            import_source = source.marketplace or source.plugin_root.parent.name
+            module_path = _resolve_lifecycle_module_path(source.plugin_root, descriptor)
+            mods.append({
+                "name": name,
+                "plugin_root": str(source.plugin_root),
+                "module_path": str(module_path) if module_path is not None else "",
+                "import_path": f"akasic_plugin_{import_source}_{import_suffix}",
+                "marketplace": source.marketplace,
+                "source_type": source.source_type,
+            })
         return mods
 
     async def load_all(self) -> None:
@@ -198,103 +271,122 @@ class PluginManager:
 
     async def _load_one(self, mod: dict[str, str]) -> None:
         mp = mod["import_path"]
+        plugin_dir = Path(mod["plugin_root"])
+        descriptor = load_plugin_descriptor(plugin_dir)
+        initial_plugin_id = _resolve_plugin_id(mod, descriptor)
+        plugin_policy = self._plugin_policy(initial_plugin_id)
         # 1. 幂等：已加载过直接跳过
         if mp in self._loaded:
             return
+        if not _plugin_enabled(plugin_policy):
+            logger.info("插件已禁用（config.plugins）: %s", initial_plugin_id)
+            return
         # 1b. 本地禁用标记存在时跳过
-        if _is_plugin_disabled(Path(mod["module_path"]).parent):
+        if _is_plugin_disabled(plugin_dir):
             logger.info("插件已禁用（plugin.disabled）: %s", mod["name"])
             return
-        # 2. 用 importlib 从文件路径加载，不依赖 sys.path
-        try:
-            self._import_plugin(mp, Path(mod["module_path"]))
-        except Exception as e:
-            logger.warning("插件 %s 导入失败: %s", mod["name"], e)
-            return
-        # 3. 导入触发 __init_subclass__，从 registry 取注册的类
-        cls = plugin_registry._classes.get(mp)
-        if cls is None:
-            logger.warning("插件 %s 未注册类", mod["name"])
-            return
-        # 4. 实例化，读 manifest 覆盖元信息，注入 PluginContext
-        instance = cls()
-        plugin_dir = Path(mod["module_path"]).parent
-        manifest = _apply_manifest(instance, plugin_dir)
-        plugin_id = str(instance.name) if instance.name else mod["name"]
-        try:
-            plugin_config = _load_plugin_config(
-                plugin_dir,
-                getattr(cls, "ConfigModel", None),
-                self._plugin_configs.get(plugin_id),
-            )
-        except _PluginConfigError as e:
-            logger.warning("插件 %s 配置无效，跳过: %s", mod["name"], e)
-            return
-        from agent.plugins.context import PluginContext, PluginKVStore
-        instance.context = PluginContext(  # type: ignore[attr-defined]
-            event_bus=self._event_bus,
-            tool_registry=self._tool_registry,
-            plugin_id=plugin_id,
-            plugin_dir=plugin_dir,
-            kv_store=PluginKVStore(plugin_dir / ".kv.json"),
-            config=plugin_config,
-            workspace=self._workspace,
-            session_manager=self._session_manager,
-            memory_engine=self._memory_engine,
-            llm=self._llm,
-        )
-        plugin_registry.register_instance(mp, instance)
-        self._bind_handlers(instance, mp)
-        tool_names = self._register_tools(instance, mp)
+        instance = None
+        tool_names: list[str] = []
         hook_count_before = len(self._tool_hooks)
-        self._bind_tool_hooks(instance, mp)
         before_turn_count_before = len(self._before_turn_modules)
-        self._collect_before_turn_modules(instance)
         before_reasoning_count_before = len(self._before_reasoning_modules)
-        self._collect_before_reasoning_modules(instance)
         prompt_render_count_before = len(self._prompt_render_modules)
-        self._collect_prompt_render_modules(instance)
         before_step_count_before = len(self._before_step_modules)
-        self._collect_before_step_modules(instance)
         after_step_count_before = len(self._after_step_modules)
-        self._collect_after_step_modules(instance)
         after_reasoning_count_before = len(self._after_reasoning_modules)
-        self._collect_after_reasoning_modules(instance)
         after_turn_count_before = len(self._after_turn_modules)
-        self._collect_after_turn_modules(instance)
         proactive_module_count_before = len(self._proactive_modules)
-        self._collect_proactive_modules(instance)
         job_count_before = len(self._jobs)
-        self._collect_jobs(instance, plugin_id)
-        # 5. 给插件机会做异步初始化；失败时回滚所有注册
-        try:
-            if hasattr(instance, "initialize"):
-                await instance.initialize()
-        except Exception as e:
-            logger.warning("插件 %s 初始化失败，回滚: %s", mod["name"], e)
-            plugin_registry.remove_plugin(mp)
-            for tn in tool_names:
-                if self._tool_registry is not None:
-                    self._tool_registry.unregister(tn)
-            del self._tool_hooks[hook_count_before:]
-            del self._before_turn_modules[before_turn_count_before:]
-            del self._before_reasoning_modules[before_reasoning_count_before:]
-            del self._prompt_render_modules[prompt_render_count_before:]
-            del self._before_step_modules[before_step_count_before:]
-            del self._after_step_modules[after_step_count_before:]
-            del self._after_reasoning_modules[after_reasoning_count_before:]
-            del self._after_turn_modules[after_turn_count_before:]
-            del self._proactive_modules[proactive_module_count_before:]
-            del self._jobs[job_count_before:]
-            return
+        module_path = mod["module_path"].strip() if _capability_enabled(plugin_policy, "lifecycle") else ""
+        if module_path:
+            try:
+                self._import_plugin(mp, Path(module_path))
+            except Exception as e:
+                logger.warning("插件 %s 导入失败: %s", mod["name"], e)
+                return
+            cls = plugin_registry._classes.get(mp)
+            if cls is None:
+                logger.warning("插件 %s 未注册类", mod["name"])
+                return
+            instance = cls()
+            manifest = _apply_manifest(instance, plugin_dir, descriptor)
+            plugin_id = (
+                _resolve_plugin_id(mod, descriptor)
+                if descriptor is not None
+                else str(instance.name) if instance.name else mod["name"]
+            )
+            try:
+                plugin_config = _load_plugin_config(
+                    plugin_dir,
+                    getattr(cls, "ConfigModel", None),
+                    self._plugin_policy(plugin_id) or self._plugin_policy(initial_plugin_id),
+                )
+            except _PluginConfigError as e:
+                logger.warning("插件 %s 配置无效，跳过: %s", mod["name"], e)
+                return
+            from agent.plugins.context import PluginContext, PluginKVStore
+            instance.context = PluginContext(  # type: ignore[attr-defined]
+                event_bus=self._event_bus,
+                tool_registry=self._tool_registry,
+                plugin_id=plugin_id,
+                plugin_dir=plugin_dir,
+                data_dir=_resolve_plugin_data_dir(descriptor, mod),
+                kv_store=PluginKVStore(plugin_dir / ".kv.json"),
+                config=plugin_config,
+                workspace=self._workspace,
+                session_manager=self._session_manager,
+                memory_engine=self._memory_engine,
+                llm=self._llm,
+            )
+            plugin_registry.register_instance(mp, instance)
+            self._bind_handlers(instance, mp)
+            tool_names = self._register_tools(instance, mp)
+            self._bind_tool_hooks(instance, mp)
+            self._collect_before_turn_modules(instance)
+            self._collect_before_reasoning_modules(instance)
+            self._collect_prompt_render_modules(instance)
+            self._collect_before_step_modules(instance)
+            self._collect_after_step_modules(instance)
+            self._collect_after_reasoning_modules(instance)
+            self._collect_after_turn_modules(instance)
+            self._collect_proactive_modules(instance)
+            self._collect_jobs(instance, plugin_id)
+            try:
+                if hasattr(instance, "initialize"):
+                    await instance.initialize()
+            except Exception as e:
+                logger.warning("插件 %s 初始化失败，回滚: %s", mod["name"], e)
+                plugin_registry.remove_plugin(mp)
+                for tn in tool_names:
+                    if self._tool_registry is not None:
+                        self._tool_registry.unregister(tn)
+                del self._tool_hooks[hook_count_before:]
+                del self._before_turn_modules[before_turn_count_before:]
+                del self._before_reasoning_modules[before_reasoning_count_before:]
+                del self._prompt_render_modules[prompt_render_count_before:]
+                del self._before_step_modules[before_step_count_before:]
+                del self._after_step_modules[after_step_count_before:]
+                del self._after_reasoning_modules[after_reasoning_count_before:]
+                del self._after_turn_modules[after_turn_count_before:]
+                del self._proactive_modules[proactive_module_count_before:]
+                del self._jobs[job_count_before:]
+                return
+        else:
+            manifest = _descriptor_manifest(descriptor)
+            plugin_id = initial_plugin_id
         self._loaded.add(mp)
         self._active_plugins[mp] = ActivePluginInfo(
             plugin_id=plugin_id,
             plugin_dir=plugin_dir,
             manifest=manifest,
             module_path=mp,
+            declares_aka_plugin=descriptor is not None,
+            skill_roots=_skill_roots_for_policy(plugin_policy, descriptor),
+            drift_skill_roots=_drift_skill_roots_for_policy(plugin_policy, descriptor),
+            mcp_servers=_mcp_servers_for_policy(plugin_policy, descriptor),
         )
-        self._collect_channels(instance)
+        if instance is not None:
+            self._collect_channels(instance)
         logger.info("插件已加载: %s", mod["name"])
 
     def _import_plugin(self, module_name: str, path: Path) -> None:
@@ -575,7 +667,15 @@ def _load_module_list(instance: Any, method_name: str) -> list[object]:
 _MANIFEST_FIELDS = ("name", "version", "desc", "author")
 
 
-def _apply_manifest(instance: Any, plugin_dir: Path) -> dict[str, object]:
+def _apply_manifest(
+    instance: Any,
+    plugin_dir: Path,
+    descriptor: PluginDescriptor | None = None,
+) -> dict[str, object]:
+    if descriptor is not None:
+        raw = _descriptor_manifest(descriptor)
+        _apply_manifest_fields(instance, raw)
+        return raw
     manifest_path = plugin_dir / "manifest.yaml"
     if not manifest_path.exists():
         return {}
@@ -589,12 +689,137 @@ def _apply_manifest(instance: Any, plugin_dir: Path) -> dict[str, object]:
         logger.warning("manifest.yaml 格式错误，期望 dict (%s)", plugin_dir)
         return {}
     raw: dict[str, object] = cast("dict[str, object]", loaded)
-    # 逐字段覆盖实例属性，非字符串值转 str，缺失字段跳过
+    _apply_manifest_fields(instance, raw)
+    return raw
+
+
+def _descriptor_manifest(descriptor: PluginDescriptor | None) -> dict[str, object]:
+    if descriptor is None:
+        return {}
+    return {
+        **descriptor.raw_manifest,
+        "name": descriptor.name,
+        "version": descriptor.version,
+        "desc": descriptor.description,
+    }
+
+
+def _apply_manifest_fields(instance: Any, raw: dict[str, object]) -> None:
     for field in _MANIFEST_FIELDS:
         val = raw.get(field)
         if val is not None:
             setattr(instance, field, str(val))
-    return raw
+
+
+def _resolve_lifecycle_module_path(
+    plugin_dir: Path,
+    descriptor: PluginDescriptor | None,
+) -> Path | None:
+    if descriptor is not None:
+        return descriptor.lifecycle_entry
+    plugin_py = plugin_dir / "plugin.py"
+    if plugin_py.exists():
+        return plugin_py
+    return None
+
+
+def _resolve_plugin_id(
+    mod: dict[str, str],
+    descriptor: PluginDescriptor | None,
+) -> str:
+    name = descriptor.name if descriptor is not None else mod["name"]
+    marketplace = mod.get("marketplace", "").strip()
+    if not marketplace:
+        return name
+    return f"{name}@{marketplace}"
+
+
+def _plugin_enabled(plugin_policy: dict[str, Any]) -> bool:
+    enabled = plugin_policy.get("enabled")
+    if isinstance(enabled, bool):
+        return enabled
+    return True
+
+
+def _capability_enabled(
+    plugin_policy: dict[str, Any],
+    capability: str,
+) -> bool:
+    capabilities = plugin_policy.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return True
+    capability_value = capabilities.get(capability)
+    if not isinstance(capability_value, dict):
+        return True
+    enabled = capability_value.get("enabled")
+    if isinstance(enabled, bool):
+        return enabled
+    return True
+
+
+def _skill_roots_for_policy(
+    plugin_policy: dict[str, Any],
+    descriptor: PluginDescriptor | None,
+) -> tuple[Path, ...]:
+    if descriptor is None or not _capability_enabled(plugin_policy, "skills"):
+        return ()
+    return descriptor.skill_roots
+
+
+def _drift_skill_roots_for_policy(
+    plugin_policy: dict[str, Any],
+    descriptor: PluginDescriptor | None,
+) -> tuple[Path, ...]:
+    if descriptor is None or not _capability_enabled(plugin_policy, "skills"):
+        return ()
+    return descriptor.drift_skill_roots
+
+
+def _mcp_servers_for_policy(
+    plugin_policy: dict[str, Any],
+    descriptor: PluginDescriptor | None,
+) -> dict[str, dict[str, Any]]:
+    if descriptor is None or not _capability_enabled(plugin_policy, "mcp"):
+        return {}
+    raw_servers = descriptor.mcp_servers
+    configured_servers = plugin_policy.get("mcp_servers")
+    if not isinstance(configured_servers, dict):
+        return dict(raw_servers)
+    filtered: dict[str, dict[str, Any]] = {}
+    for server_name, config in raw_servers.items():
+        policy = configured_servers.get(server_name)
+        if isinstance(policy, dict):
+            enabled = policy.get("enabled")
+            if isinstance(enabled, bool) and not enabled:
+                continue
+        filtered[server_name] = dict(config)
+    return filtered
+
+
+def _resolve_plugin_data_dir(
+    descriptor: PluginDescriptor | None,
+    mod: dict[str, str],
+) -> Path | None:
+    marketplace = mod.get("marketplace", "").strip()
+    if descriptor is None or not marketplace:
+        return None
+    return Path.home() / ".akashic-plugin" / "data" / f"{descriptor.name}-{marketplace}"
+
+
+def _collect_skill_names(skill_roots: tuple[Path, ...]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for root in skill_roots:
+        if not root.is_dir():
+            continue
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or not (child / "SKILL.md").exists():
+                continue
+            if child.name in seen:
+                continue
+            seen.add(child.name)
+            names.append(child.name)
+    return names
 
 
 def _make_execute(bound: Any) -> Any:

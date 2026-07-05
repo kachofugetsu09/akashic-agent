@@ -40,7 +40,7 @@ class CommonMetaToolsetProvider(ToolsetProvider):
             LoadSkillTool(SkillsLoader(deps.workspace)),
             always_on=True,
             risk="read-only",
-            search_hint="技能 skill SKILL.md 使用能力",
+            search_hint="技能 skill SKILL.md 使用能力 先 load_skill 不要 read_file 猜路径",
         )
 
         # 主模型不支持多模态时，注册视觉工具供模型调用

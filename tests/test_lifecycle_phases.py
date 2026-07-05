@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import importlib
 import sqlite3
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,13 +67,44 @@ from agent.prompting import PromptSectionRender
 from agent.turns.outbound import OutboundDispatch
 from session.manager import SessionManager
 
-_observe_db = importlib.import_module("plugins.observe.db")
-open_observe_db = cast(
-    Callable[[Path], sqlite3.Connection],
-    getattr(_observe_db, "open_db"),
-)
-
 _now = datetime.now()
+
+
+def open_observe_db(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            source TEXT NOT NULL,
+            session_key TEXT NOT NULL,
+            user_msg TEXT,
+            llm_output TEXT NOT NULL DEFAULT '',
+            raw_llm_output TEXT,
+            meme_tag TEXT,
+            meme_media_count INTEGER,
+            tool_calls TEXT,
+            tool_chain_json TEXT,
+            history_window INTEGER,
+            history_messages INTEGER,
+            history_chars INTEGER,
+            history_tokens INTEGER,
+            prompt_tokens INTEGER,
+            next_turn_baseline_tokens INTEGER,
+            error TEXT,
+            react_iteration_count INTEGER,
+            react_input_sum_tokens INTEGER,
+            react_input_peak_tokens INTEGER,
+            react_final_input_tokens INTEGER,
+            react_cache_prompt_tokens INTEGER,
+            react_cache_hit_tokens INTEGER
+        )
+        """
+    )
+    return conn
 
 
 class _MemoryStatusPluginModule:

@@ -37,6 +37,46 @@ def _is_plugin_disabled(plugin_dir: Path) -> bool:
     return (plugin_dir / "plugin.disabled").exists()
 
 
+def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    plugins_root = project_root / "plugins"
+    if plugins_root.is_dir():
+        for plugin_dir in sorted(plugins_root.iterdir()):
+            if not plugin_dir.is_dir() or _is_plugin_disabled(plugin_dir):
+                continue
+            result[plugin_dir.name] = plugin_dir
+
+    registry_path = Path.home() / ".akashic-plugin" / "registry.json"
+    if not registry_path.exists():
+        return result
+    try:
+        loaded = json.loads(registry_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("插件注册表读取失败 (%s): %s", registry_path, e)
+        return result
+    if not isinstance(loaded, dict):
+        return result
+    raw_plugins = loaded.get("plugins")
+    if not isinstance(raw_plugins, dict):
+        return result
+    for raw_plugin_id, raw_entry in sorted(raw_plugins.items()):
+        if not isinstance(raw_plugin_id, str) or not isinstance(raw_entry, dict):
+            continue
+        entry = cast(dict[str, object], raw_entry)
+        if str(entry.get("source_type") or "") != "installed":
+            continue
+        if entry.get("active") is False:
+            continue
+        plugin_root_text = str(entry.get("plugin_root") or "").strip()
+        if not plugin_root_text:
+            continue
+        plugin_root = Path(plugin_root_text).resolve(strict=False)
+        if not plugin_root.is_dir() or _is_plugin_disabled(plugin_root):
+            continue
+        result[raw_plugin_id] = plugin_root
+    return result
+
+
 def _is_dashboard_access_record(record: logging.LogRecord) -> bool:
     args = record.args
     if not isinstance(args, tuple) or len(args) < 3:
@@ -518,16 +558,18 @@ def _run_esbuild(cmd: list[str], ts_path: Path, js_path: Path, name: str) -> Non
         logger.warning("插件面板编译异常 (%s): %s", name, exc)
 
 
-def _resolve_plugin_dir(plugins_root: Path, plugin_id: str) -> Path:
+def _resolve_plugin_dir(
+    plugin_dirs: dict[str, Path],
+    plugin_id: str,
+) -> Path:
     if not plugin_id or "/" in plugin_id or "\\" in plugin_id:
         raise HTTPException(status_code=400, detail="invalid plugin id")
     win_path = PureWindowsPath(plugin_id)
     if Path(plugin_id).is_absolute() or win_path.drive or win_path.root:
         raise HTTPException(status_code=400, detail="invalid plugin id")
-    plugin_dir = (plugins_root / plugin_id).resolve()
-    root = plugins_root.resolve()
-    if plugin_dir.parent != root:
-        raise HTTPException(status_code=400, detail="invalid plugin id")
+    plugin_dir = plugin_dirs.get(plugin_id)
+    if plugin_dir is None:
+        raise HTTPException(status_code=404, detail="plugin not found")
     return plugin_dir
 
 
@@ -597,14 +639,24 @@ def _plugin_dashboard_enabled(app: FastAPI, plugin_dir: Path) -> bool:
 
 def _load_plugin_dashboard_module(plugin_dir: Path) -> ModuleType:
     dash_path = plugin_dir / "dashboard.py"
-    module_name = f"akasic_dashboard_plugin_{plugin_dir.name}"
-    spec = importlib.util.spec_from_file_location(module_name, dash_path)
+    module_name = _dashboard_module_name(plugin_dir)
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        dash_path,
+        submodule_search_locations=[str(plugin_dir)],
+    )
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {dash_path}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = mod
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
+
+
+def _dashboard_module_name(plugin_dir: Path) -> str:
+    raw = str(plugin_dir.resolve(strict=False))
+    normalized = "".join(ch if ch.isalnum() else "_" for ch in raw)
+    return f"akasic_dashboard_plugin_{normalized}"
 
 
 def _dashboard_closeables(value: object) -> list[object]:
@@ -655,7 +707,6 @@ def create_dashboard_app(
     optimizer_last_error: str | None = None
     plugin_closeables: list[object] = []
     project_root = Path(__file__).resolve().parent.parent
-    plugins_root = project_root / "plugins"
     static_dir = project_root / "static" / "dashboard"
 
     def get_proactive_reader() -> ProactiveDashboardReader:
@@ -695,21 +746,17 @@ def create_dashboard_app(
         StaticFiles(directory=static_dir, check_dir=False),
         name="dashboard-assets",
     )
+    plugin_dirs = _dashboard_plugin_dirs(project_root)
 
     # Compile TypeScript plugin panels and mount plugin routes
-    if plugins_root.is_dir():
-        for _plugin_dir in sorted(plugins_root.iterdir()):
-            if not _plugin_dir.is_dir():
-                continue
-            if _is_plugin_disabled(_plugin_dir):
-                continue
-            if not _plugin_dashboard_enabled(app, _plugin_dir):
-                continue
-            _build_plugin_panels_js(project_root, _plugin_dir)
-            if (_plugin_dir / "dashboard.py").exists():
-                plugin_closeables.extend(
-                    _load_plugin_dashboard(app, _plugin_dir, workspace)
-                )
+    for _plugin_id, _plugin_dir in sorted(plugin_dirs.items()):
+        if not _plugin_dashboard_enabled(app, _plugin_dir):
+            continue
+        _build_plugin_panels_js(project_root, _plugin_dir)
+        if (_plugin_dir / "dashboard.py").exists():
+            plugin_closeables.extend(
+                _load_plugin_dashboard(app, _plugin_dir, workspace)
+            )
 
     # Vite emits index.html with content-hashed asset URLs under /assets, so it
     # is served verbatim — no manual cache-busting needed.
@@ -727,12 +774,8 @@ def create_dashboard_app(
 
     @app.get("/api/dashboard/plugins")
     def list_dashboard_plugins() -> list[dict[str, Any]]:
-        if not plugins_root.is_dir():
-            return []
         result: list[dict[str, Any]] = []
-        for plugin_dir in sorted(plugins_root.iterdir()):
-            if not plugin_dir.is_dir() or _is_plugin_disabled(plugin_dir):
-                continue
+        for plugin_id, plugin_dir in sorted(_dashboard_plugin_dirs(project_root).items()):
             if not _plugin_dashboard_enabled(app, plugin_dir):
                 continue
             _build_plugin_panels_js(project_root, plugin_dir)
@@ -745,14 +788,17 @@ def create_dashboard_app(
                     "has_css": css_path.exists(),
                 })
             if panels:
-                result.append({"id": plugin_dir.name, "panels": panels})
+                result.append({"id": plugin_id, "panels": panels})
         return result
 
     @app.get("/plugins/{plugin_id}/{panel_name}.js")
     def get_plugin_panel_js(plugin_id: str, panel_name: str) -> FileResponse:
         if not panel_name.startswith("dashboard_panel"):
             raise HTTPException(status_code=404, detail="plugin panel not found")
-        plugin_dir = _resolve_plugin_dir(plugins_root, plugin_id)
+        plugin_dir = _resolve_plugin_dir(
+            _dashboard_plugin_dirs(project_root),
+            plugin_id,
+        )
         if _is_plugin_disabled(plugin_dir) or not _plugin_dashboard_enabled(app, plugin_dir):
             raise HTTPException(status_code=404, detail="plugin panel not found")
         _build_plugin_panels_js(project_root, plugin_dir)
@@ -765,7 +811,10 @@ def create_dashboard_app(
     def get_plugin_panel_css(plugin_id: str, panel_name: str) -> FileResponse:
         if not panel_name.startswith("dashboard_panel"):
             raise HTTPException(status_code=404, detail="plugin panel css not found")
-        plugin_dir = _resolve_plugin_dir(plugins_root, plugin_id)
+        plugin_dir = _resolve_plugin_dir(
+            _dashboard_plugin_dirs(project_root),
+            plugin_id,
+        )
         if _is_plugin_disabled(plugin_dir) or not _plugin_dashboard_enabled(app, plugin_dir):
             raise HTTPException(status_code=404, detail="plugin panel css not found")
         css_path = plugin_dir / f"{panel_name}.css"

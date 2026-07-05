@@ -60,8 +60,13 @@ class McpClientPool:
         await pool.disconnect_all()   # agent 关闭时（finally 块）
     """
 
-    def __init__(self, workspace: Path | None = None) -> None:
+    def __init__(
+        self,
+        workspace: Path | None = None,
+        extra_server_configs: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self._workspace = workspace or _DEFAULT_WORKSPACE
+        self._extra_server_configs = dict(extra_server_configs or {})
         self._clients: dict[str, Any] = {}               # server -> McpClient
         self._configs: dict[str, tuple[list, dict]] = {}  # server -> (command, env)
         self._locks: dict[str, asyncio.Lock] = {}         # server -> per-server lock（MCP stdio 不支持并发调用）
@@ -74,15 +79,28 @@ class McpClientPool:
             if not server or server in seen:
                 continue
             seen.add(server)
-            cfg = _get_server_cfg(server, self._workspace)
+            cfg = self._get_server_cfg(server)
             if not cfg:
                 continue
             command = cfg.get("command", [])
             env = cfg.get("env") or {}
+            cwd = cfg.get("cwd")
             if not command:
                 continue
-            self._configs[server] = (command, env)
+            full_env = {
+                str(key): str(value)
+                for key, value in dict(env).items()
+            }
+            if cwd:
+                full_env.setdefault("PWD", str(cwd))
+            self._configs[server] = (list(command), full_env)
             await self._connect(server)
+
+    def _get_server_cfg(self, server_name: str) -> dict[str, Any] | None:
+        extra = self._extra_server_configs.get(server_name)
+        if extra is not None:
+            return dict(extra)
+        return _get_server_cfg(server_name, self._workspace)
 
     async def _connect(self, server: str) -> bool:
         from agent.mcp.client import McpClient

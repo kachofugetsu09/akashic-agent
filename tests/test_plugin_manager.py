@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import shlex
 import shutil
 import tempfile
-import sqlite3
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,10 +23,6 @@ from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
-
-_observe_db = importlib.import_module("plugins.observe.db")
-open_db = cast(Callable[[Path], sqlite3.Connection], getattr(_observe_db, "open_db"))
-
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -104,120 +97,6 @@ async def test_load_hello_plugin():
 
 
 @pytest.mark.asyncio
-async def test_observe_plugin_writes_turn_trace(tmp_path: Path):
-    source = Path(__file__).parents[1] / "plugins" / "observe"
-    plugin_root = tmp_path / "plugins"
-    shutil.copytree(source, plugin_root / "observe")
-    bus = EventBus()
-    mgr = PluginManager(
-        plugin_dirs=[plugin_root],
-        event_bus=bus,
-        workspace=tmp_path,
-    )
-
-    await mgr.load_all()
-    await bus.emit(
-        TurnCommitted(
-            session_key="telegram:observe",
-            channel="telegram",
-            chat_id="observe",
-            input_message="你好",
-            persisted_user_message="你好",
-            assistant_response="收到",
-            tools_used=[],
-            thinking=None,
-            raw_reply="收到",
-            meme_tag=None,
-            meme_media_count=0,
-            tool_chain_raw=[],
-            tool_call_groups=[],
-            post_reply_budget={"prompt_tokens": 8},
-            react_stats={"cache_prompt_tokens": 8, "cache_hit_tokens": 6},
-        )
-    )
-    await mgr.terminate_all()
-    await bus.aclose()
-
-    conn = open_db(tmp_path / "observe" / "observe.db")
-    try:
-        row = conn.execute(
-            """SELECT session_key, user_msg, llm_output, react_cache_hit_tokens
-               FROM turns WHERE source='agent'"""
-        ).fetchone()
-    finally:
-        conn.close()
-    assert row == ("telegram:observe", "你好", "收到", 6)
-
-
-@pytest.mark.asyncio
-async def test_observe_plugin_writes_memory_domain_events(tmp_path: Path):
-    source = Path(__file__).parents[1] / "plugins" / "observe"
-    plugin_root = tmp_path / "plugins"
-    shutil.copytree(source, plugin_root / "observe")
-    bus = EventBus()
-    mgr = PluginManager(
-        plugin_dirs=[plugin_root],
-        event_bus=bus,
-        workspace=tmp_path,
-    )
-
-    await mgr.load_all()
-    await bus.fanout(
-        RetrievalCompleted(
-            session_key="telegram:memory",
-            channel="telegram",
-            chat_id="memory",
-            query="改写问题",
-            orig_query="原始问题",
-            hits=[
-                RetrievalHitSummary(
-                    item_id="mem_1",
-                    memory_type="event",
-                    score=0.9,
-                    summary="命中的记忆",
-                    injected=True,
-                )
-            ],
-            injected_count=1,
-            route_decision="RETRIEVE",
-            aux_queries=["假想问题"],
-        )
-    )
-    await bus.fanout(
-        MemoryWritten(
-            session_key="telegram:memory",
-            channel="telegram",
-            chat_id="memory",
-            action="supersede",
-            source_ref="telegram:memory@post_response",
-            superseded_ids=["mem_1"],
-        )
-    )
-    await mgr.terminate_all()
-    await bus.aclose()
-
-    conn = open_db(tmp_path / "observe" / "observe.db")
-    try:
-        rag = conn.execute(
-            """SELECT session_key, query, orig_query, injected_count
-               FROM rag_queries"""
-        ).fetchone()
-        memory_write = conn.execute(
-            """SELECT session_key, action, source_ref, superseded_ids
-               FROM memory_writes"""
-        ).fetchone()
-    finally:
-        conn.close()
-    assert rag == ("telegram:memory", "改写问题", "原始问题", 1)
-    assert memory_write == (
-        "telegram:memory",
-        "supersede",
-        "telegram:memory@post_response",
-        '["mem_1"]',
-    )
-
-
-@pytest.mark.asyncio
 async def test_duplicate_plugin_name_first_wins():
     # 同名插件目录放两份，second 应被跳过
     bus = EventBus()
@@ -225,6 +104,44 @@ async def test_duplicate_plugin_name_first_wins():
     await mgr.load_all()
     # discover 跨两个同名目录，seen_names 跨目录共享 → 只加载一次
     assert mgr.loaded_count == len({m["name"] for m in mgr.discover()})
+
+
+@pytest.mark.asyncio
+async def test_installed_plugin_shadows_builtin_with_same_name(tmp_path: Path):
+    builtin_root = tmp_path / "plugins"
+    installed_root = tmp_path / "cache"
+    builtin_plugin = builtin_root / "shadow"
+    installed_plugin = installed_root / "github" / "shadow" / "0.1.0"
+    for plugin_dir in (builtin_plugin, installed_plugin):
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.py").write_text(
+            "from agent.plugins import Plugin\n"
+            "class ShadowPlugin(Plugin):\n"
+            "    name = 'shadow'\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / ".aka-plugin").mkdir()
+        (plugin_dir / ".aka-plugin" / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "shadow",
+                    "version": "0.1.0",
+                    "description": "shadow plugin",
+                    "akashic": {"lifecycle": {"entry": "plugin.py"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+    bus = EventBus()
+    mgr = PluginManager(
+        plugin_dirs=[builtin_root],
+        installed_cache_root=installed_root,
+        event_bus=bus,
+    )
+    mods = mgr.discover()
+    assert [mod["source_type"] for mod in mods] == ["installed"]
+    await mgr.load_all()
+    assert [plugin.plugin_id for plugin in mgr.active_plugins()] == ["shadow@github"]
 
 
 @pytest.mark.asyncio
@@ -407,6 +324,185 @@ async def test_active_plugins_exposes_loaded_manifest():
         assert active[0].plugin_id == "manifest_name"
         assert active[0].plugin_dir == Path(tmp) / "manifested"
         assert active[0].manifest["name"] == "manifest_name"
+
+
+@pytest.mark.asyncio
+async def test_loads_installed_aka_plugin_descriptor_without_lifecycle():
+    bus = EventBus()
+    with tempfile.TemporaryDirectory() as tmp:
+        cache_root = Path(tmp) / "cache"
+        plugin_root = cache_root / "lab" / "feed" / "0.1.0"
+        (plugin_root / ".aka-plugin").mkdir(parents=True)
+        (plugin_root / "skills" / "feed-manage").mkdir(parents=True)
+        (plugin_root / "skills" / "feed-manage" / "SKILL.md").write_text(
+            "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
+            encoding="utf-8",
+        )
+        (plugin_root / "mcp").mkdir()
+        (plugin_root / ".aka-plugin" / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "feed",
+                    "version": "0.1.0",
+                    "description": "feed plugin",
+                    "paths": {
+                        "skills": ["skills"],
+                        "mcp_servers": ["mcp/servers.json"],
+                    },
+                    "akashic": {
+                        "runtime": {"supports": ["skills", "mcp"]},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / "mcp" / "servers.json").write_text(
+            json.dumps(
+                {
+                    "servers": {
+                        "feed": {
+                            "command": ["run_mcp.py"],
+                            "env": {"A": "1"},
+                            "cwd": ".",
+                        }
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
+
+        mgr = PluginManager(
+            plugin_dirs=[],
+            installed_cache_root=cache_root,
+            event_bus=bus,
+        )
+        await mgr.load_all()
+
+        active = mgr.active_plugins()
+        assert len(active) == 1
+        assert active[0].plugin_id == "feed@lab"
+        assert active[0].skill_roots == (plugin_root / "skills",)
+        assert "feed" in active[0].mcp_servers
+        assert mgr.loaded_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_path: Path):
+    bus = EventBus()
+    builtin_root = tmp_path / "plugins"
+    shutil.copytree(FIXTURES_DIR / "hello", builtin_root / "hello")
+
+    cache_root = tmp_path / "cache"
+    installed_root = cache_root / "lab" / "feed" / "0.1.0"
+    (installed_root / ".aka-plugin").mkdir(parents=True)
+    (installed_root / "skills" / "feed-manage").mkdir(parents=True)
+    (installed_root / "skills" / "feed-manage" / "SKILL.md").write_text(
+        "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (installed_root / ".aka-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "feed",
+                "version": "0.1.0",
+                "description": "feed plugin",
+                "paths": {"skills": ["skills"]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = PluginManager(
+        plugin_dirs=[builtin_root],
+        installed_cache_root=cache_root,
+        event_bus=bus,
+    )
+    await mgr.load_all()
+
+    registry_path = mgr.sync_global_registry(plugins_home=tmp_path / ".akashic-plugin")
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert set(registry["plugins"]) == {"feed@lab", "hello"}
+    assert registry["plugins"]["feed@lab"]["source_type"] == "installed"
+    assert registry["plugins"]["feed@lab"]["skills"] == ["feed-manage"]
+    assert registry["plugins"]["feed@lab"]["active"] is True
+    assert registry["plugins"]["hello"]["source_type"] == "builtin"
+
+
+@pytest.mark.asyncio
+async def test_sync_global_registry_marks_inactive_memory_plugin_when_engine_differs(
+    tmp_path: Path,
+) -> None:
+    bus = EventBus()
+    mgr = PluginManager(
+        plugin_dirs=[Path(__file__).parents[1] / "plugins"],
+        event_bus=bus,
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+    await mgr.load_all()
+
+    registry_path = mgr.sync_global_registry(plugins_home=tmp_path / ".akashic-plugin")
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert registry["plugins"]["default_memory"]["active"] is False
+    assert registry["plugins"]["akasha"]["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_installed_plugin_uses_bare_name_config_fallback(tmp_path: Path):
+    bus = EventBus()
+    cache_root = tmp_path / "cache"
+    installed_root = cache_root / "github" / "demo" / "0.1.0"
+    (installed_root / ".aka-plugin").mkdir(parents=True)
+    (installed_root / ".aka-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "demo",
+                "version": "0.1.0",
+                "akashic": {
+                    "lifecycle": {"entry": "plugin.py"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (installed_root / "plugin.py").write_text(
+        "from pydantic import BaseModel\n"
+        "from agent.plugins import Plugin\n"
+        "class DemoConfig(BaseModel):\n"
+        "    value: int = 0\n"
+        "class DemoModule:\n"
+        "    slot = 'demo.before_turn'\n"
+        "    requires = ()\n"
+        "    def __init__(self, value: int) -> None:\n"
+        "        self.value = value\n"
+        "    async def run(self, frame):\n"
+        "        return frame\n"
+        "class DemoPlugin(Plugin):\n"
+        "    name = 'demo'\n"
+        "    ConfigModel = DemoConfig\n"
+        "    def before_turn_modules(self):\n"
+        "        return [DemoModule(self.context.config.value)]\n",
+        encoding="utf-8",
+    )
+
+    mgr = PluginManager(
+        plugin_dirs=[],
+        installed_cache_root=cache_root,
+        event_bus=bus,
+        plugin_configs={"demo": {"value": 7}},
+    )
+    await mgr.load_all()
+
+    assert mgr.loaded_count == 1
+    assert len(mgr.before_turn_modules) == 1
+    assert getattr(mgr.before_turn_modules[0], "value") == 7
 
 
 @pytest.mark.asyncio

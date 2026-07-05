@@ -14,6 +14,7 @@ import pytest
 
 import agent.provider as provider_module
 from agent.mcp.registry import McpServerRegistry
+from agent.plugins.manager import ActivePluginInfo
 from agent.provider import (
     ContextLengthError,
     ContentSafetyError,
@@ -693,6 +694,55 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
     assert meta["reason"] == "probability"
     gate.record_action(now_utc=now)
 
+
+@pytest.mark.asyncio
+async def test_mcp_registry_syncs_plugin_servers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    class _Client:
+        def __init__(self, name: str, command: list[str], env=None, cwd=None):
+            self.name = name
+            self.command = command
+            self.env = env
+            self.cwd = cwd
+
+        async def connect(self):
+            return [SimpleNamespace(name="tool", description="desc")]
+
+        async def disconnect(self):
+            return None
+
+    class _Wrapper:
+        def __init__(self, client, info):
+            self.name = f"mcp_{client.name}__{info.name}"
+            self.description = info.description
+            self.parameters = {"type": "object", "properties": {}, "required": []}
+
+    monkeypatch.setattr("agent.mcp.registry.McpClient", _Client)
+    monkeypatch.setattr("agent.mcp.registry.McpToolWrapper", _Wrapper)
+    tools = MagicMock()
+    registry = McpServerRegistry(tmp_path / "mcp.json", tools)
+    plugin = ActivePluginInfo(
+        plugin_id="feed@lab",
+        plugin_dir=tmp_path / "feed",
+        manifest={},
+        module_path="feed",
+        mcp_servers={
+            "feed": {
+                "command": ["python", "run_mcp.py"],
+                "env": {"A": "1"},
+                "cwd": str(tmp_path),
+            }
+        },
+    )
+
+    await registry.sync_plugin_servers([plugin])
+    assert "feed（1 个工具）" in registry.list_servers()
+
+    await registry.sync_plugin_servers([])
+    assert registry.list_servers() == "当前没有已注册的 MCP server。"
+
 @pytest.mark.asyncio
 async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -905,11 +955,14 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     assert mem_tasks == []
     assert mem_optimizer is None
 
-    proactive_loop = SimpleNamespace(
-        run=lambda: "loop-task",
-    )
+    proactive_kwargs: dict[str, Any] = {}
+
+    def _build_loop(**kwargs: Any):
+        proactive_kwargs.update(kwargs)
+        return SimpleNamespace(run=lambda: "loop-task")
+
     monkeypatch.setattr(
-        "bootstrap.proactive.ProactiveLoop", lambda **kwargs: proactive_loop
+        "bootstrap.proactive.ProactiveLoop", _build_loop
     )
     monkeypatch.setattr("bootstrap.proactive.ProactiveStateStore", lambda path: path)
     monkeypatch.setattr(
@@ -942,9 +995,13 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         agent_loop=cast(Any, SimpleNamespace(
             processing_state=SimpleNamespace(is_busy=lambda: False)
         )),
+        plugin_mcp_servers={"feed": {"command": ["python", "run_mcp.py"]}},
     )
     assert tasks == ["loop-task"]
-    assert loop is proactive_loop
+    assert proactive_kwargs["plugin_mcp_servers"] == {
+        "feed": {"command": ["python", "run_mcp.py"]}
+    }
+    assert loop is not None
     mem_tasks, mem_optimizer = build_memory_optimizer_task(
         cast(Any, cfg),
         provider=MagicMock(),
@@ -952,3 +1009,19 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     )
     assert mem_tasks == [("mem-task", 7200)]
     assert mem_optimizer is not None
+
+
+def test_collect_plugin_mcp_servers_merges_active_plugins():
+    from bootstrap.app import _collect_plugin_mcp_servers
+
+    plugin_manager = SimpleNamespace(
+        active_plugins=lambda: [
+            SimpleNamespace(mcp_servers={"feed": {"command": ["python", "run_mcp.py"]}}),
+            SimpleNamespace(mcp_servers={"steam": {"command": ["python", "steam.py"]}}),
+        ]
+    )
+
+    assert _collect_plugin_mcp_servers(plugin_manager) == {
+        "feed": {"command": ["python", "run_mcp.py"]},
+        "steam": {"command": ["python", "steam.py"]},
+    }

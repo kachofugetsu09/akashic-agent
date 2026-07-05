@@ -182,21 +182,110 @@ def test_plugin_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
     assert not (workspace / "skills" / "akasha:memory").is_symlink()
 
 
-def test_meme_plugin_skill_is_exposed_with_plugin_prefix(tmp_path: Path) -> None:
+def test_aka_plugin_skill_is_exposed_with_bare_name(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    plugin_root = Path(__file__).parents[1] / "plugins"
-    plugin_dir = plugin_root / "meme"
+    cache_root = tmp_path / "cache"
+    plugin_dir = cache_root / "lab" / "feed" / "0.1.0"
+    skill_dir = plugin_dir / "skills" / "feed-manage"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: feed-manage\n"
+        "description: feed skill\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    plugin = ActivePluginInfo(
+        plugin_id="feed@lab",
+        plugin_dir=plugin_dir,
+        manifest={},
+        module_path="feed",
+        declares_aka_plugin=True,
+        skill_roots=(plugin_dir / "skills",),
+    )
 
     result = PluginSkillLinker(
         workspace=workspace,
-        plugin_roots=[plugin_root],
+        plugin_roots=[cache_root],
         memory_engine=None,
-    ).sync([_plugin_info("meme", plugin_dir)])
+    ).sync([plugin])
 
-    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
-    assert result.expected >= 1
-    assert (workspace / "skills" / "meme:meme-manage").is_symlink()
-    assert "表情包库管理" in (loader.load_skill_body("meme:meme-manage") or "")
+    assert result.expected == 1
+    assert (workspace / "skills" / "feed-manage").is_symlink()
+    assert not (workspace / "skills" / "feed@lab:feed-manage").exists()
+
+
+def test_aka_plugin_skill_sync_removes_old_prefixed_link(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    cache_root = tmp_path / "cache"
+    plugin_dir = cache_root / "lab" / "feed" / "0.1.0"
+    skill_dir = plugin_dir / "skills" / "feed-manage"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: feed-manage\n"
+        "description: feed skill\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    old_link = workspace / "skills" / "feed@lab:feed-manage"
+    old_link.parent.mkdir(parents=True)
+    old_link.symlink_to(skill_dir, target_is_directory=True)
+    plugin = ActivePluginInfo(
+        plugin_id="feed@lab",
+        plugin_dir=plugin_dir,
+        manifest={},
+        module_path="feed",
+        declares_aka_plugin=True,
+        skill_roots=(plugin_dir / "skills",),
+    )
+
+    result = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[cache_root],
+        memory_engine=None,
+    ).sync([plugin])
+
+    assert result.created == 1
+    assert result.removed == 1
+    assert (workspace / "skills" / "feed-manage").is_symlink()
+    assert not old_link.exists()
+
+
+def test_aka_plugin_drift_skill_uses_bare_plugin_name(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    cache_root = tmp_path / "cache"
+    plugin_dir = cache_root / "github" / "emotion" / "0.1.0"
+    skill_dir = plugin_dir / "drift" / "skills" / "feedback-preference-context"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: emotion:feedback-preference-context\n"
+        "description: drift skill\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    plugin = ActivePluginInfo(
+        plugin_id="emotion@github",
+        plugin_dir=plugin_dir,
+        manifest={},
+        module_path="emotion",
+        declares_aka_plugin=True,
+        drift_skill_roots=(plugin_dir / "drift" / "skills",),
+    )
+
+    result = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[cache_root],
+        memory_engine=None,
+    ).sync([plugin])
+
+    assert result.expected == 1
+    assert (workspace / "drift" / "skills" / "emotion:feedback-preference-context").is_symlink()
+    assert not (workspace / "drift" / "skills" / "emotion@github:feedback-preference-context").exists()
 
 
 def test_plugin_drift_skill_linker_creates_workspace_symlink(tmp_path: Path) -> None:
@@ -328,26 +417,48 @@ def test_default_memory_audit_drift_skill_is_gated_by_memory_engine(tmp_path: Pa
 
 def test_emotion_feedback_drift_skill_is_exposed(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    plugin_root = Path(__file__).parents[1] / "plugins"
-    plugin_dir = plugin_root / "emotion"
-    plugin = _plugin_info("emotion", plugin_dir)
+    cache_root = tmp_path / "cache"
+    plugin_dir = cache_root / "github" / "emotion" / "0.1.0"
+    skill_dir = plugin_dir / "drift" / "skills" / "feedback-preference-context"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: emotion:feedback-preference-context\n"
+        "description: 情绪反馈 drift skill\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "sample_feedback_context.py").write_text(
+        "print('ok')\n",
+        encoding="utf-8",
+    )
+    plugin = ActivePluginInfo(
+        plugin_id="emotion@github",
+        plugin_dir=plugin_dir,
+        manifest={},
+        module_path="emotion",
+        declares_aka_plugin=True,
+        drift_skill_roots=(plugin_dir / "drift" / "skills",),
+    )
 
     result = PluginSkillLinker(
         workspace=workspace,
-        plugin_roots=[plugin_root],
+        plugin_roots=[cache_root],
         memory_engine=None,
     ).sync([plugin])
     skills = DriftStateStore(workspace / "drift").scan_skills()
-    skill_dir = DriftStateStore(workspace / "drift").skill_dir_for(
+    linked_skill_dir = DriftStateStore(workspace / "drift").skill_dir_for(
         "emotion:feedback-preference-context"
     )
 
     assert result.expected >= 1
     assert (workspace / "drift" / "skills" / "emotion:feedback-preference-context").is_symlink()
     assert "emotion:feedback-preference-context" in {skill.name for skill in skills}
-    assert skill_dir is not None
+    assert linked_skill_dir is not None
     assert (
-        skill_dir / "scripts" / "sample_feedback_context.py"
+        linked_skill_dir / "scripts" / "sample_feedback_context.py"
     ).exists()
 
 

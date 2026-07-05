@@ -185,6 +185,11 @@ class AppRuntime:
                     if plugin_manager
                     else None
                 ),
+                plugin_mcp_servers=(
+                    _collect_plugin_mcp_servers(plugin_manager)
+                    if plugin_manager
+                    else None
+                ),
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
@@ -237,3 +242,22 @@ class AppRuntime:
 
 def build_app_runtime(config: Config, workspace: Path | None = None) -> AppRuntime:
     return AppRuntime(config, workspace or (Path.home() / ".akashic" / "workspace"))
+
+
+def _collect_plugin_mcp_servers(plugin_manager: object) -> dict[str, dict[str, object]]:
+    active_plugins = getattr(plugin_manager, "active_plugins", None)
+    if not callable(active_plugins):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    plugins = active_plugins()
+    if not isinstance(plugins, list):
+        return result
+    for plugin in plugins:
+        servers = getattr(plugin, "mcp_servers", {})
+        if not isinstance(servers, dict):
+            continue
+        for server_name, config in servers.items():
+            if server_name in result or not isinstance(config, dict):
+                continue
+            result[str(server_name)] = dict(config)
+    return result

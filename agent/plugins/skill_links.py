@@ -132,7 +132,12 @@ class PluginSkillLinker:
                         skill_dir.name,
                     )
                     continue
-                link_name = f"{plugin.plugin_id}:{skill_dir.name}"
+                if plugin.declares_aka_plugin and manifest_key == "skills":
+                    link_name = skill_dir.name
+                elif plugin.declares_aka_plugin and manifest_key == "drift_skills":
+                    link_name = f"{plugin.plugin_id.split('@', 1)[0]}:{skill_dir.name}"
+                else:
+                    link_name = f"{plugin.plugin_id}:{skill_dir.name}"
                 target = skill_dir.resolve(strict=False)
                 existing = expected.get(link_name)
                 if existing is not None and existing != target:
@@ -213,7 +218,7 @@ class PluginSkillLinker:
         path: Path,
         managed_subpath: Sequence[str],
     ) -> bool:
-        if ":" not in path.name or not path.is_symlink():
+        if not path.is_symlink():
             return False
         target = _readlink_target(path)
         if target is None:
@@ -258,17 +263,35 @@ def _iter_plugin_skill_dirs(
     plugin: ActivePluginInfo,
     plugin_subpath: Sequence[str],
 ) -> list[Path]:
-    skills_dir = plugin.plugin_dir.joinpath(*plugin_subpath)
-    if not skills_dir.is_dir():
-        return []
     result: list[Path] = []
-    for child in sorted(skills_dir.iterdir(), key=lambda item: item.name):
-        if not child.is_dir():
+    roots = _resolve_skill_roots(plugin, plugin_subpath)
+    for skills_dir in roots:
+        if not skills_dir.is_dir():
             continue
-        if not (child / "SKILL.md").exists():
-            continue
-        result.append(child)
+        for child in sorted(skills_dir.iterdir(), key=lambda item: item.name):
+            if not child.is_dir():
+                continue
+            if not (child / "SKILL.md").exists():
+                continue
+            result.append(child)
     return result
+
+
+def _resolve_skill_roots(
+    plugin: ActivePluginInfo,
+    plugin_subpath: Sequence[str],
+) -> tuple[Path, ...]:
+    if tuple(plugin_subpath) == ("skills",):
+        if plugin.declares_aka_plugin:
+            return plugin.skill_roots
+        if plugin.skill_roots:
+            return plugin.skill_roots
+    if tuple(plugin_subpath) == ("drift", "skills"):
+        if plugin.declares_aka_plugin:
+            return plugin.drift_skill_roots
+        if plugin.drift_skill_roots:
+            return plugin.drift_skill_roots
+    return (plugin.plugin_dir.joinpath(*plugin_subpath),)
 
 
 def _memory_engine_name(
@@ -333,4 +356,4 @@ def _is_under_plugin_skills(
         return False
     parts = relative.parts
     expected = tuple(managed_subpath)
-    return len(parts) >= 1 + len(expected) + 1 and parts[1:1 + len(expected)] == expected
+    return len(parts) >= len(expected) + 1 and parts[-(len(expected) + 1):-1] == expected

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from proactive_v2 import mcp_sources
 from proactive_v2.config import ProactiveConfig
@@ -23,9 +23,13 @@ class McpRuntimeModule:
         *,
         workspace: Path | None,
         cfg: ProactiveConfig,
+        extra_server_configs: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._cfg = cfg
-        self._pool = McpClientPool(workspace)
+        self._pool = McpClientPool(
+            workspace,
+            extra_server_configs=extra_server_configs,
+        )
         self._poll_lock = asyncio.Lock()
         self._running = False
         self._poll_task: asyncio.Task[None] | None = None

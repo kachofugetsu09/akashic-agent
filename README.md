@@ -6,6 +6,48 @@
 
 ---
 
+## 先装常用插件
+
+如果你想让自己的 Akashic 具备和作者差不多的扩展能力，先看社区插件组织：
+
+- <https://github.com/orgs/akashic-plugins/repositories>
+
+很多能力现在都不是写死在主仓里，而是做成独立插件仓库，例如：
+
+- `steam-mcp`
+- `feed-mcp`
+- `huayue-skills`
+
+如果 Akashic 已经在运行，你通常可以直接像聊天一样让它安装：
+
+```text
+帮我安装这个插件试试看：
+https://github.com/akashic-plugins/steam-mcp
+```
+
+或者更自然一点：
+
+```text
+steam mcp 我想用插件方式加载，你帮我把这个插件装一下看看能不能用：
+https://github.com/akashic-plugins/steam-mcp
+```
+
+Akashic 理想上的动作应该是：
+
+```text
+安装插件
+├─ 识别这是一个 GitHub 插件仓库
+├─ 执行 plugin-install
+├─ 检查 registry / skills / mcp_servers
+└─ 提醒你重启后生效
+```
+
+当前这套插件系统默认按“重启后生效”理解，尤其是 lifecycle、skill、MCP 声明变更后。
+
+想看完整机制，直接看 [插件系统 Handbook](./_handbook/plugins-tutorial.md)。
+
+---
+
 ## Quickstart
 
 需要 Python 3.12。

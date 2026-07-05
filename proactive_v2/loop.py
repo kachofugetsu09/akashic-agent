@@ -76,6 +76,7 @@ class ProactiveLoop:
         event_bus: EventBus | None = None,
         tool_hooks: list[ToolHook] | None = None,
         proactive_modules: list[object] | None = None,
+        plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -92,6 +93,7 @@ class ProactiveLoop:
         self._event_bus = event_bus
         self._tool_hooks = tool_hooks or []
         self._plugin_proactive_modules = proactive_modules or []
+        self._plugin_mcp_servers = dict(plugin_mcp_servers or {})
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -159,6 +161,7 @@ class ProactiveLoop:
         return McpRuntimeModule(
             workspace=Path(self._sessions.workspace),
             cfg=self._cfg,
+            extra_server_configs=self._plugin_mcp_servers,
         )
 
     def _build_kernel(self) -> ProactiveKernel:

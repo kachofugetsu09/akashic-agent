@@ -1,6 +1,4 @@
 import asyncio
-import shutil
-import tempfile
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -9,21 +7,18 @@ import pytest
 
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
-from agent.plugins.manager import PluginManager
 from agent.provider import LLMResponse, ToolCall
 from agent.subagent import SubAgent
 from agent.tool_hooks.base import ToolHook
+from agent.tool_hooks.types import HookContext, HookOutcome
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
-from bus.event_bus import EventBus
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
 from tests.memory_fakes import FakeMemoryEngine
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _DummyTool(Tool):
@@ -128,6 +123,61 @@ class _ExitTool(Tool):
         return "noted"
 
 
+class _ToolLoopGuardHook(ToolHook):
+    name = "test.tool_loop_guard"
+    event = "pre_tool_use"
+
+    def __init__(self) -> None:
+        self._states: dict[str, tuple[str, int]] = {}
+
+    def matches(self, ctx: HookContext) -> bool:
+        return ctx.event == "pre_tool_use"
+
+    async def run(self, ctx: HookContext) -> HookOutcome:
+        signature, active_index = self._event_signature(ctx)
+        if not signature or ctx.request.tool_batch_index != active_index:
+            return HookOutcome()
+        key = self._state_key(ctx)
+        last_signature, repeat_count = self._states.get(key, ("", 0))
+        if signature == last_signature:
+            repeat_count += 1
+        else:
+            repeat_count = 1
+        self._states[key] = (signature, repeat_count)
+        if repeat_count < 3:
+            return HookOutcome()
+        return HookOutcome(
+            decision="deny",
+            reason="tool_loop_guard:连续重复调用工具 3 次，已截断并进入收尾。",
+        )
+
+    def _state_key(self, ctx: HookContext) -> str:
+        request = ctx.request
+        if request.session_key:
+            return f"{request.source}:{request.session_key}"
+        return f"{request.source}:{request.channel}:{request.chat_id}"
+
+    def _event_signature(self, ctx: HookContext) -> tuple[str, int]:
+        request = ctx.request
+        excluded = {"task_output", "task_stop"}
+        if not request.tool_batch:
+            if request.tool_name in excluded:
+                return "", 0
+            return f"{request.tool_name}:{request.arguments}", 0
+        parts: list[str] = []
+        active_index = -1
+        for index, tool_call in enumerate(request.tool_batch):
+            tool_name = str(tool_call.get("name", ""))
+            if tool_name in excluded:
+                continue
+            if active_index < 0:
+                active_index = index
+            parts.append(f"{tool_name}:{tool_call.get('arguments', {})}")
+        if active_index < 0:
+            return "", 0
+        return "|".join(parts), active_index
+
+
 def _make_agent_loop_with_tools(
     tmp_path: Path,
     provider: _FakeProvider,
@@ -163,12 +213,7 @@ def _make_agent_loop(tmp_path: Path, provider: _FakeProvider, tool: Tool) -> Age
 
 
 def _tool_loop_guard_hooks() -> list[ToolHook]:
-    with tempfile.TemporaryDirectory() as tmp:
-        plugin_dir = Path(tmp) / "tool_loop_guard"
-        shutil.copytree(_PROJECT_ROOT / "plugins" / "tool_loop_guard", plugin_dir)
-        mgr = PluginManager(plugin_dirs=[Path(tmp)], event_bus=EventBus())
-        asyncio.run(mgr.load_all())
-        return mgr.tool_hooks
+    return [_ToolLoopGuardHook()]
 
 
 def _install_tool_loop_guard(subagent: SubAgent) -> SubAgent:

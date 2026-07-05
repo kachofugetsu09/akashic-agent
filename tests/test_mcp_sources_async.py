@@ -172,6 +172,51 @@ async def test_mcp_pool_disconnects_timeout_client_without_retry():
 
 
 @pytest.mark.asyncio
+async def test_mcp_pool_connect_all_uses_extra_server_configs(monkeypatch, tmp_path: Path):
+    class _Client:
+        def __init__(self, name: str, command: list[str], env=None, cwd=None) -> None:
+            self.name = name
+            self.command = command
+            self.env = env
+            self.cwd = cwd
+
+        async def connect(self) -> list[object]:
+            return []
+
+        async def disconnect(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        mcp_sources,
+        "_load_sources",
+        lambda _w=None: [{"channel": "content", "server": "feed", "poll_tool": "poll_feeds"}],
+    )
+    monkeypatch.setattr("agent.mcp.client.McpClient", _Client)
+
+    pool = mcp_sources.McpClientPool(
+        tmp_path,
+        extra_server_configs={
+            "feed": {
+                "command": ["python", "run_mcp.py"],
+                "env": {"AKA_PLUGIN_DATA_DIR": "/tmp/feed"},
+                "cwd": "/tmp/feed",
+            }
+        },
+    )
+
+    await pool.connect_all()
+
+    assert "feed" in pool._clients
+    assert pool._configs["feed"] == (
+        ["python", "run_mcp.py"],
+        {
+            "AKA_PLUGIN_DATA_DIR": "/tmp/feed",
+            "PWD": "/tmp/feed",
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_acknowledge_events_async_groups_by_ack_server(monkeypatch):
     monkeypatch.setattr(
         mcp_sources,

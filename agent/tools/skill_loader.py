@@ -8,7 +8,13 @@ from agent.tools.base import Tool
 
 class LoadSkillTool(Tool):
     name = "load_skill"
-    description = "按 skill 名称加载完整 SKILL.md 指令。用于使用 Skills 目录里列出的技能。"
+    description = (
+        "按 skill 名称加载完整 SKILL.md 指令。凡是用户明确提到某个 skill，"
+        "或说“有一个 skill 可以帮助你”“去看看那个 skill”，都应先调用本工具，"
+        "不要先自己猜、不要先用 read_file/find/shell 去找 SKILL.md。"
+        "反例：用户说“差不太多 有一个skill 可以帮助你进一步了解 你去看看呢”，"
+        "这就是应该立刻 load_skill(\"plugin-system\") 的场景。"
+    )
     parameters = {
         "type": "object",
         "properties": {

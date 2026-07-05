@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import json
 import sqlite3
 import threading
 from datetime import datetime
@@ -765,75 +766,94 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
         assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
 
 
-def test_status_commands_kvcache_dashboard_uses_workspace_observe(tmp_path) -> None:
+def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:
     _seed_workspace(tmp_path)
-    observe_dir = tmp_path / "observe"
-    observe_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(observe_dir / "observe.db")
-    try:
-        conn.execute("""
-            CREATE TABLE turns(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT NOT NULL,
-                source TEXT NOT NULL,
-                session_key TEXT NOT NULL,
-                user_msg TEXT,
-                llm_output TEXT NOT NULL DEFAULT '',
-                react_cache_prompt_tokens INTEGER,
-                react_cache_hit_tokens INTEGER
-            )
-            """)
-        conn.execute(
-            """
-            INSERT INTO turns(
-                ts, source, session_key, user_msg, llm_output,
-                react_cache_prompt_tokens, react_cache_hit_tokens
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "2026-04-19T03:20:00+00:00",
-                "agent",
-                "telegram:100",
-                "again",
-                "ok",
-                300,
-                260,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO turns(
-                ts, source, session_key, user_msg, llm_output,
-                react_cache_prompt_tokens, react_cache_hit_tokens
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "2026-04-19T03:21:00+00:00",
-                "proactive",
-                "telegram:100",
-                "",
-                "skip",
-                200,
-                50,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    with TestClient(create_dashboard_app(tmp_path)) as client:
-        overview = client.get("/api/dashboard/status-commands/kvcache/overview")
-        turns = client.get("/api/dashboard/status-commands/kvcache/turns")
+    home = tmp_path / "home"
+    plugin_dir = tmp_path / "installed" / "status_commands" / "0.1.0"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "dashboard.py").write_text(
+        "from fastapi import FastAPI\n"
+        "def register(app: FastAPI, plugin_dir, workspace):\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "dashboard_panel.js").write_text("export default {};\n", encoding="utf-8")
+    registry_dir = home / ".akashic-plugin"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    (registry_dir / "registry.json").write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "status_commands@github": {
+                        "plugin_id": "status_commands@github",
+                        "source_type": "installed",
+                        "active": True,
+                        "plugin_root": str(plugin_dir),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
 
-        assert overview.status_code == 200
-        assert overview.json()["tracked_turn_count"] == 2
-        assert overview.json()["hit_rate"] == 310 / 500
-        assert overview.json()["passive"]["hit_rate"] == 260 / 300
-        assert overview.json()["proactive"]["hit_rate"] == 50 / 200
-        assert turns.status_code == 200
-        payload = turns.json()
-        assert payload["total"] == 2
-        assert payload["items"][0]["source"] == "proactive"
-        assert payload["items"][1]["user_preview"] == "again"
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        plugins = client.get("/api/dashboard/plugins").json()
+    installed = next(item for item in plugins if item["id"] == "status_commands@github")
+    assert installed == {
+        "id": "status_commands@github",
+        "panels": [
+            {
+                "name": "dashboard_panel",
+                "js_version": str((plugin_dir / "dashboard_panel.js").stat().st_mtime_ns),
+                "has_css": False,
+            }
+        ],
+    }
+
+
+def test_installed_plugin_dashboard_supports_relative_imports(tmp_path, monkeypatch) -> None:
+    _seed_workspace(tmp_path)
+    home = tmp_path / "home"
+    plugin_dir = tmp_path / "installed" / "observe" / "0.1.0"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "db.py").write_text(
+        "def ping():\n"
+        "    return 'ok'\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "dashboard.py").write_text(
+        "from fastapi import FastAPI\n"
+        "from .db import ping\n"
+        "def register(app: FastAPI, plugin_dir, workspace):\n"
+        "    @app.get('/api/dashboard/test-relative-import')\n"
+        "    def route():\n"
+        "        return {'value': ping()}\n",
+        encoding="utf-8",
+    )
+    registry_dir = home / ".akashic-plugin"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    (registry_dir / "registry.json").write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "observe@github": {
+                        "plugin_id": "observe@github",
+                        "source_type": "installed",
+                        "active": True,
+                        "plugin_root": str(plugin_dir),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        response = client.get("/api/dashboard/test-relative-import")
+    assert response.status_code == 200
+    assert response.json() == {"value": "ok"}
 
 
 def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
