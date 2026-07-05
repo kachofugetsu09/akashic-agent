@@ -219,29 +219,187 @@ input {
   margin: 0 0 1em;
 }
 
-.thinking-block {
-  margin: 8px 0 24px;
-  color: #a9a9a9;
+.kaomoji-literal {
+  white-space: nowrap;
 }
 
-.thinking-block button {
+.process-trace {
+  margin: 4px 0 22px;
+  color: #8f8f8f;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.process-trigger {
   width: auto;
-  color: #aaa;
+  color: #909090;
+  font-size: 14px;
 }
 
-.thinking-block [data-state="open"] {
-  color: #a6a6a6;
+.process-trigger:hover {
+  color: #c5c5c5;
 }
 
-.tool-block {
-  margin: 14px 0;
-  border-color: #202020;
-  border-radius: 14px;
-  background: #080808;
+.process-chevron {
+  transition: transform 150ms ease;
 }
 
-.tool-block button {
-  color: #dcdcdc;
+.process-chevron.open {
+  transform: rotate(180deg);
+}
+
+.process-content {
+  position: relative;
+  margin-top: 12px;
+  padding: 0 0 2px 2px;
+  overflow: hidden;
+  color: #8d8d8d;
+  outline: none;
+}
+
+.process-content[data-state="open"] {
+  animation: trace-open 180ms ease-out;
+}
+
+.process-line {
+  position: absolute;
+  top: 8px;
+  bottom: 13px;
+  left: 8px;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    rgba(120, 120, 120, 0.16),
+    rgba(120, 120, 120, 0.42)
+  );
+  transform-origin: top;
+  animation: trace-grow 360ms ease-out both;
+}
+
+.process-items {
+  position: relative;
+  display: grid;
+  gap: 10px;
+}
+
+.process-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: start;
+  min-height: 24px;
+  animation: trace-item-in 180ms ease-out both;
+}
+
+.process-node {
+  z-index: 1;
+  justify-self: center;
+  margin-top: 7px;
+  background: #676767;
+  box-shadow: 0 0 0 4px #000;
+  transition: background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.process-node.circle {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.process-node.diamond {
+  width: 8px;
+  height: 8px;
+  transform: rotate(45deg);
+}
+
+.process-item.active .process-node {
+  background: #78b883;
+  box-shadow: 0 0 0 4px #000, 0 0 18px rgba(120, 184, 131, 0.34);
+}
+
+.process-item.active .process-node.diamond {
+  transform: rotate(45deg) scale(1.08);
+}
+
+.process-item.error .process-node {
+  background: #c36f6f;
+}
+
+.process-text {
+  max-width: 78ch;
+  color: #8f8f8f;
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
+.tool-step-body {
+  min-width: 0;
+}
+
+.tool-step-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #bdbdbd;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+}
+
+.tool-step-icon {
+  color: #9f9f9f;
+}
+
+.tool-step.active .tool-step-icon {
+  color: #8bcf95;
+  animation: tool-pulse 1.3s ease-in-out infinite;
+}
+
+.tool-step-description {
+  margin-top: 2px;
+  color: #777;
+  font-size: 13px;
+}
+
+@keyframes trace-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes trace-grow {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes trace-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tool-pulse {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .composer-wrap {

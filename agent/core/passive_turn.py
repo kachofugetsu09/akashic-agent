@@ -475,6 +475,9 @@ class PassiveTurnPipeline:
                         retrieved_memory_block=before_reasoning.retrieved_memory_block,
                         extra_hints=list(before_reasoning.extra_hints) or None,
                     )
+                state.extra_metadata["turn_duration_ms"] = int(
+                    (time.perf_counter() - started) * 1000
+                )
                 logger.info(
                     diagnostic_line(
                         "PassiveTurnPipeline.run",

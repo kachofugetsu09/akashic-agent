@@ -148,6 +148,9 @@ class _PersistAssistantMessageModule:
             "tools_used": list(ctx.tools_used) if ctx.tools_used else None,
             "tool_chain": list(ctx.tool_chain) if ctx.tool_chain else None,
         }
+        turn_duration_ms = frame.input.state.extra_metadata.get("turn_duration_ms")
+        if isinstance(turn_duration_ms, int):
+            assistant_kwargs["turn_duration_ms"] = turn_duration_ms
         if ctx.thinking is not None:
             assistant_kwargs["reasoning_content"] = ctx.thinking
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))

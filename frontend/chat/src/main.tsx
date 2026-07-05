@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { FileUIPart } from "ai";
+import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
+  ChevronDown,
   CircleStop,
   Pencil,
   Plus,
   SendHorizontal,
+  Wrench,
 } from "lucide-react";
 import {
   Attachment,
@@ -45,16 +48,10 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import {
   Reasoning,
-  ReasoningContent,
   ReasoningTrigger,
+  useReasoning,
 } from "@/components/ai-elements/reasoning";
-import {
-  Tool,
-  ToolContent,
-  ToolHeader,
-  ToolInput,
-  ToolOutput,
-} from "@/components/ai-elements/tool";
+import { CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./styles.css";
 
@@ -74,6 +71,9 @@ interface MessageRow {
   content: string;
   timestamp?: string;
   media?: unknown;
+  tool_chain?: unknown;
+  reasoning_content?: unknown;
+  turn_duration_ms?: unknown;
   extra?: Record<string, unknown>;
 }
 
@@ -118,6 +118,8 @@ interface ChatMessage {
   attachments?: MessageAttachment[];
   blocks: AgentBlock[];
   streaming?: boolean;
+  startedAt?: number;
+  durationMs?: number;
 }
 
 type ChatFrame =
@@ -127,7 +129,7 @@ type ChatFrame =
   | { type: "react.tool.started"; session_id: string; turn_id: string; call_id: string; tool_name: string; arguments: unknown }
   | { type: "react.tool.completed"; session_id: string; turn_id: string; call_id: string; tool_name: string; status: string; result_preview: string }
   | { type: "answer.delta"; session_id: string; turn_id: string; delta: string }
-  | { type: "message.final"; session_id: string; turn_id: string; content: string; thinking?: string; media?: string[] }
+  | { type: "message.final"; session_id: string; turn_id: string; content: string; thinking?: string; media?: string[]; duration_ms?: number }
   | { type: "turn.interrupted"; session_id: string; status: string; message: string }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
@@ -288,6 +290,7 @@ function App() {
               messages.map((message) => <ChatMessageView key={message.id} message={message} />)
             )}
           </ConversationContent>
+          <AutoScroll messages={messages} status={status} />
           <ConversationScrollButton />
         </Conversation>
 
@@ -418,16 +421,33 @@ function ChatMessageView({ message }: { message: ChatMessage }) {
   return (
     <Message from="assistant" className="message-row agent-row">
       <MessageContent className="agent-content">
-        {message.blocks.map((block, index) => (
-          block.kind === "thinking"
-            ? <ThinkingView key={`thinking-${index}`} block={block} streaming={message.streaming} />
-            : <ToolView key={block.callId} block={block} />
-        ))}
+        {message.blocks.length ? <ProcessTrace message={message} /> : null}
         {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
         {message.content && <MessageResponse>{message.content}</MessageResponse>}
       </MessageContent>
     </Message>
   );
+}
+
+function AutoScroll({ messages, status }: { messages: ChatMessage[]; status: ChatStatus }) {
+  const { scrollToBottom } = useStickToBottomContext();
+  const scrollKey = messages.map((message) => {
+    const lastBlock = message.blocks.at(-1);
+    return [
+      message.id,
+      message.content.length,
+      message.blocks.length,
+      lastBlock?.kind === "thinking" ? lastBlock.content.length : "",
+    ].join(":");
+  }).join("|");
+
+  useEffect(() => {
+    if (status === "streaming" || status === "submitted") {
+      void scrollToBottom({ animation: "smooth", ignoreEscapes: false });
+    }
+  }, [scrollKey, status, scrollToBottom]);
+
+  return null;
 }
 
 function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
@@ -449,26 +469,61 @@ function MessageAttachments({ attachments }: { attachments: MessageAttachment[] 
   );
 }
 
-function ThinkingView({ block, streaming }: { block: ThinkingBlock; streaming?: boolean }) {
+function ProcessTrace({ message }: { message: ChatMessage }) {
   return (
-    <Reasoning className="thinking-block" isStreaming={!!streaming} defaultOpen>
-      <ReasoningTrigger
-        getThinkingMessage={(isStreaming) => isStreaming ? "正在思考" : "已思考"}
-      />
-      <ReasoningContent>{block.content}</ReasoningContent>
+    <Reasoning
+      className="process-trace"
+      isStreaming={!!message.streaming}
+      defaultOpen={!!message.streaming}
+      duration={message.durationMs ? Math.max(1, Math.round(message.durationMs / 1000)) : undefined}
+    >
+      <ProcessTraceTrigger />
+      <CollapsibleContent className="process-content">
+        <div className="process-line" aria-hidden="true" />
+        <div className="process-items">
+          {message.blocks.map((block, index) => (
+            block.kind === "thinking"
+              ? <ThinkingStep key={`thinking-${index}`} block={block} active={!!message.streaming && index === message.blocks.length - 1} />
+              : <ToolStep key={block.callId} block={block} active={block.status === "input-available"} />
+          ))}
+        </div>
+      </CollapsibleContent>
     </Reasoning>
   );
 }
 
-function ToolView({ block }: { block: ToolBlock }) {
+function ProcessTraceTrigger() {
+  const { isOpen, isStreaming, duration } = useReasoning();
   return (
-    <Tool className="tool-block" defaultOpen={block.status !== "output-available"}>
-      <ToolHeader type="dynamic-tool" toolName={block.name} state={block.status} title={block.name} />
-      <ToolContent>
-        <ToolInput input={block.input} />
-        <ToolOutput output={block.output} errorText={block.errorText} />
-      </ToolContent>
-    </Tool>
+    <ReasoningTrigger className="process-trigger">
+      <span>{isStreaming ? "正在思考" : `已思考${duration ? ` ${duration}s` : ""}`}</span>
+      <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={15} />
+    </ReasoningTrigger>
+  );
+}
+
+function ThinkingStep({ block, active }: { block: ThinkingBlock; active: boolean }) {
+  return (
+    <div className={`process-item thinking-step ${active ? "active" : ""}`}>
+      <span className="process-node circle" />
+      <div className="process-text">{block.content}</div>
+    </div>
+  );
+}
+
+function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
+  const description = toolDescription(block.input);
+  return (
+    <div className={`process-item tool-step ${active ? "active" : ""} ${block.status === "output-error" ? "error" : ""}`}>
+      <span className="process-node diamond" />
+      <div className="tool-step-body">
+        <div className="tool-step-title">
+          <Wrench className="tool-step-icon" size={14} />
+          <span>{block.name}</span>
+        </div>
+        {description ? <div className="tool-step-description">{description}</div> : null}
+      </div>
+    </div>
   );
 }
 
@@ -500,7 +555,14 @@ function handleFrame(
     ctx.setStatus("streaming");
     ctx.setMessages((messages) => [
       ...messages,
-      { id: frame.turn_id, role: "assistant", content: "", blocks: [], streaming: true },
+      {
+        id: frame.turn_id,
+        role: "assistant",
+        content: "",
+        blocks: [],
+        streaming: true,
+        startedAt: Date.now(),
+      },
     ]);
     return;
   }
@@ -559,6 +621,10 @@ function handleFrame(
       ...message,
       content: frame.content || message.content,
       attachments: frame.media ? mediaToAttachments(frame.media) : message.attachments,
+      blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
+      durationMs: frame.duration_ms ?? (
+        message.startedAt ? Date.now() - message.startedAt : message.durationMs
+      ),
       streaming: false,
     })));
     void ctx.loadSessions();
@@ -624,8 +690,84 @@ function rowToMessage(row: MessageRow): ChatMessage {
     role,
     content: row.content,
     attachments: mediaToAttachments(row.media),
-    blocks: [],
+    blocks: role === "assistant" ? rowBlocks(row) : [],
+    durationMs: numberValue(row.turn_duration_ms),
   };
+}
+
+function rowBlocks(row: MessageRow): AgentBlock[] {
+  const blocks = toolChainToBlocks(row.tool_chain);
+  const finalThinking = stringValue(row.reasoning_content);
+  if (finalThinking) {
+    blocks.push({ kind: "thinking", content: finalThinking });
+  }
+  return blocks;
+}
+
+function toolChainToBlocks(toolChain: unknown): AgentBlock[] {
+  if (!Array.isArray(toolChain)) return [];
+  const blocks: AgentBlock[] = [];
+  toolChain.forEach((item, groupIndex) => {
+    const group = recordValue(item);
+    if (!group) return;
+    const thinking = stringValue(group.reasoning_content) || stringValue(group.text);
+    if (thinking) {
+      blocks.push({ kind: "thinking", content: thinking });
+    }
+    const calls = Array.isArray(group.calls) ? group.calls : [];
+    calls.forEach((call, callIndex) => {
+      const block = toolCallToBlock(call, groupIndex, callIndex);
+      if (block) blocks.push(block);
+    });
+  });
+  return blocks;
+}
+
+function toolCallToBlock(call: unknown, groupIndex: number, callIndex: number): ToolBlock | null {
+  const item = recordValue(call);
+  if (!item) return null;
+  const name = stringValue(item.name);
+  if (!name) return null;
+  const status = stringValue(item.status) === "error" ? "output-error" : "output-available";
+  return {
+    kind: "tool",
+    callId: stringValue(item.call_id) || `${groupIndex}-${callIndex}-${name}`,
+    name,
+    status,
+    input: item.final_arguments ?? item.arguments,
+    output: item.result,
+    errorText: status === "output-error" ? stringValue(item.result) : undefined,
+  };
+}
+
+function blocksWithFinalThinking(blocks: AgentBlock[], thinking: string | undefined): AgentBlock[] {
+  const text = thinking?.trim();
+  if (!text || blocks.some((block) => block.kind === "thinking")) return blocks;
+  return [{ kind: "thinking", content: text } satisfies ThinkingBlock, ...blocks];
+}
+
+function toolDescription(input: unknown) {
+  const inputRecord = recordValue(input);
+  return stringValue(inputRecord?.description);
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function numberValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
 }
 
 function uploadedFileToAttachment(file: UploadedFile, source?: ComposerFile): MessageAttachment {

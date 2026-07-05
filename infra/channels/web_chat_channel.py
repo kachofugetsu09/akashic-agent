@@ -307,6 +307,7 @@ class WebChatChannel:
     async def _on_response(self, msg: OutboundMessage) -> None:
         session_key = self._session_key(msg.chat_id)
         media = list(msg.media or [])
+        metadata = dict(msg.metadata or {})
         self.remember_media(media)
         await self._broadcast(session_key, {
             "type": "message.final",
@@ -315,7 +316,8 @@ class WebChatChannel:
             "content": msg.content,
             "thinking": msg.thinking or "",
             "media": media,
-            "metadata": dict(msg.metadata or {}),
+            "duration_ms": metadata.get("turn_duration_ms"),
+            "metadata": metadata,
         })
         _ = self._active_turn_ids.pop(session_key, None)
 
