@@ -378,12 +378,27 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
         session_key=session_key,
         original_user_message="原始消息 A",
         partial_reply="半截回答",
+        tools_used=["noop"],
+        tool_chain_partial=[{"text": "", "calls": []}],
     )
+    session_messages: list[dict[str, Any]] = []
+
+    def _add_message(role: str, content: str, **kwargs: Any) -> None:
+        session_messages.append({"role": role, "content": content, **kwargs})
+
+    session = SimpleNamespace(
+        key=session_key,
+        messages=session_messages,
+        add_message=_add_message,
+    )
+    loop.session_manager.get_or_create.return_value = session
+    loop.session_manager.append_messages = AsyncMock(return_value=None)
+
     async def _slow_process(*args, **kwargs):
         await asyncio.sleep(0.05)
         return MagicMock(content="ok")
 
-    loop._core_runner.process = _slow_process  # type: ignore[attr-defined]
+    loop._core_runner.process = AsyncMock(side_effect=_slow_process)  # type: ignore[attr-defined]
 
     msg = InboundMessage(
         channel="telegram",
@@ -395,6 +410,16 @@ async def test_resumed_interrupt_state_completes_normally(tmp_path: Path):
 
     assert outbound.content == "ok"
     assert session_key not in loop._interrupt_states  # type: ignore[attr-defined]
+    processed_msg = loop._core_runner.process.await_args.args[0]  # type: ignore[attr-defined]
+    assert processed_msg.content == "补充 B"
+    assert "【上一轮任务" not in processed_msg.content
+    assert session.messages[0]["content"] == "原始消息 A"
+    assert session.messages[1]["content"] == "[interrupted]"
+    assert session.messages[1]["tools_used"] == ["noop"]
+    loop.session_manager.append_messages.assert_awaited_once_with(
+        session,
+        session.messages,
+    )
 
 
 @pytest.mark.asyncio
