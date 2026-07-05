@@ -9,7 +9,6 @@ from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-from agent.skills import BUILTIN_SKILLS_DIR
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
@@ -26,9 +25,6 @@ from proactive_v2.drift_tools import DriftToolDeps
 from proactive_v2.judge import MessageDeduper
 from proactive_v2.tools import ToolDeps
 
-
-BUILTIN_DRIFT_SKILLS_DIR = BUILTIN_SKILLS_DIR
-BUILTIN_DRIFT_SKILL_NAMES = {"create-drift-skill"}
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 RecentChatFn = Callable[[int], Awaitable[list[dict]]]
@@ -212,12 +208,7 @@ class AgentTickFactory:
         if not self._deps.cfg.drift_enabled:
             return None
         drift_dir = Path(self._deps.state_store.workspace_dir) / "drift"
-        store = DriftStateStore(
-            drift_dir,
-            builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
-            include_builtin_skills=True,
-            builtin_skill_names=BUILTIN_DRIFT_SKILL_NAMES,
-        )
+        store = DriftStateStore(drift_dir)
         return DriftTurnPipeline(
             DriftTurnPipelineDeps(
                 store=store,
@@ -225,7 +216,6 @@ class AgentTickFactory:
                     drift_dir=drift_dir,
                     store=store,
                     workspace_dir=Path(self._deps.state_store.workspace_dir),
-                    builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
                     memory=self._deps.memory,
                     recent_chat_fn=self._build_recent_chat_fn(),
                     shared_tools=self._deps.shared_tools,

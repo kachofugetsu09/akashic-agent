@@ -74,6 +74,8 @@ def test_agent_tick_factory_builds_drift_pipeline_when_enabled(tmp_path):
     tick = AgentTickFactory(deps).build()
     assert tick._drift_pipeline is not None
     assert tick._drift_pipeline._store.drift_dir == tmp_path / "drift"
+    assert tick._drift_pipeline._store.include_builtin_skills is False
+    assert tick._drift_pipeline._store.builtin_skills_dir is None
 
 
 def test_agent_tick_factory_binds_drift_step_recorder_to_tick_store(tmp_path):
