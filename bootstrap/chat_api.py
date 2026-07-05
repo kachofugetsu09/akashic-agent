@@ -74,6 +74,7 @@ def build_chat_server(
         ),
         host=host,
         port=port,
-        log_level="info",
+        log_level="warning",
+        access_log=False,
     )
     return uvicorn.Server(config)
