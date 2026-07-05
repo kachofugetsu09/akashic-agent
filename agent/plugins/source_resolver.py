@@ -21,6 +21,13 @@ def resolve_plugin_sources(
 ) -> list[ResolvedPluginSource]:
     discovered: list[ResolvedPluginSource] = []
     seen: set[Path] = set()
+    if installed_cache_root is not None:
+        for source in _iter_installed_plugin_roots(installed_cache_root):
+            normalized = source.plugin_root.resolve(strict=False)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            discovered.append(source)
     for root in plugin_dirs:
         for plugin_root in _iter_declared_plugin_roots(root):
             normalized = plugin_root.resolve(strict=False)
@@ -33,13 +40,6 @@ def resolve_plugin_sources(
                     source_type="builtin",
                 )
             )
-    if installed_cache_root is not None:
-        for source in _iter_installed_plugin_roots(installed_cache_root):
-            normalized = source.plugin_root.resolve(strict=False)
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            discovered.append(source)
     return discovered
 
 

@@ -228,6 +228,44 @@ async def test_duplicate_plugin_name_first_wins():
 
 
 @pytest.mark.asyncio
+async def test_installed_plugin_shadows_builtin_with_same_name(tmp_path: Path):
+    builtin_root = tmp_path / "plugins"
+    installed_root = tmp_path / "cache"
+    builtin_plugin = builtin_root / "shadow"
+    installed_plugin = installed_root / "github" / "shadow" / "0.1.0"
+    for plugin_dir in (builtin_plugin, installed_plugin):
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.py").write_text(
+            "from agent.plugins import Plugin\n"
+            "class ShadowPlugin(Plugin):\n"
+            "    name = 'shadow'\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / ".aka-plugin").mkdir()
+        (plugin_dir / ".aka-plugin" / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "shadow",
+                    "version": "0.1.0",
+                    "description": "shadow plugin",
+                    "akashic": {"lifecycle": {"entry": "plugin.py"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+    bus = EventBus()
+    mgr = PluginManager(
+        plugin_dirs=[builtin_root],
+        installed_cache_root=installed_root,
+        event_bus=bus,
+    )
+    mods = mgr.discover()
+    assert [mod["source_type"] for mod in mods] == ["installed"]
+    await mgr.load_all()
+    assert [plugin.plugin_id for plugin in mgr.active_plugins()] == ["shadow@github"]
+
+
+@pytest.mark.asyncio
 async def test_plugin_job_runtime_runs_event_job():
     bus = EventBus()
     llm = _FakePluginLlm()

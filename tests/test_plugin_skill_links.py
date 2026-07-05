@@ -254,6 +254,40 @@ def test_aka_plugin_skill_sync_removes_old_prefixed_link(tmp_path: Path) -> None
     assert not old_link.exists()
 
 
+def test_aka_plugin_drift_skill_uses_bare_plugin_name(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    cache_root = tmp_path / "cache"
+    plugin_dir = cache_root / "github" / "emotion" / "0.1.0"
+    skill_dir = plugin_dir / "drift" / "skills" / "feedback-preference-context"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: emotion:feedback-preference-context\n"
+        "description: drift skill\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    plugin = ActivePluginInfo(
+        plugin_id="emotion@github",
+        plugin_dir=plugin_dir,
+        manifest={},
+        module_path="emotion",
+        declares_aka_plugin=True,
+        drift_skill_roots=(plugin_dir / "drift" / "skills",),
+    )
+
+    result = PluginSkillLinker(
+        workspace=workspace,
+        plugin_roots=[cache_root],
+        memory_engine=None,
+    ).sync([plugin])
+
+    assert result.expected == 1
+    assert (workspace / "drift" / "skills" / "emotion:feedback-preference-context").is_symlink()
+    assert not (workspace / "drift" / "skills" / "emotion@github:feedback-preference-context").exists()
+
+
 def test_plugin_drift_skill_linker_creates_workspace_symlink(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"

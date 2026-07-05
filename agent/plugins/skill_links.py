@@ -132,11 +132,12 @@ class PluginSkillLinker:
                         skill_dir.name,
                     )
                     continue
-                link_name = (
-                    skill_dir.name
-                    if plugin.declares_aka_plugin and manifest_key == "skills"
-                    else f"{plugin.plugin_id}:{skill_dir.name}"
-                )
+                if plugin.declares_aka_plugin and manifest_key == "skills":
+                    link_name = skill_dir.name
+                elif plugin.declares_aka_plugin and manifest_key == "drift_skills":
+                    link_name = f"{plugin.plugin_id.split('@', 1)[0]}:{skill_dir.name}"
+                else:
+                    link_name = f"{plugin.plugin_id}:{skill_dir.name}"
                 target = skill_dir.resolve(strict=False)
                 existing = expected.get(link_name)
                 if existing is not None and existing != target:
