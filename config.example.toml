@@ -45,6 +45,13 @@ memory_window = 40
 [agent.tools]
 search_enabled = true
 
+# Web Chatbox 默认跟主进程一起启动，只监听本机。
+[channels.chat]
+enabled = true
+host = "127.0.0.1"
+port = 6322
+channel_name = "web"
+
 # 可选：长期记忆整理任务（默认已启用，通常无需修改）
 # [agent.maintenance]
 # memory_optimizer_enabled = true

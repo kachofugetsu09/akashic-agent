@@ -24,6 +24,7 @@ from agent.config_models import (
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
+    WebChatConfig,
     WiringConfig,
 )
 from proactive_v2.config import ProactiveConfig
@@ -207,6 +208,13 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
             )
 
     cli_data = _as_dict(channels_data.get("cli"))
+    chat_data = _as_dict(channels_data.get("chat"))
+    chat = WebChatConfig(
+        enabled=bool(chat_data.get("enabled", True)),
+        host=str(chat_data.get("host", "127.0.0.1") or "127.0.0.1"),
+        port=int(chat_data.get("port", 6322)),
+        channel_name=str(chat_data.get("channel_name", "web") or "web"),
+    )
     socket_value = channels_data.get("socket") or cli_data.get(
         "socket", DEFAULT_SOCKET
     )
@@ -218,6 +226,7 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
     channels = ChannelsConfig(
         telegram=telegram,
         qq=qq,
+        chat=chat,
         socket=_normalize_cli_socket_endpoint(socket_value),
         cli_session_key=cli_session_key,
     )

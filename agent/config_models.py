@@ -38,9 +38,18 @@ class QQBotGroupConfig:
 
 
 @dataclass
+class WebChatConfig:
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 6322
+    channel_name: str = "web"
+
+
+@dataclass
 class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
+    chat: WebChatConfig = field(default_factory=WebChatConfig)
     socket: str = "/tmp/akashic.sock"
     cli_session_key: str = ""
 
@@ -143,5 +152,6 @@ __all__ = [
     "QQBotGroupConfig",
     "QQGroupConfig",
     "TelegramChannelConfig",
+    "WebChatConfig",
     "WiringConfig",
 ]

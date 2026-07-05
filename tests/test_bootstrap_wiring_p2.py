@@ -455,6 +455,40 @@ def test_config_load_reads_qq_websocket_timeout(tmp_path: Path):
     assert cfg.channels.qq.websocket_open_timeout_seconds == 9.5
 
 
+def test_config_load_reads_web_chat_config(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
+                },
+            },
+            "agent": {
+                "system_prompt": "s",
+            },
+            "channels": {
+                "chat": {
+                    "enabled": True,
+                    "host": "127.0.0.2",
+                    "port": 6324,
+                    "channel_name": "web_test",
+                },
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.channels.chat.enabled is True
+    assert cfg.channels.chat.host == "127.0.0.2"
+    assert cfg.channels.chat.port == 6324
+    assert cfg.channels.chat.channel_name == "web_test"
+
+
 def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, tmp_path: Path):
     calls: list[str] = []
 

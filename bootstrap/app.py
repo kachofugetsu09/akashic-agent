@@ -9,6 +9,7 @@ from typing import Awaitable, Callable
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
+from bootstrap.chat_api import build_chat_server
 from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.tools import CoreRuntime, build_core_runtime
@@ -85,6 +86,9 @@ class AppRuntime:
         self.peer_poller = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
+        self.chat_server = None
+        self.chat_task: asyncio.Task[None] | None = None
+        self.web_chat_channel = None
         self.plugin_job_runtime: PluginJobRuntime | None = None
         self.tasks: list[Awaitable[None]] = []
         self._memory_optimizer = None
@@ -119,6 +123,14 @@ class AppRuntime:
             await self.core.start()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
+            plugin_channels = list(plugin_manager.channels) if plugin_manager else []
+            if self.config.channels.chat.enabled:
+                from infra.channels.web_chat_channel import WebChatChannel
+
+                self.web_chat_channel = WebChatChannel(
+                    channel_name=self.config.channels.chat.channel_name,
+                )
+                plugin_channels.append(self.web_chat_channel)
             self.ipc, self.channel_host = await start_channels(
                 self.config,
                 bus=self.bus,
@@ -132,7 +144,7 @@ class AppRuntime:
                     else None
                 ),
                 interrupt_controller=self.agent_loop,
-                plugin_channels=plugin_manager.channels if plugin_manager else None,
+                plugin_channels=plugin_channels,
             )
             await self.channel_host.start_all()
 
@@ -169,6 +181,17 @@ class AppRuntime:
                 self.dashboard_server.serve(),
                 name="dashboard_server",
             )
+            if self.web_chat_channel is not None:
+                self.chat_server = build_chat_server(
+                    workspace=self.workspace,
+                    channel=self.web_chat_channel,
+                    host=self.config.channels.chat.host,
+                    port=self.config.channels.chat.port,
+                )
+                self.chat_task = asyncio.create_task(
+                    self.chat_server.serve(),
+                    name="chat_server",
+                )
             proactive_tasks, self.proactive_loop = build_proactive_runtime(
                 self.config,
                 self.workspace,
@@ -214,9 +237,16 @@ class AppRuntime:
         try:
             if self.dashboard_server is not None:
                 self.dashboard_server.should_exit = True
+            if self.chat_server is not None:
+                self.chat_server.should_exit = True
             if self.dashboard_task is not None:
                 try:
                     await self.dashboard_task
+                except asyncio.CancelledError:
+                    pass
+            if self.chat_task is not None:
+                try:
+                    await self.chat_task
                 except asyncio.CancelledError:
                     pass
             await _run_cleanup_steps(
