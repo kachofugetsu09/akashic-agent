@@ -13,6 +13,13 @@ def global_registry_path(plugins_home: Path | None = None) -> Path:
     return aka_plugins_root(plugins_home) / "registry.json"
 
 
+def load_plugin_registry(
+    plugins_home: Path | None = None,
+) -> dict[str, dict[str, object]]:
+    path = global_registry_path(plugins_home)
+    return _load_plugins(_load_registry(path))
+
+
 def upsert_plugin_registry_entry(
     plugin_id: str,
     entry: Mapping[str, object],

@@ -9,12 +9,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
 import sys
 from contextlib import suppress
 from pathlib import Path
 
 from agent.config import Config
+from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.install import install_git_plugin
 from bootstrap.app import build_app_runtime
 from bootstrap.dashboard_api import run_dashboard_api
@@ -211,6 +213,21 @@ if __name__ == "__main__":
         print(f"代码: {result.installed_path}")
         print(f"数据: {result.data_path}")
         sys.exit(0)
+
+    if args and args[0] == "plugin-doctor":
+        target_plugin_id = ""
+        if len(args) >= 2 and not args[1].startswith("--"):
+            target_plugin_id = args[1]
+        report = run_plugin_doctor(
+            plugin_id=target_plugin_id,
+            config_path=config_path,
+            workspace=workspace or _default_workspace(),
+        )
+        if "--json" in args:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(format_plugin_doctor_report(report))
+        sys.exit(1 if report.get("status") == "broken" else 0)
 
     if args and args[0] == "gateway":
         asyncio.run(serve(config_path, workspace))

@@ -107,6 +107,12 @@ python main.py plugin-install --source <repo_or_github_url> --marketplace github
 4. `~/.akashic/workspace/mcp_servers.json`
 5. 运行日志
 
+优先直接跑：
+
+```bash
+python main.py plugin-doctor <plugin_id>
+```
+
 不要先猜，先看 registry。
 
 ## 安装方式
@@ -223,10 +229,12 @@ enabled = false
 
 1. 先读 `~/.akashic-plugin/registry.json`
 2. 确认目标 `plugin_id`
-3. 如果是安装请求，直接执行 `python main.py plugin-install ...`
-4. 如果是启停请求，直接修改 `config.plugins.<plugin_id>`
-5. 如果发现旧 `workspace/mcp_servers.json` 里有同名 server，提醒冲突或协助迁移
-6. 明确告知“当前插件系统默认需要重启后生效”
+3. 优先执行 `python main.py plugin-doctor <plugin_id>`
+4. 如果 doctor 还不能解释清楚，再继续看软链接、MCP、日志
+5. 如果是安装请求，直接执行 `python main.py plugin-install ...`
+6. 如果是启停请求，直接修改 `config.plugins.<plugin_id>`
+7. 如果发现旧 `workspace/mcp_servers.json` 里有同名 server，提醒冲突或协助迁移
+8. 明确告知“当前插件系统默认需要重启后生效”
 
 ## 不要这样做
 
