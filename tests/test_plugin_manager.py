@@ -517,6 +517,58 @@ async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_installed_plugin_uses_bare_name_config_fallback(tmp_path: Path):
+    bus = EventBus()
+    cache_root = tmp_path / "cache"
+    installed_root = cache_root / "github" / "demo" / "0.1.0"
+    (installed_root / ".aka-plugin").mkdir(parents=True)
+    (installed_root / ".aka-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "demo",
+                "version": "0.1.0",
+                "akashic": {
+                    "lifecycle": {"entry": "plugin.py"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (installed_root / "plugin.py").write_text(
+        "from pydantic import BaseModel\n"
+        "from agent.plugins import Plugin\n"
+        "class DemoConfig(BaseModel):\n"
+        "    value: int = 0\n"
+        "class DemoModule:\n"
+        "    slot = 'demo.before_turn'\n"
+        "    requires = ()\n"
+        "    def __init__(self, value: int) -> None:\n"
+        "        self.value = value\n"
+        "    async def run(self, frame):\n"
+        "        return frame\n"
+        "class DemoPlugin(Plugin):\n"
+        "    name = 'demo'\n"
+        "    ConfigModel = DemoConfig\n"
+        "    def before_turn_modules(self):\n"
+        "        return [DemoModule(self.context.config.value)]\n",
+        encoding="utf-8",
+    )
+
+    mgr = PluginManager(
+        plugin_dirs=[],
+        installed_cache_root=cache_root,
+        event_bus=bus,
+        plugin_configs={"demo": {"value": 7}},
+    )
+    await mgr.load_all()
+
+    assert mgr.loaded_count == 1
+    assert len(mgr.before_turn_modules) == 1
+    assert getattr(mgr.before_turn_modules[0], "value") == 7
+
+
+@pytest.mark.asyncio
 async def test_no_manifest_uses_class_attributes():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:

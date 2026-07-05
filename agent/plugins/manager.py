@@ -158,13 +158,23 @@ class PluginManager:
     def active_plugins(self) -> list[ActivePluginInfo]:
         return list(self._active_plugins.values())
 
+    def _plugin_policy(self, plugin_id: str) -> dict[str, Any]:
+        exact = self._plugin_configs.get(plugin_id)
+        if isinstance(exact, dict):
+            return exact
+        base_name = plugin_id.split("@", 1)[0]
+        fallback = self._plugin_configs.get(base_name)
+        if isinstance(fallback, dict):
+            return fallback
+        return {}
+
     def sync_global_registry(self, *, plugins_home: Path | None = None) -> Path:
         entries: dict[str, dict[str, object]] = {}
         for mod in self.discover():
             plugin_dir = Path(mod["plugin_root"])
             descriptor = load_plugin_descriptor(plugin_dir)
             plugin_id = _resolve_plugin_id(mod, descriptor)
-            plugin_policy = self._plugin_configs.get(plugin_id, {})
+            plugin_policy = self._plugin_policy(plugin_id)
             local_disabled = _is_plugin_disabled(plugin_dir)
             skill_roots = _skill_roots_for_policy(plugin_policy, descriptor)
             drift_skill_roots = _drift_skill_roots_for_policy(plugin_policy, descriptor)
@@ -249,7 +259,7 @@ class PluginManager:
         plugin_dir = Path(mod["plugin_root"])
         descriptor = load_plugin_descriptor(plugin_dir)
         initial_plugin_id = _resolve_plugin_id(mod, descriptor)
-        plugin_policy = self._plugin_configs.get(initial_plugin_id, {})
+        plugin_policy = self._plugin_policy(initial_plugin_id)
         # 1. 幂等：已加载过直接跳过
         if mp in self._loaded:
             return
@@ -294,7 +304,7 @@ class PluginManager:
                 plugin_config = _load_plugin_config(
                     plugin_dir,
                     getattr(cls, "ConfigModel", None),
-                    self._plugin_configs.get(plugin_id) or self._plugin_configs.get(initial_plugin_id),
+                    self._plugin_policy(plugin_id) or self._plugin_policy(initial_plugin_id),
                 )
             except _PluginConfigError as e:
                 logger.warning("插件 %s 配置无效，跳过: %s", mod["name"], e)

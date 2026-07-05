@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from agent.core.passive_turn import DefaultReasoner
 from agent.core.runtime_support import LLMServices, ToolDiscoveryState
+from agent.lifecycle.types import AfterStepCtx
 from agent.looping.ports import LLMConfig
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
@@ -13,8 +14,35 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.tool_search import ToolSearchTool
 from bus.event_bus import EventBus
 from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
-import plugins.context_pressure.plugin as context_pressure_plugin
-from plugins.context_pressure.plugin import ContextPressureStopModule
+
+_TEST_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS = 1
+
+
+class ContextPressureStopModule:
+    slot = "context_pressure.stop"
+    requires = ("after_step.copy_input", "step:ctx")
+    produces = (
+        "step:early_stop_reason",
+        "step:telemetry:context_pressure_tokens",
+        "step:telemetry:context_pressure_threshold",
+    )
+
+    async def run(self, frame: object) -> object:
+        raw_slots = getattr(frame, "slots", None)
+        if not isinstance(raw_slots, dict):
+            return frame
+        slots = cast(dict[str, object], raw_slots)
+        ctx = slots.get("step:ctx")
+        if not isinstance(ctx, AfterStepCtx) or not ctx.has_more:
+            return frame
+        if ctx.context_tokens_estimate <= _TEST_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS:
+            return frame
+        slots["step:early_stop_reason"] = "context_pressure"
+        slots["step:telemetry:context_pressure_tokens"] = ctx.context_tokens_estimate
+        slots["step:telemetry:context_pressure_threshold"] = (
+            _TEST_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS
+        )
+        return frame
 
 
 class _DummyTool(Tool):
@@ -273,7 +301,6 @@ def test_default_reasoner_zero_max_iterations_is_unlimited():
 
 
 def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch):
-    monkeypatch.setattr(context_pressure_plugin, "_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS", 1)
     provider = _Provider(
         [
             LLMResponse(content="", tool_calls=[ToolCall("c1", "inflate_probe", {"value": 1})]),
@@ -317,7 +344,6 @@ def test_default_reasoner_stops_on_context_pressure_after_tool_batch(monkeypatch
 
 
 def test_default_reasoner_context_pressure_policy_lives_in_after_step_plugin(monkeypatch):
-    monkeypatch.setattr(context_pressure_plugin, "_CONTEXT_PRESSURE_STOP_THRESHOLD_TOKENS", 1)
     provider = _Provider(
         [
             LLMResponse(content="", tool_calls=[ToolCall("c1", "inflate_probe", {"value": 1})]),

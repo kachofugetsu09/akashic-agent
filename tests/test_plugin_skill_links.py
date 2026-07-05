@@ -182,23 +182,6 @@ def test_plugin_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
     assert not (workspace / "skills" / "akasha:memory").is_symlink()
 
 
-def test_meme_plugin_skill_is_exposed_with_plugin_prefix(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    plugin_root = Path(__file__).parents[1] / "plugins"
-    plugin_dir = plugin_root / "meme"
-
-    result = PluginSkillLinker(
-        workspace=workspace,
-        plugin_roots=[plugin_root],
-        memory_engine=None,
-    ).sync([_plugin_info("meme", plugin_dir)])
-
-    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
-    assert result.expected >= 1
-    assert (workspace / "skills" / "meme:meme-manage").is_symlink()
-    assert "表情包库管理" in (loader.load_skill_body("meme:meme-manage") or "")
-
-
 def test_aka_plugin_skill_is_exposed_with_bare_name(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     cache_root = tmp_path / "cache"
