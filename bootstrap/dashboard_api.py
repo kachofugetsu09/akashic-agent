@@ -639,14 +639,24 @@ def _plugin_dashboard_enabled(app: FastAPI, plugin_dir: Path) -> bool:
 
 def _load_plugin_dashboard_module(plugin_dir: Path) -> ModuleType:
     dash_path = plugin_dir / "dashboard.py"
-    module_name = f"akasic_dashboard_plugin_{plugin_dir.name}"
-    spec = importlib.util.spec_from_file_location(module_name, dash_path)
+    module_name = _dashboard_module_name(plugin_dir)
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        dash_path,
+        submodule_search_locations=[str(plugin_dir)],
+    )
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {dash_path}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = mod
     spec.loader.exec_module(mod)  # type: ignore[union-attr]
     return mod
+
+
+def _dashboard_module_name(plugin_dir: Path) -> str:
+    raw = str(plugin_dir.resolve(strict=False))
+    normalized = "".join(ch if ch.isalnum() else "_" for ch in raw)
+    return f"akasic_dashboard_plugin_{normalized}"
 
 
 def _dashboard_closeables(value: object) -> list[object]:

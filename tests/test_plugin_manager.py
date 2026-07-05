@@ -434,6 +434,26 @@ async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_sync_global_registry_marks_inactive_memory_plugin_when_engine_differs(
+    tmp_path: Path,
+) -> None:
+    bus = EventBus()
+    mgr = PluginManager(
+        plugin_dirs=[Path(__file__).parents[1] / "plugins"],
+        event_bus=bus,
+        workspace=tmp_path,
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+    )
+    await mgr.load_all()
+
+    registry_path = mgr.sync_global_registry(plugins_home=tmp_path / ".akashic-plugin")
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert registry["plugins"]["default_memory"]["active"] is False
+    assert registry["plugins"]["akasha"]["active"] is True
+
+
+@pytest.mark.asyncio
 async def test_installed_plugin_uses_bare_name_config_fallback(tmp_path: Path):
     bus = EventBus()
     cache_root = tmp_path / "cache"

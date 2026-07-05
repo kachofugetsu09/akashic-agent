@@ -193,7 +193,7 @@ class PluginManager:
                 "description": descriptor.description if descriptor is not None else "",
                 "enabled": _plugin_enabled(plugin_policy),
                 "local_disabled": local_disabled,
-                "active": mod["import_path"] in self._active_plugins,
+                "active": self._registry_active(mod["import_path"]),
                 "plugin_root": str(plugin_dir),
                 "data_dir": str(_resolve_plugin_data_dir(descriptor, mod) or ""),
                 "lifecycle_entry": str(lifecycle_entry or ""),
@@ -207,6 +207,21 @@ class PluginManager:
                 "mcp_servers": sorted(mcp_servers.keys()),
             }
         return replace_plugin_registry(entries, plugins_home=plugins_home)
+
+    def _registry_active(self, module_path: str) -> bool:
+        if module_path not in self._active_plugins:
+            return False
+        instance = plugin_registry.get_instance(module_path)
+        if instance is None:
+            return True
+        checker = getattr(instance, "is_active", None)
+        if not callable(checker):
+            return True
+        try:
+            return bool(checker())
+        except Exception as e:
+            logger.warning("插件 active 状态检查失败 (%s): %s", module_path, e)
+            return True
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:

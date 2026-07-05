@@ -43,6 +43,9 @@ class DefaultMemoryInspector(Plugin):
         )
         self._data_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def is_active(self) -> bool:
+        return bool(getattr(self, "_active", False))
+
     def before_turn_modules(self) -> list[object]:
         return [ContextPrepareRecordModule(self)]
 

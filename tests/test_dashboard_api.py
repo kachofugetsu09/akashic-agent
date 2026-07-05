@@ -812,6 +812,50 @@ def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:
     }
 
 
+def test_installed_plugin_dashboard_supports_relative_imports(tmp_path, monkeypatch) -> None:
+    _seed_workspace(tmp_path)
+    home = tmp_path / "home"
+    plugin_dir = tmp_path / "installed" / "observe" / "0.1.0"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "db.py").write_text(
+        "def ping():\n"
+        "    return 'ok'\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "dashboard.py").write_text(
+        "from fastapi import FastAPI\n"
+        "from .db import ping\n"
+        "def register(app: FastAPI, plugin_dir, workspace):\n"
+        "    @app.get('/api/dashboard/test-relative-import')\n"
+        "    def route():\n"
+        "        return {'value': ping()}\n",
+        encoding="utf-8",
+    )
+    registry_dir = home / ".akashic-plugin"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    (registry_dir / "registry.json").write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "observe@github": {
+                        "plugin_id": "observe@github",
+                        "source_type": "installed",
+                        "active": True,
+                        "plugin_root": str(plugin_dir),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        response = client.get("/api/dashboard/test-relative-import")
+    assert response.status_code == 200
+    assert response.json() == {"value": "ok"}
+
+
 def test_plugin_asset_paths_reject_cross_platform_traversal(tmp_path) -> None:
     with TestClient(create_dashboard_app(tmp_path)) as client:
         for path in (
