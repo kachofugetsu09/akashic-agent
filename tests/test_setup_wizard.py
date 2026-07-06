@@ -7,7 +7,21 @@ import types
 
 import pytest
 
-from bootstrap.setup_wizard import _async_fetch_qqbot_openid
+from bootstrap.setup_wizard import (
+    WizardAnswers,
+    _async_fetch_qqbot_openid,
+    _render_config,
+)
+
+
+def test_setup_wizard_renders_web_chat_config() -> None:
+    text = _render_config(WizardAnswers())
+
+    assert "[channels.chat]" in text
+    assert "enabled = true" in text
+    assert 'host = "127.0.0.1"' in text
+    assert "port = 6322" in text
+    assert 'channel_name = "web"' in text
 
 
 @pytest.mark.asyncio

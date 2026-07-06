@@ -268,6 +268,9 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert "multimodal = false" in config_text
     assert "[llm.vl]" in config_text
     assert 'model = "qwen-vl-plus"' in config_text
+    assert "[channels.chat]" in config_text
+    assert "port = 6322" in config_text
+    assert any("http://127.0.0.1:6322" in step for step in summary.next_steps)
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
     assert (workspace / "memory" / "consolidation_writes.db").exists()
