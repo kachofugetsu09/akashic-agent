@@ -1436,6 +1436,7 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
         reply="reply",
         tool_chain=[],
         tools_used=[],
+        media=["/tmp/from-turn.png"],
         thinking=None,
         streamed=False,
         context_retry={},
@@ -1453,9 +1454,10 @@ async def test_after_reasoning_collects_persist_and_outbound_slots():
 
     assert session.messages[0]["user_flag"] == "u"
     assert session.messages[1]["assistant_flag"] == "a"
+    assert session.messages[1]["media"] == ["/tmp/from-turn.png"]
     assert result.outbound.metadata["before_turn_flag"] == "bt"
     assert result.outbound.metadata["plugin_flag"] == "m"
-    assert result.outbound.media == ["/tmp/a.png"]
+    assert result.outbound.media == ["/tmp/from-turn.png", "/tmp/a.png"]
 
 
 @pytest.mark.asyncio

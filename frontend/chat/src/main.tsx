@@ -52,6 +52,12 @@ import {
   useReasoning,
 } from "@/components/ai-elements/reasoning";
 import { CollapsibleContent } from "@/components/ui/collapsible";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./styles.css";
 
@@ -129,7 +135,7 @@ type ChatFrame =
   | { type: "react.tool.started"; session_id: string; turn_id: string; call_id: string; tool_name: string; arguments: unknown }
   | { type: "react.tool.completed"; session_id: string; turn_id: string; call_id: string; tool_name: string; status: string; result_preview: string }
   | { type: "answer.delta"; session_id: string; turn_id: string; delta: string }
-  | { type: "message.final"; session_id: string; turn_id: string; content: string; thinking?: string; media?: string[]; duration_ms?: number }
+  | { type: "message.final"; session_id: string; turn_id: string; content: string; thinking?: string; media?: string[]; duration_ms?: number; metadata?: Record<string, unknown> }
   | { type: "turn.interrupted"; session_id: string; status: string; message: string }
   | { type: "error"; request_id: string; message: string }
   | { type: "pong"; request_id: string };
@@ -162,7 +168,7 @@ function App() {
   const loadMessages = useCallback(async (sessionId: string) => {
     const response = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages?page=1&page_size=100&sort_by=seq&sort_order=asc`);
     const data = await response.json() as { items?: MessageRow[] };
-    setMessages((data.items ?? []).map(rowToMessage));
+    setMessages((data.items ?? []).filter(isVisibleChatRow).map(rowToMessage));
   }, []);
 
   const connect = useCallback(() => {
@@ -287,7 +293,12 @@ function App() {
                 <h1>今天有什么计划?</h1>
               </ConversationEmptyState>
             ) : (
-              messages.map((message) => <ChatMessageView key={message.id} message={message} />)
+              messages.map((message, index) => (
+                <React.Fragment key={message.id}>
+                  {messages[index - 1]?.role === message.role ? <RoleDivider role={message.role} /> : null}
+                  <ChatMessageView message={message} />
+                </React.Fragment>
+              ))
             )}
           </ConversationContent>
           <AutoScroll messages={messages} status={status} />
@@ -429,6 +440,10 @@ function ChatMessageView({ message }: { message: ChatMessage }) {
   );
 }
 
+function RoleDivider({ role }: { role: Role }) {
+  return <div aria-hidden="true" className={`role-divider ${role}-divider`} />;
+}
+
 function AutoScroll({ messages, status }: { messages: ChatMessage[]; status: ChatStatus }) {
   const { escapedFromLock, isAtBottom, scrollToBottom } = useStickToBottomContext();
   const lastMessageCountRef = useRef(messages.length);
@@ -464,18 +479,49 @@ function MessageAttachments({ attachments }: { attachments: MessageAttachment[] 
   return (
     <Attachments className="message-attachments" variant="grid">
       {attachments.map((attachment) => (
-        <AttachmentHoverCard key={attachment.id}>
-          <AttachmentHoverCardTrigger asChild>
-            <Attachment data={attachment}>
-              <AttachmentPreview />
-            </Attachment>
-          </AttachmentHoverCardTrigger>
-          <AttachmentHoverCardContent>
-            <AttachmentHover attachment={attachment} />
-          </AttachmentHoverCardContent>
-        </AttachmentHoverCard>
+        <MessageAttachmentItem attachment={attachment} key={attachment.id} />
       ))}
     </Attachments>
+  );
+}
+
+function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }) {
+  const isImage = getMediaCategory(attachment) === "image" && attachment.url;
+  const label = getAttachmentLabel(attachment);
+
+  if (isImage) {
+    return (
+      <Dialog>
+        <DialogTrigger asChild>
+          <Attachment
+            className="previewable-attachment"
+            data={attachment}
+            role="button"
+            tabIndex={0}
+            title="点击预览图片"
+          >
+            <AttachmentPreview />
+          </Attachment>
+        </DialogTrigger>
+        <DialogContent className="image-preview-dialog">
+          <DialogTitle className="sr-only">{label}</DialogTitle>
+          <img alt={label} className="image-preview-full" src={attachment.url} />
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return (
+    <AttachmentHoverCard>
+      <AttachmentHoverCardTrigger asChild>
+        <Attachment data={attachment}>
+          <AttachmentPreview />
+        </Attachment>
+      </AttachmentHoverCardTrigger>
+      <AttachmentHoverCardContent>
+        <AttachmentHover attachment={attachment} />
+      </AttachmentHoverCardContent>
+    </AttachmentHoverCard>
   );
 }
 
@@ -626,11 +672,24 @@ function handleFrame(
     return;
   }
   if (frame.type === "message.final") {
+    if (frame.metadata?.source === "message_push") {
+      ctx.setMessages((messages) => updateLastAssistant(messages, (message) => ({
+        ...message,
+        content: message.content || frame.content,
+        attachments: mergeAttachments(message.attachments, mediaToAttachments(frame.media)),
+        blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
+        streaming: message.streaming,
+      })));
+      void ctx.loadSessions();
+      return;
+    }
     ctx.setStatus("idle");
     ctx.setMessages((messages) => updateLastAssistant(messages, (message) => ({
       ...message,
       content: frame.content || message.content,
-      attachments: frame.media ? mediaToAttachments(frame.media) : message.attachments,
+      attachments: frame.media?.length
+        ? mergeAttachments(message.attachments, mediaToAttachments(frame.media))
+        : message.attachments,
       blocks: blocksWithFinalThinking(message.blocks, frame.thinking),
       durationMs: frame.duration_ms ?? (
         message.startedAt ? Date.now() - message.startedAt : message.durationMs
@@ -703,6 +762,10 @@ function rowToMessage(row: MessageRow): ChatMessage {
     blocks: role === "assistant" ? rowBlocks(row) : [],
     durationMs: numberValue(row.turn_duration_ms),
   };
+}
+
+function isVisibleChatRow(row: MessageRow) {
+  return !(row.role === "user" && row.content.startsWith("[后台任务完成]"));
 }
 
 function rowBlocks(row: MessageRow): AgentBlock[] {
@@ -790,6 +853,22 @@ function uploadedFileToAttachment(file: UploadedFile, source?: ComposerFile): Me
     url: source?.url || file.upload_url || mediaUrl(file.upload_path),
     path: file.upload_path,
   };
+}
+
+function mergeAttachments(
+  current: MessageAttachment[] | undefined,
+  incoming: MessageAttachment[],
+) {
+  if (!incoming.length) return current;
+  const merged = [...(current ?? [])];
+  const seen = new Set(merged.map((item) => item.path || item.id));
+  incoming.forEach((item) => {
+    const key = item.path || item.id;
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(item);
+  });
+  return merged;
 }
 
 function mediaToAttachments(media: unknown): MessageAttachment[] {

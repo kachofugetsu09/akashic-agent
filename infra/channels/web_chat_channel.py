@@ -119,9 +119,10 @@ class WebChatChannel:
         return str(path.resolve()) in self._media_paths
 
     async def send(self, chat_id: str, message: str) -> None:
-        await self._broadcast(self._session_key(chat_id), {
+        session_key = self._session_key(chat_id)
+        await self._broadcast(session_key, {
             "type": "message.final",
-            "session_id": self._session_key(chat_id),
+            "session_id": session_key,
             "turn_id": "",
             "content": message,
             "media": [],
@@ -137,21 +138,24 @@ class WebChatChannel:
         file_path: str,
         name: str | None = None,
     ) -> None:
+        session_key = self._session_key(chat_id)
+        content = name or Path(file_path).name
         self.remember_media([file_path])
-        await self._broadcast(self._session_key(chat_id), {
+        await self._broadcast(session_key, {
             "type": "message.final",
-            "session_id": self._session_key(chat_id),
+            "session_id": session_key,
             "turn_id": "",
-            "content": name or Path(file_path).name,
+            "content": content,
             "media": [file_path],
             "metadata": {"source": "message_push", "kind": "file"},
         })
 
     async def send_image(self, chat_id: str, image: str) -> None:
+        session_key = self._session_key(chat_id)
         self.remember_media([image])
-        await self._broadcast(self._session_key(chat_id), {
+        await self._broadcast(session_key, {
             "type": "message.final",
-            "session_id": self._session_key(chat_id),
+            "session_id": session_key,
             "turn_id": "",
             "content": "",
             "media": [image],

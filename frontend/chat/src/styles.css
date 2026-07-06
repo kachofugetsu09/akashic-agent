@@ -181,6 +181,28 @@ input {
   max-width: 100%;
 }
 
+.role-divider {
+  width: min(100%, 820px);
+  height: 1px;
+  margin: -6px 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(148, 148, 148, 0.18) 18%,
+    rgba(148, 148, 148, 0.28) 50%,
+    rgba(148, 148, 148, 0.18) 82%,
+    transparent
+  );
+}
+
+.user-divider {
+  align-self: flex-end;
+}
+
+.assistant-divider {
+  align-self: flex-start;
+}
+
 .user-row {
   align-items: flex-end;
 }
@@ -196,12 +218,45 @@ input {
 }
 
 .message-attachments {
-  margin: 0 0 10px auto;
+  margin: 0 0 10px;
+}
+
+.user-bubble .message-attachments {
+  margin-left: auto;
+}
+
+.agent-content .message-attachments {
+  margin-left: 0;
+  margin-right: auto;
 }
 
 .message-attachments .group {
   border: 1px solid rgba(255, 255, 255, 0.13);
   background: #242424;
+}
+
+.previewable-attachment {
+  cursor: zoom-in;
+}
+
+.image-preview-dialog {
+  width: min(92vw, 1100px);
+  max-width: none;
+  max-height: 90vh;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
+.image-preview-full {
+  display: block;
+  max-width: 100%;
+  max-height: 84vh;
+  margin: 0 auto;
+  border-radius: 12px;
+  object-fit: contain;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
 }
 
 .agent-row {

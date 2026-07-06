@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from bootstrap.chat_api import create_chat_app
 from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import WebChatChannel
+from session.manager import Session
 
 
 class _Bus:
@@ -43,13 +44,19 @@ class _PushTool:
 class _SessionManager:
     def __init__(self) -> None:
         self.saved: list[Any] = []
+        self.sessions: dict[str, Session] = {}
+        self.appended: list[tuple[Session, list[dict[str, Any]]]] = []
         self._store = _SessionStore()
 
     def get_or_create(self, key: str) -> Any:
-        return SimpleNamespace(key=key, metadata={})
+        self.sessions.setdefault(key, Session(key=key))
+        return self.sessions[key]
 
     async def save_async(self, session: Any) -> None:
         self.saved.append(session)
+
+    async def append_messages(self, session: Session, messages: list[dict[str, Any]]) -> None:
+        self.appended.append((session, list(messages)))
 
 
 class _SessionStore:
@@ -211,3 +218,24 @@ def test_chat_messages_default_to_turn_order(tmp_path: Path) -> None:
     assert [item["role"] for item in payload["items"]] == ["user", "assistant"]
     assert session_manager._store.calls[0]["sort_by"] == "seq"
     assert session_manager._store.calls[0]["sort_order"] == "asc"
+
+
+@pytest.mark.asyncio
+async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: Path) -> None:
+    session_manager = _SessionManager()
+    channel = WebChatChannel()
+    await channel.start(cast(Any, SimpleNamespace(
+        bus=_Bus(),
+        session_manager=session_manager,
+        event_bus=_EventBus(),
+        push_tool=_PushTool(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        interrupt_controller=None,
+    )))
+    image = tmp_path / "meme.png"
+    image.write_bytes(b"image")
+
+    await channel.send_image("abc", str(image))
+
+    assert "web:abc" not in session_manager.sessions
+    assert session_manager.appended == []
