@@ -430,7 +430,8 @@ function ChatMessageView({ message }: { message: ChatMessage }) {
 }
 
 function AutoScroll({ messages, status }: { messages: ChatMessage[]; status: ChatStatus }) {
-  const { scrollToBottom } = useStickToBottomContext();
+  const { escapedFromLock, isAtBottom, scrollToBottom } = useStickToBottomContext();
+  const lastMessageCountRef = useRef(messages.length);
   const scrollKey = messages.map((message) => {
     const lastBlock = message.blocks.at(-1);
     return [
@@ -442,10 +443,19 @@ function AutoScroll({ messages, status }: { messages: ChatMessage[]; status: Cha
   }).join("|");
 
   useEffect(() => {
-    if (status === "streaming" || status === "submitted") {
+    const lastMessage = messages.at(-1);
+    const hasNewUserMessage = messages.length > lastMessageCountRef.current && lastMessage?.role === "user";
+    lastMessageCountRef.current = messages.length;
+
+    if (hasNewUserMessage) {
+      void scrollToBottom({ animation: "smooth", ignoreEscapes: true });
+      return;
+    }
+
+    if ((status === "streaming" || status === "submitted") && isAtBottom && !escapedFromLock) {
       void scrollToBottom({ animation: "smooth", ignoreEscapes: false });
     }
-  }, [scrollKey, status, scrollToBottom]);
+  }, [escapedFromLock, isAtBottom, messages, scrollKey, status, scrollToBottom]);
 
   return null;
 }
