@@ -34,6 +34,15 @@ class _FakeDashboardServer:
             await asyncio.sleep(0)
 
 
+class _FakeChatServer:
+    def __init__(self) -> None:
+        self.should_exit = False
+
+    async def serve(self) -> None:
+        while not self.should_exit:
+            await asyncio.sleep(0)
+
+
 def _toml_value(value):
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -176,6 +185,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     )
     monkeypatch.setattr(
         bootstrap_app, "build_dashboard_server", lambda **_: _FakeDashboardServer()
+    )
+    monkeypatch.setattr(
+        bootstrap_app, "build_chat_server", lambda **_: _FakeChatServer()
     )
 
     class _FakePluginJobRuntime:

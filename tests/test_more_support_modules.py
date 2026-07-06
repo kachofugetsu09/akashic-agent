@@ -803,7 +803,14 @@ async def test_app_runtime_start_passes_markdown_store_to_memory_optimizer(
     )
 
     app = AppRuntime(
-        config=cast(Any, SimpleNamespace()),
+        config=cast(
+            Any,
+            SimpleNamespace(
+                channels=SimpleNamespace(
+                    chat=SimpleNamespace(enabled=False),
+                ),
+            ),
+        ),
         workspace=tmp_path,
     )
     await app.start()
