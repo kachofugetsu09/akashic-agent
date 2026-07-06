@@ -695,6 +695,16 @@ search_enabled = true
 def _render_channels(a: WizardAnswers) -> str:
     lines: list[str] = []
 
+    lines += [
+        "# Web Chatbox 默认跟主进程一起启动，只监听本机。",
+        "[channels.chat]",
+        "enabled = true",
+        'host = "127.0.0.1"',
+        "port = 6322",
+        'channel_name = "web"',
+        "",
+    ]
+
     if a.tg_token:
         allow = ", ".join(f'"{u}"' for u in a.tg_allow_from)
         lines += [

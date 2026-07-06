@@ -8,6 +8,7 @@ import pytest
 
 from agent.context import ContextBuilder
 from agent.lifecycle.types import PromptRenderResult
+from agent.lifecycle.types import TurnPersistencePolicy
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.core.runner import CoreRunner, CoreRunnerDeps
@@ -122,4 +123,5 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     pipeline_mock.post_reasoning.assert_awaited_once()
     pr_kwargs = pipeline_mock.post_reasoning.await_args.kwargs
     assert pr_kwargs["dispatch_outbound"] is False
+    assert pr_kwargs["persistence"] == TurnPersistencePolicy(persist_user=False)
     runner._agent_core.process.assert_not_awaited()

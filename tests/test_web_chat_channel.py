@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+from fastapi.testclient import TestClient
+
+from bootstrap.chat_api import create_chat_app
+from infra.channels.base import AttachmentStore
+from infra.channels.web_chat_channel import WebChatChannel
+from session.manager import Session
+
+
+class _Bus:
+    def __init__(self) -> None:
+        self.inbound: list[Any] = []
+        self.subscribers: dict[str, Any] = {}
+
+    async def publish_inbound(self, msg: Any) -> None:
+        self.inbound.append(msg)
+
+    def subscribe_outbound(self, channel: str, callback: Any) -> None:
+        self.subscribers[channel] = callback
+
+
+class _EventBus:
+    def __init__(self) -> None:
+        self.handlers: dict[type[object], Any] = {}
+
+    def on(self, event_type: type[object], handler: Any) -> None:
+        self.handlers[event_type] = handler
+
+
+class _PushTool:
+    def __init__(self) -> None:
+        self.registered: dict[str, Any] = {}
+
+    def register_channel(self, channel: str, **senders: Any) -> None:
+        self.registered[channel] = senders
+
+
+class _SessionManager:
+    def __init__(self) -> None:
+        self.saved: list[Any] = []
+        self.sessions: dict[str, Session] = {}
+        self.appended: list[tuple[Session, list[dict[str, Any]]]] = []
+        self._store = _SessionStore()
+
+    def get_or_create(self, key: str) -> Any:
+        self.sessions.setdefault(key, Session(key=key))
+        return self.sessions[key]
+
+    async def save_async(self, session: Any) -> None:
+        self.saved.append(session)
+
+    async def append_messages(self, session: Session, messages: list[dict[str, Any]]) -> None:
+        self.appended.append((session, list(messages)))
+
+
+class _SessionStore:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def list_sessions_for_dashboard(self, **_: Any) -> tuple[list[dict[str, Any]], int]:
+        return [], 0
+
+    def list_messages_for_dashboard(self, **kwargs: Any) -> tuple[list[dict[str, Any]], int]:
+        self.calls.append(kwargs)
+        return [
+            {"id": "m0", "role": "user", "content": "用户问题"},
+            {"id": "m1", "role": "assistant", "content": "助手回答"},
+        ], 2
+
+
+@pytest.mark.asyncio
+async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
+    bus = _Bus()
+    session_manager = _SessionManager()
+    channel = WebChatChannel()
+    await channel.start(cast(Any, SimpleNamespace(
+        bus=bus,
+        session_manager=session_manager,
+        event_bus=_EventBus(),
+        push_tool=_PushTool(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        interrupt_controller=None,
+    )))
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "session.create", "request_id": "r1"})
+            created = ws.receive_json()
+            session_id = created["session_id"]
+
+            ws.send_json({
+                "type": "message.send",
+                "request_id": "r2",
+                "session_id": session_id,
+                "text": "你好",
+                "media": [],
+            })
+
+    assert created["type"] == "session.created"
+    assert str(session_id).startswith("web:")
+    assert session_manager.saved == []
+    assert len(bus.inbound) == 1
+    assert bus.inbound[0].content == "你好"
+    assert bus.inbound[0].session_key == session_id
+
+
+@pytest.mark.asyncio
+async def test_web_chat_message_send_can_create_session_without_persisting_empty_one(tmp_path: Path) -> None:
+    bus = _Bus()
+    session_manager = _SessionManager()
+    channel = WebChatChannel()
+    await channel.start(cast(Any, SimpleNamespace(
+        bus=bus,
+        session_manager=session_manager,
+        event_bus=_EventBus(),
+        push_tool=_PushTool(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        interrupt_controller=None,
+    )))
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({
+                "type": "message.send",
+                "request_id": "r1",
+                "text": "你好",
+                "media": [],
+            })
+
+    assert session_manager.saved == []
+    assert len(bus.inbound) == 1
+    assert bus.inbound[0].content == "你好"
+    assert str(bus.inbound[0].session_key).startswith("web:")
+
+
+def test_chat_upload_returns_local_path(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat/uploads",
+            params={"filename": "note.txt"},
+            content=b"hello",
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["filename"] == "note.txt"
+    assert Path(payload["upload_path"]).is_file()
+    assert payload["upload_url"].startswith("/api/chat/media?path=")
+
+
+def test_chat_media_reads_uploaded_file(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    channel._attachments = AttachmentStore(tmp_path / "uploads")
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+
+    with TestClient(app) as client:
+        upload = client.post(
+            "/api/chat/uploads",
+            params={"filename": "note.txt"},
+            content=b"hello",
+        ).json()
+        response = client.get("/api/chat/media", params={"path": upload["upload_path"]})
+
+    assert response.status_code == 200
+    assert response.content == b"hello"
+
+
+def test_chat_media_rejects_outside_upload_root(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    channel._attachments = AttachmentStore(tmp_path / "uploads")
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    with TestClient(app) as client:
+        response = client.get("/api/chat/media", params={"path": str(outside)})
+
+    assert response.status_code == 404
+
+
+def test_chat_media_reads_registered_outbound_file(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    channel._attachments = AttachmentStore(tmp_path / "uploads")
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+    outside = tmp_path / "outside" / "meme.png"
+    outside.parent.mkdir()
+    outside.write_bytes(b"image")
+    channel.remember_media([str(outside)])
+
+    with TestClient(app) as client:
+        response = client.get("/api/chat/media", params={"path": str(outside)})
+
+    assert response.status_code == 200
+    assert response.content == b"image"
+
+
+def test_chat_messages_default_to_turn_order(tmp_path: Path) -> None:
+    channel = WebChatChannel()
+    session_manager = _SessionManager()
+    channel._ctx = cast(Any, SimpleNamespace(session_manager=session_manager))
+    app = create_chat_app(workspace=tmp_path, channel=channel)
+
+    with TestClient(app) as client:
+        response = client.get("/api/chat/sessions/web:abc/messages")
+
+    payload = response.json()
+    assert [item["role"] for item in payload["items"]] == ["user", "assistant"]
+    assert session_manager._store.calls[0]["sort_by"] == "seq"
+    assert session_manager._store.calls[0]["sort_order"] == "asc"
+
+
+@pytest.mark.asyncio
+async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: Path) -> None:
+    session_manager = _SessionManager()
+    channel = WebChatChannel()
+    await channel.start(cast(Any, SimpleNamespace(
+        bus=_Bus(),
+        session_manager=session_manager,
+        event_bus=_EventBus(),
+        push_tool=_PushTool(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        interrupt_controller=None,
+    )))
+    image = tmp_path / "meme.png"
+    image.write_bytes(b"image")
+
+    await channel.send_image("abc", str(image))
+
+    assert "web:abc" not in session_manager.sessions
+    assert session_manager.appended == []

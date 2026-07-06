@@ -9,7 +9,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["frontend/dashboard/src/**/*.{ts,tsx}", "plugins/**/*.ts", "types/**/*.d.ts"],
+    files: ["frontend/dashboard/src/**/*.{ts,tsx}", "frontend/chat/src/**/*.{ts,tsx}", "plugins/**/*.ts", "types/**/*.d.ts"],
     languageOptions: {
       ecmaVersion: 2021,
       globals: globals.browser,
@@ -24,6 +24,14 @@ export default tseslint.config(
       "react-hooks/set-state-in-effect": "off",
       "@typescript-eslint/triple-slash-reference": "off",
       "@typescript-eslint/no-explicit-any": "error",
+    },
+  },
+  {
+    files: ["frontend/chat/src/components/ai-elements/**/*.{ts,tsx}"],
+    rules: {
+      "react-hooks/refs": "off",
+      "react-hooks/static-components": "off",
+      "@typescript-eslint/no-unused-vars": "off",
     },
   },
 );

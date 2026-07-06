@@ -18,7 +18,7 @@ from agent.lifecycle.phase import (
     collect_prefixed_slots,
     topo_sort_modules,
 )
-from agent.lifecycle.types import AfterTurnCtx, TurnSnapshot
+from agent.lifecycle.types import AfterTurnCtx, TurnPersistencePolicy, TurnSnapshot
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
@@ -42,7 +42,7 @@ AfterTurnModules: TypeAlias = list[PhaseModule[AfterTurnFrame]]
 _BUDGET_SLOT = "turn:budget"
 _REACT_STATS_SLOT = "turn:react_stats"
 _TOOL_CHAIN_SLOT = "turn:tool_chain"
-_OMIT_USER_TURN_SLOT = "turn:omit_user_turn"
+_PERSISTENCE_SLOT = "turn:persistence"
 _EXTRA_SLOT = "turn:extra"
 _EXTRA_COLLECTED_SLOT = "turn:extra_collected"
 _TURN_COMMITTED_SLOT = "turn:committed"
@@ -67,7 +67,7 @@ class _BuildTurnWorkModule:
         _BUDGET_SLOT,
         _REACT_STATS_SLOT,
         _TOOL_CHAIN_SLOT,
-        _OMIT_USER_TURN_SLOT,
+        _PERSISTENCE_SLOT,
         _EXTRA_SLOT,
     )
 
@@ -92,9 +92,7 @@ class _BuildTurnWorkModule:
             else {}
         )
         frame.slots[_TOOL_CHAIN_SLOT] = list(snap.ctx.tool_chain)
-        frame.slots[_OMIT_USER_TURN_SLOT] = bool(
-            (msg.metadata or {}).get("omit_user_turn")
-        )
+        frame.slots[_PERSISTENCE_SLOT] = state.persistence
         return frame
 
 
@@ -104,7 +102,7 @@ class _BuildTurnCommittedModule:
         _BUDGET_SLOT,
         _REACT_STATS_SLOT,
         _TOOL_CHAIN_SLOT,
-        _OMIT_USER_TURN_SLOT,
+        _PERSISTENCE_SLOT,
         _EXTRA_SLOT,
         _EXTRA_COLLECTED_SLOT,
     )
@@ -116,13 +114,13 @@ class _BuildTurnCommittedModule:
         state = snap.state
         msg = state.msg
         tool_chain_list = cast(list[dict[str, Any]], frame.slots[_TOOL_CHAIN_SLOT])
-        omit_user_turn = bool(frame.slots[_OMIT_USER_TURN_SLOT])
+        persistence = cast(TurnPersistencePolicy, frame.slots[_PERSISTENCE_SLOT])
         frame.slots[_TURN_COMMITTED_SLOT] = TurnCommitted(
             session_key=state.session_key,
             channel=msg.channel,
             chat_id=msg.chat_id,
             input_message=msg.content,
-            persisted_user_message=None if omit_user_turn else msg.content,
+            persisted_user_message=msg.content if persistence.persist_user else None,
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
             thinking=snap.ctx.thinking,

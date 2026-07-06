@@ -34,6 +34,15 @@ class _FakeDashboardServer:
             await asyncio.sleep(0)
 
 
+class _FakeChatServer:
+    def __init__(self) -> None:
+        self.should_exit = False
+
+    async def serve(self) -> None:
+        while not self.should_exit:
+            await asyncio.sleep(0)
+
+
 def _toml_value(value):
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -177,6 +186,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     monkeypatch.setattr(
         bootstrap_app, "build_dashboard_server", lambda **_: _FakeDashboardServer()
     )
+    monkeypatch.setattr(
+        bootstrap_app, "build_chat_server", lambda **_: _FakeChatServer()
+    )
 
     class _FakePluginJobRuntime:
         def __init__(self, **_: object) -> None:
@@ -256,6 +268,9 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert "multimodal = false" in config_text
     assert "[llm.vl]" in config_text
     assert 'model = "qwen-vl-plus"' in config_text
+    assert "[channels.chat]" in config_text
+    assert "port = 6322" in config_text
+    assert any("http://127.0.0.1:6322" in step for step in summary.next_steps)
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
     assert (workspace / "memory" / "consolidation_writes.db").exists()

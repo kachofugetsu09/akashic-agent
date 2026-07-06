@@ -69,6 +69,7 @@ from agent.lifecycle.types import (
     PromptRenderResult,
     TurnSnapshot,
     TurnState,
+    TurnPersistencePolicy,
 )
 
 if TYPE_CHECKING:
@@ -83,6 +84,14 @@ from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
 logger = logging.getLogger(__name__)
+
+
+def _persistence_from_metadata(metadata: dict[str, Any] | None) -> TurnPersistencePolicy:
+    return TurnPersistencePolicy(
+        persist_user=not bool((metadata or {}).get("omit_user_turn")),
+        persist_assistant=True,
+    )
+
 
 # 被动链路核心入口，负责串起 lifecycle 模块链与 reasoner。
 #
@@ -366,6 +375,7 @@ class PassiveTurnPipeline:
             msg=msg,
             session_key=key,
             dispatch_outbound=dispatch_outbound,
+            persistence=_persistence_from_metadata(msg.metadata),
         )
         with diagnostic_context(session=key, flow="passive", turn=turn_id):
             logger.info(
@@ -475,6 +485,9 @@ class PassiveTurnPipeline:
                         retrieved_memory_block=before_reasoning.retrieved_memory_block,
                         extra_hints=list(before_reasoning.extra_hints) or None,
                     )
+                state.extra_metadata["turn_duration_ms"] = int(
+                    (time.perf_counter() - started) * 1000
+                )
                 logger.info(
                     diagnostic_line(
                         "PassiveTurnPipeline.run",
@@ -597,12 +610,14 @@ class PassiveTurnPipeline:
         turn_result: "TurnRunResult",
         *,
         dispatch_outbound: bool = True,
+        persistence: TurnPersistencePolicy | None = None,
     ) -> OutboundMessage:
         state = TurnState(
             msg=msg,
             session_key=session_key,
             dispatch_outbound=dispatch_outbound,
             session=self._session.session_manager.get_or_create(session_key),
+            persistence=persistence or _persistence_from_metadata(msg.metadata),
         )
         after_reasoning = await self._after_reasoning.run(
             AfterReasoningInput(state=state, turn_result=turn_result)
@@ -1008,6 +1023,7 @@ class DefaultReasoner(Reasoner):
                 tools_used = list(result.metadata.get("tools_used") or [])
                 tools_unlocked = list(result.metadata.get("tools_unlocked") or [])
                 tool_chain = list(result.metadata.get("tool_chain") or [])
+                media = list(result.metadata.get("media") or [])
                 if attempt > 0:
                     window = plan["history_window"]
                     retry_trace["selected_plan"] = plan["name"]
@@ -1043,6 +1059,7 @@ class DefaultReasoner(Reasoner):
                     reply=result.reply,
                     tools_used=tools_used,
                     tool_chain=tool_chain,
+                    media=[str(item) for item in media if str(item).strip()],
                     thinking=result.thinking,
                     streamed=result.streamed,
                     context_retry=retry_trace,
@@ -1106,6 +1123,7 @@ class DefaultReasoner(Reasoner):
         tools_used: list[str] = []
         tools_unlocked: list[str] = []
         tool_chain: list[dict[str, Any]] = []
+        outbound_media: list[str] = []
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
         visible_order: list[str] | None = None
@@ -1160,6 +1178,7 @@ class DefaultReasoner(Reasoner):
                     reply=step_ctx.early_stop_reply or summary,
                     tools_used=tools_used,
                     tool_chain=tool_chain,
+                    media=outbound_media,
                     visible_names=visible_names,
                     thinking=None,
                     streamed=False,
@@ -1342,6 +1361,7 @@ class DefaultReasoner(Reasoner):
                                 reply=summary,
                                 tools_used=tools_used,
                                 tool_chain=tool_chain,
+                                media=outbound_media,
                                 visible_names=visible_names,
                                 thinking=None,
                                 streamed=False,
@@ -1475,6 +1495,13 @@ class DefaultReasoner(Reasoner):
                         content=result,
                         tool_name=tool_call.name,
                     )
+                    if exec_result.status == "success" and tool_call.name == "message_push":
+                        _collect_current_web_push_media(
+                            outbound_media,
+                            exec_result.final_arguments,
+                            channel=tool_event_channel,
+                            chat_id=tool_event_chat_id,
+                        )
 
                     # 6.3 tool_search 的结果会扩展下一轮可见工具。
                     if (
@@ -1557,6 +1584,7 @@ class DefaultReasoner(Reasoner):
                             reply=summary,
                             tools_used=tools_used,
                             tool_chain=tool_chain,
+                            media=outbound_media,
                             visible_names=visible_names,
                             thinking=None,
                             streamed=False,
@@ -1604,6 +1632,7 @@ class DefaultReasoner(Reasoner):
                         reply=summary,
                         tools_used=tools_used,
                         tool_chain=tool_chain,
+                        media=outbound_media,
                         visible_names=visible_names,
                         thinking=None,
                         streamed=False,
@@ -1671,6 +1700,7 @@ class DefaultReasoner(Reasoner):
                 reply=response.content or "（无响应）",
                 tools_used=tools_used,
                 tool_chain=tool_chain,
+                media=outbound_media,
                 visible_names=visible_names,
                 thinking=response.thinking,
                 streamed=streamed,
@@ -1697,6 +1727,7 @@ class DefaultReasoner(Reasoner):
             reply=summary,
             tools_used=tools_used,
             tool_chain=tool_chain,
+            media=outbound_media,
             visible_names=visible_names,
             thinking=None,
             streamed=False,
@@ -1813,6 +1844,7 @@ class DefaultReasoner(Reasoner):
         reply: str,
         tools_used: list[str],
         tool_chain: list[dict[str, Any]],
+        media: list[str],
         visible_names: set[str] | None,
         thinking: str | None,
         streamed: bool,
@@ -1860,6 +1892,7 @@ class DefaultReasoner(Reasoner):
             "tools_used": list(tools_used),
             "tools_unlocked": list(tools_unlocked or []),
             "tool_chain": list(tool_chain),
+            "media": list(media),
             "visible_names": set(visible_names) if visible_names is not None else None,
             "react_stats": react_stats,
         }
@@ -1963,6 +1996,25 @@ def extract_model_facing_turn(
     if isinstance(frame_content, str) and is_context_frame(frame_content):
         return user_content, frame_content
     return user_content, None
+
+
+def _collect_current_web_push_media(
+    target: list[str],
+    arguments: dict[str, Any],
+    *,
+    channel: str,
+    chat_id: str,
+) -> None:
+    if channel != "web":
+        return
+    if str(arguments.get("channel") or "").strip() != channel:
+        return
+    if str(arguments.get("chat_id") or "").strip() != chat_id:
+        return
+    for key in ("image", "file"):
+        value = str(arguments.get(key) or "").strip()
+        if value and value not in target:
+            target.append(value)
 
 
 def build_turn_injection_prompt(

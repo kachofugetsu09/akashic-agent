@@ -26,12 +26,19 @@ def _empty_prompt_sections() -> list[PromptSectionRender]:
 
 
 @dataclass
+class TurnPersistencePolicy:
+    persist_user: bool = True
+    persist_assistant: bool = True
+
+
+@dataclass
 class TurnState:
     msg: InboundMessage
     session_key: str
     dispatch_outbound: bool
     session: SessionLike | None = None
     extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    persistence: TurnPersistencePolicy = field(default_factory=TurnPersistencePolicy)
 
 
 @dataclass

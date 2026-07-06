@@ -115,6 +115,18 @@ max_steps = 30
 min_interval_hours = 1
 ```
 
+Web Chatbox 会随主进程默认启动在 `http://127.0.0.1:6322`，适合本机被动对话和调试。它的 session key 形如 `web:<uuid>`，其中 `<uuid>` 才是 message_push 的 `chat_id`。因为浏览器断开时 Web 推送不会作为独立 proactive 消息持久入库，长期主动推送仍建议使用 Telegram / QQBot。
+
+```text
+proactive delivery target
+├─ telegram
+│  └─ chat_id = Telegram user id
+├─ qqbot
+│  └─ chat_id = c2c:USER_OPENID
+└─ web
+   └─ 本机调试可用；不推荐作为长期主动推送目标
+```
+
 ### 2. 注册 MCP server（`~/.akashic/workspace/mcp_servers.json`）
 
 ```json

@@ -68,6 +68,7 @@ class _BuildAfterReasoningCtxModule:
             response_metadata=parsed.metadata,
             tools_used=tuple(turn_result.tools_used),
             tool_chain=tuple(tool_chain),
+            media=list(turn_result.media),
             thinking=turn_result.thinking,
             streamed=turn_result.streamed,
             context_retry=dict(turn_result.context_retry),
@@ -112,8 +113,7 @@ class _PersistUserMessageModule:
         if raw_session is None:
             raise RuntimeError("AfterReasoning requires TurnState.session")
         session = cast("Session", raw_session)
-        omit_user_turn = bool((msg.metadata or {}).get("omit_user_turn"))
-        if omit_user_turn:
+        if not state.persistence.persist_user:
             return frame
         if self._session_services.presence:
             self._session_services.presence.record_user_message(session.key)
@@ -148,10 +148,19 @@ class _PersistAssistantMessageModule:
             "tools_used": list(ctx.tools_used) if ctx.tools_used else None,
             "tool_chain": list(ctx.tool_chain) if ctx.tool_chain else None,
         }
+        turn_duration_ms = frame.input.state.extra_metadata.get("turn_duration_ms")
+        if isinstance(turn_duration_ms, int):
+            assistant_kwargs["turn_duration_ms"] = turn_duration_ms
         if ctx.thinking is not None:
             assistant_kwargs["reasoning_content"] = ctx.thinking
         assistant_kwargs.update(_collect_persist_assistant_slots(frame.slots))
-        session.add_message("assistant", ctx.reply, **assistant_kwargs)
+        if frame.input.state.persistence.persist_assistant:
+            session.add_message(
+                "assistant",
+                ctx.reply,
+                media=ctx.media if ctx.media else None,
+                **assistant_kwargs,
+            )
         return frame
 
 
@@ -186,7 +195,11 @@ class _AppendMessagesModule:
         if raw_session is None:
             raise RuntimeError("AfterReasoning requires TurnState.session")
         session = cast("Session", raw_session)
-        persist_count = 1 if bool((state.msg.metadata or {}).get("omit_user_turn")) else 2
+        persist_count = int(state.persistence.persist_user) + int(
+            state.persistence.persist_assistant
+        )
+        if persist_count == 0:
+            return frame
         await self._session_services.session_manager.append_messages(
             session,
             cast(list[dict[str, Any]], session.messages[-persist_count:]),

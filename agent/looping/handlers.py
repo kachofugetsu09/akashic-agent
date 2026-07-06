@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from agent.core.runtime_support import AgentLoopRunner, PromptRenderRunner, TurnRunResult
-from agent.lifecycle.types import PromptRenderInput
+from agent.lifecycle.types import PromptRenderInput, TurnPersistencePolicy
 from agent.looping.ports import SessionServices
 from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
 
@@ -108,14 +108,11 @@ async def process_spawn_completion_event(
             final_content = "后台任务执行出错。"
 
     # 3. 走 AfterReasoning + dispatch 流程，经过插件链。
-    marker = f"[后台任务完成] {label} ({status})"
-    if exit_reason:
-        marker += f" [{exit_reason}]"
     pseudo_msg = InboundMessage(
         channel=item.channel,
         sender="spawn",
         chat_id=item.chat_id,
-        content=marker,
+        content=f"内部后台任务完成：{label}",
         timestamp=item.timestamp,
         media=[],
         metadata={"skip_post_memory": True},
@@ -130,4 +127,5 @@ async def process_spawn_completion_event(
             tool_chain=parsed_tool_chain,
         ),
         dispatch_outbound=dispatch_outbound,
+        persistence=TurnPersistencePolicy(persist_user=False),
     )

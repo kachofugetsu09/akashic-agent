@@ -5,7 +5,17 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+
+def _resolve_path_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.startswith(("http://", "https://")):
+        return ""
+    try:
+        return str(Path(text).expanduser().resolve())
+    except OSError:
+        return ""
 
 
 class SessionStore:
@@ -293,6 +303,7 @@ class SessionStore:
                 s.metadata,
                 s.last_user_at,
                 s.last_proactive_at,
+                first_user.content AS first_message_content,
                 COALESCE(msg.message_count, 0) AS message_count
             FROM sessions s
             LEFT JOIN (
@@ -300,6 +311,16 @@ class SessionStore:
                 FROM messages
                 GROUP BY session_key
             ) msg ON msg.session_key = s.key
+            LEFT JOIN (
+                SELECT m.session_key, m.content
+                FROM messages m
+                INNER JOIN (
+                    SELECT session_key, MIN(seq) AS first_user_seq
+                    FROM messages
+                    WHERE role = 'user' AND TRIM(COALESCE(content, '')) != ''
+                    GROUP BY session_key
+                ) first ON first.session_key = m.session_key AND first.first_user_seq = m.seq
+            ) first_user ON first_user.session_key = s.key
             {where_sql}
             ORDER BY s.{safe_sort_by} {safe_sort_order}, s.key ASC
             LIMIT ? OFFSET ?
@@ -320,6 +341,7 @@ class SessionStore:
                 "metadata": json.loads(row["metadata"] or "{}"),
                 "last_user_at": row["last_user_at"],
                 "last_proactive_at": row["last_proactive_at"],
+                "first_message_content": row["first_message_content"],
                 "message_count": int(row["message_count"] or 0),
             }
             for row in rows
@@ -689,6 +711,31 @@ class SessionStore:
             ).fetchall()
         total = int((count_row["c"] if count_row else 0) or 0)
         return [self._row_to_message(row) for row in rows], total
+
+    def media_path_exists(self, path: str | Path) -> bool:
+        target = _resolve_path_text(path)
+        if not target:
+            return False
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT extra FROM messages WHERE extra LIKE ?",
+                ('%"media"%',),
+            ).fetchall()
+        for row in rows:
+            try:
+                loaded = json.loads(row["extra"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(loaded, dict):
+                continue
+            extra = cast(dict[str, object], loaded)
+            media = extra.get("media")
+            if not isinstance(media, list):
+                continue
+            for item in cast(list[object], media):
+                if _resolve_path_text(item) == target:
+                    return True
+        return False
 
     def get_message(self, message_id: str) -> dict[str, Any] | None:
         with self._lock:
