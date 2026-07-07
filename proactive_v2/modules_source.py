@@ -122,7 +122,7 @@ class McpGatewaySource:
             return []
         return cast(list[dict[str, object]], rows)
 
-    async def ack_fn(self, compound_key: str, ttl_hours: int) -> None:
+    async def ack_fn(self, compound_key: str, ttl_hours: int, feedback: str) -> None:
         parts = compound_key.split(":", 1)
         if len(parts) != 2:
             return
@@ -132,6 +132,7 @@ class McpGatewaySource:
             self._pool,
             [(source_key, item_id)],
             ttl_hours=ttl_hours,
+            feedback=feedback,
         )
 
     async def alert_ack_fn(self, compound_key: str) -> None:
