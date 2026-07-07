@@ -342,7 +342,6 @@ async def acknowledge_content_entries_async(
     pool: McpClientPool,
     entries: list[tuple[str, str]],
     *,
-    ttl_hours: int | None = None,
     feedback: str,
 ) -> None:
     if not entries:
@@ -362,8 +361,6 @@ async def acknowledge_content_entries_async(
         if not ids:
             continue
         args: dict = {"event_ids": ids}
-        if ttl_hours is not None and ttl_hours > 0:
-            args["ttl_hours"] = ttl_hours
         args["feedback"] = feedback
         try:
             await pool.call(server, ack_tool, args)

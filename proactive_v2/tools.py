@@ -37,7 +37,7 @@ class ToolDeps:
     web_search_tool: Any = None         # WebSearchTool（可选）
     memory: "MemoryProfileApi | MemoryRetrievalApi | None" = None
     recent_chat_fn: Any = None          # async (n) -> list[dict]
-    ack_fn: Any = None                  # async (compound_key: str, ttl_hours: int) -> None
+    ack_fn: Any = None                  # async (compound_key: str, feedback: str) -> None
     alert_ack_fn: Any = None            # async (compound_key: str) -> None
     max_chars: int = 8_000
 
@@ -133,7 +133,7 @@ TOOL_SCHEMAS: list[dict] = [
             (
                 "将指定 item 明确标记为「感兴趣」。只用于你已单独评估且明确相关的条目，"
                 "不能因为其中一条相关就把整批不同主题内容一起标记。"
-                "被标记但未被 message_push.evidence 引用的条目将得到 24h ACK。"
+                "被标记但未被 message_push.evidence 引用的条目也会 ACK。"
                 "可选传 reason，简短说明为什么 interesting。"
             ),
             {"type": "object", "properties": {
@@ -150,7 +150,7 @@ TOOL_SCHEMAS: list[dict] = [
 
     _schema("mark_not_interesting",
             (
-                "将指定 item 标记为「本质上不感兴趣」（720h ACK，30天内不再出现）。\n"
+                "将指定 item 标记为「本质上不感兴趣」。\n"
                 "仅用于内容本身无价值；时机问题、抓取失败不得调用。"
                 "可选传 reason，简短说明为什么 not_interesting。"
             ),

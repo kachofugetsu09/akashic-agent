@@ -107,22 +107,19 @@ class FakeAckSink:
     """记录所有 ACK 调用。"""
 
     def __init__(self):
-        self.calls: list[tuple[str, int, str]] = []
+        self.calls: list[tuple[str, str]] = []
 
-    async def __call__(self, compound_key: str, ttl_hours: int, feedback: str) -> None:
-        self.calls.append((compound_key, ttl_hours, feedback))
+    async def __call__(self, compound_key: str, feedback: str) -> None:
+        self.calls.append((compound_key, feedback))
 
-    def acked(self, key: str, ttl: int) -> bool:
-        return any(k == key and t == ttl for k, t, _ in self.calls)
-
-    def ttls_for(self, key: str) -> list[int]:
-        return [ttl for k, ttl, _ in self.calls if k == key]
+    def acked(self, key: str) -> bool:
+        return any(k == key for k, _ in self.calls)
 
     def not_acked(self, key: str) -> bool:
-        return all(k != key for k, _, _ in self.calls)
+        return all(k != key for k, _ in self.calls)
 
     def all_keys(self) -> set[str]:
-        return {k for k, _, _ in self.calls}
+        return {k for k, _ in self.calls}
 
 
 # ── FakeAlertAckSink ─────────────────────────────────────────────────────

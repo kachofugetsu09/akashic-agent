@@ -246,7 +246,7 @@ async def test_acknowledge_events_async_groups_by_ack_server(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_acknowledge_content_entries_async_passes_ttl_hours(monkeypatch):
+async def test_acknowledge_content_entries_async_passes_feedback(monkeypatch):
     monkeypatch.setattr(
         mcp_sources,
         "_load_sources",
@@ -259,10 +259,10 @@ async def test_acknowledge_content_entries_async_passes_ttl_hours(monkeypatch):
         ("mcp:feed", "evt-2"),
         ("rss:other", "skip"),
     ]
-    await mcp_sources.acknowledge_content_entries_async(cast(Any, pool), entries, ttl_hours=24)
+    await mcp_sources.acknowledge_content_entries_async(cast(Any, pool), entries, feedback="interesting")
 
     assert (
         "feed",
         "ack_content",
-        {"event_ids": ["evt-1", "evt-2"], "ttl_hours": 24},
+        {"event_ids": ["evt-1", "evt-2"], "feedback": "interesting"},
     ) in pool.calls
