@@ -104,19 +104,16 @@ class FakeRng:
 # ── FakeAckSink ──────────────────────────────────────────────────────────
 
 class FakeAckSink:
-    """记录所有 ACK 调用的 (compound_key, ttl_hours) 对。"""
+    """记录所有 ACK 调用。"""
 
     def __init__(self):
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple[str, str]] = []
 
-    async def __call__(self, compound_key: str, ttl_hours: int) -> None:
-        self.calls.append((compound_key, ttl_hours))
+    async def __call__(self, compound_key: str, feedback: str) -> None:
+        self.calls.append((compound_key, feedback))
 
-    def acked(self, key: str, ttl: int) -> bool:
-        return (key, ttl) in self.calls
-
-    def ttls_for(self, key: str) -> list[int]:
-        return [ttl for k, ttl in self.calls if k == key]
+    def acked(self, key: str) -> bool:
+        return any(k == key for k, _ in self.calls)
 
     def not_acked(self, key: str) -> bool:
         return all(k != key for k, _ in self.calls)

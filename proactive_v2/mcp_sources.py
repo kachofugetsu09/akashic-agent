@@ -341,10 +341,13 @@ async def acknowledge_events_async(
 async def acknowledge_content_entries_async(
     pool: McpClientPool,
     entries: list[tuple[str, str]],
-    ttl_hours: int | None = None,
+    *,
+    feedback: str,
 ) -> None:
     if not entries:
         return
+    if feedback not in {"interesting", "not_interesting"}:
+        raise ValueError(f"invalid feedback: {feedback}")
     ack_map = _build_ack_map(_load_sources(pool._workspace))
     for source_key, item_id in entries:
         if not source_key.startswith("mcp:"):
@@ -358,8 +361,7 @@ async def acknowledge_content_entries_async(
         if not ids:
             continue
         args: dict = {"event_ids": ids}
-        if ttl_hours is not None and ttl_hours > 0:
-            args["ttl_hours"] = ttl_hours
+        args["feedback"] = feedback
         try:
             await pool.call(server, ack_tool, args)
         except Exception as e:

@@ -13,12 +13,6 @@ from proactive_v2.context import AgentTickContext
 
 logger = logging.getLogger(__name__)
 
-_CITED_ACK_TTL = 168
-_UNCITED_ACK_TTL = 24
-_POST_GUARD_ACK_TTL = 24
-_DISCARDED_ACK_TTL = 720
-
-
 @dataclass
 class ResolveResult:
     action: str
@@ -87,7 +81,7 @@ async def ack_discarded(ctx: AgentTickContext, ack_fn: Any) -> None:
     if ack_fn is None:
         return
     for key in ctx.discarded_item_ids:
-        await ack_fn(key, _DISCARDED_ACK_TTL)
+        await ack_fn(key, "not_interesting")
 
 
 async def ack_post_guard_fail(
@@ -108,18 +102,18 @@ async def ack_post_guard_fail(
         if alert_ack_fn is not None:
             await alert_ack_fn(key)
         else:
-            await ack_fn(key, _POST_GUARD_ACK_TTL)
+            await ack_fn(key, "interesting")
 
     for key in cited_set - fetched_alert_keys:
-        await ack_fn(key, _POST_GUARD_ACK_TTL)
+        await ack_fn(key, "interesting")
     for key in cited_set & fetched_alert_keys:
         await _ack_alert(key)
     for key in fetched_alert_keys - cited_set:
         await _ack_alert(key)
     for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
-        await ack_fn(key, _POST_GUARD_ACK_TTL)
+        await ack_fn(key, "interesting")
     for key in ctx.discarded_item_ids:
-        await ack_fn(key, _DISCARDED_ACK_TTL)
+        await ack_fn(key, "not_interesting")
 
 
 async def ack_on_success(
@@ -140,16 +134,16 @@ async def ack_on_success(
     }
     cited_set = set(ctx.cited_item_ids)
     for key in cited_set & fetched_content_keys:
-        await ack_fn(key, _CITED_ACK_TTL)
+        await ack_fn(key, "interesting")
     for key in cited_set & fetched_alert_keys:
         if alert_ack_fn is not None:
             await alert_ack_fn(key)
         else:
-            await ack_fn(key, _CITED_ACK_TTL)
+            await ack_fn(key, "interesting")
     for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
-        await ack_fn(key, _UNCITED_ACK_TTL)
+        await ack_fn(key, "interesting")
     for key in ctx.discarded_item_ids:
-        await ack_fn(key, _DISCARDED_ACK_TTL)
+        await ack_fn(key, "not_interesting")
 
 
 async def _mark_delivery(

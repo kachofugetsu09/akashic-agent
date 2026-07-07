@@ -77,12 +77,12 @@ async def test_mcp_gateway_source_ack_routes(monkeypatch):
     pool = object()
     source = McpGatewaySource(pool, content_limit=5)  # type: ignore[arg-type]
 
-    await source.ack_fn("feed-mcp:item-1", 720)
+    await source.ack_fn("feed-mcp:item-1", "not_interesting")
     await source.alert_ack_fn("calendar:alert-1")
 
     content_ack.assert_awaited_once_with(
         pool,
         [("mcp:feed-mcp", "item-1")],
-        ttl_hours=720,
+        feedback="not_interesting",
     )
     assert alert_ack.await_args.args[1] == [("calendar", "alert-1")]
