@@ -168,7 +168,7 @@ class DriftTurnPipeline:
         # 2.4 构建初始 messages。
         messages: list[dict] = [
             {"role": "system", "content": self._build_system_prompt()},
-            await self._build_runtime_context_message(skills, connected_servers),
+            await self._build_runtime_context_message(skills, connected_servers, ctx=ctx),
         ]
 
         return tools, messages
@@ -499,6 +499,7 @@ class DriftTurnPipeline:
         self,
         skills: list[SkillMeta],
         connected_servers: set[str] | None = None,
+        ctx: AgentTickContext | None = None,
     ) -> dict[str, str]:
         """构建 runtime context frame，包含记忆、skill 列表、近期 run 记录。"""
 
@@ -600,7 +601,22 @@ class DriftTurnPipeline:
                     is_static=False,
                 )
             )
+        sections.append(
+            PromptSectionRender(
+                name="runtime_clock",
+                content=self._build_runtime_clock(ctx),
+                is_static=False,
+            )
+        )
         return build_context_frame_message(build_context_frame_content(sections))
+
+    def _build_runtime_clock(self, ctx: AgentTickContext | None) -> str:
+        now_utc = ctx.now_utc if ctx is not None else datetime.now(timezone.utc)
+        local_now = now_utc.astimezone()
+        return (
+            f"current_time_utc={now_utc.isoformat()}\n"
+            f"current_time_local={local_now.isoformat()}"
+        )
 
     def _build_selection_context(self, skills: list[SkillMeta]) -> str:
         if not skills:

@@ -288,8 +288,14 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
             shared_tools=_build_shared_tools(),
         ),
     )
-    runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
+    ctx = AgentTickContext(now_utc=datetime(2026, 1, 3, 12, 34, tzinfo=timezone.utc))
+    runtime = str(
+        (await pipeline._build_runtime_context_message(store.scan_skills(), ctx=ctx))["content"]
+    )
     assert "drift_selection_context" in runtime
+    assert "runtime_clock" in runtime
+    assert "current_time_utc=2026-01-03T12:34:00+00:00" in runtime
+    assert "current_time_local=" in runtime
     assert "按 skill 名称排列，顺序不代表优先级" in runtime
     assert "选择依据：status、上次 finish 时间" in runtime
     assert "recent_raw_chat" in runtime
@@ -305,6 +311,7 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
     assert "本轮首选" not in runtime
     assert "首个工具调用" not in runtime
     assert runtime.index("drift_selection_context") < runtime.index("long_term_memory")
+    assert runtime.index("recent_drift_runs") < runtime.index("runtime_clock")
 
 
 @pytest.mark.asyncio

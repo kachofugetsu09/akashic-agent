@@ -95,8 +95,13 @@ async def test_loop_puts_runtime_context_frame_before_kickoff():
     messages = llm.calls[0]
     assert messages[0]["role"] == "system"
     assert messages[1]["role"] == "user"
-    assert is_context_frame(str(messages[1]["content"]))
-    assert "proactive_tick_state" in str(messages[1]["content"])
+    runtime = str(messages[1]["content"])
+    assert is_context_frame(runtime)
+    assert "proactive_tick_state" in runtime
+    assert "runtime_clock" in runtime
+    assert "current_time_utc=" in runtime
+    assert "current_time_local=" in runtime
+    assert runtime.index("proactive_content") < runtime.index("runtime_clock")
     assert str(messages[2]["content"]).startswith("开始本轮 proactive 处理。")
 
 
