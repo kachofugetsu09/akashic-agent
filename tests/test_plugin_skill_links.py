@@ -262,7 +262,7 @@ def test_aka_plugin_drift_skill_uses_bare_plugin_name(tmp_path: Path) -> None:
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
-        "name: emotion:feedback-preference-context\n"
+        "name: feedback-preference-context\n"
         "description: drift skill\n"
         "---\n"
         "body\n",
@@ -284,7 +284,8 @@ def test_aka_plugin_drift_skill_uses_bare_plugin_name(tmp_path: Path) -> None:
     ).sync([plugin])
 
     assert result.expected == 1
-    assert (workspace / "drift" / "skills" / "emotion:feedback-preference-context").is_symlink()
+    assert (workspace / "drift" / "skills" / "feedback-preference-context").is_symlink()
+    assert not (workspace / "drift" / "skills" / "emotion:feedback-preference-context").exists()
     assert not (workspace / "drift" / "skills" / "emotion@github:feedback-preference-context").exists()
 
 
@@ -424,7 +425,7 @@ def test_emotion_feedback_drift_skill_is_exposed(tmp_path: Path) -> None:
     scripts_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
-        "name: emotion:feedback-preference-context\n"
+        "name: feedback-preference-context\n"
         "description: 情绪反馈 drift skill\n"
         "---\n"
         "body\n",
@@ -450,12 +451,12 @@ def test_emotion_feedback_drift_skill_is_exposed(tmp_path: Path) -> None:
     ).sync([plugin])
     skills = DriftStateStore(workspace / "drift").scan_skills()
     linked_skill_dir = DriftStateStore(workspace / "drift").skill_dir_for(
-        "emotion:feedback-preference-context"
+        "feedback-preference-context"
     )
 
     assert result.expected >= 1
-    assert (workspace / "drift" / "skills" / "emotion:feedback-preference-context").is_symlink()
-    assert "emotion:feedback-preference-context" in {skill.name for skill in skills}
+    assert (workspace / "drift" / "skills" / "feedback-preference-context").is_symlink()
+    assert "feedback-preference-context" in {skill.name for skill in skills}
     assert linked_skill_dir is not None
     assert (
         linked_skill_dir / "scripts" / "sample_feedback_context.py"
