@@ -32,6 +32,7 @@ from plugins.akasha.core import (
     graph_seed_keys_from_snapshot,
     parse_turn_key,
     parse_ts_unix,
+    recall_budget_from_dense,
     reinforced_activation_items,
     turn_key,
 )
@@ -198,8 +199,9 @@ class AkashaReplayRuntime:
             snapshot.nodes,
             snapshot.message_embeddings,
             snapshot.message_turn_keys,
-            limit=max(self._config.dense_top_k, CONTEXT_QUERY_LIMIT),
+            limit=max(20, self._config.dense_top_k, CONTEXT_QUERY_LIMIT),
         )
+        budget = recall_budget_from_dense(dense_items, self._core_config)
         candidates, _, trace = compute_candidates_from_snapshot(
             query_text,
             query_vec,
@@ -208,12 +210,12 @@ class AkashaReplayRuntime:
             config=self._core_config,
             source_cursor=self._source_cursor,
             soft_recall=False,
-            return_limit=self._config.activate_limit,
+            return_limit=budget.activation_k,
             graph_seed_keys=graph_seed_keys,
         )
         display_limit = max(
             24,
-            max(self._config.ripple_top_k, CONTEXT_QUERY_LIMIT) * 3,
+            max(budget.ripple_k, CONTEXT_QUERY_LIMIT) * 3,
         )
         ripple_items, _, trace = compute_candidates_from_snapshot(
             query_text,
@@ -265,6 +267,7 @@ class AkashaReplayRuntime:
                     ts,
                     query_residual=query_residual,
                     reinforce_boost=reinforce_boost,
+                    nodes={node.key: node for node in self._store.list_nodes()},
                 )
             )
             self._store.insert_activation_events(_activation_events(trigger, activation_items))
@@ -294,12 +297,13 @@ class AkashaReplayRuntime:
         message: SourceMessage,
         activation: ReplayActivation,
     ) -> None:
+        budget = recall_budget_from_dense(activation.dense_items, self._core_config)
         dense_cards = _cards_from_candidates(
             self._source_db_path,
             self._config,
             activation.dense_items,
             lane="dense",
-            limit=self._config.dense_top_k,
+            limit=budget.dense_k,
         )
         dense_keys = {card.key for card in dense_cards}
         dense_pairs = {_card_dedupe_key(card) for card in dense_cards}
@@ -308,7 +312,7 @@ class AkashaReplayRuntime:
             self._config,
             [item for item in activation.ripple_items if item.key not in dense_keys],
             lane="ripple",
-            limit=self._config.ripple_top_k,
+            limit=budget.ripple_k,
             skip_pairs=dense_pairs,
         )
         text_block = _format_context_block(

@@ -126,7 +126,7 @@ def _snapshot(db_path: Path):
         for row in db.execute("SELECT key, strength, resource, recall_count FROM akasha_nodes")
     }
     edges = {
-        (row[0], row[1]): (round(row[2], 6), int(row[3]), round(row[4], 6))
+        (row[0], row[1]): (round(row[2], 5), int(row[3]), round(row[4], 6))
         for row in db.execute("SELECT src_key, dst_key, weight, co_count, last_used_ts FROM akasha_edges")
     }
     db.close()
@@ -186,6 +186,15 @@ def _build_online_path(tmp_path: Path) -> Path:
                 )
                 activation_items: list[core.AkashaCandidate] = []
                 if snapshot.nodes:
+                    dense_items = core.dense_message_candidates(
+                        query_vec,
+                        snapshot.nodes,
+                        snapshot.message_embeddings,
+                        snapshot.message_turn_keys,
+                        limit=max(20, config.dense_top_k, 8),
+                        message_index=snapshot.message_index,
+                    )
+                    budget = core.recall_budget_from_dense(dense_items, core_config)
                     graph_seed_keys = core.graph_seed_keys_from_snapshot(
                         query_vec,
                         snapshot,
@@ -199,7 +208,7 @@ def _build_online_path(tmp_path: Path) -> Path:
                         config=core_config,
                         source_cursor=source_cursor,
                         soft_recall=False,
-                        return_limit=config.activate_limit,
+                        return_limit=budget.activation_k,
                         graph_seed_keys=graph_seed_keys,
                     )
                 updates = core.activation_updates(activation_items, snapshot.nodes, now_ts)
@@ -248,25 +257,11 @@ def _build_online_path(tmp_path: Path) -> Path:
                         activation_items,
                         now_ts,
                         query_residual=query_residual,
+                        nodes=nodes,
                     )
                     store.upsert_edges(edge_updates)
-                    for item in edge_updates:
-                        if item.src_key == item.dst_key:
-                            continue
-                        edge_key = (item.src_key, item.dst_key)
-                        old = edges.get(edge_key)
-                        if old is None:
-                            weight = 0.12 * item.strength
-                        else:
-                            decayed = core.effective_edge_weight(
-                                old,
-                                edges_meta.get(edge_key, 0.0),
-                                item.ts,
-                            )
-                            weight = core.bounded_add(decayed, 0.12 * item.strength, 2.0)
-                        edges[edge_key] = weight
-                        edges_meta[edge_key] = item.ts
-                        edges_by_src.setdefault(item.src_key, {})[item.dst_key] = weight
+                    edges, edges_meta = store.load_edges_with_meta()
+                    edges_by_src = core.edges_by_src(edges)
                     fan = core.fan_counts(edges)
         finally:
             store.close()

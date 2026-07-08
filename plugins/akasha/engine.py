@@ -12,7 +12,7 @@ import hashlib
 import sqlite3
 import threading
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -29,6 +29,7 @@ from plugins.akasha.core import (
     AkashaNode,
     CoreConfig,
     EdgeUpdate,
+    RecallBudget,
     SourceMessage,
     build_dense_message_index,
     turn_key,
@@ -45,6 +46,7 @@ from plugins.akasha.core import (
     graph_seed_keys_from_snapshot as _graph_seed_keys_from_snapshot,
     parse_turn_key as _parse_turn_key,
     bounded_add as _bounded_add,
+    recall_budget_from_dense as _recall_budget_from_dense,
     reinforce_boost_from_payload as _reinforce_boost_from_payload,
     reinforced_activation_items as _reinforced_activation_items,
 )
@@ -93,7 +95,7 @@ class PendingActivation:
     seq: int          # 仅作 query_log 标识用
     ts: float         # 用于 EdgeUpdate / last_used_ts
     items: list[AkashaCandidate]
-    query_vec: np.ndarray
+    query_vec: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float32))
 
 
 class AkashaMemoryEngine:
@@ -294,9 +296,10 @@ class AkashaMemoryEngine:
         if stateful and request.intent in {"context", "answer"}:
             self._remember_pending_activation(request, result.activation_items, query_vec, now_ts=now_ts)
 
-        # 4. context 注入按 Akasha 配置展示 topK；工具查询继续尊重调用方 limit。
-        dense_limit = self._akasha_config.dense_top_k
-        ripple_limit = self._akasha_config.ripple_top_k
+        # 4. dense 高原越强，左脑少展示重复共振，右脑多展开。
+        budget = result.budget
+        dense_limit = budget.dense_k
+        ripple_limit = budget.ripple_k
         if request.intent != "context":
             dense_limit = min(request.limit, dense_limit)
             ripple_limit = min(request.limit, ripple_limit)
@@ -343,6 +346,10 @@ class AkashaMemoryEngine:
                 "effect": request.effect,
                 "dense_count": len(dense_cards),
                 "ripple_count": len(ripple_cards),
+                "activation_count": len(result.activation_items),
+                "plateau_strength": budget.plateau_strength,
+                "dense_support": budget.dense_support,
+                "dense_tail_ratio": budget.tail_ratio,
                 "seed_count": result.trace.seed_count,
                 "pool_count": result.trace.pool_count,
             },
@@ -556,9 +563,10 @@ class AkashaMemoryEngine:
                 snapshot.nodes,
                 snapshot.message_embeddings,
                 snapshot.message_turn_keys,
-                limit=max(self._akasha_config.dense_top_k, request.limit),
+                limit=max(20, self._akasha_config.dense_top_k, request.limit),
                 message_index=snapshot.message_index,
             )
+            budget = _recall_budget_from_dense(dense_items, _core_config(self._akasha_config))
             graph_seed_keys = _graph_seed_keys_from_snapshot(
                 query_vec,
                 snapshot,
@@ -572,12 +580,12 @@ class AkashaMemoryEngine:
                 config=self._akasha_config,
                 source_cursor=source_cursor,
                 soft_recall=False,
-                return_limit=self._akasha_config.activate_limit,
+                return_limit=budget.activation_k,
                 graph_seed_keys=graph_seed_keys,
             )
             display_limit = max(
                 24,
-                max(self._akasha_config.ripple_top_k, request.limit) * 3,
+                max(budget.ripple_k, request.limit) * 3,
             )
             ripple_items, _, trace = _compute_candidates_from_snapshot(
                 query,
@@ -604,6 +612,7 @@ class AkashaMemoryEngine:
             ripple_items=ripple_items,
             activation_items=activation_items,
             trace=trace,
+            budget=budget,
             seq=seq,
         )
 
@@ -681,12 +690,15 @@ class AkashaMemoryEngine:
             prev_by_session.get(session_key, []),
             reinforce_boost,
         )
+        with self._graph_lock:
+            edge_nodes = dict(getattr(self, "_nodes", {}))
         edge_updates = _activation_edge_updates(
             current_key,
             edge_items,
             pending.ts,
             query_residual=query_residual,
             reinforce_boost=reinforce_boost,
+            nodes=edge_nodes,
         )
         self._store.upsert_edges(edge_updates)
         self._apply_edge_updates(edge_updates)
@@ -802,10 +814,12 @@ class AkashaMemoryEngine:
 
     # ν_turn = 1 − max_{j<i} cos(query, prior_j)²；当前 turn 自身排除。
     def _compute_query_residual(self, query_vec: np.ndarray, current_key: str) -> float:
+        if query_vec.size == 0:
+            return 1.0
         with self._graph_lock:
             embeddings = [
                 node.embedding
-                for key, node in self._nodes.items()
+                for key, node in getattr(self, "_nodes", {}).items()
                 if key != current_key and node.embedding.size > 0
             ]
         if not embeddings:
@@ -1067,6 +1081,7 @@ class _AkashaRetrieval:
     activation_items: list[AkashaCandidate]
     trace: ActivationTrace
     seq: int
+    budget: RecallBudget = RecallBudget(10, 10, 8, 0.0, 0, 0.0)
 
 
 def _reinforce_boost_for_turn(
