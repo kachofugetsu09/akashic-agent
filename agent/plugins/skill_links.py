@@ -135,7 +135,7 @@ class PluginSkillLinker:
                 if plugin.declares_aka_plugin and manifest_key == "skills":
                     link_name = skill_dir.name
                 elif plugin.declares_aka_plugin and manifest_key == "drift_skills":
-                    link_name = f"{plugin.plugin_id.split('@', 1)[0]}:{skill_dir.name}"
+                    link_name = skill_dir.name
                 else:
                     link_name = f"{plugin.plugin_id}:{skill_dir.name}"
                 target = skill_dir.resolve(strict=False)

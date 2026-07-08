@@ -191,7 +191,22 @@ class ProactivePromptBuilder:
                     )
                 )
 
+        sections.append(
+            PromptSectionRender(
+                name="runtime_clock",
+                content=self.render_runtime_clock(ctx),
+                is_static=False,
+            )
+        )
+
         return build_context_frame_message(build_context_frame_content(sections))
+
+    def render_runtime_clock(self, ctx: AgentTickContext) -> str:
+        local_now = ctx.now_utc.astimezone()
+        return (
+            f"current_time_utc={ctx.now_utc.isoformat()}\n"
+            f"current_time_local={local_now.isoformat()}"
+        )
 
     def read_workspace_context_for_prompt(self) -> str:
         if self._workspace_context_fn is None:

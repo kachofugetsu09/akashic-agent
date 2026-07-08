@@ -168,7 +168,7 @@ class DriftTurnPipeline:
         # 2.4 构建初始 messages。
         messages: list[dict] = [
             {"role": "system", "content": self._build_system_prompt()},
-            await self._build_runtime_context_message(skills, connected_servers),
+            await self._build_runtime_context_message(skills, connected_servers, ctx=ctx),
         ]
 
         return tools, messages
@@ -499,6 +499,7 @@ class DriftTurnPipeline:
         self,
         skills: list[SkillMeta],
         connected_servers: set[str] | None = None,
+        ctx: AgentTickContext | None = None,
     ) -> dict[str, str]:
         """构建 runtime context frame，包含记忆、skill 列表、近期 run 记录。"""
 
@@ -600,7 +601,22 @@ class DriftTurnPipeline:
                     is_static=False,
                 )
             )
+        sections.append(
+            PromptSectionRender(
+                name="runtime_clock",
+                content=self._build_runtime_clock(ctx),
+                is_static=False,
+            )
+        )
         return build_context_frame_message(build_context_frame_content(sections))
+
+    def _build_runtime_clock(self, ctx: AgentTickContext | None) -> str:
+        now_utc = ctx.now_utc if ctx is not None else datetime.now(timezone.utc)
+        local_now = now_utc.astimezone()
+        return (
+            f"current_time_utc={now_utc.isoformat()}\n"
+            f"current_time_local={local_now.isoformat()}"
+        )
 
     def _build_selection_context(self, skills: list[SkillMeta]) -> str:
         if not skills:
@@ -608,9 +624,10 @@ class DriftTurnPipeline:
 
         lines = [
             "下面按 skill 名称排列，顺序不代表优先级，也不是强制首选。",
-            "选择依据：status、上次 finish 时间、上次摘要、scratchpad、cursor、recent_raw_chat 和最近 runs。",
+            "选择依据：runtime_clock、status、上次 finish 时间、上次摘要、scratchpad、cursor、recent_raw_chat 和最近 runs。",
             "completed 表示上次小闭环已完成；paused 表示可接续；waiting 表示等待外部条件。",
             "local_context 只在 select_skill 后作为执行上下文参考，其中 scratchpad 是自然语言前情，cursor 是结构化游标。",
+            "判断“刚刚、今天、昨天、两天前”等相对时间时，必须以 runtime_clock 的完整日期和时间为准；只有时分没有日期时，不要断言它发生在今天。",
         ]
         for skill in skills:
             continuum = self._store.load_skill_continuum(skill.name)
@@ -664,7 +681,9 @@ class DriftTurnPipeline:
             f"{AKASHIC_IDENTITY}\n\n"
             f"{PERSONALITY_RULES}\n\n"
             "你现在有一段空闲时间（Drift 模式）。没有外部内容需要推送，\n"
-            "你可以自主决定做一件有意义的事。本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
+            "这段时间更像一个人没有被叫住时的自处：可以整理想法、延续自己的小兴趣、准备以后可能用得上的素材，或只是安静待着。"
+            "Drift 不是定时巡检，也不是补跑所有历史任务；不要为了显得忙而硬找事做。"
+            "本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
             "【执行规则】\n"
             "1. 先根据 context frame 比较所有可用 skill 和最近聊天气氛。"
             "如果没有值得做的事、刚刚打扰过用户或当前气氛不适合主动行动，调用 idle_drift(reason) 静默结束；"

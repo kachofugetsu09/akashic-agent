@@ -245,6 +245,9 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     prompt = pipeline._build_system_prompt()
     runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
     assert "select_skill 会记录本轮 selected_skill" in prompt
+    assert "没有被叫住时的自处" in prompt
+    assert "不要为了显得忙而硬找事做" in prompt
+    assert "Drift 不是定时巡检" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
     assert "message_result" in prompt
     assert "select_skill" in prompt
@@ -288,10 +291,17 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
             shared_tools=_build_shared_tools(),
         ),
     )
-    runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
+    ctx = AgentTickContext(now_utc=datetime(2026, 1, 3, 12, 34, tzinfo=timezone.utc))
+    runtime = str(
+        (await pipeline._build_runtime_context_message(store.scan_skills(), ctx=ctx))["content"]
+    )
     assert "drift_selection_context" in runtime
+    assert "runtime_clock" in runtime
+    assert "current_time_utc=2026-01-03T12:34:00+00:00" in runtime
+    assert "current_time_local=" in runtime
     assert "按 skill 名称排列，顺序不代表优先级" in runtime
-    assert "选择依据：status、上次 finish 时间" in runtime
+    assert "选择依据：runtime_clock、status、上次 finish 时间" in runtime
+    assert "必须以 runtime_clock 的完整日期和时间为准" in runtime
     assert "recent_raw_chat" in runtime
     assert "local_context 只在 select_skill 后作为执行上下文参考" in runtime
     assert "explore-curiosity: status=completed" in runtime
@@ -305,6 +315,7 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
     assert "本轮首选" not in runtime
     assert "首个工具调用" not in runtime
     assert runtime.index("drift_selection_context") < runtime.index("long_term_memory")
+    assert runtime.index("## recent_drift_runs") < runtime.index("## runtime_clock")
 
 
 @pytest.mark.asyncio
