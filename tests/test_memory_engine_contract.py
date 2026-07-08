@@ -472,9 +472,7 @@ async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_pa
         await maintenance.consolidate(ConsolidateRequest(session=session))
 
     assert session.last_consolidated == 6
-    assert "用户测试记忆" in (tmp_path / "memory" / "HISTORY.md").read_text(
-        encoding="utf-8"
-    )
+    assert not (tmp_path / "memory" / "HISTORY.md").exists()
     await event_bus.aclose()
 
 

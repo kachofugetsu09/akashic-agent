@@ -246,10 +246,6 @@ class MemoryOptimizer:
                 len(current_memory),
                 len(merged_memory),
             )
-            if pending:
-                self._memory.append_history(
-                    f"[memory_optimizer] PENDING 归档:\n{pending}"
-                )
             self._memory.commit_pending_snapshot()
             logger.info("[memory_optimizer] PENDING 已归档，snapshot 已提交")
         else:

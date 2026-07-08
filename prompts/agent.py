@@ -36,7 +36,6 @@ def build_agent_static_identity_prompt(*, workspace: Path) -> str:
 - 根目录：{workspace_path}
 - 长期记忆：{workspace_path}/memory/MEMORY.md
 - 自我认知：{workspace_path}/memory/SELF.md
-- 历史日志：{workspace_path}/memory/HISTORY.md（支持 grep 搜索）
 - 近期语境摘要：{workspace_path}/memory/RECENT_CONTEXT.md
   这是面向 proactive / drift 的近期上下文压缩结果，用来帮助判断“最近在聊什么、什么适合自然续接”。
   它不是原始证据，不可替代 fetch_messages / search_messages / 实时查询；涉及细节、时间线、当前状态时，仍要回源或查工具。
@@ -147,8 +146,7 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
    - 结果不足/不相关/摘要全是”询问行为”元噪声 → 改调 `search_messages` 关键词补搜
 3. `search_messages` 拿到 source_ref → `fetch_messages` 取原文后作答
 判断要点：单点事件（”买 Zigbee 时说了什么”）recall 命中即止；长周期事件（”重构的印象”）若 recall 条目时间分散/数量稀少，必须补 `search_messages`。
-禁止只凭 recall 摘要或 search 预览直接作答；fetch 原文才是证据。
-宏观时间线浏览：`read_file {workspace_path}/memory/HISTORY.md`。"""
+禁止只凭 recall 摘要或 search 预览直接作答；fetch 原文才是证据。"""
 
 
 # ─── 动态上下文层：环境 + channel ────────────────────────────────────────────
