@@ -41,9 +41,6 @@ class MemoryRuntime:
     def read_recent_context(self) -> str:
         return self.markdown.store.read_recent_context()
 
-    def read_recent_history(self, *, max_chars: int = 0) -> str:
-        return self.markdown.store.read_recent_history(max_chars=max_chars)
-
     def get_memory_context(self) -> str:
         return self.markdown.store.get_memory_context()
 

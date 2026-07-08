@@ -70,7 +70,6 @@ def test_optimize_updates_self_using_pending_only(tmp_path):
     memory.write_long_term("old")
     memory.write_self("## 原 SELF")
     memory.append_pending("- [preference] 回复保持简洁。")
-    memory.append_history("[2026-03-03 10:00] USER: 这段历史不该进入 SELF")
 
     provider = _provider_with_responses(
         "## 新记忆",
@@ -85,14 +84,12 @@ def test_optimize_updates_self_using_pending_only(tmp_path):
 
     self_prompt = provider.chat.await_args_list[1].kwargs["messages"][1]["content"]
     assert "- [preference] 回复保持简洁。" in self_prompt
-    assert "这段历史不该进入 SELF" not in self_prompt
 
 
 def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path):
     memory = MarkdownMemoryStore(tmp_path)
     memory.write_long_term("old profile")
     memory.append_pending("- [identity] 新身份")
-    memory.append_history("[2026-03-03 10:00] USER: 这段历史不该进入长期记忆")
 
     provider = _provider_with_responses("## 用户画像\n- 新版本\n")
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")

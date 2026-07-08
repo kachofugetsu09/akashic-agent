@@ -63,8 +63,6 @@ class MemoryProfileApi(Protocol):
 
     def write_self(self, content: str) -> None: ...
 
-    def read_recent_history(self, *, max_chars: int = 0) -> str: ...
-
     def read_recent_context(self) -> str: ...
 
     def write_recent_context(self, content: str) -> None: ...
@@ -218,39 +216,11 @@ def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _select_recent_history_entries(history_text: str, *, limit: int = 3) -> list[str]:
-    if not history_text.strip() or limit <= 0:
-        return []
-    chunks = re.split(r"\n\s*\n+", history_text.strip())
-    entries = [chunk.strip() for chunk in chunks if chunk.strip()]
-    return entries[-limit:]
-
-
-def _coerce_history_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    return ""
-
-
-_DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})")
-
-
-def _append_entries_to_journal(
-    profile_maint: "MarkdownMemoryStore",
-    entries: list[str],
-    source_ref: str,
-) -> None:
-    by_date: dict[str, list[str]] = {}
-    for entry in entries:
-        m = _DATE_PREFIX_RE.match(entry)
-        if not m:
-            continue
-        by_date.setdefault(m.group(1), []).append(entry)
-    for date_str, date_entries in by_date.items():
-        combined = "\n".join(date_entries)
-        profile_maint.append_journal(
-            date_str, combined, source_ref=source_ref, kind=f"journal:{date_str}"
-        )
+def _clip_context_text(text: str, max_chars: int = 16000) -> str:
+    stripped = text.strip()
+    if max_chars <= 0 or len(stripped) <= max_chars:
+        return stripped
+    return stripped[-max_chars:]
 
 
 def _coerce_emotional_weight(value: object) -> int:
@@ -771,21 +741,12 @@ ongoing_threads 严格限制：
         if window is None:
             return
 
-        # 2. 把窗口消息格式化成一段对话文本，并准备好 source_ref / 现有长期记忆 / 最近 history。
+        # 2. 把窗口消息格式化成一段对话文本，并准备好 source_ref / 现有长期记忆 / 近期语境。
         source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
         current_memory = await asyncio.to_thread(profile_maint.read_long_term)
-        history_text = ""
-        if hasattr(profile_maint, "read_history"):
-            history_text = _coerce_history_text(
-                await asyncio.to_thread(profile_maint.read_history, 16000)
-            )
-        recent_history_entries = _select_recent_history_entries(
-            history_text,
-            limit=3,
-        )
-        recent_history_block = "\n".join(
-            f"- {entry}" for entry in recent_history_entries
+        recent_context_block = _clip_context_text(
+            await asyncio.to_thread(profile_maint.read_recent_context)
         )
 
         scope_channel = getattr(session, "_channel", "")
@@ -795,9 +756,9 @@ ongoing_threads 严格限制：
 
 ## 字段说明
 
-### 1. "history_entries" → HISTORY.md（数组，每条对应一个独立主题）
+### 1. "history_entries" → 记忆事件条目（数组，每条对应一个独立主题）
 按主题拆分，每个独立话题写一条对象，格式为 {{"summary":"...", "emotional_weight":0}}。
-summary 仍然要求 1-2 句，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
+summary 仍然要求 1-2 句，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于后续向量写入和回源判断。
 不同主题必须拆成独立条目，不得合并。若整段对话只有一个主题，返回只含一条的数组。
 
 history_entries.emotional_weight 规则：
@@ -897,13 +858,13 @@ history_entries.emotional_weight 规则：
 ## 当前用户档案（用于查重）
 {current_memory or "（空）"}
 
-## 最近三次 consolidation event（仅用于主题延续参考）
+## 当前 RECENT_CONTEXT.md（仅用于主题延续参考）
 使用原则（严格遵守）：
-- 这些旧 event 只能帮助你理解“当前窗口大概在延续什么话题”，不能作为人物身份、说话人归属、关系判断或具体事实归属的直接证据。
-- 若旧 event 与当前窗口原文在昵称、身份、关系、事实归属上存在冲突或不一致，必须以当前窗口原文为准。
-- 不要因为旧 event 里出现了某个昵称、人设或关系描述，就在新的 history_entries 中继续沿用这些判断。
-- 对 transcript / 聊天截图 / 转贴聊天场景，旧 event 绝不能用于推断“谁是当前用户、谁是对方、哪句话归谁”。
-{recent_history_block or "（空）"},
+- 这份近期语境只能帮助你理解“当前窗口大概在延续什么话题”，不能作为人物身份、说话人归属、关系判断或具体事实归属的直接证据。
+- 若近期语境与当前窗口原文在昵称、身份、关系、事实归属上存在冲突或不一致，必须以当前窗口原文为准。
+- 不要因为近期语境里出现了某个昵称、人设或关系描述，就在新的 history_entries 中继续沿用这些判断。
+- 对 transcript / 聊天截图 / 转贴聊天场景，近期语境绝不能用于推断“谁是当前用户、谁是对方、哪句话归谁”。
+{recent_context_block or "（空）"}
 
 ## 待处理对话
 {conversation}
@@ -979,9 +940,6 @@ history_entries.emotional_weight 规则：
 
 
 class MarkdownMemoryStore(MemoryStore):
-    def read_recent_history(self, *, max_chars: int = 0) -> str:
-        return self.read_history(max_chars=max_chars)
-
     def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
         if self.memory_file.exists():
             shutil.copyfile(
@@ -1152,14 +1110,6 @@ class MarkdownMemoryMaintenance:
         session: object,
         draft: "_ConsolidationDraft",
     ) -> None:
-        history_entries = [entry for entry, _ in draft.history_entry_payloads]
-        if history_entries:
-            await asyncio.to_thread(
-                self._store.append_history_once,
-                "\n".join(history_entries),
-                source_ref=draft.source_ref,
-                kind="history_entry",
-            )
         if draft.pending_items:
             appended = await asyncio.to_thread(
                 self._store.append_pending_once,
@@ -1173,13 +1123,6 @@ class MarkdownMemoryMaintenance:
                     len(draft.pending_items.splitlines()),
                 )
         self._store.write_recent_context(draft.recent_context_text)
-        if history_entries:
-            await asyncio.to_thread(
-                _append_entries_to_journal,
-                self._store,
-                history_entries,
-                draft.source_ref,
-            )
         if draft.archive_all:
             session.last_consolidated = 0
         else:
