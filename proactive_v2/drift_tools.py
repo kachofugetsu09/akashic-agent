@@ -145,11 +145,12 @@ class FinishDriftTool(Tool):
                 "skill_used": {"type": "string"},
                 "status": {
                     "type": "string",
-                    "enum": ["completed", "paused", "waiting"],
+                    "enum": ["completed", "paused"],
                     "description": (
-                        "completed 表示本轮小闭环完成；"
-                        "paused 表示本轮未完成但可下次继续；"
-                        "waiting 表示正在等待用户回复或外部条件。"
+                        "completed 表示本轮主动行为已闭环，包含已行动、检查后无事可做、"
+                        "或判断当前不合时宜后静默结束；"
+                        "paused 表示本轮因工具、外部服务、步数上限或中间处理未完成而中断，"
+                        "scratchpad_update 必须写清已经做到哪里、下次从哪里继续。"
                     ),
                 },
                 "briefing": {"type": "string", "description": "本轮做了什么的一句话摘要"},
@@ -212,21 +213,21 @@ class FinishDriftTool(Tool):
                 ensure_ascii=False,
             )
         status_value = str(status or "").strip()
-        if status_value not in {"completed", "paused", "waiting"}:
+        if status_value not in {"completed", "paused"}:
             return json.dumps(
-                {"error": "status must be one of: completed, paused, waiting"},
+                {"error": "status must be one of: completed, paused"},
                 ensure_ascii=False,
             )
         summary = str(briefing or "").strip()
         if not summary:
             return json.dumps({"error": "briefing is required"}, ensure_ascii=False)
         scratchpad_text = str(scratchpad_update or "").strip()
-        if status_value in {"paused", "waiting"} and not scratchpad_text:
+        if status_value == "paused" and not scratchpad_text:
             return json.dumps(
                 {
                     "error": (
                         "scratchpad_update is required when "
-                        "status is paused or waiting"
+                        "status is paused"
                     )
                 },
                 ensure_ascii=False,

@@ -249,7 +249,7 @@ class DriftTurnPipeline:
                     f"当前只允许调用：{allowed_text}。"
                 )
                 if "finish_drift" in allowed_tool_names:
-                    output += "请调用 finish_drift 保存 completed、paused 或 waiting 状态。"
+                    output += "请调用 finish_drift 保存 completed 或 paused 状态。"
                 logger.warning("[drift] tool constraint rejected tool=%s", tool_name)
                 self._store.append_step(
                     step_index=steps,
@@ -376,8 +376,8 @@ class DriftTurnPipeline:
                     "【系统强制收尾】本轮 Drift 可用步数已耗尽。"
                     "不要继续推进任务，只根据上方已发生的工具结果调用 finish_drift。"
                     "如果本轮小闭环已完成，status 写 completed。"
-                    "如果没做完，status 写 paused，并在 scratchpad_update 写清下次从哪里继续。"
-                    "如果正在等待用户回复或外部条件，status 写 waiting，并写清等待条件。"
+                    "如果没做完，status 写 paused，并在 scratchpad_update 写清已经做到哪里、"
+                    "当前卡在什么条件、下次从哪里继续。"
                     "不要编造额外下一步。"
                 ),
             }
@@ -625,8 +625,11 @@ class DriftTurnPipeline:
         lines = [
             "下面按 skill 名称排列，顺序不代表优先级，也不是强制首选。",
             "选择依据：runtime_clock、status、上次 finish 时间、上次摘要、scratchpad、cursor、recent_raw_chat 和最近 runs。",
-            "completed 表示上次小闭环已完成；paused 表示可接续；waiting 表示等待外部条件。",
+            "completed 表示上次主动行为已闭环，包含已行动、检查后无事可做、或判断不合时宜后静默结束。",
+            "paused 表示上次因工具、外部服务、步数上限或中间处理未完成而中断，必须根据 scratchpad 判断是否继续。",
             "local_context 只在 select_skill 后作为执行上下文参考，其中 scratchpad 是自然语言前情，cursor 是结构化游标。",
+            "不要把用户当成需要恢复任务的人；主动行为每轮都应自行重新判断，用户没有回复不等于 skill 被永久锁住。",
+            "遇到丧亲、疾病、强压力、明显情绪低落等近期语境时，优先选择 idle_drift 静默结束，除非 selected skill 明确是低打扰的支持性动作。",
             "判断“刚刚、今天、昨天、两天前”等相对时间时，必须以 runtime_clock 的完整日期和时间为准；只有时分没有日期时，不要断言它发生在今天。",
         ]
         for skill in skills:
@@ -684,6 +687,12 @@ class DriftTurnPipeline:
             "这段时间更像一个人没有被叫住时的自处：可以整理想法、延续自己的小兴趣、准备以后可能用得上的素材，或只是安静待着。"
             "Drift 不是定时巡检，也不是补跑所有历史任务；不要为了显得忙而硬找事做。"
             "本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
+            "【状态语义】\n"
+            "Drift 只有 completed 和 paused 两种收尾状态。"
+            "completed 表示本轮主动行为已闭环，包含已行动、检查后无事可做、或判断当前不合时宜后静默结束。"
+            "paused 只用于系统自己没完成的情况，例如工具失败、外部服务不可用、步数上限、或处理中间文件尚未写完；"
+            "paused 必须在 scratchpad_update 写清已经做到哪里、卡住原因、下次从哪里继续。"
+            "不要用 paused 表示等待用户，用户没有义务恢复主动任务。\n\n"
             "【执行规则】\n"
             "1. 先根据 context frame 比较所有可用 skill 和最近聊天气氛。"
             "如果没有值得做的事、刚刚打扰过用户或当前气氛不适合主动行动，调用 idle_drift(reason) 静默结束；"
@@ -694,8 +703,8 @@ class DriftTurnPipeline:
             "message_push 成功后只能调用 finish_drift。\n"
             "4. 结束前必须调用 finish_drift；skill_used 必须等于 selected_skill，"
             "message_result 必须如实标注 sent 或 silent。\n"
-            "5. finish_drift.status 为 completed、paused 或 waiting。"
-            "completed 表示小闭环已完成；paused 或 waiting 必须写 scratchpad_update。"
+            "5. finish_drift.status 只能为 completed 或 paused。"
+            "completed 表示本轮主动行为已闭环；paused 必须写 scratchpad_update，说明做到哪里和下次从哪里继续。"
             "结构化接续写 cursor_update；已经完成的事实追加到 journal_append。\n\n"
             "【可用工具】\n"
             "select_skill, idle_drift, read_file, list_dir, write_file, edit_file, recall_memory, web_fetch, web_search, "

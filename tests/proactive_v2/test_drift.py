@@ -486,7 +486,7 @@ async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_pat
         scratchpad_update="短期避免继续问音乐，优先换成食物口味。",
         global_note_update=None,
         now_utc=now,
-        cursor_update={"last_topic": "音乐", "waiting_for_answer": True},
+        cursor_update={"last_topic": "音乐", "last_asked_at": "2026-01-01T00:00:00+00:00"},
         journal_append=[
             {
                 "entry_type": "curiosity_asked",
@@ -656,7 +656,10 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
             "status": "completed",
             "briefing": "问了音乐偏好",
             "message_result": "silent",
-            "cursor_update": {"last_topic": "music", "waiting_for_answer": True},
+            "cursor_update": {
+                "last_topic": "music",
+                "last_asked_at": "2026-01-01T00:00:00+00:00",
+            },
             "journal_append": [
                 {
                     "entry_type": "curiosity_asked",
@@ -672,7 +675,7 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
     continuum = store.load_skill_continuum("explore-curiosity")
     journal = store.load_skill_journal("explore-curiosity")
     assert continuum["cursor"]["last_topic"] == "music"
-    assert continuum["cursor"]["waiting_for_answer"] is True
+    assert continuum["cursor"]["last_asked_at"] == "2026-01-01T00:00:00+00:00"
     assert journal[0]["entry_type"] == "curiosity_asked"
     assert journal[0]["key"] == "music"
 
@@ -695,9 +698,7 @@ async def test_finish_drift_paused_requires_scratchpad(tmp_path: Path):
         store=store,
     )
     payload = json.loads(cast(Any, raw))
-    assert payload["error"] == (
-        "scratchpad_update is required when status is paused or waiting"
-    )
+    assert payload["error"] == "scratchpad_update is required when status is paused"
     assert ctx.drift_finished is False
 
 
