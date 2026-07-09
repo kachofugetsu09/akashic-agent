@@ -400,7 +400,7 @@ class IdleDriftTool(Tool):
 
     @property
     def description(self) -> str:
-        return "【终止工具】不选择 skill，静默结束本次 Drift；reason 必填。"
+        return "【例外终止工具】仅在近期气氛、频率或风险明确不合适时，不选择 skill 并静默结束；reason 必填。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -409,7 +409,7 @@ class IdleDriftTool(Tool):
             "properties": {
                 "reason": {
                     "type": "string",
-                    "description": "为什么本轮什么都不做，例如气氛不合适、没有足够价值或刚刚发过消息。",
+                    "description": "具体时机或风险原因，例如刚主动发过消息、丧亲/疾病/强压力语境、当前行动会明显低价值重复。",
                 },
             },
             "required": ["reason"],

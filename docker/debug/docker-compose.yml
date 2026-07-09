@@ -20,5 +20,7 @@ services:
       - ./profiles/${AKASHIC_DEBUG_PROFILE:-default}:/sandbox
     ports:
       - "2237:2236"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     stdin_open: true
     tty: true

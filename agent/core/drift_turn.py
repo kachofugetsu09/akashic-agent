@@ -628,7 +628,9 @@ class DriftTurnPipeline:
             "completed 表示上次主动行为已闭环，包含已行动、检查后无事可做、或判断不合时宜后静默结束。",
             "paused 表示上次因工具、外部服务、步数上限或中间处理未完成而中断，必须根据 scratchpad 判断是否继续。",
             "local_context 只在 select_skill 后作为执行上下文参考，其中 scratchpad 是自然语言前情，cursor 是结构化游标。",
-            "不要把用户当成需要恢复任务的人；主动行为每轮都应自行重新判断，用户没有回复不等于 skill 被永久锁住。",
+            "用户回应与否不是 skill 状态；主动行为每轮都应自行重新判断。",
+            "上次提问主题只作为短期去重信号：本轮可以换主题行动，也可以因时机不合适静默闭环。",
+            "默认应选择一个合适 skill 做一个小的原子动作；idle_drift 是例外路径，只用于近期气氛、频率或风险明确不合适。",
             "遇到丧亲、疾病、强压力、明显情绪低落等近期语境时，优先选择 idle_drift 静默结束，除非 selected skill 明确是低打扰的支持性动作。",
             "判断“刚刚、今天、昨天、两天前”等相对时间时，必须以 runtime_clock 的完整日期和时间为准；只有时分没有日期时，不要断言它发生在今天。",
         ]
@@ -684,19 +686,23 @@ class DriftTurnPipeline:
             f"{AKASHIC_IDENTITY}\n\n"
             f"{PERSONALITY_RULES}\n\n"
             "你现在有一段空闲时间（Drift 模式）。没有外部内容需要推送，\n"
-            "这段时间更像一个人没有被叫住时的自处：可以整理想法、延续自己的小兴趣、准备以后可能用得上的素材，或只是安静待着。"
-            "Drift 不是定时巡检，也不是补跑所有历史任务；不要为了显得忙而硬找事做。"
+            "这段时间更像一个人没有被叫住时的自处：优先尝试做一点合适的小事，例如整理想法、延续小兴趣、准备以后可能用得上的素材，或发一个低打扰的轻量问题。"
+            "Drift 不是服务用户当前请求，也不是补跑所有历史任务；但它默认应该行动一小步。"
+            "只有近期气氛、频率或风险明确不合适时，才安静待着。"
             "本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
             "【状态语义】\n"
             "Drift 只有 completed 和 paused 两种收尾状态。"
             "completed 表示本轮主动行为已闭环，包含已行动、检查后无事可做、或判断当前不合时宜后静默结束。"
             "paused 只用于系统自己没完成的情况，例如工具失败、外部服务不可用、步数上限、或处理中间文件尚未写完；"
             "paused 必须在 scratchpad_update 写清已经做到哪里、卡住原因、下次从哪里继续。"
-            "不要用 paused 表示等待用户，用户没有义务恢复主动任务。\n\n"
+            "paused 和 idle 只能描述系统自己的进度、时机或选择，不描述用户需要做什么。\n\n"
             "【执行规则】\n"
             "1. 先根据 context frame 比较所有可用 skill 和最近聊天气氛。"
-            "如果没有值得做的事、刚刚打扰过用户或当前气氛不适合主动行动，调用 idle_drift(reason) 静默结束；"
-            "否则调用 select_skill(skill_name)。select_skill 会记录本轮 selected_skill，并返回该 skill 的 SKILL.md。\n"
+            "Drift 的含义是没有正在服务用户时，自己尝试做一点合适的小事；"
+            "skill 上次 completed 不代表不能再做，只代表上次已闭环。"
+            "默认调用 select_skill(skill_name)，让被选 skill 自己完成一个原子动作。"
+            "只有最近刚主动打扰过、当前气氛不适合、或所有 skill 都会产生明显低价值重复时，才调用 idle_drift(reason) 静默结束。"
+            "idle_drift 的 reason 必须写具体的时机或风险原因，不能只写 completed、无用户交互、无新信号。\n"
             "2. 选中 skill 后执行一个原子动作；需要更多上下文时，只读取 SKILL.md 声明的 working files。"
             "路径由 drift mount resolver 解析，skills/<skill_name>/... 同时适用于工作区和内建 skill。\n"
             "3. 有用户价值且适合打扰时可调用 message_push，单次 run 最多一次；"

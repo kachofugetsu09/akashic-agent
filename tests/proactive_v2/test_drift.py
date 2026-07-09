@@ -244,10 +244,10 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     )
     prompt = pipeline._build_system_prompt()
     runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
-    assert "select_skill 会记录本轮 selected_skill" in prompt
     assert "没有被叫住时的自处" in prompt
-    assert "不要为了显得忙而硬找事做" in prompt
-    assert "Drift 不是定时巡检" in prompt
+    assert "默认应该行动一小步" in prompt
+    assert "默认调用 select_skill" in prompt
+    assert "idle_drift 的 reason 必须写具体的时机或风险原因" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
     assert "message_result" in prompt
     assert "select_skill" in prompt

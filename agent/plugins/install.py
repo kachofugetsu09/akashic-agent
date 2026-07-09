@@ -72,6 +72,9 @@ def install_git_plugin(
             cache_root=cache_root,
             data_root=data_root,
         )
+        installed_descriptor = load_plugin_descriptor(install_result.installed_path)
+        if installed_descriptor is None:
+            raise ValueError("安装后的插件缺少 .aka-plugin/plugin.json")
         plugin_id = f"{descriptor.name}@{marketplace}"
         _ = upsert_plugin_registry_entry(
             plugin_id,
@@ -87,15 +90,18 @@ def install_git_plugin(
                 "active": False,
                 "plugin_root": str(install_result.installed_path),
                 "data_dir": str(install_result.data_path),
-                "lifecycle_entry": str(descriptor.lifecycle_entry or ""),
+                "lifecycle_entry": str(installed_descriptor.lifecycle_entry or ""),
                 "capabilities": {
-                    "lifecycle": bool(descriptor.lifecycle_entry),
-                    "skills": bool(descriptor.skill_roots or descriptor.drift_skill_roots),
-                    "mcp": bool(descriptor.mcp_servers),
+                    "lifecycle": bool(installed_descriptor.lifecycle_entry),
+                    "skills": bool(
+                        installed_descriptor.skill_roots
+                        or installed_descriptor.drift_skill_roots
+                    ),
+                    "mcp": bool(installed_descriptor.mcp_servers),
                 },
-                "skills": _collect_skill_names(descriptor.skill_roots),
-                "drift_skills": _collect_skill_names(descriptor.drift_skill_roots),
-                "mcp_servers": sorted(descriptor.mcp_servers.keys()),
+                "skills": _collect_skill_names(installed_descriptor.skill_roots),
+                "drift_skills": _collect_skill_names(installed_descriptor.drift_skill_roots),
+                "mcp_servers": sorted(installed_descriptor.mcp_servers.keys()),
                 "install_source": source,
             },
             plugins_home=home,

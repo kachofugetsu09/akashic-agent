@@ -12,6 +12,7 @@ from agent.plugins.install import install_git_plugin
 def test_install_git_plugin_installs_into_cache_and_preserves_data(tmp_path: Path) -> None:
     repo = tmp_path / "feed-mcp"
     (repo / ".aka-plugin").mkdir(parents=True)
+    (repo / "plugin.py").write_text("print('ok')\n", encoding="utf-8")
     (repo / "skills" / "feed-manage").mkdir(parents=True)
     (repo / "skills" / "feed-manage" / "SKILL.md").write_text(
         "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
@@ -24,7 +25,10 @@ def test_install_git_plugin_installs_into_cache_and_preserves_data(tmp_path: Pat
                 "version": "0.1.0",
                 "description": "feed plugin",
                 "paths": {"skills": ["skills"]},
-                "akashic": {"runtime": {"supports": ["skills"]}},
+                "akashic": {
+                    "runtime": {"supports": ["skills"]},
+                    "lifecycle": {"entry": "plugin.py"},
+                },
             },
             ensure_ascii=False,
         ),
@@ -58,6 +62,7 @@ def test_install_git_plugin_installs_into_cache_and_preserves_data(tmp_path: Pat
     assert entry["plugin_id"] == "feed@lab"
     assert entry["install_source"] == str(repo)
     assert entry["skills"] == ["feed-manage"]
+    assert entry["lifecycle_entry"] == str(result.installed_path / "plugin.py")
     assert entry["active"] is False
 
 
