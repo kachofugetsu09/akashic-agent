@@ -681,6 +681,29 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_finish_drift_rejects_removed_waiting_status(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "waiting",
+            "briefing": "无新反馈",
+            "message_result": "silent",
+        },
+        store=store,
+    )
+    payload = json.loads(cast(Any, raw))
+    assert payload["error"] == "status must be one of: completed, paused"
+    assert ctx.drift_finished is False
+    assert store.load_drift()["recent_runs"] == []
+
+
+@pytest.mark.asyncio
 async def test_finish_drift_paused_requires_scratchpad(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
