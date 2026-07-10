@@ -291,13 +291,13 @@ Passive turn、proactive tick、job、tool execution、EventBus queue envelope �
 
 ### Step 5: 收敛 Channels、Dashboard、Memory Engine 与 Plugin Services
 
-ChannelHost 按 generation identity 保存实例，RuntimeSnapshot 的 channel binding 选择 sender；不存在独立 current slot。候选先构造和验证，发布只替换 snapshot；旧 ingress 在旧 generation drain 后停止。新实例启动失败时不发布候选。
+Channel contribution 声明通用 `ingress_mode`。`stable_adapter` 由 ChannelHost 持有唯一外部连接，入站消息在执行入口获取 RuntimeSnapshot，再路由到 generation handler；候选只验证 handler/sender，不启动第二个 ingress。无法分离连接的 `exclusive` channel 使用与 exclusive service 相同的 quiesce → execution lease drain → stop old → start new → publish 流程。RuntimeSnapshot 的 channel binding 选择 sender，不存在独立 current slot，也不允许候选提前双开 ingress。
 
 Dashboard 使用 generation-keyed ASGI sub-app registry，请求 lease 从 RuntimeSnapshot binding 选择 sub-app，禁止插件直接修改全局 FastAPI route table或替换独立 current dispatcher。前端插件模块返回 dispose，更新时卸载 React root、formatter 和样式后再加载 revision URL。
 
 Memory Engine 移入主插件 contribution，删除第二套动态 loader。核心通过稳定代理和当前 snapshot 选择 engine；同一 turn 的检索、工具和写入固定在同一 engine generation。
 
-Fitbit monitor 声明为 exclusive service，禁止 standby 双开。候选阶段只验证模型、配置、命令和端口，不启动进程。切换先进入 quiescing，阻止新的相关 snapshot lease 并等待现有 v1 generation/service lease 全部退出；随后停止 v1 monitor、启动 v2 并等待 ready，再发布含 v2 binding 的 snapshot并恢复入口。若启动或 post-publish invariant 失败，先停止 v2、重启保留描述与数据引用的 v1 monitor，再发布 v1 并恢复入口。整个过程 monitor 数量不超过一个，data 目录不参与 generation 清理。
+Fitbit monitor 声明为 exclusive service，禁止 standby 双开。候选阶段只验证模型、配置、命令和端口，不启动进程。切换先进入 quiescing，阻止新的相关 snapshot lease，只等待现有 v1 execution/service-use lease 退出，rollback hold 不参与 drain；随后停止 v1 monitor、启动 v2 并等待 ready，再发布含 v2 binding 的 pending snapshot。入口保持 quiesced，直到 post-publish invariants 通过并 COMMITTED 后才恢复。若失败则先停止 v2、重启 v1 monitor、发布 v1，确认恢复后再开放入口，因此不会破坏已经放行的 v2 执行。整个过程 monitor 数量不超过一个，data 目录不参与 generation 清理。
 
 **G2/G3/G5 Verify**:
 
