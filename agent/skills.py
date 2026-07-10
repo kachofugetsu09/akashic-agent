@@ -50,13 +50,15 @@ class SkillsLoader:
         *,
         workspace_skills_dir: Path | None = None,
         plugin_roots: Mapping[str, tuple[Path, ...]] | None = None,
-        ignore_workspace_symlinks: bool = False,
+        ignored_workspace_symlink_roots: tuple[Path, ...] = (),
     ):
         self.workspace = workspace
         self.workspace_skills = workspace_skills_dir or workspace / "skills"
         self.builtin_skills = builtin_skills_dir
         self.plugin_roots = dict(plugin_roots or {})
-        self.ignore_workspace_symlinks = ignore_workspace_symlinks
+        self.ignored_workspace_symlink_roots = tuple(
+            root.resolve(strict=False) for root in ignored_workspace_symlink_roots
+        )
 
     def list_skill_records(self, filter_unavailable: bool = True) -> list[SkillRecord]:
         return self.build_index().list_records(filter_unavailable=filter_unavailable)
@@ -123,7 +125,7 @@ class SkillsLoader:
             self.workspace_skills,
             source="workspace",
             source_id="workspace",
-            ignore_symlinks=self.ignore_workspace_symlinks,
+            ignored_symlink_roots=self.ignored_workspace_symlink_roots,
         ):
             records[record.name] = record
 
@@ -155,15 +157,17 @@ class SkillsLoader:
         source: SkillSource,
         source_id: str,
         name_prefix: str = "",
-        ignore_symlinks: bool = False,
+        ignored_symlink_roots: tuple[Path, ...] = (),
     ) -> list[SkillRecord]:
         if not skills_dir.exists():
             return []
 
         records: list[SkillRecord] = []
         for skill_dir in sorted(skills_dir.iterdir(), key=lambda item: item.name):
-            if ignore_symlinks and skill_dir.is_symlink():
-                continue
+            if skill_dir.is_symlink() and ignored_symlink_roots:
+                target = skill_dir.resolve(strict=False)
+                if any(target.is_relative_to(root) for root in ignored_symlink_roots):
+                    continue
             if not skill_dir.is_dir():
                 continue
             skill_file = skill_dir / "SKILL.md"

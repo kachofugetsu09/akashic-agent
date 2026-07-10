@@ -36,17 +36,23 @@ class PluginSkillHost:
         self._validate_unique_names(normal_roots)
         self._validate_unique_names(drift_roots)
         workspace = self._workspace or Path("/__akashic_no_workspace__")
+        normal_targets = tuple(
+            root for roots in normal_roots.values() for root in roots
+        )
+        drift_targets = tuple(
+            root for roots in drift_roots.values() for root in roots
+        )
         normal = SkillsLoader(
             workspace,
             plugin_roots=normal_roots,
-            ignore_workspace_symlinks=True,
+            ignored_workspace_symlink_roots=normal_targets,
         ).build_index()
         drift = SkillsLoader(
             workspace,
             builtin_skills_dir=None,
             workspace_skills_dir=workspace / "drift" / "skills",
             plugin_roots=drift_roots,
-            ignore_workspace_symlinks=True,
+            ignored_workspace_symlink_roots=drift_targets,
         ).build_index()
         catalog = PreparedSkillCatalog(
             generation_id=generation_id,
