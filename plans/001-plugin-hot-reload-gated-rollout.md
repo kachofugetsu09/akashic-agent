@@ -18,6 +18,8 @@
 
 实现已收敛到 `RuntimeSnapshot` 单一发布点。安装、删除、清单启停、源码和私有配置变化由 Watcher 触发候选验证；被动执行、主动 tick、Job、Tool、MCP、Skill、Lifecycle、Channel、Dashboard 与托管服务统一按代际租约切换和排空。全部外部插件已迁移，Fitbit 的睡眠模型、数据目录和预测接口保持不变。
 
+最终真实 Runtime 证据：`all-plugins` Gate 对 19 个非 Fitbit 外部插件逐个完成 load → reload → disable；`fitbit` Gate 单独完成监控服务 reload → disable，并确认进程数、健康接口和持久数据哈希不变。G-1 与 G6 的失败传播另有纯单元测试覆盖。
+
 ## Why this matters
 
 当前插件能力在启动时直接追加到多个 Runtime，插件实例、事件订阅、任务、MCP 连接和 Channel 没有统一所有权。只增加文件 Watcher 会让旧实例残留、回调重复或同一 turn 混用两代能力。
@@ -347,7 +349,7 @@ Watcher 只发送 invalidation hint。Reconciler 必须在启动、Watcher 事�
 - 公共协调层不包含具体插件名：`rg -n "fitbit|feed-mcp|calendar-mcp|emotion|proactive_feedback" agent/plugins bus proactive_v2 bootstrap` → 除测试 fixture/文档外无匹配。
 - `pytest -q tests/` → all pass。
 - 对全部 changed Python files 运行 `pyright` → exit 0。
-- `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase migrated-plugins` → 在真实 `main.py` 中逐个 load → reload → disable 已迁移插件；Fitbit 使用匿名 fixture。
+- `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase all-plugins` → 在真实 `main.py` 中逐个 load → reload → disable 19 个非 Fitbit 插件；Fitbit 使用独立匿名 fixture Gate。
 
 ### Step 8: Docker 完整 Runtime 验收
 

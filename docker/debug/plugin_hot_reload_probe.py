@@ -33,6 +33,33 @@ class GateResult:
     checks: list[CheckResult]
 
 
+def _gate_status(checks: list[CheckResult]) -> str:
+    return "passed" if all(check.passed for check in checks) else "failed"
+
+
+def _sandbox_is_protected(sandbox: Path, protected: list[Path]) -> bool:
+    return any(sandbox == path or sandbox.is_relative_to(path) for path in protected)
+
+
+def _controller_gate_passed(
+    *,
+    build_returncode: int,
+    integrity_returncode: int,
+    smoke_passed: bool,
+    cleanup_returncode: int,
+    unchanged: bool,
+    controller_error: str,
+) -> bool:
+    return (
+        build_returncode == 0
+        and integrity_returncode == 0
+        and smoke_passed
+        and cleanup_returncode == 0
+        and unchanged
+        and not controller_error
+    )
+
+
 def _run(repo: Path, *args: str) -> bytes:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -181,7 +208,7 @@ def _sandbox_integrity() -> GateResult:
             str(test_plugin),
         ),
     ]
-    status = "passed" if all(check.passed for check in checks) else "failed"
+    status = _gate_status(checks)
     result = GateResult(gate_id="G-1", status=status, checks=checks)
     report_dir = sandbox / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -203,7 +230,7 @@ def _run_controller(*, scenario: str, phase: str) -> int:
     sandbox = Path(tempfile.mkdtemp(prefix="akashic-plugin-gate-", dir="/tmp")).resolve()
     (sandbox / "static").mkdir()
     protected = [repo.resolve(), plugin_root, host_cache]
-    if any(sandbox == path or sandbox.is_relative_to(path) for path in protected):
+    if _sandbox_is_protected(sandbox, protected):
         shutil.rmtree(sandbox)
         raise SystemExit(f"Gate sandbox 不能位于受保护路径内：{sandbox}")
 
@@ -277,13 +304,13 @@ def _run_controller(*, scenario: str, phase: str) -> int:
             controller_error = f"{controller_error}; {suffix}".strip("; ")
     after = {str(path): _repository_digest(path) for path in repositories}
     unchanged = before == after
-    passed = (
-        build_returncode == 0
-        and integrity_returncode == 0
-        and smoke_passed
-        and cleanup_returncode == 0
-        and unchanged
-        and not controller_error
+    passed = _controller_gate_passed(
+        build_returncode=build_returncode,
+        integrity_returncode=integrity_returncode,
+        smoke_passed=smoke_passed,
+        cleanup_returncode=cleanup_returncode,
+        unchanged=unchanged,
+        controller_error=controller_error,
     )
     report: dict[str, object] = {
         "gate_id": "G-1-host" if scenario == "sandbox-integrity" else f"runtime:{phase}",
@@ -525,6 +552,55 @@ def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
             ),
         )
     return observe_source
+
+
+def _install_all_plugins(
+    sandbox: Path,
+    plugin_root: Path,
+) -> tuple[dict[str, Path], Path]:
+    cache = sandbox / "home/.akashic-plugin/cache/gate"
+    sources: dict[str, Path] = {}
+    entries: list[str] = []
+    for source_name, plugin_name in (
+        ("calendar-mcp", "calendar"),
+        ("citation", "citation"),
+        ("context_pressure", "context_pressure"),
+        ("daynight_gate", "daynight_gate"),
+        ("emotion", "emotion"),
+        ("feed-mcp", "feed"),
+        ("feishu", "feishu"),
+        ("huayue-skills", "huayue-skills"),
+        ("meme", "meme"),
+        ("observe", "observe"),
+        ("plugin_undo", "plugin_undo"),
+        ("proactive_feedback", "proactive_feedback"),
+        ("qqbot", "qqbot"),
+        ("setup_helper", "setup_helper"),
+        ("shell_restore", "shell_restore"),
+        ("shell_safety", "shell_safety"),
+        ("status_commands", "status_commands"),
+        ("steam-mcp", "steam"),
+        ("tool_loop_guard", "tool_loop_guard"),
+    ):
+        target = cache / plugin_name / "1.0.0"
+        ignored = (
+            shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache")
+            if source_name == "calendar-mcp"
+            else shutil.ignore_patterns(
+                ".git",
+                ".venv",
+                "__pycache__",
+                ".pytest_cache",
+            )
+        )
+        shutil.copytree(plugin_root / source_name, target, ignore=ignored)
+        plugin_id = f"{plugin_name}@gate"
+        sources[plugin_id] = target / "plugin.py"
+        entries.append(f'[plugins."{plugin_id}"]\nenabled = true\n')
+    manifest = sandbox / "home/.akashic-plugin/manifest.toml"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    _ = manifest.write_text("\n".join(entries), encoding="utf-8")
+    return sources, manifest
 
 
 def _install_candidate_plugins(
@@ -1042,6 +1118,77 @@ def _exercise_migrated_plugins(
     }
 
 
+def _exercise_all_plugins(
+    container_id: str,
+    sources: dict[str, Path],
+    manifest: Path,
+) -> dict[str, object]:
+    reloads: dict[str, object] = {}
+    disables: dict[str, object] = {}
+    for plugin_id, source in sources.items():
+        before = _snapshot_statuses(container_id)
+        _ = source.write_text(
+            source.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+        _, reloads[plugin_id] = _wait_snapshot_status(
+            container_id,
+            after=len(before),
+            publication_state="committed",
+            plugin_id=plugin_id,
+        )
+    manifest_text = manifest.read_text(encoding="utf-8")
+    for plugin_id in reversed(sources):
+        before = _snapshot_statuses(container_id)
+        manifest_text = manifest_text.replace(
+            f'[plugins."{plugin_id}"]\nenabled = true',
+            f'[plugins."{plugin_id}"]\nenabled = false',
+        )
+        _ = manifest.write_text(manifest_text, encoding="utf-8")
+        _, disables[plugin_id] = _wait_snapshot_status(
+            container_id,
+            after=len(before),
+            publication_state="disabled",
+            plugin_id=plugin_id,
+        )
+    passed = all(
+        isinstance(result, dict)
+        and result.get("publication_state") == "committed"
+        and result.get("old_generation") != result.get("new_generation")
+        for result in reloads.values()
+    ) and all(
+        isinstance(result, dict)
+        and result.get("publication_state") == "disabled"
+        for result in disables.values()
+    )
+    return {
+        "passed": passed,
+        "plugin_count": len(sources),
+        "reloaded": sorted(
+            plugin_id
+            for plugin_id, result in reloads.items()
+            if isinstance(result, dict)
+            and result.get("publication_state") == "committed"
+        ),
+        "disabled": sorted(
+            plugin_id
+            for plugin_id, result in disables.items()
+            if isinstance(result, dict)
+            and result.get("publication_state") == "disabled"
+        ),
+        "reload_failures": {
+            plugin_id: result
+            for plugin_id, result in reloads.items()
+            if not isinstance(result, dict)
+            or result.get("publication_state") != "committed"
+        },
+        "disable_failures": {
+            plugin_id: result
+            for plugin_id, result in disables.items()
+            if not isinstance(result, dict)
+            or result.get("publication_state") != "disabled"
+        },
+    }
 def _fitbit_runtime_probe(container_id: str) -> dict[str, object]:
     script = (
         "import json, urllib.request\n"
@@ -1067,6 +1214,14 @@ def _fitbit_runtime_probe(container_id: str) -> dict[str, object]:
     if not isinstance(raw, dict):
         return {"error": repr(raw)}
     return {str(key): value for key, value in raw.items()}
+
+
+def _persistent_file_hashes(root: Path) -> dict[str, str]:
+    return {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name != "monitor.runtime.log"
+    }
 
 
 def _wait_process_count(
@@ -1690,6 +1845,14 @@ def _run_runtime_smoke(
         if phase == "plugins"
         else None
     )
+    all_plugins = (
+        _install_all_plugins(
+            sandbox,
+            Path(env["AKASHIC_PLUGIN_SOURCE"]),
+        )
+        if phase == "all-plugins"
+        else None
+    )
     candidate_states = (
         _install_candidate_plugins(sandbox)
         if phase in {"candidate", "capability-hosts", "snapshot", "topology"}
@@ -1762,11 +1925,58 @@ def _run_runtime_smoke(
         ).stdout
     candidate_prepare: dict[str, object] = {}
     migrated_probe: dict[str, object] = {}
+    all_plugins_probe: dict[str, object] = {}
     fitbit_probe: dict[str, object] = {}
     fitbit_processes = -1
+    fitbit_reload: dict[str, object] = {}
+    fitbit_disabled: dict[str, object] = {}
+    fitbit_disabled_processes = -1
+    fitbit_data_before: dict[str, str] = {}
+    fitbit_data_after: dict[str, str] = {}
     if fitbit_data is not None and container_id and runtime_stable:
+        fitbit_data_before = _persistent_file_hashes(fitbit_data)
         fitbit_probe = _fitbit_runtime_probe(container_id)
         fitbit_processes = _container_process_count(container_id, "monitor/server.py")
+        before = _snapshot_statuses(container_id)
+        fitbit_source = (
+            sandbox
+            / "home/.akashic-plugin/cache/gate/fitbit/1.1.0/plugin.py"
+        )
+        _ = fitbit_source.write_text(
+            fitbit_source.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+        )
+        _, fitbit_reload = _wait_snapshot_status(
+            container_id,
+            after=len(before),
+            publication_state="committed",
+            plugin_id="fitbit@gate",
+        )
+        fitbit_processes = _wait_process_count(
+            container_id,
+            "monitor/server.py",
+            lambda count: count == 1,
+        )
+        fitbit_probe = _fitbit_runtime_probe(container_id)
+        before = _snapshot_statuses(container_id)
+        manifest = sandbox / "home/.akashic-plugin/manifest.toml"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        _ = manifest.write_text(
+            '[plugins."fitbit@gate"]\nenabled = false\n',
+            encoding="utf-8",
+        )
+        _, fitbit_disabled = _wait_snapshot_status(
+            container_id,
+            after=len(before),
+            publication_state="disabled",
+            plugin_id="fitbit@gate",
+        )
+        fitbit_disabled_processes = _wait_process_count(
+            container_id,
+            "monitor/server.py",
+            lambda count: count == 0,
+        )
+        fitbit_data_after = _persistent_file_hashes(fitbit_data)
     if candidate_states is not None and container_id and runtime_stable:
         if phase == "snapshot":
             candidate_prepare = _exercise_snapshot_publish(
@@ -1793,6 +2003,12 @@ def _run_runtime_smoke(
             container_id,
             migrated_observe,
             sandbox,
+        )
+    if all_plugins is not None and container_id and runtime_stable:
+        all_plugins_probe = _exercise_all_plugins(
+            container_id,
+            all_plugins[0],
+            all_plugins[1],
         )
     _ = (
         _wait_json_value(scope_state, "event_started", True)
@@ -1905,6 +2121,12 @@ def _run_runtime_smoke(
         runtime_log = fitbit_data / "monitor.runtime.log"
         phase_passed = (
             fitbit_processes == 1
+            and fitbit_reload.get("publication_state") == "committed"
+            and fitbit_reload.get("old_generation")
+            != fitbit_reload.get("new_generation")
+            and fitbit_disabled.get("publication_state") == "disabled"
+            and fitbit_disabled_processes == 0
+            and fitbit_data_before == fitbit_data_after
             and isinstance(fitbit_probe.get("data"), dict)
             and isinstance(fitbit_probe.get("snapshot"), dict)
             and runtime_log.exists()
@@ -1912,12 +2134,19 @@ def _run_runtime_smoke(
         phase_evidence = {
             "phase": phase,
             "monitor_processes": fitbit_processes,
+            "disabled_monitor_processes": fitbit_disabled_processes,
+            "reload": fitbit_reload,
+            "disabled": fitbit_disabled,
+            "persistent_data_unchanged": fitbit_data_before == fitbit_data_after,
             "probe": fitbit_probe,
             "runtime_log": str(runtime_log),
         }
     if migrated_observe is not None:
         phase_passed = migrated_probe.get("passed") is True
         phase_evidence = {"phase": phase, **migrated_probe}
+    if all_plugins is not None:
+        phase_passed = all_plugins_probe.get("passed") is True
+        phase_evidence = {"phase": phase, **all_plugins_probe}
     passed = (
         started.returncode == 0
         and ipc_ready
@@ -1995,6 +2224,7 @@ def main() -> int:
             "snapshot",
             "topology",
             "plugins",
+            "all-plugins",
             "fitbit",
         ),
         default="smoke",

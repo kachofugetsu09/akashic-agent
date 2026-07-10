@@ -209,3 +209,18 @@ Runtime 每秒检查插件清单、源码和本地配置的元数据。发现变
 ```
 
 插件需要独占后台服务时，通过 `managed_services()` 声明；短期异步任务使用 `self.context.create_task()`。MCP bridge 只连接服务，不应再维护第二套进程所有权。
+
+## 仍需重启的边界
+
+热重载只替换插件代际，不替换宿主进程本身。
+
+```text
+┌─ 可热重载
+│  ├─ Python 插件源码与资源
+│  ├─ config.local.toml
+│  └─ MCP、Skill、Job、Channel、Dashboard 与 managed service 声明
+└─ 必须重启 Runtime
+   ├─ CPython 或核心 Runtime ABI 变化
+   ├─ 已载入的原生动态库升级
+   └─ Runtime 自身依赖与启动参数变化
+```
