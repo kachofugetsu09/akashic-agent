@@ -176,7 +176,7 @@
 - 不挂载宿主 `~/.akashic-plugin/cache`；Gate 在 `/sandbox/home/.akashic-plugin/cache` 安装和修改一次性测试插件。
 - canonical plugin repo 若用于 fixture，只能只读挂载；Probe 先复制到 sandbox cache 再执行 reload。
 - root filesystem 只读，`/tmp` 使用 tmpfs；不挂载 Docker socket，不发布端口，不启用 Telegram、QQ、Chat 等外部 Channel。
-- 使用独立 Compose project `akashic-plugin-reload-gate`，清理命令不能影响普通 debug 容器。
+- Controller 从临时目录名生成带 nonce 的独立 Compose project，清理命令不能影响普通 debug 容器或并行 Gate。
 
 新增 host-side controller `plugin_hot_reload_probe.py`。Controller 使用系统临时目录创建唯一 sandbox，规范化路径并拒绝位于核心仓库、任一插件仓库或宿主插件缓存内；随后启动独立 Runtime 容器。`/mnt/data/coding/akashic-plugin` 是多个独立插件仓库的父目录，不是单一 Git 仓库；Controller 在运行前后分别记录核心仓库和每个插件仓库状态。容器内 probe 只检查 mount 与沙盒路径。工作树允许原本就是 dirty，但前后状态必须完全一致；Git 审计只是二次证据，真正保护依赖只读 mount。
 
@@ -195,7 +195,7 @@
 │     ├─ config.toml
 │     └─ reports
 └─ Cleanup
-   └─ only compose project akashic-plugin-reload-gate
+   └─ only compose project akashic-plugin-gate-<nonce>
 ```
 
 **G-1 Verify**:
@@ -271,7 +271,7 @@ JobHost 使用稳定 `<plugin_id>:<job_id>` 保存调度状态，Proactive sourc
 
 ### Step 4: 建立 RuntimeSnapshot、执行 lease 与安全回滚
 
-RuntimeSnapshot 一次性包含 lifecycle graphs、event handlers、tool hooks、tool catalog、skill catalog、generation-bound job catalog、proactive declarations 和 service provider 引用。发布只允许原子替换一个 snapshot 引用；Job queue envelope 固化入队时的 snapshot identity 和 handler 引用，不能在出队时重新查 current。
+RuntimeSnapshot 一次性包含 lifecycle graphs、event handlers、tool hooks、tool catalog、skill catalog、generation-bound job catalog、proactive declarations、Channel sender 和 Dashboard/Memory dispatcher binding。Channel outbound 与 Dashboard request 从已持有的 snapshot 选择 endpoint，不读取独立全局 slot。发布和回滚都只替换一个 snapshot 引用；Job queue envelope 固化入队时的 snapshot identity 和 handler 引用，不能在出队时重新查 current。
 
 Passive turn、proactive tick、job、tool execution、EventBus queue envelope 和 Dashboard request 都在入口获取 snapshot lease，在完成时释放。同一次执行禁止重新读取 current snapshot。
 
@@ -285,6 +285,7 @@ Passive turn、proactive tick、job、tool execution、EventBus queue envelope �
 - v2 发布后触发 rollback：后续执行回到 v1，已经持有 v2 lease 的执行安全完成，最后 v2 才清理。
 - v1 rollback hold 在发布验收完成前始终保留其 MCP、Channel 和 Service；验收通过后才允许 v1 drain。
 - Job 在 v1 入队、v2 发布后出队时仍调用 v1 envelope 中的 handler；新入队任务使用 v2 job catalog。
+- 测试 Job 与 Proactive source 必须写出 generation marker；Controller 等待 v1 已入队／tick 已开始的结构化事件，再发布 v2、释放 barrier 并断言旧执行为 v1、新执行为 v2。
 - `pytest -q tests/test_plugin_hot_reload.py tests/proactive_v2` → all pass。
 - `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase snapshot` → 真实 `main.py` 中阻塞 v1 turn，中途更新隔离 cache，当前 turn 保持 v1，下一 turn 使用 v2。
 
@@ -296,7 +297,7 @@ Dashboard 改为稳定 dispatcher 指向 generation-owned ASGI sub-app，禁止�
 
 Memory Engine 移入主插件 contribution，删除第二套动态 loader。核心通过稳定代理和当前 snapshot 选择 engine；同一 turn 的检索、工具和写入固定在同一 engine generation。
 
-Fitbit monitor 迁成 managed service：新进程 ready 后才允许发布，旧进程关闭后必须确认只剩一个 monitor；data 目录不参与 generation 清理。
+Fitbit monitor 声明为 exclusive service，禁止 standby 双开。候选阶段只验证模型、配置、命令和端口，不启动进程。发布事务先暂停新入口并停止 v1 monitor，再启动 v2 并等待 ready，随后把包含 v2 endpoint 的 snapshot 一次发布；若启动或 post-publish invariant 失败，先停止 v2、重启保留描述与数据引用的 v1 monitor，再重新发布 v1。整个过程 monitor 数量不超过一个，data 目录不参与 generation 清理。
 
 **G2/G3/G5 Verify**:
 
