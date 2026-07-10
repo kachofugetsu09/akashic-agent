@@ -681,7 +681,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     class _Skills:
-        def __init__(self, workspace: Path) -> None:
+        def __init__(self, workspace: Path, **_: object) -> None:
             self.workspace = workspace
 
         def get_always_skills(self) -> list[str]:
@@ -862,7 +862,7 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     class _Skills:
-        def __init__(self, workspace: Path) -> None:
+        def __init__(self, workspace: Path, **_: object) -> None:
             self.workspace = workspace
 
         def get_always_skills(self) -> list[str]:
