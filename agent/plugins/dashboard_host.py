@@ -271,11 +271,11 @@ def _route_paths_overlap(first: APIRoute, second: APIRoute) -> bool:
 
 
 def _overlapping_methods(first: APIRoute, second: APIRoute) -> list[str]:
-    if first.methods is None and second.methods is None:
+    if not first.methods and not second.methods:
         return ["*"]
-    if first.methods is None:
+    if not first.methods:
         return sorted(second.methods or ())
-    if second.methods is None:
+    if not second.methods:
         return sorted(first.methods)
     return sorted(first.methods.intersection(second.methods))
 

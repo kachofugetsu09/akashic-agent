@@ -3331,7 +3331,10 @@ def test_dashboard_rejects_custom_path_convertor(
         _plugin_routes(app.routes)
 
 
-def test_dashboard_treats_missing_methods_as_wildcard() -> None:
+@pytest.mark.parametrize("wildcard_methods", [None, set()])
+def test_dashboard_treats_missing_methods_as_wildcard(
+    wildcard_methods: set[str] | None,
+) -> None:
     core_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     plugin_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -3344,7 +3347,7 @@ def test_dashboard_treats_missing_methods_as_wildcard() -> None:
         return {"plugin": True}
 
     core_routes = _plugin_routes(core_app.routes)
-    core_routes[0].methods = None
+    core_routes[0].methods = wildcard_methods
     binding = DashboardBinding(
         plugin_id="wildcard",
         app=plugin_app,
