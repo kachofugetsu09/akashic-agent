@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _RECV_TIMEOUT = 30.0
 _CONNECT_TIMEOUT = 8.0
+_DISCONNECT_TIMEOUT = 5.0
 _STREAM_LIMIT = 4 * 1024 * 1024  # 4 MB，防止大响应触发 StreamReader 行限
 
 
@@ -163,12 +164,24 @@ class McpClient:
         """终止子进程。"""
         if self._process is None:
             return
+        process = self._process
         try:
-            self._process.terminate()
-            _ = await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            if process.stdin is not None:
+                process.stdin.close()
+            _ = await asyncio.wait_for(
+                process.wait(),
+                timeout=_DISCONNECT_TIMEOUT,
+            )
         except asyncio.TimeoutError:
-            self._process.kill()
-            _ = await self._process.wait()
+            process.terminate()
+            try:
+                _ = await asyncio.wait_for(
+                    process.wait(),
+                    timeout=_DISCONNECT_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                _ = await process.wait()
         except Exception as e:
             logger.warning("[mcp] 断开 %r 时出错: %s", self.name, e)
         finally:
