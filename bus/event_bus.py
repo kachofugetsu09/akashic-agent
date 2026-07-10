@@ -126,8 +126,14 @@ class EventBus:
         handlers = self._handlers_for(type(event))
         if not handlers:
             return
+        from agent.plugins.snapshot import lease_current_runtime_snapshot
+
+        leases = [lease_current_runtime_snapshot() for _ in handlers]
         results = await asyncio.gather(
-            *(self._run_observer(event, handler) for handler in handlers)
+            *(
+                self._run_observer(event, handler, snapshot_lease)
+                for handler, snapshot_lease in zip(handlers, leases, strict=True)
+            )
         )
         failed_count = results.count(False)
         if failed_count:
@@ -197,9 +203,13 @@ class EventBus:
         self,
         event: object,
         handler: Handler[object],
+        snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> bool:
+        from agent.plugins.snapshot import lease_current_runtime_snapshot
+
+        snapshot_lease = snapshot_lease or lease_current_runtime_snapshot()
         handler_task = asyncio.create_task(
-            self._invoke_observer(handler, event),
+            self._invoke_observer(handler, event, snapshot_lease),
             name=f"event_observer:{_handler_name(handler)}",
         )
         try:
@@ -224,12 +234,26 @@ class EventBus:
                 _handler_name(handler),
             )
             return False
+        finally:
+            if snapshot_lease is not None and snapshot_lease.active:
+                await snapshot_lease.release()
 
     async def _invoke_observer(
         self,
         handler: Handler[object],
         event: object,
+        snapshot_lease: RuntimeSnapshotLease | None,
     ) -> None:
+        if snapshot_lease is not None:
+            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+            async with snapshot_lease:
+                token = bind_runtime_snapshot(snapshot_lease)
+                try:
+                    await self._invoke_observer(handler, event, None)
+                finally:
+                    reset_runtime_snapshot(token)
+            return
         result = handler(event)
         if inspect.isawaitable(result):
             await result

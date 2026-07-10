@@ -2255,6 +2255,33 @@ async def test_event_bus_shutdown_drains_snapshot_lease_before_plugins(
 
 
 @pytest.mark.asyncio
+async def test_event_observers_keep_snapshot_binding_in_isolated_tasks() -> None:
+    event_bus = EventBus()
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    event_bus.bind_runtime_snapshot_store(store)
+    seen: list[str | None] = []
+
+    async def observe_snapshot(_event: str) -> None:
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        current = get_current_runtime_snapshot()
+        seen.append(current.snapshot_id if current is not None else None)
+
+    event_bus.on(str, observe_snapshot)
+
+    await event_bus.observe("observe")
+    await event_bus.fanout("fanout")
+    event_bus.enqueue("queued")
+    await event_bus.drain()
+
+    assert seen == [snapshot.snapshot_id] * 3
+    await event_bus.aclose()
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins" / "snapshot_skill"
     for version in ("v1", "v2"):
