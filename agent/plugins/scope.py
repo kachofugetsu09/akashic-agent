@@ -6,7 +6,7 @@ import logging
 import subprocess
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 from bus.event_bus import EventBus, EventSubscription, Handler
 
@@ -143,25 +143,91 @@ class PluginScope:
 
 
 class ScopedEventBus:
-    def __init__(self, event_bus: EventBus, scope: PluginScope) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        scope: PluginScope,
+        *,
+        staged: bool = False,
+    ) -> None:
         self._event_bus = event_bus
         self._scope = scope
+        self._active = not staged
+        self._pending: list[_StagedEventSubscription[Any]] = []
 
     def on(
         self,
         event_type: type[T],
         handler: Handler[T],
-    ) -> EventSubscription:
+    ) -> EventSubscription | _StagedEventSubscription[T]:
+        if not self._active:
+            subscription = _StagedEventSubscription(
+                self._event_bus,
+                event_type,
+                handler,
+            )
+            self._pending.append(subscription)
+            self._scope.defer(
+                f"event:{event_type.__name__}",
+                subscription.close,
+            )
+            return subscription
         return self._scope.subscribe(self._event_bus, event_type, handler)
 
+    def activate(self) -> None:
+        if self._active:
+            return
+        self._active = True
+        for subscription in self._pending:
+            subscription.activate()
+        self._pending.clear()
+
     async def emit(self, event: T) -> T:
+        self._ensure_active()
         return await self._event_bus.emit(event)
 
     async def observe(self, event: object) -> None:
+        self._ensure_active()
         await self._event_bus.observe(event)
 
     async def fanout(self, event: object) -> None:
+        self._ensure_active()
         await self._event_bus.fanout(event)
 
     def enqueue(self, event: object) -> None:
+        self._ensure_active()
         self._event_bus.enqueue(event)
+
+    def _ensure_active(self) -> None:
+        if not self._active:
+            raise RuntimeError("候选插件尚未发布，不能发送事件")
+
+
+class _StagedEventSubscription(Generic[T]):
+    def __init__(
+        self,
+        event_bus: EventBus,
+        event_type: type[T],
+        handler: Handler[T],
+    ) -> None:
+        self._event_bus = event_bus
+        self._event_type = event_type
+        self._handler = handler
+        self._subscription: EventSubscription | None = None
+        self._active = True
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def activate(self) -> None:
+        if not self._active or self._subscription is not None:
+            return
+        self._subscription = self._event_bus.on(self._event_type, self._handler)
+
+    def close(self) -> None:
+        if not self._active:
+            return
+        self._active = False
+        if self._subscription is not None:
+            self._subscription.close()

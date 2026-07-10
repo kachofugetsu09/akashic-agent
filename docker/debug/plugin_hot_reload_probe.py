@@ -384,12 +384,16 @@ def _install_scope_plugin(sandbox: Path) -> Path:
     return sandbox / "home/.akashic-plugin/data/scope_gate-gate/.kv.json"
 
 
-def _install_candidate_plugins(sandbox: Path) -> tuple[Path, Path]:
+def _install_candidate_plugins(sandbox: Path) -> tuple[Path, Path, Path, Path]:
     cache = sandbox / "home/.akashic-plugin/cache/gate"
     valid = cache / "candidate_valid/1.0.0"
     invalid = cache / "candidate_invalid/1.0.0"
+    failed = cache / "candidate_failed/1.0.0"
+    observer = cache / "candidate_observer/1.0.0"
     valid.mkdir(parents=True, exist_ok=True)
     invalid.mkdir(parents=True, exist_ok=True)
+    failed.mkdir(parents=True, exist_ok=True)
+    observer.mkdir(parents=True, exist_ok=True)
     _ = (valid / "plugin.py").write_text(
         "from agent.plugins import Plugin\n"
         "class CandidateValidPlugin(Plugin):\n"
@@ -408,10 +412,51 @@ def _install_candidate_plugins(sandbox: Path) -> tuple[Path, Path]:
         "        self.context.kv_store.set('initialized', True)\n",
         encoding="utf-8",
     )
+    _ = (failed / "plugin.py").write_text(
+        "from agent.plugins import Plugin, tool\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class CandidateFailedPlugin(Plugin):\n"
+        "    name = 'candidate_failed'\n"
+        "    @tool(name='candidate_failed_tool')\n"
+        "    async def failed_tool(self, event):\n"
+        "        \"\"\"Failed candidate tool.\"\"\"\n"
+        "        return 'leaked'\n"
+        "    async def initialize(self):\n"
+        "        self.context.event_bus.on(TurnCommitted, self._on_turn)\n"
+        "        raise RuntimeError('candidate init failed')\n"
+        "    def _on_turn(self, event):\n"
+        "        self.context.kv_store.set('handler_leaked', True)\n",
+        encoding="utf-8",
+    )
+    _ = (observer / "plugin.py").write_text(
+        "from __future__ import annotations\n"
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class CandidateObserverPlugin(Plugin):\n"
+        "    name = 'candidate_observer'\n"
+        "    async def initialize(self):\n"
+        "        self.context.create_task(self._verify(), name='candidate-observer')\n"
+        "    async def _verify(self):\n"
+        "        await asyncio.sleep(0.2)\n"
+        "        registry = self.context.tool_registry\n"
+        "        self.context.kv_store.set(\n"
+        "            'failed_tool_visible',\n"
+        "            registry is not None and registry.has_tool('candidate_failed_tool'),\n"
+        "        )\n"
+        "        await self.context.event_bus.fanout(TurnCommitted(\n"
+        "            session_key='gate:candidate', channel='gate', chat_id='candidate',\n"
+        "            input_message='candidate', persisted_user_message='candidate',\n"
+        "            assistant_response='candidate', tools_used=[]))\n"
+        "        self.context.kv_store.set('event_sent', True)\n",
+        encoding="utf-8",
+    )
     data = sandbox / "home/.akashic-plugin/data"
     return (
         data / "candidate_valid-gate/.kv.json",
         data / "candidate_invalid-gate/.kv.json",
+        data / "candidate_failed-gate/.kv.json",
+        data / "candidate_observer-gate/.kv.json",
     )
 
 
@@ -549,24 +594,39 @@ def _run_runtime_smoke(
         expected["generation"] = "scope_gate@gate:<revision>:<sequence>"
         phase_evidence = {"phase": phase, "state": state, "expected": expected}
     if candidate_states is not None:
-        valid_path, invalid_path = candidate_states
+        valid_path, invalid_path, failed_path, observer_path = candidate_states
         valid_state: dict[str, object] = {}
         if valid_path.exists():
             raw_valid: object = json.loads(valid_path.read_text(encoding="utf-8"))
             if isinstance(raw_valid, dict):
                 mapping = cast(dict[object, object], raw_valid)
                 valid_state = {str(key): value for key, value in mapping.items()}
+        observer_state: dict[str, object] = {}
+        if observer_path.exists():
+            raw_observer: object = json.loads(
+                observer_path.read_text(encoding="utf-8")
+            )
+            if isinstance(raw_observer, dict):
+                mapping = cast(dict[object, object], raw_observer)
+                observer_state = {
+                    str(key): value for key, value in mapping.items()
+                }
         generation = valid_state.get("generation")
         phase_passed = (
             valid_state.get("initialized") is True
             and isinstance(generation, str)
             and generation.startswith("candidate_valid@gate:")
             and not invalid_path.exists()
+            and not failed_path.exists()
+            and observer_state.get("failed_tool_visible") is False
+            and observer_state.get("event_sent") is True
         )
         phase_evidence = {
             "phase": phase,
             "valid": valid_state,
             "invalid_initialized": invalid_path.exists(),
+            "failed_candidate_state_exists": failed_path.exists(),
+            "observer": observer_state,
         }
     passed = (
         started.returncode == 0

@@ -241,7 +241,9 @@
 
 每次候选加载使用唯一模块命名空间，不使用 `importlib.reload()`。Generation 持有 plugin instance、scope、source/config revision、贡献集合、状态和 lease count。
 
-加载过程必须先收集完整贡献，再做任何全局发布。Candidate Gate 至少验证：API version、ConfigModel、路径边界、重复工具名、重复 source/job/channel ID、phase graph、proactive lifecycle、MCP spec、proactive source 引用和 Dashboard 声明。
+加载过程必须先收集完整贡献，再做任何全局发布。Candidate Gate 验证本阶段已有声明的 API version、ConfigModel、路径边界、重复工具名、重复 source/job/channel ID、插件 phase graph、proactive lifecycle 结构、MCP spec 和 proactive source 引用。Dashboard 在 Step 5 成为正式 contribution 时接入同一 Gate，不让 Step 2 预先理解文件名旁路。
+
+同一 plugin_id 已有 active generation 时，Step 2 只产生 `prepared` candidate，不能在 RuntimeSnapshot 建立前替换旧代。candidate context 在声明阶段只开放配置、路径和只读 KV；initialize 失败前不得向全局 ToolRegistry、EventBus 或 capability lists 发布。插件 phase graph 在这里与其他 active plugin 合并验证；builtin graph 与 runtime factory 需要的完整依赖由 Step 4 的 Snapshot compiler 验证。
 
 插件可提供两级只读 semantic checks：Step 2 执行不依赖外部服务的 static checks，Step 3 在候选 Host ready 后执行 readiness checks。协调器只执行并汇总 `GateResult`，不得理解检查内容；两级适用检查都通过后才允许发布。
 
@@ -249,9 +251,9 @@
 
 - invalid Python、invalid config、重复 tool、phase cycle、无效 MCP spec／source 引用、失败 semantic check 都返回 failed GateResult。
 - 每种失败后 active generation id、工具集合、EventBus handler 和 Runtime 行为保持不变。
-- v1 → invalid → v2 后只发布 v2，invalid 从未对外可见。
+- v1 → invalid → v2 后 active 始终为 v1，invalid 被回收，v2 只进入 prepared；Step 4 才允许原子发布 v2。
 - `pytest -q tests/test_plugin_hot_reload.py` → all pass。
-- `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase candidate` → 真实 `main.py` 中执行 v1 → invalid → v2，invalid 不改变 active generation。
+- `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase candidate` → 真实 `main.py` 中验证 initialize 失败的候选没有泄漏 tool／handler，合法插件正常激活；同 ID prepared 路径由单元 Gate 覆盖，并在 Step 6 接入真实 Watcher 后补齐动态 Runtime 验证。
 
 ### Step 3: 接入 Skills、MCP、Jobs 与 Proactive Host
 

@@ -120,6 +120,7 @@ class PluginManager:
         self._scopes: dict[str, PluginScope] = {}
         self._cleanup_failures: list[CleanupFailure] = []
         self._active_generations: dict[str, PluginGeneration] = {}
+        self._prepared_generations: dict[str, PluginGeneration] = {}
         self._gate_results: dict[str, GateResult] = {}
         self._stable_aliases: dict[str, str] = {}
         self._generation_sequence = 0
@@ -213,10 +214,13 @@ class PluginManager:
     def latest_gate(self, plugin_id: str) -> GateResult | None:
         return self._gate_results.get(plugin_id)
 
+    def prepared_generation(self, plugin_id: str) -> PluginGeneration | None:
+        return self._prepared_generations.get(plugin_id)
+
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
         for mod in self.discover():
-            entries.setdefault(_resolve_plugin_id(mod), True)
+            _ = entries.setdefault(_resolve_plugin_id(mod), True)
         return write_plugin_manifest(entries, plugins_home=plugins_home)
 
     def _registry_active(self, module_path: str) -> bool:
@@ -277,24 +281,40 @@ class PluginManager:
 
     async def load_all(self) -> None:
         for mod in self.discover():
-            await self._load_one(mod)
+            _ = await self._load_one(mod)
 
-    async def _load_one(self, mod: dict[str, str]) -> None:
+    async def prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
+        await self.discard_prepared(plugin_id)
+        for mod in self.discover():
+            if _resolve_plugin_id(mod) == plugin_id:
+                return await self._load_one(mod, activate=False)
+        raise KeyError(f"插件不存在: {plugin_id}")
+
+    async def discard_prepared(self, plugin_id: str) -> None:
+        generation = self._prepared_generations.pop(plugin_id, None)
+        if generation is None:
+            return
+        self._cleanup_failures.extend(await generation.scope.aclose())
+        self._remove_module_tree(generation.module_path)
+
+    async def _load_one(
+        self,
+        mod: dict[str, str],
+        *,
+        activate: bool = True,
+    ) -> PluginGeneration | None:
         stable_module_path = mod["import_path"]
         plugin_dir = Path(mod["plugin_root"])
         initial_plugin_id = _resolve_plugin_id(mod)
-        # 1. 幂等：已加载过直接跳过
-        if initial_plugin_id in self._active_generations:
-            return
+        if activate and initial_plugin_id in self._active_generations:
+            return self._active_generations[initial_plugin_id]
         plugin_manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
         if plugin_manifest.get(initial_plugin_id, True) is False:
             logger.info("插件已禁用（manifest.toml）: %s", initial_plugin_id)
-            return
-        # 1b. 本地禁用标记存在时跳过
+            return None
         if _is_plugin_disabled(plugin_dir):
             logger.info("插件已禁用（plugin.disabled）: %s", mod["name"])
-            return
-        instance = None
+            return None
         tool_names: list[str] = []
         hook_count_before = len(self._tool_hooks)
         before_turn_count_before = len(self._before_turn_modules)
@@ -310,220 +330,225 @@ class PluginManager:
         proactive_runtime_factory_count_before = len(self._proactive_runtime_factories)
         proactive_source_count_before = len(self._proactive_sources)
         job_count_before = len(self._jobs)
+        channel_count_before = len(self._channels)
         module_path = mod["module_path"].strip()
-        if module_path:
-            source_revision = _file_revision(Path(module_path))
-            config_revision = _file_revision(
-                _resolve_plugin_data_dir(
-                    mod["name"],
-                    mod,
-                    self._installed_cache_root,
-                )
-                / "config.local.toml"
+        if not module_path:
+            raise RuntimeError(f"插件缺少 plugin.py: {plugin_dir}")
+        source_revision = _source_revision(plugin_dir)
+        data_dir = _resolve_plugin_data_dir(
+            mod["name"],
+            mod,
+            self._installed_cache_root,
+        )
+        config_revision = _file_revision(data_dir / "config.local.toml")
+        self._generation_sequence += 1
+        generation_id = (
+            f"{initial_plugin_id}:{source_revision[:12]}:{self._generation_sequence}"
+        )
+        mp = (
+            f"{stable_module_path}__g{self._generation_sequence}_"
+            f"{source_revision[:8]}"
+        )
+        try:
+            self._import_plugin(mp, Path(module_path))
+        except Exception as error:
+            logger.warning("插件 %s 导入失败: %s", mod["name"], error)
+            self._record_failed_gate(
+                plugin_id=initial_plugin_id,
+                revision=source_revision,
+                check_id="import",
+                reason=str(error),
             )
-            self._generation_sequence += 1
-            generation_id = (
-                f"{initial_plugin_id}:{source_revision[:12]}:"
-                f"{self._generation_sequence}"
+            return None
+        cls = plugin_registry.get_class(mp)
+        if cls is None:
+            logger.warning("插件 %s 未注册类", mod["name"])
+            self._remove_module_tree(mp)
+            self._record_failed_gate(
+                plugin_id=initial_plugin_id,
+                revision=source_revision,
+                check_id="plugin_class",
+                reason="plugin.py 未注册 Plugin 子类",
             )
-            mp = (
-                f"{stable_module_path}__g{self._generation_sequence}_"
-                f"{source_revision[:8]}"
-            )
-            try:
-                self._import_plugin(mp, Path(module_path))
-            except Exception as e:
-                logger.warning("插件 %s 导入失败: %s", mod["name"], e)
-                self._record_failed_gate(
-                    plugin_id=initial_plugin_id,
-                    revision=source_revision,
-                    check_id="import",
-                    reason=str(e),
-                )
-                return
-            cls = plugin_registry._classes.get(mp)
-            if cls is None:
-                logger.warning("插件 %s 未注册类", mod["name"])
-                return
+            return None
+        try:
             instance = cls()
             name = str(instance.name or mod["name"]).strip()
             if not name:
-                logger.warning("插件 %s 缺少 name", mod["name"])
-                return
+                raise RuntimeError("插件缺少 name")
             plugin_id = f"{name}@{mod['marketplace']}" if mod["marketplace"] else name
             if plugin_id != initial_plugin_id:
                 raise RuntimeError(
                     f"插件目录身份与声明不一致: directory={initial_plugin_id} declared={plugin_id}"
                 )
-            data_dir = _resolve_plugin_data_dir(name, mod, self._installed_cache_root)
-            try:
-                plugin_config = _load_plugin_config(
-                    data_dir,
-                    getattr(cls, "ConfigModel", None),
-                )
-            except _PluginConfigError as e:
-                logger.warning("插件 %s 配置无效，跳过: %s", mod["name"], e)
-                plugin_registry.remove_plugin(mp)
-                self._record_failed_gate(
-                    plugin_id=plugin_id,
-                    revision=source_revision,
-                    check_id="config",
-                    reason=str(e),
-                )
-                return
-            from agent.plugins.context import PluginContext, PluginKVStore
-            scope = PluginScope(plugin_id)
-            instance.context = PluginContext(  # type: ignore[attr-defined]
-                event_bus=ScopedEventBus(self._event_bus, scope),
-                tool_registry=self._tool_registry,
+            plugin_config = _load_plugin_config(
+                data_dir,
+                getattr(cls, "ConfigModel", None),
+            )
+        except Exception as error:
+            self._remove_module_tree(mp)
+            self._record_failed_gate(
+                plugin_id=initial_plugin_id,
+                revision=source_revision,
+                check_id=("config" if isinstance(error, _PluginConfigError) else "identity"),
+                reason=str(error),
+            )
+            return None
+        from agent.plugins.context import PluginContext, PluginKVStore
+        scope = PluginScope(plugin_id)
+        instance.context = PluginContext(  # type: ignore[attr-defined]
+            event_bus=None,  # type: ignore[arg-type]
+            tool_registry=None,
+            plugin_id=plugin_id,
+            plugin_dir=plugin_dir,
+            data_dir=data_dir,
+            kv_store=PluginKVStore(data_dir / ".kv.json", writable=False),
+            config=plugin_config,
+            workspace=self._workspace,
+            session_manager=None,
+            memory_engine=self._memory_engine,
+            llm=None,
+            scope=None,
+            generation_id=generation_id,
+        )
+        plugin_registry.register_instance(mp, instance)
+        initialization_started = False
+
+        async def rollback_load() -> None:
+            terminator = getattr(instance, "terminate", None)
+            if initialization_started and callable(terminator):
+                try:
+                    typed_terminator = cast(
+                        Callable[[], Awaitable[None]],
+                        terminator,
+                    )
+                    await typed_terminator()
+                except (asyncio.CancelledError, Exception) as terminate_error:
+                    self._cleanup_failures.append(
+                        CleanupFailure(
+                            resource=f"plugin:{plugin_id}:terminate",
+                            error=str(terminate_error) or type(terminate_error).__name__,
+                        )
+                    )
+            self._cleanup_failures.extend(await scope.aclose())
+            self._remove_module_tree(mp)
+            for tool_name in tool_names:
+                if self._tool_registry is not None:
+                    self._tool_registry.unregister(tool_name)
+            del self._tool_hooks[hook_count_before:]
+            del self._before_turn_modules[before_turn_count_before:]
+            del self._before_reasoning_modules[before_reasoning_count_before:]
+            del self._prompt_render_modules[prompt_render_count_before:]
+            del self._before_step_modules[before_step_count_before:]
+            del self._after_step_modules[after_step_count_before:]
+            del self._after_reasoning_modules[after_reasoning_count_before:]
+            del self._after_turn_modules[after_turn_count_before:]
+            del self._proactive_modules[proactive_module_count_before:]
+            del self._proactive_lifecycles[proactive_lifecycle_count_before:]
+            del self._proactive_module_factories[proactive_factory_count_before:]
+            del self._proactive_runtime_factories[proactive_runtime_factory_count_before:]
+            del self._proactive_sources[proactive_source_count_before:]
+            del self._jobs[job_count_before:]
+            del self._channels[channel_count_before:]
+
+        try:
+            load_phase = "declarations"
+            contributions = self._collect_candidate_contributions(
+                instance=instance,
                 plugin_id=plugin_id,
                 plugin_dir=plugin_dir,
                 data_dir=data_dir,
-                kv_store=PluginKVStore(data_dir / ".kv.json"),
-                config=plugin_config,
-                workspace=self._workspace,
-                session_manager=self._session_manager,
-                memory_engine=self._memory_engine,
-                llm=self._llm,
-                scope=scope,
-                generation_id=generation_id,
+                module_path=mp,
             )
-            plugin_registry.register_instance(mp, instance)
-            initialization_started = False
-
-            async def rollback_load() -> None:
-                terminator = getattr(instance, "terminate", None)
-                if initialization_started and callable(terminator):
-                    try:
-                        typed_terminator = cast(
-                            Callable[[], Awaitable[None]],
-                            terminator,
-                        )
-                        await typed_terminator()
-                    except (asyncio.CancelledError, Exception) as terminate_error:
-                        self._cleanup_failures.append(
-                            CleanupFailure(
-                                resource=f"plugin:{plugin_id}:terminate",
-                                error=str(terminate_error) or type(terminate_error).__name__,
-                            )
-                        )
-                self._cleanup_failures.extend(await scope.aclose())
-                plugin_registry.remove_plugin(mp)
-                _ = sys.modules.pop(mp, None)
-                for tool_name in tool_names:
-                    if self._tool_registry is not None:
-                        self._tool_registry.unregister(tool_name)
-                del self._tool_hooks[hook_count_before:]
-                del self._before_turn_modules[before_turn_count_before:]
-                del self._before_reasoning_modules[before_reasoning_count_before:]
-                del self._prompt_render_modules[prompt_render_count_before:]
-                del self._before_step_modules[before_step_count_before:]
-                del self._after_step_modules[after_step_count_before:]
-                del self._after_reasoning_modules[after_reasoning_count_before:]
-                del self._after_turn_modules[after_turn_count_before:]
-                del self._proactive_modules[proactive_module_count_before:]
-                del self._proactive_lifecycles[proactive_lifecycle_count_before:]
-                del self._proactive_module_factories[proactive_factory_count_before:]
-                del self._proactive_runtime_factories[
-                    proactive_runtime_factory_count_before:
-                ]
-                del self._proactive_sources[proactive_source_count_before:]
-                del self._jobs[job_count_before:]
-
-            try:
-                contributions = self._collect_candidate_contributions(
-                    instance=instance,
-                    plugin_id=plugin_id,
-                    plugin_dir=plugin_dir,
-                    data_dir=data_dir,
-                    module_path=mp,
-                )
-                gate_result = self._validate_candidate(
-                    instance=instance,
-                    plugin_id=plugin_id,
-                    revision=source_revision,
-                    contributions=contributions,
-                )
-                self._gate_results[plugin_id] = gate_result
-                if gate_result.status == "failed":
-                    raise _CandidateRejected(gate_result)
-                self._bind_handlers(instance, mp, scope)
-                self._register_tools(instance, mp, tool_names)
-                self._bind_tool_hooks(instance, mp)
-                self._publish_contributions(contributions)
-                if hasattr(instance, "initialize"):
-                    initialization_started = True
-                    await instance.initialize()
-            except asyncio.CancelledError:
-                rollback_task = asyncio.create_task(
-                    rollback_load(),
-                    name=f"plugin_rollback:{plugin_id}",
-                )
-                while not rollback_task.done():
-                    try:
-                        await asyncio.shield(rollback_task)
-                    except asyncio.CancelledError:
-                        continue
-                await rollback_task
-                raise
-            except _CandidateRejected as error:
-                logger.warning(
-                    "插件 %s 候选验证失败: %s",
-                    mod["name"],
-                    error.gate.failure_reason,
-                )
-                await rollback_load()
-                return
-            except Exception as e:
-                logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], e)
-                latest_gate = self._gate_results.get(plugin_id)
-                if (
-                    latest_gate is None
-                    or latest_gate.candidate_revision != source_revision
-                ):
-                    self._record_failed_gate(
-                        plugin_id=plugin_id,
-                        revision=source_revision,
-                        check_id="declarations",
-                        reason=str(e),
-                    )
-                await rollback_load()
-                return
-            self._scopes[mp] = scope
-            manifest = contributions.manifest
-            skill_roots = contributions.skill_roots
-            drift_skill_roots = contributions.drift_skill_roots
-            mcp_servers = contributions.mcp_servers
-        else:
-            raise RuntimeError(f"插件缺少 plugin.py: {plugin_dir}")
+            gate_result = self._validate_candidate(
+                instance=instance,
+                plugin_id=plugin_id,
+                revision=source_revision,
+                contributions=contributions,
+            )
+            self._gate_results[plugin_id] = gate_result
+            if gate_result.status == "failed":
+                raise _CandidateRejected(gate_result)
+            generation = PluginGeneration(
+                plugin_id=plugin_id,
+                generation_id=generation_id,
+                module_path=mp,
+                source_revision=source_revision,
+                config_revision=config_revision,
+                instance=instance,
+                scope=scope,
+                contributions=contributions,
+                gate_result=gate_result,
+                state="prepared" if not activate else "activating",
+            )
+            if not activate:
+                self._prepared_generations[plugin_id] = generation
+                return generation
+            staged_event_bus = ScopedEventBus(self._event_bus, scope, staged=True)
+            instance.context.event_bus = staged_event_bus
+            instance.context.kv_store = PluginKVStore(data_dir / ".kv.json")
+            instance.context.session_manager = self._session_manager
+            instance.context.llm = self._llm
+            instance.context.scope = scope
+            load_phase = "initialize"
+            initialization_started = True
+            await instance.initialize()
+            load_phase = "publish"
+            self._register_tools(instance, mp, tool_names)
+            self._bind_tool_hooks(instance, mp)
+            self._publish_contributions(contributions)
+            self._channels.extend(contributions.channels)
+            self._bind_handlers(instance, mp, scope)
+            staged_event_bus.activate()
+            instance.context.tool_registry = self._tool_registry
+        except asyncio.CancelledError:
+            rollback_task = asyncio.create_task(
+                rollback_load(),
+                name=f"plugin_rollback:{plugin_id}",
+            )
+            while not rollback_task.done():
+                try:
+                    await asyncio.shield(rollback_task)
+                except asyncio.CancelledError:
+                    continue
+            await rollback_task
+            raise
+        except _CandidateRejected as error:
+            logger.warning(
+                "插件 %s 候选验证失败: %s",
+                mod["name"],
+                error.gate.failure_reason,
+            )
+            await rollback_load()
+            return None
+        except Exception as error:
+            logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], error)
+            self._record_failed_gate(
+                plugin_id=plugin_id,
+                revision=source_revision,
+                check_id=load_phase,
+                reason=str(error),
+            )
+            await rollback_load()
+            return None
+        self._scopes[mp] = scope
         self._loaded.add(mp)
         self._active_plugins[mp] = ActivePluginInfo(
             plugin_id=plugin_id,
             plugin_dir=plugin_dir,
-            manifest=manifest,
+            manifest=contributions.manifest,
             module_path=mp,
-            skill_roots=skill_roots,
-            drift_skill_roots=drift_skill_roots,
-            mcp_servers=mcp_servers,
+            skill_roots=contributions.skill_roots,
+            drift_skill_roots=contributions.drift_skill_roots,
+            mcp_servers=contributions.mcp_servers,
         )
-        generation = PluginGeneration(
-            plugin_id=plugin_id,
-            generation_id=generation_id,
-            module_path=mp,
-            source_revision=source_revision,
-            config_revision=config_revision,
-            instance=instance,
-            scope=scope,
-            contributions=contributions,
-            gate_result=gate_result,
-        )
+        generation.state = "active"
         self._active_generations[plugin_id] = generation
         self._stable_aliases[mp] = stable_module_path
         plugin_registry.register_instance(stable_module_path, instance)
         sys.modules[stable_module_path] = sys.modules[mp]
-        if instance is not None:
-            self._channels.extend(contributions.channels)
         logger.info("插件已加载: %s", mod["name"])
+        return generation
 
     def _collect_candidate_contributions(
         self,
@@ -622,6 +647,12 @@ class PluginManager:
         contributions: PluginContributions,
     ) -> GateResult:
         checks: list[GateCheckResult] = []
+        current = self._active_generations.get(plugin_id)
+        other_generations = [
+            generation
+            for generation in self._active_generations.values()
+            if generation.plugin_id != plugin_id
+        ]
 
         def check(check_id: str, passed: bool, evidence: object = "") -> None:
             checks.append(
@@ -644,8 +675,23 @@ class PluginManager:
             if md.kind == MetadataKind.TOOL
         ]
         duplicate_tools = _duplicates(tool_names)
+        current_tool_names = (
+            {
+                metadata.tool_name or metadata.handler_name
+                for metadata in plugin_registry.get_handlers_by_module_path(
+                    current.module_path
+                )
+                if metadata.kind == MetadataKind.TOOL
+            }
+            if current is not None
+            else set()
+        )
         occupied_tools = (
-            sorted(name for name in tool_names if self._tool_registry.has_tool(name))
+            sorted(
+                name
+                for name in tool_names
+                if self._tool_registry.has_tool(name) and name not in current_tool_names
+            )
             if self._tool_registry is not None
             else []
         )
@@ -660,14 +706,26 @@ class PluginManager:
             for source in contributions.proactive_sources
             if not source.spec.id
             or not source.spec.channels
+            or not set(source.spec.channels).issubset({"alert", "content", "context"})
             or not source.spec.server
             or not source.spec.fetch_tool
+            or source.spec.poll_interval_seconds < 0
             or source.spec.server not in contributions.mcp_servers
         ]
         check(
             "proactive_sources",
             not _duplicates(source_ids) and not source_errors,
             {"duplicates": _duplicates(source_ids), "invalid": source_errors},
+        )
+        occupied_servers = {
+            server_name
+            for generation in other_generations
+            for server_name in generation.contributions.mcp_servers
+        }
+        check(
+            "mcp_servers",
+            not occupied_servers.intersection(contributions.mcp_servers),
+            sorted(occupied_servers.intersection(contributions.mcp_servers)),
         )
         job_ids = [job.spec.id for job in contributions.jobs]
         check(
@@ -680,7 +738,9 @@ class PluginManager:
             for channel in contributions.channels
         ]
         occupied_channels = {
-            str(getattr(channel, "name", "")).strip() for channel in self._channels
+            str(getattr(channel, "name", "")).strip()
+            for generation in other_generations
+            for channel in generation.contributions.channels
         }
         check(
             "channel_names",
@@ -697,17 +757,22 @@ class PluginManager:
             },
         )
         phase_groups = (
-            contributions.before_turn_modules,
-            contributions.before_reasoning_modules,
-            contributions.prompt_render_modules,
-            contributions.before_step_modules,
-            contributions.after_step_modules,
-            contributions.after_reasoning_modules,
-            contributions.after_turn_modules,
+            ("before_turn_modules", contributions.before_turn_modules),
+            ("before_reasoning_modules", contributions.before_reasoning_modules),
+            ("prompt_render_modules", contributions.prompt_render_modules),
+            ("before_step_modules", contributions.before_step_modules),
+            ("after_step_modules", contributions.after_step_modules),
+            ("after_reasoning_modules", contributions.after_reasoning_modules),
+            ("after_turn_modules", contributions.after_turn_modules),
         )
         try:
-            for modules in phase_groups:
-                _ = topo_sort_modules(modules)
+            for field_name, candidate_modules in phase_groups:
+                active_modules = [
+                    module
+                    for generation in other_generations
+                    for module in getattr(generation.contributions, field_name)
+                ]
+                _ = topo_sort_modules([*active_modules, *candidate_modules])
         except RuntimeError as error:
             check("phase_graph", False, str(error))
         else:
@@ -720,8 +785,24 @@ class PluginManager:
         check(
             "proactive_lifecycles",
             len(lifecycle_ids) == len(contributions.proactive_lifecycles)
-            and not _duplicates(lifecycle_ids),
-            _duplicates(lifecycle_ids),
+            and not _duplicates(lifecycle_ids)
+            and not {
+                lifecycle.id
+                for generation in other_generations
+                for lifecycle in generation.contributions.proactive_lifecycles
+                if isinstance(lifecycle, ProactiveLifecycleSpec)
+            }.intersection(lifecycle_ids),
+            {
+                "duplicates": _duplicates(lifecycle_ids),
+                "occupied": sorted(
+                    {
+                        lifecycle.id
+                        for generation in other_generations
+                        for lifecycle in generation.contributions.proactive_lifecycles
+                        if isinstance(lifecycle, ProactiveLifecycleSpec)
+                    }.intersection(lifecycle_ids)
+                ),
+            },
         )
         try:
             semantic_checks = instance.static_semantic_checks()
@@ -808,8 +889,14 @@ class PluginManager:
         try:
             spec.loader.exec_module(module)  # type: ignore[union-attr]
         except BaseException:
-            _ = sys.modules.pop(module_name, None)
+            self._remove_module_tree(module_name)
             raise
+
+    def _remove_module_tree(self, module_name: str) -> None:
+        plugin_registry.remove_module_tree(module_name)
+        for imported_name in tuple(sys.modules):
+            if imported_name == module_name or imported_name.startswith(f"{module_name}."):
+                _ = sys.modules.pop(imported_name, None)
 
     def _register_tools(
         self,
@@ -886,6 +973,8 @@ class PluginManager:
             logger.info("插件 tool hook 已注册: %s", hook.name)
 
     async def terminate_all(self) -> None:
+        for plugin_id in tuple(self._prepared_generations):
+            await self.discard_prepared(plugin_id)
         for mp in list(self._loaded):
             active_info = self._active_plugins.get(mp)
             instance = plugin_registry.get_instance(mp)
@@ -912,8 +1001,7 @@ class PluginManager:
             for md in plugin_registry.get_handlers_by_module_path(mp):
                 if md.kind == MetadataKind.TOOL and self._tool_registry is not None:
                     self._tool_registry.unregister(md.tool_name or md.handler_name)
-            plugin_registry.remove_plugin(mp)
-            _ = sys.modules.pop(mp, None)
+            self._remove_module_tree(mp)
             stable_alias = self._stable_aliases.pop(mp, None)
             if stable_alias is not None:
                 plugin_registry.remove_plugin(stable_alias)
@@ -940,6 +1028,7 @@ class PluginManager:
         self._channels.clear()
         self._scopes.clear()
         self._active_generations.clear()
+        self._prepared_generations.clear()
         self._stable_aliases.clear()
 
 
@@ -965,6 +1054,8 @@ def _load_plugin_config(
         except (OSError, tomllib.TOMLDecodeError) as e:
             raise _PluginConfigError(str(e)) from e
     if config_model is not None:
+        if not isinstance(config_model, type) or not issubclass(config_model, BaseModel):
+            raise _PluginConfigError("ConfigModel 必须继承 pydantic.BaseModel")
         try:
             return config_model.model_validate(raw_config)
         except ValidationError as e:
@@ -986,18 +1077,23 @@ def _load_module_list(instance: Any, method_name: str) -> list[object]:
     if provider is None:
         return []
     if not callable(provider):
-        logger.warning("插件 %s.%s 不是可调用对象", type(instance).__name__, method_name)
-        return []
+        raise RuntimeError(
+            f"插件 {type(instance).__name__}.{method_name} 不是可调用对象"
+        )
     try:
         loaded = provider()
     except Exception as e:
-        logger.warning("插件 %s.%s 加载失败: %s", type(instance).__name__, method_name, e)
-        return []
+        raise RuntimeError(
+            f"插件 {type(instance).__name__}.{method_name} 声明失败: {e}"
+        ) from e
     if loaded is None:
-        return []
+        raise RuntimeError(
+            f"插件 {type(instance).__name__}.{method_name} 返回值不能为 None"
+        )
     if not isinstance(loaded, list):
-        logger.warning("插件 %s.%s 返回值不是 list", type(instance).__name__, method_name)
-        return []
+        raise RuntimeError(
+            f"插件 {type(instance).__name__}.{method_name} 返回值不是 list"
+        )
     return loaded
 
 
@@ -1031,9 +1127,11 @@ def _resolve_declared_roots(
     plugin_dir: Path,
     declared: tuple[str, ...],
 ) -> tuple[Path, ...]:
+    plugin_root = plugin_dir.resolve(strict=False)
     roots: list[Path] = []
     for raw_path in declared:
         path = (plugin_dir / raw_path).resolve(strict=False)
+        _require_plugin_path(plugin_root, path, "能力目录")
         if not path.is_dir():
             raise RuntimeError(f"插件能力目录不存在: {path}")
         roots.append(path)
@@ -1046,18 +1144,31 @@ def _resolve_mcp_servers(
     declared: list[McpServerSpec],
 ) -> dict[str, dict[str, Any]]:
     servers: dict[str, dict[str, Any]] = {}
+    plugin_root = plugin_dir.resolve(strict=False)
     for spec in declared:
         if not isinstance(spec, McpServerSpec) or not spec.name or not spec.command:
             raise RuntimeError(f"插件 MCP server 声明无效: {spec!r}")
+        if not all(isinstance(item, str) and item for item in spec.command):
+            raise RuntimeError(f"插件 MCP command 声明无效: {spec.name}")
+        if not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in spec.env.items()
+        ):
+            raise RuntimeError(f"插件 MCP env 声明无效: {spec.name}")
         if spec.name in servers:
             raise RuntimeError(f"插件 MCP server 名称重复: {spec.name}")
-        command = [_resolve_command_item(plugin_dir, item) for item in spec.command]
+        command = [
+            _resolve_command_item(plugin_root, item, executable=index == 0)
+            for index, item in enumerate(spec.command)
+        ]
         cwd_path = Path(spec.cwd)
-        cwd = (
-            str(cwd_path)
+        resolved_cwd = (
+            cwd_path.resolve(strict=False)
             if cwd_path.is_absolute()
-            else str((plugin_dir / cwd_path).resolve(strict=False))
+            else (plugin_root / cwd_path).resolve(strict=False)
         )
+        _require_plugin_path(plugin_root, resolved_cwd, "MCP cwd")
+        cwd = str(resolved_cwd)
         env = {**spec.env, "AKA_PLUGIN_DATA_DIR": str(data_dir)}
         if _is_python_command(command[0]):
             runtime_root = _resolve_mcp_runtime_root(plugin_dir, cwd, command)
@@ -1069,11 +1180,31 @@ def _resolve_mcp_servers(
     return servers
 
 
-def _resolve_command_item(plugin_dir: Path, item: str) -> str:
+def _resolve_command_item(
+    plugin_dir: Path,
+    item: str,
+    *,
+    executable: bool,
+) -> str:
     path = Path(item)
-    if path.is_absolute() or ("/" not in item and "\\" not in item and not item.startswith(".")):
+    if executable and path.is_absolute():
         return item
-    return str((plugin_dir / path).resolve(strict=False))
+    if "/" not in item and "\\" not in item and not item.startswith("."):
+        return item
+    resolved = (
+        path.resolve(strict=False)
+        if path.is_absolute()
+        else (plugin_dir / path).resolve(strict=False)
+    )
+    _require_plugin_path(plugin_dir, resolved, "MCP command")
+    return str(resolved)
+
+
+def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
+    try:
+        _ = path.relative_to(plugin_dir)
+    except ValueError as error:
+        raise RuntimeError(f"插件 {label} 越界: {path}") from error
 
 
 def _is_python_command(value: str) -> bool:
@@ -1191,6 +1322,35 @@ def _file_revision(path: Path) -> str:
         digest.update(path.read_bytes())
     else:
         digest.update(b"<missing>")
+    return digest.hexdigest()
+
+
+def _source_revision(plugin_dir: Path) -> str:
+    digest = hashlib.sha256()
+    root = plugin_dir.resolve(strict=False)
+    excluded = {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+    }
+    for path in sorted(plugin_dir.rglob("*")):
+        relative = path.relative_to(plugin_dir)
+        if any(part in excluded for part in relative.parts):
+            continue
+        if path.is_symlink():
+            digest.update(str(relative).encode())
+            digest.update(os.readlink(path).encode())
+            continue
+        if not path.is_file():
+            continue
+        resolved = path.resolve(strict=False)
+        _require_plugin_path(root, resolved, "源码文件")
+        digest.update(str(relative).encode())
+        digest.update(path.read_bytes())
     return digest.hexdigest()
 
 

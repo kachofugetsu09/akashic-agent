@@ -60,20 +60,21 @@ class PluginContext:
 
 
 class PluginKVStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, writable: bool = True) -> None:
         self._path = path
+        self._writable = writable
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._read().get(key, default)
 
     def set(self, key: str, value: Any) -> None:
-        # 1. 读取现有数据，写入新值，落盘
+        self._require_writable()
         data = self._read()
         data[key] = value
         self._write(data)
 
     def increment(self, key: str, delta: int = 1) -> int:
-        # 1. 读取 → 加 delta → 写回，返回新值
+        self._require_writable()
         data = self._read()
         new_val = int(data.get(key, 0)) + delta
         data[key] = new_val
@@ -90,3 +91,7 @@ class PluginKVStore:
         _ = self._path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+
+    def _require_writable(self) -> None:
+        if not self._writable:
+            raise RuntimeError("候选声明阶段禁止写入插件 KV")
