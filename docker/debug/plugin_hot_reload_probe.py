@@ -471,10 +471,11 @@ def _install_candidate_plugins(
             encoding="utf-8",
         )
     _ = (reload_plugin / "candidate_mcp_server.py").write_text(
-        "import json, sys\n"
+        "import json, os, sys\n"
+        "version = os.environ['CANDIDATE_VERSION']\n"
         "tools = [\n"
         "    {'name': name, 'description': name, 'inputSchema': {'type': 'object', 'properties': {}}}\n"
-        "    for name in ('fetch_events', 'ack_events', 'poll_events')\n"
+        "    for name in ('fetch_events', 'ack_events', 'poll_events', 'candidate_version')\n"
         "]\n"
         "for line in sys.stdin:\n"
         "    msg = json.loads(line)\n"
@@ -483,7 +484,9 @@ def _install_candidate_plugins(
         "    method = msg.get('method')\n"
         "    result = {'tools': tools} if method == 'tools/list' else {}\n"
         "    if method == 'tools/call':\n"
-        "        result = {'content': [{'type': 'text', 'text': '[]'}]}\n"
+        "        tool = msg.get('params', {}).get('name')\n"
+        "        text = version if tool == 'candidate_version' else '[]'\n"
+        "        result = {'content': [{'type': 'text', 'text': text}]}\n"
         "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n",
         encoding="utf-8",
     )
@@ -508,6 +511,10 @@ def _candidate_reload_source(version: str) -> str:
         "        while True:\n"
         "            self.context.kv_store.increment('heartbeats')\n"
         "            self.context.kv_store.set('active_generation', self.context.generation_id)\n"
+        "            registry = self.context.tool_registry\n"
+        "            if registry is not None and registry.has_tool('mcp_candidate_feed__candidate_version'):\n"
+        "                result = await registry.execute('mcp_candidate_feed__candidate_version', {}, raise_errors=True)\n"
+        "                self.context.kv_store.set('live_mcp_version', getattr(result, 'text', str(result)))\n"
         "            await asyncio.sleep(0.05)\n"
         if version == "v1"
         else "        self.context.kv_store.set('initialized_version', 'v2')\n"
@@ -523,17 +530,21 @@ def _candidate_reload_source(version: str) -> str:
     return (
         "from __future__ import annotations\n"
         "import asyncio\n"
-        "from agent.plugins import McpServerSpec, Plugin, ProactiveSourceSpec, tool\n"
+        "from agent.plugins import McpServerSpec, Plugin, PluginSemanticCheck, ProactiveSourceSpec, tool\n"
         "class CandidateReloadPlugin(Plugin):\n"
         "    name = 'candidate_reload'\n"
         f"{skills}"
         "    @classmethod\n"
         "    def mcp_servers(cls):\n"
-        "        return [McpServerSpec(name='candidate_feed', command=('python', 'candidate_mcp_server.py'))]\n"
+        f"        return [McpServerSpec(name='candidate_feed', command=('python', 'candidate_mcp_server.py'), env={{'CANDIDATE_VERSION': '{version}'}})]\n"
         "    def proactive_sources(self):\n"
         "        return [ProactiveSourceSpec(id='candidate_feed', channels=('content',), "
         "server='candidate_feed', fetch_tool='fetch_events', ack_tool='ack_events', "
         "poll_tool='poll_events')]\n"
+        "    async def readiness_semantic_checks(self, context):\n"
+        "        server = context.mcp_catalog.servers['candidate_feed']\n"
+        "        value = await server.client.call('candidate_version', {})\n"
+        f"        return [PluginSemanticCheck('candidate_mcp_version', value == '{version}', value)]\n"
         "    @tool(name='candidate_reload_tool')\n"
         "    async def run(self, event):\n"
         "        \"\"\"Candidate reload tool.\"\"\"\n"
@@ -732,6 +743,7 @@ def _exercise_candidate_prepare(
         "candidate_mcp_server.py",
         lambda count: count == initial_mcp_processes,
     )
+    after_return = _read_json_object(state_path)
     valid_skills = valid_status.get("skills")
     valid_descriptions = valid_status.get("skill_descriptions")
     valid_drift_descriptions = valid_status.get("drift_skill_descriptions")
@@ -740,6 +752,7 @@ def _exercise_candidate_prepare(
     return_body_hashes = return_status.get("skill_body_hashes")
     return_drift_body_hashes = return_status.get("drift_skill_body_hashes")
     valid_mcp_tools = valid_status.get("mcp_tools")
+    valid_readiness_checks = valid_status.get("readiness_checks")
     valid_description_map = (
         cast(dict[object, object], valid_descriptions)
         if isinstance(valid_descriptions, dict)
@@ -773,8 +786,18 @@ def _exercise_candidate_prepare(
         and valid_mcp_tools
         == [
             "mcp_candidate_feed__ack_events",
+            "mcp_candidate_feed__candidate_version",
             "mcp_candidate_feed__fetch_events",
             "mcp_candidate_feed__poll_events",
+        ]
+        and isinstance(valid_readiness_checks, list)
+        and valid_readiness_checks
+        == [
+            {
+                "check_id": "candidate_mcp_version",
+                "passed": True,
+                "evidence": "v2",
+            }
         ]
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"
@@ -792,6 +815,8 @@ def _exercise_candidate_prepare(
         and after_invalid.get("active_generation") == initial_generation
         and after_valid.get("active_generation") == initial_generation
         and after_valid.get("initialized_version") == "v1"
+        and after_valid.get("live_mcp_version") == "v1"
+        and after_return.get("live_mcp_version") == "v1"
         and _integer(after_valid.get("heartbeats")) > initial_heartbeats
         and initial_mcp_processes >= 1
         and after_invalid_mcp_processes == initial_mcp_processes
@@ -806,6 +831,7 @@ def _exercise_candidate_prepare(
         "valid_status": valid_status,
         "after_valid": after_valid,
         "return_status": return_status,
+        "after_return": after_return,
         "invalid_signal": invalid_signal.returncode,
         "valid_signal": valid_signal.returncode,
         "return_signal": return_signal.returncode,

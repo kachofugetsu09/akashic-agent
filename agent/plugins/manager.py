@@ -45,6 +45,7 @@ from agent.plugins.generation import (
     GateResult,
     PluginContributions,
     PluginGeneration,
+    PluginReadinessContext,
     PluginSemanticCheck,
 )
 from agent.plugins.importer import FreshPluginImporter
@@ -371,6 +372,10 @@ class PluginManager:
                         drift=True,
                     ),
                     "mcp_tools": _mcp_tool_names(active),
+                    "readiness_checks": _gate_check_evidence(
+                        active,
+                        "readiness_semantic_checks",
+                    ),
                 }
                 results.append(result)
                 logger.info(
@@ -420,6 +425,11 @@ class PluginManager:
                     else {}
                 ),
                 "mcp_tools": _mcp_tool_names(prepared) if prepared is not None else [],
+                "readiness_checks": (
+                    _gate_check_evidence(prepared, "readiness_semantic_checks")
+                    if prepared is not None
+                    else []
+                ),
             }
             results.append(result)
             logger.info(
@@ -681,6 +691,7 @@ class PluginManager:
                         generation_id,
                         server_specs=contributions.mcp_servers,
                         proactive_sources=contributions.proactive_sources,
+                        scope=scope,
                     )
                 except Exception as error:
                     gate_result = _with_gate_check(
@@ -698,7 +709,12 @@ class PluginManager:
                     lambda: self._mcp_host.close(generation_id),
                 )
                 try:
-                    raw_readiness_checks: object = instance.readiness_semantic_checks()
+                    raw_readiness_checks: object = await instance.readiness_semantic_checks(
+                        PluginReadinessContext(
+                            generation_id=generation_id,
+                            mcp_catalog=mcp_catalog,
+                        )
+                    )
                     if not isinstance(raw_readiness_checks, list):
                         raise RuntimeError(
                             "readiness_semantic_checks 返回值不是 list"
@@ -714,10 +730,25 @@ class PluginManager:
                         if not isinstance(check, PluginSemanticCheck) or not check.passed
                     ]
                     readiness_passed = not invalid_readiness
-                    readiness_evidence = [
-                        getattr(check, "evidence", repr(check))
-                        for check in invalid_readiness
-                    ]
+                    normalized_readiness: list[dict[str, object]] = []
+                    for check in readiness_checks:
+                        if isinstance(check, PluginSemanticCheck):
+                            normalized_readiness.append(
+                                {
+                                    "check_id": check.check_id,
+                                    "passed": check.passed,
+                                    "evidence": check.evidence,
+                                }
+                            )
+                        else:
+                            normalized_readiness.append(
+                                {
+                                    "check_id": "invalid",
+                                    "passed": False,
+                                    "evidence": repr(check),
+                                }
+                            )
+                    readiness_evidence = normalized_readiness
                 gate_result = _with_gate_check(
                     gate_result,
                     check_id="mcp_readiness",
@@ -1715,6 +1746,16 @@ def _skill_body_hashes(
 def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
     catalog = generation.mcp_catalog
     return list(catalog.tool_names) if catalog is not None else []
+
+
+def _gate_check_evidence(
+    generation: PluginGeneration,
+    check_id: str,
+) -> object:
+    for check in reversed(generation.gate_result.checks):
+        if check.check_id == check_id:
+            return check.evidence
+    return []
 
 
 def _is_plugin_disabled(plugin_dir: Path) -> bool:

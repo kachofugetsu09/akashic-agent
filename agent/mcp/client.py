@@ -7,7 +7,7 @@ import os
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,10 @@ class McpClient:
     def tool_infos(self) -> list[McpToolInfo]:
         return self._tool_infos
 
+    @property
+    def connected(self) -> bool:
+        return self._process is not None
+
     async def connect(self) -> list[McpToolInfo]:
         try:
             return await asyncio.wait_for(
@@ -102,7 +106,8 @@ class McpClient:
                 },
             }
         )
-        _ = await self._recv(expected_id=init_id, stage="initialize")
+        init_response = await self._recv(expected_id=init_id, stage="initialize")
+        _ = self._response_result(init_response, "initialize")
 
         # initialized 通知（无 id，不等响应）
         await self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -112,17 +117,31 @@ class McpClient:
         await self._send(
             {"jsonrpc": "2.0", "id": list_id, "method": "tools/list", "params": {}}
         )
-        resp = await self._recv(expected_id=list_id, stage="tools/list")
-
-        raw_tools = resp.get("result", {}).get("tools", [])
-        self._tool_infos = [
-            McpToolInfo(
-                name=t["name"],
-                description=t.get("description", ""),
-                input_schema=t.get("inputSchema", {"type": "object", "properties": {}}),
+        response = await self._recv(expected_id=list_id, stage="tools/list")
+        result = self._response_result(response, "tools/list")
+        raw_tools: object = result.get("tools", [])
+        if not isinstance(raw_tools, list):
+            raise RuntimeError(f"MCP server {self.name!r} tools/list.tools 不是 list")
+        tool_infos: list[McpToolInfo] = []
+        for raw_tool in cast(list[object], raw_tools):
+            if not isinstance(raw_tool, dict):
+                raise RuntimeError(f"MCP server {self.name!r} 返回了无效 tool")
+            tool = cast(dict[str, Any], raw_tool)
+            name = tool.get("name")
+            schema = tool.get(
+                "inputSchema",
+                {"type": "object", "properties": {}},
             )
-            for t in raw_tools
-        ]
+            if not isinstance(name, str) or not name or not isinstance(schema, dict):
+                raise RuntimeError(f"MCP server {self.name!r} 返回了无效 tool")
+            tool_infos.append(
+                McpToolInfo(
+                    name=name,
+                    description=str(tool.get("description") or ""),
+                    input_schema=cast(dict[str, Any], schema),
+                )
+            )
+        self._tool_infos = tool_infos
         logger.debug(
             "[mcp] %r 已连接，工具：%s", self.name, [t.name for t in self._tool_infos]
         )
@@ -248,10 +267,13 @@ class McpClient:
                 continue
             self._recent_stdout.append(text[:500])
             try:
-                msg = json.loads(text)
+                raw_message: object = json.loads(text)
             except json.JSONDecodeError:
                 logger.debug("[mcp:%s] 非 JSON 输出: %s", self.name, text[:200])
                 continue
+            if not isinstance(raw_message, dict):
+                raise RuntimeError(f"MCP server {self.name!r} 返回了非对象响应")
+            msg = cast(dict[str, Any], raw_message)
             # 跳过通知（有 method 但无 id）
             if "method" in msg and "id" not in msg:
                 logger.debug("[mcp:%s] <- notification: %s", self.name, text[:400])
@@ -267,6 +289,22 @@ class McpClient:
                 continue
             logger.debug("[mcp:%s] <- %s", self.name, text[:400])
             return msg
+
+    def _response_result(
+        self,
+        response: dict[str, Any],
+        stage: str,
+    ) -> dict[str, Any]:
+        if "error" in response:
+            raise RuntimeError(
+                f"MCP server {self.name!r} {stage} 失败: {response['error']}"
+            )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"MCP server {self.name!r} {stage} 返回了无效 result"
+            )
+        return cast(dict[str, Any], result)
 
     async def _drain_stderr(self) -> None:
         """后台读取 stderr，防止缓冲区阻塞。"""

@@ -916,7 +916,7 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "mcp_ready",
-        "from agent.plugins import McpServerSpec, Plugin, ProactiveSourceSpec\n"
+        "from agent.plugins import McpServerSpec, Plugin, PluginSemanticCheck, ProactiveSourceSpec\n"
         "class McpReadyPlugin(Plugin):\n"
         "    name = 'mcp_ready'\n"
         "    @classmethod\n"
@@ -925,7 +925,10 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
         "    def proactive_sources(self):\n"
         "        return [ProactiveSourceSpec(id='feed', channels=('content',), "
         "server='feed', fetch_tool='fetch_events', ack_tool='ack_events', "
-        "poll_tool='poll_events')]\n",
+        "poll_tool='poll_events')]\n"
+        "    async def readiness_semantic_checks(self, context):\n"
+        "        value = await context.mcp_catalog.servers['feed'].client.call('fetch_events', {})\n"
+        "        return [PluginSemanticCheck('candidate_feed', value == '[]', value)]\n",
     )
     _write_mcp_server(
         plugin_dir,
@@ -968,7 +971,7 @@ async def test_candidate_mcp_readiness_failure_closes_process(
     failure: str,
 ) -> None:
     readiness = (
-        "    def readiness_semantic_checks(self):\n"
+        "    async def readiness_semantic_checks(self, context):\n"
         "        return [PluginSemanticCheck('remote', False, 'not ready')]\n"
         if failure == "semantic"
         else ""
@@ -1038,4 +1041,44 @@ async def test_candidate_mcp_handshake_failure_closes_process(tmp_path: Path) ->
     assert gate.checks[-1].check_id == "mcp_readiness"
     lifecycle = tmp_path / "home" / "data" / "mcp_handshake-builtin" / "mcp-lifecycle.log"
     await _wait_for_log(lifecycle, ["started", "stopped"])
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_mcp_cleanup_failure_is_reported_and_catalog_removed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_cleanup",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class McpCleanupPlugin(Plugin):\n"
+        "    name = 'mcp_cleanup'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='cleanup', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("health",))
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    prepared = await manager.prepare_candidate("mcp_cleanup")
+    assert prepared is not None and prepared.mcp_catalog is not None
+    client = prepared.mcp_catalog.servers["cleanup"].client
+    disconnect = client.disconnect
+
+    async def fail_after_disconnect() -> None:
+        await disconnect()
+        raise OSError("mcp cleanup failed")
+
+    monkeypatch.setattr(client, "disconnect", fail_after_disconnect)
+    await manager.discard_prepared("mcp_cleanup")
+
+    assert manager.mcp_catalog(prepared.generation_id) is None
+    assert client.connected is False
+    assert any(
+        failure.resource == "mcp_catalog"
+        and "mcp cleanup failed" in failure.error
+        for failure in manager.cleanup_failures
+    )
     await manager.terminate_all()

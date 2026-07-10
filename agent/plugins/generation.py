@@ -24,6 +24,12 @@ class PluginSemanticCheck:
 
 
 @dataclass(frozen=True)
+class PluginReadinessContext:
+    generation_id: str
+    mcp_catalog: PreparedMcpCatalog
+
+
+@dataclass(frozen=True)
 class GateCheckResult:
     check_id: str
     status: GateStatus

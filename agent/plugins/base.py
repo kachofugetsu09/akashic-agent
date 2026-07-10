@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from agent.plugins.jobs import PluginJobSpec
     from agent.plugins.specs import McpServerSpec, ProactiveSourceSpec
     from agent.plugins.generation import PluginSemanticCheck
+    from agent.plugins.generation import PluginReadinessContext
 
 
 class Plugin(ABC):
@@ -32,7 +33,10 @@ class Plugin(ABC):
     def static_semantic_checks(self) -> list["PluginSemanticCheck"]:
         return []
 
-    def readiness_semantic_checks(self) -> list["PluginSemanticCheck"]:
+    async def readiness_semantic_checks(
+        self,
+        context: "PluginReadinessContext",
+    ) -> list["PluginSemanticCheck"]:
         return []
 
     @classmethod

@@ -6,6 +6,7 @@ from agent.plugins.generation import (
     GateCheckResult,
     GateResult,
     PluginGeneration,
+    PluginReadinessContext,
     PluginSemanticCheck,
 )
 from agent.plugins.decorators import (
@@ -43,6 +44,7 @@ __all__ = [
     "GateCheckResult",
     "GateResult",
     "PluginGeneration",
+    "PluginReadinessContext",
     "PluginSemanticCheck",
     "EventTrigger",
     "IntervalTrigger",

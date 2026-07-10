@@ -585,6 +585,35 @@ async def test_mcp_client_disconnect_reports_cleanup_error() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["initialize", "tools/list"])
+async def test_mcp_client_rejects_json_rpc_error_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    responses = (
+        [b'{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"bad init"}}\n']
+        if stage == "initialize"
+        else [
+            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            b'{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"bad list"}}\n',
+        ]
+    )
+    proc = _Proc(responses)
+    monkeypatch.setattr(
+        "agent.mcp.client.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    )
+    client = McpClient("broken", ["python", "server.py"])
+
+    with pytest.raises(RuntimeError, match=stage):
+        await client.connect()
+
+    assert client._process is None
+    assert client._stderr_task is None
+    assert proc.stdin.closed is True
+
+
+@pytest.mark.asyncio
 async def test_mcp_client_serializes_calls_on_same_server():
     class ConcurrentReadPipe(_Pipe):
         def __init__(self) -> None:
