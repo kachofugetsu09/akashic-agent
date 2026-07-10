@@ -242,13 +242,17 @@ def _require_routes_available(
     conflicts: list[str] = []
     for index, route in enumerate(binding.routes):
         for other in occupied:
-            methods = sorted(route.methods.intersection(other.methods))
+            methods = sorted(
+                (route.methods or set()).intersection(other.methods or set())
+            )
             if methods and _route_paths_overlap(route, other):
                 conflicts.append(
                     f"{','.join(methods)} {route.path} <> {other.path}"
                 )
         for other in binding.routes[:index]:
-            methods = sorted(route.methods.intersection(other.methods))
+            methods = sorted(
+                (route.methods or set()).intersection(other.methods or set())
+            )
             if (
                 methods
                 and _route_paths_overlap(route, other)
