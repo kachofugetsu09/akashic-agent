@@ -499,7 +499,13 @@ def _candidate_reload_source(version: str) -> str:
 def _read_json_object(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
-    raw: object = json.loads(path.read_text(encoding="utf-8"))
+    raw: object = {}
+    for _ in range(20):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            break
+        except json.JSONDecodeError:
+            time.sleep(0.01)
     if not isinstance(raw, dict):
         return {}
     mapping = cast(dict[object, object], raw)
