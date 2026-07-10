@@ -275,7 +275,7 @@ RuntimeSnapshot 一次性包含 lifecycle graphs、event handlers、tool hooks�
 
 Passive turn、proactive tick、job、tool execution、EventBus queue envelope 和 Dashboard request 都在入口获取 snapshot lease，在完成时释放。同一次执行禁止重新读取 current snapshot。
 
-替换 `add_*_plugin_modules()` 的永久追加语义，改为从 snapshot 构建或选择 phase graph。Tool schema、tool search 和 tool execute 必须来自同一 snapshot。发布使用固定状态机：`PREPARED → PUBLISHED_PENDING → COMMITTED／ABORTED`。进入 pending 时原子发布 v2，同时保留 v1 rollback hold；Reconciler 在 5 秒内执行无业务副作用的 post-publish invariants，包括 active snapshot identity、稳定 endpoint slot 指向、候选 Host alive 和资源计数。全部通过即 COMMITTED 并释放 v1 hold；失败或超时即 ABORTED，先恢复 v1 active hold并重新发布 v1。已经持有 v2 lease 的执行继续完成，v2 等待 lease 清零后回收。
+替换 `add_*_plugin_modules()` 的永久追加语义，改为从 snapshot 构建或选择 phase graph。Tool schema、tool search 和 tool execute 必须来自同一 snapshot。发布使用固定状态机：`PREPARED → PUBLISHED_PENDING → COMMITTED／ABORTED`。进入 pending 时原子发布 v2，同时保留 v1 rollback hold；Reconciler 在 5 秒内执行无业务副作用的 post-publish invariants，包括 active snapshot identity、snapshot 中 generation-keyed endpoint binding 可用、候选 Host alive 和资源计数。全部通过即 COMMITTED 并释放 v1 hold；失败或超时即 ABORTED，先恢复 v1 active hold并重新发布 v1。已经持有 v2 lease 的执行继续完成，v2 等待 lease 清零后回收。
 
 **G4 Verify**:
 
@@ -291,13 +291,13 @@ Passive turn、proactive tick、job、tool execution、EventBus queue envelope �
 
 ### Step 5: 收敛 Channels、Dashboard、Memory Engine 与 Plugin Services
 
-ChannelHost 按稳定 channel name 持有 sender slot。候选先构造和验证；切换时停止旧 ingress、启动新实例、替换 slot。新实例启动失败必须重新启动旧实例并保持旧 snapshot。
+ChannelHost 按 generation identity 保存实例，RuntimeSnapshot 的 channel binding 选择 sender；不存在独立 current slot。候选先构造和验证，发布只替换 snapshot；旧 ingress 在旧 generation drain 后停止。新实例启动失败时不发布候选。
 
-Dashboard 改为稳定 dispatcher 指向 generation-owned ASGI sub-app，禁止插件直接修改全局 FastAPI route table。前端插件模块返回 dispose，更新时卸载 React root、formatter 和样式后再加载 revision URL。
+Dashboard 使用 generation-keyed ASGI sub-app registry，请求 lease 从 RuntimeSnapshot binding 选择 sub-app，禁止插件直接修改全局 FastAPI route table或替换独立 current dispatcher。前端插件模块返回 dispose，更新时卸载 React root、formatter 和样式后再加载 revision URL。
 
 Memory Engine 移入主插件 contribution，删除第二套动态 loader。核心通过稳定代理和当前 snapshot 选择 engine；同一 turn 的检索、工具和写入固定在同一 engine generation。
 
-Fitbit monitor 声明为 exclusive service，禁止 standby 双开。候选阶段只验证模型、配置、命令和端口，不启动进程。发布事务先暂停新入口并停止 v1 monitor，再启动 v2 并等待 ready，随后把包含 v2 endpoint 的 snapshot 一次发布；若启动或 post-publish invariant 失败，先停止 v2、重启保留描述与数据引用的 v1 monitor，再重新发布 v1。整个过程 monitor 数量不超过一个，data 目录不参与 generation 清理。
+Fitbit monitor 声明为 exclusive service，禁止 standby 双开。候选阶段只验证模型、配置、命令和端口，不启动进程。切换先进入 quiescing，阻止新的相关 snapshot lease 并等待现有 v1 generation/service lease 全部退出；随后停止 v1 monitor、启动 v2 并等待 ready，再发布含 v2 binding 的 snapshot并恢复入口。若启动或 post-publish invariant 失败，先停止 v2、重启保留描述与数据引用的 v1 monitor，再发布 v1 并恢复入口。整个过程 monitor 数量不超过一个，data 目录不参与 generation 清理。
 
 **G2/G3/G5 Verify**:
 
