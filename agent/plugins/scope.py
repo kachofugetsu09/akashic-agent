@@ -6,7 +6,7 @@ import logging
 import subprocess
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from bus.event_bus import EventBus, EventSubscription, Handler
 
@@ -157,6 +157,7 @@ class ScopedEventBus:
         self._event_bus = event_bus
         self._scope = scope
         self._active = not staged
+        self._snapshot_managed = staged
         self._pending: list[_StagedEventSubscription[Any]] = []
 
     def on(
@@ -164,7 +165,7 @@ class ScopedEventBus:
         event_type: type[T],
         handler: Handler[T],
     ) -> EventSubscription | _StagedEventSubscription[T]:
-        if not self._active:
+        if self._snapshot_managed:
             subscription = _StagedEventSubscription(
                 self._event_bus,
                 event_type,
@@ -177,6 +178,18 @@ class ScopedEventBus:
             )
             return subscription
         return self._scope.subscribe(self._event_bus, event_type, handler)
+
+    def publish(self) -> None:
+        if not self._snapshot_managed:
+            return
+        self._active = True
+
+    def staged_handlers(self) -> tuple[tuple[type[object], Handler[object]], ...]:
+        return tuple(
+            (subscription.event_type, subscription.handler)
+            for subscription in self._pending
+            if subscription.active
+        )
 
     def activate(self) -> None:
         if self._active:
@@ -223,6 +236,14 @@ class _StagedEventSubscription(Generic[T]):
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def event_type(self) -> type[object]:
+        return self._event_type
+
+    @property
+    def handler(self) -> Handler[object]:
+        return cast(Handler[object], self._handler)
 
     def activate(self) -> None:
         if not self._active or self._subscription is not None:

@@ -13,6 +13,7 @@ import sys
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -160,6 +161,7 @@ class PluginManager:
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_drains: dict[str, tuple[PluginGeneration, ...]] = {}
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
+        self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
 
     @property
     def loaded_count(self) -> int:
@@ -439,6 +441,9 @@ class PluginManager:
             )
             return result
 
+        self._compile_snapshot_event_handlers(snapshot)
+        if generation.staged_event_bus is not None:
+            generation.staged_event_bus.publish()
         transaction = self._snapshot_store.begin_publish(snapshot)
         try:
             await asyncio.wait_for(
@@ -501,6 +506,32 @@ class PluginManager:
         generation.initialization_started = True
         await instance.initialize()
         generation.minimum_resource_count = generation.scope.resource_count
+
+    def _compile_snapshot_event_handlers(self, snapshot: RuntimeSnapshot) -> None:
+        handlers: dict[type[object], list[Any]] = {}
+        for generation in snapshot.generations.values():
+            for metadata in plugin_registry.get_handlers_by_module_path(
+                generation.module_path
+            ):
+                if metadata.kind != MetadataKind.LIFECYCLE:
+                    continue
+                event_type = _EVENT_TYPE_MAP.get(metadata.event_type)  # type: ignore[arg-type]
+                if event_type is None:
+                    continue
+                handlers.setdefault(event_type, []).append(
+                    functools.partial(metadata.handler, generation.instance)
+                )
+            staged = generation.staged_event_bus
+            if staged is None:
+                continue
+            for event_type, handler in staged.staged_handlers():
+                handlers.setdefault(event_type, []).append(handler)
+        snapshot.event_handlers = MappingProxyType(
+            {
+                event_type: tuple(event_handlers)
+                for event_type, event_handlers in handlers.items()
+            }
+        )
 
     async def _post_publish_invariants(
         self,
@@ -1099,6 +1130,7 @@ class PluginManager:
                     return generation
             generation.runtime_snapshot = self._compile_generation_snapshot(generation)
             staged_event_bus = ScopedEventBus(self._event_bus, scope, staged=True)
+            generation.staged_event_bus = staged_event_bus
             instance.context.event_bus = staged_event_bus
             instance.context.kv_store = PluginKVStore(data_dir / ".kv.json")
             instance.context.session_manager = self._session_manager
@@ -1113,8 +1145,7 @@ class PluginManager:
             self._bind_tool_hooks(instance, mp)
             self._publish_contributions(contributions)
             self._channels.extend(contributions.channels)
-            self._bind_handlers(instance, mp, scope)
-            staged_event_bus.activate()
+            staged_event_bus.publish()
             instance.context.tool_registry = self._tool_registry
             generation.minimum_resource_count = scope.resource_count
         except asyncio.CancelledError:
@@ -1167,6 +1198,7 @@ class PluginManager:
         plugin_registry.register_instance(stable_module_path, instance)
         sys.modules[stable_module_path] = sys.modules[mp]
         assert generation.runtime_snapshot is not None
+        self._compile_snapshot_event_handlers(generation.runtime_snapshot)
         await self._publish_committed_snapshot(generation.runtime_snapshot)
         logger.info("插件已加载: %s", mod["name"])
         return generation

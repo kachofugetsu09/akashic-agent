@@ -415,7 +415,7 @@ async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
         instance = plugin_registry.get_instance("akasic_plugin_plugins_scoped")
         assert instance is not None
         task = instance.task
-        assert bus.handler_count() == 1
+        assert bus.handler_count() == 0
 
         await manager.terminate_all()
 

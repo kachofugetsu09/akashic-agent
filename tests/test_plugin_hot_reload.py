@@ -20,6 +20,7 @@ from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import Tool
 from bus.event_bus import EventBus
+from bus.events_lifecycle import TurnCommitted
 
 
 @pytest.fixture(autouse=True)
@@ -473,7 +474,7 @@ async def test_candidate_is_not_published_before_initialize_finishes(tmp_path: P
 
     assert manager.generation("pending") is not None
     assert tools.get_tool("pending_tool") is not None
-    assert event_bus.handler_count() == 1
+    assert event_bus.handler_count() == 0
 
 
 @pytest.mark.asyncio
@@ -2029,6 +2030,87 @@ async def test_initial_plugin_mcp_tool_is_visible_in_first_snapshot(
 
     assert seen == ["[]"]
     await manager.terminate_all()
+
+
+def _snapshot_event_source(version: str) -> str:
+    wait = (
+        "        self.context.kv_store.set('event_entered_v1', True)\n"
+        "        release = self.context.data_dir / 'release-event-v1'\n"
+        "        while not release.exists():\n"
+        "            await asyncio.sleep(0.01)\n"
+        if version == "v1"
+        else ""
+    )
+    return (
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class SnapshotEventPlugin(Plugin):\n"
+        "    name = 'snapshot_event'\n"
+        "    async def initialize(self):\n"
+        "        self.context.event_bus.on(TurnCommitted, self.handle)\n"
+        "    async def handle(self, event):\n"
+        f"{wait}"
+        f"        self.context.kv_store.increment('event_finished_{version}')\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_queued_event_keeps_enqueued_snapshot_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_event",
+        _snapshot_event_source("v1"),
+    )
+    event_bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_event_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_event")
+    assert candidate is not None
+    event = TurnCommitted(
+        session_key="cli:event",
+        channel="cli",
+        chat_id="event",
+        input_message="event",
+        persisted_user_message="event",
+        assistant_response="event",
+        tools_used=[],
+    )
+    event_bus.enqueue(event)
+    state_path = tmp_path / "home" / "data" / "snapshot_event-builtin" / ".kv.json"
+    for _ in range(100):
+        if state_path.exists():
+            state: object = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(state, dict) and state.get("event_entered_v1") is True:
+                break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("v1 queued event did not start")
+
+    await manager.publish_prepared("snapshot_event")
+    _ = (state_path.parent / "release-event-v1").write_text(
+        "released\n",
+        encoding="utf-8",
+    )
+    await event_bus.drain()
+    await event_bus.fanout(event)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert state["event_finished_v1"] == 1
+    assert state["event_finished_v2"] == 1
+    assert event_bus.handler_count() == 0
+    await manager.terminate_all()
+    await event_bus.aclose()
 
 
 @pytest.mark.asyncio

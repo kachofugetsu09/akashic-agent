@@ -14,6 +14,7 @@ from agent.plugins.jobs import RegisteredPluginJob, plugin_job_key
 from agent.plugins.specs import RegisteredProactiveSource, proactive_source_key
 from agent.tools.registry import ToolRegistry
 from agent.skills import SkillIndex
+from bus.event_bus import Handler
 
 
 SnapshotState = Literal[
@@ -41,6 +42,9 @@ class RuntimeSnapshot:
     mcp_catalog_generation_ids: Mapping[str, str]
     tool_registry: ToolRegistry | None = None
     plugin_skill_index: SkillIndex | None = None
+    event_handlers: Mapping[type[object], tuple[Handler[object], ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     state: SnapshotState = "compiled"
     lease_count: int = 0
     _store_token: object | None = field(default=None, repr=False)
@@ -208,6 +212,9 @@ class RuntimeSnapshotLease:
     def active(self) -> bool:
         return not self._released
 
+    def fork(self) -> RuntimeSnapshotLease:
+        return self._store.lease(self.snapshot.snapshot_id)
+
     async def __aenter__(self) -> RuntimeSnapshot:
         return self.snapshot
 
@@ -257,6 +264,17 @@ def get_current_runtime_snapshot() -> RuntimeSnapshot | None:
     ):
         return None
     return binding.lease.snapshot
+
+
+def lease_current_runtime_snapshot() -> RuntimeSnapshotLease | None:
+    binding = _current_runtime_binding.get()
+    if (
+        binding is None
+        or not binding.lease.active
+        or binding.owner_task is not asyncio.current_task()
+    ):
+        return None
+    return binding.lease.fork()
 
 
 class RuntimeSnapshotStore:

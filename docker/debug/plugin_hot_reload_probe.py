@@ -509,6 +509,7 @@ def _install_candidate_plugins(
 
 def _candidate_reload_source(version: str) -> str:
     initialize = (
+        "        self.context.event_bus.on(TurnCommitted, self._on_committed)\n"
         "        self.context.kv_store.set('initialized_version', 'v1')\n"
         "        self.context.kv_store.set('active_generation', self.context.generation_id)\n"
         "        self.context.create_task(self._heartbeat(), name='candidate-reload-heartbeat')\n"
@@ -522,7 +523,8 @@ def _candidate_reload_source(version: str) -> str:
         "                self.context.kv_store.set('live_mcp_version', getattr(result, 'text', str(result)))\n"
         "            await asyncio.sleep(0.05)\n"
         if version == "v1"
-        else "        self.context.kv_store.set('initialized_version', 'v2')\n"
+        else "        self.context.event_bus.on(TurnCommitted, self._on_committed)\n"
+        "        self.context.kv_store.set('initialized_version', 'v2')\n"
     )
     skills = (
         "    @classmethod\n"
@@ -537,6 +539,7 @@ def _candidate_reload_source(version: str) -> str:
         "import asyncio\n"
         "from agent.plugins.snapshot import get_current_runtime_snapshot\n"
         "from agent.skills import SkillsLoader\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
         "from agent.plugins import (IntervalTrigger, McpServerSpec, Plugin, PluginJobSpec, "
         "PluginSemanticCheck, ProactiveSourceSpec, tool)\n"
         "class SnapshotBeforeTurn:\n"
@@ -551,6 +554,7 @@ def _candidate_reload_source(version: str) -> str:
         f"            self.plugin.context.kv_store.set('phase_tool_version_{version}', str(value))\n"
         "        skill_body = SkillsLoader(self.plugin.context.workspace, runtime_catalog='normal').load_skill_body('candidate-skill')\n"
         f"        self.plugin.context.kv_store.set('phase_skill_body_{version}', skill_body)\n"
+        "        await self.plugin.context.event_bus.fanout(TurnCommitted(session_key='gate:event', channel='gate', chat_id='event', input_message='event', persisted_user_message='event', assistant_response='event', tools_used=[]))\n"
         "        self.plugin.context.create_task(self._probe_detached(), name='snapshot-detached-probe')\n"
         "        ctx = frame.slots['session:ctx']\n"
         f"        if '{version}' == 'v1' and ctx.content == 'block snapshot':\n"
@@ -599,6 +603,8 @@ def _candidate_reload_source(version: str) -> str:
         f"        return '{version}'\n"
         "    async def initialize(self):\n"
         f"{initialize}"
+        "    async def _on_committed(self, event):\n"
+        f"        self.context.kv_store.increment('phase_event_version_{version}')\n"
     )
 
 
@@ -1124,6 +1130,8 @@ def _exercise_candidate_prepare(
         and after_passive.get("phase_tool_version_v2") is None
         and after_passive.get("phase_skill_body_v1") == "candidate v1"
         and after_passive.get("phase_skill_body_v2") is None
+        and _integer(after_passive.get("phase_event_version_v1")) >= 1
+        and _integer(after_passive.get("phase_event_version_v2")) == 0
         and after_passive.get("detached_snapshot_visible") is False
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"

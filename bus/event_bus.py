@@ -4,7 +4,11 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TypeAlias, TypeVar, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast
+
+if TYPE_CHECKING:
+    from agent.plugins.snapshot import RuntimeSnapshotLease, RuntimeSnapshotStore
 
 logger = logging.getLogger(__name__)
 
@@ -12,14 +16,24 @@ E = TypeVar("E")
 Handler: TypeAlias = Callable[[E], Awaitable[E | None] | E | None]
 
 
+@dataclass(frozen=True)
+class _QueuedEvent:
+    event: object
+    snapshot_lease: RuntimeSnapshotLease | None
+
+
 class EventBus:
     """Typed lifecycle hooks: observe + ordered intercept pipeline."""
 
     def __init__(self) -> None:
         self._handlers: dict[type[object], list[Handler[object]]] = {}
-        self._observe_queue: asyncio.Queue[object] | None = None
+        self._observe_queue: asyncio.Queue[_QueuedEvent] | None = None
         self._observe_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
+
+    def bind_runtime_snapshot_store(self, store: RuntimeSnapshotStore) -> None:
+        self._runtime_snapshot_store = store
 
     def on(
         self,
@@ -54,10 +68,18 @@ class EventBus:
         self,
         event: E,
     ) -> E:
+        lease = self._runtime_lease()
+        if lease is not None:
+            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+            async with lease:
+                token = bind_runtime_snapshot(lease)
+                try:
+                    return await self.emit(event)
+                finally:
+                    reset_runtime_snapshot(token)
         # 1. 依次执行干预链，handler 返回新事件时替换当前事件。
-        for raw_handler in list(
-            self._handlers.get(cast(type[object], type(event)), [])
-        ):
+        for raw_handler in self._handlers_for(cast(type[object], type(event))):
             handler = cast(Handler[E], raw_handler)
             result = handler(event)
             if inspect.isawaitable(result):
@@ -70,16 +92,38 @@ class EventBus:
         self,
         event: object,
         ) -> None:
+        lease = self._runtime_lease()
+        if lease is not None:
+            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+            async with lease:
+                token = bind_runtime_snapshot(lease)
+                try:
+                    await self.observe(event)
+                    return
+                finally:
+                    reset_runtime_snapshot(token)
         # 1. 依次执行观察者，单个观察者失败不打断主流程。
-        for handler in list(self._handlers.get(type(event), [])):
+        for handler in self._handlers_for(type(event)):
             _ = await self._run_observer(event, handler)
 
     async def fanout(
         self,
         event: object,
     ) -> None:
+        lease = self._runtime_lease()
+        if lease is not None:
+            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+            async with lease:
+                token = bind_runtime_snapshot(lease)
+                try:
+                    await self.fanout(event)
+                    return
+                finally:
+                    reset_runtime_snapshot(token)
         # 1. 并发执行观察者；每个观察者自己记录异常，fanout 只汇总失败数量。
-        handlers = list(self._handlers.get(type(event), []))
+        handlers = self._handlers_for(type(event))
         if not handlers:
             return
         results = await asyncio.gather(
@@ -103,7 +147,28 @@ class EventBus:
             logger.warning("event enqueue ignored after close: %s", type(event).__name__)
             return
         queue = self._ensure_observe_queue()
-        queue.put_nowait(event)
+        from agent.plugins.snapshot import lease_current_runtime_snapshot
+
+        snapshot_lease = lease_current_runtime_snapshot()
+        if snapshot_lease is None and self._runtime_snapshot_store is not None:
+            snapshot_lease = self._runtime_snapshot_store.lease()
+        queue.put_nowait(
+            _QueuedEvent(
+                event=event,
+                snapshot_lease=snapshot_lease,
+            )
+        )
+
+    def _runtime_lease(self) -> RuntimeSnapshotLease | None:
+        if self._runtime_snapshot_store is None:
+            return None
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        if get_current_runtime_snapshot() is not None:
+            return None
+        if self._runtime_snapshot_store.current is None:
+            return None
+        return self._runtime_snapshot_store.lease()
 
     async def drain(
         self,
@@ -148,7 +213,7 @@ class EventBus:
 
     def _ensure_observe_queue(
         self,
-    ) -> asyncio.Queue[object]:
+    ) -> asyncio.Queue[_QueuedEvent]:
         if self._observe_queue is None:
             self._observe_queue = asyncio.Queue()
         self._ensure_observe_task()
@@ -175,11 +240,34 @@ class EventBus:
             queue = self._observe_queue
             if queue is None:
                 return
-            event = await queue.get()
+            envelope = await queue.get()
             try:
-                await self.fanout(event)
+                await self._fanout_queued(envelope)
             finally:
                 queue.task_done()
+
+    async def _fanout_queued(self, envelope: _QueuedEvent) -> None:
+        lease = envelope.snapshot_lease
+        if lease is None:
+            await self.fanout(envelope.event)
+            return
+        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+        async with lease:
+            token = bind_runtime_snapshot(lease)
+            try:
+                await self.fanout(envelope.event)
+            finally:
+                reset_runtime_snapshot(token)
+
+    def _handlers_for(self, event_type: type[object]) -> list[Handler[object]]:
+        handlers = list(self._handlers.get(event_type, []))
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is not None:
+            handlers.extend(snapshot.event_handlers.get(event_type, ()))
+        return handlers
 
     def _on_observe_task_done(
         self,
