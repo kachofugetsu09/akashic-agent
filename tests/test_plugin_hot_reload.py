@@ -643,23 +643,31 @@ async def test_return_to_active_revision_discards_stale_prepared(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_terminating_one_manager_keeps_newer_stable_alias(tmp_path: Path):
-    _write_plugin(
+    plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "shared_alias",
         "from agent.plugins import Plugin\n"
         "class SharedAliasPlugin(Plugin):\n"
         "    name = 'shared_alias'\n",
     )
+    child = plugin_dir / "child.py"
+    _ = child.write_text("value = 'v1'\n", encoding="utf-8")
     first_manager = _manager(tmp_path)
     second_manager = _manager(tmp_path)
     await first_manager.load_all()
+    stable_alias = "akasic_plugin_plugins_shared_alias"
+    first_child = importlib.import_module(f"{stable_alias}.child")
+    assert first_child.value == "v1"
+    _ = child.write_text("value = 'v2'\n", encoding="utf-8")
     await second_manager.load_all()
     second = second_manager.generation("shared_alias")
     assert second is not None
+    second_child = importlib.import_module(f"{stable_alias}.child")
+    assert second_child.value == "v2"
+    assert second_child is not first_child
 
     await first_manager.terminate_all()
 
-    stable_alias = "akasic_plugin_plugins_shared_alias"
     assert plugin_registry.get_instance(stable_alias) is second.instance
     assert sys.modules[stable_alias] is sys.modules[second.module_path]
 

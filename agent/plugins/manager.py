@@ -642,6 +642,7 @@ class PluginManager:
         generation.state = "active"
         self._active_generations[plugin_id] = generation
         self._stable_aliases[mp] = stable_module_path
+        self._remove_module_tree(stable_module_path)
         self._fresh_importer.register(stable_module_path, plugin_dir)
         plugin_registry.register_instance(stable_module_path, instance)
         sys.modules[stable_module_path] = sys.modules[mp]
