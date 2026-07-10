@@ -117,6 +117,7 @@ class PluginManager:
         memory_engine: Any = None,
         llm: PluginLlmService | None = None,
         installed_cache_root: Path | None = None,
+        user_mcp_server_names: Callable[[], set[str]] | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -126,6 +127,7 @@ class PluginManager:
         self._memory_engine = memory_engine
         self._llm = llm
         self._installed_cache_root = installed_cache_root
+        self._user_mcp_server_names = user_mcp_server_names or set
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
@@ -1455,12 +1457,7 @@ class PluginManager:
             for generation in other_generations
             for server_name in generation.contributions.mcp_servers
         }
-        if self._tool_registry is not None:
-            occupied_servers.update(
-                document.source_name
-                for document in self._tool_registry.get_documents()
-                if document.source_type == "mcp"
-            )
+        occupied_servers.update(self._user_mcp_server_names())
         check(
             "mcp_servers",
             not occupied_servers.intersection(contributions.mcp_servers),

@@ -146,6 +146,9 @@ class McpServerRegistry:
             lines.append(f"- {name}（{len(tools)} 个工具）：{', '.join(tools) or '无'}")
         return "\n".join(lines)
 
+    def connected_server_names(self) -> set[str]:
+        return set(self._clients)
+
     async def _connect(
         self,
         name: str,

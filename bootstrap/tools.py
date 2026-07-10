@@ -509,6 +509,7 @@ def build_core_runtime(
             max_tokens=config.max_tokens,
         ),
         installed_cache_root=_resolve_installed_plugin_cache_root(),
+        user_mcp_server_names=mcp_registry.connected_server_names,
     )
     loop.bind_runtime_snapshot_store(plugin_manager.snapshot_store)
 

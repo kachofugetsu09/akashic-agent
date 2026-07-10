@@ -46,6 +46,7 @@ def _manager(
     *,
     tools: ToolRegistry | None = None,
     workspace: Path | None = None,
+    user_mcp_server_names=None,
 ) -> PluginManager:
     return PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
@@ -53,6 +54,7 @@ def _manager(
         tool_registry=tools,
         workspace=workspace,
         installed_cache_root=tmp_path / "home" / "cache",
+        user_mcp_server_names=user_mcp_server_names,
     )
 
 
@@ -1926,7 +1928,11 @@ async def test_plugin_mcp_server_cannot_replace_user_registry_server(
         "    name = 'mcp_collision'\n",
     )
     tools = ToolRegistry()
-    manager = _manager(tmp_path, tools=tools)
+    manager = _manager(
+        tmp_path,
+        tools=tools,
+        user_mcp_server_names=lambda: {"user_server"},
+    )
     await manager.load_all()
 
     class UserMcpTool(Tool):
