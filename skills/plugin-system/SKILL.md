@@ -38,7 +38,7 @@ python main.py plugin-doctor --plugin <name>@github
 
 ## 启用与禁用
 
-只修改 `manifest.toml` 对应条目的 `enabled`。启停后提醒用户重启运行进程。
+只修改 `manifest.toml` 对应条目的 `enabled`。运行中的 watcher 会自动完成启停，不需要重启进程。
 
 ```toml
 [plugins."demo@github"]
@@ -63,3 +63,13 @@ enabled = false
 ```
 
 插件能力全部由代码声明，公共 runtime 不应出现具体插件名或业务路径特判。
+
+## 热重载验证
+
+```text
+┌─ 修改 cache、manifest.toml 或 config.local.toml
+├─ 等待 watcher 生成候选代际
+├─ 检查 candidate 与 snapshot Gate 日志
+├─ 发起一次新请求验证新能力
+└─ 确认旧 MCP、任务、Channel 与服务已排空
+```

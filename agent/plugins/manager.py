@@ -381,7 +381,6 @@ class PluginManager:
             )
             digest.update(plugin_id.encode())
             digest.update(_source_metadata_revision(plugin_dir))
-            digest.update(_path_metadata(plugin_dir / "plugin.disabled"))
             digest.update(_path_metadata(data_dir / "config.local.toml"))
         return digest.hexdigest()
 
@@ -539,9 +538,8 @@ class PluginManager:
             )
             desired = {
                 plugin_id
-                for plugin_id, mod in discovered.items()
+                for plugin_id in discovered
                 if manifest.get(plugin_id, True)
-                and not _is_plugin_disabled(Path(mod["plugin_root"]))
             }
             for plugin_id in sorted(set(self._active_generations) - desired):
                 results.append(await self._deactivate_plugin(plugin_id))
@@ -1249,9 +1247,6 @@ class PluginManager:
         plugin_manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
         if plugin_manifest.get(initial_plugin_id, True) is False:
             logger.info("插件已禁用（manifest.toml）: %s", initial_plugin_id)
-            return None
-        if _is_plugin_disabled(plugin_dir):
-            logger.info("插件已禁用（plugin.disabled）: %s", mod["name"])
             return None
         tool_names: list[str] = []
         hook_count_before = len(self._tool_hooks)
@@ -2900,7 +2895,3 @@ def _gate_check_evidence(
         if check.check_id == check_id:
             return check.evidence
     return []
-
-
-def _is_plugin_disabled(plugin_dir: Path) -> bool:
-    return (plugin_dir / "plugin.disabled").exists()

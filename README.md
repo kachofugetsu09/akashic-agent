@@ -35,14 +35,15 @@ https://github.com/akashic-plugins/steam-mcp
 Akashic 理想上的动作应该是：
 
 ```text
-安装插件
-├─ 识别这是一个 GitHub 插件仓库
-├─ 执行 plugin-install
-├─ 检查 manifest.toml 与 plugin.py 声明的能力
-└─ 提醒你重启后生效
+┌─ 安装插件
+│  ├─ 识别 GitHub 插件仓库
+│  ├─ 执行 plugin-install
+│  ├─ 检查 manifest.toml 与 plugin.py
+│  └─ Runtime 自动发现并原子发布新快照
+└─ 不重启，下一次执行使用新代际
 ```
 
-当前这套插件系统默认按“重启后生效”理解，尤其是 lifecycle、skill、MCP 声明变更后。
+安装、升级、启停、源码和 `config.local.toml` 修改都会自动热重载。正在执行的请求保持旧代际，新请求统一使用新代际；候选验证失败时继续保留旧版本。
 
 想看完整机制，直接看 [插件系统 Handbook](./_handbook/plugins-tutorial.md)。
 

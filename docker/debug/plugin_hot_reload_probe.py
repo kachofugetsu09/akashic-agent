@@ -424,6 +424,34 @@ def _install_fitbit_plugin(sandbox: Path, plugin_root: Path) -> Path:
     return sandbox / "home/.akashic-plugin/data/fitbit-gate"
 
 
+def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
+    cache = sandbox / "home/.akashic-plugin/cache/gate"
+    entries: list[str] = []
+    observe_source = Path()
+    for source_name, plugin_name in (
+        ("emotion", "emotion"),
+        ("meme", "meme"),
+        ("observe", "observe"),
+        ("proactive_feedback", "proactive_feedback"),
+        ("status_commands", "status_commands"),
+    ):
+        target = cache / plugin_name / "1.0.0"
+        shutil.copytree(
+            plugin_root / source_name,
+            target,
+            ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_cache"),
+        )
+        entries.append(
+            f'[plugins."{plugin_name}@gate"]\nenabled = true\n'
+        )
+        if plugin_name == "observe":
+            observe_source = target / "plugin.py"
+    manifest = sandbox / "home/.akashic-plugin/manifest.toml"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    _ = manifest.write_text("\n".join(entries), encoding="utf-8")
+    return observe_source
+
+
 def _install_candidate_plugins(
     sandbox: Path,
 ) -> tuple[Path, Path, Path, Path, Path, Path]:
@@ -826,6 +854,72 @@ def _candidate_service_version(container_id: str) -> str:
         text=True,
     )
     return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _dashboard_plugins(container_id: str) -> list[str]:
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            container_id,
+            "python",
+            "-c",
+            (
+                "import json, urllib.request; "
+                "items=json.loads(urllib.request.urlopen("
+                "'http://127.0.0.1:2236/api/dashboard/plugins', timeout=2).read()); "
+                "print(json.dumps(sorted(item['id'] for item in items)))"
+            ),
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _exercise_migrated_plugins(
+    container_id: str,
+    observe_source: Path,
+    sandbox: Path,
+) -> dict[str, object]:
+    before = _snapshot_statuses(container_id)
+    _ = observe_source.write_text(
+        observe_source.read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+    _, reloaded = _wait_snapshot_status(
+        container_id,
+        after=len(before),
+        publication_state="committed",
+        plugin_id="observe@gate",
+    )
+    plugins = _dashboard_plugins(container_id)
+    expected = {
+        "emotion@gate",
+        "meme@gate",
+        "observe@gate",
+        "proactive_feedback@gate",
+        "status_commands@gate",
+    }
+    observe_db = sandbox / "workspace/observe/observe.db"
+    passed = (
+        reloaded.get("old_generation") != reloaded.get("new_generation")
+        and isinstance(reloaded.get("new_generation"), str)
+        and expected.issubset(plugins)
+        and observe_db.exists()
+    )
+    return {
+        "passed": passed,
+        "reloaded": reloaded,
+        "dashboard_plugins": plugins,
+        "observe_db": observe_db.exists(),
+    }
 
 
 def _fitbit_runtime_probe(container_id: str) -> dict[str, object]:
@@ -1468,6 +1562,14 @@ def _run_runtime_smoke(
         if phase == "fitbit"
         else None
     )
+    migrated_observe = (
+        _install_migrated_plugins(
+            sandbox,
+            Path(env["AKASHIC_PLUGIN_SOURCE"]),
+        )
+        if phase == "plugins"
+        else None
+    )
     candidate_states = (
         _install_candidate_plugins(sandbox)
         if phase in {"candidate", "capability-hosts", "snapshot", "topology"}
@@ -1539,6 +1641,7 @@ def _run_runtime_smoke(
             text=True,
         ).stdout
     candidate_prepare: dict[str, object] = {}
+    migrated_probe: dict[str, object] = {}
     fitbit_probe: dict[str, object] = {}
     fitbit_processes = -1
     if fitbit_data is not None and container_id and runtime_stable:
@@ -1565,6 +1668,12 @@ def _run_runtime_smoke(
                 candidate_states[5],
                 socket,
             )
+    if migrated_observe is not None and container_id and runtime_stable:
+        migrated_probe = _exercise_migrated_plugins(
+            container_id,
+            migrated_observe,
+            sandbox,
+        )
     _ = (
         _wait_json_value(scope_state, "event_started", True)
         if scope_state is not None and runtime_stable
@@ -1686,6 +1795,9 @@ def _run_runtime_smoke(
             "probe": fitbit_probe,
             "runtime_log": str(runtime_log),
         }
+    if migrated_observe is not None:
+        phase_passed = migrated_probe.get("passed") is True
+        phase_evidence = {"phase": phase, **migrated_probe}
     passed = (
         started.returncode == 0
         and ipc_ready
@@ -1762,6 +1874,7 @@ def main() -> int:
             "capability-hosts",
             "snapshot",
             "topology",
+            "plugins",
             "fitbit",
         ),
         default="smoke",

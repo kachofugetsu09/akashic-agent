@@ -175,7 +175,28 @@ python main.py plugin-doctor --plugin demo@github
 ├─ cache/github/demo/<version>/plugin.py 存在
 ├─ data/demo-github/config.local.toml 可通过 schema 验证
 ├─ 声明的 skills 与 MCP 入口存在
-└─ 重启后 doctor 与运行日志无加载错误
+└─ watcher 发布 committed snapshot，运行日志无加载错误
+```
+
+## 热重载
+
+Runtime 每秒检查插件清单、源码和本地配置的元数据。发现变化后先构建完整候选代际，通过声明、资源 readiness 与插件语义检查后再一次性发布。
+
+```text
+┌─ 变化入口
+│  ├─ 安装或删除插件目录
+│  ├─ manifest.toml enabled 改变
+│  ├─ plugin.py 或插件资源改变
+│  └─ config.local.toml 改变
+├─ Candidate Gate
+│  ├─ 编译 lifecycle、tool、skill、MCP、job、proactive
+│  ├─ 预热 Dashboard、Channel 与 managed service
+│  └─ 失败时丢弃候选，旧代继续服务
+├─ RuntimeSnapshot 原子发布
+│  ├─ 已开始的执行继续持有旧快照
+│  └─ 新执行只租用新快照
+└─ Drain
+   └─ 最后一个旧 lease 释放后关闭旧资源
 ```
 
 ## 升级边界
@@ -187,4 +208,4 @@ python main.py plugin-doctor --plugin demo@github
    └─ 必须保留：配置、数据库、Token、模型、日志
 ```
 
-插件需要后台服务时，由插件的 `initialize()` 启动，由 `terminate()` 停止。MCP bridge 只连接服务，不应再维护第二套进程所有权。
+插件需要独占后台服务时，通过 `managed_services()` 声明；短期异步任务使用 `self.context.create_task()`。MCP bridge 只连接服务，不应再维护第二套进程所有权。

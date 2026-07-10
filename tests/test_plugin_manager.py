@@ -1166,11 +1166,16 @@ async def test_plugin_toml_overrides_defaults():
 
 
 @pytest.mark.asyncio
-async def test_plugin_disabled_marker_skips_plugin():
+async def test_manifest_disables_builtin_plugin():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
-        (Path(tmp) / "configured" / "plugin.disabled").write_text("", encoding="utf-8")
+        from agent.plugins.manifest import write_plugin_manifest
+
+        write_plugin_manifest(
+            {"configured": False},
+            plugins_home=TEST_PLUGIN_HOME,
+        )
         mgr = _make_manager([Path(tmp)], event_bus=bus)
         await mgr.load_all()
 

@@ -35,16 +35,12 @@ logger = logging.getLogger(__name__)
 _DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets", "/plugins/")
 
 
-def _is_plugin_disabled(plugin_dir: Path) -> bool:
-    return (plugin_dir / "plugin.disabled").exists()
-
-
 def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
     result: dict[str, Path] = {}
     plugins_root = project_root / "plugins"
     if plugins_root.is_dir():
         for plugin_dir in sorted(plugins_root.iterdir()):
-            if not plugin_dir.is_dir() or _is_plugin_disabled(plugin_dir):
+            if not plugin_dir.is_dir():
                 continue
             result[plugin_dir.name] = plugin_dir
 
@@ -60,7 +56,7 @@ def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
         if manifest.get(plugin_id, True) is False:
             continue
         plugin_root = source.plugin_root.resolve(strict=False)
-        if not plugin_root.is_dir() or _is_plugin_disabled(plugin_root):
+        if not plugin_root.is_dir():
             continue
         result[plugin_id] = plugin_root
     return result
@@ -789,7 +785,7 @@ def create_dashboard_app(
             _dashboard_plugin_dirs(project_root),
             plugin_id,
         )
-        if _is_plugin_disabled(plugin_dir) or not dashboard_plugin_enabled(
+        if not dashboard_plugin_enabled(
             plugin_id,
             plugin_dir,
         ):
@@ -808,7 +804,7 @@ def create_dashboard_app(
             _dashboard_plugin_dirs(project_root),
             plugin_id,
         )
-        if _is_plugin_disabled(plugin_dir) or not dashboard_plugin_enabled(
+        if not dashboard_plugin_enabled(
             plugin_id,
             plugin_dir,
         ):
