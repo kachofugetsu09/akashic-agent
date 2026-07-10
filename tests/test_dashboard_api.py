@@ -5,9 +5,11 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import sqlite3
 import threading
+import tomllib
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient as _RawTestClient
 
 from bootstrap.dashboard_api import (
@@ -822,6 +824,19 @@ def test_standalone_dashboard_honors_builtin_plugin_manifest(
 
     assert "akasha" not in plugins
     assert "default_memory" in plugins
+
+
+def test_standalone_dashboard_rejects_invalid_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    manifest_path = home / ".akashic-plugin" / "manifest.toml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("invalid = [\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    with pytest.raises(tomllib.TOMLDecodeError):
+        _dashboard_plugin_dirs(Path.cwd())
 
 
 def test_installed_plugin_dashboard_supports_relative_imports(tmp_path, monkeypatch) -> None:

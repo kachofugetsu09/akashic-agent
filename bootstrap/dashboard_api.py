@@ -37,11 +37,7 @@ _DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets", "/plugins/")
 
 def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
     result: dict[str, Path] = {}
-    try:
-        manifest = load_plugin_manifest()
-    except Exception as e:
-        logger.warning("插件清单读取失败: %s", e)
-        manifest = {}
+    manifest = load_plugin_manifest()
     plugins_root = project_root / "plugins"
     if plugins_root.is_dir():
         for plugin_dir in sorted(plugins_root.iterdir()):
