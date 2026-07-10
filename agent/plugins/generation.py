@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from agent.plugins.jobs import RegisteredPluginJob
-    from agent.plugins.scope import PluginScope
+    from agent.plugins.scope import PluginScope, ScopedEventBus
     from agent.plugins.specs import RegisteredProactiveSource
     from infra.channels.contract import Channel
     from agent.plugins.skill_host import PreparedSkillCatalog
@@ -88,5 +88,7 @@ class PluginGeneration:
     job_catalog: PreparedJobCatalog | None = None
     proactive_catalog: PreparedProactiveCatalog | None = None
     runtime_snapshot: RuntimeSnapshot | None = None
+    staged_event_bus: ScopedEventBus | None = None
+    initialization_started: bool = False
     state: str = "active"
     lease_count: int = 0

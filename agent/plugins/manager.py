@@ -349,6 +349,18 @@ class PluginManager:
         generation = self._prepared_generations.pop(plugin_id, None)
         if generation is None:
             return
+        if generation.initialization_started:
+            terminator = getattr(generation.instance, "terminate", None)
+            if callable(terminator):
+                try:
+                    await cast(Callable[[], Awaitable[None]], terminator)()
+                except (asyncio.CancelledError, Exception) as error:
+                    self._cleanup_failures.append(
+                        CleanupFailure(
+                            resource=f"plugin:{plugin_id}:terminate",
+                            error=str(error) or type(error).__name__,
+                        )
+                    )
         self._cleanup_failures.extend(await generation.scope.aclose())
         self._remove_module_tree(generation.module_path)
         generation.state = "discarded"
@@ -356,6 +368,158 @@ class PluginManager:
     async def prepare_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
             return await self._prepare_changed()
+
+    async def reconcile_changed(self) -> list[dict[str, object]]:
+        async with self._candidate_prepare_lock:
+            prepared = await self._prepare_changed()
+            results: list[dict[str, object]] = []
+            published: set[str] = set()
+            for result in prepared:
+                plugin_id = str(result["plugin_id"])
+                if result.get("prepared_generation") is None:
+                    results.append(result)
+                    continue
+                results.append(await self._publish_prepared(plugin_id))
+                published.add(plugin_id)
+            for plugin_id in tuple(self._prepared_generations):
+                if plugin_id not in published:
+                    results.append(await self._publish_prepared(plugin_id))
+            return results
+
+    async def publish_prepared(self, plugin_id: str) -> dict[str, object]:
+        async with self._candidate_prepare_lock:
+            return await self._publish_prepared(plugin_id)
+
+    async def _publish_prepared(self, plugin_id: str) -> dict[str, object]:
+        generation = self._prepared_generations.get(plugin_id)
+        if generation is None:
+            raise KeyError(f"插件没有待发布候选: {plugin_id}")
+        snapshot = generation.runtime_snapshot
+        if snapshot is None:
+            raise RuntimeError(f"插件候选缺少 RuntimeSnapshot: {plugin_id}")
+        active = self._active_generations.get(plugin_id)
+        try:
+            await self._initialize_prepared_generation(generation)
+        except (asyncio.CancelledError, Exception) as error:
+            self._record_failed_gate(
+                plugin_id=plugin_id,
+                revision=generation.source_revision,
+                check_id="initialize",
+                reason=str(error) or type(error).__name__,
+            )
+            await self.discard_prepared(plugin_id)
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            result = self._publication_status(
+                plugin_id,
+                active=active,
+                candidate=generation,
+                publication_state="failed",
+            )
+            logger.info(
+                "plugin_snapshot_status %s",
+                json.dumps(result, ensure_ascii=False, sort_keys=True),
+            )
+            return result
+
+        transaction = self._snapshot_store.begin_publish(snapshot)
+        try:
+            self._validate_published_snapshot(generation, snapshot)
+            await self._snapshot_store.commit(transaction)
+        except (asyncio.CancelledError, Exception):
+            await self._snapshot_store.abort(transaction)
+            await self.discard_prepared(plugin_id)
+            raise
+
+        _ = self._prepared_generations.pop(plugin_id)
+        self._scopes[generation.module_path] = generation.scope
+        self._loaded.add(generation.module_path)
+        generation.state = "active"
+        self._active_generations[plugin_id] = generation
+        if active is not None:
+            active.state = "retained_compat"
+        result = self._publication_status(
+            plugin_id,
+            active=active,
+            candidate=generation,
+            publication_state="committed",
+        )
+        logger.info(
+            "plugin_snapshot_status %s",
+            json.dumps(result, ensure_ascii=False, sort_keys=True),
+        )
+        return result
+
+    async def _initialize_prepared_generation(
+        self,
+        generation: PluginGeneration,
+    ) -> None:
+        if generation.initialization_started:
+            return
+        from agent.plugins.context import PluginKVStore
+
+        instance = cast(Any, generation.instance)
+        context = instance.context
+        staged_event_bus = ScopedEventBus(
+            self._event_bus,
+            generation.scope,
+            staged=True,
+        )
+        generation.staged_event_bus = staged_event_bus
+        context.event_bus = staged_event_bus
+        context.kv_store = PluginKVStore(context.data_dir / ".kv.json")
+        context.session_manager = self._session_manager
+        context.memory_engine = self._memory_engine
+        context.llm = self._llm
+        context.scope = generation.scope
+        context.tool_registry = self._tool_registry
+        generation.initialization_started = True
+        await instance.initialize()
+
+    def _validate_published_snapshot(
+        self,
+        generation: PluginGeneration,
+        snapshot: RuntimeSnapshot,
+    ) -> None:
+        if self.current_snapshot is not snapshot:
+            raise RuntimeError("RuntimeSnapshot 发布指针不一致")
+        if snapshot.generations.get(generation.plugin_id) is not generation:
+            raise RuntimeError("RuntimeSnapshot generation 不一致")
+        catalog_id = snapshot.skill_catalog_generation_id
+        if catalog_id is not None and self._skill_host.get(catalog_id) is None:
+            raise RuntimeError("RuntimeSnapshot skill catalog 不可用")
+        for generation_id in snapshot.mcp_catalog_generation_ids.values():
+            if self._mcp_host.get(generation_id) is None:
+                raise RuntimeError("RuntimeSnapshot MCP catalog 不可用")
+        for item in snapshot.generations.values():
+            if item.job_catalog is not None and self._job_host.get(
+                item.generation_id
+            ) is not item.job_catalog:
+                raise RuntimeError("RuntimeSnapshot Job catalog 不可用")
+            if item.proactive_catalog is not None and self._proactive_host.get(
+                item.generation_id
+            ) is not item.proactive_catalog:
+                raise RuntimeError("RuntimeSnapshot proactive catalog 不可用")
+
+    def _publication_status(
+        self,
+        plugin_id: str,
+        *,
+        active: PluginGeneration | None,
+        candidate: PluginGeneration,
+        publication_state: str,
+    ) -> dict[str, object]:
+        return {
+            "plugin_id": plugin_id,
+            "old_generation": active.generation_id if active is not None else None,
+            "new_generation": candidate.generation_id,
+            "snapshot_id": (
+                self.current_snapshot.snapshot_id
+                if self.current_snapshot is not None
+                else None
+            ),
+            "publication_state": publication_state,
+        }
 
     async def _prepare_changed(self) -> list[dict[str, object]]:
         results: list[dict[str, object]] = []
@@ -1473,8 +1637,9 @@ class PluginManager:
                 else:
                     self._fresh_importer.unregister(stable_alias)
             if active_info is not None:
-                generation = self._active_generations.pop(active_info.plugin_id, None)
-                if generation is not None:
+                generation = self._active_generations.get(active_info.plugin_id)
+                if generation is not None and generation.module_path == mp:
+                    _ = self._active_generations.pop(active_info.plugin_id)
                     generation.state = "retired"
             _ = self._active_plugins.pop(mp, None)
         self._loaded.clear()

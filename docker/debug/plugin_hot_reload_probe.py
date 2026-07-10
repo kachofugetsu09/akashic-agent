@@ -11,6 +11,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from collections.abc import Callable
@@ -545,6 +546,11 @@ def _candidate_reload_source(version: str) -> str:
         f"        self.plugin.context.kv_store.increment('phase_runs_{version}')\n"
         "        self.plugin.context.create_task(self._probe_detached(), name='snapshot-detached-probe')\n"
         "        ctx = frame.slots['session:ctx']\n"
+        f"        if '{version}' == 'v1' and ctx.content == 'block snapshot':\n"
+        "            self.plugin.context.kv_store.set('blocked_v1_turn', True)\n"
+        "            release = self.plugin.context.data_dir / 'release-v1-turn'\n"
+        "            while not release.exists():\n"
+        "                await asyncio.sleep(0.01)\n"
         "        ctx.abort = True\n"
         f"        ctx.abort_reply = 'snapshot-{version}'\n"
         "        return frame\n"
@@ -675,6 +681,29 @@ def _candidate_statuses(container_id: str) -> list[dict[str, object]]:
     return statuses
 
 
+def _snapshot_statuses(container_id: str) -> list[dict[str, object]]:
+    logs = subprocess.run(
+        ["docker", "logs", container_id],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    ).stdout
+    marker = "plugin_snapshot_status "
+    statuses: list[dict[str, object]] = []
+    for line in logs.splitlines():
+        if marker not in line:
+            continue
+        try:
+            raw: object = json.loads(line.split(marker, 1)[1].strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(raw, dict):
+            mapping = cast(dict[object, object], raw)
+            statuses.append({str(key): value for key, value in mapping.items()})
+    return statuses
+
+
 def _container_process_count(container_id: str, marker: str) -> int:
     script = (
         "import os\n"
@@ -762,6 +791,121 @@ def _wait_candidate_status(
                 return statuses, status
         time.sleep(0.1)
     return _candidate_statuses(container_id), {}
+
+
+def _wait_snapshot_status(
+    container_id: str,
+    *,
+    after: int,
+    publication_state: str,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        statuses = _snapshot_statuses(container_id)
+        for status in statuses[after:]:
+            if (
+                status.get("plugin_id") == "candidate_reload@gate"
+                and status.get("publication_state") == publication_state
+            ):
+                return statuses, status
+        time.sleep(0.1)
+    return _snapshot_statuses(container_id), {}
+
+
+def _exercise_snapshot_publish(
+    container_id: str,
+    source_path: Path,
+    state_path: Path,
+    socket_path: Path,
+) -> dict[str, object]:
+    initial = _read_json_object(state_path)
+    initial_generation = initial.get("active_generation")
+    baseline_before = _candidate_statuses(container_id)
+    _ = source_path.write_text("not valid python !!!\n", encoding="utf-8")
+    baseline_signal = subprocess.run(
+        ["docker", "kill", "--signal", "HUP", container_id],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    _, baseline_status = _wait_candidate_status(
+        container_id,
+        after=len(baseline_before),
+        gate_status="failed",
+    )
+    initial_snapshot = baseline_status.get("snapshot_id")
+    _ = source_path.write_text(_candidate_reload_source("v1"), encoding="utf-8")
+    turn_release = state_path.parent / "release-v1-turn"
+    detached_release = state_path.parent / "release-detached-probe"
+    turn_release.unlink(missing_ok=True)
+    detached_release.unlink(missing_ok=True)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        old_turn = executor.submit(_ipc_roundtrip, socket_path, "block snapshot")
+        blocked = _wait_json_value(state_path, "blocked_v1_turn", True)
+        _ = source_path.write_text(_candidate_reload_source("v2"), encoding="utf-8")
+        candidate_before = _candidate_statuses(container_id)
+        publish_before = _snapshot_statuses(container_id)
+        signal_result = subprocess.run(
+            ["docker", "kill", "--signal", "HUP", container_id],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        _, candidate_status = _wait_candidate_status(
+            container_id,
+            after=len(candidate_before),
+            gate_status="passed",
+        )
+        _, publish_status = _wait_snapshot_status(
+            container_id,
+            after=len(publish_before),
+            publication_state="committed",
+        )
+        _ = turn_release.write_text("released\n", encoding="utf-8")
+        old_response = old_turn.result(timeout=10)
+
+    new_response = _ipc_roundtrip(socket_path, "snapshot after publish")
+    _ = detached_release.write_text("released\n", encoding="utf-8")
+    final_state = _wait_json_value(
+        state_path,
+        "detached_snapshot_visible",
+        False,
+    )
+    current_snapshot = publish_status.get("snapshot_id")
+    passed = (
+        signal_result.returncode == 0
+        and baseline_signal.returncode == 0
+        and isinstance(initial_generation, str)
+        and blocked.get("blocked_v1_turn") is True
+        and candidate_status.get("active_generation") == initial_generation
+        and isinstance(candidate_status.get("prepared_generation"), str)
+        and publish_status.get("old_generation") == initial_generation
+        and publish_status.get("new_generation")
+        == candidate_status.get("prepared_generation")
+        and isinstance(current_snapshot, str)
+        and isinstance(initial_snapshot, str)
+        and current_snapshot != initial_snapshot
+        and old_response.get("content") == "snapshot-v1"
+        and new_response.get("content") == "snapshot-v2"
+        and _integer(final_state.get("phase_runs_v1")) >= 1
+        and _integer(final_state.get("phase_runs_v2")) >= 1
+        and final_state.get("detached_snapshot_visible") is False
+    )
+    return {
+        "passed": passed,
+        "initial_generation": initial_generation,
+        "initial_snapshot": initial_snapshot,
+        "blocked": blocked,
+        "candidate_status": candidate_status,
+        "publish_status": publish_status,
+        "old_response": old_response,
+        "new_response": new_response,
+        "final_state": final_state,
+        "signal": signal_result.returncode,
+    }
 
 
 def _exercise_candidate_prepare(
@@ -1038,7 +1182,7 @@ def _run_runtime_smoke(
     scope_state = _install_scope_plugin(sandbox) if phase == "scope" else None
     candidate_states = (
         _install_candidate_plugins(sandbox)
-        if phase in {"candidate", "capability-hosts"}
+        if phase in {"candidate", "capability-hosts", "snapshot"}
         else None
     )
     started = subprocess.run(
@@ -1108,12 +1252,20 @@ def _run_runtime_smoke(
         ).stdout
     candidate_prepare: dict[str, object] = {}
     if candidate_states is not None and container_id and runtime_stable:
-        candidate_prepare = _exercise_candidate_prepare(
-            container_id,
-            candidate_states[4],
-            candidate_states[5],
-            socket,
-        )
+        if phase == "snapshot":
+            candidate_prepare = _exercise_snapshot_publish(
+                container_id,
+                candidate_states[4],
+                candidate_states[5],
+                socket,
+            )
+        else:
+            candidate_prepare = _exercise_candidate_prepare(
+                container_id,
+                candidate_states[4],
+                candidate_states[5],
+                socket,
+            )
     logs = subprocess.run(
         [*compose, "logs", "--no-color", "--tail", "200", "akashic-plugin-gate"],
         cwd=repo,
@@ -1278,7 +1430,7 @@ def main() -> int:
     )
     _ = parser.add_argument(
         "--phase",
-        choices=("smoke", "scope", "candidate", "capability-hosts"),
+        choices=("smoke", "scope", "candidate", "capability-hosts", "snapshot"),
         default="smoke",
     )
     _ = parser.add_argument("--inside-container", action="store_true")

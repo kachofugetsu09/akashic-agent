@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import os
 import py_compile
 import shutil
@@ -1434,4 +1435,104 @@ async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
     assert detached_seen == [None]
     await detached_tasks[0]
     await store.close()
+    await manager.terminate_all()
+
+
+def _snapshot_publish_source(version: str, *, fail_initialize: bool = False) -> str:
+    initialize = (
+        "        self.context.kv_store.set('initialized', 'v2')\n"
+        "        raise RuntimeError('initialize failed')\n"
+        if fail_initialize
+        else f"        self.context.kv_store.set('initialized', '{version}')\n"
+    )
+    return (
+        "from agent.plugins import Plugin\n"
+        "class SnapshotModule:\n"
+        "    slot = 'snapshot_publish.before_turn'\n"
+        "    requires = ('before_turn.emit',)\n"
+        f"    version = '{version}'\n"
+        "    async def run(self, frame): return frame\n"
+        "class SnapshotPublishPlugin(Plugin):\n"
+        "    name = 'snapshot_publish'\n"
+        "    def before_turn_modules(self): return [SnapshotModule()]\n"
+        "    async def initialize(self):\n"
+        f"{initialize}"
+        "    async def terminate(self):\n"
+        "        self.context.kv_store.set('terminated', True)\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_prepared_switches_snapshot_after_initialize(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_publish")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    old_lease = manager.snapshot_store.lease()
+
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None
+    assert candidate.initialization_started is False
+
+    result = await manager.publish_prepared("snapshot_publish")
+
+    assert result["publication_state"] == "committed"
+    assert manager.generation("snapshot_publish") is candidate
+    assert manager.current_snapshot is candidate.runtime_snapshot
+    assert candidate.initialization_started is True
+    assert active.state == "retained_compat"
+    assert old_lease.snapshot is old_snapshot
+    assert old_lease.snapshot.before_turn_modules[0].version == "v1"
+    next_lease = manager.snapshot_store.lease()
+    assert next_lease.snapshot.before_turn_modules[0].version == "v2"
+    state = tmp_path / "home" / "data" / "snapshot_publish-builtin" / ".kv.json"
+    state_value: object = json.loads(state.read_text(encoding="utf-8"))
+    assert isinstance(state_value, dict)
+    assert state_value["initialized"] == "v2"
+
+    await next_lease.release()
+    await old_lease.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_publish_prepared_initialize_failure_keeps_active_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_publish")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2", fail_initialize=True),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None
+
+    result = await manager.publish_prepared("snapshot_publish")
+
+    assert result["publication_state"] == "failed"
+    assert manager.generation("snapshot_publish") is active
+    assert manager.current_snapshot is old_snapshot
+    assert manager.prepared_generation("snapshot_publish") is None
+    assert candidate.state == "discarded"
     await manager.terminate_all()
