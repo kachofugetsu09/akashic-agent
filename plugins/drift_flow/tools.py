@@ -355,6 +355,13 @@ class SelectSkillTool(Tool):
                     "cursor": continuum.get("cursor") or {},
                     "journal_recent": journal_recent,
                 },
+                "runtime_guidance": (
+                    "这是 paused skill 的可续接停点。SKILL.md 是完整能力说明书，不是本轮从头执行清单。"
+                    "先用 local_context 区分已完成与未完成步骤；如果继续，只执行停点后的最小下一步。"
+                    "不要仅为遵循完整流程而重复读取、查重、规划或重建已有产物。"
+                    if str(continuum.get("last_status") or "") == "paused"
+                    else "本 skill 上轮已闭环；根据当前目标选择本轮实际需要的说明书部分。"
+                ),
             },
             ensure_ascii=False,
         )

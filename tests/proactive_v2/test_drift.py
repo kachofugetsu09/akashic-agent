@@ -534,6 +534,35 @@ async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_select_paused_skill_returns_resume_guidance(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    store.save_finish(
+        skill_used="explore-curiosity",
+        status="paused",
+        briefing="计划已写，执行失败",
+        message_result="silent",
+        scratchpad_update="plan.json 已存在，下一步执行计划",
+        global_note_update=None,
+        now_utc=datetime.now(timezone.utc),
+        cursor_update={"phase": "execute_plan"},
+    )
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "select_skill",
+        {"skill_name": "explore-curiosity"},
+        store=store,
+    )
+    payload = json.loads(cast(Any, raw))
+
+    assert "paused skill 的可续接停点" in payload["runtime_guidance"]
+    assert "只执行停点后的最小下一步" in payload["runtime_guidance"]
+
+
+@pytest.mark.asyncio
 async def test_drift_listdir_accepts_skill_shorthand_path(tmp_path: Path):
     _write_skill(tmp_path)
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
