@@ -9,6 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,7 +22,11 @@ from agent.plugins.manifest import write_plugin_manifest
 from agent.plugins.watcher import PluginWatcher
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.registry import plugin_registry
-from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    RuntimeSnapshotCompiler,
+    RuntimeSnapshotStore,
+)
 from agent.looping.core import AgentLoop
 from agent.background.subagent_manager import SubagentManager
 from proactive_v2.loop import ProactiveLoop
@@ -920,7 +925,7 @@ async def test_skill_catalog_cleanup_failure_is_reported(
     snapshot_root = generation.skill_catalog.snapshot_root
     real_rmtree = shutil.rmtree
 
-    def fail_snapshot_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+    def fail_snapshot_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
         if Path(path) == snapshot_root and not args and not kwargs:
             raise OSError("snapshot cleanup failed")
         real_rmtree(path, *args, **kwargs)
@@ -1575,7 +1580,7 @@ async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> N
         return "done"
 
     loop._process = process
-    message = SimpleNamespace(session_key="cli:snapshot")
+    message = cast(Any, SimpleNamespace(session_key="cli:snapshot"))
     running = asyncio.create_task(loop._process_with_runtime_admission(message))
     await entered.wait()
     transaction = store.begin_publish(v2)
@@ -1635,7 +1640,7 @@ async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
         return "done"
 
     loop._process = process
-    message = SimpleNamespace(session_key="cli:detached-snapshot")
+    message = cast(Any, SimpleNamespace(session_key="cli:detached-snapshot"))
     assert await loop._process_with_runtime_admission(message) == "done"
     assert snapshot.lease_count == 0
     detached_release.set()
@@ -2316,7 +2321,7 @@ async def test_tool_schema_search_and_execute_share_snapshot_generation(
         return "done"
 
     loop._process = process
-    message = SimpleNamespace(session_key="cli:snapshot-tool")
+    message = cast(Any, SimpleNamespace(session_key="cli:snapshot-tool"))
     old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
     await entered.wait()
     await manager.publish_prepared("snapshot_tool")
@@ -2538,7 +2543,7 @@ async def test_initial_plugin_mcp_tool_is_visible_in_first_snapshot(
         return "done"
 
     loop._process = process
-    message = SimpleNamespace(session_key="cli:initial-mcp")
+    message = cast(Any, SimpleNamespace(session_key="cli:initial-mcp"))
     await loop._process_with_runtime_admission(message)
 
     assert seen == ["[]"]
@@ -2617,7 +2622,10 @@ async def test_queued_event_keeps_enqueued_snapshot_generation(
     )
     await event_bus.drain()
     await event_bus.fanout(event)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state = cast(
+        dict[str, object],
+        json.loads(state_path.read_text(encoding="utf-8")),
+    )
 
     assert state["event_finished_v1"] == 1
     assert state["event_finished_v2"] == 1
@@ -2826,7 +2834,7 @@ async def test_job_queue_envelope_keeps_enqueued_snapshot_generation(
         _snapshot_job_source("v1"),
     )
     event_bus = EventBus()
-    llm = SimpleNamespace()
+    llm = cast(Any, SimpleNamespace())
     manager = PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=event_bus,
@@ -2882,7 +2890,7 @@ async def test_job_event_trigger_uses_event_snapshot_catalog(tmp_path: Path) -> 
         _snapshot_job_source("v1", event_trigger=True),
     )
     event_bus = EventBus()
-    llm = SimpleNamespace()
+    llm = cast(Any, SimpleNamespace())
     manager = PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=event_bus,
@@ -3102,7 +3110,10 @@ async def test_subagent_shutdown_releases_unstarted_snapshot_lease() -> None:
     manager._running_jobs = {}
     manager._cancel_announced = set()
     manager._snapshot_release_tasks = set()
-    task = asyncio.create_task(asyncio.Event().wait())
+    async def wait_forever() -> None:
+        _ = await asyncio.Event().wait()
+
+    task = asyncio.create_task(wait_forever())
     manager._running_tasks["job"] = task
     task.add_done_callback(
         lambda _: manager._finish_background_job("job", snapshot_lease)
@@ -3148,7 +3159,7 @@ async def test_dashboard_routes_follow_snapshot_generation(tmp_path: Path) -> No
     old_lease = manager.snapshot_store.lease()
     app = create_dashboard_app(
         tmp_path / "workspace",
-        memory_admin=SimpleNamespace(),
+        memory_admin=cast(Any, SimpleNamespace()),
         plugin_manager=manager,
     )
     client = TestClient(app)
@@ -3206,7 +3217,7 @@ async def test_dashboard_candidate_cannot_override_core_route(tmp_path: Path) ->
     old_generation = manager.generation("dashboard_conflict")
     app = create_dashboard_app(
         tmp_path / "workspace",
-        memory_admin=SimpleNamespace(),
+        memory_admin=cast(Any, SimpleNamespace()),
         plugin_manager=manager,
     )
     write_dashboard("/api/dashboard/sessions", async_close=True)
@@ -3265,7 +3276,7 @@ async def test_dashboard_candidate_cannot_override_other_plugin(tmp_path: Path) 
     old_generation = manager.generation("dashboard_second")
     _ = create_dashboard_app(
         tmp_path / "workspace",
-        memory_admin=SimpleNamespace(),
+        memory_admin=cast(Any, SimpleNamespace()),
         plugin_manager=manager,
     )
     write_dashboard(second_dir, "/api/dashboard/items/{name}")
@@ -3301,7 +3312,7 @@ async def test_dashboard_allows_static_route_before_dynamic_route(tmp_path: Path
     await manager.load_all()
     app = create_dashboard_app(
         tmp_path / "workspace",
-        memory_admin=SimpleNamespace(),
+        memory_admin=cast(Any, SimpleNamespace()),
         plugin_manager=manager,
     )
     client = TestClient(app)
@@ -3409,7 +3420,7 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
         return "done"
 
     loop._process = process
-    message = SimpleNamespace(session_key="cli:snapshot-skill")
+    message = cast(Any, SimpleNamespace(session_key="cli:snapshot-skill"))
     old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
     await entered.wait()
     await manager.publish_prepared("snapshot_skill")
@@ -3459,7 +3470,7 @@ async def test_workspace_skill_updates_without_plugin_snapshot_reload(
         return "done"
 
     loop._process = process
-    message = SimpleNamespace(session_key="cli:workspace-skill")
+    message = cast(Any, SimpleNamespace(session_key="cli:workspace-skill"))
     await loop._process_with_runtime_admission(message)
     _ = skill_file.write_text(
         "---\ndescription: workspace live\n---\nworkspace v2\n",

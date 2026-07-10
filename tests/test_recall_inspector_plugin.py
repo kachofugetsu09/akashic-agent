@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -21,7 +22,7 @@ async def test_recall_inspector_records_context_and_recall(tmp_path: Path) -> No
 
     plugin = DefaultMemoryInspector()
     plugin.context = PluginContext(
-        event_bus=None,
+        event_bus=cast(Any, None),
         tool_registry=None,
         plugin_id="default_memory",
         plugin_dir=plugin_dir,
@@ -87,7 +88,7 @@ async def test_recall_inspector_uses_workspace_data_path(tmp_path: Path) -> None
 
     plugin = DefaultMemoryInspector()
     plugin.context = PluginContext(
-        event_bus=None,
+        event_bus=cast(Any, None),
         tool_registry=None,
         plugin_id="default_memory",
         plugin_dir=plugin_dir,

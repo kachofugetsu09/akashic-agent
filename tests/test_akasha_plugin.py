@@ -1141,7 +1141,7 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
 def test_akashalast_command_only_exposes_for_akasha_engine(tmp_path: Path) -> None:
     akasha = AkashaPlugin()
     akasha.context = PluginContext(
-        event_bus=None,
+        event_bus=cast(Any, None),
         tool_registry=None,
         plugin_id="akasha",
         plugin_dir=tmp_path,
@@ -1152,7 +1152,7 @@ def test_akashalast_command_only_exposes_for_akasha_engine(tmp_path: Path) -> No
     )
     default = AkashaPlugin()
     default.context = PluginContext(
-        event_bus=None,
+        event_bus=cast(Any, None),
         tool_registry=None,
         plugin_id="akasha",
         plugin_dir=tmp_path,
@@ -1227,7 +1227,7 @@ def test_akashalast_renders_latest_query_log(tmp_path: Path) -> None:
 
     plugin = AkashaPlugin()
     plugin.context = PluginContext(
-        event_bus=None,
+        event_bus=cast(Any, None),
         tool_registry=None,
         plugin_id="akasha",
         plugin_dir=tmp_path,
