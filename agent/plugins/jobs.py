@@ -195,9 +195,6 @@ class PluginJobRuntime:
         reason: str,
         event: object | None = None,
     ) -> None:
-        current = self._current_jobs().get(key)
-        if current is not None and current.spec.coalesce and key in self._queued_keys:
-            return
         job, snapshot_lease = self._resolve_job(key)
         if job is None:
             return
@@ -242,7 +239,7 @@ class PluginJobRuntime:
         for key, job in self._current_jobs().items():
             if any(
                 isinstance(trigger, EventTrigger)
-                and isinstance(event, trigger.event_type)
+                and type(event) is trigger.event_type
                 for trigger in job.spec.triggers
             ):
                 self.enqueue(key, reason="event", event=event)
@@ -310,6 +307,12 @@ class PluginJobRuntime:
                 reset_runtime_snapshot(token)
 
     def _current_jobs(self) -> dict[str, RegisteredPluginJob]:
+        if self._snapshot_store is not None:
+            from agent.plugins.snapshot import get_current_runtime_snapshot
+
+            snapshot = get_current_runtime_snapshot()
+            if snapshot is not None:
+                return dict(snapshot.jobs)
         if self._snapshot_store is None or self._snapshot_store.current is None:
             return self._jobs
         return dict(self._snapshot_store.current.jobs)
@@ -330,6 +333,8 @@ class PluginJobRuntime:
             return None, None
         job = snapshot.jobs.get(key)
         if job is None:
+            return None, None
+        if job.spec.coalesce and key in self._queued_keys:
             return None, None
         lease = lease_current_runtime_snapshot()
         if lease is None:
