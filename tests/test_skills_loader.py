@@ -141,3 +141,24 @@ def test_always_skill_still_loads_into_context(tmp_path: Path):
 
     assert loader.get_always_skills() == ["memory"]
     assert "always body" in loader.load_skills_for_context(["memory"])
+
+
+def test_plugin_roots_do_not_depend_on_workspace_symlinks(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    plugin_root = tmp_path / "plugin-skills"
+    skill_dir = _write_skill(plugin_root, "plugin-skill", body="plugin body")
+    workspace_skills = workspace / "skills"
+    workspace_skills.mkdir(parents=True)
+    (workspace_skills / "legacy-link").symlink_to(skill_dir, target_is_directory=True)
+
+    loader = SkillsLoader(
+        workspace,
+        builtin_skills_dir=None,
+        plugin_roots={"demo": (plugin_root,)},
+        ignore_workspace_symlinks=True,
+    )
+
+    records = loader.build_index().records
+    assert set(records) == {"plugin-skill"}
+    assert records["plugin-skill"].source == "plugin"
+    assert records["plugin-skill"].source_id == "demo"

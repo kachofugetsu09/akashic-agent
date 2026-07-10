@@ -33,11 +33,17 @@ def _write_plugin(root: Path, name: str, source: str) -> Path:
     return plugin_dir
 
 
-def _manager(tmp_path: Path, *, tools: ToolRegistry | None = None) -> PluginManager:
+def _manager(
+    tmp_path: Path,
+    *,
+    tools: ToolRegistry | None = None,
+    workspace: Path | None = None,
+) -> PluginManager:
     return PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=EventBus(),
         tool_registry=tools,
+        workspace=workspace,
         installed_cache_root=tmp_path / "home" / "cache",
     )
 
@@ -672,3 +678,53 @@ async def test_terminating_one_manager_keeps_newer_stable_alias(tmp_path: Path):
     assert sys.modules[stable_alias] is sys.modules[second.module_path]
 
     await second_manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
+    first_dir = _write_plugin(
+        tmp_path / "plugins",
+        "first_skills",
+        "from agent.plugins import Plugin\n"
+        "class FirstSkillsPlugin(Plugin):\n"
+        "    name = 'first_skills'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills',)\n",
+    )
+    first_skill = first_dir / "skills" / "shared"
+    first_skill.mkdir(parents=True)
+    _ = (first_skill / "SKILL.md").write_text(
+        "---\ndescription: first\n---\nfirst\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path, workspace=tmp_path / "workspace")
+    await manager.load_all()
+    first = manager.generation("first_skills")
+    assert first is not None and first.skill_catalog is not None
+    assert first.skill_catalog.normal.get("shared").source_id == "first_skills"  # type: ignore[union-attr]
+
+    second_dir = _write_plugin(
+        tmp_path / "plugins",
+        "second_skills",
+        "from agent.plugins import Plugin\n"
+        "class SecondSkillsPlugin(Plugin):\n"
+        "    name = 'second_skills'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills',)\n",
+    )
+    second_skill = second_dir / "skills" / "shared"
+    second_skill.mkdir(parents=True)
+    _ = (second_skill / "SKILL.md").write_text(
+        "---\ndescription: second\n---\nsecond\n",
+        encoding="utf-8",
+    )
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("second_skills")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[-1].check_id == "skill_catalog"
+    assert manager.generation("second_skills") is None
+    generation_id = first.generation_id
+    await manager.terminate_all()
+    assert manager.skill_catalog(generation_id) is None

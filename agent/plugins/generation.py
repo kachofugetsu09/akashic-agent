@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from agent.plugins.scope import PluginScope
     from agent.plugins.specs import RegisteredProactiveSource
     from infra.channels.contract import Channel
+    from agent.plugins.skill_host import PreparedSkillCatalog
 
 
 GateStatus = Literal["passed", "failed"]
@@ -71,5 +72,6 @@ class PluginGeneration:
     scope: PluginScope
     contributions: PluginContributions
     gate_result: GateResult
+    skill_catalog: PreparedSkillCatalog | None = None
     state: str = "active"
     lease_count: int = 0

@@ -48,6 +48,7 @@ from agent.plugins.generation import (
     PluginSemanticCheck,
 )
 from agent.plugins.importer import FreshPluginImporter
+from agent.plugins.skill_host import PluginSkillHost, PreparedSkillCatalog
 from agent.lifecycle.phase import topo_sort_modules
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.lifecycle import ProactiveLifecycleBuilder
@@ -131,6 +132,7 @@ class PluginManager:
         self._candidate_prepare_lock = asyncio.Lock()
         self._fresh_importer = FreshPluginImporter()
         self._manager_namespace = secrets.token_hex(4)
+        self._skill_host = PluginSkillHost(workspace)
 
     @property
     def loaded_count(self) -> int:
@@ -223,6 +225,9 @@ class PluginManager:
 
     def prepared_generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._prepared_generations.get(plugin_id)
+
+    def skill_catalog(self, generation_id: str) -> PreparedSkillCatalog | None:
+        return self._skill_host.get(generation_id)
 
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
@@ -348,6 +353,11 @@ class PluginManager:
                     "prepared_generation": None,
                     "gate_status": "active",
                     "candidate_revision": source_revision,
+                    "skills": (
+                        list(active.skill_catalog.names)
+                        if active.skill_catalog is not None
+                        else []
+                    ),
                 }
                 results.append(result)
                 logger.info(
@@ -372,6 +382,11 @@ class PluginManager:
                 "gate_status": gate.status if gate is not None else "failed",
                 "candidate_revision": (
                     gate.candidate_revision if gate is not None else ""
+                ),
+                "skills": (
+                    list(prepared.skill_catalog.names)
+                    if prepared is not None and prepared.skill_catalog is not None
+                    else []
                 ),
             }
             results.append(result)
@@ -576,6 +591,46 @@ class PluginManager:
                 contributions=contributions,
                 gate_result=gate_result,
                 state="prepared" if not activate else "activating",
+            )
+            catalog_generations = [
+                active_generation
+                for active_generation in self._active_generations.values()
+                if active_generation.plugin_id != plugin_id
+            ]
+            catalog_generations.append(generation)
+            try:
+                skill_catalog = self._skill_host.prepare(
+                    generation_id,
+                    normal_roots=PluginSkillHost.roots_for(
+                        catalog_generations,
+                        drift=False,
+                    ),
+                    drift_roots=PluginSkillHost.roots_for(
+                        catalog_generations,
+                        drift=True,
+                    ),
+                )
+            except Exception as error:
+                gate_result = _with_gate_check(
+                    gate_result,
+                    check_id="skill_catalog",
+                    passed=False,
+                    evidence=str(error),
+                )
+                self._gate_results[plugin_id] = gate_result
+                raise _CandidateRejected(gate_result) from error
+            gate_result = _with_gate_check(
+                gate_result,
+                check_id="skill_catalog",
+                passed=True,
+                evidence=list(skill_catalog.names),
+            )
+            self._gate_results[plugin_id] = gate_result
+            generation.gate_result = gate_result
+            generation.skill_catalog = skill_catalog
+            scope.defer(
+                "skill_catalog",
+                lambda: self._skill_host.close(generation_id),
             )
             if not activate:
                 self._prepared_generations[plugin_id] = generation
@@ -1169,6 +1224,30 @@ class _CandidateRejected(Exception):
     def __init__(self, gate: GateResult) -> None:
         super().__init__(gate.failure_reason)
         self.gate = gate
+
+
+def _with_gate_check(
+    gate: GateResult,
+    *,
+    check_id: str,
+    passed: bool,
+    evidence: object,
+) -> GateResult:
+    check = GateCheckResult(
+        check_id=check_id,
+        status="passed" if passed else "failed",
+        evidence=evidence,
+    )
+    checks = (*gate.checks, check)
+    failed = [item.check_id for item in checks if item.status == "failed"]
+    return GateResult(
+        gate_id=gate.gate_id,
+        plugin_id=gate.plugin_id,
+        candidate_revision=gate.candidate_revision,
+        status="failed" if failed else "passed",
+        checks=checks,
+        failure_reason="; ".join(failed),
+    )
 
 
 def _load_plugin_config(

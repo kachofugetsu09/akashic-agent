@@ -456,6 +456,12 @@ def _install_candidate_plugins(
         encoding="utf-8",
     )
     reload_source = reload_plugin / "plugin.py"
+    reload_skill = reload_plugin / "skills-v2" / "candidate-v2"
+    reload_skill.mkdir(parents=True)
+    _ = (reload_skill / "SKILL.md").write_text(
+        "---\ndescription: candidate v2 skill\n---\ncandidate v2\n",
+        encoding="utf-8",
+    )
     _ = reload_source.write_text(_candidate_reload_source("v1"), encoding="utf-8")
     data = sandbox / "home/.akashic-plugin/data"
     return (
@@ -481,12 +487,20 @@ def _candidate_reload_source(version: str) -> str:
         if version == "v1"
         else "        self.context.kv_store.set('initialized_version', 'v2')\n"
     )
+    skills = (
+        "    @classmethod\n"
+        "    def skill_roots(cls):\n"
+        "        return ('skills-v2',)\n"
+        if version == "v2"
+        else ""
+    )
     return (
         "from __future__ import annotations\n"
         "import asyncio\n"
         "from agent.plugins import Plugin, tool\n"
         "class CandidateReloadPlugin(Plugin):\n"
         "    name = 'candidate_reload'\n"
+        f"{skills}"
         "    @tool(name='candidate_reload_tool')\n"
         "    async def run(self, event):\n"
         "        \"\"\"Candidate reload tool.\"\"\"\n"
@@ -614,6 +628,7 @@ def _exercise_candidate_prepare(
         after=len(valid_statuses),
         gate_status="active",
     )
+    valid_skills = valid_status.get("skills")
     passed = (
         invalid_signal.returncode == 0
         and valid_signal.returncode == 0
@@ -623,6 +638,8 @@ def _exercise_candidate_prepare(
         and invalid_status.get("prepared_generation") is None
         and valid_status.get("active_generation") == initial_generation
         and isinstance(valid_status.get("prepared_generation"), str)
+        and isinstance(valid_skills, list)
+        and "candidate-v2" in valid_skills
         and return_status.get("active_generation") == initial_generation
         and return_status.get("prepared_generation") is None
         and after_invalid.get("active_generation") == initial_generation
@@ -659,7 +676,9 @@ def _run_runtime_smoke(
     )
     scope_state = _install_scope_plugin(sandbox) if phase == "scope" else None
     candidate_states = (
-        _install_candidate_plugins(sandbox) if phase == "candidate" else None
+        _install_candidate_plugins(sandbox)
+        if phase in {"candidate", "capability-hosts"}
+        else None
     )
     started = subprocess.run(
         [*compose, "up", "-d", "--no-build", "akashic-plugin-gate"],
@@ -897,7 +916,7 @@ def main() -> int:
     )
     _ = parser.add_argument(
         "--phase",
-        choices=("smoke", "scope", "candidate"),
+        choices=("smoke", "scope", "candidate", "capability-hosts"),
         default="smoke",
     )
     _ = parser.add_argument("--inside-container", action="store_true")

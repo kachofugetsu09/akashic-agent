@@ -4,7 +4,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Mapping, cast
 
 import yaml
 
@@ -43,13 +43,26 @@ class SkillIndex:
 
 
 class SkillsLoader:
-    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        builtin_skills_dir: Path | None = BUILTIN_SKILLS_DIR,
+        *,
+        workspace_skills_dir: Path | None = None,
+        plugin_roots: Mapping[str, tuple[Path, ...]] | None = None,
+        ignore_workspace_symlinks: bool = False,
+    ):
         self.workspace = workspace
-        self.workspace_skills = workspace / "skills"
-        self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
+        self.workspace_skills = workspace_skills_dir or workspace / "skills"
+        self.builtin_skills = builtin_skills_dir
+        self.plugin_roots = dict(plugin_roots or {})
+        self.ignore_workspace_symlinks = ignore_workspace_symlinks
 
     def list_skill_records(self, filter_unavailable: bool = True) -> list[SkillRecord]:
-        return self._build_index().list_records(filter_unavailable=filter_unavailable)
+        return self.build_index().list_records(filter_unavailable=filter_unavailable)
+
+    def build_index(self) -> SkillIndex:
+        return self._build_index()
 
     def load_skills_for_context(self, skill_names: list[str]) -> str:
         parts: list[str] = []
@@ -110,8 +123,19 @@ class SkillsLoader:
             self.workspace_skills,
             source="workspace",
             source_id="workspace",
+            ignore_symlinks=self.ignore_workspace_symlinks,
         ):
             records[record.name] = record
+
+        for plugin_id, roots in sorted(self.plugin_roots.items()):
+            for root in roots:
+                for record in self._scan_skills_dir(
+                    root,
+                    source="plugin",
+                    source_id=plugin_id,
+                ):
+                    if record.name not in records:
+                        records[record.name] = record
 
         if self.builtin_skills:
             for record in self._scan_skills_dir(
@@ -131,12 +155,15 @@ class SkillsLoader:
         source: SkillSource,
         source_id: str,
         name_prefix: str = "",
+        ignore_symlinks: bool = False,
     ) -> list[SkillRecord]:
         if not skills_dir.exists():
             return []
 
         records: list[SkillRecord] = []
         for skill_dir in sorted(skills_dir.iterdir(), key=lambda item: item.name):
+            if ignore_symlinks and skill_dir.is_symlink():
+                continue
             if not skill_dir.is_dir():
                 continue
             skill_file = skill_dir / "SKILL.md"
