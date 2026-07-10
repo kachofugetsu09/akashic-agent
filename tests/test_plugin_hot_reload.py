@@ -16,6 +16,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from agent.looping.core import AgentLoop
+from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 
@@ -1832,4 +1833,62 @@ async def test_tool_schema_search_and_execute_share_snapshot_generation(
         ("snapshot tool v2", "snapshot_tool_value", "v2"),
         ("snapshot tool v2", "snapshot_tool_value", "v2"),
     ]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins" / "snapshot_skill"
+    for version in ("v1", "v2"):
+        skill_dir = plugin_dir / f"skills-{version}" / "snapshot-skill"
+        skill_dir.mkdir(parents=True)
+        _ = (skill_dir / "SKILL.md").write_text(
+            f"---\ndescription: snapshot skill {version}\n---\nbody {version}\n",
+            encoding="utf-8",
+        )
+
+    def source(version: str) -> str:
+        return (
+            "from agent.plugins import Plugin\n"
+            "class SnapshotSkillPlugin(Plugin):\n"
+            "    name = 'snapshot_skill'\n"
+            "    @classmethod\n"
+            "    def skill_roots(cls):\n"
+            f"        return ('skills-{version}',)\n"
+        )
+
+    _ = (plugin_dir / "plugin.py").write_text(source("v1"), encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = _manager(tmp_path, workspace=workspace)
+    await manager.load_all()
+    _ = (plugin_dir / "plugin.py").write_text(source("v2"), encoding="utf-8")
+    candidate = await manager.prepare_candidate("snapshot_skill")
+    assert candidate is not None
+    skills = SkillsLoader(workspace)
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = manager.snapshot_store
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[str | None] = []
+
+    async def process(msg, **kwargs):
+        seen.append(skills.load_skill_body("snapshot-skill"))
+        entered.set()
+        await release.wait()
+        seen.append(skills.load_skill_body("snapshot-skill"))
+        return "done"
+
+    loop._process = process
+    message = SimpleNamespace(session_key="cli:snapshot-skill")
+    old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
+    await entered.wait()
+    await manager.publish_prepared("snapshot_skill")
+    release.set()
+    assert await old_turn == "done"
+    await loop._process_with_runtime_admission(message)
+
+    assert seen[:2] == ["body v1", "body v1"]
+    assert seen[2:] == ["body v2", "body v2"]
     await manager.terminate_all()

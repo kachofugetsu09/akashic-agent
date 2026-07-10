@@ -82,6 +82,7 @@ class PluginSkillHost:
                 workspace,
                 plugin_roots=frozen_normal,
                 ignored_workspace_symlink_roots=ignored_normal_roots,
+                runtime_catalog=None,
             ).build_index()
             drift = SkillsLoader(
                 workspace,
@@ -89,6 +90,7 @@ class PluginSkillHost:
                 workspace_skills_dir=workspace / "drift" / "skills",
                 plugin_roots=frozen_drift,
                 ignored_workspace_symlink_roots=ignored_drift_roots,
+                runtime_catalog=None,
             ).build_index()
             normal = self._freeze_index(snapshot_root / "selected-normal", normal)
             drift = self._freeze_index(snapshot_root / "selected-drift", drift)

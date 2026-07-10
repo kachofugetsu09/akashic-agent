@@ -52,6 +52,7 @@ class SkillsLoader:
         workspace_skills_dir: Path | None = None,
         plugin_roots: Mapping[str, tuple[Path, ...]] | None = None,
         ignored_workspace_symlink_roots: tuple[Path, ...] = (),
+        runtime_catalog: Literal["normal", "drift"] | None = "normal",
     ):
         self.workspace = workspace
         self.workspace_skills = workspace_skills_dir or workspace / "skills"
@@ -60,6 +61,7 @@ class SkillsLoader:
         self.ignored_workspace_symlink_roots = tuple(
             root.resolve(strict=False) for root in ignored_workspace_symlink_roots
         )
+        self.runtime_catalog = runtime_catalog
 
     def list_skill_records(self, filter_unavailable: bool = True) -> list[SkillRecord]:
         return self.build_index().list_records(filter_unavailable=filter_unavailable)
@@ -119,6 +121,18 @@ class SkillsLoader:
         return "\n".join(lines)
 
     def _build_index(self) -> SkillIndex:
+        if self.runtime_catalog is not None:
+            from agent.plugins.snapshot import get_current_runtime_snapshot
+
+            snapshot = get_current_runtime_snapshot()
+            if snapshot is not None:
+                index = (
+                    snapshot.normal_skill_index
+                    if self.runtime_catalog == "normal"
+                    else snapshot.drift_skill_index
+                )
+                if index is not None:
+                    return index
         records: dict[str, SkillRecord] = {}
 
         for record in self._scan_skills_dir(

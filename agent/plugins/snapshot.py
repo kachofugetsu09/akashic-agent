@@ -13,6 +13,7 @@ from agent.plugins.generation import PluginGeneration
 from agent.plugins.jobs import RegisteredPluginJob, plugin_job_key
 from agent.plugins.specs import RegisteredProactiveSource, proactive_source_key
 from agent.tools.registry import ToolRegistry
+from agent.skills import SkillIndex
 
 
 SnapshotState = Literal[
@@ -39,6 +40,8 @@ class RuntimeSnapshot:
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
     tool_registry: ToolRegistry | None = None
+    normal_skill_index: SkillIndex | None = None
+    drift_skill_index: SkillIndex | None = None
     state: SnapshotState = "compiled"
     lease_count: int = 0
     _store_token: object | None = field(default=None, repr=False)
@@ -129,6 +132,16 @@ class RuntimeSnapshotCompiler:
                 else None
             ),
             mcp_catalog_generation_ids=MappingProxyType(mcp_catalogs),
+            normal_skill_index=(
+                catalog_owner.skill_catalog.normal
+                if catalog_owner is not None and catalog_owner.skill_catalog is not None
+                else None
+            ),
+            drift_skill_index=(
+                catalog_owner.skill_catalog.drift
+                if catalog_owner is not None and catalog_owner.skill_catalog is not None
+                else None
+            ),
             before_turn_modules=phases["before_turn_modules"],
             before_reasoning_modules=phases["before_reasoning_modules"],
             prompt_render_modules=phases["prompt_render_modules"],
