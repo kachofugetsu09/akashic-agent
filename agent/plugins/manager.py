@@ -5,6 +5,7 @@ import functools
 import hashlib
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import sys
@@ -47,6 +48,7 @@ from agent.plugins.generation import (
 )
 from agent.lifecycle.phase import topo_sort_modules
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
+from proactive_v2.lifecycle import ProactiveLifecycleBuilder
 from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
 from bus.event_bus import EventBus
@@ -124,6 +126,7 @@ class PluginManager:
         self._gate_results: dict[str, GateResult] = {}
         self._stable_aliases: dict[str, str] = {}
         self._generation_sequence = 0
+        self._candidate_prepare_lock = asyncio.Lock()
 
     @property
     def loaded_count(self) -> int:
@@ -296,6 +299,65 @@ class PluginManager:
             return
         self._cleanup_failures.extend(await generation.scope.aclose())
         self._remove_module_tree(generation.module_path)
+        generation.state = "discarded"
+
+    async def prepare_changed(self) -> list[dict[str, object]]:
+        async with self._candidate_prepare_lock:
+            return await self._prepare_changed()
+
+    async def _prepare_changed(self) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
+        discovered = {
+            _resolve_plugin_id(mod): mod
+            for mod in self.discover()
+        }
+        for plugin_id, active in tuple(self._active_generations.items()):
+            mod = discovered.get(plugin_id)
+            if mod is None:
+                continue
+            plugin_dir = Path(mod["plugin_root"])
+            try:
+                source_revision = _source_revision(plugin_dir)
+                config_revision = _file_revision(
+                    _resolve_plugin_data_dir(
+                        mod["name"],
+                        mod,
+                        self._installed_cache_root,
+                    )
+                    / "config.local.toml"
+                )
+            except Exception:
+                source_revision = ""
+                config_revision = ""
+            current_prepared = self._prepared_generations.get(plugin_id)
+            if (
+                source_revision == active.source_revision
+                and config_revision == active.config_revision
+            ) or (
+                current_prepared is not None
+                and source_revision == current_prepared.source_revision
+                and config_revision == current_prepared.config_revision
+            ):
+                continue
+            prepared = await self.prepare_candidate(plugin_id)
+            gate = self.latest_gate(plugin_id)
+            result: dict[str, object] = {
+                "plugin_id": plugin_id,
+                "active_generation": active.generation_id,
+                "prepared_generation": (
+                    prepared.generation_id if prepared is not None else None
+                ),
+                "gate_status": gate.status if gate is not None else "failed",
+                "candidate_revision": (
+                    gate.candidate_revision if gate is not None else ""
+                ),
+            }
+            results.append(result)
+            logger.info(
+                "plugin_candidate_status %s",
+                json.dumps(result, ensure_ascii=False, sort_keys=True),
+            )
+        return results
 
     async def _load_one(
         self,
@@ -334,7 +396,19 @@ class PluginManager:
         module_path = mod["module_path"].strip()
         if not module_path:
             raise RuntimeError(f"插件缺少 plugin.py: {plugin_dir}")
-        source_revision = _source_revision(plugin_dir)
+        try:
+            source_revision = _source_revision(plugin_dir)
+        except Exception as error:
+            revision = hashlib.sha256(
+                f"{plugin_dir}:{error}".encode()
+            ).hexdigest()
+            self._record_failed_gate(
+                plugin_id=initial_plugin_id,
+                revision=revision,
+                check_id="source_boundary",
+                reason=str(error),
+            )
+            return None
         data_dir = _resolve_plugin_data_dir(
             mod["name"],
             mod,
@@ -406,7 +480,7 @@ class PluginManager:
             config=plugin_config,
             workspace=self._workspace,
             session_manager=None,
-            memory_engine=self._memory_engine,
+            memory_engine=None,
             llm=None,
             scope=None,
             generation_id=generation_id,
@@ -488,6 +562,7 @@ class PluginManager:
             instance.context.event_bus = staged_event_bus
             instance.context.kv_store = PluginKVStore(data_dir / ".kv.json")
             instance.context.session_manager = self._session_manager
+            instance.context.memory_engine = self._memory_engine
             instance.context.llm = self._llm
             instance.context.scope = scope
             load_phase = "initialize"
@@ -804,6 +879,34 @@ class PluginManager:
                 ),
             },
         )
+        lifecycle_structure_errors: list[str] = []
+        for lifecycle in contributions.proactive_lifecycles:
+            if not isinstance(lifecycle, ProactiveLifecycleSpec):
+                continue
+            if (
+                not lifecycle.id
+                or any(not value for value in lifecycle.initial_slots)
+                or any(not value for value in lifecycle.terminal_slots)
+                or len(set(lifecycle.initial_slots)) != len(lifecycle.initial_slots)
+                or len(set(lifecycle.terminal_slots)) != len(lifecycle.terminal_slots)
+            ):
+                lifecycle_structure_errors.append(f"{lifecycle.id}: slots")
+                continue
+            try:
+                _ = ProactiveLifecycleBuilder().build(
+                    ProactiveLifecycleSpec(
+                        id=lifecycle.id,
+                        modules=lifecycle.modules,
+                        initial_slots=lifecycle.initial_slots,
+                    )
+                )
+            except RuntimeError as error:
+                lifecycle_structure_errors.append(f"{lifecycle.id}: {error}")
+        check(
+            "proactive_lifecycle_structure",
+            not lifecycle_structure_errors,
+            lifecycle_structure_errors,
+        )
         try:
             semantic_checks = instance.static_semantic_checks()
         except Exception as error:
@@ -1004,10 +1107,11 @@ class PluginManager:
             self._remove_module_tree(mp)
             stable_alias = self._stable_aliases.pop(mp, None)
             if stable_alias is not None:
-                plugin_registry.remove_plugin(stable_alias)
-                _ = sys.modules.pop(stable_alias, None)
+                self._remove_module_tree(stable_alias)
             if active_info is not None:
-                _ = self._active_generations.pop(active_info.plugin_id, None)
+                generation = self._active_generations.pop(active_info.plugin_id, None)
+                if generation is not None:
+                    generation.state = "retired"
             _ = self._active_plugins.pop(mp, None)
         self._loaded.clear()
         self._active_plugins.clear()
@@ -1112,9 +1216,7 @@ def _resolve_plugin_data_dir(
 ) -> Path:
     marketplace = mod.get("marketplace", "").strip()
     suffix = marketplace or "builtin"
-    data_dir = _plugins_home(installed_cache_root) / "data" / f"{name}-{suffix}"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
+    return _plugins_home(installed_cache_root) / "data" / f"{name}-{suffix}"
 
 
 def _plugins_home(installed_cache_root: Path | None) -> Path:
@@ -1342,8 +1444,12 @@ def _source_revision(plugin_dir: Path) -> str:
         if any(part in excluded for part in relative.parts):
             continue
         if path.is_symlink():
+            resolved = path.resolve(strict=False)
+            _require_plugin_path(root, resolved, "源码符号链接")
             digest.update(str(relative).encode())
             digest.update(os.readlink(path).encode())
+            if resolved.is_file():
+                digest.update(resolved.read_bytes())
             continue
         if not path.is_file():
             continue

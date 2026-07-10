@@ -48,8 +48,6 @@ class AkashaPlugin(Plugin):
         return [("akashalast", "查看上一轮 Akasha 检索诊断")]
 
     def before_turn_modules(self) -> list[object]:
-        if not self.is_active():
-            return []
         return [AkashaLastCommandModule(self)]
 
     def is_active(self) -> bool:

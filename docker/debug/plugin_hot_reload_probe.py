@@ -384,16 +384,20 @@ def _install_scope_plugin(sandbox: Path) -> Path:
     return sandbox / "home/.akashic-plugin/data/scope_gate-gate/.kv.json"
 
 
-def _install_candidate_plugins(sandbox: Path) -> tuple[Path, Path, Path, Path]:
+def _install_candidate_plugins(
+    sandbox: Path,
+) -> tuple[Path, Path, Path, Path, Path, Path]:
     cache = sandbox / "home/.akashic-plugin/cache/gate"
     valid = cache / "candidate_valid/1.0.0"
     invalid = cache / "candidate_invalid/1.0.0"
     failed = cache / "candidate_failed/1.0.0"
     observer = cache / "candidate_observer/1.0.0"
+    reload_plugin = cache / "candidate_reload/1.0.0"
     valid.mkdir(parents=True, exist_ok=True)
     invalid.mkdir(parents=True, exist_ok=True)
     failed.mkdir(parents=True, exist_ok=True)
     observer.mkdir(parents=True, exist_ok=True)
+    reload_plugin.mkdir(parents=True, exist_ok=True)
     _ = (valid / "plugin.py").write_text(
         "from agent.plugins import Plugin\n"
         "class CandidateValidPlugin(Plugin):\n"
@@ -451,13 +455,169 @@ def _install_candidate_plugins(sandbox: Path) -> tuple[Path, Path, Path, Path]:
         "        self.context.kv_store.set('event_sent', True)\n",
         encoding="utf-8",
     )
+    reload_source = reload_plugin / "plugin.py"
+    _ = reload_source.write_text(_candidate_reload_source("v1"), encoding="utf-8")
     data = sandbox / "home/.akashic-plugin/data"
     return (
         data / "candidate_valid-gate/.kv.json",
         data / "candidate_invalid-gate/.kv.json",
         data / "candidate_failed-gate/.kv.json",
         data / "candidate_observer-gate/.kv.json",
+        reload_source,
+        data / "candidate_reload-gate/.kv.json",
     )
+
+
+def _candidate_reload_source(version: str) -> str:
+    initialize = (
+        "        self.context.kv_store.set('initialized_version', 'v1')\n"
+        "        self.context.kv_store.set('active_generation', self.context.generation_id)\n"
+        "        self.context.create_task(self._heartbeat(), name='candidate-reload-heartbeat')\n"
+        "    async def _heartbeat(self):\n"
+        "        while True:\n"
+        "            self.context.kv_store.increment('heartbeats')\n"
+        "            self.context.kv_store.set('active_generation', self.context.generation_id)\n"
+        "            await asyncio.sleep(0.05)\n"
+        if version == "v1"
+        else "        self.context.kv_store.set('initialized_version', 'v2')\n"
+    )
+    return (
+        "from __future__ import annotations\n"
+        "import asyncio\n"
+        "from agent.plugins import Plugin, tool\n"
+        "class CandidateReloadPlugin(Plugin):\n"
+        "    name = 'candidate_reload'\n"
+        "    @tool(name='candidate_reload_tool')\n"
+        "    async def run(self, event):\n"
+        "        \"\"\"Candidate reload tool.\"\"\"\n"
+        f"        return '{version}'\n"
+        "    async def initialize(self):\n"
+        f"{initialize}"
+    )
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    raw: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        return {}
+    mapping = cast(dict[object, object], raw)
+    return {str(key): value for key, value in mapping.items()}
+
+
+def _integer(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
+def _candidate_statuses(container_id: str) -> list[dict[str, object]]:
+    logs = subprocess.run(
+        ["docker", "logs", container_id],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    ).stdout
+    marker = "plugin_candidate_status "
+    statuses: list[dict[str, object]] = []
+    for line in logs.splitlines():
+        if marker not in line:
+            continue
+        payload = line.split(marker, 1)[1].strip()
+        try:
+            raw: object = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(raw, dict):
+            mapping = cast(dict[object, object], raw)
+            statuses.append({str(key): value for key, value in mapping.items()})
+    return statuses
+
+
+def _wait_candidate_status(
+    container_id: str,
+    *,
+    after: int,
+    gate_status: str,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        statuses = _candidate_statuses(container_id)
+        for status in statuses[after:]:
+            if (
+                status.get("plugin_id") == "candidate_reload@gate"
+                and status.get("gate_status") == gate_status
+            ):
+                return statuses, status
+        time.sleep(0.1)
+    return _candidate_statuses(container_id), {}
+
+
+def _exercise_candidate_prepare(
+    container_id: str,
+    source_path: Path,
+    state_path: Path,
+) -> dict[str, object]:
+    initial = _read_json_object(state_path)
+    initial_generation = initial.get("active_generation")
+    initial_heartbeats = _integer(initial.get("heartbeats"))
+    _ = source_path.write_text("not valid python !!!\n", encoding="utf-8")
+    statuses_before = _candidate_statuses(container_id)
+    invalid_signal = subprocess.run(
+        ["docker", "kill", "--signal", "HUP", container_id],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    statuses, invalid_status = _wait_candidate_status(
+        container_id,
+        after=len(statuses_before),
+        gate_status="failed",
+    )
+    after_invalid = _read_json_object(state_path)
+    _ = source_path.write_text(_candidate_reload_source("v2"), encoding="utf-8")
+    valid_signal = subprocess.run(
+        ["docker", "kill", "--signal", "HUP", container_id],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    _, valid_status = _wait_candidate_status(
+        container_id,
+        after=len(statuses),
+        gate_status="passed",
+    )
+    time.sleep(0.2)
+    after_valid = _read_json_object(state_path)
+    passed = (
+        invalid_signal.returncode == 0
+        and valid_signal.returncode == 0
+        and isinstance(initial_generation, str)
+        and invalid_status.get("active_generation") == initial_generation
+        and invalid_status.get("prepared_generation") is None
+        and valid_status.get("active_generation") == initial_generation
+        and isinstance(valid_status.get("prepared_generation"), str)
+        and after_invalid.get("active_generation") == initial_generation
+        and after_valid.get("active_generation") == initial_generation
+        and after_valid.get("initialized_version") == "v1"
+        and _integer(after_valid.get("heartbeats")) > initial_heartbeats
+    )
+    return {
+        "passed": passed,
+        "initial": initial,
+        "invalid_status": invalid_status,
+        "after_invalid": after_invalid,
+        "valid_status": valid_status,
+        "after_valid": after_valid,
+        "invalid_signal": invalid_signal.returncode,
+        "valid_signal": valid_signal.returncode,
+    }
 
 
 def _run_runtime_smoke(
@@ -542,6 +702,13 @@ def _run_runtime_smoke(
             stderr=subprocess.STDOUT,
             text=True,
         ).stdout
+    candidate_prepare: dict[str, object] = {}
+    if candidate_states is not None and container_id and runtime_stable:
+        candidate_prepare = _exercise_candidate_prepare(
+            container_id,
+            candidate_states[4],
+            candidate_states[5],
+        )
     logs = subprocess.run(
         [*compose, "logs", "--no-color", "--tail", "200", "akashic-plugin-gate"],
         cwd=repo,
@@ -594,7 +761,14 @@ def _run_runtime_smoke(
         expected["generation"] = "scope_gate@gate:<revision>:<sequence>"
         phase_evidence = {"phase": phase, "state": state, "expected": expected}
     if candidate_states is not None:
-        valid_path, invalid_path, failed_path, observer_path = candidate_states
+        (
+            valid_path,
+            invalid_path,
+            failed_path,
+            observer_path,
+            _,
+            _,
+        ) = candidate_states
         valid_state: dict[str, object] = {}
         if valid_path.exists():
             raw_valid: object = json.loads(valid_path.read_text(encoding="utf-8"))
@@ -620,6 +794,7 @@ def _run_runtime_smoke(
             and not failed_path.exists()
             and observer_state.get("failed_tool_visible") is False
             and observer_state.get("event_sent") is True
+            and candidate_prepare.get("passed") is True
         )
         phase_evidence = {
             "phase": phase,
@@ -627,6 +802,7 @@ def _run_runtime_smoke(
             "invalid_initialized": invalid_path.exists(),
             "failed_candidate_state_exists": failed_path.exists(),
             "observer": observer_state,
+            "same_id_prepare": candidate_prepare,
         }
     passed = (
         started.returncode == 0

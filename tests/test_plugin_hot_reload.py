@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import sys
 from pathlib import Path
 
@@ -216,6 +217,7 @@ async def test_same_source_gets_new_generation_namespace_after_restart(tmp_path:
 
     second = manager.generation("repeat")
     assert second is not None
+    assert first.state == "retired"
     assert second.generation_id != first.generation_id
     assert second.module_path != first.module_path
 
@@ -363,10 +365,13 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
     generation = manager.generation("module_tree")
     assert generation is not None
     assert f"{generation.module_path}.child" in sys.modules
+    stable_child = importlib.import_module("akasic_plugin_plugins_module_tree.child")
+    assert stable_child.value == 1
 
     await manager.terminate_all()
 
     assert not any("plugins_module_tree__g" in name for name in sys.modules)
+    assert "akasic_plugin_plugins_module_tree.child" not in sys.modules
 
 
 @pytest.mark.asyncio
@@ -468,6 +473,11 @@ async def test_prepare_same_plugin_keeps_active_generation_until_snapshot_publis
     ).exists()
     assert tools.get_tool("replaceable_tool") is not None
 
+    await manager.discard_prepared("replaceable")
+
+    assert prepared.state == "discarded"
+    assert manager.prepared_generation("replaceable") is None
+
 
 @pytest.mark.asyncio
 async def test_source_revision_includes_helper_changes(tmp_path: Path):
@@ -514,3 +524,48 @@ async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
     gate = manager.latest_gate("escaped")
     assert gate is not None and gate.status == "failed"
     assert gate.checks[0].check_id == "declarations"
+
+
+@pytest.mark.asyncio
+async def test_proactive_lifecycle_structure_fails_static_gate(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "bad_lifecycle",
+        "from agent.plugins import Plugin\n"
+        "from proactive_v2.lifecycle import ProactiveLifecycleSpec\n"
+        "class BadLifecyclePlugin(Plugin):\n"
+        "    name = 'bad_lifecycle'\n"
+        "    def proactive_lifecycles(self):\n"
+        "        return [ProactiveLifecycleSpec(id='bad', modules=(object(),))]\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("bad_lifecycle")
+    assert gate is not None and gate.status == "failed"
+    assert "proactive_lifecycle_structure" in {
+        check.check_id for check in gate.checks if check.status == "failed"
+    }
+
+
+@pytest.mark.asyncio
+async def test_source_symlink_cannot_escape_plugin_root(tmp_path: Path):
+    outside = tmp_path / "outside.py"
+    _ = outside.write_text("value = 1\n", encoding="utf-8")
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "linked_source",
+        "from agent.plugins import Plugin\n"
+        "from . import helper\n"
+        "class LinkedSourcePlugin(Plugin):\n"
+        "    name = 'linked_source'\n",
+    )
+    (plugin_dir / "helper.py").symlink_to(outside)
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("linked_source")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "source_boundary"

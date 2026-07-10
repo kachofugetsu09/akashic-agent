@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import sys
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
@@ -94,6 +95,8 @@ class AppRuntime:
         self._memory_optimizer = None
         self._shutdown = False
         self._started = False
+        self._plugin_candidate_tasks: set[asyncio.Task[Any]] = set()
+        self._plugin_reload_signal_installed = False
 
     async def start(self) -> None:
         if self._started:
@@ -121,6 +124,7 @@ class AppRuntime:
             self.peer_process_manager = self.core.peer_process_manager
             self.peer_poller = self.core.peer_poller
             await self.core.start()
+            self._install_plugin_reload_signal()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
@@ -250,6 +254,15 @@ class AppRuntime:
             return
         self._shutdown = True
         try:
+            self._remove_plugin_reload_signal()
+            for task in self._plugin_candidate_tasks:
+                _ = task.cancel()
+            if self._plugin_candidate_tasks:
+                _ = await asyncio.gather(
+                    *self._plugin_candidate_tasks,
+                    return_exceptions=True,
+                )
+            self._plugin_candidate_tasks.clear()
             if self.dashboard_server is not None:
                 self.dashboard_server.should_exit = True
             if self.chat_server is not None:
@@ -283,6 +296,44 @@ class AppRuntime:
             )
         finally:
             clear_default_shared_http_resources(self.http_resources)
+
+    def _install_plugin_reload_signal(self) -> None:
+        if not hasattr(signal, "SIGHUP"):
+            return
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            return
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGHUP, self._schedule_plugin_candidate_scan)
+        self._plugin_reload_signal_installed = True
+
+    def _remove_plugin_reload_signal(self) -> None:
+        if not self._plugin_reload_signal_installed:
+            return
+        _ = asyncio.get_running_loop().remove_signal_handler(signal.SIGHUP)
+        self._plugin_reload_signal_installed = False
+
+    def _schedule_plugin_candidate_scan(self) -> None:
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None or self._shutdown:
+            return
+        task = asyncio.create_task(
+            manager.prepare_changed(),
+            name="plugin_candidate_scan",
+        )
+        self._plugin_candidate_tasks.add(task)
+        task.add_done_callback(self._plugin_candidate_scan_done)
+
+    def _plugin_candidate_scan_done(self, task: asyncio.Task[Any]) -> None:
+        self._plugin_candidate_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "plugin candidate scan failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
 
 def build_app_runtime(config: Config, workspace: Path | None = None) -> AppRuntime:
