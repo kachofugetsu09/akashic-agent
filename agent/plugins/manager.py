@@ -62,6 +62,11 @@ from agent.plugins.activity_host import (
     PreparedJobCatalog,
     PreparedProactiveCatalog,
 )
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    RuntimeSnapshotCompiler,
+    RuntimeSnapshotStore,
+)
 from agent.lifecycle.phase import topo_sort_modules
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.lifecycle import ProactiveLifecycleBuilder
@@ -149,6 +154,8 @@ class PluginManager:
         self._mcp_host = PluginMcpHost()
         self._job_host = PluginJobHost()
         self._proactive_host = PluginProactiveHost()
+        self._snapshot_compiler = RuntimeSnapshotCompiler()
+        self._snapshot_store = RuntimeSnapshotStore()
 
     @property
     def loaded_count(self) -> int:
@@ -256,6 +263,14 @@ class PluginManager:
         generation_id: str,
     ) -> PreparedProactiveCatalog | None:
         return self._proactive_host.get(generation_id)
+
+    @property
+    def current_snapshot(self) -> RuntimeSnapshot | None:
+        return self._snapshot_store.current
+
+    @property
+    def snapshot_store(self) -> RuntimeSnapshotStore:
+        return self._snapshot_store
 
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
@@ -402,6 +417,11 @@ class PluginManager:
                     "proactive_sources": _proactive_source_keys(active),
                     "job_specs": _job_spec_evidence(active),
                     "proactive_source_specs": _proactive_source_spec_evidence(active),
+                    "snapshot_id": (
+                        self.current_snapshot.snapshot_id
+                        if self.current_snapshot is not None
+                        else None
+                    ),
                 }
                 results.append(result)
                 logger.info(
@@ -469,6 +489,11 @@ class PluginManager:
                     _proactive_source_spec_evidence(prepared)
                     if prepared is not None
                     else {}
+                ),
+                "snapshot_id": (
+                    self.current_snapshot.snapshot_id
+                    if self.current_snapshot is not None
+                    else None
                 ),
             }
             results.append(result)
@@ -921,8 +946,23 @@ class PluginManager:
         self._fresh_importer.register(stable_module_path, plugin_dir)
         plugin_registry.register_instance(stable_module_path, instance)
         sys.modules[stable_module_path] = sys.modules[mp]
+        await self._refresh_committed_snapshot(generation)
         logger.info("插件已加载: %s", mod["name"])
         return generation
+
+    async def _refresh_committed_snapshot(
+        self,
+        catalog_generation: PluginGeneration,
+    ) -> None:
+        snapshot = self._snapshot_compiler.compile(
+            self._active_generations,
+            catalog_generation=catalog_generation,
+        )
+        if self._snapshot_store.current is None:
+            self._snapshot_store.install(snapshot)
+            return
+        transaction = self._snapshot_store.begin_publish(snapshot)
+        await self._snapshot_store.commit(transaction)
 
     def _collect_candidate_contributions(
         self,
@@ -1372,6 +1412,7 @@ class PluginManager:
             logger.info("插件 tool hook 已注册: %s", hook.name)
 
     async def terminate_all(self) -> None:
+        await self._snapshot_store.close()
         for plugin_id in tuple(self._prepared_generations):
             await self.discard_prepared(plugin_id)
         for mp in list(self._loaded):

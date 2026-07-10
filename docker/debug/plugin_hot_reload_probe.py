@@ -820,6 +820,9 @@ def _exercise_candidate_prepare(
         and return_signal.returncode == 0
         and isinstance(initial_generation, str)
         and invalid_status.get("active_generation") == initial_generation
+        and isinstance(invalid_status.get("snapshot_id"), str)
+        and valid_status.get("snapshot_id") == invalid_status.get("snapshot_id")
+        and return_status.get("snapshot_id") == invalid_status.get("snapshot_id")
         and invalid_status.get("prepared_generation") is None
         and valid_status.get("active_generation") == initial_generation
         and isinstance(valid_status.get("prepared_generation"), str)

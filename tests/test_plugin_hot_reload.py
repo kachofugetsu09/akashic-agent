@@ -12,6 +12,7 @@ import pytest
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
+from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 
@@ -1145,4 +1146,65 @@ async def test_candidate_mcp_cleanup_failure_is_reported_and_catalog_removed(
         and "mcp cleanup failed" in failure.error
         for failure in manager.cleanup_failures
     )
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotPlugin(Plugin):\n"
+        "    name = 'snapshot'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot")
+    installed = manager.current_snapshot
+    prepared = await manager.prepare_candidate("snapshot")
+    assert active is not None and prepared is not None and installed is not None
+    assert installed.generations["snapshot"] is active
+    assert installed.state == "committed"
+    assert manager.current_snapshot is installed
+    compiler = RuntimeSnapshotCompiler()
+    v1 = compiler.compile({"snapshot": active}, catalog_generation=active)
+    v2 = compiler.compile({"snapshot": prepared}, catalog_generation=prepared)
+    drained: list[str] = []
+
+    async def on_drained(snapshot) -> None:
+        drained.append(snapshot.snapshot_id)
+
+    store = RuntimeSnapshotStore(on_drained)
+    store.install(v1)
+    v1_lease = store.lease()
+    assert v1_lease.snapshot is v1
+    transaction = store.begin_publish(v2)
+    assert store.current is v2
+    v2_lease = store.lease()
+
+    await store.abort(transaction)
+
+    assert store.current is v1
+    assert drained == []
+    await v2_lease.release()
+    assert drained == [v2.snapshot_id]
+    await v1_lease.release()
+    assert active.lease_count == 0
+    assert prepared.lease_count == 0
+
+    next_v2 = compiler.compile({"snapshot": prepared}, catalog_generation=prepared)
+    held_v1 = store.lease()
+    committed = store.begin_publish(next_v2)
+    await store.commit(committed)
+
+    assert store.current is next_v2
+    assert drained == [v2.snapshot_id]
+    with pytest.raises(RuntimeError, match="不可租用"):
+        _ = store.lease(v1.snapshot_id)
+    await held_v1.release()
+    assert drained == [v2.snapshot_id, v1.snapshot_id]
+    await store.close()
+    assert drained == [v2.snapshot_id, v1.snapshot_id, next_v2.snapshot_id]
+    await manager.discard_prepared("snapshot")
     await manager.terminate_all()
