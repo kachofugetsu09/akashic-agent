@@ -80,12 +80,13 @@ class PluginMcpHost:
         if catalog is None:
             return
         failures: list[Exception] = []
-        for server in catalog.servers.values():
-            try:
-                await server.client.disconnect()
-            except Exception as error:
-                failures.append(error)
-        if not any(server.client.connected for server in catalog.servers.values()):
+        try:
+            for server in catalog.servers.values():
+                try:
+                    await server.client.disconnect()
+                except Exception as error:
+                    failures.append(error)
+        finally:
             _ = self._catalogs.pop(generation_id, None)
         if failures:
             raise RuntimeError(

@@ -1065,13 +1065,10 @@ async def test_candidate_mcp_cleanup_failure_is_reported_and_catalog_removed(
     prepared = await manager.prepare_candidate("mcp_cleanup")
     assert prepared is not None and prepared.mcp_catalog is not None
     client = prepared.mcp_catalog.servers["cleanup"].client
-    disconnect = client.disconnect
-
-    async def fail_after_disconnect() -> None:
-        await disconnect()
+    async def fail_before_disconnect() -> None:
         raise OSError("mcp cleanup failed")
 
-    monkeypatch.setattr(client, "disconnect", fail_after_disconnect)
+    monkeypatch.setattr(client, "disconnect", fail_before_disconnect)
     await manager.discard_prepared("mcp_cleanup")
 
     assert manager.mcp_catalog(prepared.generation_id) is None
