@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import functools
 import importlib.util
 import inspect
@@ -336,6 +337,45 @@ class PluginManager:
                 scope=scope,
             )
             plugin_registry.register_instance(mp, instance)
+
+            async def rollback_load() -> None:
+                terminator = getattr(instance, "terminate", None)
+                if callable(terminator):
+                    try:
+                        typed_terminator = cast(
+                            Callable[[], Awaitable[None]],
+                            terminator,
+                        )
+                        await typed_terminator()
+                    except (asyncio.CancelledError, Exception) as terminate_error:
+                        self._cleanup_failures.append(
+                            CleanupFailure(
+                                resource=f"plugin:{plugin_id}:terminate",
+                                error=str(terminate_error) or type(terminate_error).__name__,
+                            )
+                        )
+                self._cleanup_failures.extend(await scope.aclose())
+                plugin_registry.remove_plugin(mp)
+                for tool_name in tool_names:
+                    if self._tool_registry is not None:
+                        self._tool_registry.unregister(tool_name)
+                del self._tool_hooks[hook_count_before:]
+                del self._before_turn_modules[before_turn_count_before:]
+                del self._before_reasoning_modules[before_reasoning_count_before:]
+                del self._prompt_render_modules[prompt_render_count_before:]
+                del self._before_step_modules[before_step_count_before:]
+                del self._after_step_modules[after_step_count_before:]
+                del self._after_reasoning_modules[after_reasoning_count_before:]
+                del self._after_turn_modules[after_turn_count_before:]
+                del self._proactive_modules[proactive_module_count_before:]
+                del self._proactive_lifecycles[proactive_lifecycle_count_before:]
+                del self._proactive_module_factories[proactive_factory_count_before:]
+                del self._proactive_runtime_factories[
+                    proactive_runtime_factory_count_before:
+                ]
+                del self._proactive_sources[proactive_source_count_before:]
+                del self._jobs[job_count_before:]
+
             try:
                 self._bind_handlers(instance, mp, scope)
                 self._register_tools(instance, mp, tool_names)
@@ -355,42 +395,12 @@ class PluginManager:
                 self._collect_jobs(instance, plugin_id)
                 if hasattr(instance, "initialize"):
                     await instance.initialize()
+            except asyncio.CancelledError:
+                await asyncio.shield(rollback_load())
+                raise
             except Exception as e:
                 logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], e)
-                terminator = getattr(instance, "terminate", None)
-                if callable(terminator):
-                    try:
-                        typed_terminator = cast(
-                            Callable[[], Awaitable[None]],
-                            terminator,
-                        )
-                        await typed_terminator()
-                    except Exception as terminate_error:
-                        self._cleanup_failures.append(
-                            CleanupFailure(
-                                resource=f"plugin:{plugin_id}:terminate",
-                                error=str(terminate_error),
-                            )
-                        )
-                self._cleanup_failures.extend(await scope.aclose())
-                plugin_registry.remove_plugin(mp)
-                for tn in tool_names:
-                    if self._tool_registry is not None:
-                        self._tool_registry.unregister(tn)
-                del self._tool_hooks[hook_count_before:]
-                del self._before_turn_modules[before_turn_count_before:]
-                del self._before_reasoning_modules[before_reasoning_count_before:]
-                del self._prompt_render_modules[prompt_render_count_before:]
-                del self._before_step_modules[before_step_count_before:]
-                del self._after_step_modules[after_step_count_before:]
-                del self._after_reasoning_modules[after_reasoning_count_before:]
-                del self._after_turn_modules[after_turn_count_before:]
-                del self._proactive_modules[proactive_module_count_before:]
-                del self._proactive_lifecycles[proactive_lifecycle_count_before:]
-                del self._proactive_module_factories[proactive_factory_count_before:]
-                del self._proactive_runtime_factories[proactive_runtime_factory_count_before:]
-                del self._proactive_sources[proactive_source_count_before:]
-                del self._jobs[job_count_before:]
+                await rollback_load()
                 return
             self._scopes[mp] = scope
             manifest: dict[str, object] = {
@@ -462,6 +472,8 @@ class PluginManager:
             )
             # 3. 注册到 ToolRegistry，标记来源为 plugin
             plugin_name = getattr(instance, "name", None) or module_path
+            if self._tool_registry.has_tool(tool_name):
+                raise RuntimeError(f"插件工具名称重复: {tool_name}")
             tool_names.append(tool_name)
             self._tool_registry.register(
                 ToolCls(),

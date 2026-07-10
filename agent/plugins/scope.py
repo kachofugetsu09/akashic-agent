@@ -114,21 +114,27 @@ class PluginScope:
             return []
         self._closed = True
         failures: list[CleanupFailure] = []
+        externally_cancelled = False
         while self._cleanups:
             resource, cleanup = self._cleanups.pop()
             try:
                 result = cleanup()
                 if inspect.isawaitable(result):
                     await result
-            except Exception as error:
+            except (asyncio.CancelledError, Exception) as error:
                 failure = CleanupFailure(resource=resource, error=str(error))
                 failures.append(failure)
+                if isinstance(error, asyncio.CancelledError):
+                    task = asyncio.current_task()
+                    externally_cancelled = task is not None and task.cancelling() > 0
                 logger.warning(
                     "插件资源清理失败: plugin=%s resource=%s error=%s",
                     self.plugin_id,
                     resource,
                     error,
                 )
+        if externally_cancelled:
+            raise asyncio.CancelledError
         return failures
 
     def _ensure_open(self) -> None:

@@ -149,6 +149,11 @@ class PluginJobRuntime:
             self._subscriptions.clear()
             self._bound = False
             self._running = False
+            while not self._queue.empty():
+                request = self._queue.get_nowait()
+                if request is not None:
+                    self._queued_keys.discard(request.key)
+                self._queue.task_done()
 
     def stop(self) -> None:
         if not self._running:
