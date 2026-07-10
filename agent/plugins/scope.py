@@ -33,8 +33,7 @@ class PluginScope:
         return len(self._cleanups)
 
     def defer(self, resource: str, cleanup: Cleanup) -> None:
-        if self._closed:
-            raise RuntimeError(f"插件作用域已关闭: {self.plugin_id}")
+        self._ensure_open()
         self._cleanups.append((resource, cleanup))
 
     def subscribe(
@@ -43,6 +42,7 @@ class PluginScope:
         event_type: type[T],
         handler: Handler[T],
     ) -> EventSubscription:
+        self._ensure_open()
         subscription = event_bus.on(event_type, handler)
         self.defer(
             f"event:{event_type.__name__}",
@@ -56,6 +56,9 @@ class PluginScope:
         *,
         name: str | None = None,
     ) -> asyncio.Task[T]:
+        if self._closed:
+            coroutine.close()
+            self._ensure_open()
         task = asyncio.create_task(coroutine, name=name)
 
         async def cancel() -> None:
@@ -74,11 +77,16 @@ class PluginScope:
         process: asyncio.subprocess.Process,
         *,
         name: str,
+        timeout: float = 5,
     ) -> None:
         async def terminate() -> None:
             if process.returncode is None:
                 process.terminate()
-            _ = await process.wait()
+            try:
+                _ = await asyncio.wait_for(process.wait(), timeout=timeout)
+            except TimeoutError:
+                process.kill()
+                _ = await process.wait()
 
         self.defer(f"process:{name}", terminate)
 
@@ -122,6 +130,10 @@ class PluginScope:
                     error,
                 )
         return failures
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError(f"插件作用域已关闭: {self.plugin_id}")
 
 
 class ScopedEventBus:

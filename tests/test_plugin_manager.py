@@ -24,6 +24,7 @@ from agent.plugins.registry import plugin_registry
 from agent.plugins.scope import PluginScope
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
+from agent.tools.search_backend import KeywordSearchBackend
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
@@ -229,6 +230,13 @@ async def test_plugin_job_runtime_runs_event_job():
     }
     assert bus.handler_count() == handler_count
 
+    restarted = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0)
+    assert not restarted.done()
+    runtime.stop()
+    await restarted
+    assert bus.handler_count() == handler_count
+
 
 @pytest.mark.asyncio
 async def test_event_subscription_can_be_closed():
@@ -242,6 +250,25 @@ async def test_event_subscription_can_be_closed():
 
     assert called == ["first"]
     assert bus.handler_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_observe_keeps_current_handler_snapshot():
+    bus = EventBus()
+    called: list[str] = []
+    first = None
+
+    def close_first(_event: str) -> None:
+        called.append("first")
+        assert first is not None
+        first.close()
+
+    first = bus.on(str, close_first)
+    _ = bus.on(str, lambda _event: called.append("second"))
+
+    await bus.observe("event")
+
+    assert called == ["first", "second"]
 
 
 @pytest.mark.asyncio
@@ -280,6 +307,24 @@ async def test_plugin_scope_terminates_process():
 
     assert failures == []
     assert process.poll() is not None
+
+
+@pytest.mark.asyncio
+async def test_closed_plugin_scope_does_not_create_resources():
+    scope = PluginScope("closed")
+    bus = EventBus()
+    _ = await scope.aclose()
+
+    with pytest.raises(RuntimeError, match="作用域已关闭"):
+        _ = scope.subscribe(bus, str, lambda _event: None)
+
+    async def wait() -> None:
+        await asyncio.Event().wait()
+
+    with pytest.raises(RuntimeError, match="作用域已关闭"):
+        _ = scope.create_task(wait())
+
+    assert bus.handler_count() == 0
 
 
 @pytest.mark.asyncio
@@ -327,6 +372,85 @@ async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
     assert json.loads((data_dir / ".kv.json").read_text(encoding="utf-8")) == {
         "closed": True
     }
+    assert len(manager.cleanup_failures) == 20
+
+
+@pytest.mark.asyncio
+async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "failing"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "import asyncio\n"
+        "from contextlib import suppress\n"
+        "from agent.plugins import Plugin\n"
+        "tasks = []\n"
+        "class FailingPlugin(Plugin):\n"
+        "    name = 'failing'\n"
+        "    async def initialize(self):\n"
+        "        self.task = asyncio.create_task(asyncio.Event().wait())\n"
+        "        tasks.append(self.task)\n"
+        "        raise RuntimeError('init failed')\n"
+        "    async def terminate(self):\n"
+        "        self.task.cancel()\n"
+        "        with suppress(asyncio.CancelledError):\n"
+        "            await self.task\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=EventBus(),
+        installed_cache_root=tmp_path / "cache",
+    )
+
+    await manager.load_all()
+
+    module = sys.modules["akasic_plugin_plugins_failing"]
+    assert manager.loaded_count == 0
+    assert len(module.tasks) == 1
+    assert module.tasks[0].done()
+
+
+@pytest.mark.asyncio
+async def test_plugin_tool_registration_failure_rolls_back(tmp_path: Path):
+    class FailingBackend(KeywordSearchBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.add_count = 0
+
+        def add(self, document: Any) -> None:
+            self.add_count += 1
+            if self.add_count == 2:
+                raise RuntimeError("index failed")
+            super().add(document)
+
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "tool_failure"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin, tool\n"
+        "class ToolFailurePlugin(Plugin):\n"
+        "    name = 'tool_failure'\n"
+        "    @tool(name='first')\n"
+        "    async def first(self, event):\n"
+        "        return 'first'\n"
+        "    @tool(name='second')\n"
+        "    async def second(self, event):\n"
+        "        return 'second'\n",
+        encoding="utf-8",
+    )
+    tools = ToolRegistry(backend=FailingBackend())
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=EventBus(),
+        tool_registry=tools,
+        installed_cache_root=tmp_path / "cache",
+    )
+
+    await manager.load_all()
+
+    assert manager.loaded_count == 0
+    assert tools.get_registered_names() == set()
 
 
 # ── lifecycle hook 触发测试 ────────────────────────────────────────────────────

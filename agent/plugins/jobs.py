@@ -143,12 +143,16 @@ class PluginJobRuntime:
             for task in self._interval_tasks:
                 _ = task.cancel()
             _ = await asyncio.gather(*self._interval_tasks, return_exceptions=True)
+            self._interval_tasks.clear()
             for subscription in self._subscriptions:
                 subscription.close()
             self._subscriptions.clear()
             self._bound = False
+            self._running = False
 
     def stop(self) -> None:
+        if not self._running:
+            return
         self._running = False
         _ = self._queue.put_nowait(None)
 

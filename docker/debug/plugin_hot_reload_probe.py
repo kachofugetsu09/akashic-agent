@@ -360,6 +360,7 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "        self.context.defer('subscription_check', self._check_subscription)\n"
         "        self.subscription = self.context.event_bus.on(TurnCommitted, self._handle)\n"
         "        self.context.create_task(self._worker(), name='scope-gate-worker')\n"
+        "        self.context.create_task(self._emit(), name='scope-gate-emit')\n"
         "    async def terminate(self):\n"
         "        self.context.kv_store.set('terminated', True)\n"
         "    async def _worker(self):\n"
@@ -367,6 +368,12 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "            await asyncio.Event().wait()\n"
         "        finally:\n"
         "            self.context.kv_store.set('task_cancelled', True)\n"
+        "    async def _emit(self):\n"
+        "        await asyncio.sleep(0)\n"
+        "        await self.context.event_bus.fanout(TurnCommitted(\n"
+        "            session_key='gate:scope', channel='gate', chat_id='scope',\n"
+        "            input_message='scope', persisted_user_message='scope',\n"
+        "            assistant_response='scope', tools_used=[]))\n"
         "    def _check_subscription(self):\n"
         "        self.context.kv_store.set('subscription_closed', not self.subscription.active)\n"
         "    def _handle(self, event):\n"
@@ -492,11 +499,12 @@ def _run_runtime_smoke(
             if isinstance(raw_state, dict):
                 mapping = cast(dict[object, object], raw_state)
                 state = {str(key): value for key, value in mapping.items()}
-        expected = {
+        expected: dict[str, object] = {
             "initialized": True,
             "terminated": True,
             "task_cancelled": True,
             "subscription_closed": True,
+            "events": 1,
         }
         phase_passed = all(state.get(key) == value for key, value in expected.items())
         phase_evidence = {"phase": phase, "state": state, "expected": expected}

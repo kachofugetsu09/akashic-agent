@@ -71,7 +71,7 @@ class EventBus:
         event: object,
         ) -> None:
         # 1. 依次执行观察者，单个观察者失败不打断主流程。
-        for handler in self._handlers.get(type(event), []):
+        for handler in list(self._handlers.get(type(event), [])):
             _ = await self._run_observer(event, handler)
 
     async def fanout(
