@@ -510,6 +510,41 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
 
 
 @pytest.mark.asyncio
+async def test_mcp_client_serializes_calls_on_same_server():
+    class ConcurrentReadPipe(_Pipe):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"a"}]}}\n',
+                    b'{"jsonrpc":"2.0","id":2,"result":{"content":[{"text":"b"}]}}\n',
+                ]
+            )
+            self.reading = False
+
+        async def readline(self) -> bytes:
+            if self.reading:
+                raise RuntimeError("concurrent stdout read")
+            self.reading = True
+            try:
+                await asyncio.sleep(0)
+                return await super().readline()
+            finally:
+                self.reading = False
+
+    proc = _Proc([])
+    proc.stdout = ConcurrentReadPipe()
+    client = McpClient("fitbit", ["python", "server.py"])
+    client._process = proc
+
+    results = await asyncio.gather(
+        client.call("get_proactive_events", {}),
+        client.call("get_sleep_context", {}),
+    )
+
+    assert results == ["a", "b"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_recv_timeout_includes_stage_and_recent_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

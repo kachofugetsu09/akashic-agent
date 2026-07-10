@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from proactive_v2.gateway import GatewayDeps
+from plugins.default_proactive.gateway import GatewayDeps
 from tests.proactive_v2.conftest import FakeLLM, make_proactive_pipeline, run_proactive_pipeline
 from unittest.mock import AsyncMock
 

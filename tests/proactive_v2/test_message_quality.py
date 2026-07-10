@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from proactive_v2.context import AgentTickContext
-from proactive_v2.tools import _get_recent_chat
+from plugins.default_proactive.context import AgentTickContext
+from plugins.proactive_flow.tools import _get_recent_chat
 from tests.proactive_v2.conftest import make_proactive_pipeline
 
 

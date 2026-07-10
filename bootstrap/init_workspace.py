@@ -8,7 +8,6 @@ from agent.config import Config
 from agent.memory import DEFAULT_SELF_MD, MemoryStore
 from bootstrap.memory import ensure_memory_plugin_storage
 from infra.persistence.json_store import save_json
-from proactive_v2.anyaction import QuotaStore
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
@@ -147,23 +146,12 @@ def _ensure_workspace_db_assets(
         summary.skipped.append(consolidation_db)
 
     proactive_db = workspace / "proactive.db"
-    quota_path = workspace / "proactive_quota.json"
     proactive_exists = proactive_db.exists()
     ProactiveStateStore(proactive_db).close()
     if not proactive_exists:
         summary.created.append(proactive_db)
     else:
         summary.skipped.append(proactive_db)
-    if not quota_path.exists():
-        save_json(
-            quota_path,
-            QuotaStore(quota_path)._state,
-            domain="workspace.init",
-        )
-        summary.created.append(quota_path)
-    else:
-        summary.skipped.append(quota_path)
-
     if config.memory.enabled:
         storage_results = ensure_memory_plugin_storage(config, workspace)
         if storage_results:

@@ -32,6 +32,7 @@ class AgentTickContext:
     skip_reason: str = ""
     skip_note: str = ""
     draft_message: str = ""
+    draft_media: list[str] = field(default_factory=list)
     draft_evidence: list[str] = field(default_factory=list)
     final_message: str = ""
     cited_item_ids: list[str] = field(default_factory=list)     # 复合键列表

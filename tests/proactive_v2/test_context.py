@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from proactive_v2.context import AgentTickContext
+from plugins.default_proactive.context import AgentTickContext
 
 
 # ── 默认值 ────────────────────────────────────────────────────────────────

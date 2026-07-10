@@ -11,6 +11,8 @@ class ProactiveConfig:
     """
     # 必填运行信息
     enabled: bool = False
+    lifecycle: str = "default"
+    profile: str = ""
     default_channel: str = "telegram"
     default_chat_id: str = ""
     model: str = ""

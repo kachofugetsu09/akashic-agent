@@ -2,28 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
-from hashlib import sha1
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-from agent.tool_hooks import ToolHook
-from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
-from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from agent.turns.orchestrator import TurnOrchestrator
-from bus.event_bus import EventBus
-from proactive_v2.mcp_sources import McpClientPool
-from proactive_v2.modules_source import McpGatewaySource
-from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
-from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
-from proactive_v2.anyaction import AnyActionGate, QuotaStore
-from proactive_v2.drift_state import DriftStateStore
-from proactive_v2.drift_tools import DriftToolDeps
-from proactive_v2.judge import MessageDeduper
-from proactive_v2.tools import ToolDeps
+from plugins.default_proactive.source import McpGatewaySource
+from plugins.default_proactive.runtime import (
+    ProactiveFlowRuntime,
+    ProactiveFlowDeps,
+)
+from plugins.drift_flow.runtime import DriftTurnPipeline, DriftTurnPipelineDeps
+from plugins.default_proactive.anyaction import AnyActionGate, QuotaStore
+from plugins.drift_flow.state import DriftStateStore
+from plugins.drift_flow.tools import DriftToolDeps
+from plugins.default_proactive.deduper import MessageDeduper
+from plugins.proactive_flow.tools import ToolDeps
+from proactive_v2.runtime_scope import ProactiveRuntimeScope
 
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
@@ -31,36 +27,14 @@ RecentChatFn = Callable[[int], Awaitable[list[dict]]]
 RecentProactiveFn = Callable[[], list[dict]] | None
 
 
-@dataclass
-class AgentTickDeps:
-    cfg: Any
-    sense: Any
-    presence: Any | None
-    provider: Any
-    model: str
-    max_tokens: int
-    memory: Any | None
-    state_store: Any
-    any_action_gate: Any | None
-    passive_busy_fn: Any | None
-    deduper: Any | None
-    rng: Any
-    workspace_context_fn: Callable[[], str]
-    shared_tools: ToolRegistry | None = None
-    turn_orchestrator: TurnOrchestrator | None = None
-    pool: McpClientPool | None = None
-    event_bus: EventBus | None = None
-    tool_hooks: list[ToolHook] = field(default_factory=list)
-
-
 class AgentTickFactory:
-    def __init__(self, deps: AgentTickDeps) -> None:
+    def __init__(self, deps: ProactiveRuntimeScope) -> None:
         self._deps = deps
 
-    def build(self) -> ProactiveTurnPipeline:
-        if self._deps.pool is None:
-            raise RuntimeError("proactive_v2 依赖 MCP 连接池，pool 不能为空")
+    def build_runtime(self) -> ProactiveFlowRuntime:
+        return ProactiveFlowRuntime(self._build_runtime_deps())
 
+    def _build_runtime_deps(self) -> ProactiveFlowDeps:
         # 1. 先确定本轮 proactive 要服务哪个 session。
         session_key = self._get_session_key()
         # 2. 再把 tick 运行期依赖逐项组装好：
@@ -79,27 +53,25 @@ class AgentTickFactory:
         if deduper is None:
             deduper = self._build_message_deduper()
 
-        # 3. 产出 ProactiveTurnPipeline。后续每次 proactive loop 触发时调用 pipeline.run()。
-        return ProactiveTurnPipeline(
-            ProactiveTurnPipelineDeps(
-                cfg=self._deps.cfg,
-                session_key=session_key,
-                state_store=self._deps.state_store,
-                any_action_gate=any_action_gate,
-                last_user_at_fn=last_user_at_fn,
-                passive_busy_fn=self._deps.passive_busy_fn,
-                turn_orchestrator=self._deps.turn_orchestrator,
-                deduper=deduper,
-                tool_deps=tool_deps,
-                gateway_deps=gateway_deps,
-                workspace_context_fn=self._deps.workspace_context_fn,
-                llm_fn=self._build_llm_fn(),
-                rng=self._deps.rng,
-                recent_proactive_fn=recent_proactive_fn,
-                drift_pipeline=drift_pipeline,
-                event_bus=self._deps.event_bus,
-                tool_hooks=self._deps.tool_hooks,
-            )
+        return ProactiveFlowDeps(
+            cfg=self._deps.cfg,
+            session_key=session_key,
+            state_store=self._deps.state_store,
+            any_action_gate=any_action_gate,
+            last_user_at_fn=last_user_at_fn,
+            passive_busy_fn=self._deps.passive_busy_fn,
+            turn_orchestrator=self._deps.turn_orchestrator,
+            deduper=deduper,
+            tool_deps=tool_deps,
+            gateway_deps=gateway_deps,
+            workspace_context_fn=self._deps.workspace_context_fn,
+            llm_fn=self._build_llm_fn(),
+            rng=self._deps.rng,
+            recent_proactive_fn=recent_proactive_fn,
+            drift_pipeline=drift_pipeline,
+            schedule_fn=self._deps.schedule_fn,
+            event_bus=self._deps.event_bus,
+            tool_hooks=self._deps.tool_hooks,
         )
 
     def _get_session_key(self) -> str:
@@ -121,7 +93,7 @@ class AgentTickFactory:
             tool_choice: str | dict = "auto",
             disable_thinking: bool = False,
         ) -> dict | None:
-            # ProactiveTurnPipeline 自己维护 messages 和工具 schema；
+            # ProactiveFlowRuntime 自己维护 messages 和工具 schema；
             # factory 这里只负责把 provider.chat 包成“返回首个 tool_call”的薄适配层。
             resp = await provider.chat(
                 messages=messages,
@@ -150,10 +122,8 @@ class AgentTickFactory:
         return llm_fn
 
     def _build_mcp_source(self) -> McpGatewaySource:
-        pool = self._deps.pool
-        assert pool is not None
         return McpGatewaySource(
-            pool,
+            self._deps.mcp_gateway,
             content_limit=self._deps.cfg.agent_tick_content_limit,
         )
 
@@ -219,49 +189,9 @@ class AgentTickFactory:
                     memory=self._deps.memory,
                     recent_chat_fn=self._build_recent_chat_fn(),
                     shared_tools=self._deps.shared_tools,
-                    send_message_fn=self._build_drift_send_message_fn(),
                     event_bus=self._deps.event_bus,
                 ),
                 max_steps=self._deps.cfg.drift_max_steps,
                 tool_hooks=self._deps.tool_hooks,
             )
         )
-
-    def _build_drift_send_message_fn(self) -> Callable[..., Awaitable[bool]] | None:
-        orchestrator = self._deps.turn_orchestrator
-        session_key = self._get_session_key()
-        state_store = self._deps.state_store
-        if orchestrator is None:
-            return None
-
-        @dataclass
-        class _SideEffect:
-            callback: Callable[[], None]
-
-            async def run(self) -> None:
-                self.callback()
-
-        async def send_message(content: str, media: list[str] | None = None) -> bool:
-            media_paths = list(media or [])
-            delivery_key = sha1((content[:500] + "|".join(media_paths[:5])).encode()).hexdigest()[:16]
-            result = TurnResult(
-                decision="reply",
-                outbound=TurnOutbound(session_key=session_key, content=content, media=media_paths),
-                trace=TurnTrace(source="proactive", extra={"source_mode": "drift"}),
-                success_side_effects=[
-                    _SideEffect(
-                        callback=lambda: state_store.mark_delivery(
-                            session_key,
-                            delivery_key,
-                        )
-                    )
-                ],
-            )
-            return await orchestrator.handle_proactive_turn(
-                result=result,
-                session_key=session_key,
-                channel=str(self._deps.cfg.default_channel or "").strip(),
-                chat_id=str(self._deps.cfg.default_chat_id or "").strip(),
-            )
-
-        return send_message

@@ -1,5 +1,5 @@
 """
-TDD — Phase 4: proactive_v2/ProactiveTurnPipeline — Pre-gate
+TDD — Phase 4: proactive_v2/ProactiveFlowRuntime — Pre-gate
 
 测试覆盖：
   - passive_busy_fn 硬 veto
@@ -333,9 +333,9 @@ async def test_drift_interval_blocks_recent_drift():
 
 @pytest.mark.asyncio
 async def test_drift_interval_allows_after_window():
-    from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
-    from proactive_v2.drift_state import DriftStateStore
-    from proactive_v2.drift_tools import DriftToolDeps
+    from plugins.drift_flow.runtime import DriftTurnPipeline, DriftTurnPipelineDeps
+    from plugins.drift_flow.state import DriftStateStore
+    from plugins.drift_flow.tools import DriftToolDeps
     from tests.proactive_v2.conftest import FakeLLM
     from pathlib import Path
 
@@ -348,7 +348,6 @@ async def test_drift_interval_allows_after_window():
                 "skill_used": "explore-curiosity",
                 "status": "completed",
                 "briefing": "x",
-                "message_result": "silent",
             },
         ),
     ])
@@ -409,8 +408,8 @@ async def test_passive_busy_checked_before_delivery_cooldown():
 @pytest.mark.asyncio
 async def test_pregate_fail_does_not_call_alert_fn():
     alert_fn = AsyncMock(return_value=[])
-    from proactive_v2.tools import ToolDeps
-    from proactive_v2.gateway import GatewayDeps
+    from plugins.proactive_flow.tools import ToolDeps
+    from plugins.default_proactive.gateway import GatewayDeps
     deps = ToolDeps(
     )
     tick = make_proactive_pipeline(

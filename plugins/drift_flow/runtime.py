@@ -1,7 +1,7 @@
 """
 DriftTurnPipeline — Drift 空闲时间链路顶层抽象。
 
-设计对齐主动链路的 ProactiveTurnPipeline.run() 和被动链路的 PassiveTurnPipeline.run()：
+设计对齐主动链路的 ProactiveFlowRuntime.run() 和被动链路的 PassiveTurnPipeline.run()：
 通过 run() 一个方法可见全链路。
 
 ┌─ tick trigger (no content available)
@@ -32,9 +32,9 @@ from agent.prompting import (
 )
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_hooks.base import ToolHook
-from proactive_v2.context import AgentTickContext
-from proactive_v2.drift_state import DriftStateStore, SkillMeta
-from proactive_v2.drift_tools import (
+from plugins.default_proactive.context import AgentTickContext
+from plugins.drift_flow.state import DriftStateStore, SkillMeta
+from plugins.drift_flow.tools import (
     DriftToolDeps,
     build_drift_tool_registry,
 )
@@ -493,6 +493,9 @@ class DriftTurnPipeline:
             ctx.drift_selected_skill,
         )
 
+    def record_commit_result(self, sent: bool) -> None:
+        self._store.update_last_message_result("sent" if sent else "silent")
+
     # ── Prompt 构建 ────────────────────────────────────────────────────
 
     async def _build_runtime_context_message(
@@ -707,8 +710,7 @@ class DriftTurnPipeline:
             "路径由 drift mount resolver 解析，skills/<skill_name>/... 同时适用于工作区和内建 skill。\n"
             "3. 有用户价值且适合打扰时可调用 message_push，单次 run 最多一次；"
             "message_push 成功后只能调用 finish_drift。\n"
-            "4. 结束前必须调用 finish_drift；skill_used 必须等于 selected_skill，"
-            "message_result 必须如实标注 sent 或 silent。\n"
+            "4. 结束前必须调用 finish_drift；skill_used 必须等于 selected_skill。\n"
             "5. finish_drift.status 只能为 completed 或 paused。"
             "completed 表示本轮主动行为已闭环；paused 必须写 scratchpad_update，说明做到哪里和下次从哪里继续。"
             "结构化接续写 cursor_update；已经完成的事实追加到 journal_append。\n\n"

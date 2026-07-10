@@ -1,5 +1,5 @@
 """
-TDD — Phase 6: ProactiveTurnPipeline — Post-guard + ACK
+TDD — Phase 6: ProactiveFlowRuntime — Post-guard + ACK
 
 测试分两层：
   A. 模块级纯函数（build_delivery_key、ack_* helpers）
@@ -14,15 +14,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.proactive_turn import (
+from plugins.default_proactive.runtime import (
     ack_discarded,
     ack_on_success,
     ack_post_guard_fail,
     build_delivery_key,
 )
-from proactive_v2.context import AgentTickContext
-from proactive_v2.gateway import GatewayDeps
-from proactive_v2.tools import ToolDeps
+from plugins.default_proactive.context import AgentTickContext
+from plugins.default_proactive.gateway import GatewayDeps
+from plugins.proactive_flow.tools import ToolDeps
 from tests.proactive_v2.conftest import (
     FakeAckSink,
     FakeAlertAckSink,
@@ -825,7 +825,7 @@ async def test_discarded_content_not_in_interesting():
 @pytest.mark.asyncio
 async def test_ack_on_success_alert_cited_calls_alert_ack_fn():
     """发送成功：cited alert 调用 alert_ack_fn（独立通道），不调用普通 ack_fn"""
-    from agent.core.proactive_turn import ack_on_success
+    from plugins.default_proactive.runtime import ack_on_success
     ctx = AgentTickContext()
     ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
     ctx.fetched_contents = []
@@ -844,7 +844,7 @@ async def test_ack_on_success_alert_cited_calls_alert_ack_fn():
 @pytest.mark.asyncio
 async def test_ack_on_success_alert_ack_fn_none_falls_back_to_regular():
     """alert_ack_fn=None 时，cited alert 回退到普通 ack_fn"""
-    from agent.core.proactive_turn import ack_on_success
+    from plugins.default_proactive.runtime import ack_on_success
     ctx = AgentTickContext()
     ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
     ctx.fetched_contents = []
@@ -861,7 +861,7 @@ async def test_ack_on_success_alert_ack_fn_none_falls_back_to_regular():
 @pytest.mark.asyncio
 async def test_ack_on_success_content_unaffected_by_alert_ack_fn():
     """alert_ack_fn 独立时，content cited 仍走普通 ack_fn"""
-    from agent.core.proactive_turn import ack_on_success
+    from plugins.default_proactive.runtime import ack_on_success
     ctx = AgentTickContext()
     ctx.fetched_alerts = []
     ctx.fetched_contents = [{"id": "c1", "ack_server": "feed-mcp"}]
@@ -881,7 +881,7 @@ async def test_ack_on_success_content_unaffected_by_alert_ack_fn():
 
 def test_tool_schemas_have_openai_format():
     """每个 schema 必须是 {"type":"function","function":{name,description,parameters}} 格式"""
-    from proactive_v2.tools import TOOL_SCHEMAS
+    from plugins.proactive_flow.tools import TOOL_SCHEMAS
     for schema in TOOL_SCHEMAS:
         assert schema.get("type") == "function", f"missing type=function: {schema.get('name', schema)}"
         fn = schema.get("function", {})
@@ -892,7 +892,7 @@ def test_tool_schemas_have_openai_format():
 
 def test_tool_schemas_no_input_schema_key():
     """不应有 Anthropic 风格的 input_schema 顶层 key"""
-    from proactive_v2.tools import TOOL_SCHEMAS
+    from plugins.proactive_flow.tools import TOOL_SCHEMAS
     for schema in TOOL_SCHEMAS:
         assert "input_schema" not in schema, f"Anthropic-style input_schema found: {schema}"
         assert "name" not in schema or schema.get("type") == "function", \
@@ -936,7 +936,7 @@ async def test_run_loop_appends_openai_format_tool_messages():
 
 def test_mark_interesting_tool_in_schema():
     """TOOL_SCHEMAS 必须包含 mark_interesting 工具"""
-    from proactive_v2.tools import TOOL_SCHEMAS
+    from plugins.proactive_flow.tools import TOOL_SCHEMAS
     names = {s["function"]["name"] for s in TOOL_SCHEMAS if s.get("type") == "function"}
     assert "mark_interesting" in names, "mark_interesting tool missing from TOOL_SCHEMAS"
 

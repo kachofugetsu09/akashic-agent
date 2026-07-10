@@ -349,6 +349,16 @@ class DriftStateStore:
                     ),
                 )
 
+    def update_last_message_result(self, message_result: str) -> None:
+        run_id = self._last_saved_run_id
+        if not run_id:
+            return
+        with self._connection() as conn:
+            _ = conn.execute(
+                "UPDATE runs SET message_result = ? WHERE id = ?",
+                (message_result, run_id),
+            )
+
     def append_step(
         self,
         *,

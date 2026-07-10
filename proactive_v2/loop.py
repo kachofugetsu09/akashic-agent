@@ -35,9 +35,12 @@ from bus.event_bus import EventBus
 from core.common.strategy_trace import build_strategy_trace_envelope
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.config import ProactiveConfig
+from proactive_v2.lifecycle import ProactiveLifecycleSpec
+from proactive_v2.mcp_sources import SharedMcpGateway
 from proactive_v2.modules_schedule import ProactiveScheduler
 from proactive_v2.modules_source import McpRuntimeModule
 from proactive_v2.presence import PresenceStore
+from proactive_v2.runtime_scope import ProactiveRuntimeScope
 from proactive_v2.sensor import Sensor
 from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
@@ -76,7 +79,9 @@ class ProactiveLoop:
         event_bus: EventBus | None = None,
         tool_hooks: list[ToolHook] | None = None,
         proactive_modules: list[object] | None = None,
-        plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
+        proactive_lifecycles: list[object] | None = None,
+        proactive_module_factories: list[object] | None = None,
+        proactive_runtime_factories: list[object] | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -93,7 +98,9 @@ class ProactiveLoop:
         self._event_bus = event_bus
         self._tool_hooks = tool_hooks or []
         self._plugin_proactive_modules = proactive_modules or []
-        self._plugin_mcp_servers = dict(plugin_mcp_servers or {})
+        self._plugin_proactive_lifecycles = proactive_lifecycles or []
+        self._plugin_proactive_module_factories = proactive_module_factories or []
+        self._plugin_proactive_runtime_factories = proactive_runtime_factories or []
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -129,54 +136,106 @@ class ProactiveLoop:
             presence=self._presence,
         )
 
-    def _build_agent_tick(self):
-        from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
+    def _build_runtime_scope(self) -> ProactiveRuntimeScope:
+        return ProactiveRuntimeScope(
+            cfg=self._cfg,
+            sense=self._sense,
+            presence=self._presence,
+            provider=self._provider,
+            model=self._model,
+            max_tokens=self._max_tokens,
+            memory=self._memory,
+            state_store=self._state,
+            any_action_gate=None,
+            passive_busy_fn=self._passive_busy_fn,
+            turn_orchestrator=self._turn_orchestrator,
+            deduper=None,
+            rng=self._rng,
+            workspace_context_fn=self._read_workspace_proactive_context,
+            shared_tools=self._shared_tools,
+            event_bus=self._event_bus,
+            mcp_gateway=self._mcp_runtime.pool,
+            tool_hooks=self._tool_hooks,
+            schedule_fn=self._scheduler.next_interval,
+        )
 
-        # 1. 把 loop 级公共依赖收束成 AgentTickDeps。
-        # 2. 交给 factory 组装出 ProactiveTurnPipeline（主动链路顶层抽象）。
-        return AgentTickFactory(
-            AgentTickDeps(
-                cfg=self._cfg,
-                sense=self._sense,
-                presence=self._presence,
-                provider=self._provider,
-                model=self._model,
-                max_tokens=self._max_tokens,
-                memory=self._memory,
-                state_store=self._state,
-                any_action_gate=None,
-                passive_busy_fn=self._passive_busy_fn,
-                turn_orchestrator=self._turn_orchestrator,
-                deduper=None,
-                rng=self._rng,
-                workspace_context_fn=self._read_workspace_proactive_context,
-                shared_tools=self._shared_tools,
-                event_bus=self._event_bus,
-                pool=self._mcp_runtime.pool,
-                tool_hooks=self._tool_hooks,
+    def _build_plugin_runtime(self) -> object:
+        selected = [
+            factory
+            for factory in self._plugin_proactive_runtime_factories
+            if getattr(factory, "lifecycle_id", None) == self._cfg.lifecycle
+        ]
+        if len(selected) != 1:
+            raise RuntimeError(
+                f"主动 Runtime provider 数量错误: {self._cfg.lifecycle}={len(selected)}"
             )
-        ).build()
+        factory = selected[0]
+        if not callable(factory):
+            raise RuntimeError("插件 proactive_runtime_factories 返回了不可调用对象")
+        return factory(self._build_runtime_scope())
 
     def _build_mcp_runtime(self) -> McpRuntimeModule:
+        gateway = SharedMcpGateway(
+            Path(self._sessions.workspace),
+            self._shared_tools,
+        )
         return McpRuntimeModule(
-            workspace=Path(self._sessions.workspace),
             cfg=self._cfg,
-            extra_server_configs=self._plugin_mcp_servers,
+            gateway=gateway,
         )
 
     def _build_kernel(self) -> ProactiveKernel:
-        pipeline = self._build_agent_tick()
+        runtime = self._build_plugin_runtime()
         modules = [
             self._mcp_runtime,
             *self._plugin_proactive_modules,
-            pipeline,
+            *self._build_plugin_flow_modules(runtime),
         ]
         kernel = ProactiveKernel(
             modules,
             initial_slots_fn=self._build_initial_slots,
+            lifecycle=self._select_lifecycle(),
         )
         logger.info("[proactive] phase graph:\n%s", kernel.inspect())
         return kernel
+
+    def _build_plugin_flow_modules(
+        self,
+        runtime: object,
+    ) -> list[object]:
+        if not self._plugin_proactive_module_factories:
+            raise RuntimeError("主动 Lifecycle 缺少 Module provider")
+        modules: list[object] = []
+        factories = [
+            factory
+            for factory in self._plugin_proactive_module_factories
+            if getattr(factory, "lifecycle_id", None) == self._cfg.lifecycle
+        ]
+        if not factories:
+            raise RuntimeError(f"主动 Lifecycle 缺少 Module provider: {self._cfg.lifecycle}")
+        for factory in factories:
+            if not callable(factory):
+                raise RuntimeError("插件 proactive_module_factories 返回了不可调用对象")
+            provided = factory(runtime)
+            if not isinstance(provided, list):
+                raise RuntimeError("主动 Module factory 必须返回 list")
+            modules.extend(provided)
+        return modules
+
+    def _select_lifecycle(self) -> ProactiveLifecycleSpec:
+        selected: list[ProactiveLifecycleSpec] = []
+        for candidate in self._plugin_proactive_lifecycles:
+            if not isinstance(candidate, ProactiveLifecycleSpec):
+                raise RuntimeError(
+                    "插件 proactive_lifecycles 返回值不是 ProactiveLifecycleSpec"
+                )
+            if candidate.id == self._cfg.lifecycle:
+                selected.append(candidate)
+        if len(selected) > 1:
+            raise RuntimeError(f"主动 Lifecycle provider 冲突: {self._cfg.lifecycle}")
+        if selected:
+            return selected[0]
+        raise RuntimeError(f"主动 Lifecycle 不存在: {self._cfg.lifecycle}")
 
     def _build_initial_slots(self, session_key: str) -> dict[str, Any]:
         last_user_at = (
@@ -308,15 +367,27 @@ class ProactiveLoop:
 
     async def _run_loop(self) -> None:
         last_base_score: float | None = None
+        next_interval: int | None = None
         while self._running:
-            interval = self._next_interval(last_base_score)
+            interval = (
+                next_interval
+                if next_interval is not None
+                else self._next_interval(last_base_score)
+            )
             logger.info("[proactive] 下次 tick 间隔=%ds", interval)
             await asyncio.sleep(interval)
             try:
                 last_base_score = await self._tick()
+                result = self._proactive_kernel.last_result
+                next_interval = (
+                    result.next_interval_seconds
+                    if result is not None
+                    else None
+                )
             except Exception:
                 logger.exception("ProactiveLoop tick 异常")
                 last_base_score = None
+                next_interval = None
 
     def _next_interval(self, base_score: float | None = None) -> int:
         return self._scheduler.next_interval(base_score)

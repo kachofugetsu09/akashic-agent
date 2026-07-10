@@ -23,6 +23,7 @@ from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
+from proactive_v2.lifecycle import ProactiveLifecycleSpec
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -94,6 +95,47 @@ async def test_load_hello_plugin():
     assert mgr.loaded_count >= 1
     loaded_names = {m["name"] for m in mgr.discover()}
     assert "hello" in loaded_names
+
+
+@pytest.mark.asyncio
+async def test_load_default_proactive_lifecycle():
+    bus = EventBus()
+    plugin_dir = Path(__file__).parents[1] / "plugins" / "default_proactive"
+    mgr = _make_manager([plugin_dir], event_bus=bus)
+
+    await mgr.load_all()
+
+    assert len(mgr.proactive_lifecycles) == 1
+    lifecycle = mgr.proactive_lifecycles[0]
+    assert isinstance(lifecycle, ProactiveLifecycleSpec)
+    assert lifecycle.id == "default"
+    assert len(mgr.proactive_module_factories) == 1
+    assert len(mgr.proactive_runtime_factories) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plugin_name", ["proactive_flow", "drift_flow"])
+async def test_load_proactive_flow_factory(plugin_name: str):
+    bus = EventBus()
+    plugin_dir = Path(__file__).parents[1] / "plugins" / plugin_name
+    mgr = _make_manager([plugin_dir], event_bus=bus)
+
+    await mgr.load_all()
+
+    assert len(mgr.proactive_module_factories) == 1
+
+
+@pytest.mark.asyncio
+async def test_builtin_plugins_complete_default_proactive_lifecycle():
+    bus = EventBus()
+    plugin_root = Path(__file__).parents[1] / "plugins"
+    mgr = _make_manager([plugin_root], event_bus=bus)
+
+    await mgr.load_all()
+
+    assert len(mgr.proactive_lifecycles) == 1
+    assert len(mgr.proactive_runtime_factories) == 1
+    assert len(mgr.proactive_module_factories) == 3
 
 
 @pytest.mark.asyncio

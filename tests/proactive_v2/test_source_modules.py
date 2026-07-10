@@ -5,26 +5,27 @@ from unittest.mock import AsyncMock
 import pytest
 
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.modules_source import McpGatewaySource, McpRuntimeModule
+from plugins.default_proactive.source import McpGatewaySource
+from proactive_v2.modules_source import McpRuntimeModule
 
 
 @pytest.mark.asyncio
-async def test_mcp_runtime_module_manages_pool_lifecycle(monkeypatch):
+async def test_mcp_runtime_module_manages_poll_lifecycle(monkeypatch):
     poll = AsyncMock()
     monkeypatch.setattr(
         "proactive_v2.modules_source.mcp_sources.poll_content_feeds_async",
         poll,
     )
-    module = McpRuntimeModule(workspace=None, cfg=ProactiveConfig())
-    module.pool.connect_all = AsyncMock(return_value=None)  # type: ignore[method-assign]
-    module.pool.disconnect_all = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    gateway = object()
+    module = McpRuntimeModule(
+        cfg=ProactiveConfig(),
+        gateway=gateway,  # type: ignore[arg-type]
+    )
 
     await module.start()
     await module.stop()
 
-    module.pool.connect_all.assert_awaited_once()
-    poll.assert_awaited_once_with(module.pool)
-    module.pool.disconnect_all.assert_awaited_once()
+    poll.assert_awaited_once_with(gateway)
 
 
 @pytest.mark.asyncio

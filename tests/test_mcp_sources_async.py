@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from agent.tools.base import Tool
+from agent.tools.registry import ToolRegistry
 from proactive_v2 import mcp_sources
 
 
@@ -33,6 +35,50 @@ class _FakePool:
         if (server, tool_name) in self._failures:
             raise RuntimeError(f"failed: {server}.{tool_name}")
         return self._responses[(server, tool_name)]
+
+
+class _McpJsonTool(Tool):
+    name = "get_proactive_events"
+    description = "test"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs: Any) -> str:
+        _ = kwargs
+        return '[{"kind":"content","event_id":"1"}]'
+
+
+class _NamespacedMcpJsonTool(_McpJsonTool):
+    name = "mcp_feed__get_proactive_events"
+
+
+@pytest.mark.asyncio
+async def test_shared_mcp_gateway_reuses_tool_registry(tmp_path: Path):
+    tools = ToolRegistry()
+    tools.register(
+        _McpJsonTool(),
+        source_type="mcp",
+        source_name="feed",
+    )
+    gateway = mcp_sources.SharedMcpGateway(tmp_path, tools)
+
+    result = await gateway.call("feed", "get_proactive_events", {})
+
+    assert result == [{"kind": "content", "event_id": "1"}]
+
+
+@pytest.mark.asyncio
+async def test_shared_mcp_gateway_resolves_namespaced_mcp_tool(tmp_path: Path):
+    tools = ToolRegistry()
+    tools.register(
+        _NamespacedMcpJsonTool(),
+        source_type="mcp",
+        source_name="feed",
+    )
+    gateway = mcp_sources.SharedMcpGateway(tmp_path, tools)
+
+    result = await gateway.call("feed", "get_proactive_events", {})
+
+    assert result == [{"kind": "content", "event_id": "1"}]
 
 
 @pytest.mark.asyncio
@@ -136,84 +182,6 @@ async def test_poll_content_feeds_async_raises_when_any_source_failed(monkeypatc
     assert "s2" in str(exc.value)
     assert ("a1", "poll", {}) not in pool.calls
     assert pool.timeouts == [mcp_sources._POLL_TOOL_TIMEOUT, mcp_sources._POLL_TOOL_TIMEOUT]
-
-
-@pytest.mark.asyncio
-async def test_mcp_pool_disconnects_timeout_client_without_retry():
-    class _TimeoutClient:
-        def __init__(self) -> None:
-            self.disconnected = False
-            self.calls = 0
-
-        async def call(
-            self,
-            tool_name: str,
-            args: dict[str, Any],
-            *,
-            timeout: float | None = None,
-        ) -> str:
-            self.calls += 1
-            raise TimeoutError("slow")
-
-        async def disconnect(self) -> None:
-            self.disconnected = True
-
-    pool = mcp_sources.McpClientPool(Path("unused-workspace"))
-    client = _TimeoutClient()
-    pool._configs["feed"] = (["cmd"], {})
-    pool._clients["feed"] = client
-
-    with pytest.raises(TimeoutError):
-        await pool.call("feed", "poll_feeds", {}, timeout=1.0)
-
-    assert client.calls == 1
-    assert client.disconnected is True
-    assert "feed" not in pool._clients
-
-
-@pytest.mark.asyncio
-async def test_mcp_pool_connect_all_uses_extra_server_configs(monkeypatch, tmp_path: Path):
-    class _Client:
-        def __init__(self, name: str, command: list[str], env=None, cwd=None) -> None:
-            self.name = name
-            self.command = command
-            self.env = env
-            self.cwd = cwd
-
-        async def connect(self) -> list[object]:
-            return []
-
-        async def disconnect(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        mcp_sources,
-        "_load_sources",
-        lambda _w=None: [{"channel": "content", "server": "feed", "poll_tool": "poll_feeds"}],
-    )
-    monkeypatch.setattr("agent.mcp.client.McpClient", _Client)
-
-    pool = mcp_sources.McpClientPool(
-        tmp_path,
-        extra_server_configs={
-            "feed": {
-                "command": ["python", "run_mcp.py"],
-                "env": {"AKA_PLUGIN_DATA_DIR": "/tmp/feed"},
-                "cwd": "/tmp/feed",
-            }
-        },
-    )
-
-    await pool.connect_all()
-
-    assert "feed" in pool._clients
-    assert pool._configs["feed"] == (
-        ["python", "run_mcp.py"],
-        {
-            "AKA_PLUGIN_DATA_DIR": "/tmp/feed",
-            "PWD": "/tmp/feed",
-        },
-    )
 
 
 @pytest.mark.asyncio

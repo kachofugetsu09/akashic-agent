@@ -10,9 +10,9 @@ from agent.tools.base import Tool, ToolResult
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.registry import ToolRegistry
 from bus.events_lifecycle import DriftFinished
-from proactive_v2.context import AgentTickContext
-from proactive_v2.drift_state import DriftStateStore
-from proactive_v2.outbound_text import normalize_outbound_text
+from plugins.default_proactive.context import AgentTickContext
+from plugins.drift_flow.state import DriftStateStore
+from plugins.default_proactive.outbound_text import normalize_outbound_text
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +31,12 @@ class DriftToolDeps:
     memory: Any = None
     recent_chat_fn: Any = None
     shared_tools: ToolRegistry | None = None
-    send_message_fn: Any = None
     event_bus: Any = None
 
 
 class SendMessageTool(Tool):
-    def __init__(self, ctx: AgentTickContext, send_message_fn: Any) -> None:
+    def __init__(self, ctx: AgentTickContext) -> None:
         self._ctx = ctx
-        self._send_message_fn = send_message_fn
 
     @property
     def name(self) -> str:
@@ -86,9 +84,6 @@ class SendMessageTool(Tool):
         _ = (channel, chat_id)
         text = normalize_outbound_text(message or "").strip()
         media_paths = self._normalize_media(image=image, media=media)
-        if self._send_message_fn is None:
-            logger.info("[drift_tools] message_push unavailable")
-            return json.dumps({"error": "message_push not configured"}, ensure_ascii=False)
         if self._ctx.drift_message_sent:
             logger.info("[drift_tools] message_push rejected: already used")
             return json.dumps(
@@ -98,12 +93,10 @@ class SendMessageTool(Tool):
         if not text and not media_paths:
             logger.info("[drift_tools] message_push rejected: empty message and media")
             return json.dumps({"error": "message or media is required"}, ensure_ascii=False)
-        ok = await self._send_message_fn(text, media_paths)
-        if not ok:
-            logger.warning("[drift_tools] message_push failed")
-            return json.dumps({"error": "message_push failed"}, ensure_ascii=False)
+        self._ctx.draft_message = text
+        self._ctx.draft_media = media_paths
         self._ctx.drift_message_sent = True
-        logger.info("[drift_tools] message_push ok")
+        logger.info("[drift_tools] message_push staged")
         return json.dumps({"ok": True}, ensure_ascii=False)
 
     @staticmethod
@@ -154,14 +147,6 @@ class FinishDriftTool(Tool):
                     ),
                 },
                 "briefing": {"type": "string", "description": "本轮做了什么的一句话摘要"},
-                "message_result": {
-                    "type": "string",
-                    "enum": ["sent", "silent"],
-                    "description": (
-                        "sent 表示本轮已经成功调用 message_push；"
-                        "silent 表示本轮确认不该打扰用户，静默结束。"
-                    ),
-                },
                 "scratchpad_update": {
                     "type": "string",
                     "description": "下次进入本 skill 时需要注入的自然语言前情",
@@ -185,7 +170,7 @@ class FinishDriftTool(Tool):
                 },
                 "global_note_update": {"type": "string"},
             },
-            "required": ["skill_used", "status", "briefing", "message_result"],
+            "required": ["skill_used", "status", "briefing"],
         }
 
     async def execute(
@@ -193,7 +178,6 @@ class FinishDriftTool(Tool):
         skill_used: str,
         status: str = "",
         briefing: str = "",
-        message_result: str = "",
         scratchpad_update: str | None = None,
         cursor_update: dict[str, Any] | None = None,
         journal_append: list[dict[str, Any]] | dict[str, Any] | None = None,
@@ -232,22 +216,7 @@ class FinishDriftTool(Tool):
                 },
                 ensure_ascii=False,
             )
-        message_result_value = str(message_result or "").strip()
-        if message_result_value not in {"sent", "silent"}:
-            return json.dumps(
-                {"error": "message_result must be one of: sent, silent"},
-                ensure_ascii=False,
-            )
-        if message_result_value == "sent" and not self._ctx.drift_message_sent:
-            return json.dumps(
-                {"error": "message_result=sent requires successful message_push first"},
-                ensure_ascii=False,
-            )
-        if message_result_value == "silent" and self._ctx.drift_message_sent:
-            return json.dumps(
-                {"error": "message_result=silent conflicts with successful message_push"},
-                ensure_ascii=False,
-            )
+        message_result_value = "sent" if self._ctx.drift_message_sent else "silent"
         if cursor_update is not None and not isinstance(cursor_update, dict):
             return json.dumps(
                 {"error": "cursor_update must be an object"},
@@ -744,7 +713,7 @@ def build_drift_tool_registry(
         tools.register(MountServerTool(shared, tools), risk="read-only")
 
     tools.register(
-        SendMessageTool(ctx, deps.send_message_fn),
+        SendMessageTool(ctx),
         risk="external-side-effect",
     )
     tools.register(FinishDriftTool(ctx, deps.store, deps.event_bus), risk="write")

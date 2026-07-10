@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from core.common.diagnostic_log import diagnostic_line
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.context import AgentTickContext
+from plugins.default_proactive.context import AgentTickContext
 
 logger = logging.getLogger(__name__)
 

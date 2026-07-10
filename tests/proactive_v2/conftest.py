@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.frame import new_proactive_frame
-from proactive_v2.gateway import GatewayDeps
-from proactive_v2.tools import ToolDeps
+from plugins.default_proactive.gateway import GatewayDeps
+from plugins.proactive_flow.tools import ToolDeps
 from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
@@ -217,9 +217,9 @@ def make_proactive_pipeline(
     drift_pipeline: Any = None,
     event_bus: Any = None,
 ):
-    from agent.core.proactive_turn import (
-        ProactiveTurnPipeline,
-        ProactiveTurnPipelineDeps,
+    from plugins.default_proactive.runtime import (
+        ProactiveFlowRuntime,
+        ProactiveFlowDeps,
     )
 
     # 合理的默认值：所有 gate 都放行
@@ -277,8 +277,8 @@ def make_proactive_pipeline(
         )
     )
 
-    return ProactiveTurnPipeline(
-        ProactiveTurnPipelineDeps(
+    return ProactiveFlowRuntime(
+        ProactiveFlowDeps(
             cfg=cfg or cfg_with(),
             session_key=session_key,
             state_store=state_store,
@@ -306,7 +306,23 @@ async def run_proactive_pipeline(
     session_key: str = "test_session",
     slots: dict[str, Any] | None = None,
 ) -> float | None:
-    frame = await tick.run(new_proactive_frame(session_key, slots))
+    from plugins.default_proactive.runtime import build_default_proactive_modules
+    from plugins.drift_flow.modules import build_drift_flow_modules
+    from plugins.proactive_flow.modules import build_proactive_flow_modules
+    from proactive_v2.lifecycle import ProactiveLifecycleBuilder, ProactiveLifecycleSpec
+
+    lifecycle = ProactiveLifecycleBuilder().build(
+        ProactiveLifecycleSpec(
+            id="test",
+            terminal_slots=("run:next_wakeup",),
+        ),
+        [
+            *build_default_proactive_modules(tick),
+            *build_proactive_flow_modules(tick),
+            *build_drift_flow_modules(tick),
+        ],
+    )
+    frame = await lifecycle.run(new_proactive_frame(session_key, slots))
     if frame.output is None:
         return None
     return frame.output.base_score

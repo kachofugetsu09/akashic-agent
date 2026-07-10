@@ -5,7 +5,8 @@ from collections.abc import Iterable
 from typing import Any, Callable
 
 from proactive_v2.frame import new_proactive_frame
-from proactive_v2.phases import ProactivePhaseRunner
+from proactive_v2.frame import ProactiveTickResult
+from proactive_v2.lifecycle import ProactiveLifecycleBuilder, ProactiveLifecycleSpec
 
 logger = logging.getLogger(__name__)
 
@@ -15,39 +16,39 @@ class ProactiveKernel:
         self,
         modules: Iterable[object],
         *,
+        lifecycle: ProactiveLifecycleSpec,
         initial_slots_fn: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
-        self._runner = ProactivePhaseRunner(modules)
+        self._lifecycle = ProactiveLifecycleBuilder().build(lifecycle, modules)
         self._initial_slots_fn = initial_slots_fn
+        self._last_result: ProactiveTickResult | None = None
 
     async def start(self) -> None:
-        for module in self._all_modules():
-            starter = getattr(module, "start", None)
-            if starter is not None:
-                await starter()
+        await self._lifecycle.start()
 
     async def stop(self) -> None:
-        for module in reversed(self._all_modules()):
-            stopper = getattr(module, "stop", None)
-            if stopper is not None:
-                await stopper()
+        await self._lifecycle.stop()
 
     async def run_tick(self, session_key: str) -> float | None:
+        result = await self.run_tick_result(session_key)
+        return result.base_score if result is not None else None
+
+    async def run_tick_result(
+        self,
+        session_key: str,
+    ) -> ProactiveTickResult | None:
         initial_slots = (
             self._initial_slots_fn(session_key)
             if self._initial_slots_fn is not None
             else None
         )
-        frame = await self._runner.run(new_proactive_frame(session_key, initial_slots))
-        if frame.output is None:
-            return None
-        return frame.output.base_score
+        frame = await self._lifecycle.run(new_proactive_frame(session_key, initial_slots))
+        self._last_result = frame.output
+        return self._last_result
+
+    @property
+    def last_result(self) -> ProactiveTickResult | None:
+        return self._last_result
 
     def inspect(self) -> str:
-        return self._runner.inspect()
-
-    def _all_modules(self) -> list[Any]:
-        modules: list[Any] = []
-        for phase_modules in self._runner.modules_by_phase.values():
-            modules.extend(phase_modules)
-        return modules
+        return self._lifecycle.inspect()

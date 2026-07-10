@@ -5,12 +5,19 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from bootstrap.proactive import _build_proactive_provider, build_proactive_runtime
-from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
+from plugins.default_proactive.runtime import (
+    ProactiveFlowDeps,
+    ProactiveFlowRuntime,
+)
+from plugins.default_proactive.plugin import DefaultRuntimeFactory, DefaultModuleFactory
+from plugins.drift_flow.plugin import DriftModuleFactory
+from plugins.proactive_flow.plugin import ProactiveModuleFactory
 from core.memory.markdown import MemoryProfileApi
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.context import AgentTickContext
-from proactive_v2.gateway import GatewayDeps, GatewayResult
-from proactive_v2.tools import ToolDeps
+from plugins.default_proactive.context import AgentTickContext
+from plugins.default_proactive.gateway import GatewayDeps, GatewayResult
+from proactive_v2.lifecycle import ProactiveLifecycleSpec
+from plugins.proactive_flow.tools import ToolDeps
 
 
 def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
@@ -36,6 +43,18 @@ def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
         memory_store=facade,
         presence=cast(Any, SimpleNamespace()),
         agent_loop=cast(Any, SimpleNamespace(processing_state=None)),
+        proactive_lifecycles=[
+            ProactiveLifecycleSpec(
+                id="default",
+                terminal_slots=("run:next_wakeup",),
+            )
+        ],
+        proactive_module_factories=[
+            DefaultModuleFactory(),
+            ProactiveModuleFactory(),
+            DriftModuleFactory(),
+        ],
+        proactive_runtime_factories=[DefaultRuntimeFactory()],
     )
 
     assert loop is not None
@@ -63,8 +82,8 @@ def test_build_proactive_provider_strips_enable_thinking():
 
 
 def test_agent_tick_prompt_keeps_self_block_with_facade():
-    tick = ProactiveTurnPipeline(
-        ProactiveTurnPipelineDeps(
+    tick = ProactiveFlowRuntime(
+        ProactiveFlowDeps(
             cfg=ProactiveConfig(),
             session_key="test",
             state_store=MagicMock(),

@@ -49,6 +49,7 @@ class McpClient:
         self.cwd = cwd or _infer_cwd(command)
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1
+        self._call_lock = asyncio.Lock()
         self._tool_infos: list[McpToolInfo] = []
         self._recent_stdout: deque[str] = deque(maxlen=8)
         self._recent_stderr: deque[str] = deque(maxlen=8)
@@ -130,20 +131,21 @@ class McpClient:
         timeout: float | None = None,
     ) -> str:
         """调用远端工具，返回结果字符串。"""
-        call_id = self._new_id()
-        await self._send(
-            {
-                "jsonrpc": "2.0",
-                "id": call_id,
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": arguments},
-            }
-        )
-        resp = await self._recv(
-            expected_id=call_id,
-            stage=f"tools/call:{tool_name}",
-            timeout=timeout,
-        )
+        async with self._call_lock:
+            call_id = self._new_id()
+            await self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": call_id,
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments},
+                }
+            )
+            resp = await self._recv(
+                expected_id=call_id,
+                stage=f"tools/call:{tool_name}",
+                timeout=timeout,
+            )
 
         if "error" in resp:
             err = resp["error"]

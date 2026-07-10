@@ -53,7 +53,8 @@ ensure_sandbox_path "$CONFIG"
 ensure_sandbox_path "$WORKSPACE"
 ensure_sandbox_path "$SOCKET"
 mkdir -p /sandbox "$WORKSPACE" /sandbox/home
-chown -R "$HOST_UID:$HOST_GID" /sandbox
+chown "$HOST_UID:$HOST_GID" /sandbox /sandbox/home
+chown -R "$HOST_UID:$HOST_GID" "$WORKSPACE"
 cd /app
 
 cmd="${1:-run}"
