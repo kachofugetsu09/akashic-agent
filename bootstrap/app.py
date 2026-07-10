@@ -58,6 +58,7 @@ def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitabl
     async def stop() -> None:
         if runtime is not None:
             runtime.stop()
+            await runtime.wait_stopped()
 
     return stop
 
@@ -157,15 +158,14 @@ class AppRuntime:
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
-            plugin_jobs = plugin_manager.jobs if plugin_manager else []
-            if plugin_jobs:
+            if plugin_manager is not None:
                 assert self.core.plugin_manager is not None
                 llm = self.core.plugin_manager.llm
                 if llm is not None:
                     self.plugin_job_runtime = PluginJobRuntime(
                         event_bus=event_bus,
                         llm=llm,
-                        jobs=plugin_jobs,
+                        snapshot_store=plugin_manager.snapshot_store,
                     )
                     self.tasks.append(self.plugin_job_runtime.run())
             optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(

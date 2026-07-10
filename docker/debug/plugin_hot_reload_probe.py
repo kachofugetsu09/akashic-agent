@@ -589,6 +589,8 @@ def _candidate_reload_source(version: str) -> str:
         f"        return [PluginJobSpec(id='refresh', triggers=[IntervalTrigger({1 if version == 'v1' else 2})], handler=self.refresh)]\n"
         "    async def refresh(self, context):\n"
         f"        self.context.kv_store.increment('job_runs_{version}')\n"
+        "        snapshot = get_current_runtime_snapshot()\n"
+        f"        self.context.kv_store.set('job_snapshot_bound_{version}', snapshot is not None and snapshot.generations.get('candidate_reload@gate').instance is self)\n"
         "    async def readiness_semantic_checks(self, context):\n"
         "        server = context.mcp_catalog.servers['candidate_feed']\n"
         "        value = await server.client.call('candidate_version', {})\n"
@@ -1124,6 +1126,7 @@ def _exercise_candidate_prepare(
         )
         and _integer(after_valid.get("job_runs_v1"))
         > _integer(initial.get("job_runs_v1"))
+        and after_valid.get("job_snapshot_bound_v1") is True
         and _integer(after_valid.get("job_runs_v2")) == 0
         and after_return_calls.get("v2") == after_valid_calls.get("v2")
         and passive_response.get("content") == "snapshot-v1"

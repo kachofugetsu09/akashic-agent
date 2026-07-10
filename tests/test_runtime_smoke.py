@@ -200,6 +200,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         def stop(self) -> None:
             return None
 
+        async def wait_stopped(self) -> None:
+            return None
+
     monkeypatch.setattr(bootstrap_app, "PluginJobRuntime", _FakePluginJobRuntime)
     monkeypatch.setattr(main.Path, "home", lambda: tmp_path)
 

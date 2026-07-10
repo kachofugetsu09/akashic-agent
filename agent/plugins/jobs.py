@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from bus.event_bus import EventSubscription
+
+if TYPE_CHECKING:
+    from agent.plugins.snapshot import RuntimeSnapshotLease, RuntimeSnapshotStore
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,8 @@ class _JobRequest:
     key: str
     reason: str
     event: object | None
+    job: RegisteredPluginJob
+    snapshot_lease: RuntimeSnapshotLease | None
 
 
 class ProviderPluginLlmService:
@@ -115,24 +121,34 @@ class PluginJobRuntime:
         *,
         event_bus: Any,
         llm: PluginLlmService,
-        jobs: list[RegisteredPluginJob],
+        jobs: list[RegisteredPluginJob] | None = None,
+        snapshot_store: RuntimeSnapshotStore | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._llm = llm
-        self._jobs = {plugin_job_key(job): job for job in jobs}
+        self._jobs = {plugin_job_key(job): job for job in jobs or []}
+        self._snapshot_store = snapshot_store
         self._queue: asyncio.Queue[_JobRequest | None] = asyncio.Queue()
         self._queued_keys: set[str] = set()
         self._last_run_at: dict[str, datetime] = {}
-        self._interval_tasks: list[asyncio.Task[None]] = []
+        self._interval_task: asyncio.Task[None] | None = None
+        self._interval_due: dict[tuple[str, int, int], float] = {}
         self._running = False
         self._bound = False
         self._subscriptions: list[EventSubscription] = []
+        self._stopped = asyncio.Event()
+        self._stopped.set()
 
     async def run(self) -> None:
         if self._running:
             return
         self._running = True
+        self._stopped.clear()
         self._bind_triggers()
+        self._interval_task = asyncio.create_task(
+            self._interval_loop(),
+            name="plugin_job_intervals",
+        )
         try:
             while self._running:
                 request = await self._queue.get()
@@ -144,10 +160,11 @@ class PluginJobRuntime:
                 finally:
                     self._queue.task_done()
         finally:
-            for task in self._interval_tasks:
-                _ = task.cancel()
-            _ = await asyncio.gather(*self._interval_tasks, return_exceptions=True)
-            self._interval_tasks.clear()
+            if self._interval_task is not None:
+                _ = self._interval_task.cancel()
+                _ = await asyncio.gather(self._interval_task, return_exceptions=True)
+                self._interval_task = None
+            self._interval_due.clear()
             for subscription in self._subscriptions:
                 subscription.close()
             self._subscriptions.clear()
@@ -157,13 +174,19 @@ class PluginJobRuntime:
                 request = self._queue.get_nowait()
                 if request is not None:
                     self._queued_keys.discard(request.key)
+                    if request.snapshot_lease is not None:
+                        await request.snapshot_lease.release()
                 self._queue.task_done()
+            self._stopped.set()
 
     def stop(self) -> None:
         if not self._running:
             return
         self._running = False
         _ = self._queue.put_nowait(None)
+
+    async def wait_stopped(self) -> None:
+        _ = await self._stopped.wait()
 
     def enqueue(
         self,
@@ -172,18 +195,30 @@ class PluginJobRuntime:
         reason: str,
         event: object | None = None,
     ) -> None:
-        job = self._jobs.get(key)
+        current = self._current_jobs().get(key)
+        if current is not None and current.spec.coalesce and key in self._queued_keys:
+            return
+        job, snapshot_lease = self._resolve_job(key)
         if job is None:
             return
-        if job.spec.coalesce and key in self._queued_keys:
-            return
         self._queued_keys.add(key)
-        self._queue.put_nowait(_JobRequest(key=key, reason=reason, event=event))
+        self._queue.put_nowait(
+            _JobRequest(
+                key=key,
+                reason=reason,
+                event=event,
+                job=job,
+                snapshot_lease=snapshot_lease,
+            )
+        )
 
     def _bind_triggers(self) -> None:
         if self._bound:
             return
         self._bound = True
+        if self._snapshot_store is not None:
+            self._subscriptions.append(self._event_bus.on_any(self._handle_event))
+            return
         for key, job in self._jobs.items():
             for trigger in job.spec.triggers:
                 if isinstance(trigger, EventTrigger):
@@ -191,13 +226,6 @@ class PluginJobRuntime:
                         self._event_bus.on(
                             trigger.event_type,
                             self._make_event_handler(key),
-                        )
-                    )
-                elif isinstance(trigger, IntervalTrigger):
-                    self._interval_tasks.append(
-                        asyncio.create_task(
-                            self._interval_loop(key, trigger.seconds),
-                            name=f"plugin_job_interval:{key}",
                         )
                     )
 
@@ -210,24 +238,42 @@ class PluginJobRuntime:
 
         return handler
 
-    async def _interval_loop(
-        self,
-        key: str,
-        seconds: int,
-    ) -> None:
-        interval = max(1, int(seconds))
+    def _handle_event(self, event: object) -> None:
+        for key, job in self._current_jobs().items():
+            if any(
+                isinstance(trigger, EventTrigger)
+                and isinstance(event, trigger.event_type)
+                for trigger in job.spec.triggers
+            ):
+                self.enqueue(key, reason="event", event=event)
+
+    async def _interval_loop(self) -> None:
         while self._running:
-            await asyncio.sleep(interval)
-            self.enqueue(key, reason="interval")
+            now = time.monotonic()
+            active: set[tuple[str, int, int]] = set()
+            for key, job in self._current_jobs().items():
+                for index, trigger in enumerate(job.spec.triggers):
+                    if not isinstance(trigger, IntervalTrigger):
+                        continue
+                    interval = max(1, int(trigger.seconds))
+                    schedule_key = (key, index, interval)
+                    active.add(schedule_key)
+                    due = self._interval_due.setdefault(schedule_key, now + interval)
+                    if now >= due:
+                        self.enqueue(key, reason="interval")
+                        self._interval_due[schedule_key] = now + interval
+            for schedule_key in self._interval_due.keys() - active:
+                del self._interval_due[schedule_key]
+            await asyncio.sleep(0.2)
 
     async def _run_one(
         self,
         request: _JobRequest,
     ) -> None:
-        job = self._jobs.get(request.key)
-        if job is None:
-            return
+        job = request.job
         if self._debounced(request.key, job.spec.debounce_seconds):
+            if request.snapshot_lease is not None:
+                await request.snapshot_lease.release()
             return
         ctx = PluginJobContext(
             plugin_id=job.plugin_id,
@@ -238,7 +284,7 @@ class PluginJobRuntime:
             triggered_at=datetime.now(timezone.utc),
         )
         try:
-            await job.spec.handler(ctx)
+            await self._invoke(request, ctx)
         except Exception:
             logger.exception(
                 "插件后台任务失败: plugin=%s job=%s reason=%s",
@@ -248,6 +294,47 @@ class PluginJobRuntime:
             )
         else:
             self._last_run_at[request.key] = ctx.triggered_at
+
+    async def _invoke(self, request: _JobRequest, ctx: PluginJobContext) -> None:
+        lease = request.snapshot_lease
+        if lease is None:
+            await request.job.spec.handler(ctx)
+            return
+        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+        async with lease:
+            token = bind_runtime_snapshot(lease)
+            try:
+                await request.job.spec.handler(ctx)
+            finally:
+                reset_runtime_snapshot(token)
+
+    def _current_jobs(self) -> dict[str, RegisteredPluginJob]:
+        if self._snapshot_store is None or self._snapshot_store.current is None:
+            return self._jobs
+        return dict(self._snapshot_store.current.jobs)
+
+    def _resolve_job(
+        self,
+        key: str,
+    ) -> tuple[RegisteredPluginJob | None, RuntimeSnapshotLease | None]:
+        if self._snapshot_store is None:
+            return self._jobs.get(key), None
+        from agent.plugins.snapshot import (
+            get_current_runtime_snapshot,
+            lease_current_runtime_snapshot,
+        )
+
+        snapshot = get_current_runtime_snapshot() or self._snapshot_store.current
+        if snapshot is None:
+            return None, None
+        job = snapshot.jobs.get(key)
+        if job is None:
+            return None, None
+        lease = lease_current_runtime_snapshot()
+        if lease is None:
+            lease = self._snapshot_store.lease(snapshot.snapshot_id)
+        return job, lease
 
     def _debounced(
         self,

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.plugins.manager import PluginManager
+from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.registry import plugin_registry
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from agent.looping.core import AgentLoop
@@ -2330,6 +2331,79 @@ async def test_running_fanout_cancellation_releases_observer_leases() -> None:
     assert snapshot.lease_count == 0
     await event_bus.aclose()
     await store.close()
+
+
+def _snapshot_job_source(version: str) -> str:
+    return (
+        "from agent.plugins import Plugin, PluginJobSpec\n"
+        "from agent.plugins.snapshot import get_current_runtime_snapshot\n"
+        "class SnapshotJobPlugin(Plugin):\n"
+        "    name = 'snapshot_job'\n"
+        "    def jobs(self):\n"
+        "        return [PluginJobSpec(id='refresh', triggers=[], handler=self.refresh)]\n"
+        "    async def refresh(self, context):\n"
+        f"        self.context.kv_store.increment('job_{version}')\n"
+        "        snapshot = get_current_runtime_snapshot()\n"
+        f"        self.context.kv_store.set('snapshot_{version}', snapshot.snapshot_id if snapshot else None)\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_job_queue_envelope_keeps_enqueued_snapshot_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_job",
+        _snapshot_job_source("v1"),
+    )
+    event_bus = EventBus()
+    llm = SimpleNamespace()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        llm=llm,
+        installed_cache_root=tmp_path / "home/cache",
+    )
+    await manager.load_all()
+    runtime = PluginJobRuntime(
+        event_bus=event_bus,
+        llm=llm,
+        snapshot_store=manager.snapshot_store,
+    )
+    runtime.enqueue("snapshot_job:refresh", reason="manual")
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_job_source("v2"),
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("snapshot_job") is not None
+    result = await manager.publish_prepared("snapshot_job")
+    assert result["publication_state"] == "committed"
+    running = asyncio.create_task(runtime.run())
+    state_path = tmp_path / "home/data/snapshot_job-builtin/.kv.json"
+    for _ in range(100):
+        if state_path.exists() and json.loads(
+            state_path.read_text(encoding="utf-8")
+        ).get("job_v1") == 1:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("v1 job did not run")
+
+    runtime.enqueue("snapshot_job:refresh", reason="manual")
+    for _ in range(100):
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("job_v2") == 1:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("v2 job did not run")
+
+    assert state["snapshot_v1"] != state["snapshot_v2"]
+    runtime.stop()
+    await running
+    await event_bus.aclose()
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio
