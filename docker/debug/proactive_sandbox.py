@@ -362,7 +362,6 @@ async def tick(
         proactive_config.message_dedupe_enabled = False
         proactive_config.delivery_dedupe_hours = 0
         proactive_config.drift_enabled = mode == "drift"
-        proactive_config.drift_max_steps = 8
         proactive_config.drift_min_interval_hours = 0
         model = app_config.model
         max_tokens = app_config.max_tokens

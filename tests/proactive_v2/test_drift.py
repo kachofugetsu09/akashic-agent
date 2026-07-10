@@ -52,7 +52,11 @@ def _select_input(skill_name: str, *, decision: str = "explore") -> dict[str, st
 
 
 def _self_update(next_tendency: str = "下次根据当时状态自由选择") -> dict[str, str]:
-    return {"next_tendency": next_tendency}
+    return {
+        "next_tendency": next_tendency,
+        "reflection": "本轮是一次普通闭环，没有形成需要保存的新观察",
+        "pattern": "ordinary",
+    }
 
 
 def test_drift_commit_result_corrects_staged_message_result(tmp_path: Path):
@@ -249,7 +253,10 @@ async def test_drift_message_push_sends_media(tmp_path: Path):
             "media": ["/tmp/two.png"],
         },
     )
-    assert json.loads(cast(Any, raw))["ok"] is True
+    payload = json.loads(cast(Any, raw))
+    assert payload["ok"] is True
+    assert payload["delivery_semantics"] == "completed_fire_and_forget"
+    assert payload["reply_state"] == "not_tracked"
     assert ctx.draft_message == "新表情来啦"
     assert ctx.draft_media == ["/tmp/one.png", "/tmp/two.png"]
 
@@ -277,6 +284,13 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     assert "本轮也可以暂时不继续 paused skill" in prompt
     assert "过去的自己留下的意图和倾向" in prompt
     assert "self_update.next_tendency" in prompt
+    assert "没有新发现就省略" in prompt
+    assert "recent_drift_runs 是自己刚刚真实度过的空闲时间" in prompt
+    assert "是否只是逐字复制 next_tendency" in prompt
+    assert "把可反复进行的小活动沉淀成新 skill" in prompt
+    assert "现有 skill 能做，不等于此刻就想做" in prompt
+    assert "message_push 是 fire-and-forget" in prompt
+    assert "回答尚未出现不是可靠事件" in prompt
     assert "idle_drift 的 reason 必须写具体的时机或风险原因" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
     assert "message_result" not in prompt
@@ -287,6 +301,37 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     assert "shell" in prompt
     assert is_context_frame(runtime)
     assert "drift_skills" in runtime
+
+
+def test_drift_tool_descriptions_include_metacognition_examples(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    tools = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(drift_dir=tmp_path, store=store),
+    )
+    schemas = {
+        schema["function"]["name"]: schema["function"]["parameters"]
+        for schema in tools.get_schemas()
+    }
+
+    select_properties = schemas["select_skill"]["properties"]
+    finish_properties = schemas["finish_drift"]["properties"]
+    self_properties = finish_properties["self_update"]["properties"]
+    assert "<example>" in select_properties["reason"]["description"]
+    assert "不要只写" in select_properties["reason"]["description"]
+    assert "<example>" in self_properties["next_tendency"]["description"]
+    assert "不是下一轮必须执行" in self_properties["next_tendency"]["description"]
+    assert "<example>" in self_properties["observation"]["description"]
+    assert "近期多轮" in self_properties["observation"]["description"]
+    assert "recent_drift_runs" in self_properties["reflection"]["description"]
+    assert self_properties["pattern"]["enum"] == [
+        "ordinary", "repeat", "change", "contradiction"
+    ]
+    assert "发现重复模式" in finish_properties["self_update"]["description"]
+    assert "普通一轮无新发现" in finish_properties["self_update"]["description"]
+    assert "创建元能力" in select_properties["reason"]["description"]
 
 
 @pytest.mark.asyncio
@@ -335,6 +380,7 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
     )
     assert "drift_selection_context" in runtime
     assert "drift_self_state" in runtime
+    assert "drift_self_observations" in runtime
     assert "继续完成已经计划好的图片" in runtime
     assert "计划已经存在，只差执行" in runtime
     assert "服务恢复后再继续，也可以先做别的" in runtime
@@ -361,6 +407,61 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
     assert "首个工具调用" not in runtime
     assert runtime.index("drift_selection_context") < runtime.index("long_term_memory")
     assert runtime.index("## recent_drift_runs") < runtime.index("## runtime_clock")
+
+
+@pytest.mark.asyncio
+async def test_drift_runtime_context_treats_self_observations_as_tentative(tmp_path: Path):
+    _write_skill(tmp_path, name="explore-curiosity")
+    _write_skill(tmp_path, name="quiet-organize")
+    store = DriftStateStore(tmp_path)
+    store.save_finish(
+        skill_used="explore-curiosity",
+        status="completed",
+        briefing="整理了旧问题",
+        message_result="silent",
+        scratchpad_update=None,
+        global_note_update=None,
+        now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        journal_append=[{
+            "entry_type": "self_observation",
+            "key": "question",
+            "payload": {
+                "statement": "我似乎喜欢回看未完的问题",
+                "basis": "主动选择了一条旧问题",
+                "effect": "question",
+            },
+        }],
+    )
+    store.save_finish(
+        skill_used="quiet-organize",
+        status="completed",
+        briefing="整理了零散材料",
+        message_result="silent",
+        scratchpad_update=None,
+        global_note_update=None,
+        now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        journal_append=[{
+            "entry_type": "self_observation",
+            "key": "reinforce",
+            "payload": {
+                "statement": "我喜欢把零散材料连成线",
+                "basis": "再次主动整理了互不相邻的材料",
+                "effect": "reinforce",
+            },
+        }],
+    )
+    pipeline = _make_drift_pipeline(
+        store=store,
+        tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store),
+    )
+
+    runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
+
+    assert "drift_self_observations" in runtime
+    assert "不是长期记忆、人格结论或行动命令" in runtime
+    assert "单次观察不能定义自己" in runtime
+    assert "explore-curiosity [question]" in runtime
+    assert "quiet-organize [reinforce]" in runtime
 
 
 @pytest.mark.asyncio
@@ -749,6 +850,118 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_finish_drift_saves_optional_self_observation(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "把零散想法整理成了一条线",
+            "self_update": {
+                "next_tendency": "下次看心情再决定",
+                "reflection": "本轮与近期行为形成了一条值得暂定记录的新线索",
+                "pattern": "repeat",
+                "observation": {
+                    "statement": "我似乎喜欢把零散材料连成线",
+                    "basis": "这轮没有被要求，但主动整理了三条旧笔记的关系",
+                    "effect": "question",
+                },
+            },
+        },
+        store=store,
+    )
+
+    assert json.loads(cast(Any, raw))["ok"] is True
+    observations = store.load_recent_self_observations()
+    assert observations[0]["skill_name"] == "explore-curiosity"
+    assert observations[0]["payload"]["effect"] == "question"
+    assert observations[0]["payload"]["statement"] == "我似乎喜欢把零散材料连成线"
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_does_not_force_self_observation(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "完成普通检查",
+            "self_update": _self_update(),
+        },
+        store=store,
+    )
+
+    assert json.loads(cast(Any, raw))["ok"] is True
+    assert store.load_recent_self_observations() == []
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_rejects_invalid_self_observation(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "完成检查",
+            "self_update": {
+                "next_tendency": "下次自由选择",
+                "reflection": "本轮试图形成一条观察",
+                "pattern": "repeat",
+                "observation": {
+                    "statement": "我就是这样的人",
+                    "basis": "只有这一次",
+                    "effect": "confirm",
+                },
+            },
+        },
+        store=store,
+    )
+
+    assert "observation.effect" in json.loads(cast(Any, raw))["error"]
+    assert store.load_recent_self_observations() == []
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_requires_observation_for_declared_pattern(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "连续做了同类动作",
+            "self_update": {
+                "next_tendency": "下次自由选择",
+                "reflection": "最近三轮都做了同类动作",
+                "pattern": "repeat",
+            },
+        },
+        store=store,
+    )
+
+    assert "observation is required when pattern is repeat" in json.loads(cast(Any, raw))["error"]
+
+
+@pytest.mark.asyncio
 async def test_finish_drift_updates_self_state_without_losing_choice(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
@@ -776,6 +989,8 @@ async def test_finish_drift_updates_self_state_without_losing_choice(tmp_path: P
             "self_update": {
                 "current_intention": "暂时把这个问题放下",
                 "next_tendency": "下次想自由看看别的东西",
+                "reflection": "本轮主动结束了原意图，没有形成新的重复模式",
+                "pattern": "ordinary",
             },
         },
         store=store,

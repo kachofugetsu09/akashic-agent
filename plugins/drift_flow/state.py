@@ -204,6 +204,28 @@ class DriftStateStore:
             )
         return result
 
+    def load_recent_self_observations(self, *, limit: int = 12) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT skill_name, payload_json, run_id, created_at
+                FROM skill_journal
+                WHERE entry_type = 'self_observation'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [
+            {
+                "skill_name": str(row["skill_name"] or ""),
+                "payload": self._decode_json_object(row["payload_json"]),
+                "run_id": int(row["run_id"] or 0) if row["run_id"] is not None else None,
+                "created_at": str(row["created_at"] or ""),
+            }
+            for row in reversed(rows)
+        ]
+
     def load_briefing(self, skills: list[SkillMeta]) -> str:
         recent_rows = self._load_recent_runs_from_db(limit=5)
         note = self._load_global_note()

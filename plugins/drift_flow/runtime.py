@@ -569,6 +569,7 @@ class DriftTurnPipeline:
         drift_note = str(self._store.load_drift().get("note") or "")[:150]
         drift_briefing = self._store.load_briefing(skills)
         self_state = self._build_self_state_context()
+        self_observations = self._build_self_observations_context()
         mcp_block = ""
         shared = self._tool_deps.shared_tools
         if connected_servers and shared:
@@ -586,6 +587,11 @@ class DriftTurnPipeline:
             PromptSectionRender(
                 name="drift_self_state",
                 content=self_state,
+                is_static=False,
+            ),
+            PromptSectionRender(
+                name="drift_self_observations",
+                content=self_observations,
                 is_static=False,
             ),
             PromptSectionRender(
@@ -655,6 +661,25 @@ class DriftTurnPipeline:
             f"- 更新时间：{state.get('updated_at') or '（空）'}"
         )
 
+    def _build_self_observations_context(self) -> str:
+        rows = self._store.load_recent_self_observations()
+        if not rows:
+            return "（还没有 Drift 自我观察。）"
+        lines = [
+            "这些只是过去多轮 Drift 对自身行为的暂定观察，不是长期记忆、人格结论或行动命令。",
+            "结合具体情境寻找重复、矛盾和变化；单次观察不能定义自己，本轮也不必刻意证明它。",
+        ]
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            lines.append(
+                f"- {str(row.get('created_at') or '')[:16]} {row.get('skill_name') or 'unknown'} "
+                f"[{payload.get('effect') or 'question'}] {str(payload.get('statement') or '')[:200]}；"
+                f"依据：{str(payload.get('basis') or '')[:240]}"
+            )
+        return "\n".join(lines)
+
     def _build_runtime_clock(self, ctx: AgentTickContext | None) -> str:
         now_utc = ctx.now_utc if ctx is not None else datetime.now(timezone.utc)
         local_now = now_utc.astimezone()
@@ -677,7 +702,7 @@ class DriftTurnPipeline:
             "SKILL.md 是能力说明书、约束和路径地图，不是每轮都要从第一条重新执行的清单。",
             "对 paused skill，local_context 记录的已完成进度高于 SKILL.md 中面向全新任务的完整流程和固定工具序列。",
             "local_context 只在 select_skill 后作为执行上下文参考，其中 scratchpad 是自然语言前情，cursor 是结构化游标。",
-            "用户回应与否不是 skill 状态；主动行为每轮都应自行重新判断。",
+            "用户回应与否不是 skill 状态；回答出现后可作为新上下文使用，但未出现回答不是可观测事件，不要写成‘用户没回’。",
             "上次提问主题只作为短期去重信号：本轮可以换主题行动，也可以因时机不合适静默闭环。",
             "默认应选择一个合适 skill 做一个小的原子动作；idle_drift 是例外路径，只用于近期气氛、频率或风险明确不合适。",
             "遇到丧亲、疾病、强压力、明显情绪低落等近期语境时，优先选择 idle_drift 静默结束，除非 selected skill 明确是低打扰的支持性动作。",
@@ -737,6 +762,7 @@ class DriftTurnPipeline:
             "你现在有一段空闲时间（Drift 模式）。没有外部内容需要推送，\n"
             "这段时间更像一个人没有被叫住时的自处：优先尝试做一点合适的小事，例如整理想法、延续小兴趣、准备以后可能用得上的素材，或发一个低打扰的轻量问题。"
             "Drift 不是服务用户当前请求，也不是补跑所有历史任务；但它默认应该行动一小步。"
+            "它也不需要总是提问、产出或维护系统；现有 skill 能做，不等于此刻就想做。"
             "只有近期气氛、频率或风险明确不合适时，才安静待着。"
             "本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
             "【状态语义】\n"
@@ -746,9 +772,19 @@ class DriftTurnPipeline:
             "paused 必须在 scratchpad_update 写清已经做到哪里、卡住原因、下次从哪里继续。"
             "paused 保存的是可续接停点：下轮可以继续、延后或改做别的事；若选择继续，应从未完成处接上，而不是重新开始。"
             "paused 和 idle 只能描述系统自己的进度、时机或选择，不描述用户需要做什么。\n\n"
+            "【异步消息语义】\n"
+            "message_push 是 fire-and-forget：成功写入会话后，本轮动作已经完成，不进入等待回复状态。"
+            "用户以后若感兴趣并回答，回答会作为新的会话上下文并由记忆系统自然提炼；Drift 不维护提问与回答的 pending 状态。"
+            "回答真的出现时可以理解和使用它；回答尚未出现不是可靠事件，不能声称‘用户没回’，也不能据此安排下一轮。"
+            "scratchpad、cursor、next_tendency 和 observation 都不得保存‘等待用户回复’或‘如果用户不回复’。\n\n"
             "【自我定位】\n"
             "调用首个工具前，先在内部确认：上一轮在做什么、哪些步骤和产物已经完成、为何停下、当前最自然的下一步是什么。"
+            "Drift 会被反复触发，recent_drift_runs 是自己刚刚真实度过的空闲时间，不是互相独立的测试样本。"
             "drift_self_state 是过去的自己留下的意图和倾向，不是待办指令；本轮可以继续、延后、切换、自由探索或安静休息。"
+            "留意自己是否只是逐字复制 next_tendency，或反复选择最容易执行的同一类动作；重复本身没有错，但要由此刻的意愿和价值重新成立。"
+            "当最近多轮都落在同一类服务或维护动作时，停一下判断：这是正在形成的兴趣，还是只是候选里最省事的路径。"
+            "drift_self_observations 是 Drift 多轮使用中留下的暂定自我观察；可以参考、质疑或修正，但不要把它当作稳定人格或强行复现。"
+            "也要判断此刻想做的活动是否已被现有 skill 覆盖；如果没有覆盖，可以选择候选中的元能力，把可反复进行的小活动沉淀成新 skill。"
             "已有计划和工作文件是过去行动留下的进度，不要仅因为进入了新一轮 Drift 就重新创建。"
             "SKILL.md 是说明书，不是必须从头播放的脚本；只执行当前决定所需要的部分。\n\n"
             "选择 paused skill 后，把 SKILL.md 的完整工作流拆成“已经完成”和“尚未完成”两部分。"
@@ -774,7 +810,9 @@ class DriftTurnPipeline:
             "5. finish_drift.status 只能为 completed 或 paused。"
             "completed 表示本轮主动行为已闭环；paused 必须写 scratchpad_update，说明做到哪里和下次从哪里继续。"
             "结构化接续写 cursor_update；已经完成的事实追加到 journal_append。"
-            "收尾时必须通过 self_update.next_tendency 保存下次空闲时的自然倾向；如果原意图改变，再更新 current_intention。\n\n"
+            "收尾时必须通过 self_update.next_tendency 保存下次空闲时的自然倾向；如果原意图改变，再更新 current_intention。"
+            "只有本轮或它与近期多轮的对照确实显露出关于自己如何选择或行动的新证据时，才写 self_update.observation；"
+            "初次发现用 question，重复证据用 reinforce，反例或变化用 revise。没有新发现就省略，不要为了显得成长而编造。\n\n"
             "【可用工具】\n"
             "select_skill, idle_drift, read_file, list_dir, write_file, edit_file, recall_memory, web_fetch, web_search, "
             "fetch_messages, search_messages, shell, message_push, finish_drift；"
