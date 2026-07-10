@@ -354,9 +354,15 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "import asyncio\n"
         "from agent.plugins import Plugin\n"
         "from bus.events_lifecycle import TurnCommitted\n"
+        "class ScopeGateChannel:\n"
+        "    name = 'scope-gate-channel'\n"
+        "    def __init__(self, plugin): self.plugin = plugin\n"
+        "    async def start(self, ctx): self.plugin.context.kv_store.set('channel_started', True)\n"
+        "    async def stop(self): self.plugin.context.kv_store.set('channel_stopped', True)\n"
         "class ScopeGatePlugin(Plugin):\n"
         "    name = 'scope_gate'\n"
         "    version = '1.0.0'\n"
+        "    def channels(self): return [ScopeGateChannel(self)]\n"
         "    async def initialize(self):\n"
         "        self.context.kv_store.set('initialized', True)\n"
         "        self.context.kv_store.set('generation', self.context.generation_id)\n"
@@ -1351,6 +1357,8 @@ def _run_runtime_smoke(
         expected: dict[str, object] = {
             "initialized": True,
             "event_started": True,
+            "channel_started": True,
+            "channel_stopped": True,
             "terminated": True,
             "task_cancelled": True,
             "subscription_closed": True,

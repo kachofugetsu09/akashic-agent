@@ -82,6 +82,7 @@ class SubagentManager:
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._running_jobs: dict[str, RunningSubagentJob] = {}
         self._cancel_announced: set[str] = set()
+        self._snapshot_release_tasks: set[asyncio.Task[None]] = set()
 
     def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
         object.__setattr__(self._runtime, "tool_hooks", list(hooks))
@@ -374,9 +375,25 @@ class SubagentManager:
     ) -> None:
         self._forget_running_job(job_id)
         if snapshot_lease is not None and snapshot_lease.active:
-            _ = asyncio.create_task(
+            task = asyncio.create_task(
                 snapshot_lease.release(),
                 name=f"spawn_snapshot_release:{job_id}",
+            )
+            self._snapshot_release_tasks.add(task)
+            task.add_done_callback(self._snapshot_release_tasks.discard)
+
+    async def shutdown(self) -> None:
+        tasks = list(self._running_tasks.values())
+        for task in tasks:
+            _ = task.cancel()
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+        while self._snapshot_release_tasks:
+            release_tasks = tuple(self._snapshot_release_tasks)
+            self._snapshot_release_tasks.difference_update(release_tasks)
+            _ = await asyncio.gather(
+                *release_tasks,
+                return_exceptions=True,
             )
 
     async def _announce_cancelled_job(self, job: RunningSubagentJob) -> None:

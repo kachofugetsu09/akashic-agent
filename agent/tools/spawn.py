@@ -29,6 +29,9 @@ class SpawnTool(Tool):
     def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
         self._manager.add_tool_hooks(hooks)
 
+    async def shutdown(self) -> None:
+        await self._manager.shutdown()
+
     @property
     def name(self) -> str:
         return "spawn"

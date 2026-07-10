@@ -58,3 +58,39 @@ async def test_channel_host_stops_in_reverse_order():
     await host.stop_all()
 
     assert events == ["stop:c", "stop:b", "stop:a"]
+
+
+@pytest.mark.asyncio
+async def test_channel_host_swaps_plugin_generation():
+    events: list[str] = []
+    host = ChannelHost(lambda channel: f"ctx:{channel.name}")  # type: ignore[arg-type]
+    old = _Channel("old", events)
+    new = _Channel("new", events)
+    host.add(old)  # type: ignore[arg-type]
+    host.bind_plugin_channels({"chat": (old,)})  # type: ignore[arg-type]
+
+    await host.swap_plugin_channels("chat", (old,), (new,))  # type: ignore[arg-type]
+
+    assert host.channels == [new]
+    assert events == ["stop:old", "start:new:ctx:new"]
+
+
+@pytest.mark.asyncio
+async def test_channel_host_restores_old_generation_when_start_fails():
+    events: list[str] = []
+    host = ChannelHost(lambda channel: f"ctx:{channel.name}")  # type: ignore[arg-type]
+    old = _Channel("old", events)
+    failed = _Channel("new", events, fail_start=True)
+    host.add(old)  # type: ignore[arg-type]
+    host.bind_plugin_channels({"chat": (old,)})  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        await host.swap_plugin_channels("chat", (old,), (failed,))  # type: ignore[arg-type]
+
+    assert host.channels == [old]
+    assert events == [
+        "stop:old",
+        "start:new:ctx:new",
+        "stop:new",
+        "start:old:ctx:old",
+    ]

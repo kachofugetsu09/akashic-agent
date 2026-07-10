@@ -242,6 +242,10 @@ class CoreRuntime:
         return "\n".join(parts)
 
     async def stop(self) -> None:
+        spawn_tool = self.tools.get_tool("spawn")
+        shutdown = getattr(spawn_tool, "shutdown", None)
+        if callable(shutdown):
+            await shutdown()
         await self.event_bus.aclose()
         if self.plugin_manager is not None:
             await self.plugin_manager.terminate_all()

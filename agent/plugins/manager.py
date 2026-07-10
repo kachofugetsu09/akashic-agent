@@ -128,6 +128,10 @@ class PluginManager:
         self._llm = llm
         self._installed_cache_root = installed_cache_root
         self._user_mcp_server_names = user_mcp_server_names or set
+        self._channel_switcher: Callable[
+            [str, tuple[Channel, ...], tuple[Channel, ...]],
+            Awaitable[None],
+        ] | None = None
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
@@ -261,6 +265,15 @@ class PluginManager:
 
     def mcp_catalog(self, generation_id: str) -> PreparedMcpCatalog | None:
         return self._mcp_host.get(generation_id)
+
+    def bind_channel_switcher(
+        self,
+        switcher: Callable[
+            [str, tuple[Channel, ...], tuple[Channel, ...]],
+            Awaitable[None],
+        ],
+    ) -> None:
+        self._channel_switcher = switcher
 
     def job_catalog(self, generation_id: str) -> PreparedJobCatalog | None:
         return self._job_host.get(generation_id)
@@ -442,6 +455,30 @@ class PluginManager:
             )
             return result
 
+        old_channels = active.contributions.channels if active is not None else ()
+        new_channels = generation.contributions.channels
+        channels_switched = False
+        if self._channel_switcher is not None and old_channels != new_channels:
+            try:
+                await self._channel_switcher(plugin_id, old_channels, new_channels)
+                channels_switched = True
+            except (asyncio.CancelledError, Exception) as error:
+                self._record_failed_gate(
+                    plugin_id=plugin_id,
+                    revision=generation.source_revision,
+                    check_id="channels",
+                    reason=str(error) or type(error).__name__,
+                )
+                await self.discard_prepared(plugin_id)
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+                return self._publication_status(
+                    plugin_id,
+                    active=active,
+                    candidate=generation,
+                    publication_state="failed",
+                )
+
         self._compile_snapshot_event_handlers(snapshot)
         if generation.staged_event_bus is not None:
             generation.staged_event_bus.publish()
@@ -457,6 +494,8 @@ class PluginManager:
             generation.state = "aborted"
             self._snapshot_drains[snapshot.snapshot_id] = (generation,)
             await self._snapshot_store.abort(transaction)
+            if channels_switched and self._channel_switcher is not None:
+                await self._channel_switcher(plugin_id, new_channels, old_channels)
             raise
 
         _ = self._prepared_generations.pop(plugin_id)
@@ -2091,6 +2130,7 @@ class _PluginToolHook(ToolHook):
     """将插件的 @on_tool_pre handler 适配为 ToolExecutor 的 ToolHook 接口。"""
 
     event = "pre_tool_use"
+    snapshot_managed = True
 
     def __init__(
         self,

@@ -18,6 +18,7 @@ from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.registry import plugin_registry
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from agent.looping.core import AgentLoop
+from agent.background.subagent_manager import SubagentManager
 from proactive_v2.loop import ProactiveLoop
 from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
@@ -2625,6 +2626,29 @@ async def test_tool_hooks_follow_bound_snapshot_generation(tmp_path: Path) -> No
     assert old_result.final_arguments == {"version": "v1"}
     assert new_result.final_arguments == {"version": "v2"}
     await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_subagent_shutdown_releases_unstarted_snapshot_lease() -> None:
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    snapshot_lease = store.lease()
+    manager = object.__new__(SubagentManager)
+    manager._running_tasks = {}
+    manager._running_jobs = {}
+    manager._cancel_announced = set()
+    manager._snapshot_release_tasks = set()
+    task = asyncio.create_task(asyncio.Event().wait())
+    manager._running_tasks["job"] = task
+    task.add_done_callback(
+        lambda _: manager._finish_background_job("job", snapshot_lease)
+    )
+
+    await manager.shutdown()
+
+    assert snapshot.lease_count == 0
+    await store.close()
 
 
 @pytest.mark.asyncio

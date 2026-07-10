@@ -161,6 +161,15 @@ class AppRuntime:
                 plugin_channels=plugin_channels,
             )
             await self.channel_host.start_all()
+            if plugin_manager is not None:
+                channel_bindings = {
+                    plugin_id: generation.contributions.channels
+                    for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
+                } if plugin_manager.current_snapshot is not None else {}
+                self.channel_host.bind_plugin_channels(channel_bindings)
+                plugin_manager.bind_channel_switcher(
+                    self.channel_host.swap_plugin_channels
+                )
 
             self.tasks = [
                 self.agent_loop.run(),
@@ -298,12 +307,12 @@ class AppRuntime:
                     "plugin_jobs.stop",
                     _stop_plugin_jobs(self.plugin_job_runtime),
                 ),
-                ("core.stop", self.core.stop if self.core else _noop_async),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
                 (
                     "channels.stop",
                     self.channel_host.stop_all if self.channel_host else _noop_async,
                 ),
+                ("core.stop", self.core.stop if self.core else _noop_async),
                 (
                     "memory_runtime.aclose",
                     self.memory_runtime.aclose if self.memory_runtime else _noop_async,

@@ -16,6 +16,7 @@ from agent.tools.registry import ToolRegistry
 from agent.tool_hooks import ToolHook
 from agent.skills import SkillIndex
 from bus.event_bus import Handler
+from infra.channels.contract import Channel
 
 
 SnapshotState = Literal[
@@ -44,6 +45,7 @@ class RuntimeSnapshot:
     proactive_module_factories: tuple[object, ...]
     proactive_runtime_factories: tuple[object, ...]
     tool_hooks: tuple[ToolHook, ...]
+    channels: Mapping[str, Channel]
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
     tool_registry: ToolRegistry | None = None
@@ -124,6 +126,13 @@ class RuntimeSnapshotCompiler:
             for generation in ordered
             for factory in generation.contributions.proactive_runtime_factories
         )
+        channels: dict[str, Channel] = {}
+        for generation in ordered:
+            for channel in generation.contributions.channels:
+                name = str(channel.name).strip()
+                if not name or name in channels:
+                    raise RuntimeError(f"RuntimeSnapshot Channel 名称冲突: {name}")
+                channels[name] = channel
         catalog_owner = catalog_generation or next(
             (generation for generation in reversed(ordered) if generation.skill_catalog),
             None,
@@ -160,6 +169,7 @@ class RuntimeSnapshotCompiler:
             proactive_module_factories=proactive_module_factories,
             proactive_runtime_factories=proactive_runtime_factories,
             tool_hooks=(),
+            channels=MappingProxyType(channels),
             skill_catalog_generation_id=(
                 catalog_owner.skill_catalog.generation_id
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None
