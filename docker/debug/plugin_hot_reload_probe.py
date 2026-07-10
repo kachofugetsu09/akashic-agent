@@ -497,6 +497,7 @@ def _install_candidate_plugins(
     )
     _ = reload_source.write_text(_candidate_reload_source("v1"), encoding="utf-8")
     data = sandbox / "home/.akashic-plugin/data"
+    (data / "candidate_reload-gate").mkdir(parents=True, exist_ok=True)
     return (
         data / "candidate_valid-gate/.kv.json",
         data / "candidate_invalid-gate/.kv.json",

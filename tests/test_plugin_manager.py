@@ -1558,6 +1558,8 @@ async def test_add_tool_hooks_propagates_to_tool_executor():
 async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     from bootstrap.tools import CoreRuntime
 
+    startup_order: list[str] = []
+
     class FakePluginManager:
         def __init__(self) -> None:
             self.tool_hooks = [object()]
@@ -1571,6 +1573,7 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
             self.loaded_count = 0
 
         async def load_all(self) -> None:
+            startup_order.append("plugins")
             self.loaded_count = 1
 
     class FakeLoop:
@@ -1637,7 +1640,8 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
             self.received_hooks = list(hooks)
 
     class FakeMcpRegistry:
-        def start_connect_all_background(self) -> None:
+        async def load_and_connect_all(self) -> None:
+            startup_order.append("mcp")
             return None
 
         async def shutdown(self) -> None:
@@ -1669,6 +1673,7 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
 
     await runtime.start()
 
+    assert startup_order == ["mcp", "plugins"]
     assert plugin_manager.loaded_count == 1
     assert loop.received_before_turn is None
     assert loop.received_before_reasoning is None

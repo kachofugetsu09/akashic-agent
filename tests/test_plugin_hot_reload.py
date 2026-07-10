@@ -1868,7 +1868,7 @@ async def test_tool_schema_search_and_execute_share_snapshot_generation(
 
 
 @pytest.mark.asyncio
-async def test_removed_plugin_mcp_server_does_not_leak_from_live_registry(
+async def test_removed_plugin_mcp_server_releases_name_for_user_registry(
     tmp_path: Path,
 ) -> None:
     plugin_dir = _write_plugin(
@@ -1909,8 +1909,48 @@ async def test_removed_plugin_mcp_server_does_not_leak_from_live_registry(
     assert candidate is not None and candidate.runtime_snapshot is not None
     registry = candidate.runtime_snapshot.tool_registry
     assert registry is not None
-    assert registry.has_tool("mcp_removed_server__legacy") is False
+    assert registry.has_tool("mcp_removed_server__legacy") is True
     await manager.discard_prepared("removed_mcp")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_plugin_mcp_server_cannot_replace_user_registry_server(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_collision",
+        "from agent.plugins import Plugin\n"
+        "class McpCollisionPlugin(Plugin):\n"
+        "    name = 'mcp_collision'\n",
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+
+    class UserMcpTool(Tool):
+        name = "mcp_user_server__value"
+        description = "user"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return "user"
+
+    tools.register(UserMcpTool(), source_type="mcp", source_name="user_server")
+    _write_mcp_server(plugin_dir, ("value",))
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class McpCollisionPlugin(Plugin):\n"
+        "    name = 'mcp_collision'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='user_server', command=('python', 'server.py'))]\n",
+        encoding="utf-8",
+    )
+
+    assert await manager.prepare_candidate("mcp_collision") is None
+    assert await tools.execute("mcp_user_server__value", {}) == "user"
     await manager.terminate_all()
 
 

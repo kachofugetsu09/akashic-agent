@@ -121,7 +121,6 @@ class PluginManager:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
         self._tool_registry = tool_registry
-        self._plugin_mcp_server_names: set[str] = set()
         self._workspace = workspace
         self._session_manager = session_manager
         self._memory_engine = memory_engine
@@ -459,9 +458,6 @@ class PluginManager:
             raise
 
         _ = self._prepared_generations.pop(plugin_id)
-        self._plugin_mcp_server_names.update(
-            generation.contributions.mcp_servers
-        )
         self._scopes[generation.module_path] = generation.scope
         self._loaded.add(generation.module_path)
         generation.state = "active"
@@ -502,7 +498,7 @@ class PluginManager:
         context.memory_engine = self._memory_engine
         context.llm = self._llm
         context.scope = generation.scope
-        context.tool_registry = self._tool_registry
+        context.tool_registry = generation.runtime_snapshot.tool_registry
         generation.initialization_started = True
         await instance.initialize()
         generation.minimum_resource_count = generation.scope.resource_count
@@ -1137,6 +1133,7 @@ class PluginManager:
             instance.context.memory_engine = self._memory_engine
             instance.context.llm = self._llm
             instance.context.scope = scope
+            instance.context.tool_registry = generation.runtime_snapshot.tool_registry
             load_phase = "initialize"
             initialization_started = True
             await instance.initialize()
@@ -1146,7 +1143,6 @@ class PluginManager:
             self._publish_contributions(contributions)
             self._channels.extend(contributions.channels)
             staged_event_bus.publish()
-            instance.context.tool_registry = self._tool_registry
             generation.minimum_resource_count = scope.resource_count
         except asyncio.CancelledError:
             rollback_task = asyncio.create_task(
@@ -1191,7 +1187,6 @@ class PluginManager:
         )
         generation.state = "active"
         self._active_generations[plugin_id] = generation
-        self._plugin_mcp_server_names.update(contributions.mcp_servers)
         self._stable_aliases[mp] = stable_module_path
         self._remove_module_tree(stable_module_path)
         self._fresh_importer.register(stable_module_path, plugin_dir)
@@ -1235,14 +1230,8 @@ class PluginManager:
             return None
         plugin_mcp_sources = {
             ("mcp", server_name)
-            for server_name in {
-                *self._plugin_mcp_server_names,
-                *(
-                    server_name
-                    for generation in generations.values()
-                    for server_name in generation.contributions.mcp_servers
-                ),
-            }
+            for generation in generations.values()
+            for server_name in generation.contributions.mcp_servers
         }
         registry = self._tool_registry.fork(
             excluded_source_types={"plugin"},
@@ -1466,6 +1455,12 @@ class PluginManager:
             for generation in other_generations
             for server_name in generation.contributions.mcp_servers
         }
+        if self._tool_registry is not None:
+            occupied_servers.update(
+                document.source_name
+                for document in self._tool_registry.get_documents()
+                if document.source_type == "mcp"
+            )
         check(
             "mcp_servers",
             not occupied_servers.intersection(contributions.mcp_servers),

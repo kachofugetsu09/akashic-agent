@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import inspect
-
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,7 +87,7 @@ class CoreRuntime:
     workspace: Path | None = None
 
     async def start(self) -> None:
-        self.mcp_registry.start_connect_all_background()
+        await self.mcp_registry.load_and_connect_all()
 
         if (
             self.peer_poller is not None
