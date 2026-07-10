@@ -90,5 +90,6 @@ class PluginGeneration:
     runtime_snapshot: RuntimeSnapshot | None = None
     staged_event_bus: ScopedEventBus | None = None
     initialization_started: bool = False
+    minimum_resource_count: int = 0
     state: str = "active"
     lease_count: int = 0

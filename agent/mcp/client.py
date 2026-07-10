@@ -62,7 +62,7 @@ class McpClient:
 
     @property
     def connected(self) -> bool:
-        return self._process is not None
+        return self._process is not None and self._process.returncode is None
 
     async def connect(self) -> list[McpToolInfo]:
         try:

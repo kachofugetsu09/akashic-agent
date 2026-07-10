@@ -1560,21 +1560,149 @@ async def test_post_publish_invariant_failure_aborts_to_previous_snapshot(
     candidate = await manager.prepare_candidate("snapshot_publish")
     assert candidate is not None
 
+    invariant_entered = asyncio.Event()
+    invariant_release = asyncio.Event()
+
     async def fail_invariant(generation, snapshot) -> None:
         assert manager.current_snapshot is snapshot
+        invariant_entered.set()
+        await invariant_release.wait()
         raise RuntimeError("post publish failed")
 
     monkeypatch.setattr(manager, "_post_publish_invariants", fail_invariant)
 
+    publishing = asyncio.create_task(manager.publish_prepared("snapshot_publish"))
+    await invariant_entered.wait()
+    candidate_lease = manager.snapshot_store.lease()
+    invariant_release.set()
     with pytest.raises(RuntimeError, match="post publish failed"):
-        await manager.publish_prepared("snapshot_publish")
+        await publishing
 
     assert manager.current_snapshot is old_snapshot
     assert manager.generation("snapshot_publish") is active
     assert manager.prepared_generation("snapshot_publish") is None
-    assert candidate.state == "discarded"
+    assert candidate.state == "aborted"
+    assert candidate.scope.closed is False
     assert candidate.runtime_snapshot is not None
     assert candidate.runtime_snapshot.state == "aborted"
+    await candidate_lease.release()
+    assert candidate.scope.closed is True
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_post_publish_invariant_timeout_aborts_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None and old_snapshot is not None
+
+    async def never_finishes(generation, snapshot) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_post_publish_invariants", never_finishes)
+    manager.POST_PUBLISH_TIMEOUT_SECONDS = 0.01
+
+    with pytest.raises(TimeoutError):
+        await manager.publish_prepared("snapshot_publish")
+
+    assert manager.current_snapshot is old_snapshot
+    assert candidate.state == "aborted"
+    assert candidate.scope.closed is True
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publish_waits_for_candidate_lease_before_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None and old_snapshot is not None
+    entered = asyncio.Event()
+
+    async def wait_forever(generation, snapshot) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_post_publish_invariants", wait_forever)
+    publishing = asyncio.create_task(manager.publish_prepared("snapshot_publish"))
+    await entered.wait()
+    lease = manager.snapshot_store.lease()
+    publishing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await publishing
+
+    assert manager.current_snapshot is old_snapshot
+    assert candidate.scope.closed is False
+    await lease.release()
+    assert candidate.scope.closed is True
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_dead_candidate_mcp_aborts_post_publish_invariant(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_mcp",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class SnapshotMcpPlugin(Plugin):\n"
+        "    name = 'snapshot_mcp'\n"
+        "    version = 'v1'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='snapshot', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("version",))
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    plugin_file = plugin_dir / "plugin.py"
+    _ = plugin_file.write_text(
+        plugin_file.read_text(encoding="utf-8").replace("'v1'", "'v2'"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_mcp")
+    assert candidate is not None and candidate.mcp_catalog is not None
+    client = candidate.mcp_catalog.servers["snapshot"].client
+    process = client._process
+    assert process is not None
+    process.kill()
+    await process.wait()
+    assert client.connected is False
+
+    with pytest.raises(RuntimeError, match="MCP client 已断开"):
+        await manager.publish_prepared("snapshot_mcp")
+
+    assert manager.current_snapshot is old_snapshot
+    assert candidate.scope.closed is True
     await manager.terminate_all()
 
 

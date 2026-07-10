@@ -103,6 +103,8 @@ class ActivePluginInfo:
 
 
 class PluginManager:
+    POST_PUBLISH_TIMEOUT_SECONDS = 5.0
+
     def __init__(
         self,
         plugin_dirs: list[Path],
@@ -155,7 +157,8 @@ class PluginManager:
         self._job_host = PluginJobHost()
         self._proactive_host = PluginProactiveHost()
         self._snapshot_compiler = RuntimeSnapshotCompiler()
-        self._snapshot_store = RuntimeSnapshotStore()
+        self._snapshot_drains: dict[str, tuple[PluginGeneration, ...]] = {}
+        self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
 
     @property
     def loaded_count(self) -> int:
@@ -349,6 +352,14 @@ class PluginManager:
         generation = self._prepared_generations.pop(plugin_id, None)
         if generation is None:
             return
+        await self._dispose_generation(generation, state="discarded")
+
+    async def _dispose_generation(
+        self,
+        generation: PluginGeneration,
+        *,
+        state: str,
+    ) -> None:
         if generation.initialization_started:
             terminator = getattr(generation.instance, "terminate", None)
             if callable(terminator):
@@ -363,7 +374,12 @@ class PluginManager:
                     )
         self._cleanup_failures.extend(await generation.scope.aclose())
         self._remove_module_tree(generation.module_path)
-        generation.state = "discarded"
+        generation.state = state
+
+    async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
+        generations = self._snapshot_drains.pop(snapshot.snapshot_id, ())
+        for generation in generations:
+            await self._dispose_generation(generation, state=generation.state)
 
     async def prepare_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
@@ -426,12 +442,14 @@ class PluginManager:
         try:
             await asyncio.wait_for(
                 self._post_publish_invariants(generation, snapshot),
-                timeout=5,
+                timeout=self.POST_PUBLISH_TIMEOUT_SECONDS,
             )
             await self._snapshot_store.commit(transaction)
         except (asyncio.CancelledError, Exception):
+            _ = self._prepared_generations.pop(plugin_id, None)
+            generation.state = "aborted"
+            self._snapshot_drains[snapshot.snapshot_id] = (generation,)
             await self._snapshot_store.abort(transaction)
-            await self.discard_prepared(plugin_id)
             raise
 
         _ = self._prepared_generations.pop(plugin_id)
@@ -485,8 +503,6 @@ class PluginManager:
         snapshot: RuntimeSnapshot,
     ) -> None:
         await asyncio.sleep(0)
-        if generation.scope.closed:
-            raise RuntimeError("候选插件作用域已关闭")
         if self.current_snapshot is not snapshot:
             raise RuntimeError("RuntimeSnapshot 发布指针不一致")
         if snapshot.generations.get(generation.plugin_id) is not generation:
@@ -501,6 +517,10 @@ class PluginManager:
             if any(not server.client.connected for server in catalog.servers.values()):
                 raise RuntimeError("RuntimeSnapshot MCP client 已断开")
         for item in snapshot.generations.values():
+            if item.scope.closed:
+                raise RuntimeError("RuntimeSnapshot 插件作用域已关闭")
+            if item.scope.resource_count < item.minimum_resource_count:
+                raise RuntimeError("RuntimeSnapshot 插件资源数量不足")
             if item.job_catalog is not None and self._job_host.get(
                 item.generation_id
             ) is not item.job_catalog:
@@ -1064,6 +1084,7 @@ class PluginManager:
                 generation.runtime_snapshot = self._compile_generation_snapshot(
                     generation
                 )
+                generation.minimum_resource_count = scope.resource_count
                 self._prepared_generations[plugin_id] = generation
                 return generation
             generation.runtime_snapshot = self._compile_generation_snapshot(generation)
@@ -1085,6 +1106,7 @@ class PluginManager:
             self._bind_handlers(instance, mp, scope)
             staged_event_bus.activate()
             instance.context.tool_registry = self._tool_registry
+            generation.minimum_resource_count = scope.resource_count
         except asyncio.CancelledError:
             rollback_task = asyncio.create_task(
                 rollback_load(),
