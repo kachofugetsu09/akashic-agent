@@ -569,7 +569,11 @@ async def test_plugin_tool_registration_failure_rolls_back(tmp_path: Path):
 
     assert manager.loaded_count == 0
     assert tools.get_registered_names() == set()
-    assert backend.add_count == 2
+    assert backend.add_count == 0
+    gate = manager.latest_gate("tool_failure")
+    assert gate is not None
+    assert gate.status == "failed"
+    assert any(check.check_id == "runtime_snapshot" for check in gate.checks)
 
 
 @pytest.mark.asyncio

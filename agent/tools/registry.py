@@ -123,12 +123,25 @@ class ToolRegistry:
         self._backend: SearchBackend = backend or KeywordSearchBackend()
         self._snapshot_view = False
 
-    def fork(self) -> "ToolRegistry":
+    def fork(
+        self,
+        *,
+        excluded_source_types: set[str] | None = None,
+        excluded_sources: set[tuple[str, str]] | None = None,
+    ) -> "ToolRegistry":
         backend = deepcopy(self._backend)
         cloned = ToolRegistry(backend=backend)
-        cloned._tools = dict(self._tools)
-        cloned._metadata = dict(self._metadata)
-        cloned._documents = dict(self._documents)
+        excluded_types = excluded_source_types or set()
+        excluded_pairs = excluded_sources or set()
+        names = {
+            name
+            for name, document in self._documents.items()
+            if document.source_type not in excluded_types
+            and (document.source_type, document.source_name) not in excluded_pairs
+        }
+        cloned._tools = {name: self._tools[name] for name in names}
+        cloned._metadata = {name: self._metadata[name] for name in names}
+        cloned._documents = {name: self._documents[name] for name in names}
         cloned._context = dict(self._context)
         cloned._backend.rebuild(list(cloned._documents.values()))
         cloned._snapshot_view = True

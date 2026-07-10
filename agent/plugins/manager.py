@@ -120,7 +120,6 @@ class PluginManager:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
         self._tool_registry = tool_registry
-        self._base_tool_registry: Any = None
         self._workspace = workspace
         self._session_manager = session_manager
         self._memory_engine = memory_engine
@@ -339,12 +338,10 @@ class PluginManager:
         return mods
 
     async def load_all(self) -> None:
-        self._ensure_base_tool_registry()
         for mod in self.discover():
             _ = await self._load_one(mod)
 
     async def prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
-        self._ensure_base_tool_registry()
         await self.discard_prepared(plugin_id)
         for mod in self.discover():
             if _resolve_plugin_id(mod) == plugin_id:
@@ -1188,17 +1185,21 @@ class PluginManager:
             self._gate_results[generation.plugin_id] = gate
             raise _CandidateRejected(gate) from error
 
-    def _ensure_base_tool_registry(self) -> None:
-        if self._base_tool_registry is None and self._tool_registry is not None:
-            self._base_tool_registry = self._tool_registry.fork()
-
     def _compile_snapshot_tools(
         self,
         generations: dict[str, PluginGeneration],
     ) -> Any:
-        if self._base_tool_registry is None:
+        if self._tool_registry is None:
             return None
-        registry = self._base_tool_registry.fork()
+        plugin_mcp_sources = {
+            ("mcp", server_name)
+            for generation in generations.values()
+            for server_name in generation.contributions.mcp_servers
+        }
+        registry = self._tool_registry.fork(
+            excluded_source_types={"plugin"},
+            excluded_sources=plugin_mcp_sources,
+        )
         for generation in sorted(generations.values(), key=lambda item: item.plugin_id):
             plugin_name = getattr(
                 generation.instance,

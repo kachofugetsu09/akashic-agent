@@ -18,6 +18,7 @@ from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from agent.looping.core import AgentLoop
 from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
+from agent.tools.base import Tool
 from bus.event_bus import EventBus
 
 
@@ -493,6 +494,7 @@ async def test_prepare_same_plugin_keeps_active_generation_until_snapshot_publis
     tools = ToolRegistry()
     manager = _manager(tmp_path, tools=tools)
     await manager.load_all()
+
     active = manager.generation("replaceable")
     assert active is not None
 
@@ -1792,6 +1794,20 @@ async def test_tool_schema_search_and_execute_share_snapshot_generation(
     tools = ToolRegistry()
     manager = _manager(tmp_path, tools=tools)
     await manager.load_all()
+
+    class LateMcpTool(Tool):
+        name = "mcp_late__value"
+        description = "late mcp"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return "late"
+
+    tools.register(
+        LateMcpTool(),
+        source_type="mcp",
+        source_name="late",
+    )
     _ = (plugin_dir / "plugin.py").write_text(
         _snapshot_tool_source("v2"),
         encoding="utf-8",
@@ -1804,11 +1820,13 @@ async def test_tool_schema_search_and_execute_share_snapshot_generation(
     entered = asyncio.Event()
     release = asyncio.Event()
     seen: list[tuple[str, str, str]] = []
+    late_seen: list[str] = []
 
     async def process(msg, **kwargs):
         schema = tools.get_schemas(["snapshot_tool_value"])[0]
         search = tools.search("snapshot tool", top_k=1)[0]
         before = str(await tools.execute("snapshot_tool_value", {}))
+        late_seen.append(str(await tools.execute("mcp_late__value", {})))
         entered.set()
         await release.wait()
         after = str(await tools.execute("snapshot_tool_value", {}))
@@ -1833,6 +1851,7 @@ async def test_tool_schema_search_and_execute_share_snapshot_generation(
         ("snapshot tool v2", "snapshot_tool_value", "v2"),
         ("snapshot tool v2", "snapshot_tool_value", "v2"),
     ]
+    assert late_seen == ["工具 'mcp_late__value' 不存在", "late"]
     await manager.terminate_all()
 
 
