@@ -3274,6 +3274,42 @@ async def test_dashboard_candidate_cannot_override_other_plugin(tmp_path: Path) 
     await manager.terminate_all()
 
 
+@pytest.mark.asyncio
+async def test_dashboard_allows_static_route_before_dynamic_route(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "dashboard_ordered",
+        "from agent.plugins import Plugin\n"
+        "class DashboardOrderedPlugin(Plugin):\n"
+        "    name = 'dashboard_ordered'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+    _ = (plugin_dir / "dashboard.py").write_text(
+        "def register(app, plugin_dir, workspace):\n"
+        "    @app.get('/api/dashboard/items/overview')\n"
+        "    def overview(): return {'route': 'overview'}\n"
+        "    @app.get('/api/dashboard/items/{item_id}')\n"
+        "    def detail(item_id): return {'route': item_id}\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    app = create_dashboard_app(
+        tmp_path / "workspace",
+        memory_admin=SimpleNamespace(),
+        plugin_manager=manager,
+    )
+    client = TestClient(app)
+
+    assert client.get("/api/dashboard/items/overview").json() == {
+        "route": "overview"
+    }
+    assert client.get("/api/dashboard/items/42").json() == {"route": "42"}
+    client.close()
+    await manager.terminate_all()
+
+
 def test_dashboard_rejects_custom_path_convertor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
