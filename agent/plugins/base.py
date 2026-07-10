@@ -32,6 +32,9 @@ class Plugin(ABC):
     def static_semantic_checks(self) -> list["PluginSemanticCheck"]:
         return []
 
+    def readiness_semantic_checks(self) -> list["PluginSemanticCheck"]:
+        return []
+
     @classmethod
     def skill_roots(cls) -> tuple[str, ...]:
         return ()

@@ -49,6 +49,47 @@ def _manager(
     )
 
 
+def _write_mcp_server(plugin_dir: Path, tools: tuple[str, ...]) -> None:
+    tool_items = ", ".join(
+        repr(
+            {
+                "name": name,
+                "description": name,
+                "inputSchema": {"type": "object", "properties": {}},
+            }
+        )
+        for name in tools
+    )
+    _ = (plugin_dir / "server.py").write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "log = Path(os.environ['AKA_PLUGIN_DATA_DIR']) / 'mcp-lifecycle.log'\n"
+        "log.parent.mkdir(parents=True, exist_ok=True)\n"
+        "with log.open('a', encoding='utf-8') as f: f.write('started\\n')\n"
+        "try:\n"
+        "    for line in sys.stdin:\n"
+        "        msg = json.loads(line)\n"
+        "        if 'id' not in msg:\n"
+        "            continue\n"
+        "        method = msg.get('method')\n"
+        "        result = {}\n"
+        f"        if method == 'tools/list': result = {{'tools': [{tool_items}]}}\n"
+        "        elif method == 'tools/call': result = {'content': [{'type': 'text', 'text': '[]'}]}\n"
+        "        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n"
+        "finally:\n"
+        "    with log.open('a', encoding='utf-8') as f: f.write('stopped\\n')\n",
+        encoding="utf-8",
+    )
+
+
+async def _wait_for_log(path: Path, expected: list[str]) -> None:
+    for _ in range(100):
+        if path.exists() and path.read_text(encoding="utf-8").splitlines() == expected:
+            return
+        await asyncio.sleep(0.01)
+    assert path.read_text(encoding="utf-8").splitlines() == expected
+
+
 @pytest.mark.asyncio
 async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
     _write_plugin(
@@ -866,3 +907,135 @@ async def test_skill_catalog_cleanup_failure_is_reported(
         and failure.error == "snapshot cleanup failed"
         for failure in manager.cleanup_failures
     )
+
+
+@pytest.mark.asyncio
+async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_ready",
+        "from agent.plugins import McpServerSpec, Plugin, ProactiveSourceSpec\n"
+        "class McpReadyPlugin(Plugin):\n"
+        "    name = 'mcp_ready'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n"
+        "    def proactive_sources(self):\n"
+        "        return [ProactiveSourceSpec(id='feed', channels=('content',), "
+        "server='feed', fetch_tool='fetch_events', ack_tool='ack_events', "
+        "poll_tool='poll_events')]\n",
+    )
+    _write_mcp_server(
+        plugin_dir,
+        ("fetch_events", "ack_events", "poll_events"),
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+
+    prepared = await manager.prepare_candidate("mcp_ready")
+
+    assert prepared is not None and prepared.mcp_catalog is not None
+    catalog = prepared.mcp_catalog
+    server = catalog.servers["feed"]
+    assert server.client.name == f"feed@{prepared.generation_id}"
+    assert catalog.tool_names == (
+        "mcp_feed__ack_events",
+        "mcp_feed__fetch_events",
+        "mcp_feed__poll_events",
+    )
+    assert not any(prepared.generation_id in name for name in catalog.tool_names)
+    assert tools.get_registered_names() == set()
+    assert await server.tools[1].execute() == "[]"
+    lifecycle = tmp_path / "home" / "data" / "mcp_ready-builtin" / "mcp-lifecycle.log"
+    await _wait_for_log(lifecycle, ["started"])
+
+    await manager.discard_prepared("mcp_ready")
+
+    await _wait_for_log(lifecycle, ["started", "stopped"])
+    assert manager.mcp_catalog(prepared.generation_id) is None
+    assert server.client._process is None
+    assert server.client._stderr_task is None
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing_tool", "semantic"])
+async def test_candidate_mcp_readiness_failure_closes_process(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    readiness = (
+        "    def readiness_semantic_checks(self):\n"
+        "        return [PluginSemanticCheck('remote', False, 'not ready')]\n"
+        if failure == "semantic"
+        else ""
+    )
+    fetch_tool = "missing" if failure == "missing_tool" else "fetch_events"
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_rejected",
+        "from agent.plugins import (McpServerSpec, Plugin, PluginSemanticCheck, "
+        "ProactiveSourceSpec)\n"
+        "class McpRejectedPlugin(Plugin):\n"
+        "    name = 'mcp_rejected'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n"
+        "    def proactive_sources(self):\n"
+        f"        return [ProactiveSourceSpec(id='feed', channels=('content',), server='feed', fetch_tool='{fetch_tool}')]\n"
+        + readiness,
+    )
+    _write_mcp_server(plugin_dir, ("fetch_events",))
+    manager = _manager(tmp_path)
+    await manager.load_all()
+
+    prepared = await manager.prepare_candidate("mcp_rejected")
+
+    assert prepared is None
+    assert manager.prepared_generation("mcp_rejected") is None
+    gate = manager.latest_gate("mcp_rejected")
+    assert gate is not None and gate.status == "failed"
+    failed_checks = {check.check_id for check in gate.checks if check.status == "failed"}
+    assert (
+        "mcp_readiness" if failure == "missing_tool" else "readiness_semantic_checks"
+    ) in failed_checks
+    lifecycle = tmp_path / "home" / "data" / "mcp_rejected-builtin" / "mcp-lifecycle.log"
+    await _wait_for_log(lifecycle, ["started", "stopped"])
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_mcp_handshake_failure_closes_process(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_handshake",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class McpHandshakePlugin(Plugin):\n"
+        "    name = 'mcp_handshake'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='broken', command=('python', 'server.py'))]\n",
+    )
+    _ = (plugin_dir / "server.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "log = Path(os.environ['AKA_PLUGIN_DATA_DIR']) / 'mcp-lifecycle.log'\n"
+        "log.parent.mkdir(parents=True, exist_ok=True)\n"
+        "log.write_text('started\\nstopped\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+
+    prepared = await manager.prepare_candidate("mcp_handshake")
+
+    assert prepared is None
+    gate = manager.latest_gate("mcp_handshake")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[-1].check_id == "mcp_readiness"
+    lifecycle = tmp_path / "home" / "data" / "mcp_handshake-builtin" / "mcp-lifecycle.log"
+    await _wait_for_log(lifecycle, ["started", "stopped"])
+    await manager.terminate_all()

@@ -13,6 +13,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import cast
 
 
@@ -469,6 +470,23 @@ def _install_candidate_plugins(
             f"---\ndescription: candidate drift {version}\n---\ndrift {version}\n",
             encoding="utf-8",
         )
+    _ = (reload_plugin / "candidate_mcp_server.py").write_text(
+        "import json, sys\n"
+        "tools = [\n"
+        "    {'name': name, 'description': name, 'inputSchema': {'type': 'object', 'properties': {}}}\n"
+        "    for name in ('fetch_events', 'ack_events', 'poll_events')\n"
+        "]\n"
+        "for line in sys.stdin:\n"
+        "    msg = json.loads(line)\n"
+        "    if 'id' not in msg:\n"
+        "        continue\n"
+        "    method = msg.get('method')\n"
+        "    result = {'tools': tools} if method == 'tools/list' else {}\n"
+        "    if method == 'tools/call':\n"
+        "        result = {'content': [{'type': 'text', 'text': '[]'}]}\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n",
+        encoding="utf-8",
+    )
     _ = reload_source.write_text(_candidate_reload_source("v1"), encoding="utf-8")
     data = sandbox / "home/.akashic-plugin/data"
     return (
@@ -505,10 +523,17 @@ def _candidate_reload_source(version: str) -> str:
     return (
         "from __future__ import annotations\n"
         "import asyncio\n"
-        "from agent.plugins import Plugin, tool\n"
+        "from agent.plugins import McpServerSpec, Plugin, ProactiveSourceSpec, tool\n"
         "class CandidateReloadPlugin(Plugin):\n"
         "    name = 'candidate_reload'\n"
         f"{skills}"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='candidate_feed', command=('python', 'candidate_mcp_server.py'))]\n"
+        "    def proactive_sources(self):\n"
+        "        return [ProactiveSourceSpec(id='candidate_feed', channels=('content',), "
+        "server='candidate_feed', fetch_tool='fetch_events', ack_tool='ack_events', "
+        "poll_tool='poll_events')]\n"
         "    @tool(name='candidate_reload_tool')\n"
         "    async def run(self, event):\n"
         "        \"\"\"Candidate reload tool.\"\"\"\n"
@@ -574,6 +599,50 @@ def _candidate_statuses(container_id: str) -> list[dict[str, object]]:
     return statuses
 
 
+def _container_process_count(container_id: str, marker: str) -> int:
+    script = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "count = 0\n"
+        "for entry in Path('/proc').iterdir():\n"
+        "    if not entry.name.isdigit() or int(entry.name) == os.getpid():\n"
+        "        continue\n"
+        "    try:\n"
+        "        command = (entry / 'cmdline').read_bytes().replace(b'\\0', b' ').decode()\n"
+        "    except (FileNotFoundError, PermissionError, ProcessLookupError):\n"
+        "        continue\n"
+        f"    if {marker!r} in command:\n"
+        "        count += 1\n"
+        "print(count)\n"
+    )
+    result = subprocess.run(
+        ["docker", "exec", container_id, "python", "-c", script],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return -1
+
+
+def _wait_process_count(
+    container_id: str,
+    marker: str,
+    predicate: Callable[[int], bool],
+) -> int:
+    deadline = time.monotonic() + 8
+    count = -1
+    while time.monotonic() < deadline:
+        count = _container_process_count(container_id, marker)
+        if predicate(count):
+            return count
+        time.sleep(0.1)
+    return count
+
+
 def _wait_candidate_status(
     container_id: str,
     *,
@@ -599,6 +668,11 @@ def _exercise_candidate_prepare(
     state_path: Path,
 ) -> dict[str, object]:
     initial = _read_json_object(state_path)
+    initial_mcp_processes = _wait_process_count(
+        container_id,
+        "candidate_mcp_server.py",
+        lambda count: count >= 1,
+    )
     initial_generation = initial.get("active_generation")
     initial_heartbeats = _integer(initial.get("heartbeats"))
     _ = source_path.write_text("not valid python !!!\n", encoding="utf-8")
@@ -616,6 +690,10 @@ def _exercise_candidate_prepare(
         gate_status="failed",
     )
     after_invalid = _read_json_object(state_path)
+    after_invalid_mcp_processes = _container_process_count(
+        container_id,
+        "candidate_mcp_server.py",
+    )
     _ = source_path.write_text(_candidate_reload_source("v2"), encoding="utf-8")
     valid_signal = subprocess.run(
         ["docker", "kill", "--signal", "HUP", container_id],
@@ -631,6 +709,11 @@ def _exercise_candidate_prepare(
     )
     time.sleep(0.2)
     after_valid = _read_json_object(state_path)
+    after_valid_mcp_processes = _wait_process_count(
+        container_id,
+        "candidate_mcp_server.py",
+        lambda count: count >= initial_mcp_processes + 1,
+    )
     _ = source_path.write_text(_candidate_reload_source("v1"), encoding="utf-8")
     return_signal = subprocess.run(
         ["docker", "kill", "--signal", "HUP", container_id],
@@ -644,6 +727,11 @@ def _exercise_candidate_prepare(
         after=len(valid_statuses),
         gate_status="active",
     )
+    after_return_mcp_processes = _wait_process_count(
+        container_id,
+        "candidate_mcp_server.py",
+        lambda count: count == initial_mcp_processes,
+    )
     valid_skills = valid_status.get("skills")
     valid_descriptions = valid_status.get("skill_descriptions")
     valid_drift_descriptions = valid_status.get("drift_skill_descriptions")
@@ -651,6 +739,7 @@ def _exercise_candidate_prepare(
     valid_drift_body_hashes = valid_status.get("drift_skill_body_hashes")
     return_body_hashes = return_status.get("skill_body_hashes")
     return_drift_body_hashes = return_status.get("drift_skill_body_hashes")
+    valid_mcp_tools = valid_status.get("mcp_tools")
     valid_description_map = (
         cast(dict[object, object], valid_descriptions)
         if isinstance(valid_descriptions, dict)
@@ -680,6 +769,13 @@ def _exercise_candidate_prepare(
         and valid_status.get("active_generation") == initial_generation
         and isinstance(valid_status.get("prepared_generation"), str)
         and isinstance(valid_skills, list)
+        and isinstance(valid_mcp_tools, list)
+        and valid_mcp_tools
+        == [
+            "mcp_candidate_feed__ack_events",
+            "mcp_candidate_feed__fetch_events",
+            "mcp_candidate_feed__poll_events",
+        ]
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"
         and valid_drift_description_map.get("candidate-drift") == "candidate drift v2"
@@ -697,6 +793,10 @@ def _exercise_candidate_prepare(
         and after_valid.get("active_generation") == initial_generation
         and after_valid.get("initialized_version") == "v1"
         and _integer(after_valid.get("heartbeats")) > initial_heartbeats
+        and initial_mcp_processes >= 1
+        and after_invalid_mcp_processes == initial_mcp_processes
+        and after_valid_mcp_processes >= initial_mcp_processes + 1
+        and after_return_mcp_processes == initial_mcp_processes
     )
     return {
         "passed": passed,
@@ -709,6 +809,12 @@ def _exercise_candidate_prepare(
         "invalid_signal": invalid_signal.returncode,
         "valid_signal": valid_signal.returncode,
         "return_signal": return_signal.returncode,
+        "mcp_processes": {
+            "initial": initial_mcp_processes,
+            "after_invalid": after_invalid_mcp_processes,
+            "after_valid": after_valid_mcp_processes,
+            "after_return": after_return_mcp_processes,
+        },
     }
 
 

@@ -54,6 +54,7 @@ class McpClient:
         self._tool_infos: list[McpToolInfo] = []
         self._recent_stdout: deque[str] = deque(maxlen=8)
         self._recent_stderr: deque[str] = deque(maxlen=8)
+        self._stderr_task: asyncio.Task[None] | None = None
 
     @property
     def tool_infos(self) -> list[McpToolInfo]:
@@ -65,7 +66,7 @@ class McpClient:
                 self._connect_impl(),
                 timeout=_CONNECT_TIMEOUT,
             )
-        except Exception:
+        except BaseException:
             await self.disconnect()
             raise
 
@@ -82,7 +83,10 @@ class McpClient:
             cwd=self.cwd,
             limit=_STREAM_LIMIT,
         )
-        _ = asyncio.create_task(self._drain_stderr())
+        self._stderr_task = asyncio.create_task(
+            self._drain_stderr(),
+            name=f"mcp_stderr:{self.name}",
+        )
 
         # initialize 握手
         init_id = self._new_id()
@@ -165,27 +169,43 @@ class McpClient:
         if self._process is None:
             return
         process = self._process
+        stopped = False
         try:
             if process.stdin is not None:
                 process.stdin.close()
-            _ = await asyncio.wait_for(
-                process.wait(),
-                timeout=_DISCONNECT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            process.terminate()
             try:
                 _ = await asyncio.wait_for(
                     process.wait(),
                     timeout=_DISCONNECT_TIMEOUT,
                 )
+                stopped = True
             except asyncio.TimeoutError:
-                process.kill()
-                _ = await process.wait()
-        except Exception as e:
-            logger.warning("[mcp] 断开 %r 时出错: %s", self.name, e)
+                process.terminate()
+                try:
+                    _ = await asyncio.wait_for(
+                        process.wait(),
+                        timeout=_DISCONNECT_TIMEOUT,
+                    )
+                    stopped = True
+                except asyncio.TimeoutError:
+                    process.kill()
+                    _ = await process.wait()
+                    stopped = True
         finally:
-            self._process = None
+            try:
+                if not stopped:
+                    process.kill()
+                    _ = await process.wait()
+                    stopped = True
+            finally:
+                if stopped:
+                    self._process = None
+                stderr_task = self._stderr_task
+                self._stderr_task = None
+                if stderr_task is not None:
+                    if not stderr_task.done():
+                        _ = stderr_task.cancel()
+                    _ = await asyncio.gather(stderr_task, return_exceptions=True)
 
     def _new_id(self) -> int:
         i = self._next_id
@@ -251,16 +271,13 @@ class McpClient:
     async def _drain_stderr(self) -> None:
         """后台读取 stderr，防止缓冲区阻塞。"""
         assert self._process and self._process.stderr
-        try:
-            while True:
-                line = await self._process.stderr.readline()
-                if not line:
-                    break
-                text = line.decode().rstrip()
-                self._recent_stderr.append(text[:500])
-                logger.debug("[mcp:%s] stderr: %s", self.name, text)
-        except Exception:
-            pass
+        while True:
+            line = await self._process.stderr.readline()
+            if not line:
+                break
+            text = line.decode().rstrip()
+            self._recent_stderr.append(text[:500])
+            logger.debug("[mcp:%s] stderr: %s", self.name, text)
 
     def _build_timeout_message(
         self,

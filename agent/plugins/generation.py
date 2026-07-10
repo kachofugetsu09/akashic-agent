@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from agent.plugins.specs import RegisteredProactiveSource
     from infra.channels.contract import Channel
     from agent.plugins.skill_host import PreparedSkillCatalog
+    from agent.plugins.mcp_host import PreparedMcpCatalog
 
 
 GateStatus = Literal["passed", "failed"]
@@ -73,5 +74,6 @@ class PluginGeneration:
     contributions: PluginContributions
     gate_result: GateResult
     skill_catalog: PreparedSkillCatalog | None = None
+    mcp_catalog: PreparedMcpCatalog | None = None
     state: str = "active"
     lease_count: int = 0

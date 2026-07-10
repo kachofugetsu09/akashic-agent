@@ -13,17 +13,24 @@ class McpToolWrapper(Tool):
     避免与内置工具冲突，也方便按 server 识别。
     """
 
-    def __init__(self, client: McpClient, info: McpToolInfo) -> None:
+    def __init__(
+        self,
+        client: McpClient,
+        info: McpToolInfo,
+        *,
+        server_name: str | None = None,
+    ) -> None:
         self._client = client
         self._info = info
+        self._server_name = server_name or client.name
 
     @property
     def name(self) -> str:
-        return f"mcp_{self._client.name}__{self._info.name}"
+        return f"mcp_{self._server_name}__{self._info.name}"
 
     @property
     def description(self) -> str:
-        return f"[MCP:{self._client.name}] {self._info.description}"
+        return f"[MCP:{self._server_name}] {self._info.description}"
 
     @property
     def parameters(self) -> dict[str, Any]:

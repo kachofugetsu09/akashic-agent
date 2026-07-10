@@ -571,6 +571,20 @@ async def test_mcp_client_disconnect_kills_after_terminate_timeout(
 
 
 @pytest.mark.asyncio
+async def test_mcp_client_disconnect_reports_cleanup_error() -> None:
+    proc = _Proc([])
+    proc.stdin.close = MagicMock(side_effect=OSError("stdin close failed"))
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(OSError, match="stdin close failed"):
+        await client.disconnect()
+
+    assert proc.killed is True
+    assert client._process is None
+
+
+@pytest.mark.asyncio
 async def test_mcp_client_serializes_calls_on_same_server():
     class ConcurrentReadPipe(_Pipe):
         def __init__(self) -> None:

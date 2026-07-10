@@ -49,6 +49,7 @@ from agent.plugins.generation import (
 )
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.skill_host import PluginSkillHost, PreparedSkillCatalog
+from agent.plugins.mcp_host import PluginMcpHost, PreparedMcpCatalog
 from agent.lifecycle.phase import topo_sort_modules
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.lifecycle import ProactiveLifecycleBuilder
@@ -133,6 +134,7 @@ class PluginManager:
         self._fresh_importer = FreshPluginImporter()
         self._manager_namespace = secrets.token_hex(4)
         self._skill_host = PluginSkillHost(workspace)
+        self._mcp_host = PluginMcpHost()
 
     @property
     def loaded_count(self) -> int:
@@ -228,6 +230,9 @@ class PluginManager:
 
     def skill_catalog(self, generation_id: str) -> PreparedSkillCatalog | None:
         return self._skill_host.get(generation_id)
+
+    def mcp_catalog(self, generation_id: str) -> PreparedMcpCatalog | None:
+        return self._mcp_host.get(generation_id)
 
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
@@ -365,6 +370,7 @@ class PluginManager:
                         active,
                         drift=True,
                     ),
+                    "mcp_tools": _mcp_tool_names(active),
                 }
                 results.append(result)
                 logger.info(
@@ -413,6 +419,7 @@ class PluginManager:
                     if prepared is not None
                     else {}
                 ),
+                "mcp_tools": _mcp_tool_names(prepared) if prepared is not None else [],
             }
             results.append(result)
             logger.info(
@@ -669,6 +676,65 @@ class PluginManager:
                 lambda: self._skill_host.close(generation_id),
             )
             if not activate:
+                try:
+                    mcp_catalog = await self._mcp_host.prepare(
+                        generation_id,
+                        server_specs=contributions.mcp_servers,
+                        proactive_sources=contributions.proactive_sources,
+                    )
+                except Exception as error:
+                    gate_result = _with_gate_check(
+                        gate_result,
+                        check_id="mcp_readiness",
+                        passed=False,
+                        evidence=str(error),
+                        gate_id="G1/G2/G3-readiness",
+                    )
+                    self._gate_results[plugin_id] = gate_result
+                    raise _CandidateRejected(gate_result) from error
+                generation.mcp_catalog = mcp_catalog
+                scope.defer(
+                    "mcp_catalog",
+                    lambda: self._mcp_host.close(generation_id),
+                )
+                try:
+                    raw_readiness_checks: object = instance.readiness_semantic_checks()
+                    if not isinstance(raw_readiness_checks, list):
+                        raise RuntimeError(
+                            "readiness_semantic_checks 返回值不是 list"
+                        )
+                    readiness_checks = cast(list[object], raw_readiness_checks)
+                except Exception as error:
+                    readiness_passed = False
+                    readiness_evidence: object = str(error)
+                else:
+                    invalid_readiness = [
+                        check
+                        for check in readiness_checks
+                        if not isinstance(check, PluginSemanticCheck) or not check.passed
+                    ]
+                    readiness_passed = not invalid_readiness
+                    readiness_evidence = [
+                        getattr(check, "evidence", repr(check))
+                        for check in invalid_readiness
+                    ]
+                gate_result = _with_gate_check(
+                    gate_result,
+                    check_id="mcp_readiness",
+                    passed=True,
+                    evidence=list(mcp_catalog.tool_names),
+                    gate_id="G1/G2/G3-readiness",
+                )
+                gate_result = _with_gate_check(
+                    gate_result,
+                    check_id="readiness_semantic_checks",
+                    passed=readiness_passed,
+                    evidence=readiness_evidence,
+                )
+                self._gate_results[plugin_id] = gate_result
+                generation.gate_result = gate_result
+                if gate_result.status == "failed":
+                    raise _CandidateRejected(gate_result)
                 self._prepared_generations[plugin_id] = generation
                 return generation
             staged_event_bus = ScopedEventBus(self._event_bus, scope, staged=True)
@@ -1268,6 +1334,7 @@ def _with_gate_check(
     check_id: str,
     passed: bool,
     evidence: object,
+    gate_id: str | None = None,
 ) -> GateResult:
     check = GateCheckResult(
         check_id=check_id,
@@ -1277,7 +1344,7 @@ def _with_gate_check(
     checks = (*gate.checks, check)
     failed = [item.check_id for item in checks if item.status == "failed"]
     return GateResult(
-        gate_id=gate.gate_id,
+        gate_id=gate_id or gate.gate_id,
         plugin_id=gate.plugin_id,
         candidate_revision=gate.candidate_revision,
         status="failed" if failed else "passed",
@@ -1643,6 +1710,11 @@ def _skill_body_hashes(
         name: hashlib.sha256(record.content.encode()).hexdigest()
         for name, record in sorted(records.items())
     }
+
+
+def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
+    catalog = generation.mcp_catalog
+    return list(catalog.tool_names) if catalog is not None else []
 
 
 def _is_plugin_disabled(plugin_dir: Path) -> bool:
