@@ -474,6 +474,8 @@ async def test_plugin_initialize_cancellation_rolls_back(tmp_path: Path):
         "from contextlib import suppress\n"
         "from agent.plugins import Plugin\n"
         "started = asyncio.Event()\n"
+        "terminate_started = asyncio.Event()\n"
+        "release_terminate = asyncio.Event()\n"
         "tasks = []\n"
         "class CancelledPlugin(Plugin):\n"
         "    name = 'cancelled'\n"
@@ -483,6 +485,8 @@ async def test_plugin_initialize_cancellation_rolls_back(tmp_path: Path):
         "        started.set()\n"
         "        await asyncio.Event().wait()\n"
         "    async def terminate(self):\n"
+        "        terminate_started.set()\n"
+        "        await release_terminate.wait()\n"
         "        self.task.cancel()\n"
         "        with suppress(asyncio.CancelledError):\n"
         "            await self.task\n",
@@ -501,6 +505,11 @@ async def test_plugin_initialize_cancellation_rolls_back(tmp_path: Path):
     await module.started.wait()
 
     loading.cancel()
+    await module.terminate_started.wait()
+    loading.cancel()
+    await asyncio.sleep(0)
+    assert not loading.done()
+    module.release_terminate.set()
     with pytest.raises(asyncio.CancelledError):
         await loading
 

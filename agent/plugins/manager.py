@@ -396,7 +396,16 @@ class PluginManager:
                 if hasattr(instance, "initialize"):
                     await instance.initialize()
             except asyncio.CancelledError:
-                await asyncio.shield(rollback_load())
+                rollback_task = asyncio.create_task(
+                    rollback_load(),
+                    name=f"plugin_rollback:{plugin_id}",
+                )
+                while not rollback_task.done():
+                    try:
+                        await asyncio.shield(rollback_task)
+                    except asyncio.CancelledError:
+                        continue
+                await rollback_task
                 raise
             except Exception as e:
                 logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], e)
