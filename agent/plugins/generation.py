@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from agent.plugins.skill_host import PreparedSkillCatalog
     from agent.plugins.mcp_host import PreparedMcpCatalog
     from agent.plugins.activity_host import PreparedJobCatalog, PreparedProactiveCatalog
+    from agent.plugins.snapshot import RuntimeSnapshot
 
 
 GateStatus = Literal["passed", "failed"]
@@ -86,5 +87,6 @@ class PluginGeneration:
     mcp_catalog: PreparedMcpCatalog | None = None
     job_catalog: PreparedJobCatalog | None = None
     proactive_catalog: PreparedProactiveCatalog | None = None
+    runtime_snapshot: RuntimeSnapshot | None = None
     state: str = "active"
     lease_count: int = 0

@@ -878,8 +878,12 @@ class PluginManager:
                 generation.gate_result = gate_result
                 if gate_result.status == "failed":
                     raise _CandidateRejected(gate_result)
+                generation.runtime_snapshot = self._compile_generation_snapshot(
+                    generation
+                )
                 self._prepared_generations[plugin_id] = generation
                 return generation
+            generation.runtime_snapshot = self._compile_generation_snapshot(generation)
             staged_event_bus = ScopedEventBus(self._event_bus, scope, staged=True)
             instance.context.event_bus = staged_event_bus
             instance.context.kv_store = PluginKVStore(data_dir / ".kv.json")
@@ -890,6 +894,7 @@ class PluginManager:
             load_phase = "initialize"
             initialization_started = True
             await instance.initialize()
+            generation.runtime_snapshot = self._compile_generation_snapshot(generation)
             load_phase = "publish"
             self._register_tools(instance, mp, tool_names)
             self._bind_tool_hooks(instance, mp)
@@ -946,18 +951,37 @@ class PluginManager:
         self._fresh_importer.register(stable_module_path, plugin_dir)
         plugin_registry.register_instance(stable_module_path, instance)
         sys.modules[stable_module_path] = sys.modules[mp]
-        await self._refresh_committed_snapshot(generation)
+        assert generation.runtime_snapshot is not None
+        await self._publish_committed_snapshot(generation.runtime_snapshot)
         logger.info("插件已加载: %s", mod["name"])
         return generation
 
-    async def _refresh_committed_snapshot(
+    def _compile_generation_snapshot(
         self,
-        catalog_generation: PluginGeneration,
+        generation: PluginGeneration,
+    ) -> RuntimeSnapshot:
+        generations = dict(self._active_generations)
+        generations[generation.plugin_id] = generation
+        try:
+            return self._snapshot_compiler.compile(
+                generations,
+                catalog_generation=generation,
+            )
+        except Exception as error:
+            gate = _with_gate_check(
+                generation.gate_result,
+                check_id="runtime_snapshot",
+                passed=False,
+                evidence=str(error),
+            )
+            generation.gate_result = gate
+            self._gate_results[generation.plugin_id] = gate
+            raise _CandidateRejected(gate) from error
+
+    async def _publish_committed_snapshot(
+        self,
+        snapshot: RuntimeSnapshot,
     ) -> None:
-        snapshot = self._snapshot_compiler.compile(
-            self._active_generations,
-            catalog_generation=catalog_generation,
-        )
         if self._snapshot_store.current is None:
             self._snapshot_store.install(snapshot)
             return

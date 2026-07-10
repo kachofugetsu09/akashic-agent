@@ -1155,8 +1155,15 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
         tmp_path / "plugins",
         "snapshot",
         "from agent.plugins import Plugin\n"
+        "class A:\n"
+        "    slot = 'snapshot.a'\n"
+        "    requires = ()\n"
+        "class B:\n"
+        "    slot = 'snapshot.b'\n"
+        "    requires = ('snapshot.a',)\n"
         "class SnapshotPlugin(Plugin):\n"
-        "    name = 'snapshot'\n",
+        "    name = 'snapshot'\n"
+        "    def before_turn_modules(self): return [B(), A()]\n",
     )
     manager = _manager(tmp_path)
     await manager.load_all()
@@ -1167,6 +1174,10 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     assert installed.generations["snapshot"] is active
     assert installed.state == "committed"
     assert manager.current_snapshot is installed
+    assert [module.slot for module in installed.before_turn_modules] == [
+        "snapshot.a",
+        "snapshot.b",
+    ]
     compiler = RuntimeSnapshotCompiler()
     v1 = compiler.compile({"snapshot": active}, catalog_generation=active)
     v2 = compiler.compile({"snapshot": prepared}, catalog_generation=prepared)
@@ -1207,4 +1218,101 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     await store.close()
     assert drained == [v2.snapshot_id, v1.snapshot_id, next_v2.snapshot_id]
     await manager.discard_prepared("snapshot")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_snapshot_drain_retry_and_store_ownership(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_owner",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotOwnerPlugin(Plugin):\n"
+        "    name = 'snapshot_owner'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_owner")
+    prepared = await manager.prepare_candidate("snapshot_owner")
+    assert active is not None and prepared is not None
+    compiler = RuntimeSnapshotCompiler()
+    v1 = compiler.compile({"snapshot_owner": active}, catalog_generation=active)
+    v2 = compiler.compile(
+        {"snapshot_owner": prepared},
+        catalog_generation=prepared,
+    )
+    attempts = 0
+
+    async def fail_once(snapshot) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("drain failed")
+
+    store = RuntimeSnapshotStore(fail_once)
+    store.install(v1)
+    lease = store.lease()
+    with pytest.raises(RuntimeError, match="仍有 lease"):
+        await store.close()
+    assert store.current is v1
+    await lease.release()
+    transaction = store.begin_publish(v2)
+
+    with pytest.raises(RuntimeError, match="drain failed"):
+        await store.commit(transaction)
+
+    assert store.current is v2
+    assert v1.snapshot_id in store.retained_snapshot_ids
+    await store.retry_drains()
+    assert v1.snapshot_id not in store.retained_snapshot_ids
+    other_store = RuntimeSnapshotStore()
+    with pytest.raises(RuntimeError, match="全新 compiled"):
+        other_store.install(v2)
+    await store.close()
+    await manager.discard_prepared("snapshot_owner")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_compile_failure_does_not_publish_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins = tmp_path / "plugins"
+    _write_plugin(
+        plugins,
+        "first_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class FirstSnapshotPlugin(Plugin):\n"
+        "    name = 'first_snapshot'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    current = manager.current_snapshot
+    assert current is not None
+    _write_plugin(
+        plugins,
+        "second_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class SecondSnapshotPlugin(Plugin):\n"
+        "    name = 'second_snapshot'\n",
+    )
+    compile_snapshot = manager._snapshot_compiler.compile
+
+    def fail_second(generations, *, catalog_generation=None):
+        if "second_snapshot" in generations:
+            raise RuntimeError("snapshot compile failed")
+        return compile_snapshot(
+            generations,
+            catalog_generation=catalog_generation,
+        )
+
+    monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_second)
+
+    await manager.load_all()
+
+    assert manager.current_snapshot is current
+    assert manager.loaded_count == 1
+    assert manager.generation("second_snapshot") is None
+    assert plugin_registry.get_instance("akasic_plugin_plugins_second_snapshot") is None
     await manager.terminate_all()

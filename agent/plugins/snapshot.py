@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 
@@ -38,6 +38,12 @@ class RuntimeSnapshot:
     mcp_catalog_generation_ids: Mapping[str, str]
     state: SnapshotState = "compiled"
     lease_count: int = 0
+    _store_token: object | None = field(default=None, repr=False)
+
+    def claim(self, store_token: object) -> None:
+        if self.state != "compiled" or self.lease_count or self._store_token is not None:
+            raise RuntimeError("RuntimeSnapshot 不是可发布的全新 compiled 快照")
+        self._store_token = store_token
 
 
 @dataclass(frozen=True)
@@ -73,14 +79,15 @@ class RuntimeSnapshotCompiler:
                 for generation in ordered
                 for module in getattr(generation.contributions, field_name)
             )
-            _ = topo_sort_modules(list(modules))
-            phases[field_name] = modules
+            phases[field_name] = tuple(topo_sort_modules(list(modules)))
         jobs = self._compile_jobs(ordered)
         sources = self._compile_sources(ordered)
         catalog_owner = catalog_generation or next(
             (generation for generation in reversed(ordered) if generation.skill_catalog),
             None,
         )
+        if catalog_owner is not None and generations.get(catalog_owner.plugin_id) is not catalog_owner:
+            raise RuntimeError("RuntimeSnapshot catalog owner 不属于 generations")
         mcp_catalogs = {
             generation.plugin_id: generation.mcp_catalog.generation_id
             for generation in ordered
@@ -90,6 +97,15 @@ class RuntimeSnapshotCompiler:
             f"{generation.plugin_id}:{generation.generation_id}:"
             f"{generation.source_revision}:{generation.config_revision}"
             for generation in ordered
+        )
+        identity += "|skill:" + (
+            catalog_owner.skill_catalog.generation_id
+            if catalog_owner is not None and catalog_owner.skill_catalog is not None
+            else ""
+        )
+        identity += "|mcp:" + "|".join(
+            f"{plugin_id}:{generation_id}"
+            for plugin_id, generation_id in sorted(mcp_catalogs.items())
         )
         snapshot_id = hashlib.sha256(identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
@@ -171,14 +187,20 @@ class RuntimeSnapshotStore:
         self._snapshots: dict[str, RuntimeSnapshot] = {}
         self._pending: SnapshotTransaction | None = None
         self._on_drained = on_drained
+        self._token = object()
 
     @property
     def current(self) -> RuntimeSnapshot | None:
         return self._current
 
+    @property
+    def retained_snapshot_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._snapshots))
+
     def install(self, snapshot: RuntimeSnapshot) -> None:
         if self._current is not None or self._pending is not None:
             raise RuntimeError("RuntimeSnapshotStore 已安装初始快照")
+        self._adopt(snapshot)
         snapshot.state = "committed"
         self._current = snapshot
         self._snapshots[snapshot.snapshot_id] = snapshot
@@ -188,6 +210,7 @@ class RuntimeSnapshotStore:
             raise RuntimeError("已有 RuntimeSnapshot 发布事务")
         if candidate.snapshot_id in self._snapshots:
             raise RuntimeError(f"RuntimeSnapshot 已存在: {candidate.snapshot_id}")
+        self._adopt(candidate)
         transaction = SnapshotTransaction(previous=self._current, candidate=candidate)
         candidate.state = "published_pending"
         self._snapshots[candidate.snapshot_id] = candidate
@@ -214,6 +237,14 @@ class RuntimeSnapshotStore:
     async def close(self) -> None:
         if self._pending is not None:
             raise RuntimeError("RuntimeSnapshot 发布事务尚未结束")
+        leased = [
+            snapshot.snapshot_id
+            for snapshot in self._snapshots.values()
+            if snapshot.lease_count
+        ]
+        if leased:
+            raise RuntimeError(f"RuntimeSnapshot 仍有 lease: {', '.join(sorted(leased))}")
+        await self.retry_drains()
         current = self._current
         self._current = None
         if current is not None:
@@ -246,10 +277,17 @@ class RuntimeSnapshotStore:
     async def _drain_if_ready(self, snapshot: RuntimeSnapshot) -> None:
         if snapshot.state not in {"retired", "aborted"} or snapshot.lease_count:
             return
-        _ = self._snapshots.pop(snapshot.snapshot_id, None)
         if self._on_drained is not None:
             await self._on_drained(snapshot)
+        _ = self._snapshots.pop(snapshot.snapshot_id, None)
+
+    async def retry_drains(self) -> None:
+        for snapshot in tuple(self._snapshots.values()):
+            await self._drain_if_ready(snapshot)
 
     def _require_pending(self, transaction: SnapshotTransaction) -> None:
         if self._pending is not transaction or self._current is not transaction.candidate:
             raise RuntimeError("RuntimeSnapshot 发布事务已失效")
+
+    def _adopt(self, snapshot: RuntimeSnapshot) -> None:
+        snapshot.claim(self._token)
