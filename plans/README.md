@@ -17,8 +17,8 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 └─ G-1 沙盒完整性
    └─ G0 基线
       └─ G1 候选验证
-         └─ G2 资源预热
-            └─ G3 插件语义验证
+         └─ G3 插件语义验证
+            └─ G2 资源预热
                └─ G4 原子发布
                   └─ G5 旧代际排空
                      └─ G6 完整 Runtime 验收
