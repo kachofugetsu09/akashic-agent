@@ -322,7 +322,10 @@ class PluginJobRuntime:
         key: str,
     ) -> tuple[RegisteredPluginJob | None, RuntimeSnapshotLease | None]:
         if self._snapshot_store is None:
-            return self._jobs.get(key), None
+            job = self._jobs.get(key)
+            if job is not None and job.spec.coalesce and key in self._queued_keys:
+                return None, None
+            return job, None
         from agent.plugins.snapshot import (
             get_current_runtime_snapshot,
             lease_current_runtime_snapshot,

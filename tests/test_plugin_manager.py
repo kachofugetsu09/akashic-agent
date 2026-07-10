@@ -273,6 +273,34 @@ async def test_plugin_job_runtime_restarts_after_stop_during_job():
     runtime.stop()
     await restarted
 
+
+@pytest.mark.asyncio
+async def test_plugin_job_runtime_coalesces_legacy_queue():
+    calls = 0
+
+    async def handler(_context: Any) -> None:
+        nonlocal calls
+        calls += 1
+
+    job = RegisteredPluginJob(
+        plugin_id="coalesce",
+        plugin_context=None,
+        spec=PluginJobSpec(id="refresh", triggers=[], handler=handler),
+    )
+    runtime = PluginJobRuntime(
+        event_bus=EventBus(),
+        llm=_FakePluginLlm(),
+        jobs=[job],
+    )
+    runtime.enqueue("coalesce:refresh", reason="test")
+    runtime.enqueue("coalesce:refresh", reason="test")
+    running = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0.05)
+    runtime.stop()
+    await running
+
+    assert calls == 1
+
 @pytest.mark.asyncio
 async def test_event_subscription_can_be_closed():
     bus = EventBus()
