@@ -750,18 +750,42 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
         encoding="utf-8",
     )
     workspace = tmp_path / "workspace"
+    workspace_skill = workspace / "skills" / "personal"
+    workspace_skill.mkdir(parents=True)
+    _ = (workspace_skill / "SKILL.md").write_text(
+        "---\ndescription: workspace one\n---\nworkspace body v1\n",
+        encoding="utf-8",
+    )
+    workspace_drift = workspace / "drift" / "skills" / "personal-drift"
+    workspace_drift.mkdir(parents=True)
+    _ = (workspace_drift / "SKILL.md").write_text(
+        "---\ndescription: drift workspace one\n---\ndrift workspace v1\n",
+        encoding="utf-8",
+    )
     manager = _manager(tmp_path, workspace=workspace)
     await manager.load_all()
     active = manager.generation("skill_reload")
     assert active is not None and active.skill_catalog is not None
     active_record = active.skill_catalog.normal.get("shared")
     assert active_record is not None
+    active_workspace = active.skill_catalog.normal.get("personal")
+    active_workspace_drift = active.skill_catalog.drift.get("personal-drift")
+    assert active_workspace is not None
+    assert active_workspace_drift is not None
 
     workspace_skills = workspace / "skills"
-    workspace_skills.mkdir(parents=True)
+    workspace_skills.mkdir(parents=True, exist_ok=True)
     (workspace_skills / "shared").symlink_to(v1_skill, target_is_directory=True)
     _ = (v1_skill / "SKILL.md").write_text(
         "---\ndescription: changed old source\n---\nchanged old body\n",
+        encoding="utf-8",
+    )
+    _ = (workspace_skill / "SKILL.md").write_text(
+        "---\ndescription: workspace two\n---\nworkspace body v2\n",
+        encoding="utf-8",
+    )
+    _ = (workspace_drift / "SKILL.md").write_text(
+        "---\ndescription: drift workspace two\n---\ndrift workspace v2\n",
         encoding="utf-8",
     )
     v2_skill = plugin_dir / "skills-v2" / "shared"
@@ -790,3 +814,20 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
     assert prepared_record.source == "plugin"
     assert "body v2" in prepared_record.skill_file.read_text(encoding="utf-8")
     assert active_record.root_dir != prepared_record.root_dir
+    prepared_workspace = prepared.skill_catalog.normal.get("personal")
+    prepared_workspace_drift = prepared.skill_catalog.drift.get("personal-drift")
+    assert prepared_workspace is not None
+    assert prepared_workspace_drift is not None
+    assert "workspace body v1" in active_workspace.content
+    assert "workspace body v1" in active_workspace.skill_file.read_text(encoding="utf-8")
+    assert "workspace body v2" in prepared_workspace.content
+    assert "drift workspace v1" in active_workspace_drift.content
+    assert "drift workspace v2" in prepared_workspace_drift.content
+    active_snapshot = active.skill_catalog.snapshot_root
+    prepared_snapshot = prepared.skill_catalog.snapshot_root
+
+    await manager.discard_prepared("skill_reload")
+    await manager.terminate_all()
+
+    assert not active_snapshot.exists()
+    assert not prepared_snapshot.exists()

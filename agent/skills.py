@@ -20,6 +20,7 @@ class SkillRecord:
     source_id: str
     root_dir: Path
     skill_file: Path
+    content: str
     description: str
     when_to_use: str
     config: dict[str, Any]
@@ -79,8 +80,7 @@ class SkillsLoader:
         record = self.load_skill_record(name)
         if record is None:
             return None
-        content = record.skill_file.read_text(encoding="utf-8")
-        return self._strip_frontmatter(content)
+        return self._strip_frontmatter(record.content)
 
     def load_skill_record(self, name: str) -> SkillRecord | None:
         return self._build_index().get(name)
@@ -205,6 +205,7 @@ class SkillsLoader:
             source_id=source_id,
             root_dir=root_dir,
             skill_file=skill_file,
+            content=content,
             description=meta.get("description") or name,
             when_to_use=meta.get("when_to_use", ""),
             config=config,

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from pathlib import Path
 import shutil
 import tempfile
+import weakref
 from typing import TYPE_CHECKING
 
-from agent.skills import SkillIndex, SkillsLoader
+from agent.skills import SkillIndex, SkillRecord, SkillsLoader
 
 if TYPE_CHECKING:
     from agent.plugins.generation import PluginGeneration
@@ -16,13 +17,31 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class PreparedSkillCatalog:
     generation_id: str
-    snapshot_root: Path
+    snapshot: SkillSnapshot
     normal: SkillIndex
     drift: SkillIndex
 
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(sorted({*self.normal.records, *self.drift.records}))
+
+    @property
+    def snapshot_root(self) -> Path:
+        return self.snapshot.root
+
+
+class SkillSnapshot:
+    def __init__(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="akashic-skill-catalog-"))
+        self._finalizer = weakref.finalize(
+            self,
+            shutil.rmtree,
+            self.root,
+            True,
+        )
+
+    def cleanup(self) -> None:
+        _ = self._finalizer()
 
 
 class PluginSkillHost:
@@ -42,7 +61,8 @@ class PluginSkillHost:
         self._validate_unique_names(normal_roots)
         self._validate_unique_names(drift_roots)
         workspace = self._workspace or Path("/__akashic_no_workspace__")
-        snapshot_root = Path(tempfile.mkdtemp(prefix="akashic-skill-catalog-"))
+        snapshot = SkillSnapshot()
+        snapshot_root = snapshot.root
         try:
             frozen_normal = self._snapshot_roots(
                 snapshot_root / "normal",
@@ -64,12 +84,14 @@ class PluginSkillHost:
                 plugin_roots=frozen_drift,
                 ignored_workspace_symlink_roots=ignored_drift_roots,
             ).build_index()
+            normal = self._freeze_index(snapshot_root / "selected-normal", normal)
+            drift = self._freeze_index(snapshot_root / "selected-drift", drift)
         except BaseException:
-            shutil.rmtree(snapshot_root)
+            snapshot.cleanup()
             raise
         catalog = PreparedSkillCatalog(
             generation_id=generation_id,
-            snapshot_root=snapshot_root,
+            snapshot=snapshot,
             normal=normal,
             drift=drift,
         )
@@ -82,7 +104,7 @@ class PluginSkillHost:
     def close(self, generation_id: str) -> None:
         catalog = self._catalogs.pop(generation_id, None)
         if catalog is not None:
-            shutil.rmtree(catalog.snapshot_root)
+            catalog.snapshot.cleanup()
 
     @staticmethod
     def roots_for(
@@ -131,3 +153,17 @@ class PluginSkillHost:
                 copies.append(target)
             frozen[plugin_id] = tuple(copies)
         return frozen
+
+    @staticmethod
+    def _freeze_index(snapshot_dir: Path, index: SkillIndex) -> SkillIndex:
+        records: dict[str, SkillRecord] = {}
+        for position, (name, record) in enumerate(sorted(index.records.items())):
+            key = hashlib.sha256(f"{position}:{name}".encode()).hexdigest()[:12]
+            target = snapshot_dir / key
+            _ = shutil.copytree(record.root_dir, target)
+            records[name] = replace(
+                record,
+                root_dir=target,
+                skill_file=target / "SKILL.md",
+            )
+        return SkillIndex(records)

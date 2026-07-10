@@ -518,6 +518,14 @@ def _candidate_reload_source(version: str) -> str:
     )
 
 
+def _skill_fixture_hash(version: str, *, drift: bool) -> str:
+    label = f"candidate drift {version}" if drift else f"candidate {version} skill"
+    body = f"drift {version}" if drift else f"candidate {version}"
+    return hashlib.sha256(
+        f"---\ndescription: {label}\n---\n{body}\n".encode()
+    ).hexdigest()
+
+
 def _read_json_object(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
@@ -639,6 +647,10 @@ def _exercise_candidate_prepare(
     valid_skills = valid_status.get("skills")
     valid_descriptions = valid_status.get("skill_descriptions")
     valid_drift_descriptions = valid_status.get("drift_skill_descriptions")
+    valid_body_hashes = valid_status.get("skill_body_hashes")
+    valid_drift_body_hashes = valid_status.get("drift_skill_body_hashes")
+    return_body_hashes = return_status.get("skill_body_hashes")
+    return_drift_body_hashes = return_status.get("drift_skill_body_hashes")
     valid_description_map = (
         cast(dict[object, object], valid_descriptions)
         if isinstance(valid_descriptions, dict)
@@ -649,6 +661,15 @@ def _exercise_candidate_prepare(
         if isinstance(valid_drift_descriptions, dict)
         else {}
     )
+    hash_maps = [
+        cast(dict[object, object], value) if isinstance(value, dict) else {}
+        for value in (
+            valid_body_hashes,
+            valid_drift_body_hashes,
+            return_body_hashes,
+            return_drift_body_hashes,
+        )
+    ]
     passed = (
         invalid_signal.returncode == 0
         and valid_signal.returncode == 0
@@ -662,6 +683,14 @@ def _exercise_candidate_prepare(
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"
         and valid_drift_description_map.get("candidate-drift") == "candidate drift v2"
+        and hash_maps[0].get("candidate-skill")
+        == _skill_fixture_hash("v2", drift=False)
+        and hash_maps[1].get("candidate-drift")
+        == _skill_fixture_hash("v2", drift=True)
+        and hash_maps[2].get("candidate-skill")
+        == _skill_fixture_hash("v1", drift=False)
+        and hash_maps[3].get("candidate-drift")
+        == _skill_fixture_hash("v1", drift=True)
         and return_status.get("active_generation") == initial_generation
         and return_status.get("prepared_generation") is None
         and after_invalid.get("active_generation") == initial_generation

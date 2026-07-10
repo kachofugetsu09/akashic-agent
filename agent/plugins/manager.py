@@ -360,6 +360,11 @@ class PluginManager:
                     ),
                     "skill_descriptions": _skill_descriptions(active),
                     "drift_skill_descriptions": _drift_skill_descriptions(active),
+                    "skill_body_hashes": _skill_body_hashes(active, drift=False),
+                    "drift_skill_body_hashes": _skill_body_hashes(
+                        active,
+                        drift=True,
+                    ),
                 }
                 results.append(result)
                 logger.info(
@@ -395,6 +400,16 @@ class PluginManager:
                 ),
                 "drift_skill_descriptions": (
                     _drift_skill_descriptions(prepared)
+                    if prepared is not None
+                    else {}
+                ),
+                "skill_body_hashes": (
+                    _skill_body_hashes(prepared, drift=False)
+                    if prepared is not None
+                    else {}
+                ),
+                "drift_skill_body_hashes": (
+                    _skill_body_hashes(prepared, drift=True)
                     if prepared is not None
                     else {}
                 ),
@@ -1612,6 +1627,21 @@ def _drift_skill_descriptions(generation: PluginGeneration) -> dict[str, str]:
     return {
         name: record.description
         for name, record in sorted(catalog.drift.records.items())
+    }
+
+
+def _skill_body_hashes(
+    generation: PluginGeneration,
+    *,
+    drift: bool,
+) -> dict[str, str]:
+    catalog = generation.skill_catalog
+    if catalog is None:
+        return {}
+    records = catalog.drift.records if drift else catalog.normal.records
+    return {
+        name: hashlib.sha256(record.content.encode()).hexdigest()
+        for name, record in sorted(records.items())
     }
 
 
