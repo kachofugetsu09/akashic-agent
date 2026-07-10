@@ -536,9 +536,21 @@ def _candidate_reload_source(version: str) -> str:
         "import asyncio\n"
         "from agent.plugins import (IntervalTrigger, McpServerSpec, Plugin, PluginJobSpec, "
         "PluginSemanticCheck, ProactiveSourceSpec, tool)\n"
+        "class SnapshotBeforeTurn:\n"
+        "    slot = 'candidate_reload.before_turn'\n"
+        "    requires = ('before_turn.emit',)\n"
+        "    def __init__(self, plugin): self.plugin = plugin\n"
+        "    async def run(self, frame):\n"
+        f"        self.plugin.context.kv_store.increment('phase_runs_{version}')\n"
+        "        ctx = frame.slots['session:ctx']\n"
+        "        ctx.abort = True\n"
+        f"        ctx.abort_reply = 'snapshot-{version}'\n"
+        "        return frame\n"
         "class CandidateReloadPlugin(Plugin):\n"
         "    name = 'candidate_reload'\n"
         f"{skills}"
+        "    def before_turn_modules(self):\n"
+        "        return [SnapshotBeforeTurn(self)]\n"
         "    @classmethod\n"
         "    def mcp_servers(cls):\n"
         f"        return [McpServerSpec(name='candidate_feed', command=('python', 'candidate_mcp_server.py'), env={{'CANDIDATE_VERSION': '{version}'}})]\n"
@@ -690,6 +702,32 @@ def _wait_process_count(
     return count
 
 
+def _ipc_roundtrip(path: Path, content: str) -> dict[str, object]:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(15)
+    try:
+        client.connect(str(path))
+        payload = json.dumps(
+            {
+                "content": content,
+                "as_session_key": "cli:snapshot-gate",
+            }
+        )
+        client.sendall((payload + "\n").encode())
+        data = b""
+        while b"\n" not in data:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        raw: object = json.loads(data.split(b"\n", 1)[0]) if data else {}
+        if not isinstance(raw, dict):
+            return {}
+        return {str(key): value for key, value in raw.items()}
+    finally:
+        client.close()
+
+
 def _wait_candidate_status(
     container_id: str,
     *,
@@ -713,6 +751,7 @@ def _exercise_candidate_prepare(
     container_id: str,
     source_path: Path,
     state_path: Path,
+    socket_path: Path,
 ) -> dict[str, object]:
     initial = _read_json_object(state_path)
     calls_path = state_path.parent / "candidate_mcp_calls.jsonl"
@@ -759,6 +798,8 @@ def _exercise_candidate_prepare(
     time.sleep(2.3)
     after_valid = _read_json_object(state_path)
     after_valid_calls = _mcp_call_counts(calls_path)
+    passive_response = _ipc_roundtrip(socket_path, "snapshot lease gate")
+    after_passive = _read_json_object(state_path)
     after_valid_mcp_processes = _wait_process_count(
         container_id,
         "candidate_mcp_server.py",
@@ -901,6 +942,9 @@ def _exercise_candidate_prepare(
         > _integer(initial.get("job_runs_v1"))
         and _integer(after_valid.get("job_runs_v2")) == 0
         and after_return_calls.get("v2") == after_valid_calls.get("v2")
+        and passive_response.get("content") == "snapshot-v1"
+        and _integer(after_passive.get("phase_runs_v1")) >= 1
+        and _integer(after_passive.get("phase_runs_v2")) == 0
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"
         and valid_drift_description_map.get("candidate-drift") == "candidate drift v2"
@@ -939,6 +983,8 @@ def _exercise_candidate_prepare(
             "after_valid": after_valid_calls,
             "after_return": after_return_calls,
         },
+        "passive_response": passive_response,
+        "after_passive": after_passive,
         "invalid_signal": invalid_signal.returncode,
         "valid_signal": valid_signal.returncode,
         "return_signal": return_signal.returncode,
@@ -1041,6 +1087,7 @@ def _run_runtime_smoke(
             container_id,
             candidate_states[4],
             candidate_states[5],
+            socket,
         )
     logs = subprocess.run(
         [*compose, "logs", "--no-color", "--tail", "200", "akashic-plugin-gate"],

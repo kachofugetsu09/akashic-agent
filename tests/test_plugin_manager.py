@@ -1657,12 +1657,12 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     await runtime.start()
 
     assert plugin_manager.loaded_count == 1
-    assert loop.received_before_turn == plugin_manager.before_turn_modules
-    assert loop.received_before_reasoning == plugin_manager.before_reasoning_modules
-    assert loop.received_prompt_render == plugin_manager.prompt_render_modules
-    assert loop.received_before_step == plugin_manager.before_step_modules
-    assert loop.received_after_step == plugin_manager.after_step_modules
-    assert loop.received_after_reasoning == plugin_manager.after_reasoning_modules
-    assert loop.received_after_turn == plugin_manager.after_turn_modules
+    assert loop.received_before_turn is None
+    assert loop.received_before_reasoning is None
+    assert loop.received_prompt_render is None
+    assert loop.received_before_step is None
+    assert loop.received_after_step is None
+    assert loop.received_after_reasoning is None
+    assert loop.received_after_turn is None
     assert loop.received_hooks == plugin_manager.tool_hooks
     assert spawn_tool.received_hooks == plugin_manager.tool_hooks

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+from contextvars import ContextVar
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, cast
 
 from agent.lifecycle.phase import topo_sort_modules
 from agent.plugins.generation import PluginGeneration
@@ -19,6 +20,8 @@ SnapshotState = Literal[
     "aborted",
     "retired",
 ]
+
+current_runtime_snapshot: ContextVar[RuntimeSnapshot | None]
 
 
 @dataclass
@@ -46,10 +49,20 @@ class RuntimeSnapshot:
         self._store_token = store_token
 
 
+current_runtime_snapshot = ContextVar("current_runtime_snapshot", default=None)
+
+
 @dataclass(frozen=True)
 class SnapshotTransaction:
     previous: RuntimeSnapshot | None
     candidate: RuntimeSnapshot
+
+
+@dataclass(frozen=True)
+class _SnapshotModuleOrder:
+    module: object
+    slot: str
+    requires: tuple[str, ...]
 
 
 class RuntimeSnapshotCompiler:
@@ -79,7 +92,7 @@ class RuntimeSnapshotCompiler:
                 for generation in ordered
                 for module in getattr(generation.contributions, field_name)
             )
-            phases[field_name] = tuple(topo_sort_modules(list(modules)))
+            phases[field_name] = self._order_plugin_modules(modules)
         jobs = self._compile_jobs(ordered)
         sources = self._compile_sources(ordered)
         catalog_owner = catalog_generation or next(
@@ -127,6 +140,28 @@ class RuntimeSnapshotCompiler:
             after_reasoning_modules=phases["after_reasoning_modules"],
             after_turn_modules=phases["after_turn_modules"],
         )
+
+    @staticmethod
+    def _order_plugin_modules(modules: tuple[object, ...]) -> tuple[object, ...]:
+        slots = {
+            str(slot)
+            for slot in (getattr(module, "slot", None) for module in modules)
+            if isinstance(slot, str) and slot
+        }
+        bindings = [
+            _SnapshotModuleOrder(
+                module=module,
+                slot=str(getattr(module, "slot", "")),
+                requires=tuple(
+                    str(required)
+                    for required in getattr(module, "requires", ())
+                    if str(required) in slots
+                ),
+            )
+            for module in modules
+        ]
+        ordered = cast(list[_SnapshotModuleOrder], topo_sort_modules(bindings))
+        return tuple(binding.module for binding in ordered)
 
     @staticmethod
     def _compile_jobs(

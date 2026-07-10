@@ -7,12 +7,14 @@ import py_compile
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.registry import plugin_registry
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
+from agent.looping.core import AgentLoop
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 
@@ -1319,4 +1321,62 @@ async def test_snapshot_compile_failure_does_not_publish_plugin(
     assert plugin_registry.get_instance("akasic_plugin_plugins_second_snapshot") is None
     state = tmp_path / "home" / "data" / "second_snapshot-builtin" / ".kv.json"
     assert not state.exists()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "passive_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class PassiveSnapshotPlugin(Plugin):\n"
+        "    name = 'passive_snapshot'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("passive_snapshot")
+    prepared = await manager.prepare_candidate("passive_snapshot")
+    assert active is not None and prepared is not None
+    compiler = RuntimeSnapshotCompiler()
+    v1 = compiler.compile({"passive_snapshot": active}, catalog_generation=active)
+    v2 = compiler.compile(
+        {"passive_snapshot": prepared},
+        catalog_generation=prepared,
+    )
+    store = RuntimeSnapshotStore()
+    store.install(v1)
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = store
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[str] = []
+
+    async def process(msg, **kwargs):
+        from agent.plugins.snapshot import current_runtime_snapshot
+
+        snapshot = current_runtime_snapshot.get()
+        assert snapshot is not None
+        seen.append(snapshot.snapshot_id)
+        entered.set()
+        await release.wait()
+        assert current_runtime_snapshot.get() is snapshot
+        seen.append(snapshot.snapshot_id)
+        return "done"
+
+    loop._process = process
+    message = SimpleNamespace(session_key="cli:snapshot")
+    running = asyncio.create_task(loop._process_with_runtime_admission(message))
+    await entered.wait()
+    transaction = store.begin_publish(v2)
+    await store.commit(transaction)
+    release.set()
+
+    assert await running == "done"
+    assert seen == [v1.snapshot_id, v1.snapshot_id]
+    await loop._process_with_runtime_admission(message)
+    assert seen[-2:] == [v2.snapshot_id, v2.snapshot_id]
+    await store.close()
+    await manager.discard_prepared("passive_snapshot")
     await manager.terminate_all()

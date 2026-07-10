@@ -137,27 +137,6 @@ class CoreRuntime:
                 manifest_path = sync_manifest()
                 logger.info("插件清单已同步: %s", manifest_path)
             logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
-            self.loop.add_before_turn_plugin_modules(
-                self.plugin_manager.before_turn_modules,
-            )
-            self.loop.add_before_reasoning_plugin_modules(
-                self.plugin_manager.before_reasoning_modules,
-            )
-            self.loop.add_prompt_render_plugin_modules(
-                self.plugin_manager.prompt_render_modules,
-            )
-            self.loop.add_before_step_plugin_modules(
-                self.plugin_manager.before_step_modules,
-            )
-            self.loop.add_after_step_plugin_modules(
-                self.plugin_manager.after_step_modules,
-            )
-            self.loop.add_after_reasoning_plugin_modules(
-                self.plugin_manager.after_reasoning_modules,
-            )
-            self.loop.add_after_turn_plugin_modules(
-                self.plugin_manager.after_turn_modules,
-            )
             if self.plugin_manager.tool_hooks:
                 self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
                 spawn_tool = self.tools.get_tool("spawn")
@@ -538,6 +517,7 @@ def build_core_runtime(
         ),
         installed_cache_root=_resolve_installed_plugin_cache_root(),
     )
+    loop.bind_runtime_snapshot_store(plugin_manager.snapshot_store)
 
     return CoreRuntime(
         config=config,
