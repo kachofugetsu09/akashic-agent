@@ -259,6 +259,8 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     assert "默认应该行动一小步" in prompt
     assert "默认调用 select_skill" in prompt
     assert "SKILL.md 是说明书，不是必须从头播放的脚本" in prompt
+    assert "local_context 明确已经完成的读文件、查重、规划、写计划等前置动作" in prompt
+    assert "不必无目的地重新读取" in prompt
     assert "本轮也可以暂时不继续 paused skill" in prompt
     assert "idle_drift 的 reason 必须写具体的时机或风险原因" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
@@ -317,6 +319,7 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
     assert "必须以 runtime_clock 的完整日期和时间为准" in runtime
     assert "recent_raw_chat" in runtime
     assert "SKILL.md 是能力说明书、约束和路径地图" in runtime
+    assert "local_context 记录的已完成进度高于 SKILL.md" in runtime
     assert "local_context 只在 select_skill 后作为执行上下文参考" in runtime
     assert "explore-curiosity: status=completed" in runtime
     assert "meme-auto-generate: status=paused" in runtime
