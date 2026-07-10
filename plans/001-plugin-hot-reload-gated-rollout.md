@@ -1,0 +1,408 @@
+# Plan 001: 以验证门禁完成全插件热重载
+
+> **Executor instructions**: 严格按步骤施工。每一步必须运行对应 Gate，只有预期结果全部满足后才能进入下一步。任何 Gate 失败时保留当前可运行实现，停止扩展范围并报告证据。完成后更新 `plans/README.md` 状态。
+>
+> **Drift check (run first)**: `git diff --stat d2957df..HEAD -- agent/plugins bus agent/tools agent/core agent/looping proactive_v2 bootstrap frontend/dashboard tests tests_scenarios docker/debug plugins`
+> 若范围内代码已变化，先逐项核对“当前状态”；关键入口不一致时停止并更新计划。
+
+## Status
+
+- **Priority**: P1
+- **Effort**: L
+- **Risk**: HIGH
+- **Depends on**: none
+- **Category**: migration
+- **Planned at**: commit `d2957df`, 2026-07-11
+
+## Why this matters
+
+当前插件能力在启动时直接追加到多个 Runtime，插件实例、事件订阅、任务、MCP 连接和 Channel 没有统一所有权。只增加文件 Watcher 会让旧实例残留、回调重复或同一 turn 混用两代能力。
+
+目标是让安装、升级、启停、源码修改和配置修改统一进入 `reconcile(plugin_id)`，并通过可机器验证的 Gate 判断候选代际是否可以发布。中心层只理解插件代际、能力类别、状态和验证结果，不出现具体插件名或业务字符串。
+
+## Current state
+
+- `agent/plugins/base.py:14-82`：插件公开 skills、MCP、七类 passive module、proactive、jobs、channels 和 initialize/terminate。
+- `agent/plugins/manager.py:91-107`：各能力保存在平铺列表中，没有 generation owner。
+- `agent/plugins/manager.py:254-260`：已加载模块直接跳过，没有 reload 入口。
+- `agent/plugins/manager.py:329-369`：加载时立即注册副作用，初始化失败只能回滚部分列表，EventBus handler 无法解绑。
+- `bus/event_bus.py:24-31`：`on()` 不返回 subscription，也没有 unsubscribe。
+- `bootstrap/tools.py:112-165`：启动时一次性把插件能力追加到 AgentLoop、Skills 和 MCP。
+- `agent/core/passive_turn.py:283-309`：phase module 只能 extend 后重建，不能按插件替换。
+- `proactive_v2/loop.py:65-110`：proactive contributions 在构造时保存并一次性构建 kernel。
+- `agent/plugins/jobs.py:106-180`：JobRuntime 构造时固定 jobs，并创建无法解绑的 EventBus handler。
+- `bootstrap/channel_host.py:11-39`：ChannelHost 只有 add、start_all、stop_all。
+- `agent/mcp/registry.py:80-111`：MCP 只按 server name 增删，同名配置改变不会重连。
+- `agent/skills.py:51-125`：SkillLoader 每次调用都会扫描，天然适合 snapshot/invalidation。
+- `bootstrap/dashboard_api.py:602-642`：Dashboard 插件直接向全局 FastAPI app 注册，无法可靠卸载路由。
+- `bootstrap/wiring.py:79-121`：Memory Engine 使用第二套插件加载路径。
+- `/mnt/data/coding/akashic-plugin/proactive_feedback/plugin.py:34-50`、`observe/plugin.py:30-52`：插件直接创建 task 和 EventBus subscription。
+- `/mnt/data/coding/akashic-plugin/fitbit-mcp/plugin.py:61-86`：Fitbit 直接管理 sleep ML monitor 子进程，迁移必须保持模型、数据和行为不变。
+- `docker/debug/docker-compose.yml`：现有 `akashic-debug` 把仓库挂载到 `/app`，默认可写；它适合开发调试，不满足“Gate 无法损伤项目”的隔离要求。
+- `docker/debug/docker-compose.yml`：现有宿主插件缓存挂载到 `/sandbox/home/.akashic-plugin/cache:ro`；热安装、更新、卸载测试不能在这里运行。
+- `docker/debug/Dockerfile` 与 `.dockerignore`：镜像只包含依赖和 entrypoint，真实源码必须通过 `/app` 提供，因此 Gate 应把 `/app` 挂成只读，而不是另造一份 Runtime。
+- `docker/debug/context_probe.py`：已有真实进程启动、Unix socket readiness、超时和 `finally` 清理模式。
+- `docker/debug/runtime_race_probe.py`：已有 `build_core_runtime()` 的结构化场景输出，可复用真实 wiring 与确定性 provider 的组合。
+- `docker/debug/proactive_sandbox.py`：已有真实 PluginManager、MCP 子进程和 proactive kernel 的沙盒路径约束，可复用主动链路验证方式。
+
+仓库约定：Python 使用四空格、针对性类型标注、避免宽泛异常；测试使用 pytest/pytest-asyncio；前端只修改 `frontend/**/src`；提交信息使用简洁 Conventional Commit。
+
+## Gate model
+
+所有 Gate 返回结构化结果，不以日志文本作为唯一判据：
+
+```text
+┌─ GateResult
+│  ├─ gate_id
+│  ├─ plugin_id
+│  ├─ candidate_revision
+│  ├─ status = passed／failed
+│  ├─ checks[]
+│  │  ├─ check_id
+│  │  ├─ status
+│  │  └─ evidence
+│  └─ failure_reason
+```
+
+运行时只负责通用 Gate；业务语义由插件提供无副作用检查：
+
+```text
+┌─ G-1 Sandbox Integrity Gate
+│  └─ 仓库只读、HOME／插件缓存／workspace 隔离，运行前后宿主仓库状态一致
+├─ G0 Baseline Gate
+│  └─ 现有行为和资源计数已记录
+├─ G1 Candidate Gate
+│  └─ 新代际可导入、配置可验证、能力图可编译
+├─ G2 Readiness Gate
+│  └─ MCP／Service／Channel／Dashboard 候选可启动或预热
+├─ G3 Semantic Gate
+│  └─ 插件自己的只读验证通过
+├─ G4 Publication Gate
+│  └─ 新执行只见新快照，旧执行保持旧快照
+├─ G5 Drain Gate
+│  └─ 旧代际无 subscription／task／process／connection 泄漏
+└─ G6 System Gate
+   └─ 完整测试、Docker Runtime 和真实插件行为通过
+```
+
+硬规则：G-1 失败不得在 Docker 内执行后续 Gate；G1-G3 任一失败不得发布；G4 失败立即回滚当前 snapshot；G5 失败不得继续下一批能力迁移；G6 失败不得删除旧实现。
+
+验证按同一条逐步升级链路执行，不用轻量探针冒充真实 Runtime：
+
+```text
+┌─ 宿主保护层
+│  ├─ /app 只读
+│  ├─ canonical plugin repo 不可写
+│  └─ /sandbox 独占可写
+├─ 纯单元 Gate
+│  └─ generation／scope／snapshot 契约
+├─ 确定性真实 Runtime Gate
+│  ├─ 真实 AppRuntime／PluginManager／MCP／Job／Proactive
+│  └─ 测试 provider 与测试 outbound，禁止外部副作用
+└─ 最终真实 Profile Gate
+   ├─ 由 main.py 启动完整 Runtime
+   ├─ 外部 Channel 关闭
+   └─ 只对测试账户或匿名 fixture 做业务契约验证
+```
+
+## Commands you will need
+
+| Purpose | Command | Expected on success |
+|---|---|---|
+| Plugin tests | `pytest -q tests/test_plugin_manager.py tests/test_plugin_hot_reload.py` | exit 0, all pass |
+| Proactive tests | `pytest -q tests/proactive_v2 tests/test_plugin_hot_reload.py` | exit 0, all pass |
+| Full tests | `pytest -q tests/` | exit 0, all pass |
+| Python types | `pyright <changed-python-files>` | exit 0, no errors |
+| Frontend types | `npm run typecheck` | exit 0 |
+| Frontend lint | `npm run lint` | exit 0 |
+| Frontend build | `npm run build` | exit 0 |
+| Docker build | `docker compose -f docker/debug/docker-compose.yml build akashic-plugin-gate` | exit 0 |
+| Sandbox integrity | `AKASHIC_DEBUG_PROFILE=plugin-reload-gate docker compose -p akashic-plugin-reload-gate -f docker/debug/docker-compose.yml --profile plugin-gate run --rm akashic-plugin-gate python docker/debug/plugin_hot_reload_probe.py --scenario sandbox-integrity` | exit 0, `/app` read-only, isolated cache writable, host state unchanged |
+| Docker runtime | `AKASHIC_DEBUG_PROFILE=plugin-reload-gate docker compose -p akashic-plugin-reload-gate -f docker/debug/docker-compose.yml --profile plugin-gate run --rm akashic-plugin-gate python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime` | exit 0, structured report passed |
+| Docker cleanup | `docker compose -p akashic-plugin-reload-gate -f docker/debug/docker-compose.yml --profile plugin-gate down --remove-orphans` | only dedicated Gate project is removed |
+
+## Scope
+
+**In scope**:
+
+- `agent/plugins/**`
+- `agent/tools/**`
+- `agent/core/passive_turn.py`
+- `agent/looping/core.py`
+- `bus/event_bus.py`
+- `proactive_v2/**`
+- `bootstrap/tools.py`
+- `bootstrap/app.py`
+- `bootstrap/channel_host.py`
+- `bootstrap/dashboard_api.py`
+- `bootstrap/memory.py`
+- `bootstrap/wiring.py`
+- `frontend/dashboard/src/pluginRuntime.ts`
+- `tests/test_plugin_manager.py`
+- `tests/test_plugin_hot_reload.py`（新增）
+- `tests_scenarios/test_plugin_hot_reload_runtime.py`（新增）
+- `docker/debug/docker-compose.yml`
+- `docker/debug/README.md`
+- `docker/debug/plugin_hot_reload_probe.py`（新增）
+- `_handbook/plugins-tutorial.md`
+- `/mnt/data/coding/akashic-plugin/*` 的插件源码迁移
+
+**Out of scope**:
+
+- 修改插件业务功能或产品行为。
+- 修改 Fitbit 模型、训练数据、预测阈值和持久数据格式。
+- 用进程隔离重写全部 Python 插件。
+- 给公共协调层加入插件名、业务路径或 payload 字符串特判。
+- 为旧插件 API 保留兼容壳。
+- 让 Watcher 直接修改 Runtime registry。
+- 热替换 CPython、原生动态库或核心 Runtime ABI；这类变化仍是进程重启边界。
+
+## Git workflow
+
+- 在独立 feature branch 施工。
+- 每个通过 Gate 的步骤形成一个可独立回退的 commit。
+- Commit 示例：`feat(plugin): 引入插件代际与资源作用域`。
+- 核心仓库与 `/mnt/data/coding/akashic-plugin/*` 下的各插件仓库分别提交，不混淆历史。
+- 未经操作者要求，不 push 或创建 PR。
+
+## Steps
+
+### Step 0A: 先建立不可损伤宿主的 Docker Gate
+
+在现有 `docker/debug/docker-compose.yml` 中增加独立 `akashic-plugin-gate` service，不改变 `akashic-debug` 的开发行为。该 service 复用同一个 Dockerfile 和 entrypoint，但必须满足：
+
+- `/app` 只读挂载，容器不能写源码、测试、构建产物或 Git 元数据。
+- `/sandbox` 是唯一持久可写挂载；HOME、workspace、socket、配置和测试插件缓存全部位于其下。
+- 不挂载宿主 `~/.akashic-plugin/cache`；Gate 在 `/sandbox/home/.akashic-plugin/cache` 安装和修改一次性测试插件。
+- canonical plugin repo 若用于 fixture，只能只读挂载；Probe 先复制到 sandbox cache 再执行 reload。
+- root filesystem 只读，`/tmp` 使用 tmpfs；不挂载 Docker socket，不发布端口，不启用 Telegram、QQ、Chat 等外部 Channel。
+- 使用独立 Compose project `akashic-plugin-reload-gate`，清理命令不能影响普通 debug 容器。
+
+新增 `plugin_hot_reload_probe.py --scenario sandbox-integrity`。`/mnt/data/coding/akashic-plugin` 是多个独立插件仓库的父目录，不是单一 Git 仓库；Probe 必须发现父目录下一层的 `.git`，并在运行前后分别记录核心仓库和每个插件仓库的 `git status --porcelain=v1 --untracked-files=all`、binary diff 和 submodule 状态。工作树允许原本就是 dirty，但前后状态必须完全一致；这只是二次审计，真正保护依赖只读 mount。
+
+```text
+┌─ Host repositories
+│  ├─ akasic-agent ───────── read-only ──┐
+│  └─ akashic-plugin/* repos read-only ──┤
+│                                       ▼
+├─ akashic-plugin-gate container
+│  ├─ /app              read-only
+│  ├─ /fixtures/plugins read-only
+│  ├─ /tmp              tmpfs
+│  └─ /sandbox          writable
+│     ├─ home/.akashic-plugin/cache
+│     ├─ workspace
+│     ├─ config.toml
+│     └─ reports
+└─ Cleanup
+   └─ only compose project akashic-plugin-reload-gate
+```
+
+**G-1 Verify**:
+
+- 容器内 mount 信息证明 `/app` 和 fixture repo 为只读，`/sandbox` 可写。
+- `HOME`、workspace、socket 和 installed plugin cache 的规范路径都位于 `/sandbox`。
+- 启动、安装测试插件、修改 sandbox 中的插件、关闭容器后，核心仓库和全部插件仓库的前后状态完全一致。
+- Probe 失败时保留 `/sandbox/reports` 和 profile 内容，`finally` 只停止自己的 Runtime 和 Compose project。
+
+### Step 0B: 固化行为基线与全能力测试插件
+
+新增 `tests/test_plugin_hot_reload.py`，动态生成一个覆盖全部核心能力的测试插件：lifecycle module、event handler、tool hook、tool、skill root、MCP spec、proactive source、job、channel 和 managed service。准备 v1、v2、invalid 三个 revision。
+
+为每一代写入可观测 generation marker，测试必须能判断一次执行到底使用了哪一代，而不是只检查“没有报错”。记录 reload 前后的 handler、task、process、MCP client、channel 和 module namespace 数量。
+
+在 canonical plugin repo 为 Fitbit 增加只读行为基线：固定匿名 fixture 输入、预测输出契约、monitor 单实例、数据目录 hash 不变。不得复制 Token 或真实健康数据进入测试。
+
+**G0 Verify**:
+
+- `pytest -q tests/test_plugin_manager.py tests/test_plugin_hot_reload.py` → 新基线测试通过。
+- Fitbit 契约测试在迁移前通过，并输出不包含隐私数据的结果摘要。
+- `git diff -- tests/` 与 `git -C /mnt/data/coding/akashic-plugin/fitbit-mcp diff -- .` → 只有测试与 fixture 变更，没有生产行为变更。
+- 在 G-1 容器中运行 baseline scenario，证明真实 `build_core_runtime()` 能从隔离 cache 加载测试插件并正常关闭。
+
+### Step 1: 建立 PluginScope，先解决完整退出
+
+在 `agent/plugins/` 中引入 plugin-owned scope。EventBus subscription、asyncio task、subprocess、closeable 和 deferred cleanup 都必须挂到 scope，并按逆序释放。
+
+修改 `EventBus.on()` 返回可释放 subscription；插件通过 scoped EventBus 注册。`terminate_all()` 改为关闭 scope，而不是依赖插件手工记住所有资源。
+
+迁移现有插件的直接 EventBus 订阅和后台 task。长驻进程或循环必须成为 Runtime 可追踪的 managed service；禁止继续直接 `asyncio.create_task()` 后只靠实例字段保存。
+
+**G5 Verify**:
+
+- 加载并关闭测试插件 20 次后，EventBus handler 数、活动 task 数、子进程数和 scope child 数回到初始值。
+- 插件 `close()` 抛错时，scope 仍完成其余强制回收，并返回 failed cleanup check。
+- `rg -n "context\.event_bus\.on|asyncio\.create_task" /mnt/data/coding/akashic-plugin --glob '*.py'` → 不存在绕过 scope 的插件注册。
+- `pytest -q tests/test_plugin_manager.py tests/test_plugin_hot_reload.py` → all pass。
+
+### Step 2: 建立 PluginGeneration 与 Candidate Gate
+
+每次候选加载使用唯一模块命名空间，不使用 `importlib.reload()`。Generation 持有 plugin instance、scope、source/config revision、贡献集合、状态和 lease count。
+
+加载过程必须先收集完整贡献，再做任何全局发布。Candidate Gate 至少验证：API version、ConfigModel、路径边界、重复工具名、重复 source/job/channel ID、phase graph、proactive lifecycle、MCP spec、proactive source 引用和 Dashboard 声明。
+
+插件可提供只读 semantic checks；协调器只执行并汇总 `GateResult`，不得理解检查内容。
+
+**G1/G3 Verify**:
+
+- invalid Python、invalid config、重复 tool、phase cycle、缺失 MCP tool、失败 semantic check 都返回 failed GateResult。
+- 每种失败后 active generation id、工具集合、EventBus handler 和 Runtime 行为保持不变。
+- v1 → invalid → v2 后只发布 v2，invalid 从未对外可见。
+- `pytest -q tests/test_plugin_hot_reload.py` → all pass。
+- 在 G-1 容器中执行 v1 → invalid → v2，真实 CoreRuntime 只发布 v2，前后宿主仓库状态一致。
+
+### Step 3: 建立 RuntimeSnapshot 与执行 lease
+
+RuntimeSnapshot 一次性包含 lifecycle graphs、event handlers、tool hooks、tool catalog、skill catalog、proactive declarations 和 service provider 引用。发布只允许原子替换一个 snapshot 引用。
+
+Passive turn、proactive tick、job、tool execution、EventBus queue envelope 和 Dashboard request 都在入口获取 snapshot lease，在完成时释放。同一次执行禁止重新读取 current snapshot。
+
+替换 `add_*_plugin_modules()` 的永久追加语义，改为从 snapshot 构建或选择 phase graph。Tool schema、tool search 和 tool execute 必须来自同一 snapshot。
+
+**G4 Verify**:
+
+- 阻塞 v1 turn，在中途发布 v2：该 turn 所有 marker 均为 v1，下一 turn 所有 marker 均为 v2。
+- 阻塞 v1 tool call、EventBus queued event 和 proactive tick，重复同样断言。
+- Candidate snapshot 只要任一 graph/index 构建失败，current snapshot identity 不变。
+- `pytest -q tests/test_plugin_hot_reload.py tests/proactive_v2` → all pass。
+- 在 G-1 容器内启动真实 AppRuntime，以确定性 provider 阻塞 v1 turn；中途更新 sandbox cache 后，当前 turn 保持 v1，下一 turn 使用 v2。
+
+### Step 4: 接入 Skills、MCP、Jobs 与 Proactive Host
+
+SkillCatalog 直接合并 workspace、builtin 和 active plugin roots，不再把插件软链接视为运行时真相源。Skill 文件变化使 catalog 失效，下一 turn/drift 获取新版；仅修改 Skill 不重启其他能力。
+
+MCP client 使用内部 generation identity。候选先完成 initialize、capability negotiation 和 tools/list，再把 wrapper 放入 candidate ToolCatalog。公开 server/tool 名不带 generation。同名 MCP 配置 fingerprint 变化必须启动新连接；旧调用 lease 归零后再断开旧连接。支持 `notifications/tools/list_changed` 触发下一执行边界的 catalog 更新。
+
+JobHost 使用稳定 `<plugin_id>:<job_id>` 保存调度状态。更新停止旧定义产生新请求，但已排队和已运行任务继续持有旧 lease；新触发使用新 handler。Proactive source 以稳定 source ID 保存 poll/ACK 状态，新 kernel 在 tick 边界切换。
+
+**G2/G4/G5 Verify**:
+
+- Skill v1 → v2：当前 turn 保持 v1，下一 turn 使用 v2，MCP PID 与 Channel instance 不变。
+- MCP v1 call 阻塞时发布 v2：旧 call 正常完成，新 call 路由 v2，旧 client 随后关闭。
+- MCP initialize/tools/list 失败：旧 client 和旧 tool catalog 不变。
+- Job interval next-run 在 reload 后不重置、不重复；运行中的旧 job 完成后旧 generation 可回收。
+- proactive tick 不跨代际，source ACK/poll 状态不丢失。
+- `pytest -q tests/test_plugin_hot_reload.py tests/proactive_v2 tests/test_plugin_manager.py` → all pass。
+- 在 G-1 容器中复用 `proactive_sandbox.py` 的真实 MCP 子进程与 proactive kernel 组合，完成 MCP、Job、tick 的跨代际与排空验证。
+
+### Step 5: 收敛 Channels、Dashboard、Memory Engine 与 Plugin Services
+
+ChannelHost 按稳定 channel name 持有 sender slot。候选先构造和验证；切换时停止旧 ingress、启动新实例、替换 slot。新实例启动失败必须重新启动旧实例并保持旧 snapshot。
+
+Dashboard 改为稳定 dispatcher 指向 generation-owned ASGI sub-app，禁止插件直接修改全局 FastAPI route table。前端插件模块返回 dispose，更新时卸载 React root、formatter 和样式后再加载 revision URL。
+
+Memory Engine 移入主插件 contribution，删除第二套动态 loader。核心通过稳定代理和当前 snapshot 选择 engine；同一 turn 的检索、工具和写入固定在同一 engine generation。
+
+Fitbit monitor 迁成 managed service：新进程 ready 后才允许发布，旧进程关闭后必须确认只剩一个 monitor；data 目录不参与 generation 清理。
+
+**G2/G3/G5 Verify**:
+
+- Channel v2 启动失败时 v1 恢复收发；成功时旧 Channel 不再接收或发送。
+- Dashboard 更新后旧 route、React root、CSS 和 formatter 数量不增长。
+- Memory Engine reload 中的旧 turn 完整使用旧 engine，新 turn 使用新 engine，旧写入完成后才 close。
+- Fitbit reload 前后数据目录 hash 不变、预测契约通过、monitor 进程始终不超过一个。
+- `pytest -q tests/test_channel_host.py tests/test_dashboard_api.py tests/test_memory_engine_contract.py tests/test_plugin_hot_reload.py` → all pass。
+- `npm run typecheck && npm run lint && npm run build` → exit 0。
+
+### Step 6: 建立 PluginControlPlane、Watcher 与 Reconciler
+
+`manifest.toml` 只保存 plugin enabled 状态。Control Plane 从 manifest、已发现 source revision 和插件私有 config revision 计算 desired state；Runtime status 单独保存，不回写能力声明。
+
+Watcher 只发送 invalidation hint。Reconciler 必须在启动、Watcher 事件和低频一致性检查时比较 desired/current；漏掉 Watcher 事件也能恢复。事件按 plugin_id 合并，reconcile 运行中出现更新时只保留最新 revision。
+
+变化路由：manifest → enable/disable；Python/config/普通资源 → full generation；skill root → SkillCatalog；dashboard asset → Dashboard revision。源码暂时缺失或写入未完成时保留 last-known-good 并标记 degraded；明确 disable/uninstall 才卸载。
+
+**G1-G5 Verify**:
+
+- enable、disable、install、update、uninstall 都只通过 reconcile 改变 Runtime。
+- 快速写入 v2、v3、v4，最终只激活 v4，不出现 v2/v3 副作用。
+- 模拟丢失 Watcher 事件后，一致性检查仍发现 revision 变化。
+- 写入半成品 plugin.py 时旧代际继续工作；文件稳定有效后自动切换。
+- `pytest -q tests/test_plugin_hot_reload.py tests/test_plugin_manager.py` → all pass。
+- 由容器内 Watcher 观察 sandbox cache；修改 plugin.py、私有 config 和全局 manifest 后，真实 AppRuntime 分别执行 reload、reconfigure 和 enable/disable。
+
+### Step 7: 迁移全部插件并删除旧链路
+
+迁移 core bundled plugins 和 `/mnt/data/coding/akashic-plugin` 全部插件。把隐藏的 dashboard、bot commands、memory engine、background task/process 纳入正式 contribution 或 PluginScope。
+
+删除：平铺 manager capability lists、启动时永久 add、无法解绑的 direct subscriptions、skills 软链接真相源、Dashboard 文件名旁路、Memory Engine 第二加载器，以及任何旧 API 兼容壳。
+
+每个插件必须提供至少一个结构检查；拥有外部进程、模型或持久状态的插件还必须提供只读 semantic check。
+
+**G3/G5 Verify**:
+
+- 所有插件通过 `plugin-doctor`，报告 active revision、能力清单、semantic checks 和 resource ownership。
+- 对每个插件执行 load → reload → disable，旧 generation resource count 最终为零。
+- 公共协调层不包含具体插件名：`rg -n "fitbit|feed-mcp|calendar-mcp|emotion|proactive_feedback" agent/plugins bus proactive_v2 bootstrap` → 除测试 fixture/文档外无匹配。
+- `pytest -q tests/` → all pass。
+- 对全部 changed Python files 运行 `pyright` → exit 0。
+
+### Step 8: Docker 完整 Runtime 验收
+
+扩展 `docker/debug/plugin_hot_reload_probe.py`。确定性场景直接启动真实 `AppRuntime.start()`；最终场景必须由容器 entrypoint 执行 `python main.py`，通过 Unix socket 驱动完整进程，不能只实例化 PluginManager。Probe 在隔离 cache 安装全能力测试插件，制造 active turn、MCP call、job、proactive tick 和 Dashboard request，再修改 sandbox 内源码、config 和 manifest。
+
+Probe 复用 `context_probe.py` 的进程 readiness/cleanup、`runtime_race_probe.py` 的真实 wiring/结构化输出、`proactive_sandbox.py` 的真实 MCP/proactive 组合。Probe 必须读取结构化 PluginStatus 和 GateResult，不依赖模糊日志关键词；连续执行成功发布、失败回滚、disable/re-enable、rapid revisions 和进程重启后恢复。
+
+使用独立 `plugin-reload-gate` profile，绝不挂载正式 workspace、正式 HOME 或宿主插件缓存。Fitbit 从只读 canonical source 复制到 sandbox cache 后安装；验证使用匿名 fixture 和测试凭据，没有可用测试凭据时只运行本地模型与 monitor 契约，不访问真实账户。
+
+**G6 Verify**:
+
+- `docker compose -f docker/debug/docker-compose.yml build akashic-plugin-gate` → exit 0。
+- 先运行 `sandbox-integrity`，再运行 `full-runtime`；所有 scenario 返回 passed GateResult。
+- `full-runtime` 报告必须证明 `main.py`、AppRuntime、Watcher、Reconciler 和 capability hosts 全部实际启动。
+- `pytest -q tests/`、`npm run typecheck`、`npm run lint`、`npm run build` → 全部 exit 0。
+- 连续 20 次 reload 后，handler/task/process/connection/module generation 数量无单调增长。
+- Runtime 不重启，下一 turn/tick/job 确实使用新 generation。
+- 核心仓库和全部插件仓库的运行前后状态完全一致；所有 Runtime 写入只存在于 `/sandbox`。
+
+## Test plan
+
+- `tests/test_plugin_hot_reload.py`：代际、scope、snapshot、rollback、rapid revision、资源泄漏、各 capability host。
+- `tests/test_plugin_manager.py`：保留 discovery、manifest、config 和程序化能力声明的既有契约。
+- `tests/test_channel_host.py`：Channel 成功切换与失败恢复。
+- `tests/test_dashboard_api.py`：ASGI sub-app 替换和旧请求排空。
+- `tests/test_memory_engine_contract.py`：Memory Engine snapshot consistency。
+- `tests/proactive_v2/`：tick boundary、source state、MCP client generation。
+- `tests_scenarios/test_plugin_hot_reload_runtime.py`：真实 provider 下下一 turn 生效。
+- `/mnt/data/coding/akashic-plugin/fitbit-mcp`：匿名模型 fixture、monitor 单实例和数据不变。
+- `docker/debug/plugin_hot_reload_probe.py`：完整 Runtime 综合 Gate。
+- `docker/debug/docker-compose.yml`：独立只读源码 Gate service，不改变普通 debug service。
+
+## Done criteria
+
+- [ ] G-1-G6 都有结构化结果和失败测试。
+- [ ] 任一候选验证失败时，旧 generation 保持可用。
+- [ ] 同一 turn/tick/job/request 不跨 generation。
+- [ ] 旧 generation drain 后没有 subscription、task、process、MCP client、Channel 或 Dashboard resource 残留。
+- [ ] 所有现有插件迁移完成，无旧 API 兼容壳。
+- [ ] Fitbit 模型、持久数据和预测契约保持不变。
+- [ ] `pytest -q tests/` 通过。
+- [ ] changed Python files 的 `pyright` 通过。
+- [ ] `npm run typecheck && npm run lint && npm run build` 通过。
+- [ ] Docker 完整 Runtime probe 通过。
+- [ ] Docker Gate 无法写核心仓库、任一插件仓库或宿主插件缓存，运行前后状态完全一致。
+- [ ] `_handbook/plugins-tutorial.md` 说明代际、Gate、热重载语义和进程重启边界。
+- [ ] 除已知 `private_runtime` 状态、核心仓库和本次迁移的插件仓库外，没有无关文件变更。
+
+## STOP conditions
+
+停止并报告，不要临时绕过 Gate：
+
+- 当前代码与本计划的关键入口已发生结构性变化。
+- G-1 发现 `/app`、canonical plugin repo、宿主 HOME 或宿主插件缓存可写／被错误挂载。
+- Gate 需要复用正式 workspace、正式账户或正式 Channel 才能完成验证。
+- 为完成热重载必须在公共协调层硬编码插件名或业务 payload。
+- 某能力无法归属 PluginGeneration 或 PluginScope。
+- Candidate Gate 需要执行有用户副作用的业务调用才能判定通过。
+- 新 snapshot 无法在一次指针发布中保持 lifecycle、tool 和 event 一致。
+- Channel 或 Fitbit monitor 无法失败恢复到旧实例。
+- Fitbit 行为基线、数据 hash 或预测契约发生变化。
+- 同一 Gate 连续两轮针对性修复后仍失败。
+- 完成步骤需要改动 Out of scope 内容。
+
+## Maintenance notes
+
+- 新增插件能力时，必须先确定它属于 Snapshot Capability、Managed Resource 或 Exclusive Endpoint，并补充对应 Gate；不要在 Reconciler 中加业务分支。
+- PluginScope 的资源计数和 generation lease 是以后排查“热重载后重复执行”的第一证据，必须暴露给 doctor/status。
+- Semantic Gate 只能验证插件自己声明的无副作用契约；它不能替代插件仓库测试和真实 Runtime scenario。
+- 更新插件依赖中的原生动态库或核心 ABI 不属于插件热重载，必须明确提示进程重启。
