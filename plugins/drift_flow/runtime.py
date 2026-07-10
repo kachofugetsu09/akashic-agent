@@ -483,6 +483,9 @@ class DriftTurnPipeline:
             scratchpad_update="下次先阅读 Drift Briefing，再根据上一轮已执行的工具结果继续或改选更合适的 skill。",
             global_note_update=None,
             now_utc=ctx.now_utc,
+            self_update={
+                "next_tendency": "下次根据停点和当时状态重新选择是否继续",
+            },
         )
         ctx.drift_finished = True
         ctx.drift_finish_status = "paused"
@@ -565,6 +568,7 @@ class DriftTurnPipeline:
 
         drift_note = str(self._store.load_drift().get("note") or "")[:150]
         drift_briefing = self._store.load_briefing(skills)
+        self_state = self._build_self_state_context()
         mcp_block = ""
         shared = self._tool_deps.shared_tools
         if connected_servers and shared:
@@ -579,6 +583,11 @@ class DriftTurnPipeline:
             )
 
         sections = [
+            PromptSectionRender(
+                name="drift_self_state",
+                content=self_state,
+                is_static=False,
+            ),
             PromptSectionRender(
                 name="drift_selection_context",
                 content=selection_context,
@@ -631,6 +640,20 @@ class DriftTurnPipeline:
             )
         )
         return build_context_frame_message(build_context_frame_content(sections))
+
+    def _build_self_state_context(self) -> str:
+        state = self._store.load_self_state()
+        if not state:
+            return "（还没有过去的 Drift 意图，可以自由探索。）"
+        return (
+            "这是上轮留下的自我连续性，不是必须执行的命令；可以延续，也可以改变主意。\n"
+            f"- 当时选择：{state.get('last_decision') or '（空）'}\n"
+            f"- 当时想做：{state.get('current_intention') or '（空）'}\n"
+            f"- 选择原因：{state.get('decision_reason') or '（空）'}\n"
+            f"- 下次倾向：{state.get('next_tendency') or '（尚未收尾）'}\n"
+            f"- 关联 skill：{state.get('current_skill') or '（空）'}\n"
+            f"- 更新时间：{state.get('updated_at') or '（空）'}"
+        )
 
     def _build_runtime_clock(self, ctx: AgentTickContext | None) -> str:
         now_utc = ctx.now_utc if ctx is not None else datetime.now(timezone.utc)
@@ -725,6 +748,7 @@ class DriftTurnPipeline:
             "paused 和 idle 只能描述系统自己的进度、时机或选择，不描述用户需要做什么。\n\n"
             "【自我定位】\n"
             "调用首个工具前，先在内部确认：上一轮在做什么、哪些步骤和产物已经完成、为何停下、当前最自然的下一步是什么。"
+            "drift_self_state 是过去的自己留下的意图和倾向，不是待办指令；本轮可以继续、延后、切换、自由探索或安静休息。"
             "已有计划和工作文件是过去行动留下的进度，不要仅因为进入了新一轮 Drift 就重新创建。"
             "SKILL.md 是说明书，不是必须从头播放的脚本；只执行当前决定所需要的部分。\n\n"
             "选择 paused skill 后，把 SKILL.md 的完整工作流拆成“已经完成”和“尚未完成”两部分。"
@@ -735,7 +759,8 @@ class DriftTurnPipeline:
             "1. 先根据 context frame 比较所有可用 skill 和最近聊天气氛。"
             "Drift 的含义是没有正在服务用户时，自己尝试做一点合适的小事；"
             "skill 上次 completed 不代表不能再做，只代表上次已闭环。"
-            "默认调用 select_skill(skill_name)，让被选 skill 自己完成一个原子动作。"
+            "默认调用 select_skill(skill_name, decision, intention, reason)，先保存本轮选择，再让被选 skill 完成一个原子动作。"
+            "decision 表示本轮与既有意图的关系，只能是 continue、defer、switch、explore。"
             "选择 paused skill 表示接回原来的意图；select_skill 返回 local_context 后，先定位停点，再执行最小的未完成动作。"
             "此时第一次执行动作通常应是停点后的下一步，而不是 SKILL.md 完整流程的第一步。"
             "本轮也可以暂时不继续 paused skill，改选其他 skill；不要为了续接而续接。"
@@ -748,7 +773,8 @@ class DriftTurnPipeline:
             "4. 结束前必须调用 finish_drift；skill_used 必须等于 selected_skill。\n"
             "5. finish_drift.status 只能为 completed 或 paused。"
             "completed 表示本轮主动行为已闭环；paused 必须写 scratchpad_update，说明做到哪里和下次从哪里继续。"
-            "结构化接续写 cursor_update；已经完成的事实追加到 journal_append。\n\n"
+            "结构化接续写 cursor_update；已经完成的事实追加到 journal_append。"
+            "收尾时必须通过 self_update.next_tendency 保存下次空闲时的自然倾向；如果原意图改变，再更新 current_intention。\n\n"
             "【可用工具】\n"
             "select_skill, idle_drift, read_file, list_dir, write_file, edit_file, recall_memory, web_fetch, web_search, "
             "fetch_messages, search_messages, shell, message_push, finish_drift；"

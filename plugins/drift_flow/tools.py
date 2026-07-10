@@ -16,6 +16,8 @@ from plugins.default_proactive.outbound_text import normalize_outbound_text
 
 logger = logging.getLogger(__name__)
 
+_DRIFT_DECISIONS = {"continue", "defer", "switch", "explore"}
+
 
 def _clip_text(text: object, limit: int) -> str:
     value = str(text or "").strip()
@@ -169,8 +171,23 @@ class FinishDriftTool(Tool):
                     },
                 },
                 "global_note_update": {"type": "string"},
+                "self_update": {
+                    "type": "object",
+                    "description": "收尾后的自我连续性更新，不保存执行断点",
+                    "properties": {
+                        "current_intention": {
+                            "type": "string",
+                            "description": "如果本轮改变了原意图，写更新后的意图",
+                        },
+                        "next_tendency": {
+                            "type": "string",
+                            "description": "下次空闲时可能想继续、搁置或探索什么",
+                        },
+                    },
+                    "required": ["next_tendency"],
+                },
             },
-            "required": ["skill_used", "status", "briefing"],
+            "required": ["skill_used", "status", "briefing", "self_update"],
         }
 
     async def execute(
@@ -182,6 +199,7 @@ class FinishDriftTool(Tool):
         cursor_update: dict[str, Any] | None = None,
         journal_append: list[dict[str, Any]] | dict[str, Any] | None = None,
         global_note_update: str | None = None,
+        self_update: dict[str, Any] | None = None,
     ) -> str:
         skill_name = str(skill_used or "").strip()
         if skill_name not in self._store.valid_skill_names():
@@ -225,6 +243,18 @@ class FinishDriftTool(Tool):
         journal_entries, journal_error = self._normalize_journal_append(journal_append)
         if journal_error:
             return json.dumps({"error": journal_error}, ensure_ascii=False)
+        if not isinstance(self_update, dict):
+            return json.dumps({"error": "self_update must be an object"}, ensure_ascii=False)
+        next_tendency = str(self_update.get("next_tendency") or "").strip()
+        if not next_tendency:
+            return json.dumps(
+                {"error": "self_update.next_tendency is required"},
+                ensure_ascii=False,
+            )
+        normalized_self_update = {
+            "current_intention": str(self_update.get("current_intention") or "").strip(),
+            "next_tendency": next_tendency,
+        }
         note_text = (
             str(global_note_update).strip()
             if global_note_update is not None
@@ -242,6 +272,7 @@ class FinishDriftTool(Tool):
             now_utc=self._ctx.now_utc,
             cursor_update=cursor_update,
             journal_append=journal_entries,
+            self_update=normalized_self_update,
         )
         self._ctx.drift_finished = True
         self._ctx.drift_finish_status = status_value
@@ -304,7 +335,7 @@ class SelectSkillTool(Tool):
 
     @property
     def description(self) -> str:
-        return "声明本轮 Drift 选中的 skill，并返回该 skill 的 SKILL.md 内容和 local_context。"
+        return "声明本轮 Drift 的意图与选择，并返回所选 skill 的说明和 local_context。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -315,14 +346,45 @@ class SelectSkillTool(Tool):
                     "type": "string",
                     "description": "本轮要执行的 drift skill 名称",
                 },
+                "decision": {
+                    "type": "string",
+                    "enum": sorted(_DRIFT_DECISIONS),
+                    "description": "本轮与既有意图的关系：继续、延后、切换或自由探索",
+                },
+                "intention": {
+                    "type": "string",
+                    "description": "这轮真正想做的一件小事",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "结合前情说明为什么此刻这样选择",
+                },
             },
-            "required": ["skill_name"],
+            "required": ["skill_name", "decision", "intention", "reason"],
         }
 
-    async def execute(self, skill_name: str) -> str:
+    async def execute(
+        self,
+        skill_name: str,
+        decision: str = "",
+        intention: str = "",
+        reason: str = "",
+    ) -> str:
         name = str(skill_name or "").strip()
+        decision_value = str(decision or "").strip()
+        intention_text = str(intention or "").strip()
+        reason_text = str(reason or "").strip()
         if name not in self._store.valid_skill_names():
             return json.dumps({"error": f"unknown skill: {name}"}, ensure_ascii=False)
+        if decision_value not in _DRIFT_DECISIONS:
+            return json.dumps(
+                {"error": "decision must be one of: continue, defer, switch, explore"},
+                ensure_ascii=False,
+            )
+        if not intention_text:
+            return json.dumps({"error": "intention is required"}, ensure_ascii=False)
+        if not reason_text:
+            return json.dumps({"error": "reason is required"}, ensure_ascii=False)
         selected = str(self._ctx.drift_selected_skill or "").strip()
         if selected and selected != name:
             return json.dumps(
@@ -338,6 +400,13 @@ class SelectSkillTool(Tool):
         except OSError as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
         self._ctx.drift_selected_skill = name
+        self._store.save_self_choice(
+            skill_name=name,
+            intention=intention_text,
+            decision=decision_value,
+            reason=reason_text,
+            now_utc=self._ctx.now_utc,
+        )
         continuum = self._store.load_skill_continuum(name)
         journal_recent = self._store.load_skill_journal(name, limit=8)
         return json.dumps(
@@ -405,6 +474,13 @@ class IdleDriftTool(Tool):
             )
 
         self._ctx.drift_selected_skill = "idle"
+        self._store.save_self_choice(
+            skill_name="idle",
+            intention="本轮暂时不行动",
+            decision="rest",
+            reason=reason_text,
+            now_utc=self._ctx.now_utc,
+        )
         self._store.save_finish(
             skill_used="idle",
             status="completed",
@@ -413,6 +489,7 @@ class IdleDriftTool(Tool):
             scratchpad_update=None,
             global_note_update=None,
             now_utc=self._ctx.now_utc,
+            self_update={"next_tendency": "等待更合适的时机再自由选择"},
         )
         self._ctx.drift_finished = True
         logger.info("[drift_tools] idle_drift ok reason=%s", reason_text[:120])
@@ -683,7 +760,7 @@ def build_drift_tool_registry(
     tools = ToolRegistry()
     drift_dir = deps.drift_dir
     resolver = DriftPathResolver(drift_dir, deps.store)
-    tools.register(SelectSkillTool(ctx, deps.store), risk="read-only")
+    tools.register(SelectSkillTool(ctx, deps.store), risk="write")
     tools.register(IdleDriftTool(ctx, deps.store), risk="write")
     tools.register(
         DriftReadFileTool(resolver),

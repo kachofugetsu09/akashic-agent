@@ -42,6 +42,19 @@ def _write_skill(root: Path, name: str = "explore-curiosity") -> Path:
     return skill_dir
 
 
+def _select_input(skill_name: str, *, decision: str = "explore") -> dict[str, str]:
+    return {
+        "skill_name": skill_name,
+        "decision": decision,
+        "intention": f"做一点 {skill_name}",
+        "reason": "当前适合做一个小动作",
+    }
+
+
+def _self_update(next_tendency: str = "下次根据当时状态自由选择") -> dict[str, str]:
+    return {"next_tendency": next_tendency}
+
+
 def test_drift_commit_result_corrects_staged_message_result(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     store.save_finish(
@@ -262,6 +275,8 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     assert "local_context 明确已经完成的读文件、查重、规划、写计划等前置动作" in prompt
     assert "不必无目的地重新读取" in prompt
     assert "本轮也可以暂时不继续 paused skill" in prompt
+    assert "过去的自己留下的意图和倾向" in prompt
+    assert "self_update.next_tendency" in prompt
     assert "idle_drift 的 reason 必须写具体的时机或风险原因" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
     assert "message_result" not in prompt
@@ -288,6 +303,13 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
         global_note_update=None,
         now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
+    store.save_self_choice(
+        skill_name="meme-auto-generate",
+        intention="继续完成已经计划好的图片",
+        decision="continue",
+        reason="计划已经存在，只差执行",
+        now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
     store.save_finish(
         skill_used="meme-auto-generate",
         status="paused",
@@ -297,6 +319,7 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
         global_note_update=None,
         now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
         cursor_update={"next_mode": "create_category"},
+        self_update={"next_tendency": "服务恢复后再继续，也可以先做别的"},
     )
     pipeline = _make_drift_pipeline(
         store=store,
@@ -311,6 +334,10 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
         (await pipeline._build_runtime_context_message(store.scan_skills(), ctx=ctx))["content"]
     )
     assert "drift_selection_context" in runtime
+    assert "drift_self_state" in runtime
+    assert "继续完成已经计划好的图片" in runtime
+    assert "计划已经存在，只差执行" in runtime
+    assert "服务恢复后再继续，也可以先做别的" in runtime
     assert "runtime_clock" in runtime
     assert "current_time_utc=2026-01-03T12:34:00+00:00" in runtime
     assert "current_time_local=" in runtime
@@ -420,6 +447,10 @@ async def test_drift_pipeline_can_idle_before_selecting_skill(tmp_path: Path):
     assert recent["skill"] == "idle"
     assert recent["message_result"] == "silent"
     assert "主动打扰价值不高" in recent["briefing"]
+    self_state = store.load_self_state()
+    assert self_state["last_decision"] == "rest"
+    assert self_state["decision_reason"] == "最近对话刚结束，主动打扰价值不高"
+    assert self_state["next_tendency"] == "等待更合适的时机再自由选择"
 
 
 @pytest.mark.asyncio
@@ -518,7 +549,7 @@ async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_pat
         tmp_path,
         ctx,
         "select_skill",
-        {"skill_name": "explore-curiosity"},
+        _select_input("explore-curiosity"),
         store=store,
     )
     payload = json.loads(cast(Any, raw))
@@ -531,6 +562,12 @@ async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_pat
     assert payload["local_context"]["cursor"]["last_topic"] == "音乐"
     assert payload["local_context"]["journal_recent"][0]["entry_type"] == "curiosity_asked"
     assert ctx.drift_selected_skill == "explore-curiosity"
+    self_state = store.load_self_state()
+    assert self_state["current_skill"] == "explore-curiosity"
+    assert self_state["last_decision"] == "explore"
+    assert self_state["current_intention"] == "做一点 explore-curiosity"
+    assert self_state["decision_reason"] == "当前适合做一个小动作"
+    assert self_state["next_tendency"] == ""
 
 
 @pytest.mark.asyncio
@@ -553,7 +590,7 @@ async def test_select_paused_skill_returns_resume_guidance(tmp_path: Path):
         tmp_path,
         ctx,
         "select_skill",
-        {"skill_name": "explore-curiosity"},
+        _select_input("explore-curiosity", decision="continue"),
         store=store,
     )
     payload = json.loads(cast(Any, raw))
@@ -594,6 +631,7 @@ async def test_finish_drift_rejects_unknown_skill(tmp_path: Path):
             "skill_used": "missing",
             "status": "completed",
             "briefing": "x",
+            "self_update": _self_update(),
         },
         store=store,
     )
@@ -613,6 +651,7 @@ async def test_finish_drift_saves_silent_message_result(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "completed",
             "briefing": "x",
+            "self_update": _self_update(),
         },
         store=store,
     )
@@ -648,6 +687,7 @@ async def test_finish_drift_emits_result_after_delivery(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "completed",
             "briefing": "staged",
+            "self_update": _self_update(),
         },
     )
 
@@ -683,6 +723,7 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "completed",
             "briefing": "问了音乐偏好",
+            "self_update": _self_update(),
             "cursor_update": {
                 "last_topic": "music",
                 "last_asked_at": "2026-01-01T00:00:00+00:00",
@@ -705,6 +746,47 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
     assert continuum["cursor"]["last_asked_at"] == "2026-01-01T00:00:00+00:00"
     assert journal[0]["entry_type"] == "curiosity_asked"
     assert journal[0]["key"] == "music"
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_updates_self_state_without_losing_choice(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "select_skill",
+        {
+            "skill_name": "explore-curiosity",
+            "decision": "continue",
+            "intention": "把上次没想完的问题继续想一点",
+            "reason": "已有停点仍然自然",
+        },
+        store=store,
+    )
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "想清楚了一个问题",
+            "self_update": {
+                "current_intention": "暂时把这个问题放下",
+                "next_tendency": "下次想自由看看别的东西",
+            },
+        },
+        store=store,
+    )
+
+    assert json.loads(cast(Any, raw))["ok"] is True
+    self_state = store.load_self_state()
+    assert self_state["last_decision"] == "continue"
+    assert self_state["decision_reason"] == "已有停点仍然自然"
+    assert self_state["current_intention"] == "暂时把这个问题放下"
+    assert self_state["next_tendency"] == "下次想自由看看别的东西"
 
 
 @pytest.mark.asyncio
@@ -813,13 +895,14 @@ async def test_drift_pipeline_runs_and_finishes(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     llm = FakeLLM(
         [
-            ("select_skill", {"skill_name": "explore-curiosity"}),
+            ("select_skill", _select_input("explore-curiosity")),
             (
                 "finish_drift",
                 {
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "问了一个问题",
+                    "self_update": _self_update(),
                 },
             ),
         ]
@@ -864,7 +947,7 @@ async def test_drift_pipeline_restricts_tools_after_staging_message(tmp_path: Pa
     store = DriftStateStore(tmp_path)
     llm = FakeLLM(
         [
-            ("select_skill", {"skill_name": "explore-curiosity"}),
+            ("select_skill", _select_input("explore-curiosity")),
             ("message_push", {"message": "hello\\n\\nfrom drift"}),
             (
                 "finish_drift",
@@ -872,6 +955,7 @@ async def test_drift_pipeline_restricts_tools_after_staging_message(tmp_path: Pa
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "sent",
+                    "self_update": _self_update(),
                 },
             ),
         ]
@@ -906,7 +990,7 @@ async def test_drift_pipeline_wraps_up_at_step_limit(tmp_path: Path):
         captured.append(([s["function"]["name"] for s in schemas], tool_choice))
         step = len(captured)
         if step == 1:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         if step == 2:
             return {
                 "name": "write_file",
@@ -925,6 +1009,7 @@ async def test_drift_pipeline_wraps_up_at_step_limit(tmp_path: Path):
                     "status": "paused",
                     "briefing": "读了 skill 并写了中间状态",
                     "scratchpad_update": "下次继续检查 state.json",
+                    "self_update": _self_update(),
                 },
             }
         return None
@@ -966,10 +1051,11 @@ async def test_drift_pipeline_does_not_restrict_before_step_limit(tmp_path: Path
                     "status": "paused",
                     "briefing": "达到步数上限后停止继续读取",
                     "scratchpad_update": "下次根据已读 SKILL.md 继续判断是否要行动",
+                    "self_update": _self_update(),
                 },
             }
         if len(captured) == 1:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         return {
             "name": "read_file",
             "input": {"path": "skills/explore-curiosity/SKILL.md"},
@@ -1008,7 +1094,7 @@ async def test_drift_pipeline_fallback_pauses_when_wrap_up_ignores_finish(tmp_pa
     async def llm(messages: list[dict], schemas: list[dict], tool_choice: str | dict = "auto"):
         step = len([m for m in messages if m.get("role") == "tool"]) + 1
         if step == 1:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         if step == 2:
             return {"name": "read_file", "input": {"path": "skills/explore-curiosity/queue.md"}}
         return {"name": "read_file", "input": {"path": "skills/explore-curiosity/state.json"}}
@@ -1039,7 +1125,7 @@ async def test_drift_pipeline_wrap_up_retries_non_finish_once(tmp_path: Path):
     async def llm(messages: list[dict], schemas: list[dict], tool_choice: str | dict = "auto"):
         nonlocal wrap_up_calls
         if len([m for m in messages if m.get("role") == "tool"]) == 0:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         wrap_up_calls += 1
         if wrap_up_calls == 1:
             return {"name": "read_file", "input": {"path": "skills/explore-curiosity/queue.md"}}
@@ -1050,6 +1136,7 @@ async def test_drift_pipeline_wrap_up_retries_non_finish_once(tmp_path: Path):
                 "status": "paused",
                 "briefing": "读了 skill，但还没有完成动作",
                 "scratchpad_update": "下次从 explore-curiosity 的自然问题判断继续",
+                "self_update": _self_update(),
             },
         }
 
@@ -1078,13 +1165,14 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
     gate.should_act.return_value = (True, {})
     llm = FakeLLM(
         [
-            ("select_skill", {"skill_name": "explore-curiosity"}),
+            ("select_skill", _select_input("explore-curiosity")),
             (
                 "finish_drift",
                 {
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "整理了漂移状态",
+                    "self_update": _self_update(),
                 },
             ),
         ]
@@ -1170,7 +1258,7 @@ async def test_agent_tick_drift_emits_delivery_result(
     gate.should_act.return_value = (True, {})
     llm = FakeLLM(
         [
-            ("select_skill", {"skill_name": "explore-curiosity"}),
+            ("select_skill", _select_input("explore-curiosity")),
             ("message_push", {"message": "hello from drift"}),
             (
                 "finish_drift",
@@ -1178,6 +1266,7 @@ async def test_agent_tick_drift_emits_delivery_result(
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "发出一条消息",
+                    "self_update": _self_update(),
                 },
             ),
         ]
@@ -1358,7 +1447,10 @@ async def test_drift_readfile_accepts_builtin_skill_shorthand_path(tmp_path: Pat
         {"path": "skills/create-drift-skill/SKILL.md"},
         store=store,
     )
-    assert "创建 Drift Skill" in str(raw)
+    content = str(raw)
+    assert "创建 Drift Skill" in content
+    assert "从下一轮 Drift 起进入候选列表" in content
+    assert "不执行新活动本身" in content
 
 
 @pytest.mark.asyncio
@@ -1388,13 +1480,14 @@ async def test_drift_pipeline_keeps_skills_when_mcp_available(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     shared = _build_shared_tools_with_mcp("calendar")
     llm = FakeLLM([
-        ("select_skill", {"skill_name": "needs-cal"}),
+        ("select_skill", _select_input("needs-cal")),
         (
             "finish_drift",
             {
                 "skill_used": "needs-cal",
                 "status": "completed",
                 "briefing": "done",
+                "self_update": _self_update(),
             },
         ),
     ])
@@ -1528,7 +1621,7 @@ async def test_drift_pipeline_executes_mounted_mcp_tool(tmp_path: Path):
         captured_schemas.append([s["function"]["name"] for s in schemas])
         step = len(captured_schemas)
         if step == 1:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         if step == 2:
             return {"name": "mount_server", "input": {"server": "calendar"}}
         if step == 3:
@@ -1540,6 +1633,7 @@ async def test_drift_pipeline_executes_mounted_mcp_tool(tmp_path: Path):
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "used cal",
+                    "self_update": _self_update(),
                 },
             }
         return None
