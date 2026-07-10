@@ -454,6 +454,9 @@ class PluginManager:
             raise
 
         _ = self._prepared_generations.pop(plugin_id)
+        self._plugin_mcp_server_names.update(
+            generation.contributions.mcp_servers
+        )
         self._scopes[generation.module_path] = generation.scope
         self._loaded.add(generation.module_path)
         generation.state = "active"
@@ -904,7 +907,6 @@ class PluginManager:
                 gate_result=gate_result,
                 state="prepared" if not activate else "activating",
             )
-            self._plugin_mcp_server_names.update(contributions.mcp_servers)
             catalog_generations = [
                 active_generation
                 for active_generation in self._active_generations.values()
@@ -1001,7 +1003,11 @@ class PluginManager:
             )
             self._gate_results[plugin_id] = gate_result
             generation.gate_result = gate_result
-            if not activate:
+            if (
+                not activate
+                or contributions.mcp_servers
+                or contributions.proactive_sources
+            ):
                 try:
                     mcp_catalog = await self._mcp_host.prepare(
                         generation_id,
@@ -1084,12 +1090,13 @@ class PluginManager:
                 generation.gate_result = gate_result
                 if gate_result.status == "failed":
                     raise _CandidateRejected(gate_result)
-                generation.runtime_snapshot = self._compile_generation_snapshot(
-                    generation
-                )
-                generation.minimum_resource_count = scope.resource_count
-                self._prepared_generations[plugin_id] = generation
-                return generation
+                if not activate:
+                    generation.runtime_snapshot = self._compile_generation_snapshot(
+                        generation
+                    )
+                    generation.minimum_resource_count = scope.resource_count
+                    self._prepared_generations[plugin_id] = generation
+                    return generation
             generation.runtime_snapshot = self._compile_generation_snapshot(generation)
             staged_event_bus = ScopedEventBus(self._event_bus, scope, staged=True)
             instance.context.event_bus = staged_event_bus
@@ -1153,6 +1160,7 @@ class PluginManager:
         )
         generation.state = "active"
         self._active_generations[plugin_id] = generation
+        self._plugin_mcp_server_names.update(contributions.mcp_servers)
         self._stable_aliases[mp] = stable_module_path
         self._remove_module_tree(stable_module_path)
         self._fresh_importer.register(stable_module_path, plugin_dir)
@@ -1195,7 +1203,14 @@ class PluginManager:
             return None
         plugin_mcp_sources = {
             ("mcp", server_name)
-            for server_name in self._plugin_mcp_server_names
+            for server_name in {
+                *self._plugin_mcp_server_names,
+                *(
+                    server_name
+                    for generation in generations.values()
+                    for server_name in generation.contributions.mcp_servers
+                ),
+            }
         }
         registry = self._tool_registry.fork(
             excluded_source_types={"plugin"},

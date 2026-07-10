@@ -127,11 +127,6 @@ class CoreRuntime:
                     link_result.removed,
                     link_result.skipped,
                 )
-            sync_plugin_servers = getattr(self.mcp_registry, "sync_plugin_servers", None)
-            if callable(sync_plugin_servers):
-                sync_result = sync_plugin_servers(self.plugin_manager.active_plugins())
-                if inspect.isawaitable(sync_result):
-                    await sync_result
             sync_manifest = getattr(self.plugin_manager, "sync_manifest", None)
             if callable(sync_manifest):
                 manifest_path = sync_manifest()

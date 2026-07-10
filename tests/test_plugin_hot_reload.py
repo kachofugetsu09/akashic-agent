@@ -1001,11 +1001,11 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     assert manager.jobs == [active_job]
     assert active_job.spec.handler.__self__ is active.instance  # type: ignore[attr-defined]
     lifecycle = tmp_path / "home" / "data" / "mcp_ready-builtin" / "mcp-lifecycle.log"
-    await _wait_for_log(lifecycle, ["started"])
+    await _wait_for_log(lifecycle, ["started", "started"])
 
     await manager.discard_prepared("mcp_ready")
 
-    await _wait_for_log(lifecycle, ["started", "stopped"])
+    await _wait_for_log(lifecycle, ["started", "started", "stopped"])
     assert manager.mcp_catalog(prepared.generation_id) is None
     assert manager.job_catalog(prepared.generation_id) is None
     assert manager.proactive_catalog(prepared.generation_id) is None
@@ -1066,8 +1066,19 @@ async def test_candidate_mcp_readiness_failure_closes_process(
         + readiness,
     )
     _write_mcp_server(plugin_dir, ("fetch_events",))
+    invalid_source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class McpRejectedPlugin(Plugin):\n"
+        "    name = 'mcp_rejected'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n",
+        encoding="utf-8",
+    )
     manager = _manager(tmp_path)
     await manager.load_all()
+    _ = (plugin_dir / "plugin.py").write_text(invalid_source, encoding="utf-8")
 
     prepared = await manager.prepare_candidate("mcp_rejected")
 
@@ -1080,7 +1091,7 @@ async def test_candidate_mcp_readiness_failure_closes_process(
         "mcp_readiness" if failure == "missing_tool" else "readiness_semantic_checks"
     ) in failed_checks
     lifecycle = tmp_path / "home" / "data" / "mcp_rejected-builtin" / "mcp-lifecycle.log"
-    await _wait_for_log(lifecycle, ["started", "stopped"])
+    await _wait_for_log(lifecycle, ["started", "started", "stopped"])
     await manager.terminate_all()
 
 
@@ -1869,7 +1880,7 @@ async def test_removed_plugin_mcp_server_does_not_leak_from_live_registry(
         "    def mcp_servers(cls):\n"
         "        return [McpServerSpec(name='removed_server', command=('python', 'server.py'))]\n",
     )
-    _ = (plugin_dir / "server.py").write_text("", encoding="utf-8")
+    _write_mcp_server(plugin_dir, ("legacy",))
     tools = ToolRegistry()
     manager = _manager(tmp_path, tools=tools)
     await manager.load_all()
@@ -1919,6 +1930,105 @@ def test_tool_registry_fork_preserves_registration_order() -> None:
         registry.register(tool_class())
 
     assert registry.fork().get_registered_order() == expected
+
+
+@pytest.mark.asyncio
+async def test_failed_candidate_mcp_name_does_not_hide_user_mcp(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "candidate_mcp_pollution",
+        "from agent.plugins import Plugin\n"
+        "class CandidateMcpPollutionPlugin(Plugin):\n"
+        "    name = 'candidate_mcp_pollution'\n"
+        "    version = 'v1'\n",
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+
+    class UserMcpTool(Tool):
+        name = "mcp_candidate_failed__user"
+        description = "user mcp"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return "user"
+
+    tools.register(
+        UserMcpTool(),
+        source_type="mcp",
+        source_name="candidate_failed",
+    )
+    _ = (plugin_dir / "fail.py").write_text(
+        "raise RuntimeError('candidate failed')\n",
+        encoding="utf-8",
+    )
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class CandidateMcpPollutionPlugin(Plugin):\n"
+        "    name = 'candidate_mcp_pollution'\n"
+        "    version = 'v2'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='candidate_failed', command=('python', 'fail.py'))]\n",
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("candidate_mcp_pollution") is None
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class CandidateMcpPollutionPlugin(Plugin):\n"
+        "    name = 'candidate_mcp_pollution'\n"
+        "    version = 'v3'\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("candidate_mcp_pollution")
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    registry = candidate.runtime_snapshot.tool_registry
+    assert registry is not None
+    assert registry.has_tool("mcp_candidate_failed__user") is True
+    await manager.discard_prepared("candidate_mcp_pollution")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_initial_plugin_mcp_tool_is_visible_in_first_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "initial_mcp_snapshot",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class InitialMcpSnapshotPlugin(Plugin):\n"
+        "    name = 'initial_mcp_snapshot'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='initial_snapshot', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("version",))
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+    generation = manager.generation("initial_mcp_snapshot")
+    assert generation is not None and generation.mcp_catalog is not None
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = manager.snapshot_store
+    seen: list[str] = []
+
+    async def process(msg, **kwargs):
+        seen.append(
+            str(await tools.execute("mcp_initial_snapshot__version", {}))
+        )
+        return "done"
+
+    loop._process = process
+    message = SimpleNamespace(session_key="cli:initial-mcp")
+    await loop._process_with_runtime_admission(message)
+
+    assert seen == ["[]"]
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio

@@ -777,10 +777,18 @@ async def test_loads_installed_programmatic_plugin():
             "    def skill_roots(cls): return ('skills',)\n"
             "    @classmethod\n"
             "    def mcp_servers(cls):\n"
-            "        return [McpServerSpec(name='feed', command=('run_mcp.py',))]\n",
+            "        return [McpServerSpec(name='feed', command=('python', 'run_mcp.py'))]\n",
             encoding="utf-8",
         )
-        (plugin_root / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
+        (plugin_root / "run_mcp.py").write_text(
+            "import json, sys\n"
+            "for line in sys.stdin:\n"
+            "    msg = json.loads(line)\n"
+            "    if 'id' not in msg: continue\n"
+            "    result = {'tools': []} if msg.get('method') == 'tools/list' else {}\n"
+            "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n",
+            encoding="utf-8",
+        )
 
         mgr = PluginManager(
             plugin_dirs=[],
@@ -795,6 +803,7 @@ async def test_loads_installed_programmatic_plugin():
         assert active[0].skill_roots == (plugin_root / "skills",)
         assert "feed" in active[0].mcp_servers
         assert mgr.loaded_count == 1
+        await mgr.terminate_all()
 
 
 @pytest.mark.asyncio
