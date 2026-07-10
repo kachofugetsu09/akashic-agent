@@ -413,6 +413,17 @@ def _install_scope_plugin(sandbox: Path) -> Path:
     return sandbox / "home/.akashic-plugin/data/scope_gate-gate/.kv.json"
 
 
+def _install_fitbit_plugin(sandbox: Path, plugin_root: Path) -> Path:
+    source = plugin_root / "fitbit-mcp"
+    target = sandbox / "home/.akashic-plugin/cache/gate/fitbit/1.1.0"
+    shutil.copytree(
+        source,
+        target,
+        ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_cache"),
+    )
+    return sandbox / "home/.akashic-plugin/data/fitbit-gate"
+
+
 def _install_candidate_plugins(
     sandbox: Path,
 ) -> tuple[Path, Path, Path, Path, Path, Path]:
@@ -779,6 +790,33 @@ def _container_process_count(container_id: str, marker: str) -> int:
         return int(result.stdout.strip())
     except ValueError:
         return -1
+
+
+def _fitbit_runtime_probe(container_id: str) -> dict[str, object]:
+    script = (
+        "import json, urllib.request\n"
+        "result = {}\n"
+        "for key, path in [('data', '/api/data'), ('snapshot', '/api/tool/fitbit_health_snapshot')]:\n"
+        "    with urllib.request.urlopen('http://127.0.0.1:18765' + path, timeout=3) as response:\n"
+        "        result[key] = json.loads(response.read())\n"
+        "print(json.dumps(result))\n"
+    )
+    result = subprocess.run(
+        ["docker", "exec", container_id, "python", "-c", script],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if result.returncode != 0:
+        return {"error": result.stdout.strip()}
+    try:
+        raw: object = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"error": result.stdout.strip()}
+    if not isinstance(raw, dict):
+        return {"error": repr(raw)}
+    return {str(key): value for key, value in raw.items()}
 
 
 def _wait_process_count(
@@ -1238,13 +1276,18 @@ def _run_runtime_smoke(
 ) -> tuple[bool, dict[str, object]]:
     _write_smoke_config(
         sandbox,
-        proactive_enabled=phase in {"capability-hosts", "snapshot"},
+        proactive_enabled=phase in {"capability-hosts", "snapshot", "fitbit"},
     )
     shutil.rmtree(
         sandbox / "home/.akashic-plugin/cache/gate",
         ignore_errors=True,
     )
     scope_state = _install_scope_plugin(sandbox) if phase == "scope" else None
+    fitbit_data = (
+        _install_fitbit_plugin(sandbox, Path(env["AKASHIC_PLUGIN_SOURCE"]))
+        if phase == "fitbit"
+        else None
+    )
     candidate_states = (
         _install_candidate_plugins(sandbox)
         if phase in {"candidate", "capability-hosts", "snapshot"}
@@ -1316,6 +1359,11 @@ def _run_runtime_smoke(
             text=True,
         ).stdout
     candidate_prepare: dict[str, object] = {}
+    fitbit_probe: dict[str, object] = {}
+    fitbit_processes = -1
+    if fitbit_data is not None and container_id and runtime_stable:
+        fitbit_probe = _fitbit_runtime_probe(container_id)
+        fitbit_processes = _container_process_count(container_id, "monitor/server.py")
     if candidate_states is not None and container_id and runtime_stable:
         if phase == "snapshot":
             candidate_prepare = _exercise_snapshot_publish(
@@ -1438,6 +1486,20 @@ def _run_runtime_smoke(
             "observer": observer_state,
             "same_id_prepare": candidate_prepare,
         }
+    if fitbit_data is not None:
+        runtime_log = fitbit_data / "monitor.runtime.log"
+        phase_passed = (
+            fitbit_processes == 1
+            and isinstance(fitbit_probe.get("data"), dict)
+            and isinstance(fitbit_probe.get("snapshot"), dict)
+            and runtime_log.exists()
+        )
+        phase_evidence = {
+            "phase": phase,
+            "monitor_processes": fitbit_processes,
+            "probe": fitbit_probe,
+            "runtime_log": str(runtime_log),
+        }
     passed = (
         started.returncode == 0
         and ipc_ready
@@ -1507,7 +1569,7 @@ def main() -> int:
     )
     _ = parser.add_argument(
         "--phase",
-        choices=("smoke", "scope", "candidate", "capability-hosts", "snapshot"),
+        choices=("smoke", "scope", "candidate", "capability-hosts", "snapshot", "fitbit"),
         default="smoke",
     )
     _ = parser.add_argument("--inside-container", action="store_true")
