@@ -318,8 +318,8 @@ class AppRuntime:
         if manager is None or self._shutdown:
             return
         task = asyncio.create_task(
-            manager.reconcile_changed(),
-            name="plugin_reconcile_changed",
+            manager.prepare_changed(),
+            name="plugin_candidate_scan",
         )
         self._plugin_candidate_tasks.add(task)
         task.add_done_callback(self._plugin_candidate_scan_done)

@@ -371,19 +371,19 @@ class PluginManager:
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
-            prepared = await self._prepare_changed()
             results: list[dict[str, object]] = []
-            published: set[str] = set()
-            for result in prepared:
-                plugin_id = str(result["plugin_id"])
+            for plugin_id in sorted(tuple(self._active_generations)):
+                prepared = await self._prepare_changed(
+                    plugin_ids={plugin_id},
+                    force_reprepare=True,
+                )
+                if not prepared:
+                    continue
+                result = prepared[0]
                 if result.get("prepared_generation") is None:
                     results.append(result)
                     continue
                 results.append(await self._publish_prepared(plugin_id))
-                published.add(plugin_id)
-            for plugin_id in tuple(self._prepared_generations):
-                if plugin_id not in published:
-                    results.append(await self._publish_prepared(plugin_id))
             return results
 
     async def publish_prepared(self, plugin_id: str) -> dict[str, object]:
@@ -521,13 +521,20 @@ class PluginManager:
             "publication_state": publication_state,
         }
 
-    async def _prepare_changed(self) -> list[dict[str, object]]:
+    async def _prepare_changed(
+        self,
+        *,
+        plugin_ids: set[str] | None = None,
+        force_reprepare: bool = False,
+    ) -> list[dict[str, object]]:
         results: list[dict[str, object]] = []
         discovered = {
             _resolve_plugin_id(mod): mod
             for mod in self.discover()
         }
         for plugin_id, active in tuple(self._active_generations.items()):
+            if plugin_ids is not None and plugin_id not in plugin_ids:
+                continue
             mod = discovered.get(plugin_id)
             if mod is None:
                 continue
@@ -546,6 +553,9 @@ class PluginManager:
                 source_revision = ""
                 config_revision = ""
             current_prepared = self._prepared_generations.get(plugin_id)
+            if force_reprepare and current_prepared is not None:
+                await self.discard_prepared(plugin_id)
+                current_prepared = None
             matches_active = (
                 source_revision == active.source_revision
                 and config_revision == active.config_revision

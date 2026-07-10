@@ -1536,3 +1536,54 @@ async def test_publish_prepared_initialize_failure_keeps_active_snapshot(
     assert manager.prepared_generation("snapshot_publish") is None
     assert candidate.state == "discarded"
     await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugins = tmp_path / "plugins"
+
+    def source(name: str, version: str) -> str:
+        class_name = "".join(part.title() for part in name.split("_"))
+        return (
+            "from agent.plugins import Plugin\n"
+            f"class {class_name}Plugin(Plugin):\n"
+            f"    name = '{name}'\n"
+            f"    version = '{version}'\n"
+        )
+
+    first_dir = _write_plugin(plugins, "snapshot_first", source("snapshot_first", "v1"))
+    second_dir = _write_plugin(
+        plugins,
+        "snapshot_second",
+        source("snapshot_second", "v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    _ = (first_dir / "plugin.py").write_text(
+        source("snapshot_first", "v2"),
+        encoding="utf-8",
+    )
+    _ = (second_dir / "plugin.py").write_text(
+        source("snapshot_second", "v2"),
+        encoding="utf-8",
+    )
+
+    results = await manager.reconcile_changed()
+
+    assert [result["publication_state"] for result in results] == [
+        "committed",
+        "committed",
+    ]
+    first = manager.generation("snapshot_first")
+    second = manager.generation("snapshot_second")
+    snapshot = manager.current_snapshot
+    assert first is not None and second is not None and snapshot is not None
+    assert first.instance.version == "v2"  # type: ignore[attr-defined]
+    assert second.instance.version == "v2"  # type: ignore[attr-defined]
+    assert snapshot.generations == {
+        "snapshot_first": first,
+        "snapshot_second": second,
+    }
+    await manager.terminate_all()
