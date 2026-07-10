@@ -36,12 +36,16 @@ class _Pipe:
     def __init__(self, lines: list[bytes] | None = None) -> None:
         self._lines = list(lines or [])
         self.writes: list[bytes] = []
+        self.closed = False
 
     def write(self, data: bytes) -> None:
         self.writes.append(data)
 
     async def drain(self) -> None:
         return None
+
+    def close(self) -> None:
+        self.closed = True
 
     async def readline(self) -> bytes:
         if self._lines:
@@ -55,9 +59,13 @@ class _Proc:
         self.stdout = _Pipe(stdout_lines)
         self.stderr = _Pipe(stderr_lines)
         self.terminated = False
+        self.killed = False
 
     def terminate(self) -> None:
         self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
 
     async def wait(self) -> None:
         return None
@@ -499,7 +507,8 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     assert proc.stdin.writes
     assert await client.call("tool1", {"q": "x"}) == "ok"
     await client.disconnect()
-    assert proc.terminated is True
+    assert proc.stdin.closed is True
+    assert proc.terminated is False
 
     proc = _Proc([b""])
     monkeypatch.setattr("agent.mcp.client.asyncio.create_subprocess_exec", AsyncMock(return_value=proc))
@@ -507,6 +516,93 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     client._process = proc
     with pytest.raises(ConnectionError):
         await client._recv(expected_id=1)
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_disconnect_escalates_after_graceful_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    proc = _Proc([])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+    wait_count = 0
+
+    async def wait_for(awaitable, *args, **kwargs):
+        nonlocal wait_count
+        wait_count += 1
+        if wait_count == 1:
+            awaitable.close()
+            raise asyncio.TimeoutError
+        return await awaitable
+
+    monkeypatch.setattr(mcp_client_module.asyncio, "wait_for", wait_for)
+
+    await client.disconnect()
+
+    assert proc.stdin.closed is True
+    assert proc.terminated is True
+    assert proc.killed is False
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_disconnect_kills_after_terminate_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    proc = _Proc([])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+    wait_count = 0
+
+    async def wait_for(awaitable, *args, **kwargs):
+        nonlocal wait_count
+        wait_count += 1
+        if wait_count <= 2:
+            awaitable.close()
+            raise asyncio.TimeoutError
+        return await awaitable
+
+    monkeypatch.setattr(mcp_client_module.asyncio, "wait_for", wait_for)
+
+    await client.disconnect()
+
+    assert proc.stdin.closed is True
+    assert proc.terminated is True
+    assert proc.killed is True
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_serializes_calls_on_same_server():
+    class ConcurrentReadPipe(_Pipe):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"a"}]}}\n',
+                    b'{"jsonrpc":"2.0","id":2,"result":{"content":[{"text":"b"}]}}\n',
+                ]
+            )
+            self.reading = False
+
+        async def readline(self) -> bytes:
+            if self.reading:
+                raise RuntimeError("concurrent stdout read")
+            self.reading = True
+            try:
+                await asyncio.sleep(0)
+                return await super().readline()
+            finally:
+                self.reading = False
+
+    proc = _Proc([])
+    proc.stdout = ConcurrentReadPipe()
+    client = McpClient("fitbit", ["python", "server.py"])
+    client._process = proc
+
+    results = await asyncio.gather(
+        client.call("get_proactive_events", {}),
+        client.call("get_sleep_context", {}),
+    )
+
+    assert results == ["a", "b"]
 
 
 @pytest.mark.asyncio

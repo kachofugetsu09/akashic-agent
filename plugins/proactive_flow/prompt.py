@@ -12,9 +12,9 @@ from agent.prompting import (
 )
 from core.memory.markdown import MemoryProfileApi
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.context import AgentTickContext
+from plugins.default_proactive.context import AgentTickContext
 from proactive_v2.contracts import normalize_alert, normalize_content, normalize_context
-from proactive_v2.gateway import GatewayResult
+from plugins.default_proactive.gateway import GatewayResult
 
 
 class ProactivePromptBuilder:

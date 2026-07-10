@@ -235,9 +235,17 @@ class ToolRegistry:
             "mcp": {k: sorted(v) for k, v in sorted(mcp.items())},
         }
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> str | ToolResult:
+    async def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        raise_errors: bool = False,
+    ) -> str | ToolResult:
         tool = self._tools.get(name)
         if tool is None:
+            if raise_errors:
+                raise RuntimeError(f"工具 '{name}' 不存在")
             return f"工具 '{name}' 不存在"
         try:
             # 将会话上下文（channel、chat_id）作为低优先级默认值合并进 kwargs，
@@ -248,6 +256,8 @@ class ToolRegistry:
             return await tool.execute(**merged)
         except Exception as e:
             logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
+            if raise_errors:
+                raise
             return f"工具执行出错: {e}"
 
     def get_schemas_as_doc_results(self, names: list[str]) -> list[dict[str, Any]]:

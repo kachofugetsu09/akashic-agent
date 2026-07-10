@@ -243,10 +243,13 @@ class DriftStateStore:
         journal_append: list[dict[str, Any]] | None = None,
     ) -> None:
         skill_name = str(skill_used or "").strip()
+        status_value = str(status or "").strip()
+        if status_value not in {"completed", "paused"}:
+            raise ValueError("drift status must be completed or paused")
         logger.info(
             "[drift_state] save_finish: skill=%s status=%s note=%s",
             skill_name,
-            status,
+            status_value,
             bool(global_note_update),
         )
 
@@ -259,7 +262,7 @@ class DriftStateStore:
                 (
                     now_utc.isoformat(),
                     skill_name,
-                    status,
+                    status_value,
                     _clip(briefing, 500),
                     message_result,
                 ),
@@ -317,7 +320,7 @@ class DriftStateStore:
                     skill_name,
                     old_count + 1,
                     now_utc.isoformat(),
-                    status,
+                    status_value,
                     _clip(briefing, 500),
                     scratchpad,
                     json.dumps(merged_cursor, ensure_ascii=False, sort_keys=True),
@@ -345,6 +348,16 @@ class DriftStateStore:
                         now_utc.isoformat(),
                     ),
                 )
+
+    def update_last_message_result(self, message_result: str) -> None:
+        run_id = self._last_saved_run_id
+        if not run_id:
+            return
+        with self._connection() as conn:
+            _ = conn.execute(
+                "UPDATE runs SET message_result = ? WHERE id = ?",
+                (message_result, run_id),
+            )
 
     def append_step(
         self,
@@ -390,7 +403,7 @@ class DriftStateStore:
     @staticmethod
     def _normalize_status(raw: Any) -> str:
         status = str(raw or "").strip()
-        return status if status in {"idle", "completed", "paused", "waiting"} else "idle"
+        return status if status in {"idle", "completed", "paused"} else "idle"
 
     def _skill_roots(self) -> list[tuple[Path, bool]]:
         roots: list[tuple[Path, bool]] = [(self.skills_dir, False)]
@@ -525,7 +538,7 @@ class DriftStateStore:
                 {
                     "skill": _clip(row["skill_name"], 80),
                     "run_at": _clip(row["run_at"], 80),
-                    "status": _clip(row["status"], 20),
+                    "status": _clip(self._normalize_status(row["status"]), 20),
                     "briefing": _clip(row["briefing"], 150),
                     "message_result": _clip(row["message_result"], 20),
                 }
@@ -555,7 +568,7 @@ class DriftStateStore:
         return {
             "run_count": int(row["run_count"] or 0),
             "last_run_at": str(row["last_run_at"] or ""),
-            "last_status": str(row["last_status"] or "idle"),
+            "last_status": self._normalize_status(row["last_status"]),
             "last_briefing": str(row["last_briefing"] or ""),
             "scratchpad": str(row["scratchpad"] or ""),
             "cursor": self._decode_json_object(row["cursor_json"]),

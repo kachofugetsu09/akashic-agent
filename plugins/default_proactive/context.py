@@ -32,14 +32,18 @@ class AgentTickContext:
     skip_reason: str = ""
     skip_note: str = ""
     draft_message: str = ""
+    draft_media: list[str] = field(default_factory=list)
     draft_evidence: list[str] = field(default_factory=list)
     final_message: str = ""
     cited_item_ids: list[str] = field(default_factory=list)     # 复合键列表
     steps_taken: int = 0
     drift_entered: bool = False
     drift_finished: bool = False
+    drift_message_staged: bool = False
     drift_message_sent: bool = False
     drift_selected_skill: str = ""
+    drift_finish_status: str = ""
+    drift_finish_briefing: str = ""
     llm_call_count: int = 0
     cache_prompt_tokens: int = 0
     cache_hit_tokens: int = 0

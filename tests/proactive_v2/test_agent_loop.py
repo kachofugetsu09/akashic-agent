@@ -1,5 +1,5 @@
 """
-TDD — Phase 5: proactive_v2/ProactiveTurnPipeline — Agent Loop
+TDD — Phase 5: proactive_v2/ProactiveFlowRuntime — Agent Loop
 
 测试覆盖：
   - max_steps 保护：loop 不超过 agent_tick_max_steps
@@ -24,8 +24,8 @@ import pytest
 from agent.prompting import is_context_frame
 from bus.event_bus import EventBus
 from bus.events_lifecycle import ProactiveFinished
-from proactive_v2.gateway import GatewayDeps
-from proactive_v2.tools import ToolDeps
+from plugins.default_proactive.gateway import GatewayDeps
+from plugins.proactive_flow.tools import ToolDeps
 from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_proactive_pipeline, run_proactive_pipeline
 
 

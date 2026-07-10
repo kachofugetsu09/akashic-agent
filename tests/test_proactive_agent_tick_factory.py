@@ -1,13 +1,20 @@
 from __future__ import annotations
 from typing import Any, cast
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
+from plugins.default_proactive.factory import AgentTickFactory
+from plugins.default_proactive.runtime import build_default_proactive_modules
+from plugins.drift_flow.modules import build_drift_flow_modules
+from plugins.proactive_flow.modules import build_proactive_flow_modules
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.context import AgentTickContext
-from proactive_v2.mcp_sources import McpClientPool
+from plugins.default_proactive.context import AgentTickContext
+from proactive_v2.mcp_sources import SharedMcpGateway
+from proactive_v2.lifecycle import ProactiveLifecycleBuilder, ProactiveLifecycleSpec
+from proactive_v2.runtime_scope import ProactiveRuntimeScope
+from agent.tools.registry import ToolRegistry
 from bootstrap.proactive import build_proactive_runtime
 
 
@@ -20,7 +27,7 @@ class _FakeProvider:
         return SimpleNamespace(tool_calls=[], content="")
 
 
-def _build_deps(*, with_pool: bool):
+def _build_deps():
     cfg = ProactiveConfig(
         default_chat_id="cid",
         message_dedupe_recent_n=3,
@@ -30,7 +37,7 @@ def _build_deps(*, with_pool: bool):
         collect_recent=lambda: [],
         collect_recent_proactive=lambda n: [],
     )
-    return AgentTickDeps(
+    return ProactiveRuntimeScope(
         cfg=cfg,
         sense=sense,
         presence=SimpleNamespace(get_last_user_at=lambda _: None),
@@ -44,34 +51,44 @@ def _build_deps(*, with_pool: bool):
         deduper=None,
         rng=SimpleNamespace(),
         workspace_context_fn=lambda: "",
-        pool=McpClientPool() if with_pool else None,
+        mcp_gateway=SharedMcpGateway(Path("."), ToolRegistry()),
     )
 
 
-def test_agent_tick_factory_build_requires_pool():
-    deps = _build_deps(with_pool=False)
-    try:
-        AgentTickFactory(deps).build()
-        assert False, "expected RuntimeError"
-    except RuntimeError as e:
-        assert "pool 不能为空" in str(e)
-
-
 def test_agent_tick_factory_build_returns_tick():
-    deps = _build_deps(with_pool=True)
-    tick = AgentTickFactory(deps).build()
+    deps = _build_deps()
+    tick = AgentTickFactory(deps).build_runtime()
     assert tick is not None
 
 
+def test_plugin_flow_modules_close_default_lifecycle():
+    runtime = AgentTickFactory(_build_deps()).build_runtime()
+    modules = [
+        *build_default_proactive_modules(runtime),
+        *build_proactive_flow_modules(runtime),
+        *build_drift_flow_modules(runtime),
+    ]
+
+    lifecycle = ProactiveLifecycleBuilder().build(
+        ProactiveLifecycleSpec(
+            id="default",
+            terminal_slots=("run:next_wakeup",),
+        ),
+        modules,
+    )
+
+    assert lifecycle.modules[-1].slot == "proactive.schedule"
+
+
 def test_agent_tick_factory_builds_drift_pipeline_when_enabled(tmp_path):
-    deps = _build_deps(with_pool=True)
+    deps = _build_deps()
     deps.cfg = ProactiveConfig(
         default_chat_id="cid",
         drift_enabled=True,
     )
     deps.state_store = SimpleNamespace(workspace_dir=tmp_path)
     deps.any_action_gate = SimpleNamespace()
-    tick = AgentTickFactory(deps).build()
+    tick = AgentTickFactory(deps).build_runtime()
     assert tick._drift_pipeline is not None
     assert tick._drift_pipeline._store.drift_dir == tmp_path / "drift"
     assert tick._drift_pipeline._store.include_builtin_skills is False
@@ -79,7 +96,7 @@ def test_agent_tick_factory_builds_drift_pipeline_when_enabled(tmp_path):
 
 
 def test_agent_tick_factory_binds_drift_step_recorder_to_tick_store(tmp_path):
-    deps = _build_deps(with_pool=True)
+    deps = _build_deps()
     deps.cfg = ProactiveConfig(
         default_chat_id="cid",
         drift_enabled=True,
@@ -90,7 +107,7 @@ def test_agent_tick_factory_binds_drift_step_recorder_to_tick_store(tmp_path):
     )
     deps.state_store = state_store
 
-    tick = AgentTickFactory(deps).build()
+    tick = AgentTickFactory(deps).build_runtime()
     assert tick._drift_pipeline is not None
     assert tick._drift_pipeline.step_recorder is not None
 
@@ -138,9 +155,9 @@ def test_build_proactive_runtime_accepts_light_agent_loop_stub(tmp_path):
 
 
 async def test_agent_tick_factory_llm_fn_forces_disable_thinking():
-    deps = _build_deps(with_pool=True)
+    deps = _build_deps()
     provider = deps.provider
-    tick = AgentTickFactory(deps).build()
+    tick = AgentTickFactory(deps).build_runtime()
 
     await tick._llm_fn(
         messages=[{"role": "user", "content": "hi"}],
@@ -153,9 +170,9 @@ async def test_agent_tick_factory_llm_fn_forces_disable_thinking():
 
 
 async def test_agent_tick_factory_llm_fn_honors_disable_thinking_without_schemas():
-    deps = _build_deps(with_pool=True)
+    deps = _build_deps()
     provider = deps.provider
-    tick = AgentTickFactory(deps).build()
+    tick = AgentTickFactory(deps).build_runtime()
 
     await tick._llm_fn(
         messages=[{"role": "user", "content": "hi"}],

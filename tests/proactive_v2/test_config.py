@@ -15,6 +15,14 @@ from proactive_v2.config import ProactiveConfig
 
 # ── v2-only ───────────────────────────────────────────────────────────────
 
+def test_lifecycle_default():
+    assert ProactiveConfig().lifecycle == "default"
+
+
+def test_profile_default_empty():
+    assert ProactiveConfig().profile == ""
+
+
 def test_use_agent_tick_removed():
     assert not hasattr(ProactiveConfig(), "use_agent_tick")
 

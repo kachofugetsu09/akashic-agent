@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from proactive_v2.context import AgentTickContext
+from plugins.default_proactive.context import AgentTickContext
 
 logger = logging.getLogger(__name__)
 

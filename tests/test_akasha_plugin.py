@@ -17,7 +17,7 @@ from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
-from plugins.akasha.config import AkashaConfig
+from plugins.akasha.config import AkashaConfig, load_akasha_config, render_akasha_config
 from plugins.akasha.engine import (
     ActivationTrace,
     AkashaCandidate,
@@ -46,6 +46,22 @@ from scripts.build_akasha_db import _iter_replay_turns, _load_embeddings_from_ca
 
 
 QUERY_TS = datetime.fromtimestamp(1_700_000_000.0, timezone.utc)
+
+
+def test_akasha_config_does_not_expose_dynamic_budget_limits(tmp_path: Path) -> None:
+    (tmp_path / "config.local.toml").write_text(
+        "dense_top_k = 99\nripple_top_k = 99\nactivate_limit = 99\n",
+        encoding="utf-8",
+    )
+
+    config = load_akasha_config(plugin_dir=tmp_path)
+    rendered = render_akasha_config(config)
+
+    assert not hasattr(config, "dense_top_k")
+    assert not hasattr(config, "ripple_top_k")
+    assert not hasattr(config, "activate_limit")
+    assert "top_k" not in rendered
+    assert "activate_limit" not in rendered
 
 
 def _init_sessions_db(path: Path) -> None:
@@ -761,7 +777,7 @@ async def test_context_block_sorts_injected_cards_by_time_desc(tmp_path: Path) -
         )
 
     engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
-    engine._akasha_config = AkashaConfig(dense_top_k=10, ripple_top_k=10)
+    engine._akasha_config = AkashaConfig()
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     engine._remember_pending_activation = lambda *_, **__: None
@@ -875,7 +891,7 @@ async def test_context_query_uses_akasha_top_k_over_default_query_limit(
         )
 
     engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
-    engine._akasha_config = AkashaConfig(dense_top_k=10, ripple_top_k=10, inject_max_chars=20000)
+    engine._akasha_config = AkashaConfig(inject_max_chars=20000)
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     engine._remember_pending_activation = lambda *_, **__: None
@@ -928,7 +944,7 @@ def test_compute_candidates_uses_activation_limit_for_stateful_replay(tmp_path: 
         nodes,
         {},
         100,
-        config=AkashaConfig(dense_top_k=30, activate_limit=8),
+        config=AkashaConfig(),
         fan={},
         soft_recall=False,
         return_limit=8,

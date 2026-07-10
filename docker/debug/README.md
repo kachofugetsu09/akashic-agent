@@ -254,6 +254,58 @@ AKASHIC_RACE_CONFIG    指定 config.toml；不指定时生成无外部 channel 
 AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
 ```
 
+## 主动链路操作沙盒
+
+`proactive_sandbox.py` 使用隔离 workspace、真实插件加载器、Slot Lifecycle、Feed MCP 子进程和消息发送编排器。模型使用可预测驱动器，测试失败时可以排除模型随机性。
+
+```text
+┌─ operator
+│  ├─ inject-content ──> feed_mcp.sqlite3
+│  ├─ clear-content ───> empty gateway
+│  ├─ tick-content
+│  ├─ tick-drift
+│  └─ status
+│
+└─ Docker sandbox
+   ├─ PluginManager ──> runtime/module/lifecycle factories
+   ├─ ToolRegistry  ──> Feed MCP stdio process
+   ├─ ProactiveLoop ──> compiled Slot Graph
+   └─ state
+      ├─ proactive.db
+      ├─ sessions.db
+      ├─ feed-data/feed_mcp.sqlite3
+      └─ drift/drift.db
+```
+
+完整验证：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml build akashic-debug
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/proactive_sandbox.py run-all
+```
+
+使用当前 profile 的真实模型配置：
+
+```bash
+AKASHIC_DEBUG_PROFILE=dev_verify \
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/proactive_sandbox.py run-all --config /sandbox/config.toml
+```
+
+手动控制：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/proactive_sandbox.py reset
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/proactive_sandbox.py inject-content
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/proactive_sandbox.py tick-content
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/proactive_sandbox.py status
+```
+
 `agent-loop-runtime` 场景会启动真实 `AgentLoop.run()`，读取 `config.toml`，但不启动 Telegram / QQ / CLI server。它用 fake reasoner 卡住 passive turn，再并发触发 drift 发送和 scheduler soft 的 `process_direct`，验证 runtime lock 与 ChatLane 的联动。
 
 ```text

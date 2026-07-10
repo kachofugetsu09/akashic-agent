@@ -11,21 +11,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.prompting import is_context_frame
-from agent.core.proactive_turn import ProactiveTurnPipeline, ProactiveTurnPipelineDeps
+from plugins.default_proactive.runtime import ProactiveFlowRuntime, ProactiveFlowDeps
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from agent.looping.ports import SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
-from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from proactive_v2.context import AgentTickContext
-from agent.core.drift_turn import DriftTurnPipeline, DriftTurnPipelineDeps
-from proactive_v2.drift_state import DriftStateStore
-from proactive_v2.drift_tools import DriftToolDeps, build_drift_tool_registry
-from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
-from proactive_v2.gateway import GatewayDeps
-from proactive_v2.mcp_sources import McpClientPool
-from proactive_v2.tools import ToolDeps
+from plugins.default_proactive.context import AgentTickContext
+from plugins.drift_flow.runtime import DriftTurnPipeline, DriftTurnPipelineDeps
+from plugins.drift_flow.state import DriftStateStore
+from plugins.drift_flow.tools import DriftToolDeps, build_drift_tool_registry
+from plugins.default_proactive.gateway import GatewayDeps
+from plugins.proactive_flow.tools import ToolDeps
 from tests.proactive_v2.conftest import FakeLLM, FakeRng, cfg_with, make_proactive_pipeline, run_proactive_pipeline
 
 
@@ -43,6 +40,23 @@ def _write_skill(root: Path, name: str = "explore-curiosity") -> Path:
         encoding="utf-8",
     )
     return skill_dir
+
+
+def test_drift_commit_result_corrects_staged_message_result(tmp_path: Path):
+    store = DriftStateStore(tmp_path)
+    store.save_finish(
+        skill_used="explore-curiosity",
+        status="completed",
+        briefing="done",
+        message_result="staged",
+        scratchpad_update=None,
+        global_note_update=None,
+        now_utc=datetime.now(timezone.utc),
+    )
+
+    store.update_last_message_result("silent")
+
+    assert store.load_drift()["recent_runs"][-1]["message_result"] == "silent"
 
 
 class _DummyTool(Tool):
@@ -136,7 +150,6 @@ async def _exec_drift_tool(
     args: dict,
     *,
     store: DriftStateStore | None = None,
-    send_message_fn=None,
 ):
     resolved_store = store or DriftStateStore(tmp_path)
     reg = build_drift_tool_registry(
@@ -146,7 +159,6 @@ async def _exec_drift_tool(
             store=resolved_store,
             builtin_skills_dir=getattr(resolved_store, "builtin_skills_dir", None),
             shared_tools=_build_shared_tools(),
-            send_message_fn=send_message_fn,
         ),
     )
     return await reg.execute(tool_name, args)
@@ -214,7 +226,6 @@ def test_drift_message_push_schema_supports_media(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_drift_message_push_sends_media(tmp_path: Path):
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    send_message = AsyncMock(return_value=True)
     raw = await _exec_drift_tool(
         tmp_path,
         ctx,
@@ -224,10 +235,10 @@ async def test_drift_message_push_sends_media(tmp_path: Path):
             "image": "/tmp/one.png",
             "media": ["/tmp/two.png"],
         },
-        send_message_fn=send_message,
     )
     assert json.loads(cast(Any, raw))["ok"] is True
-    send_message.assert_awaited_once_with("新表情来啦", ["/tmp/one.png", "/tmp/two.png"])
+    assert ctx.draft_message == "新表情来啦"
+    assert ctx.draft_media == ["/tmp/one.png", "/tmp/two.png"]
 
 
 @pytest.mark.asyncio
@@ -244,12 +255,12 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     )
     prompt = pipeline._build_system_prompt()
     runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
-    assert "select_skill 会记录本轮 selected_skill" in prompt
     assert "没有被叫住时的自处" in prompt
-    assert "不要为了显得忙而硬找事做" in prompt
-    assert "Drift 不是定时巡检" in prompt
+    assert "默认应该行动一小步" in prompt
+    assert "默认调用 select_skill" in prompt
+    assert "idle_drift 的 reason 必须写具体的时机或风险原因" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
-    assert "message_result" in prompt
+    assert "message_result" not in prompt
     assert "select_skill" in prompt
     assert "idle_drift" in prompt
     assert "fetch_messages" in prompt
@@ -486,7 +497,7 @@ async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_pat
         scratchpad_update="短期避免继续问音乐，优先换成食物口味。",
         global_note_update=None,
         now_utc=now,
-        cursor_update={"last_topic": "音乐", "waiting_for_answer": True},
+        cursor_update={"last_topic": "音乐", "last_asked_at": "2026-01-01T00:00:00+00:00"},
         journal_append=[
             {
                 "entry_type": "curiosity_asked",
@@ -547,77 +558,10 @@ async def test_finish_drift_rejects_unknown_skill(tmp_path: Path):
             "skill_used": "missing",
             "status": "completed",
             "briefing": "x",
-            "message_result": "silent",
         },
         store=store,
     )
     assert json.loads(cast(Any, raw))["error"] == "unknown skill: missing"
-
-
-@pytest.mark.asyncio
-async def test_finish_drift_requires_message_result_to_match_actual_send(tmp_path: Path):
-    _write_skill(tmp_path)
-    store = DriftStateStore(tmp_path)
-    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    raw = await _exec_drift_tool(
-        tmp_path,
-        ctx,
-        "finish_drift",
-        {
-            "skill_used": "explore-curiosity",
-            "status": "completed",
-            "briefing": "x",
-            "message_result": "sent",
-        },
-        store=store,
-    )
-    payload = json.loads(cast(Any, raw))
-    assert payload["error"] == "message_result=sent requires successful message_push first"
-    assert ctx.drift_finished is False
-
-
-@pytest.mark.asyncio
-async def test_finish_drift_rejects_missing_message_result(tmp_path: Path):
-    _write_skill(tmp_path)
-    store = DriftStateStore(tmp_path)
-    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    raw = await _exec_drift_tool(
-        tmp_path,
-        ctx,
-        "finish_drift",
-        {
-            "skill_used": "explore-curiosity",
-            "status": "completed",
-            "briefing": "x",
-        },
-        store=store,
-    )
-    payload = json.loads(cast(Any, raw))
-    assert payload["error"] == "message_result must be one of: sent, silent"
-    assert ctx.drift_finished is False
-
-
-@pytest.mark.asyncio
-async def test_finish_drift_rejects_silent_after_message_sent(tmp_path: Path):
-    _write_skill(tmp_path)
-    store = DriftStateStore(tmp_path)
-    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    ctx.drift_message_sent = True
-    raw = await _exec_drift_tool(
-        tmp_path,
-        ctx,
-        "finish_drift",
-        {
-            "skill_used": "explore-curiosity",
-            "status": "completed",
-            "briefing": "x",
-            "message_result": "silent",
-        },
-        store=store,
-    )
-    payload = json.loads(cast(Any, raw))
-    assert payload["error"] == "message_result=silent conflicts with successful message_push"
-    assert ctx.drift_finished is False
 
 
 @pytest.mark.asyncio
@@ -633,13 +577,61 @@ async def test_finish_drift_saves_silent_message_result(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "completed",
             "briefing": "x",
-            "message_result": "silent",
         },
         store=store,
     )
     assert json.loads(cast(Any, raw))["ok"] is True
     assert store.load_drift()["recent_runs"][-1]["message_result"] == "silent"
     assert not (tmp_path / "skills" / "explore-curiosity" / "state.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_emits_result_after_delivery(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(
+        now_utc=datetime.now(timezone.utc),
+        session_key="session",
+        drift_selected_skill="explore-curiosity",
+    )
+    events: list[Any] = []
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=_build_shared_tools(),
+            event_bus=SimpleNamespace(enqueue=events.append),
+        ),
+    )
+
+    await reg.execute("message_push", {"message": "hello"})
+    await reg.execute(
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "staged",
+        },
+    )
+
+    assert ctx.drift_message_staged is True
+    assert ctx.drift_message_sent is False
+    assert events == []
+
+    pipeline = _make_drift_pipeline(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=_build_shared_tools(),
+            event_bus=SimpleNamespace(enqueue=events.append),
+        ),
+    )
+    pipeline.record_commit_result(ctx, False)
+
+    assert events[0].message_result == "silent"
+    assert store.load_drift()["recent_runs"][-1]["message_result"] == "silent"
 
 
 @pytest.mark.asyncio
@@ -655,8 +647,10 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "completed",
             "briefing": "问了音乐偏好",
-            "message_result": "silent",
-            "cursor_update": {"last_topic": "music", "waiting_for_answer": True},
+            "cursor_update": {
+                "last_topic": "music",
+                "last_asked_at": "2026-01-01T00:00:00+00:00",
+            },
             "journal_append": [
                 {
                     "entry_type": "curiosity_asked",
@@ -672,9 +666,31 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
     continuum = store.load_skill_continuum("explore-curiosity")
     journal = store.load_skill_journal("explore-curiosity")
     assert continuum["cursor"]["last_topic"] == "music"
-    assert continuum["cursor"]["waiting_for_answer"] is True
+    assert continuum["cursor"]["last_asked_at"] == "2026-01-01T00:00:00+00:00"
     assert journal[0]["entry_type"] == "curiosity_asked"
     assert journal[0]["key"] == "music"
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_rejects_removed_waiting_status(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "waiting",
+            "briefing": "无新反馈",
+        },
+        store=store,
+    )
+    payload = json.loads(cast(Any, raw))
+    assert payload["error"] == "status must be one of: completed, paused"
+    assert ctx.drift_finished is False
+    assert store.load_drift()["recent_runs"] == []
 
 
 @pytest.mark.asyncio
@@ -690,14 +706,11 @@ async def test_finish_drift_paused_requires_scratchpad(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "paused",
             "briefing": "读到一半",
-            "message_result": "silent",
         },
         store=store,
     )
     payload = json.loads(cast(Any, raw))
-    assert payload["error"] == (
-        "scratchpad_update is required when status is paused or waiting"
-    )
+    assert payload["error"] == "scratchpad_update is required when status is paused"
     assert ctx.drift_finished is False
 
 
@@ -771,7 +784,6 @@ async def test_drift_pipeline_runs_and_finishes(tmp_path: Path):
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "问了一个问题",
-                    "message_result": "silent",
                 },
             ),
         ]
@@ -811,10 +823,9 @@ async def test_drift_pipeline_runs_and_finishes(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_drift_pipeline_restricts_tools_after_send_message(tmp_path: Path):
+async def test_drift_pipeline_restricts_tools_after_staging_message(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
-    send_message = AsyncMock(return_value=True)
     llm = FakeLLM(
         [
             ("select_skill", {"skill_name": "explore-curiosity"}),
@@ -825,7 +836,6 @@ async def test_drift_pipeline_restricts_tools_after_send_message(tmp_path: Path)
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "sent",
-                    "message_result": "sent",
                 },
             ),
         ]
@@ -836,7 +846,6 @@ async def test_drift_pipeline_restricts_tools_after_send_message(tmp_path: Path)
             drift_dir=tmp_path,
             store=store,
             shared_tools=_build_shared_tools(),
-            send_message_fn=send_message,
         ),
         max_steps=5,
     )
@@ -846,8 +855,9 @@ async def test_drift_pipeline_restricts_tools_after_send_message(tmp_path: Path)
     assert llm.calls
     # FakeLLM 不记录 schemas，这里用行为结果兜底：send 后仍正常 finish。
     assert ctx.drift_finished is True
-    assert store.load_drift()["recent_runs"][-1]["message_result"] == "sent"
-    send_message.assert_awaited_once_with("hello\n\nfrom drift", [])
+    assert ctx.drift_message_staged is True
+    assert ctx.drift_message_sent is False
+    assert store.load_drift()["recent_runs"][-1]["message_result"] == "staged"
 
 
 @pytest.mark.asyncio
@@ -879,7 +889,6 @@ async def test_drift_pipeline_wraps_up_at_step_limit(tmp_path: Path):
                     "status": "paused",
                     "briefing": "读了 skill 并写了中间状态",
                     "scratchpad_update": "下次继续检查 state.json",
-                    "message_result": "silent",
                 },
             }
         return None
@@ -921,7 +930,6 @@ async def test_drift_pipeline_does_not_restrict_before_step_limit(tmp_path: Path
                     "status": "paused",
                     "briefing": "达到步数上限后停止继续读取",
                     "scratchpad_update": "下次根据已读 SKILL.md 继续判断是否要行动",
-                    "message_result": "silent",
                 },
             }
         if len(captured) == 1:
@@ -1006,7 +1014,6 @@ async def test_drift_pipeline_wrap_up_retries_non_finish_once(tmp_path: Path):
                 "status": "paused",
                 "briefing": "读了 skill，但还没有完成动作",
                 "scratchpad_update": "下次从 explore-curiosity 的自然问题判断继续",
-                "message_result": "silent",
             },
         }
 
@@ -1042,7 +1049,6 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "整理了漂移状态",
-                    "message_result": "silent",
                 },
             ),
         ]
@@ -1079,9 +1085,18 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("delivered", "message_result"),
+    [(True, "sent"), (False, "silent")],
+)
+async def test_agent_tick_drift_emits_delivery_result(
+    tmp_path: Path,
+    delivered: bool,
+    message_result: str,
+):
     _write_skill(tmp_path)
-    sender = AsyncMock(return_value=True)
+    sender = AsyncMock(return_value=delivered)
+    events: list[Any] = []
 
     class _Session:
         def __init__(self) -> None:
@@ -1115,18 +1130,6 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
         )
     )
 
-    async def send_message(content: str, media: list[str] | None = None) -> bool:
-        return await orchestrator.handle_proactive_turn(
-            result=TurnResult(
-                decision="reply",
-                outbound=TurnOutbound(session_key="test_session", content=content, media=list(media or [])),
-                trace=TurnTrace(source="proactive", extra={"source_mode": "drift"}),
-            ),
-            session_key="test_session",
-            channel="telegram",
-            chat_id="1",
-        )
-
     gate = MagicMock()
     gate.should_act.return_value = (True, {})
     llm = FakeLLM(
@@ -1139,13 +1142,12 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "发出一条消息",
-                    "message_result": "sent",
                 },
             ),
         ]
     )
-    tick = ProactiveTurnPipeline(
-        ProactiveTurnPipelineDeps(
+    tick = ProactiveFlowRuntime(
+        ProactiveFlowDeps(
             cfg=cfg_with(
                 drift_enabled=True,
                 default_channel="telegram",
@@ -1184,7 +1186,7 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
                     drift_dir=tmp_path,
                     store=DriftStateStore(tmp_path),
                     shared_tools=_build_shared_tools(),
-                    send_message_fn=send_message,
+                    event_bus=SimpleNamespace(enqueue=events.append),
                 ),
                 max_steps=5,
             ),
@@ -1197,7 +1199,8 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
     sender.assert_awaited_once_with("hello from drift")
     gate.record_action.assert_called_once()
     assert tick.last_ctx.drift_entered is True
-    assert tick.last_ctx.drift_message_sent is True
+    assert tick.last_ctx.drift_message_sent is delivered
+    assert events[-1].message_result == message_result
 
 
 def _write_skill_with_mcp(
@@ -1356,7 +1359,6 @@ async def test_drift_pipeline_keeps_skills_when_mcp_available(tmp_path: Path):
                 "skill_used": "needs-cal",
                 "status": "completed",
                 "briefing": "done",
-                "message_result": "silent",
             },
         ),
     ])
@@ -1502,7 +1504,6 @@ async def test_drift_pipeline_executes_mounted_mcp_tool(tmp_path: Path):
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "used cal",
-                    "message_result": "silent",
                 },
             }
         return None
@@ -1573,93 +1574,3 @@ async def test_system_prompt_skill_requires_mcp_annotation(tmp_path: Path):
         ))["content"]
     )
     assert "[需要: calendar]" in content
-
-
-class _FakeProvider:
-    async def chat(self, **kwargs):
-        return SimpleNamespace(tool_calls=[])
-
-
-def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
-    sender = AsyncMock()
-    sender.send.return_value = sender_ok
-
-    session = SimpleNamespace(
-        messages=[],
-        add_message=lambda *args, **kwargs: session.messages.append(
-            {"args": args, "kwargs": kwargs}
-        ),
-    )
-    session_manager = SimpleNamespace(
-        get_or_create=lambda _key: session,
-        append_messages=AsyncMock(return_value=None),
-    )
-
-    class _Outbound:
-        async def dispatch(self, outbound) -> bool:
-            return await sender.send(outbound.content)
-
-    from agent.looping.ports import SessionServices
-    from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
-
-    orchestrator = TurnOrchestrator(
-        TurnOrchestratorDeps(
-            session=SessionServices(
-                session_manager=cast(Any, session_manager),
-                presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
-            ),
-            outbound=_Outbound(),
-        )
-    )
-
-    deps = AgentTickDeps(
-        cfg=cfg_with(
-            drift_enabled=True,
-            default_channel="telegram",
-            default_chat_id="1",
-        ),
-        sense=SimpleNamespace(
-            target_session_key=lambda: "telegram:1",
-            collect_recent=lambda: [],
-            collect_recent_proactive=lambda n: [],
-        ),
-        presence=SimpleNamespace(get_last_user_at=lambda _: None),
-        provider=_FakeProvider(),
-        model="m",
-        max_tokens=128,
-        memory=None,
-        state_store=state_store,
-        any_action_gate=SimpleNamespace(),
-        passive_busy_fn=None,
-        deduper=None,
-        rng=SimpleNamespace(),
-        workspace_context_fn=lambda: "",
-        shared_tools=_build_shared_tools(),
-        turn_orchestrator=orchestrator,
-        pool=McpClientPool(),
-    )
-    return AgentTickFactory(deps), sender
-
-
-@pytest.mark.asyncio
-async def test_factory_drift_send_message_returns_false_when_send_fails(tmp_path: Path):
-    state = SimpleNamespace(path=tmp_path / "proactive_state.json", mark_delivery=MagicMock())
-    factory, sender = _build_factory(tmp_path, sender_ok=False, state_store=state)
-    send_message = factory._build_drift_send_message_fn()
-    assert send_message is not None
-    ok = await send_message("hello")
-    assert ok is False
-    state.mark_delivery.assert_not_called()
-    sender.send.assert_called_once_with("hello")
-
-
-@pytest.mark.asyncio
-async def test_factory_drift_send_message_marks_delivery_on_success(tmp_path: Path):
-    state = SimpleNamespace(path=tmp_path / "proactive_state.json", mark_delivery=MagicMock())
-    factory, sender = _build_factory(tmp_path, sender_ok=True, state_store=state)
-    send_message = factory._build_drift_send_message_fn()
-    assert send_message is not None
-    ok = await send_message("hello")
-    assert ok is True
-    state.mark_delivery.assert_called_once()
-    sender.send.assert_called_once_with("hello")

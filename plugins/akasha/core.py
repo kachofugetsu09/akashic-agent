@@ -44,6 +44,9 @@ HETERO_DEPRESSION_RATE = 0.05
 INITIAL_STRENGTH_BASE = 0.70
 INITIAL_STRENGTH_SALIENCE_BONUS = 0.30
 SALIENCE_CENTROID_SCALE = 2.0
+DENSE_SEED_LIMIT = 10
+DENSE_CANDIDATE_LIMIT = 20
+DEFAULT_ACTIVATION_LIMIT = 8
 
 
 def initial_strength(salience: float) -> float:
@@ -248,8 +251,7 @@ def idf_table_is_stale(
 
 @dataclass(frozen=True)
 class CoreConfig:
-    """算法配置。字段与 AkashaConfig 保持一致的命名和默认值。"""
-    dense_top_k: int = 10
+    """Akasha 算法配置。"""
     dense_seed_threshold: float = 0.675
     activation_threshold: float = 0.22
     cross_boost: float = 36.0
@@ -257,7 +259,16 @@ class CoreConfig:
     nearby_dense_threshold: float = 0.28
     soft_recall_threshold: float = 0.165
     soft_recall_direct_floor: float = 0.45
-    activate_limit: int = 8
+
+
+@dataclass(frozen=True)
+class RecallBudget:
+    dense_k: int
+    ripple_k: int
+    activation_k: int
+    plateau_strength: float
+    dense_support: int
+    tail_ratio: float
 
 
 @dataclass(frozen=True)
@@ -357,6 +368,7 @@ class EdgeUpdate:
     dst_key: str
     strength: float
     ts: float
+    kind: str = "temporal"
 
 
 REINFORCE_NU_FLOOR = 0.3
@@ -368,6 +380,7 @@ def activation_edge_updates(
     ts: float,
     query_residual: float = 1.0,
     reinforce_boost: float = 1.0,
+    nodes: dict[str, AkashaNode] | None = None,
 ) -> list[EdgeUpdate]:
     # Residual Hebb：右脑只对预测误差产生可塑性。
     # gain = max(ν_turn, REINFORCE_NU_FLOOR if reinforce_boost > 1 else 0)
@@ -384,19 +397,54 @@ def activation_edge_updates(
     key_to_score = {item.key: item.score for item in candidates}
     for item in candidates:
         edge_strength = key_to_score.get(item.key, 1.0) * reinforce_boost
+        forward_gain = edge_coherence_gain(item.key, current_key, nodes, ts, kind="temporal")
+        backward_gain = edge_coherence_gain(current_key, item.key, nodes, ts, kind="temporal")
         updates.append(
-            EdgeUpdate(item.key, current_key, edge_strength * STDP_CAUSAL_EDGE_GAIN * gain, ts)
+            EdgeUpdate(
+                item.key,
+                current_key,
+                edge_strength * STDP_CAUSAL_EDGE_GAIN * gain * forward_gain,
+                ts,
+                "temporal",
+            )
         )
         updates.append(
-            EdgeUpdate(current_key, item.key, edge_strength * STDP_ACAUSAL_EDGE_GAIN * gain, ts)
+            EdgeUpdate(
+                current_key,
+                item.key,
+                edge_strength * STDP_ACAUSAL_EDGE_GAIN * gain * backward_gain,
+                ts,
+                "temporal",
+            )
         )
     for left_index, left in enumerate(candidates):
         for right in candidates[left_index + 1:]:
             edge_strength = math.sqrt(key_to_score[left.key] * key_to_score[right.key])
             edge_strength *= STDP_COACTIVE_EDGE_GAIN * gain
-            updates.append(EdgeUpdate(left.key, right.key, edge_strength, ts))
-            updates.append(EdgeUpdate(right.key, left.key, edge_strength, ts))
+            left_gain = edge_coherence_gain(left.key, right.key, nodes, ts, kind="coactive")
+            right_gain = edge_coherence_gain(right.key, left.key, nodes, ts, kind="coactive")
+            updates.append(EdgeUpdate(left.key, right.key, edge_strength * left_gain, ts, "coactive"))
+            updates.append(EdgeUpdate(right.key, left.key, edge_strength * right_gain, ts, "coactive"))
     return updates
+
+
+def edge_coherence_gain(
+    src_key: str,
+    dst_key: str,
+    nodes: dict[str, AkashaNode] | None,
+    now_ts: float,
+    *,
+    kind: str,
+) -> float:
+    if not nodes:
+        return 1.0
+    src = nodes.get(src_key)
+    dst = nodes.get(dst_key)
+    if src is None or dst is None:
+        return 1.0
+    dt_hours = abs(src.first_ts_unix - dst.first_ts_unix) / 3600.0
+    tau_hours = 2.0 if kind == "coactive" else 6.0
+    return 0.35 + 0.65 * math.exp(-dt_hours / tau_hours)
 
 
 def reinforced_activation_items(
@@ -815,6 +863,32 @@ def dense_message_candidates(
     return candidates
 
 
+def recall_budget_from_dense(
+    dense_items: list[AkashaCandidate],
+    dense_seed_threshold: float,
+) -> RecallBudget:
+    scores = sorted(
+        [max(0.0, item.direct or item.score) for item in dense_items],
+        reverse=True,
+    )[:20]
+    if len(scores) < 2 or scores[0] <= 0:
+        return RecallBudget(10, 8, 6, 0.0, 0, 0.0)
+    top1 = scores[0]
+    tail_mean = sum(scores[1:]) / len(scores[1:])
+    tail_ratio = max(0.0, min(1.0, tail_mean / top1))
+    support = sum(1 for score in scores if score >= dense_seed_threshold)
+    support_ratio = support / len(scores)
+    plateau = max(0.0, min(1.0, support_ratio * tail_ratio * tail_ratio))
+    return RecallBudget(
+        dense_k=round(10 - 6 * plateau),
+        ripple_k=round(8 + 8 * plateau),
+        activation_k=round(6 + 6 * plateau),
+        plateau_strength=plateau,
+        dense_support=support,
+        tail_ratio=tail_ratio,
+    )
+
+
 def graph_seed_keys_from_snapshot(
     query_vec: np.ndarray,
     snapshot: AkashaActivationSnapshot,
@@ -910,7 +984,7 @@ def seed_pool(
             seed_sources[key] = "Dense"
             seed_energy[key] = 1.0
     if not seed_sources:
-        for key, _ in ranked[:config.dense_top_k]:
+        for key, _ in ranked[:DENSE_SEED_LIMIT]:
             seed_sources[key] = "Dense(FB)"
             seed_energy[key] = 1.0
 
@@ -1240,7 +1314,7 @@ def score_candidates(
             )
     candidates.sort(key=lambda item: item.score, reverse=True)
     suppressed.sort(key=lambda item: item.score, reverse=True)
-    limit = return_limit or config.activate_limit
+    limit = return_limit or DEFAULT_ACTIVATION_LIMIT
     return candidates[:limit], suppressed[:limit]
 
 
@@ -1440,7 +1514,7 @@ def compute_candidates(
             query_vec, nodes, direct_scores_map, fan, now_ts,
             source_cursor, edges_by_src, edges_meta, graph_seed_keys,
         )
-        limit = return_limit or config.activate_limit
+        limit = return_limit or DEFAULT_ACTIVATION_LIMIT
         candidates = merge_active_candidates(candidates, graph_candidates, limit)
         active_keys = {item.key for item in candidates}
         suppressed = [item for item in suppressed if item.key not in active_keys]

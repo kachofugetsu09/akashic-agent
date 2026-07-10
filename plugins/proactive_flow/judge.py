@@ -7,9 +7,9 @@ from typing import Any, Callable
 from agent.tool_hooks import ToolExecutionRequest
 from core.common.diagnostic_log import diagnostic_line
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.context import AgentTickContext
-from proactive_v2.gateway import GatewayResult
-from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, dispatch
+from plugins.default_proactive.context import AgentTickContext
+from plugins.default_proactive.gateway import GatewayResult
+from plugins.proactive_flow.tools import TOOL_SCHEMAS, ToolDeps, dispatch
 
 logger = logging.getLogger(__name__)
 

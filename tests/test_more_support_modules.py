@@ -25,7 +25,7 @@ from agent.tool_runtime import append_assistant_tool_calls
 from infra.channels.cli import CLIClient, _print_banner
 from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 from memory2.models import MemoryItem
-from proactive_v2.anyaction import AnyActionGate, QuotaStore
+from plugins.default_proactive.anyaction import AnyActionGate, QuotaStore
 from bootstrap.app import AppRuntime
 from bootstrap.providers import build_providers, build_vl_provider
 from bus.event_bus import EventBus
@@ -1002,12 +1002,8 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         agent_loop=cast(Any, SimpleNamespace(
             processing_state=SimpleNamespace(is_busy=lambda: False)
         )),
-        plugin_mcp_servers={"feed": {"command": ["python", "run_mcp.py"]}},
     )
     assert tasks == ["loop-task"]
-    assert proactive_kwargs["plugin_mcp_servers"] == {
-        "feed": {"command": ["python", "run_mcp.py"]}
-    }
     assert loop is not None
     mem_tasks, mem_optimizer = build_memory_optimizer_task(
         cast(Any, cfg),
@@ -1016,19 +1012,3 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     )
     assert mem_tasks == [("mem-task", 7200)]
     assert mem_optimizer is not None
-
-
-def test_collect_plugin_mcp_servers_merges_active_plugins():
-    from bootstrap.app import _collect_plugin_mcp_servers
-
-    plugin_manager = SimpleNamespace(
-        active_plugins=lambda: [
-            SimpleNamespace(mcp_servers={"feed": {"command": ["python", "run_mcp.py"]}}),
-            SimpleNamespace(mcp_servers={"steam": {"command": ["python", "steam.py"]}}),
-        ]
-    )
-
-    assert _collect_plugin_mcp_servers(plugin_manager) == {
-        "feed": {"command": ["python", "run_mcp.py"]},
-        "steam": {"command": ["python", "steam.py"]},
-    }

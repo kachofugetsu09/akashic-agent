@@ -96,6 +96,9 @@ class PluginManager:
         self._after_reasoning_modules: list[object] = []
         self._after_turn_modules: list[object] = []
         self._proactive_modules: list[object] = []
+        self._proactive_lifecycles: list[object] = []
+        self._proactive_module_factories: list[object] = []
+        self._proactive_runtime_factories: list[object] = []
         self._jobs: list[RegisteredPluginJob] = []
         self._active_plugins: dict[str, ActivePluginInfo] = {}
 
@@ -142,6 +145,18 @@ class PluginManager:
     @property
     def proactive_modules(self) -> list[object]:
         return list(self._proactive_modules)
+
+    @property
+    def proactive_lifecycles(self) -> list[object]:
+        return list(self._proactive_lifecycles)
+
+    @property
+    def proactive_module_factories(self) -> list[object]:
+        return list(self._proactive_module_factories)
+
+    @property
+    def proactive_runtime_factories(self) -> list[object]:
+        return list(self._proactive_runtime_factories)
 
     @property
     def jobs(self) -> list[RegisteredPluginJob]:
@@ -296,6 +311,9 @@ class PluginManager:
         after_reasoning_count_before = len(self._after_reasoning_modules)
         after_turn_count_before = len(self._after_turn_modules)
         proactive_module_count_before = len(self._proactive_modules)
+        proactive_lifecycle_count_before = len(self._proactive_lifecycles)
+        proactive_factory_count_before = len(self._proactive_module_factories)
+        proactive_runtime_factory_count_before = len(self._proactive_runtime_factories)
         job_count_before = len(self._jobs)
         module_path = mod["module_path"].strip() if _capability_enabled(plugin_policy, "lifecycle") else ""
         if module_path:
@@ -350,6 +368,9 @@ class PluginManager:
             self._collect_after_reasoning_modules(instance)
             self._collect_after_turn_modules(instance)
             self._collect_proactive_modules(instance)
+            self._collect_proactive_lifecycles(instance)
+            self._collect_proactive_module_factories(instance)
+            self._collect_proactive_runtime_factories(instance)
             self._collect_jobs(instance, plugin_id)
             try:
                 if hasattr(instance, "initialize"):
@@ -369,6 +390,9 @@ class PluginManager:
                 del self._after_reasoning_modules[after_reasoning_count_before:]
                 del self._after_turn_modules[after_turn_count_before:]
                 del self._proactive_modules[proactive_module_count_before:]
+                del self._proactive_lifecycles[proactive_lifecycle_count_before:]
+                del self._proactive_module_factories[proactive_factory_count_before:]
+                del self._proactive_runtime_factories[proactive_runtime_factory_count_before:]
                 del self._jobs[job_count_before:]
                 return
         else:
@@ -523,6 +547,27 @@ class PluginManager:
             self._proactive_modules,
         )
 
+    def _collect_proactive_lifecycles(self, instance: Any) -> None:
+        self._collect_phase_modules(
+            instance,
+            "proactive_lifecycles",
+            self._proactive_lifecycles,
+        )
+
+    def _collect_proactive_module_factories(self, instance: Any) -> None:
+        self._collect_phase_modules(
+            instance,
+            "proactive_module_factories",
+            self._proactive_module_factories,
+        )
+
+    def _collect_proactive_runtime_factories(self, instance: Any) -> None:
+        self._collect_phase_modules(
+            instance,
+            "proactive_runtime_factories",
+            self._proactive_runtime_factories,
+        )
+
     def _collect_channels(self, instance: Any) -> None:
         for channel in _load_module_list(instance, "channels"):
             self._channels.append(cast(Channel, channel))
@@ -577,6 +622,9 @@ class PluginManager:
         self._after_reasoning_modules.clear()
         self._after_turn_modules.clear()
         self._proactive_modules.clear()
+        self._proactive_lifecycles.clear()
+        self._proactive_module_factories.clear()
+        self._proactive_runtime_factories.clear()
         self._jobs.clear()
         self._channels.clear()
 

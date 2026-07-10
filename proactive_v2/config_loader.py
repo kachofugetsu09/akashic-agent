@@ -94,6 +94,7 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
     # 允许的根级键
     allowed_root_keys = {
         "enabled",
+        "lifecycle",
         "profile",
         "profiles",
         "target",
@@ -216,6 +217,7 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
 
     # 必填字段
     enabled = p.get("enabled", False)
+    lifecycle = str(p.get("lifecycle", "default") or "default")
     target = p.get("target", {}) or {}
     if not isinstance(target, dict):
         raise ProactiveConfigError("proactive.target 必须是字典")
@@ -278,6 +280,7 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     # 移除已经显式设置的键，避免冲突
     explicit_keys = {
         "enabled",
+        "lifecycle",
         "default_channel",
         "default_chat_id",
         "profile",
@@ -295,6 +298,8 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     # 构建 ProactiveConfig
     config = ProactiveConfig(
         enabled=enabled,
+        lifecycle=lifecycle,
+        profile=str(preset_name),
         default_channel=default_channel,
         default_chat_id=default_chat_id,
         model=model,

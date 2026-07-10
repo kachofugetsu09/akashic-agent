@@ -4,7 +4,7 @@ proactive/mcp_sources.py — 从 MCP server 拉取主动链路数据的通用客
 读取 ~/.akashic/workspace/proactive_sources.json 中的配置，
 动态调用各 MCP server 的 get_tool / ack_tool。
 
-使用项目自带的 agent.mcp.client.McpClient，无需额外依赖。
+通过共享 ToolRegistry 调用已连接的 MCP 工具。
 """
 
 from __future__ import annotations
@@ -13,12 +13,63 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+from agent.tools.base import ToolResult
+from agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_WORKSPACE = Path.home() / ".akashic" / "workspace"
 _POLL_TOOL_TIMEOUT = 180.0
+
+
+class McpGateway(Protocol):
+    _workspace: Path
+
+    async def call(
+        self,
+        server: str,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any: ...
+
+
+class SharedMcpGateway:
+    def __init__(self, workspace: Path, tools: ToolRegistry | None) -> None:
+        self._workspace = workspace
+        self._tools = tools
+
+    async def call(
+        self,
+        server: str,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        if self._tools is None:
+            raise RuntimeError("共享 ToolRegistry 不可用")
+        names = self._tools.get_tool_names_by_source("mcp", server)
+        registered_name = (
+            tool_name
+            if tool_name in names
+            else f"mcp_{server}__{tool_name}"
+        )
+        if registered_name not in names:
+            raise RuntimeError(f"MCP tool 不可用: {server}.{tool_name}")
+        execution = self._tools.execute(registered_name, args, raise_errors=True)
+        result = (
+            await asyncio.wait_for(execution, timeout=timeout)
+            if timeout is not None
+            else await execution
+        )
+        text = result.text if isinstance(result, ToolResult) else str(result)
+        if text.strip().startswith(("[", "{")):
+            return json.loads(text)
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -37,164 +88,15 @@ def _load_sources(workspace: Path) -> list[dict]:
         return []
 
 
-def _get_server_cfg(server_name: str, workspace: Path) -> dict | None:
-    path = workspace / "mcp_servers.json"
-    try:
-        data = json.loads(path.read_text())
-        return data.get("servers", {}).get(server_name)
-    except Exception as e:
-        logger.warning("[mcp_sources] mcp_servers.json 读取失败: %s", e)
-        return None
-
-
-# ── Persistent connection pool ────────────────────────────────────────────────
-
-
-class McpClientPool:
-    """每个 MCP server 保持一个常驻连接，避免每次调用重启子进程。
-
-    用法:
-        pool = McpClientPool()
-        await pool.connect_all()      # agent 启动时
-        await pool.call(server, tool, args)
-        await pool.disconnect_all()   # agent 关闭时（finally 块）
-    """
-
-    def __init__(
-        self,
-        workspace: Path | None = None,
-        extra_server_configs: dict[str, dict[str, Any]] | None = None,
-    ) -> None:
-        self._workspace = workspace or _DEFAULT_WORKSPACE
-        self._extra_server_configs = dict(extra_server_configs or {})
-        self._clients: dict[str, Any] = {}               # server -> McpClient
-        self._configs: dict[str, tuple[list, dict]] = {}  # server -> (command, env)
-        self._locks: dict[str, asyncio.Lock] = {}         # server -> per-server lock（MCP stdio 不支持并发调用）
-
-    async def connect_all(self) -> None:
-        """按当前配置连接所有 server，连接失败的 server 跳过。"""
-        seen: set[str] = set()
-        for src in _load_sources(self._workspace):
-            server = src.get("server", "")
-            if not server or server in seen:
-                continue
-            seen.add(server)
-            cfg = self._get_server_cfg(server)
-            if not cfg:
-                continue
-            command = cfg.get("command", [])
-            env = cfg.get("env") or {}
-            cwd = cfg.get("cwd")
-            if not command:
-                continue
-            full_env = {
-                str(key): str(value)
-                for key, value in dict(env).items()
-            }
-            if cwd:
-                full_env.setdefault("PWD", str(cwd))
-            self._configs[server] = (list(command), full_env)
-            await self._connect(server)
-
-    def _get_server_cfg(self, server_name: str) -> dict[str, Any] | None:
-        extra = self._extra_server_configs.get(server_name)
-        if extra is not None:
-            return dict(extra)
-        return _get_server_cfg(server_name, self._workspace)
-
-    async def _connect(self, server: str) -> bool:
-        from agent.mcp.client import McpClient
-
-        command, env = self._configs.get(server, ([], {}))
-        if not command:
-            return False
-        try:
-            client = McpClient(name=server, command=command, env=env)
-            await client.connect()
-            self._clients[server] = client
-            logger.info("[mcp_pool] connected: %s", server)
-            return True
-        except Exception as e:
-            logger.warning("[mcp_pool] connect failed %s: %s", server, e, exc_info=True)
-            return False
-
-    async def call(
-        self,
-        server: str,
-        tool_name: str,
-        args: dict[str, Any],
-        *,
-        timeout: float | None = None,
-    ) -> Any:
-        """调用 tool，连接断开时自动重连一次。
-
-        MCP stdio 传输不支持并发调用，per-server lock 保证串行。
-        """
-        if server not in self._locks:
-            self._locks[server] = asyncio.Lock()
-        async with self._locks[server]:
-            if server not in self._clients:
-                if server not in self._configs:
-                    raise RuntimeError(f"[mcp_pool] unknown server: {server}")
-                if not await self._connect(server):
-                    raise RuntimeError(f"[mcp_pool] could not connect: {server}")
-            client = self._clients[server]
-            try:
-                raw = await client.call(tool_name, args, timeout=timeout)
-                return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
-            except TimeoutError:
-                self._clients.pop(server, None)
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
-                raise
-            except Exception as e:
-                logger.warning(
-                    "[mcp_pool] call failed %s.%s, reconnecting: %s", server, tool_name, e
-                )
-                self._clients.pop(server, None)
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
-                if await self._connect(server):
-                    retry_client = self._clients[server]
-                    try:
-                        raw = await retry_client.call(tool_name, args, timeout=timeout)
-                        return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
-                    except Exception:
-                        self._clients.pop(server, None)
-                        try:
-                            await retry_client.disconnect()
-                        except Exception:
-                            pass
-                        raise
-                raise
-
-    async def disconnect_all(self) -> None:
-        """断开所有连接。agent 关闭时在 finally 块调用。"""
-        for server, client in list(self._clients.items()):
-            try:
-                await client.disconnect()
-                logger.info("[mcp_pool] disconnected: %s", server)
-            except Exception as e:
-                logger.warning("[mcp_pool] disconnect error %s: %s", server, e)
-        self._clients.clear()
-
-
-# ── Async pool-based variants ─────────────────────────────────────────────────
-
-
-async def fetch_alert_events_async(pool: McpClientPool) -> list[dict]:
+async def fetch_alert_events_async(pool: McpGateway) -> list[dict]:
     return await _fetch_by_channel_async(pool, channel="alert")
 
 
-async def fetch_content_events_async(pool: McpClientPool) -> list[dict]:
+async def fetch_content_events_async(pool: McpGateway) -> list[dict]:
     return await _fetch_by_channel_async(pool, channel="content")
 
 
-async def fetch_context_data_async(pool: McpClientPool) -> list[dict]:
+async def fetch_context_data_async(pool: McpGateway) -> list[dict]:
     return await _fetch_by_channel_async(pool, channel="context")
 
 
@@ -226,8 +128,10 @@ def _extract_context_items(data: Any, *, server: str) -> list[dict]:
     return result
 
 
-async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[dict]:
+async def _fetch_by_channel_async(pool: McpGateway, *, channel: str) -> list[dict]:
     result: list[dict] = []
+    failed_servers: list[str] = []
+    succeeded_count = 0
     # 1. 先按 channel 从 proactive_sources.json 中挑出本轮该访问的源。
     for src in _iter_sources_by_channel(channel, pool._workspace):
         server = src.get("server", "")
@@ -240,9 +144,9 @@ async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[
             "get_context" if channel == "context" else "get_proactive_events",
         )
         try:
-            # 3. 通过常驻 McpClientPool 调远端 MCP 工具。
-            #    pool.call() 内部会负责串行、断线重连、JSON 反序列化。
+            # 3. 通过共享 MCP Gateway 调远端工具。
             data = await pool.call(server, get_tool, {})
+            succeeded_count += 1
             if channel == "context":
                 # 4a. context 通道不看 kind，直接把返回值规范成 list[dict]。
                 items = _extract_context_items(data, server=server)
@@ -255,7 +159,6 @@ async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[
                 result.extend(events)
                 logger.debug("[mcp_sources] %s 返回 %d 条 %s 事件", server, len(events), channel)
         except Exception as e:
-            # 5. 单个源失败只记日志，不阻断其他源。
             logger.warning(
                 "[mcp_sources] fetch_%s %s.%s failed: %s",
                 channel,
@@ -263,6 +166,15 @@ async def _fetch_by_channel_async(pool: McpClientPool, *, channel: str) -> list[
                 get_tool,
                 e,
             )
+            failed_servers.append(server)
+    if failed_servers and succeeded_count == 0:
+        raise RuntimeError(f"fetch_{channel} 以下源失败: {failed_servers}")
+    if failed_servers:
+        logger.warning(
+            "[mcp_sources] fetch_%s 部分源失败，保留其他源结果: %s",
+            channel,
+            failed_servers,
+        )
     return result
 
 
@@ -298,7 +210,7 @@ def _build_ack_map(sources: list[dict]) -> dict[str, tuple[str, list[str]]]:
     return ack_map
 
 
-async def poll_content_feeds_async(pool: McpClientPool) -> None:
+async def poll_content_feeds_async(pool: McpGateway) -> None:
     failed_servers: list[str] = []
     for src in _iter_sources_by_channel("content", pool._workspace):
         poll_tool = src.get("poll_tool")
@@ -321,10 +233,11 @@ async def poll_content_feeds_async(pool: McpClientPool) -> None:
 
 
 async def acknowledge_events_async(
-    pool: McpClientPool,
+    pool: McpGateway,
     events: list[tuple[str, str]],
 ) -> None:
     ack_map = _build_ack_map(_load_sources(pool._workspace))
+    failed_servers: list[str] = []
     for ack_server, ack_id in events:
         if ack_server in ack_map and ack_id:
             ack_map[ack_server][1].append(ack_id)
@@ -336,10 +249,13 @@ async def acknowledge_events_async(
             logger.info("[mcp_sources] acked %d 事件 via %s.%s ids=%s", len(ids), server, ack_tool, ids)
         except Exception as e:
             logger.warning("[mcp_sources] ack failed %s.%s: %s", server, ack_tool, e)
+            failed_servers.append(server)
+    if failed_servers:
+        raise RuntimeError(f"ack 以下源失败: {failed_servers}")
 
 
 async def acknowledge_content_entries_async(
-    pool: McpClientPool,
+    pool: McpGateway,
     entries: list[tuple[str, str]],
     *,
     feedback: str,
@@ -349,6 +265,7 @@ async def acknowledge_content_entries_async(
     if feedback not in {"interesting", "not_interesting"}:
         raise ValueError(f"invalid feedback: {feedback}")
     ack_map = _build_ack_map(_load_sources(pool._workspace))
+    failed_servers: list[str] = []
     for source_key, item_id in entries:
         if not source_key.startswith("mcp:"):
             continue
@@ -366,3 +283,6 @@ async def acknowledge_content_entries_async(
             await pool.call(server, ack_tool, args)
         except Exception as e:
             logger.warning("[mcp_sources] content ack failed %s.%s: %s", server, ack_tool, e)
+            failed_servers.append(server)
+    if failed_servers:
+        raise RuntimeError(f"content ack 以下源失败: {failed_servers}")

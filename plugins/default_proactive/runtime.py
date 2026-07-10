@@ -1,11 +1,11 @@
 """
-ProactiveTurnPipeline — 主动回复链路顶层抽象。
+ProactiveFlowRuntime — 主动回复链路业务执行服务。
 
 设计对齐被动链路的 PassiveTurnPipeline.run()：
 通过 run() 一个方法可见全链路。
 
 ┌─ tick trigger
-│  └─ ProactiveTurnPipeline.run()
+│  └─ Lifecycle Modules
 │     ├─ 1. Gate      准入检查（busy / cooldown / anyaction / fallback）
 │     ├─ 2. Fetch     拉取数据（alerts / content / context → messages）
 │     ├─ 3. Judge     LLM 评估（多轮工具调用：分类 → 草稿 → 收尾）
@@ -28,20 +28,20 @@ from typing import Any, Callable
 
 from agent.tool_hooks import ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
-from agent.turns.result import TurnResult
+from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from bus.event_bus import EventBus
 from bus.events_lifecycle import ProactiveFinished
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 from proactive_v2.config import ProactiveConfig
-from proactive_v2.context import AgentTickContext
+from plugins.default_proactive.context import AgentTickContext
 from proactive_v2.frame import ProactiveFrame, ProactiveTickResult
-from agent.core.drift_turn import DriftTurnPipeline
-from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
-from proactive_v2.modules_deliver import ProactiveDeliverer
-from proactive_v2.modules_gate import GateResult, ProactiveGateChain
-from proactive_v2.modules_judge import ProactiveJudge
-from proactive_v2.modules_prompt import ProactivePromptBuilder
-from proactive_v2.modules_resolve import (
+from plugins.drift_flow.runtime import DriftTurnPipeline
+from plugins.default_proactive.gateway import DataGateway, GatewayDeps, GatewayResult
+from plugins.default_proactive.deliver import ProactiveDeliverer
+from plugins.default_proactive.gate import GateResult, ProactiveGateChain
+from plugins.proactive_flow.judge import ProactiveJudge
+from plugins.proactive_flow.prompt import ProactivePromptBuilder
+from plugins.default_proactive.resolve import (
     ProactiveResolver,
     ResolveResult,
     ack_discarded,
@@ -49,13 +49,13 @@ from proactive_v2.modules_resolve import (
     ack_post_guard_fail,
     build_delivery_key,
 )
-from proactive_v2.tools import ToolDeps
+from plugins.proactive_flow.tools import ToolDeps
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ProactiveTurnPipeline",
-    "ProactiveTurnPipelineDeps",
+    "ProactiveFlowRuntime",
+    "ProactiveFlowDeps",
     "ResolveResult",
     "ack_discarded",
     "ack_on_success",
@@ -71,6 +71,18 @@ class FeedResult:
     drift_entered: bool
     base_score: float | None
     messages: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class ProactiveRunState:
+    ctx: AgentTickContext
+    started: float
+    gateway: GatewayResult | None = None
+    route: str = ""
+    feed: FeedResult | None = None
+    decision: ResolveResult | None = None
+    base_score: float | None = None
+    finished: bool = False
 
 
 def _log_content_candidates(gw: GatewayResult) -> None:
@@ -95,7 +107,7 @@ def _log_content_candidates(gw: GatewayResult) -> None:
 # ── Pipeline 依赖容器 ─────────────────────────────────────────────────────
 
 @dataclass
-class ProactiveTurnPipelineDeps:
+class ProactiveFlowDeps:
     cfg: ProactiveConfig
     session_key: str
     state_store: Any
@@ -111,6 +123,7 @@ class ProactiveTurnPipelineDeps:
     rng: Any | None
     recent_proactive_fn: Callable[[], list] | None
     drift_pipeline: DriftTurnPipeline | None
+    schedule_fn: Callable[[float | None], int] | None = None
     event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] | None = None
 
@@ -120,7 +133,7 @@ class ProactiveTurnPipelineDeps:
 # 主动链路核心入口，串起 Gate → Fetch → Judge → Resolve → Deliver 五段。
 #
 # ┌─ tick trigger
-# │  └─ ProactiveTurnPipeline.run
+# │  └─ ProactiveFlowRuntime.run
 # │     ├─ 1. Gate ── _gate_check
 # │     │  └─ no_target / busy / cooldown / anyaction / context_fallback
 # │     ├─ 2. Fetch ── _fetch_pull
@@ -133,11 +146,9 @@ class ProactiveTurnPipelineDeps:
 # │        └─ _record_tick_log_finish → TurnOrchestrator.handle_proactive_turn
 # └─ done
 
-class ProactiveTurnPipeline:
-    slot = "proactive.tick.pipeline"
-    phase = "proactive.deliver"
-
-    def __init__(self, deps: ProactiveTurnPipelineDeps) -> None:
+# 主动业务执行服务，由 Lifecycle Module 分段调用。
+class ProactiveFlowRuntime:
+    def __init__(self, deps: ProactiveFlowDeps) -> None:
         self._cfg = deps.cfg
         self._session_key = deps.session_key
         self._state_store = deps.state_store
@@ -153,6 +164,7 @@ class ProactiveTurnPipeline:
         self._rng = deps.rng if deps.rng is not None else _random_module.Random()
         self._recent_proactive_fn = deps.recent_proactive_fn
         self._drift_pipeline = deps.drift_pipeline
+        self._schedule_fn = deps.schedule_fn
         self._event_bus = deps.event_bus
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
         self._proactive_slots: dict[str, Any] = {}
@@ -214,21 +226,20 @@ class ProactiveTurnPipeline:
         self.last_ctx: AgentTickContext | None = None
         self._last_gateway_result: GatewayResult | None = None
 
-    # ── 入口 ──────────────────────────────────────────────────────────
-
-    # 核心方法：处理一次主动 tick，串起 Gate → Fetch → Judge → Resolve → Deliver 五段链路。
-    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
-        started = time.perf_counter()
+    def begin(self, frame: ProactiveFrame) -> ProactiveRunState:
         self._proactive_slots = frame.slots
-        # 1. Gate — 该不该动？
         ctx = AgentTickContext(
             session_key=frame.input.session_key,
             now_utc=frame.input.started_at,
         )
+        return ProactiveRunState(ctx=ctx, started=time.perf_counter())
+
+    async def gate(self, state: ProactiveRunState) -> None:
+        ctx = state.ctx
         with diagnostic_context(session=self._session_key, flow="proactive", tick=ctx.tick_id):
             logger.info(
                 diagnostic_line(
-                    "ProactiveTurnPipeline.run",
+                    "ProactiveFlowRuntime.run",
                     event="start",
                     flow="proactive",
                     phase="pregate",
@@ -237,85 +248,193 @@ class ProactiveTurnPipeline:
                     action="run",
                 )
             )
-            frame.output = ProactiveTickResult(
-                base_score=await self._run_with_context(ctx, started)
-            )
-            return frame
+            gate = self._gate_check(ctx)
+            if gate.blocked:
+                logger.info(
+                    diagnostic_line(
+                        "ProactiveFlowRuntime.run",
+                        event="gate_exit",
+                        flow="proactive",
+                        phase="pregate",
+                        session=self._session_key,
+                        tick=ctx.tick_id,
+                        action="skip",
+                        reason=gate.reason,
+                        duration_ms=int((time.perf_counter() - state.started) * 1000),
+                    )
+                )
+                self._record_tick_log_finish(ctx, gate_exit=gate.reason)
+                state.base_score = gate.base_score
+                state.finished = True
+                return
 
-    async def _run_with_context(self, ctx: AgentTickContext, started: float) -> float | None:
-        gate = self._gate_check(ctx)
-        if gate.blocked:
+            ctx.context_as_fallback_open = gate.context_as_fallback_open
+            self.last_ctx = ctx
+            self._record_tick_log_start(ctx)
             logger.info(
                 diagnostic_line(
-                    "ProactiveTurnPipeline.run",
-                    event="gate_exit",
+                    "ProactiveFlowRuntime.run",
+                    event="end",
                     flow="proactive",
                     phase="pregate",
                     session=self._session_key,
                     tick=ctx.tick_id,
-                    action="skip",
-                    reason=gate.reason,
-                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    action="continue",
+                    duration_ms=int((time.perf_counter() - state.started) * 1000),
                 )
             )
-            self._record_tick_log_finish(ctx, gate_exit=gate.reason)
-            return gate.base_score
 
-        ctx.context_as_fallback_open = gate.context_as_fallback_open
-        self.last_ctx = ctx
-        self._record_tick_log_start(ctx)
-        self._collect_proactive_plugin_state()
-        logger.info(
-            diagnostic_line(
-                "ProactiveTurnPipeline.run",
-                event="end",
-                flow="proactive",
-                phase="pregate",
-                session=self._session_key,
-                tick=ctx.tick_id,
-                action="continue",
-                duration_ms=int((time.perf_counter() - started) * 1000),
-            )
-        )
+    def collect_plugin_state(self, state: ProactiveRunState) -> None:
+        if not state.finished:
+            self._collect_proactive_plugin_state()
 
-        # 2. Fetch — 外面有什么新鲜事？
+    async def source(self, state: ProactiveRunState) -> None:
+        if state.finished:
+            return
         with diagnostic_context(phase="gateway"):
-            feed = await self._fetch_pull(ctx)
-        if feed.drift_entered:
-            self._finalize_after_drift(ctx)
-            return feed.base_score
+            state.gateway = await self._fetch_gateway(state.ctx)
 
-        # 3. Judge — LLM 评估哪些值得说
-        if feed.messages and ctx.terminal_action is None:
+    def select_route(self, state: ProactiveRunState) -> None:
+        if state.finished:
+            return
+        if state.gateway is None:
+            raise RuntimeError("主动链路缺少 GatewayResult")
+        gw = state.gateway
+        ctx = state.ctx
+        if gw.alerts or gw.content_meta or ctx.context_as_fallback_open:
+            state.route = "proactive"
+            return
+        if self._drift_pipeline is not None and self._cfg.drift_enabled:
+            last_drift_at = self._state_store.get_last_drift_at(self._session_key)
+            min_hours = max(0, int(self._cfg.drift_min_interval_hours or 0))
+            if last_drift_at is None or min_hours == 0:
+                state.route = "drift"
+                return
+            if (ctx.now_utc - last_drift_at).total_seconds() >= min_hours * 3600:
+                state.route = "drift"
+                return
+            logger.info(
+                "[proactive_v2] fetch: drift blocked by interval "
+                "last_drift_at=%s min_interval_hours=%d",
+                last_drift_at.isoformat(),
+                min_hours,
+            )
+        state.route = "skip"
+
+    async def drift(self, state: ProactiveRunState) -> None:
+        if state.finished or state.route != "drift":
+            return
+        ctx = state.ctx
+        if self._drift_pipeline is None:
+            raise RuntimeError("Drift route 缺少 DriftFlow")
+        logger.info("[proactive_v2] fetch: empty gateway, attempting drift")
+        entered = await self._drift_pipeline.run(ctx, self._llm_fn)
+        if entered:
+            self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
+            if self._any_action_gate is not None:
+                self._any_action_gate.record_action(now_utc=ctx.now_utc)
+            logger.info(
+                "[proactive_v2] fetch: drift entered, message_staged=%s",
+                ctx.drift_message_staged,
+            )
+            self.last_ctx = ctx
+            state.feed = FeedResult(drift_entered=True, base_score=0.0)
+            state.base_score = 0.0
+            return
+        logger.info("[proactive_v2] fetch: drift not entered")
+        state.route = "skip"
+
+    def prepare_proactive(self, state: ProactiveRunState) -> None:
+        if state.finished or state.route == "drift":
+            return
+        if state.gateway is None:
+            raise RuntimeError("主动链路缺少 GatewayResult")
+        state.feed = self._prepare_feed(state.ctx, state.gateway, state.route)
+
+    async def judge(self, state: ProactiveRunState) -> None:
+        if state.finished or state.feed is None:
+            return
+        ctx = state.ctx
+        if state.feed.messages and ctx.terminal_action is None:
             with diagnostic_context(phase="agent_loop"):
-                await self._judge_evaluate(ctx, feed.messages)
+                await self._judge_evaluate(ctx, state.feed.messages)
 
-        # 3.5 LLM 判定 reply 时记录 anyaction（drift 路径在 _finalize_after_drift 中处理）。
         if ctx.terminal_action == "reply" and self._any_action_gate is not None:
             self._any_action_gate.record_action(now_utc=ctx.now_utc)
 
-        # 4. Resolve — 发还是不发？
+    async def resolve(self, state: ProactiveRunState) -> None:
+        if state.finished:
+            return
+        if state.route == "drift":
+            state.decision = self._resolve_drift(state.ctx)
+            return
         with diagnostic_context(phase="resolve"):
-            decision = await self._resolve_decide(ctx)
+            state.decision = await self._resolve_decide(state.ctx)
 
-        # 5. Deliver — 执行发送
-        score = await self._deliver_execute(ctx, decision)
+    async def deliver(self, state: ProactiveRunState) -> None:
+        if state.finished:
+            return
+        if state.decision is None:
+            raise RuntimeError("主动链路缺少 ResolveResult")
+        ctx = state.ctx
+        try:
+            state.base_score = await self._deliver_execute(ctx, state.decision)
+        finally:
+            if ctx.drift_entered and (ctx.draft_message or ctx.draft_media):
+                sent = bool(self._deliverer.last_sent)
+                if self._drift_pipeline is not None:
+                    self._drift_pipeline.record_commit_result(ctx, sent)
         logger.info(
             diagnostic_line(
-                "ProactiveTurnPipeline.run",
+                "ProactiveFlowRuntime.run",
                 event="end",
                 flow="proactive",
                 phase="resolve",
                 session=self._session_key,
                 tick=ctx.tick_id,
-                action=decision.action,
+                action=state.decision.action,
                 reason=ctx.skip_reason or "-",
-                duration_ms=int((time.perf_counter() - started) * 1000),
+                duration_ms=int((time.perf_counter() - state.started) * 1000),
                 counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
             )
         )
         ctx.content_store.clear()
-        return score
+        state.finished = True
+
+    def _resolve_drift(self, ctx: AgentTickContext) -> ResolveResult:
+        if not ctx.draft_message and not ctx.draft_media:
+            ctx.terminal_action = "skip"
+            ctx.skip_reason = "no_content"
+            return ResolveResult(
+                action="skip",
+                result=TurnResult(
+                    decision="skip",
+                    outbound=None,
+                    trace=TurnTrace(
+                        source="proactive",
+                        extra={"source_mode": "drift", "skip_reason": "no_content"},
+                    ),
+                ),
+            )
+        ctx.terminal_action = "reply"
+        ctx.final_message = ctx.draft_message
+        return ResolveResult(
+            action="reply",
+            result=TurnResult(
+                decision="reply",
+                outbound=TurnOutbound(
+                    session_key=self._session_key,
+                    content=ctx.draft_message,
+                    media=list(ctx.draft_media),
+                ),
+                trace=TurnTrace(source="proactive", extra={"source_mode": "drift"}),
+            ),
+        )
+
+    def schedule(self, state: ProactiveRunState) -> int | None:
+        if self._schedule_fn is None:
+            return None
+        return self._schedule_fn(state.base_score)
 
     # ── 1. Gate ───────────────────────────────────────────────────────
 
@@ -348,8 +467,7 @@ class ProactiveTurnPipeline:
 
     # ── 2. Fetch ──────────────────────────────────────────────────────
 
-    async def _fetch_pull(self, ctx: AgentTickContext) -> FeedResult:
-        """拉取本轮数据源，构建 LLM 输入 messages。"""
+    async def _fetch_gateway(self, ctx: AgentTickContext) -> GatewayResult:
 
         # 2.1 通过 DataGateway 并行拉取 alerts / content / context。
         gateway_deps = self._gateway_deps or GatewayDeps(
@@ -373,7 +491,7 @@ class ProactiveTurnPipeline:
         _log_content_candidates(gw_result)
         logger.info(
             diagnostic_line(
-                "ProactiveTurnPipeline._fetch_pull",
+                "ProactiveSourceModule.run",
                 event="end",
                 flow="proactive",
                 phase="gateway",
@@ -401,50 +519,19 @@ class ProactiveTurnPipeline:
         ctx.mark_contents_prefetched(fetched_contents, gw_result.content_store)
         ctx.mark_context_prefetched(gw_result.context)
 
-        # 2.3 快速 skip：无 alert、无 content、且 fallback 未开启时尝试 drift。
-        if not gw_result.alerts and not gw_result.content_meta and not ctx.context_as_fallback_open:
-            if self._drift_pipeline is not None and self._cfg.drift_enabled:
-                last_drift_at = self._state_store.get_last_drift_at(self._session_key)
-                min_interval_hours = max(0, int(self._cfg.drift_min_interval_hours or 0))
-                if (
-                    last_drift_at is not None
-                    and min_interval_hours > 0
-                    and (ctx.now_utc - last_drift_at).total_seconds() < min_interval_hours * 3600
-                ):
-                    logger.info(
-                        diagnostic_line(
-                            "ProactiveTurnPipeline._fetch_pull",
-                            event="skip",
-                            flow="proactive",
-                            phase="gateway",
-                            session=self._session_key,
-                            tick=ctx.tick_id,
-                            action="skip",
-                            reason="cooldown",
-                            counts="alerts:0,content:0,context:0",
-                        )
-                    )
-                    logger.info(
-                        "[proactive_v2] fetch: drift blocked by interval last_drift_at=%s min_interval_hours=%d",
-                        last_drift_at.isoformat(),
-                        min_interval_hours,
-                    )
-                    ctx.terminal_action = "skip"
-                    ctx.skip_reason = "no_content"
-                    self.last_ctx = ctx
-                    return FeedResult(drift_entered=False, base_score=None)
-                logger.info("[proactive_v2] fetch: empty gateway, attempting drift")
-                entered_drift = await self._drift_pipeline.run(ctx, self._llm_fn)
-                if entered_drift:
-                    self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
-                    logger.info("[proactive_v2] fetch: drift entered, message_sent=%s", ctx.drift_message_sent)
-                    self.last_ctx = ctx
-                    return FeedResult(drift_entered=True, base_score=0.0)
-                logger.info("[proactive_v2] fetch: drift not entered")
+        return gw_result
+
+    def _prepare_feed(
+        self,
+        ctx: AgentTickContext,
+        gw_result: GatewayResult,
+        route: str,
+    ) -> FeedResult:
+        if route == "skip":
             logger.info("[proactive_v2] fetch: no data and fallback off → skip")
             logger.info(
                 diagnostic_line(
-                    "ProactiveTurnPipeline._fetch_pull",
+                    "ProactivePrepareModule.run",
                     event="skip",
                     flow="proactive",
                     phase="gateway",
@@ -459,13 +546,9 @@ class ProactiveTurnPipeline:
             ctx.skip_reason = "no_content"
             self.last_ctx = ctx
             return FeedResult(drift_entered=False, base_score=None)
-
-        # 2.4 llm_fn 为空 → 无法进入 Judge，直接退出。
         if self._llm_fn is None:
             self.last_ctx = ctx
             return FeedResult(drift_entered=False, base_score=None)
-
-        # 2.5 构造本轮 proactive 输入 messages。
         system_msg = {
             "role": "system",
             "content": self._prompt_builder.build_system_prompt(
@@ -485,7 +568,6 @@ class ProactiveTurnPipeline:
             ),
         }
         messages: list[dict] = [system_msg, runtime_context_msg, kickoff_msg]
-
         return FeedResult(drift_entered=False, base_score=None, messages=messages)
 
     # ── 3. Judge ──────────────────────────────────────────────────────
@@ -503,20 +585,6 @@ class ProactiveTurnPipeline:
 
     async def _deliver_execute(self, ctx: AgentTickContext, decision: ResolveResult) -> float | None:
         return await self._deliverer.deliver(ctx, decision)
-
-    # ── drift 收尾 ────────────────────────────────────────────────────
-
-    def _finalize_after_drift(self, ctx: AgentTickContext) -> None:
-        """drift 进入后跳过正常 post_loop，直接收尾。"""
-        if self._any_action_gate is not None:
-            self._any_action_gate.record_action(now_utc=ctx.now_utc)
-        logger.info(
-            "[proactive_v2] drift entered, skipping normal post_loop message_sent=%s finished=%s",
-            ctx.drift_message_sent,
-            ctx.drift_finished,
-        )
-        self._record_tick_log_finish(ctx)
-        ctx.content_store.clear()
 
     # ── Tick 日志记录 ──────────────────────────────────────────────────
 
@@ -537,7 +605,7 @@ class ProactiveTurnPipeline:
     ) -> None:
         decision = result.decision if result is not None else ctx.terminal_action
         if ctx.drift_entered and result is None and decision is None:
-            decision = "reply" if ctx.drift_message_sent else "skip"
+            decision = "reply" if ctx.drift_message_staged else "skip"
         trace_extra = result.trace.extra if result is not None and result.trace is not None else {}
         skip_reason = str(trace_extra.get("skip_reason") or ctx.skip_reason or "")
         final_message = ""
@@ -634,3 +702,150 @@ class ProactiveTurnPipeline:
             cited_ids_after=list(ctx.cited_item_ids),
             final_message_after=ctx.final_message,
         )
+
+
+_RUN_STATE_SLOT = "run:state"
+
+
+def get_run_state(frame: ProactiveFrame) -> ProactiveRunState:
+    state = frame.slots.get(_RUN_STATE_SLOT)
+    if not isinstance(state, ProactiveRunState):
+        raise RuntimeError("主动 Lifecycle 缺少 run:state")
+    return state
+
+
+class ProactiveStartModule:
+    slot = "proactive.run.start"
+    produces = (_RUN_STATE_SLOT,)
+
+    def __init__(self, runtime: ProactiveFlowRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        frame.slots[_RUN_STATE_SLOT] = self._runtime.begin(frame)
+        return frame
+
+
+class ProactiveAdmissionModule:
+    slot = "proactive.admission.collect"
+    requires = (_RUN_STATE_SLOT,)
+    collects = ("proactive:gate:*",)
+    produces = ("admission:result",)
+
+    def __init__(self, runtime: ProactiveFlowRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        state = get_run_state(frame)
+        await self._runtime.gate(state)
+        frame.slots["admission:result"] = not state.finished
+        return frame
+
+
+class ProactivePluginStateModule:
+    slot = "proactive.prompt.collect"
+    requires = ("admission:result",)
+    collects = ("proactive:prompt:system_bottom:*", "proactive:effect:*")
+    produces = ("prompt:sections:collected",)
+
+    def __init__(self, runtime: ProactiveFlowRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        self._runtime.collect_plugin_state(get_run_state(frame))
+        frame.slots["prompt:sections:collected"] = True
+        return frame
+
+
+class ProactiveSourceModule:
+    slot = "proactive.source.collect"
+    requires = ("admission:result",)
+    produces = ("source:gateway",)
+
+    def __init__(self, runtime: ProactiveFlowRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        state = get_run_state(frame)
+        await self._runtime.source(state)
+        frame.slots["source:gateway"] = state.gateway
+        return frame
+
+
+class ProactiveRouteModule:
+    slot = "proactive.route"
+    requires = ("source:gateway",)
+    produces = ("route:selected",)
+
+    def __init__(self, runtime: ProactiveFlowRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        state = get_run_state(frame)
+        self._runtime.select_route(state)
+        frame.slots["route:selected"] = state.route
+        return frame
+
+
+class ProactiveResolveModule:
+    slot = "proactive.proposal.resolve"
+    requires = ("proposal:proactive",)
+    produces = ("run:proposal",)
+
+    def __init__(self, runtime: ProactiveFlowRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        state = get_run_state(frame)
+        await self._runtime.resolve(state)
+        frame.slots["run:proposal"] = state.decision
+        return frame
+
+
+class ProactiveCommitModule:
+    slot = "proactive.commit"
+    requires = ("run:proposal",)
+    produces = ("run:result",)
+
+    def __init__(self, runtime: ProactiveFlowRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        state = get_run_state(frame)
+        await self._runtime.deliver(state)
+        frame.output = ProactiveTickResult(base_score=state.base_score)
+        frame.slots["run:result"] = frame.output
+        return frame
+
+
+class ProactiveScheduleModule:
+    slot = "proactive.schedule"
+    requires = ("run:result",)
+    produces = ("run:next_wakeup",)
+
+    def __init__(self, runtime: ProactiveFlowRuntime) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        state = get_run_state(frame)
+        interval = self._runtime.schedule(state)
+        if frame.output is None:
+            frame.output = ProactiveTickResult(base_score=state.base_score)
+        frame.output.next_interval_seconds = interval
+        frame.slots["run:next_wakeup"] = interval
+        return frame
+
+
+def build_default_proactive_modules(
+    runtime: ProactiveFlowRuntime,
+) -> list[object]:
+    return [
+        ProactiveStartModule(runtime),
+        ProactiveAdmissionModule(runtime),
+        ProactiveSourceModule(runtime),
+        ProactivePluginStateModule(runtime),
+        ProactiveRouteModule(runtime),
+        ProactiveResolveModule(runtime),
+        ProactiveCommitModule(runtime),
+        ProactiveScheduleModule(runtime),
+    ]

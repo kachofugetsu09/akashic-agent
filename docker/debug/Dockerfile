@@ -27,7 +27,8 @@ RUN printf '%s\n' \
 COPY requirements.txt requirements-dev.txt /tmp/
 RUN python -m venv /opt/venv \
     && python -m pip install --upgrade pip \
-    && python -m pip install -r /tmp/requirements-dev.txt
+    && python -m pip install -r /tmp/requirements-dev.txt \
+    && python -m pip install mcp
 
 COPY docker/debug/entrypoint.sh /usr/local/bin/akashic-debug
 RUN chmod +x /usr/local/bin/akashic-debug

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _RECV_TIMEOUT = 30.0
 _CONNECT_TIMEOUT = 8.0
+_DISCONNECT_TIMEOUT = 5.0
 _STREAM_LIMIT = 4 * 1024 * 1024  # 4 MB，防止大响应触发 StreamReader 行限
 
 
@@ -49,6 +50,7 @@ class McpClient:
         self.cwd = cwd or _infer_cwd(command)
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1
+        self._call_lock = asyncio.Lock()
         self._tool_infos: list[McpToolInfo] = []
         self._recent_stdout: deque[str] = deque(maxlen=8)
         self._recent_stderr: deque[str] = deque(maxlen=8)
@@ -130,20 +132,21 @@ class McpClient:
         timeout: float | None = None,
     ) -> str:
         """调用远端工具，返回结果字符串。"""
-        call_id = self._new_id()
-        await self._send(
-            {
-                "jsonrpc": "2.0",
-                "id": call_id,
-                "method": "tools/call",
-                "params": {"name": tool_name, "arguments": arguments},
-            }
-        )
-        resp = await self._recv(
-            expected_id=call_id,
-            stage=f"tools/call:{tool_name}",
-            timeout=timeout,
-        )
+        async with self._call_lock:
+            call_id = self._new_id()
+            await self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": call_id,
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments},
+                }
+            )
+            resp = await self._recv(
+                expected_id=call_id,
+                stage=f"tools/call:{tool_name}",
+                timeout=timeout,
+            )
 
         if "error" in resp:
             err = resp["error"]
@@ -161,12 +164,24 @@ class McpClient:
         """终止子进程。"""
         if self._process is None:
             return
+        process = self._process
         try:
-            self._process.terminate()
-            _ = await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            if process.stdin is not None:
+                process.stdin.close()
+            _ = await asyncio.wait_for(
+                process.wait(),
+                timeout=_DISCONNECT_TIMEOUT,
+            )
         except asyncio.TimeoutError:
-            self._process.kill()
-            _ = await self._process.wait()
+            process.terminate()
+            try:
+                _ = await asyncio.wait_for(
+                    process.wait(),
+                    timeout=_DISCONNECT_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                _ = await process.wait()
         except Exception as e:
             logger.warning("[mcp] 断开 %r 时出错: %s", self.name, e)
         finally:

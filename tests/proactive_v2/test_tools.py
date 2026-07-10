@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from proactive_v2.context import AgentTickContext
-from proactive_v2.tools import (
+from plugins.default_proactive.context import AgentTickContext
+from plugins.proactive_flow.tools import (
     TOOL_SCHEMAS,
     ToolDeps,
     execute,

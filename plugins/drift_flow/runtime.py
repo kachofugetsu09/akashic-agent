@@ -1,7 +1,7 @@
 """
 DriftTurnPipeline — Drift 空闲时间链路顶层抽象。
 
-设计对齐主动链路的 ProactiveTurnPipeline.run() 和被动链路的 PassiveTurnPipeline.run()：
+设计对齐主动链路的 ProactiveFlowRuntime.run() 和被动链路的 PassiveTurnPipeline.run()：
 通过 run() 一个方法可见全链路。
 
 ┌─ tick trigger (no content available)
@@ -32,9 +32,10 @@ from agent.prompting import (
 )
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_hooks.base import ToolHook
-from proactive_v2.context import AgentTickContext
-from proactive_v2.drift_state import DriftStateStore, SkillMeta
-from proactive_v2.drift_tools import (
+from bus.events_lifecycle import DriftFinished
+from plugins.default_proactive.context import AgentTickContext
+from plugins.drift_flow.state import DriftStateStore, SkillMeta
+from plugins.drift_flow.tools import (
     DriftToolDeps,
     build_drift_tool_registry,
 )
@@ -152,8 +153,11 @@ class DriftTurnPipeline:
         # 2.1 设置 ctx 标志位。
         ctx.drift_entered = True
         ctx.drift_finished = False
+        ctx.drift_message_staged = False
         ctx.drift_message_sent = False
         ctx.drift_selected_skill = ""
+        ctx.drift_finish_status = ""
+        ctx.drift_finish_briefing = ""
 
         # 2.2 构建 drift tool registry。
         tools = build_drift_tool_registry(
@@ -202,7 +206,7 @@ class DriftTurnPipeline:
                     if s["function"]["name"] in allowed_tool_names
                 ]
                 logger.info("[drift] selected_skill missing, forcing select_skill or idle_drift")
-            elif ctx.drift_message_sent:
+            elif ctx.drift_message_staged:
                 allowed_tool_names = set(_AFTER_SEND_TOOLS)
                 schemas = [
                     s for s in schemas
@@ -249,7 +253,7 @@ class DriftTurnPipeline:
                     f"当前只允许调用：{allowed_text}。"
                 )
                 if "finish_drift" in allowed_tool_names:
-                    output += "请调用 finish_drift 保存 completed、paused 或 waiting 状态。"
+                    output += "请调用 finish_drift 保存 completed 或 paused 状态。"
                 logger.warning("[drift] tool constraint rejected tool=%s", tool_name)
                 self._store.append_step(
                     step_index=steps,
@@ -376,8 +380,8 @@ class DriftTurnPipeline:
                     "【系统强制收尾】本轮 Drift 可用步数已耗尽。"
                     "不要继续推进任务，只根据上方已发生的工具结果调用 finish_drift。"
                     "如果本轮小闭环已完成，status 写 completed。"
-                    "如果没做完，status 写 paused，并在 scratchpad_update 写清下次从哪里继续。"
-                    "如果正在等待用户回复或外部条件，status 写 waiting，并写清等待条件。"
+                    "如果没做完，status 写 paused，并在 scratchpad_update 写清已经做到哪里、"
+                    "当前卡在什么条件、下次从哪里继续。"
                     "不要编造额外下一步。"
                 ),
             }
@@ -470,7 +474,7 @@ class DriftTurnPipeline:
 
     def _fallback_pause(self, ctx: AgentTickContext) -> None:
         skill_name = str(ctx.drift_selected_skill or "").strip() or "unknown"
-        message_result = "sent" if ctx.drift_message_sent else "silent"
+        message_result = "staged" if ctx.drift_message_staged else "silent"
         self._store.save_finish(
             skill_used=skill_name,
             status="paused",
@@ -481,17 +485,35 @@ class DriftTurnPipeline:
             now_utc=ctx.now_utc,
         )
         ctx.drift_finished = True
+        ctx.drift_finish_status = "paused"
+        ctx.drift_finish_briefing = "达到步数上限后模型未按要求调用 finish_drift，runtime 自动保存为 paused。"
 
     # ── 4. Finish ──────────────────────────────────────────────────────
 
     def _finish(self, ctx: AgentTickContext) -> None:
         """记录 drift 退出状态。"""
         logger.info(
-            "[drift] exit: finished=%s message_sent=%s selected_skill=%s",
+            "[drift] exit: finished=%s message_staged=%s selected_skill=%s",
             ctx.drift_finished,
-            ctx.drift_message_sent,
+            ctx.drift_message_staged,
             ctx.drift_selected_skill,
         )
+
+    def record_commit_result(self, ctx: AgentTickContext, sent: bool) -> None:
+        message_result = "sent" if sent else "silent"
+        self._store.update_last_message_result(message_result)
+        event_bus = self._tool_deps.event_bus
+        if event_bus is not None:
+            event_bus.enqueue(
+                DriftFinished(
+                    session_key=ctx.session_key,
+                    skill_name=ctx.drift_selected_skill,
+                    status=ctx.drift_finish_status,
+                    briefing=ctx.drift_finish_briefing,
+                    message_result=message_result,
+                    timestamp=datetime.now(timezone.utc),
+                )
+            )
 
     # ── Prompt 构建 ────────────────────────────────────────────────────
 
@@ -625,8 +647,13 @@ class DriftTurnPipeline:
         lines = [
             "下面按 skill 名称排列，顺序不代表优先级，也不是强制首选。",
             "选择依据：runtime_clock、status、上次 finish 时间、上次摘要、scratchpad、cursor、recent_raw_chat 和最近 runs。",
-            "completed 表示上次小闭环已完成；paused 表示可接续；waiting 表示等待外部条件。",
+            "completed 表示上次主动行为已闭环，包含已行动、检查后无事可做、或判断不合时宜后静默结束。",
+            "paused 表示上次因工具、外部服务、步数上限或中间处理未完成而中断，必须根据 scratchpad 判断是否继续。",
             "local_context 只在 select_skill 后作为执行上下文参考，其中 scratchpad 是自然语言前情，cursor 是结构化游标。",
+            "用户回应与否不是 skill 状态；主动行为每轮都应自行重新判断。",
+            "上次提问主题只作为短期去重信号：本轮可以换主题行动，也可以因时机不合适静默闭环。",
+            "默认应选择一个合适 skill 做一个小的原子动作；idle_drift 是例外路径，只用于近期气氛、频率或风险明确不合适。",
+            "遇到丧亲、疾病、强压力、明显情绪低落等近期语境时，优先选择 idle_drift 静默结束，除非 selected skill 明确是低打扰的支持性动作。",
             "判断“刚刚、今天、昨天、两天前”等相对时间时，必须以 runtime_clock 的完整日期和时间为准；只有时分没有日期时，不要断言它发生在今天。",
         ]
         for skill in skills:
@@ -681,21 +708,30 @@ class DriftTurnPipeline:
             f"{AKASHIC_IDENTITY}\n\n"
             f"{PERSONALITY_RULES}\n\n"
             "你现在有一段空闲时间（Drift 模式）。没有外部内容需要推送，\n"
-            "这段时间更像一个人没有被叫住时的自处：可以整理想法、延续自己的小兴趣、准备以后可能用得上的素材，或只是安静待着。"
-            "Drift 不是定时巡检，也不是补跑所有历史任务；不要为了显得忙而硬找事做。"
+            "这段时间更像一个人没有被叫住时的自处：优先尝试做一点合适的小事，例如整理想法、延续小兴趣、准备以后可能用得上的素材，或发一个低打扰的轻量问题。"
+            "Drift 不是服务用户当前请求，也不是补跑所有历史任务；但它默认应该行动一小步。"
+            "只有近期气氛、频率或风险明确不合适时，才安静待着。"
             "本轮记忆、skill 和工作区信息会在后续 system context frame 里提供。\n\n"
+            "【状态语义】\n"
+            "Drift 只有 completed 和 paused 两种收尾状态。"
+            "completed 表示本轮主动行为已闭环，包含已行动、检查后无事可做、或判断当前不合时宜后静默结束。"
+            "paused 只用于系统自己没完成的情况，例如工具失败、外部服务不可用、步数上限、或处理中间文件尚未写完；"
+            "paused 必须在 scratchpad_update 写清已经做到哪里、卡住原因、下次从哪里继续。"
+            "paused 和 idle 只能描述系统自己的进度、时机或选择，不描述用户需要做什么。\n\n"
             "【执行规则】\n"
             "1. 先根据 context frame 比较所有可用 skill 和最近聊天气氛。"
-            "如果没有值得做的事、刚刚打扰过用户或当前气氛不适合主动行动，调用 idle_drift(reason) 静默结束；"
-            "否则调用 select_skill(skill_name)。select_skill 会记录本轮 selected_skill，并返回该 skill 的 SKILL.md。\n"
+            "Drift 的含义是没有正在服务用户时，自己尝试做一点合适的小事；"
+            "skill 上次 completed 不代表不能再做，只代表上次已闭环。"
+            "默认调用 select_skill(skill_name)，让被选 skill 自己完成一个原子动作。"
+            "只有最近刚主动打扰过、当前气氛不适合、或所有 skill 都会产生明显低价值重复时，才调用 idle_drift(reason) 静默结束。"
+            "idle_drift 的 reason 必须写具体的时机或风险原因，不能只写 completed、无用户交互、无新信号。\n"
             "2. 选中 skill 后执行一个原子动作；需要更多上下文时，只读取 SKILL.md 声明的 working files。"
             "路径由 drift mount resolver 解析，skills/<skill_name>/... 同时适用于工作区和内建 skill。\n"
             "3. 有用户价值且适合打扰时可调用 message_push，单次 run 最多一次；"
             "message_push 成功后只能调用 finish_drift。\n"
-            "4. 结束前必须调用 finish_drift；skill_used 必须等于 selected_skill，"
-            "message_result 必须如实标注 sent 或 silent。\n"
-            "5. finish_drift.status 为 completed、paused 或 waiting。"
-            "completed 表示小闭环已完成；paused 或 waiting 必须写 scratchpad_update。"
+            "4. 结束前必须调用 finish_drift；skill_used 必须等于 selected_skill。\n"
+            "5. finish_drift.status 只能为 completed 或 paused。"
+            "completed 表示本轮主动行为已闭环；paused 必须写 scratchpad_update，说明做到哪里和下次从哪里继续。"
             "结构化接续写 cursor_update；已经完成的事实追加到 journal_append。\n\n"
             "【可用工具】\n"
             "select_skill, idle_drift, read_file, list_dir, write_file, edit_file, recall_memory, web_fetch, web_search, "

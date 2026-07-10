@@ -13,7 +13,7 @@ import yaml
 from agent.plugins.manager import ActivePluginInfo
 from agent.plugins.skill_links import PluginSkillLinker
 from agent.skills import SkillsLoader
-from proactive_v2.drift_state import DriftStateStore
+from plugins.drift_flow.state import DriftStateStore
 
 
 def _write_plugin_skill(

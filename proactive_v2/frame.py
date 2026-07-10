@@ -19,6 +19,7 @@ class ProactiveTickInput:
 @dataclass
 class ProactiveTickResult:
     base_score: float | None = None
+    next_interval_seconds: int | None = None
 
 
 @dataclass

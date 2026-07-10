@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from core.memory.engine import MemoryQuery
 from agent.prompting import is_context_frame
-from proactive_v2.context import AgentTickContext
-from proactive_v2.outbound_text import normalize_outbound_text
+from plugins.default_proactive.context import AgentTickContext
+from plugins.default_proactive.outbound_text import normalize_outbound_text
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryRetrievalApi

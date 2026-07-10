@@ -50,6 +50,15 @@ class Plugin(ABC):
     def proactive_modules(self) -> list[object]:
         return []
 
+    def proactive_lifecycles(self) -> list[object]:
+        return []
+
+    def proactive_module_factories(self) -> list[object]:
+        return []
+
+    def proactive_runtime_factories(self) -> list[object]:
+        return []
+
     def jobs(self) -> list["PluginJobSpec"]:
         return []
 
