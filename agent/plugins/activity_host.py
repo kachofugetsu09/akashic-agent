@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 from agent.plugins.jobs import (
@@ -40,7 +40,10 @@ class PluginJobHost:
             if key in compiled:
                 raise RuntimeError(f"插件 Job 稳定键重复: {key}")
             self._validate(job)
-            compiled[key] = job
+            compiled[key] = replace(
+                job,
+                spec=replace(job.spec, triggers=tuple(job.spec.triggers)),
+            )
         catalog = PreparedJobCatalog(
             generation_id=generation_id,
             jobs=MappingProxyType(compiled),

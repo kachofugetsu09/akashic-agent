@@ -11,7 +11,7 @@ import os
 import secrets
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
@@ -38,7 +38,12 @@ from agent.lifecycle.types import (
 )
 from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
 from agent.plugins.source_resolver import resolve_plugin_sources
-from agent.plugins.jobs import PluginJobSpec, PluginLlmService, RegisteredPluginJob
+from agent.plugins.jobs import (
+    IntervalTrigger,
+    PluginJobSpec,
+    PluginLlmService,
+    RegisteredPluginJob,
+)
 from agent.plugins.scope import CleanupFailure, PluginScope, ScopedEventBus
 from agent.plugins.generation import (
     GateCheckResult,
@@ -395,6 +400,8 @@ class PluginManager:
                     ),
                     "jobs": _job_keys(active),
                     "proactive_sources": _proactive_source_keys(active),
+                    "job_specs": _job_spec_evidence(active),
+                    "proactive_source_specs": _proactive_source_spec_evidence(active),
                 }
                 results.append(result)
                 logger.info(
@@ -454,6 +461,14 @@ class PluginManager:
                     _proactive_source_keys(prepared)
                     if prepared is not None
                     else []
+                ),
+                "job_specs": (
+                    _job_spec_evidence(prepared) if prepared is not None else {}
+                ),
+                "proactive_source_specs": (
+                    _proactive_source_spec_evidence(prepared)
+                    if prepared is not None
+                    else {}
                 ),
             }
             results.append(result)
@@ -738,6 +753,12 @@ class PluginManager:
                 raise _CandidateRejected(gate_result) from error
             generation.job_catalog = job_catalog
             generation.proactive_catalog = proactive_catalog
+            contributions = replace(
+                contributions,
+                jobs=tuple(job_catalog.jobs.values()),
+                proactive_sources=tuple(proactive_catalog.sources.values()),
+            )
+            generation.contributions = contributions
             gate_result = _with_gate_check(
                 gate_result,
                 check_id="activity_catalogs",
@@ -1822,6 +1843,44 @@ def _job_keys(generation: PluginGeneration) -> list[str]:
 def _proactive_source_keys(generation: PluginGeneration) -> list[str]:
     catalog = generation.proactive_catalog
     return sorted(catalog.sources) if catalog is not None else []
+
+
+def _job_spec_evidence(generation: PluginGeneration) -> dict[str, object]:
+    catalog = generation.job_catalog
+    if catalog is None:
+        return {}
+    return {
+        key: [
+            (
+                {"type": "interval", "seconds": trigger.seconds}
+                if isinstance(trigger, IntervalTrigger)
+                else {
+                    "type": "event",
+                    "event": trigger.event_type.__name__,
+                }
+            )
+            for trigger in job.spec.triggers
+        ]
+        for key, job in sorted(catalog.jobs.items())
+    }
+
+
+def _proactive_source_spec_evidence(
+    generation: PluginGeneration,
+) -> dict[str, object]:
+    catalog = generation.proactive_catalog
+    if catalog is None:
+        return {}
+    return {
+        key: {
+            "server": source.spec.server,
+            "fetch_tool": source.spec.fetch_tool,
+            "ack_tool": source.spec.ack_tool,
+            "poll_tool": source.spec.poll_tool,
+            "poll_interval_seconds": source.spec.poll_interval_seconds,
+        }
+        for key, source in sorted(catalog.sources.items())
+    }
 
 
 def _gate_check_evidence(

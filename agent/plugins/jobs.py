@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -52,7 +52,7 @@ PluginJobHandler = Callable[[PluginJobContext], Awaitable[None]]
 @dataclass(frozen=True)
 class PluginJobSpec:
     id: str
-    triggers: list[PluginJobTrigger]
+    triggers: Sequence[PluginJobTrigger]
     handler: PluginJobHandler
     debounce_seconds: int = 0
     coalesce: bool = True

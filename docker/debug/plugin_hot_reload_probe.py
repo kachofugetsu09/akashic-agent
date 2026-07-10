@@ -472,7 +472,9 @@ def _install_candidate_plugins(
         )
     _ = (reload_plugin / "candidate_mcp_server.py").write_text(
         "import json, os, sys\n"
+        "from pathlib import Path\n"
         "version = os.environ['CANDIDATE_VERSION']\n"
+        "calls = Path(os.environ['AKA_PLUGIN_DATA_DIR']) / 'candidate_mcp_calls.jsonl'\n"
         "tools = [\n"
         "    {'name': name, 'description': name, 'inputSchema': {'type': 'object', 'properties': {}}}\n"
         "    for name in ('fetch_events', 'ack_events', 'poll_events', 'candidate_version')\n"
@@ -485,6 +487,8 @@ def _install_candidate_plugins(
         "    result = {'tools': tools} if method == 'tools/list' else {}\n"
         "    if method == 'tools/call':\n"
         "        tool = msg.get('params', {}).get('name')\n"
+        "        with calls.open('a', encoding='utf-8') as stream:\n"
+        "            stream.write(json.dumps({'version': version, 'tool': tool}) + '\\n')\n"
         "        text = version if tool == 'candidate_version' else '[]'\n"
         "        result = {'content': [{'type': 'text', 'text': text}]}\n"
         "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n",
@@ -541,19 +545,22 @@ def _candidate_reload_source(version: str) -> str:
         "    def proactive_sources(self):\n"
         "        return [ProactiveSourceSpec(id='candidate_feed', channels=('content',), "
         "server='candidate_feed', fetch_tool='fetch_events', ack_tool='ack_events', "
-        "poll_tool='poll_events')]\n"
+        f"poll_tool='poll_events', poll_interval_seconds={1 if version == 'v1' else 2})]\n"
         "    def jobs(self):\n"
-        "        return [PluginJobSpec(id='refresh', triggers=[IntervalTrigger(3600)], handler=self.refresh)]\n"
+        f"        return [PluginJobSpec(id='refresh', triggers=[IntervalTrigger({1 if version == 'v1' else 2})], handler=self.refresh)]\n"
         "    async def refresh(self, context):\n"
-        "        return None\n"
+        f"        self.context.kv_store.increment('job_runs_{version}')\n"
         "    async def readiness_semantic_checks(self, context):\n"
         "        server = context.mcp_catalog.servers['candidate_feed']\n"
         "        value = await server.client.call('candidate_version', {})\n"
         "        job = context.job_catalog.jobs['candidate_reload@gate:refresh']\n"
         "        source = context.proactive_catalog.sources['candidate_reload@gate:candidate_feed']\n"
         "        owned = getattr(job.spec.handler, '__self__', None) is self\n"
-        "        evidence = {'mcp': value, 'job_owned': owned, 'source': source.spec.id}\n"
-        f"        return [PluginSemanticCheck('candidate_capabilities', value == '{version}' and owned, evidence)]\n"
+        "        job_interval = job.spec.triggers[0].seconds\n"
+        "        source_interval = source.spec.poll_interval_seconds\n"
+        "        evidence = {'mcp': value, 'job_owned': owned, 'source': source.spec.id, "
+        "'job_interval': job_interval, 'source_interval': source_interval}\n"
+        f"        return [PluginSemanticCheck('candidate_capabilities', value == '{version}' and owned and job_interval == {1 if version == 'v1' else 2} and source_interval == {1 if version == 'v1' else 2}, evidence)]\n"
         "    @tool(name='candidate_reload_tool')\n"
         "    async def run(self, event):\n"
         "        \"\"\"Candidate reload tool.\"\"\"\n"
@@ -593,6 +600,26 @@ def _integer(value: object) -> int:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return 0
+
+
+def _mcp_call_counts(path: Path) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = {}
+    if not path.exists():
+        return counts
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            raw: object = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        item = cast(dict[object, object], raw)
+        version = str(item.get("version") or "")
+        tool = str(item.get("tool") or "")
+        if version and tool:
+            version_counts = counts.setdefault(version, {})
+            version_counts[tool] = version_counts.get(tool, 0) + 1
+    return counts
 
 
 def _candidate_statuses(container_id: str) -> list[dict[str, object]]:
@@ -688,6 +715,8 @@ def _exercise_candidate_prepare(
     state_path: Path,
 ) -> dict[str, object]:
     initial = _read_json_object(state_path)
+    calls_path = state_path.parent / "candidate_mcp_calls.jsonl"
+    initial_calls = _mcp_call_counts(calls_path)
     initial_mcp_processes = _wait_process_count(
         container_id,
         "candidate_mcp_server.py",
@@ -727,8 +756,9 @@ def _exercise_candidate_prepare(
         after=len(statuses),
         gate_status="passed",
     )
-    time.sleep(0.2)
+    time.sleep(1.2)
     after_valid = _read_json_object(state_path)
+    after_valid_calls = _mcp_call_counts(calls_path)
     after_valid_mcp_processes = _wait_process_count(
         container_id,
         "candidate_mcp_server.py",
@@ -753,6 +783,7 @@ def _exercise_candidate_prepare(
         lambda count: count == initial_mcp_processes,
     )
     after_return = _read_json_object(state_path)
+    after_return_calls = _mcp_call_counts(calls_path)
     valid_skills = valid_status.get("skills")
     valid_descriptions = valid_status.get("skill_descriptions")
     valid_drift_descriptions = valid_status.get("drift_skill_descriptions")
@@ -811,6 +842,8 @@ def _exercise_candidate_prepare(
                     "mcp": "v2",
                     "job_owned": True,
                     "source": "candidate_feed",
+                    "job_interval": 2,
+                    "source_interval": 2,
                 },
             }
         ]
@@ -819,6 +852,52 @@ def _exercise_candidate_prepare(
         and return_status.get("jobs") == ["candidate_reload@gate:refresh"]
         and return_status.get("proactive_sources")
         == ["candidate_reload@gate:candidate_feed"]
+        and valid_status.get("job_specs")
+        == {
+            "candidate_reload@gate:refresh": [
+                {"type": "interval", "seconds": 2}
+            ]
+        }
+        and valid_status.get("proactive_source_specs")
+        == {
+            "candidate_reload@gate:candidate_feed": {
+                "server": "candidate_feed",
+                "fetch_tool": "fetch_events",
+                "ack_tool": "ack_events",
+                "poll_tool": "poll_events",
+                "poll_interval_seconds": 2,
+            }
+        }
+        and return_status.get("job_specs")
+        == {
+            "candidate_reload@gate:refresh": [
+                {"type": "interval", "seconds": 1}
+            ]
+        }
+        and return_status.get("proactive_source_specs")
+        == {
+            "candidate_reload@gate:candidate_feed": {
+                "server": "candidate_feed",
+                "fetch_tool": "fetch_events",
+                "ack_tool": "ack_events",
+                "poll_tool": "poll_events",
+                "poll_interval_seconds": 1,
+            }
+        }
+        and cast(dict[str, int], after_valid_calls.get("v2", {})).get(
+            "candidate_version",
+            0,
+        )
+        == 1
+        and all(
+            cast(dict[str, int], after_valid_calls.get("v2", {})).get(tool, 0)
+            == 0
+            for tool in ("fetch_events", "poll_events", "ack_events")
+        )
+        and _integer(after_valid.get("job_runs_v1"))
+        > _integer(initial.get("job_runs_v1"))
+        and _integer(after_valid.get("job_runs_v2")) == 0
+        and after_return_calls.get("v2") == after_valid_calls.get("v2")
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"
         and valid_drift_description_map.get("candidate-drift") == "candidate drift v2"
@@ -852,6 +931,11 @@ def _exercise_candidate_prepare(
         "after_valid": after_valid,
         "return_status": return_status,
         "after_return": after_return,
+        "mcp_calls": {
+            "initial": initial_calls,
+            "after_valid": after_valid_calls,
+            "after_return": after_return_calls,
+        },
         "invalid_signal": invalid_signal.returncode,
         "valid_signal": valid_signal.returncode,
         "return_signal": return_signal.returncode,
