@@ -34,7 +34,12 @@ class ToolExecutor:
 
         snapshot = get_current_runtime_snapshot()
         if snapshot is not None:
-            return list(snapshot.tool_hooks)
+            fixed = [
+                hook
+                for hook in self._hooks
+                if not getattr(hook, "snapshot_managed", False)
+            ]
+            return [*fixed, *snapshot.tool_hooks]
         return self._hooks
 
     async def execute(

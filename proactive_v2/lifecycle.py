@@ -51,9 +51,9 @@ class CompiledProactiveLifecycle:
         try:
             for binding in self._modules:
                 starter = getattr(binding.module, "start", None)
+                started.append(binding)
                 if starter is not None:
                     await starter()
-                started.append(binding)
         except BaseException:
             for binding in reversed(started):
                 stopper = getattr(binding.module, "stop", None)

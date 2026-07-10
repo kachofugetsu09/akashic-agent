@@ -130,4 +130,4 @@ async def test_start_failure_rolls_back_started_modules():
     with pytest.raises(RuntimeError, match="start failed"):
         await lifecycle.start()
 
-    assert calls == ["start:a", "start:b", "stop:a"]
+    assert calls == ["start:a", "start:b", "stop:b", "stop:a"]
