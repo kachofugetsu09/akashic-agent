@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import inspect
 import re
 import sys
 from dataclasses import dataclass
@@ -12,6 +11,13 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from starlette.convertors import (
+    FloatConvertor,
+    IntegerConvertor,
+    PathConvertor,
+    StringConvertor,
+    UUIDConvertor,
+)
 from starlette.routing import Match
 
 from agent.plugins.generation import PluginGeneration
@@ -23,6 +29,10 @@ from agent.plugins.snapshot import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _DashboardImportError(RuntimeError):
+    pass
 
 
 @dataclass
@@ -79,7 +89,10 @@ class PluginDashboardHost:
                         occupied=occupied,
                     )
                 except Exception as error:
-                    if not tolerate_failures:
+                    if not tolerate_failures or not isinstance(
+                        error,
+                        _DashboardImportError,
+                    ):
                         raise
                     self._unavailable.add(generation_id)
 
@@ -130,10 +143,12 @@ class PluginDashboardHost:
         module.__file__ = str(module_path)
         module.__package__ = generation.module_path
         sys.modules[name] = module
-        closeables: list[object] = []
         try:
             source = module_path.read_text(encoding="utf-8")
-            exec(compile(source, str(module_path), "exec"), module.__dict__)
+            try:
+                exec(compile(source, str(module_path), "exec"), module.__dict__)
+            except Exception as error:
+                raise _DashboardImportError(str(error)) from error
             register = getattr(module, "register", None)
             if not callable(register):
                 raise RuntimeError(f"dashboard module 缺少 register: {module_path}")
@@ -143,7 +158,11 @@ class PluginDashboardHost:
                 if callable(enabled) and not enabled(app)
                 else _closeables(register(app, module_path.parent, self._workspace))
             )
-            _validate_closeables(closeables)
+            for index, closeable in enumerate(closeables):
+                generation.scope.defer(
+                    f"dashboard_closeable:{index}",
+                    getattr(closeable, "close"),
+                )
             if app.router.on_startup or app.router.on_shutdown:
                 raise RuntimeError("dashboard module 不支持 startup/shutdown hook")
             routes = _plugin_routes(app.routes)
@@ -154,14 +173,6 @@ class PluginDashboardHost:
             )
             _require_routes_available(binding, occupied)
         except BaseException:
-            for closeable in reversed(closeables):
-                try:
-                    _ = closeable.close()  # type: ignore[attr-defined]
-                except Exception as cleanup_error:
-                    logger.warning(
-                        "dashboard closeable 清理失败: %s",
-                        cleanup_error,
-                    )
             _ = sys.modules.pop(name, None)
             raise
 
@@ -169,11 +180,6 @@ class PluginDashboardHost:
             _ = sys.modules.pop(name, None)
 
         generation.scope.defer("dashboard_module", remove_module)
-        for index, closeable in enumerate(closeables):
-            generation.scope.defer(
-                f"dashboard_closeable:{index}",
-                getattr(closeable, "close"),
-            )
         return binding
 
 
@@ -208,7 +214,21 @@ def _closeables(value: object) -> list[object]:
 def _plugin_routes(routes: Sequence[object]) -> tuple[APIRoute, ...]:
     if any(not isinstance(route, APIRoute) for route in routes):
         raise RuntimeError("dashboard module 只支持 HTTP API route")
-    return tuple(route for route in routes if isinstance(route, APIRoute))
+    typed = tuple(route for route in routes if isinstance(route, APIRoute))
+    builtin_convertors = (
+        StringConvertor,
+        PathConvertor,
+        IntegerConvertor,
+        FloatConvertor,
+        UUIDConvertor,
+    )
+    if any(
+        not isinstance(convertor, builtin_convertors)
+        for route in typed
+        for convertor in route.param_convertors.values()
+    ):
+        raise RuntimeError("dashboard route 只支持内建 path converter")
+    return typed
 
 
 def _core_routes(routes: tuple[object, ...]) -> tuple[APIRoute, ...]:
@@ -250,11 +270,3 @@ def _sample_route_path(route: APIRoute) -> str:
         raise RuntimeError(f"dashboard route convertor 不受支持: {route.path}")
 
     return re.sub(r"\{([^}:]+)(?::[^}]+)?\}", replace, route.path)
-
-
-def _validate_closeables(closeables: list[object]) -> None:
-    if any(
-        inspect.iscoroutinefunction(getattr(closeable, "close", None))
-        for closeable in closeables
-    ):
-        raise RuntimeError("dashboard closeable.close 必须是同步函数")

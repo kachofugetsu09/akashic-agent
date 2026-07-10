@@ -2722,11 +2722,20 @@ async def test_dashboard_candidate_cannot_override_core_route(tmp_path: Path) ->
         "    def dashboard_module(cls): return 'dashboard.py'\n",
     )
 
-    def write_dashboard(path: str) -> None:
+    def write_dashboard(path: str, *, async_close: bool = False) -> None:
+        cleanup = (
+            "    class Closeable:\n"
+            "        async def close(self):\n"
+            "            (workspace / 'async-dashboard-closed').write_text('closed')\n"
+            "    return Closeable()\n"
+            if async_close
+            else ""
+        )
         _ = (plugin_dir / "dashboard.py").write_text(
             "def register(app, plugin_dir, workspace):\n"
             f"    @app.get('{path}')\n"
-            "    def route(): return {'owner': 'plugin'}\n",
+            "    def route(): return {'owner': 'plugin'}\n"
+            f"{cleanup}",
             encoding="utf-8",
         )
 
@@ -2739,13 +2748,14 @@ async def test_dashboard_candidate_cannot_override_core_route(tmp_path: Path) ->
         memory_admin=SimpleNamespace(),
         plugin_manager=manager,
     )
-    write_dashboard("/api/dashboard/sessions")
+    write_dashboard("/api/dashboard/sessions", async_close=True)
     assert await manager.prepare_candidate("dashboard_conflict") is not None
 
     result = await manager.publish_prepared("dashboard_conflict")
 
     assert result["publication_state"] == "failed"
     assert manager.generation("dashboard_conflict") is old_generation
+    assert (tmp_path / "workspace" / "async-dashboard-closed").exists()
     assert TestClient(app).get("/api/dashboard/plugin-owned").json() == {
         "owner": "plugin"
     }
