@@ -62,7 +62,14 @@ container
 python docker/debug/plugin_hot_reload_probe.py --scenario sandbox-integrity
 ```
 
-宿主控制器会在 `/tmp` 创建唯一 sandbox，拒绝仓库内路径，再启动容器检查挂载权限和沙盒路径。它还会审计各 Git 仓库状态，并在隔离插件缓存中完成一次写入与更新。报告路径会在运行结果中给出；Compose 未收到控制器设置的 `AKASHIC_GATE_SANDBOX` 时会拒绝启动。
+宿主控制器会在 `/tmp` 创建唯一 sandbox，拒绝仓库内路径，再通过独立的 `docker-compose.plugin-gate.yml` 启动容器。普通 `docker-compose.yml` 不受 Gate 环境变量影响。控制器会审计各 Git 仓库状态，并在隔离插件缓存中完成一次写入与更新；Runtime 需要的 `static/` 也覆盖到外部 sandbox，不会写 `/app`。
+
+插件资源作用域场景会安装一次性测试插件，并在真实 `main.py` 的启动和关闭过程中验证订阅、任务与清理回调：
+
+```bash
+python docker/debug/plugin_hot_reload_probe.py \
+  --scenario full-runtime --phase scope
+```
 
 ## 第一次配置
 

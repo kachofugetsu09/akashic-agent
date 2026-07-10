@@ -35,6 +35,7 @@ from agent.lifecycle.types import (
 from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registry
 from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.plugins.jobs import PluginJobSpec, PluginLlmService, RegisteredPluginJob
+from agent.plugins.scope import PluginScope, ScopedEventBus
 from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
 from bus.event_bus import EventBus
@@ -105,6 +106,7 @@ class PluginManager:
         self._proactive_sources: list[RegisteredProactiveSource] = []
         self._jobs: list[RegisteredPluginJob] = []
         self._active_plugins: dict[str, ActivePluginInfo] = {}
+        self._scopes: dict[str, PluginScope] = {}
 
     @property
     def loaded_count(self) -> int:
@@ -313,8 +315,9 @@ class PluginManager:
                 logger.warning("插件 %s 配置无效，跳过: %s", mod["name"], e)
                 return
             from agent.plugins.context import PluginContext, PluginKVStore
+            scope = PluginScope(plugin_id)
             instance.context = PluginContext(  # type: ignore[attr-defined]
-                event_bus=self._event_bus,
+                event_bus=ScopedEventBus(self._event_bus, scope),
                 tool_registry=self._tool_registry,
                 plugin_id=plugin_id,
                 plugin_dir=plugin_dir,
@@ -325,29 +328,31 @@ class PluginManager:
                 session_manager=self._session_manager,
                 memory_engine=self._memory_engine,
                 llm=self._llm,
+                scope=scope,
             )
             plugin_registry.register_instance(mp, instance)
-            self._bind_handlers(instance, mp)
-            tool_names = self._register_tools(instance, mp)
-            self._bind_tool_hooks(instance, mp)
-            self._collect_before_turn_modules(instance)
-            self._collect_before_reasoning_modules(instance)
-            self._collect_prompt_render_modules(instance)
-            self._collect_before_step_modules(instance)
-            self._collect_after_step_modules(instance)
-            self._collect_after_reasoning_modules(instance)
-            self._collect_after_turn_modules(instance)
-            self._collect_proactive_modules(instance)
-            self._collect_proactive_lifecycles(instance)
-            self._collect_proactive_module_factories(instance)
-            self._collect_proactive_runtime_factories(instance)
-            self._collect_proactive_sources(instance, plugin_id)
-            self._collect_jobs(instance, plugin_id)
             try:
+                self._bind_handlers(instance, mp, scope)
+                tool_names = self._register_tools(instance, mp)
+                self._bind_tool_hooks(instance, mp)
+                self._collect_before_turn_modules(instance)
+                self._collect_before_reasoning_modules(instance)
+                self._collect_prompt_render_modules(instance)
+                self._collect_before_step_modules(instance)
+                self._collect_after_step_modules(instance)
+                self._collect_after_reasoning_modules(instance)
+                self._collect_after_turn_modules(instance)
+                self._collect_proactive_modules(instance)
+                self._collect_proactive_lifecycles(instance)
+                self._collect_proactive_module_factories(instance)
+                self._collect_proactive_runtime_factories(instance)
+                self._collect_proactive_sources(instance, plugin_id)
+                self._collect_jobs(instance, plugin_id)
                 if hasattr(instance, "initialize"):
                     await instance.initialize()
             except Exception as e:
-                logger.warning("插件 %s 初始化失败，回滚: %s", mod["name"], e)
+                logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], e)
+                _ = await scope.aclose()
                 plugin_registry.remove_plugin(mp)
                 for tn in tool_names:
                     if self._tool_registry is not None:
@@ -367,6 +372,7 @@ class PluginManager:
                 del self._proactive_sources[proactive_source_count_before:]
                 del self._jobs[job_count_before:]
                 return
+            self._scopes[mp] = scope
             manifest: dict[str, object] = {
                 "name": name,
                 "version": str(instance.version or ""),
@@ -444,7 +450,12 @@ class PluginManager:
             logger.info("插件工具已注册: %s (来自 %s)", tool_name, plugin_name)
         return tool_names
 
-    def _bind_handlers(self, instance: Any, module_path: str) -> None:
+    def _bind_handlers(
+        self,
+        instance: Any,
+        module_path: str,
+        scope: PluginScope,
+    ) -> None:
         for md in plugin_registry.get_handlers_by_module_path(module_path):
             # 1. Phase 1 只绑定生命周期 handler，TOOL 类型留给后续 phase
             if md.kind != MetadataKind.LIFECYCLE:
@@ -455,7 +466,7 @@ class PluginManager:
                 continue
             # 3. 绑定 instance 为第一个参数，EventBus 已处理 sync/async，直接注册
             bound = functools.partial(md.handler, instance)
-            self._event_bus.on(ctx_type, bound)
+            _ = scope.subscribe(self._event_bus, ctx_type, bound)
 
     def _bind_tool_hooks(self, instance: Any, module_path: str) -> None:
         for md in plugin_registry.get_handlers_by_module_path(module_path):
@@ -600,6 +611,9 @@ class PluginManager:
                     await instance.terminate()
                 except Exception as e:
                     logger.warning("插件 terminate 失败 (%s): %s", mp, e)
+            scope = self._scopes.pop(mp, None)
+            if scope is not None:
+                _ = await scope.aclose()
             # 注销工具
             for md in plugin_registry.get_handlers_by_module_path(mp):
                 if md.kind == MetadataKind.TOOL and self._tool_registry is not None:
@@ -623,6 +637,7 @@ class PluginManager:
         self._proactive_sources.clear()
         self._jobs.clear()
         self._channels.clear()
+        self._scopes.clear()
 
 
 class _PluginConfigError(Exception):

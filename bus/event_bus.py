@@ -25,17 +25,39 @@ class EventBus:
         self,
         event_type: type[E],
         handler: Handler[E],
-    ) -> None:
+    ) -> EventSubscription:
         # 1. 按注册顺序保存 handler，语义由 emit / observe 调用点决定。
         handlers = self._handlers.setdefault(cast(type[object], event_type), [])
-        handlers.append(cast(Handler[object], handler))
+        raw_handler = cast(Handler[object], handler)
+        handlers.append(raw_handler)
+        return EventSubscription(self, cast(type[object], event_type), raw_handler)
+
+    def handler_count(self) -> int:
+        return sum(len(handlers) for handlers in self._handlers.values())
+
+    def off(
+        self,
+        event_type: type[object],
+        handler: Handler[object],
+    ) -> None:
+        handlers = self._handlers.get(event_type)
+        if handlers is None:
+            return
+        try:
+            handlers.remove(handler)
+        except ValueError:
+            return
+        if not handlers:
+            del self._handlers[event_type]
 
     async def emit(
         self,
         event: E,
     ) -> E:
         # 1. 依次执行干预链，handler 返回新事件时替换当前事件。
-        for raw_handler in self._handlers.get(cast(type[object], type(event)), []):
+        for raw_handler in list(
+            self._handlers.get(cast(type[object], type(event)), [])
+        ):
             handler = cast(Handler[E], raw_handler)
             result = handler(event)
             if inspect.isawaitable(result):
@@ -179,6 +201,29 @@ class EventBus:
             )
         if self._observe_queue is not None:
             self._ensure_observe_task()
+
+
+class EventSubscription:
+    def __init__(
+        self,
+        bus: EventBus,
+        event_type: type[object],
+        handler: Handler[object],
+    ) -> None:
+        self._bus = bus
+        self._event_type = event_type
+        self._handler = handler
+        self._active = True
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def close(self) -> None:
+        if not self._active:
+            return
+        self._active = False
+        self._bus.off(self._event_type, self._handler)
 
 
 def _handler_name(handler: Handler[object]) -> str:

@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import json
+import subprocess
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
+
+T = TypeVar("T")
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
     from agent.plugins.config import PluginConfig
     from agent.plugins.jobs import PluginLlmService
+    from agent.plugins.scope import PluginScope, ScopedEventBus
 
 
 @dataclass
 class PluginContext:
-    event_bus: Any
+    event_bus: "ScopedEventBus"
     tool_registry: Any
     plugin_id: str
     plugin_dir: Path
@@ -24,6 +29,33 @@ class PluginContext:
     session_manager: Any = None
     memory_engine: Any = None
     llm: "PluginLlmService | None" = None
+    scope: "PluginScope | None" = None
+
+    def create_task(
+        self,
+        coroutine: Coroutine[Any, Any, T],
+        *,
+        name: str | None = None,
+    ) -> Any:
+        if self.scope is None:
+            raise RuntimeError(f"插件缺少资源作用域: {self.plugin_id}")
+        return self.scope.create_task(coroutine, name=name)
+
+    def defer(self, resource: str, cleanup: Any) -> None:
+        if self.scope is None:
+            raise RuntimeError(f"插件缺少资源作用域: {self.plugin_id}")
+        self.scope.defer(resource, cleanup)
+
+    def track_process(
+        self,
+        process: subprocess.Popen[Any],
+        *,
+        name: str,
+        timeout: float = 5,
+    ) -> None:
+        if self.scope is None:
+            raise RuntimeError(f"插件缺少资源作用域: {self.plugin_id}")
+        self.scope.track_process(process, name=name, timeout=timeout)
 
 
 class PluginKVStore:

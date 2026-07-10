@@ -7,11 +7,13 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import cast
 
 
 @dataclass(frozen=True)
@@ -189,13 +191,14 @@ def _sandbox_integrity() -> GateResult:
     return result
 
 
-def _run_controller() -> int:
+def _run_controller(*, scenario: str, phase: str) -> int:
     repo = Path(__file__).resolve().parents[2]
     plugin_root = Path(
         os.environ.get("AKASHIC_PLUGIN_SOURCE", "/mnt/data/coding/akashic-plugin")
     ).resolve()
     host_cache = (Path.home() / ".akashic-plugin" / "cache").resolve()
     sandbox = Path(tempfile.mkdtemp(prefix="akashic-plugin-gate-", dir="/tmp")).resolve()
+    (sandbox / "static").mkdir()
     protected = [repo.resolve(), plugin_root, host_cache]
     if any(sandbox == path or sandbox.is_relative_to(path) for path in protected):
         shutil.rmtree(sandbox)
@@ -207,16 +210,17 @@ def _run_controller() -> int:
         **os.environ,
         "AKASHIC_GATE_SANDBOX": str(sandbox),
         "AKASHIC_PLUGIN_SOURCE": str(plugin_root),
+        "UID": str(os.getuid()),
+        "GID": str(os.getgid()),
     }
+    project = sandbox.name.replace("_", "-")
     compose = [
         "docker",
         "compose",
         "-p",
-        "akashic-plugin-reload-gate",
+        project,
         "-f",
-        str(repo / "docker/debug/docker-compose.yml"),
-        "--profile",
-        "plugin-gate",
+        str(repo / "docker/debug/docker-compose.plugin-gate.yml"),
     ]
     command = [
         *compose,
@@ -229,35 +233,69 @@ def _run_controller() -> int:
         "sandbox-integrity",
         "--inside-container",
     ]
-    integrity = subprocess.run(command, cwd=repo, env=env, check=False)
-    smoke_passed, smoke_evidence = _run_runtime_smoke(
-        repo=repo,
-        sandbox=sandbox,
-        compose=compose,
-        env=env,
-    )
-    _ = subprocess.run(
-        [*compose, "down", "--remove-orphans"],
-        cwd=repo,
-        env=env,
-        check=False,
-    )
+    build_returncode = -1
+    integrity_returncode = -1
+    smoke_passed = False
+    smoke_evidence: dict[str, object] = {"skipped": True}
+    cleanup_returncode = -1
+    controller_error = ""
+    try:
+        build = subprocess.run(
+            [*compose, "build", "akashic-plugin-gate"],
+            cwd=repo,
+            env=env,
+            check=False,
+        )
+        build_returncode = build.returncode
+        if build_returncode == 0:
+            integrity = subprocess.run(command, cwd=repo, env=env, check=False)
+            integrity_returncode = integrity.returncode
+        if integrity_returncode == 0:
+            smoke_passed, smoke_evidence = _run_runtime_smoke(
+                repo=repo,
+                sandbox=sandbox,
+                compose=compose,
+                env=env,
+                phase=phase if scenario == "full-runtime" else "smoke",
+            )
+    except Exception as error:
+        controller_error = f"{type(error).__name__}: {error}"
+    finally:
+        try:
+            cleanup = subprocess.run(
+                [*compose, "down", "--remove-orphans"],
+                cwd=repo,
+                env=env,
+                check=False,
+            )
+            cleanup_returncode = cleanup.returncode
+        except Exception as error:
+            suffix = f"{type(error).__name__}: {error}"
+            controller_error = f"{controller_error}; {suffix}".strip("; ")
     after = {str(path): _repository_digest(path) for path in repositories}
     unchanged = before == after
+    passed = (
+        build_returncode == 0
+        and integrity_returncode == 0
+        and smoke_passed
+        and cleanup_returncode == 0
+        and unchanged
+        and not controller_error
+    )
     report: dict[str, object] = {
-        "gate_id": "G-1-host",
-        "status": (
-            "passed"
-            if integrity.returncode == 0 and smoke_passed and unchanged
-            else "failed"
-        ),
+        "gate_id": "G-1-host" if scenario == "sandbox-integrity" else f"runtime:{phase}",
+        "status": "passed" if passed else "failed",
         "checks": {
-            "container_gate_passed": integrity.returncode == 0,
+            "image_build_passed": build_returncode == 0,
+            "container_gate_passed": integrity_returncode == 0,
             "runtime_smoke_passed": smoke_passed,
             "runtime": smoke_evidence,
+            "cleanup_passed": cleanup_returncode == 0,
             "repositories_unchanged": unchanged,
             "repositories": len(repositories),
             "sandbox": str(sandbox),
+            "compose_project": project,
+            "controller_error": controller_error,
         },
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -303,18 +341,55 @@ def _write_smoke_config(sandbox: Path) -> None:
     )
 
 
+def _install_scope_plugin(sandbox: Path) -> Path:
+    plugin_dir = (
+        sandbox
+        / "home/.akashic-plugin/cache/gate/scope_gate/1.0.0"
+    )
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from __future__ import annotations\n"
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class ScopeGatePlugin(Plugin):\n"
+        "    name = 'scope_gate'\n"
+        "    version = '1.0.0'\n"
+        "    async def initialize(self):\n"
+        "        self.context.kv_store.set('initialized', True)\n"
+        "        self.context.defer('subscription_check', self._check_subscription)\n"
+        "        self.subscription = self.context.event_bus.on(TurnCommitted, self._handle)\n"
+        "        self.context.create_task(self._worker(), name='scope-gate-worker')\n"
+        "    async def terminate(self):\n"
+        "        self.context.kv_store.set('terminated', True)\n"
+        "    async def _worker(self):\n"
+        "        try:\n"
+        "            await asyncio.Event().wait()\n"
+        "        finally:\n"
+        "            self.context.kv_store.set('task_cancelled', True)\n"
+        "    def _check_subscription(self):\n"
+        "        self.context.kv_store.set('subscription_closed', not self.subscription.active)\n"
+        "    def _handle(self, event):\n"
+        "        self.context.kv_store.increment('events')\n",
+        encoding="utf-8",
+    )
+    return sandbox / "home/.akashic-plugin/data/scope_gate-gate/.kv.json"
+
+
 def _run_runtime_smoke(
     *,
     repo: Path,
     sandbox: Path,
     compose: list[str],
     env: dict[str, str],
+    phase: str,
 ) -> tuple[bool, dict[str, object]]:
     _write_smoke_config(sandbox)
     shutil.rmtree(
         sandbox / "home/.akashic-plugin/cache/gate",
         ignore_errors=True,
     )
+    scope_state = _install_scope_plugin(sandbox) if phase == "scope" else None
     started = subprocess.run(
         [*compose, "up", "-d", "--no-build", "akashic-plugin-gate"],
         cwd=repo,
@@ -326,20 +401,40 @@ def _run_runtime_smoke(
     )
     socket = sandbox / "akashic.sock"
     container_id = ""
+    ipc_ready = False
+    dashboard_ready = False
+    stable_since: float | None = None
     deadline = time.monotonic() + 30
     while started.returncode == 0 and time.monotonic() < deadline:
         container_id = subprocess.run(
-            [*compose, "ps", "-q", "akashic-plugin-gate"],
+            [*compose, "ps", "-a", "-q", "akashic-plugin-gate"],
             cwd=repo,
             env=env,
             check=False,
             stdout=subprocess.PIPE,
             text=True,
         ).stdout.strip()
-        if socket.exists() and container_id:
+        if not container_id:
+            time.sleep(0.2)
+            continue
+        running = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container_id],
+            check=False,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip() == "true"
+        if not running:
             break
+        ipc_ready = _ipc_ready(socket)
+        dashboard_ready = _dashboard_ready(container_id)
+        if ipc_ready and dashboard_ready:
+            stable_since = stable_since or time.monotonic()
+            if time.monotonic() - stable_since >= 1:
+                break
+        else:
+            stable_since = None
         time.sleep(0.2)
-    socket_ready = socket.exists()
+    runtime_stable = stable_since is not None and time.monotonic() - stable_since >= 1
     process = ""
     if container_id:
         process = subprocess.run(
@@ -388,38 +483,97 @@ def _run_runtime_smoke(
         ).stdout.strip()
         if raw_exit_code.isdigit():
             exit_code = int(raw_exit_code)
+    phase_passed = True
+    phase_evidence: object = {"phase": phase}
+    if scope_state is not None:
+        state: dict[str, object] = {}
+        if scope_state.exists():
+            raw_state: object = json.loads(scope_state.read_text(encoding="utf-8"))
+            if isinstance(raw_state, dict):
+                mapping = cast(dict[object, object], raw_state)
+                state = {str(key): value for key, value in mapping.items()}
+        expected = {
+            "initialized": True,
+            "terminated": True,
+            "task_cancelled": True,
+            "subscription_closed": True,
+        }
+        phase_passed = all(state.get(key) == value for key, value in expected.items())
+        phase_evidence = {"phase": phase, "state": state, "expected": expected}
     passed = (
         started.returncode == 0
-        and socket_ready
+        and ipc_ready
+        and dashboard_ready
+        and runtime_stable
         and "python main.py" in process
         and stopped.returncode == 0
         and exit_code == 0
+        and phase_passed
     )
     return passed, {
         "container_id": container_id,
-        "socket_ready": socket_ready,
+        "ipc_ready": ipc_ready,
+        "dashboard_ready": dashboard_ready,
+        "runtime_stable": runtime_stable,
         "pid1_is_main": "python main.py" in process,
         "pid1": process.strip(),
         "exit_code": exit_code,
         "start_output": started.stdout[-2000:],
         "stop_output": stopped.stdout[-2000:],
         "logs": logs[-4000:],
+        "phase": phase_evidence,
     }
+
+
+def _ipc_ready(path: Path) -> bool:
+    if not path.exists():
+        return False
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.5)
+    try:
+        client.connect(str(path))
+        return True
+    except OSError:
+        return False
+    finally:
+        client.close()
+
+
+def _dashboard_ready(container_id: str) -> bool:
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            container_id,
+            "python",
+            "-c",
+            (
+                "import urllib.request; "
+                "urllib.request.urlopen("
+                "'http://127.0.0.1:2236/api/dashboard/plugins', timeout=1).read()"
+            ),
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     _ = parser.add_argument(
         "--scenario",
-        choices=("sandbox-integrity",),
+        choices=("sandbox-integrity", "full-runtime"),
         default="sandbox-integrity",
     )
+    _ = parser.add_argument("--phase", choices=("smoke", "scope"), default="smoke")
     _ = parser.add_argument("--inside-container", action="store_true")
     args = parser.parse_args()
-    if args.scenario == "sandbox-integrity":
-        if args.inside_container:
-            return 0 if _sandbox_integrity().status == "passed" else 1
-        return _run_controller()
+    if args.inside_container:
+        return 0 if _sandbox_integrity().status == "passed" else 1
+    if args.scenario in ("sandbox-integrity", "full-runtime"):
+        return _run_controller(scenario=args.scenario, phase=args.phase)
     return 2
 
 

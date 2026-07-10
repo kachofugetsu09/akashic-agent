@@ -5,6 +5,8 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,7 @@ from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCa
 from agent.plugins.manager import PluginManager
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.registry import plugin_registry
+from agent.plugins.scope import PluginScope
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
@@ -200,6 +203,7 @@ async def test_plugin_job_runtime_runs_event_job():
         llm=llm,
         jobs=[job],
     )
+    handler_count = bus.handler_count()
     task = asyncio.create_task(runtime.run())
     await asyncio.sleep(0)
     await bus.fanout(
@@ -222,6 +226,106 @@ async def test_plugin_job_runtime_runs_event_job():
         "reason": "event",
         "has_event": True,
         "context_llm": True,
+    }
+    assert bus.handler_count() == handler_count
+
+
+@pytest.mark.asyncio
+async def test_event_subscription_can_be_closed():
+    bus = EventBus()
+    called: list[str] = []
+    subscription = bus.on(str, lambda event: called.append(event))
+
+    await bus.fanout("first")
+    subscription.close()
+    await bus.fanout("second")
+
+    assert called == ["first"]
+    assert bus.handler_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_cleans_in_reverse_order_after_failure():
+    scope = PluginScope("scope-test")
+    cleaned: list[str] = []
+
+    def fail() -> None:
+        cleaned.append("fail")
+        raise RuntimeError("cleanup failed")
+
+    scope.defer("first", lambda: cleaned.append("first"))
+    scope.defer("failure", fail)
+    scope.defer("last", lambda: cleaned.append("last"))
+
+    failures = await scope.aclose()
+
+    assert cleaned == ["last", "fail", "first"]
+    assert [(item.resource, item.error) for item in failures] == [
+        ("failure", "cleanup failed")
+    ]
+    assert scope.resource_count == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_terminates_process():
+    scope = PluginScope("process-test")
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    scope.track_process(process, name="sleep")
+
+    failures = await scope.aclose()
+
+    assert failures == []
+    assert process.poll() is not None
+
+
+@pytest.mark.asyncio
+async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "scoped"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from __future__ import annotations\n"
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class ScopedPlugin(Plugin):\n"
+        "    name = 'scoped'\n"
+        "    async def initialize(self):\n"
+        "        self.context.event_bus.on(TurnCommitted, self._handle)\n"
+        "        self.task = self.context.create_task(self._run(), name='scoped-worker')\n"
+        "        self.context.defer('marker', lambda: self.context.kv_store.set('closed', True))\n"
+        "    async def terminate(self):\n"
+        "        raise RuntimeError('terminate failed')\n"
+        "    async def _run(self):\n"
+        "        await asyncio.Event().wait()\n"
+        "    def _handle(self, event):\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=bus,
+        installed_cache_root=tmp_path / "cache",
+    )
+    for _ in range(20):
+        await manager.load_all()
+        instance = plugin_registry.get_instance("akasic_plugin_plugins_scoped")
+        assert instance is not None
+        task = instance.task
+        assert bus.handler_count() == 1
+
+        await manager.terminate_all()
+
+        assert bus.handler_count() == 0
+        assert task.done()
+    data_dir = tmp_path / "data" / "scoped-builtin"
+    assert json.loads((data_dir / ".kv.json").read_text(encoding="utf-8")) == {
+        "closed": True
     }
 
 

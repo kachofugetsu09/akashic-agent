@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from bus.event_bus import EventSubscription
+
 logger = logging.getLogger(__name__)
 
 
@@ -120,6 +122,7 @@ class PluginJobRuntime:
         self._interval_tasks: list[asyncio.Task[None]] = []
         self._running = False
         self._bound = False
+        self._subscriptions: list[EventSubscription] = []
 
     async def run(self) -> None:
         if self._running:
@@ -140,6 +143,10 @@ class PluginJobRuntime:
             for task in self._interval_tasks:
                 _ = task.cancel()
             _ = await asyncio.gather(*self._interval_tasks, return_exceptions=True)
+            for subscription in self._subscriptions:
+                subscription.close()
+            self._subscriptions.clear()
+            self._bound = False
 
     def stop(self) -> None:
         self._running = False
@@ -167,9 +174,11 @@ class PluginJobRuntime:
         for key, job in self._jobs.items():
             for trigger in job.spec.triggers:
                 if isinstance(trigger, EventTrigger):
-                    self._event_bus.on(
-                        trigger.event_type,
-                        self._make_event_handler(key),
+                    self._subscriptions.append(
+                        self._event_bus.on(
+                            trigger.event_type,
+                            self._make_event_handler(key),
+                        )
                     )
                 elif isinstance(trigger, IntervalTrigger):
                     self._interval_tasks.append(
