@@ -13,10 +13,12 @@ class PluginWatcher:
         self._manager = manager
         self._interval_seconds = interval_seconds
         self._wake = asyncio.Event()
+        self._forced = False
         self._running = True
         self._stopped = asyncio.Event()
 
     async def run(self) -> None:
+        revision = self._manager.watch_revision()
         try:
             while self._running:
                 try:
@@ -29,8 +31,14 @@ class PluginWatcher:
                 self._wake.clear()
                 if not self._running:
                     break
+                forced = self._forced
+                self._forced = False
+                current_revision = self._manager.watch_revision()
+                if not forced and current_revision == revision:
+                    continue
                 try:
                     await self._manager.reconcile_changed()
+                    revision = current_revision
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -39,6 +47,7 @@ class PluginWatcher:
             self._stopped.set()
 
     def wake(self) -> None:
+        self._forced = True
         self._wake.set()
 
     def stop(self) -> None:

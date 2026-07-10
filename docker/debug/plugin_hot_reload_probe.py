@@ -920,18 +920,142 @@ def _wait_snapshot_status(
     *,
     after: int,
     publication_state: str,
+    plugin_id: str = "candidate_reload@gate",
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         statuses = _snapshot_statuses(container_id)
         for status in statuses[after:]:
             if (
-                status.get("plugin_id") == "candidate_reload@gate"
+                status.get("plugin_id") == plugin_id
                 and status.get("publication_state") == publication_state
             ):
                 return statuses, status
         time.sleep(0.1)
     return _snapshot_statuses(container_id), {}
+
+
+def _wait_service_version(container_id: str, expected: str) -> str:
+    deadline = time.monotonic() + 10
+    value = ""
+    while time.monotonic() < deadline:
+        value = _candidate_service_version(container_id)
+        if value == expected:
+            return value
+        time.sleep(0.1)
+    return value
+
+
+def _exercise_topology_watch(
+    container_id: str,
+    sandbox: Path,
+    state_path: Path,
+) -> dict[str, object]:
+    manifest = sandbox / "home/.akashic-plugin/manifest.toml"
+    initial = _read_json_object(state_path)
+    initial_generation = initial.get("active_generation")
+
+    statuses = _snapshot_statuses(container_id)
+    _ = manifest.write_text(
+        '[plugins."candidate_reload@gate"]\nenabled = false\n',
+        encoding="utf-8",
+    )
+    statuses, disabled = _wait_snapshot_status(
+        container_id,
+        after=len(statuses),
+        publication_state="disabled",
+    )
+    disabled_processes = _wait_process_count(
+        container_id,
+        "candidate_service.py",
+        lambda count: count == 0,
+    )
+
+    _ = manifest.write_text(
+        '[plugins."candidate_reload@gate"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+    statuses, enabled = _wait_snapshot_status(
+        container_id,
+        after=len(statuses),
+        publication_state="committed",
+    )
+    enabled_service = _wait_service_version(container_id, "v1")
+    enabled_state = _wait_json_value(state_path, "initialized_version", "v1")
+    enabled_generation = enabled.get("new_generation")
+
+    config = state_path.parent / "config.local.toml"
+    _ = config.write_text("probe = 1\n", encoding="utf-8")
+    statuses, configured = _wait_snapshot_status(
+        container_id,
+        after=len(statuses),
+        publication_state="committed",
+    )
+
+    added_root = (
+        sandbox
+        / "home/.akashic-plugin/cache/gate/topology_added/1.0.0"
+    )
+    added_root.mkdir(parents=True)
+    _ = (added_root / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class TopologyAddedPlugin(Plugin):\n"
+        "    name = 'topology_added'\n"
+        "    version = '1.0.0'\n"
+        "    async def initialize(self):\n"
+        "        self.context.kv_store.set('generation', self.context.generation_id)\n"
+        "    async def terminate(self):\n"
+        "        self.context.kv_store.set('terminated', True)\n",
+        encoding="utf-8",
+    )
+    added_state_path = (
+        sandbox / "home/.akashic-plugin/data/topology_added-gate/.kv.json"
+    )
+    added_state: dict[str, object] = {}
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        added_state = _read_json_object(added_state_path)
+        if isinstance(added_state.get("generation"), str):
+            break
+        time.sleep(0.1)
+    statuses = _snapshot_statuses(container_id)
+    shutil.rmtree(added_root)
+    _, removed = _wait_snapshot_status(
+        container_id,
+        after=len(statuses),
+        publication_state="disabled",
+        plugin_id="topology_added@gate",
+    )
+    removed_state = _wait_json_value(added_state_path, "terminated", True)
+
+    passed = (
+        isinstance(initial_generation, str)
+        and disabled.get("publication_state") == "disabled"
+        and disabled_processes == 0
+        and enabled.get("old_generation") is None
+        and isinstance(enabled_generation, str)
+        and enabled_generation != initial_generation
+        and enabled_service == "v1"
+        and enabled_state.get("initialized_version") == "v1"
+        and configured.get("old_generation") == enabled_generation
+        and isinstance(configured.get("new_generation"), str)
+        and configured.get("new_generation") != enabled_generation
+        and isinstance(added_state.get("generation"), str)
+        and removed.get("publication_state") == "disabled"
+        and removed_state.get("terminated") is True
+    )
+    return {
+        "passed": passed,
+        "initial_generation": initial_generation,
+        "disabled": disabled,
+        "disabled_service_processes": disabled_processes,
+        "enabled": enabled,
+        "enabled_service": enabled_service,
+        "configured": configured,
+        "added": added_state,
+        "removed": removed,
+        "removed_state": removed_state,
+    }
 
 
 def _exercise_snapshot_publish(
@@ -1346,7 +1470,7 @@ def _run_runtime_smoke(
     )
     candidate_states = (
         _install_candidate_plugins(sandbox)
-        if phase in {"candidate", "capability-hosts", "snapshot"}
+        if phase in {"candidate", "capability-hosts", "snapshot", "topology"}
         else None
     )
     started = subprocess.run(
@@ -1427,6 +1551,12 @@ def _run_runtime_smoke(
                 candidate_states[4],
                 candidate_states[5],
                 socket,
+            )
+        elif phase == "topology":
+            candidate_prepare = _exercise_topology_watch(
+                container_id,
+                sandbox,
+                candidate_states[5],
             )
         else:
             candidate_prepare = _exercise_candidate_prepare(
@@ -1625,7 +1755,15 @@ def main() -> int:
     )
     _ = parser.add_argument(
         "--phase",
-        choices=("smoke", "scope", "candidate", "capability-hosts", "snapshot", "fitbit"),
+        choices=(
+            "smoke",
+            "scope",
+            "candidate",
+            "capability-hosts",
+            "snapshot",
+            "topology",
+            "fitbit",
+        ),
         default="smoke",
     )
     _ = parser.add_argument("--inside-container", action="store_true")

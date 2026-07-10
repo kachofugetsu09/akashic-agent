@@ -57,8 +57,8 @@ class _DependentChannel:
         self._fail_start = fail_start
 
     async def start(self, _ctx: object) -> None:
-        assert self._service.version == self._expected
         self._events.append(f"start:{self.name}:{self._service.version}")
+        assert self._service.version == self._expected
         if self._fail_start:
             raise RuntimeError("dependent start failed")
 
@@ -358,3 +358,42 @@ async def test_endpoint_transaction_orders_channel_around_service_and_rolls_back
         "start:old:v1",
     ]
     await channel_host.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_endpoint_transaction_attempts_channel_restore_when_service_restore_fails():
+    events: list[str] = []
+    service = SimpleNamespace(version="v1")
+    old = _DependentChannel("old", service, "v1", events)
+    failed = _DependentChannel("new", service, "v2", events, fail_start=True)
+    channel_host = ChannelHost(lambda _channel: _context(_channel))  # type: ignore[arg-type]
+    channel_host.add(old)  # type: ignore[arg-type]
+    channel_host.bind_plugin_channels({"combined": (old,)})  # type: ignore[arg-type]
+    await channel_host.start_all()
+    events.clear()
+
+    class ServiceHost:
+        async def swap_plugin_services(self, _plugin_id, before, after) -> None:
+            if before["worker"]["version"] == "v2":
+                events.append("service_restore_failed")
+                raise RuntimeError("restore failed")
+            service.version = after["worker"]["version"]
+            events.append(f"service:{service.version}")
+
+    runtime = object.__new__(AppRuntime)
+    runtime.channel_host = channel_host
+    runtime.plugin_service_host = ServiceHost()
+    v1 = {"worker": {"version": "v1"}}
+    v2 = {"worker": {"version": "v2"}}
+
+    with pytest.raises(RuntimeError, match="managed service.*Channel"):
+        await runtime._swap_plugin_endpoints(
+            "combined",
+            v1,
+            v2,
+            (old,),
+            (failed,),
+        )
+
+    assert "service_restore_failed" in events
+    assert "start:old:v2" in events

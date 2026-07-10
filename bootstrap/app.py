@@ -456,18 +456,32 @@ class AppRuntime:
             if swap is not None:
                 await self.channel_host.start_plugin_swap(swap)
         except BaseException as error:
+            service_restore_error: BaseException | None = None
             if services_switched:
-                await self.plugin_service_host.swap_plugin_services(
-                    plugin_id,
-                    new_services,
-                    old_services,
-                )
+                try:
+                    await self.plugin_service_host.swap_plugin_services(
+                        plugin_id,
+                        new_services,
+                        old_services,
+                    )
+                except BaseException as restore_error:
+                    service_restore_error = restore_error
+            channel_restore_error: BaseException | None = None
             if swap is not None:
                 try:
                     await self.channel_host.restore_plugin_swap(swap)
                 except BaseException as restore_error:
-                    raise RuntimeError("插件旧端点恢复失败") from restore_error
-            raise error
+                    channel_restore_error = restore_error
+            if service_restore_error is not None or channel_restore_error is not None:
+                details: list[str] = []
+                if service_restore_error is not None:
+                    details.append(f"managed service: {service_restore_error}")
+                if channel_restore_error is not None:
+                    details.append(f"Channel: {channel_restore_error}")
+                raise RuntimeError(
+                    "插件旧端点恢复失败: " + "; ".join(details)
+                ) from error
+            raise
         if swap is not None:
             self.channel_host.commit_plugin_swap(swap)
 

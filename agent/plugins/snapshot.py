@@ -97,6 +97,7 @@ class RuntimeSnapshotCompiler:
         generations: Mapping[str, PluginGeneration],
         *,
         catalog_generation: PluginGeneration | None = None,
+        snapshot_revision: str = "",
     ) -> RuntimeSnapshot:
         ordered = [generations[key] for key in sorted(generations)]
         if any(generation.plugin_id != key for key, generation in generations.items()):
@@ -170,6 +171,7 @@ class RuntimeSnapshotCompiler:
             f"{plugin_id}:{generation_id}"
             for plugin_id, generation_id in sorted(mcp_catalogs.items())
         )
+        identity += f"|snapshot:{snapshot_revision}"
         snapshot_id = hashlib.sha256(identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
             snapshot_id=snapshot_id,

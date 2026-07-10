@@ -2023,6 +2023,95 @@ async def test_reconcile_changed_disables_and_reenables_plugin_capabilities(
 
 
 @pytest.mark.asyncio
+async def test_repeated_disable_with_retained_snapshot_keeps_unique_id_and_alias(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "retained_topology",
+        "from agent.plugins import Plugin\n"
+        "class RetainedTopologyPlugin(Plugin):\n"
+        "    name = 'retained_topology'\n",
+    )
+    manager = _manager(tmp_path)
+    plugins_home = tmp_path / "home"
+    write_plugin_manifest({"retained_topology": True}, plugins_home=plugins_home)
+    await manager.load_all()
+    alias = "akasic_plugin_plugins_retained_topology"
+
+    write_plugin_manifest({"retained_topology": False}, plugins_home=plugins_home)
+    await manager.reconcile_changed()
+    first_disabled = manager.current_snapshot
+    assert first_disabled is not None
+    retained = manager.snapshot_store.lease()
+
+    write_plugin_manifest({"retained_topology": True}, plugins_home=plugins_home)
+    await manager.reconcile_changed()
+    reenabled = manager.generation("retained_topology")
+    assert reenabled is not None
+    assert sys.modules[alias] is sys.modules[reenabled.module_path]
+
+    write_plugin_manifest({"retained_topology": False}, plugins_home=plugins_home)
+    await manager.reconcile_changed()
+    second_disabled = manager.current_snapshot
+    assert second_disabled is not None
+    assert second_disabled.snapshot_id != first_disabled.snapshot_id
+
+    await retained.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_publish_cancellation_after_store_commit_keeps_manager_consistent(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "commit_cancel",
+        "from agent.plugins import Plugin\n"
+        "class CommitCancelPlugin(Plugin):\n"
+        "    name = 'commit_cancel'\n"
+        "    version = 'v1'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        source.replace("version = 'v1'", "version = 'v2'"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("commit_cancel")
+    assert candidate is not None
+    committed = asyncio.Event()
+    release = asyncio.Event()
+    original_commit = manager.snapshot_store.commit
+
+    async def delayed_commit(transaction) -> None:
+        await original_commit(transaction)
+        committed.set()
+        await release.wait()
+
+    manager.snapshot_store.commit = delayed_commit  # type: ignore[method-assign]
+    publishing = asyncio.create_task(manager.publish_prepared("commit_cancel"))
+    await committed.wait()
+    publishing.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await publishing
+
+    active = manager.generation("commit_cancel")
+    alias = "akasic_plugin_plugins_commit_cancel"
+    assert active is candidate
+    assert manager.prepared_generation("commit_cancel") is None
+    assert manager.current_snapshot is candidate.runtime_snapshot
+    assert sys.modules[alias] is sys.modules[candidate.module_path]
+    manager.snapshot_store.commit = original_commit  # type: ignore[method-assign]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_reconcile_changed_adds_and_removes_discovered_plugin(
     tmp_path: Path,
 ) -> None:
@@ -2071,6 +2160,7 @@ async def test_plugin_watcher_reloads_source_without_signal(tmp_path: Path) -> N
     await manager.load_all()
     watcher = PluginWatcher(manager, interval_seconds=0.01)
     task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
     source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
     _ = (plugin_dir / "plugin.py").write_text(
         source.replace("version = 'v1'", "version = 'v2'"),
@@ -2088,6 +2178,43 @@ async def test_plugin_watcher_reloads_source_without_signal(tmp_path: Path) -> N
     watcher.stop()
     await task
     await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_reconciles_change_arriving_during_scan() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "a"
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                await self.release.wait()
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    manager.revision = "b"
+    await manager.started.wait()
+    manager.revision = "c"
+    manager.release.set()
+    for _ in range(100):
+        if manager.calls >= 2:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls >= 2
 
 
 def _snapshot_tool_source(version: str) -> str:

@@ -79,6 +79,18 @@ from infra.channels.contract import Channel
 
 logger = logging.getLogger(__name__)
 
+
+async def _complete_critical(awaitable: Awaitable[None]) -> bool:
+    task = asyncio.ensure_future(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    await task
+    return cancelled
+
 _EVENT_TYPE_MAP: dict[PluginEventType, type] = {
     PluginEventType.BEFORE_TURN: BeforeTurnCtx,
     PluginEventType.BEFORE_REASONING: BeforeReasoningCtx,
@@ -355,6 +367,24 @@ class PluginManager:
             _ = entries.setdefault(_resolve_plugin_id(mod), True)
         return write_plugin_manifest(entries, plugins_home=plugins_home)
 
+    def watch_revision(self) -> str:
+        digest = hashlib.sha256()
+        home = _plugins_home(self._installed_cache_root)
+        digest.update(_path_metadata(home / "manifest.toml"))
+        for mod in self.discover():
+            plugin_id = _resolve_plugin_id(mod)
+            plugin_dir = Path(mod["plugin_root"])
+            data_dir = _resolve_plugin_data_dir(
+                mod["name"],
+                mod,
+                self._installed_cache_root,
+            )
+            digest.update(plugin_id.encode())
+            digest.update(_source_metadata_revision(plugin_dir))
+            digest.update(_path_metadata(plugin_dir / "plugin.disabled"))
+            digest.update(_path_metadata(data_dir / "config.local.toml"))
+        return digest.hexdigest()
+
     def _registry_active(self, module_path: str) -> bool:
         if module_path not in self._active_plugins:
             return False
@@ -584,7 +614,6 @@ class PluginManager:
                 admission_gated=quiesced is not None,
             )
             await self._post_snapshot_invariants(snapshot)
-            await self._snapshot_store.commit(transaction)
         except BaseException:
             endpoint_error: BaseException | None = None
             if endpoints_switched:
@@ -609,21 +638,41 @@ class PluginManager:
             if endpoint_error is not None:
                 raise RuntimeError("禁用插件后旧端点恢复失败") from endpoint_error
             raise
-        if self._endpoint_resumer is not None and quiesced is not None:
-            await self._endpoint_resumer()
+
+        commit_error: BaseException | None = None
+        commit_cancelled = False
+        try:
+            assert transaction is not None
+            commit_cancelled = await _complete_critical(
+                self._snapshot_store.commit(transaction)
+            )
+        except BaseException as error:
+            commit_error = error
         _ = self._active_generations.pop(plugin_id)
         self._channels = [
             channel
             for generation in self._active_generations.values()
             for channel in generation.contributions.channels
         ]
-        return {
+        resume_cancelled = False
+        if self._endpoint_resumer is not None and quiesced is not None:
+            resume_cancelled = await _complete_critical(self._endpoint_resumer())
+        if commit_error is not None:
+            raise commit_error
+        if commit_cancelled or resume_cancelled:
+            raise asyncio.CancelledError
+        result = {
             "plugin_id": plugin_id,
             "old_generation": active.generation_id,
             "new_generation": None,
             "snapshot_id": snapshot.snapshot_id,
             "publication_state": "disabled",
         }
+        logger.info(
+            "plugin_snapshot_status %s",
+            json.dumps(result, ensure_ascii=False, sort_keys=True),
+        )
+        return result
 
     async def _switch_plugin_endpoints(
         self,
@@ -678,7 +727,10 @@ class PluginManager:
             ),
         )
         try:
-            snapshot = self._snapshot_compiler.compile(generations)
+            snapshot = self._snapshot_compiler.compile(
+                generations,
+                snapshot_revision=catalog_id,
+            )
             snapshot.skill_catalog_generation_id = catalog_id
             snapshot.plugin_skill_index = catalog.normal_plugins
             snapshot.tool_registry = self._compile_snapshot_tools(generations)
@@ -814,7 +866,6 @@ class PluginManager:
                 self._post_publish_invariants(generation, snapshot),
                 timeout=self.POST_PUBLISH_TIMEOUT_SECONDS,
             )
-            await self._snapshot_store.commit(transaction)
         except (asyncio.CancelledError, Exception):
             _ = self._prepared_generations.pop(plugin_id, None)
             generation.state = "aborted"
@@ -837,8 +888,14 @@ class PluginManager:
                 raise RuntimeError("Snapshot abort 后旧端点恢复失败") from endpoint_error
             raise
 
-        if self._endpoint_resumer is not None and quiesced_snapshot is not None:
-            await self._endpoint_resumer()
+        commit_error: BaseException | None = None
+        commit_cancelled = False
+        try:
+            commit_cancelled = await _complete_critical(
+                self._snapshot_store.commit(transaction)
+            )
+        except BaseException as error:
+            commit_error = error
 
         _ = self._prepared_generations.pop(plugin_id)
         self._scopes[generation.module_path] = generation.scope
@@ -853,6 +910,13 @@ class PluginManager:
             for item in self._active_generations.values()
             for channel in item.contributions.channels
         ]
+        resume_cancelled = False
+        if self._endpoint_resumer is not None and quiesced_snapshot is not None:
+            resume_cancelled = await _complete_critical(self._endpoint_resumer())
+        if commit_error is not None:
+            raise commit_error
+        if commit_cancelled or resume_cancelled:
+            raise asyncio.CancelledError
         result = self._publication_status(
             plugin_id,
             active=active,
@@ -880,11 +944,23 @@ class PluginManager:
             drift_skill_roots=generation.contributions.drift_skill_roots,
             mcp_servers=generation.contributions.mcp_servers,
         )
-        if previous is None:
-            return
-        stable_alias = self._stable_aliases.pop(previous.module_path, None)
+        stable_alias = None
+        if previous is not None:
+            stable_alias = self._stable_aliases.pop(previous.module_path, None)
         if stable_alias is None:
-            return
+            retired_module = next(
+                (
+                    module_path
+                    for module_path, info in self._active_plugins.items()
+                    if module_path != generation.module_path
+                    and info.plugin_id == generation.plugin_id
+                ),
+                None,
+            )
+            if retired_module is not None:
+                stable_alias = self._stable_aliases.pop(retired_module, None)
+        if stable_alias is None:
+            stable_alias = generation.module_path.rsplit("__g", 1)[0]
         self._stable_aliases[generation.module_path] = stable_alias
         self._remove_module_tree(stable_alias)
         self._fresh_importer.register(stable_alias, plugin_dir)
@@ -2654,25 +2730,68 @@ def _source_revision(plugin_dir: Path) -> str:
         "__pycache__",
         "node_modules",
     }
-    for path in sorted(plugin_dir.rglob("*")):
-        relative = path.relative_to(plugin_dir)
-        if any(part in excluded for part in relative.parts):
-            continue
-        if path.is_symlink():
+    for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
+        directories[:] = sorted(
+            name for name in directories if name not in excluded
+        )
+        current_path = Path(current)
+        for name in [*directories, *sorted(filenames)]:
+            path = current_path / name
+            relative = path.relative_to(plugin_dir)
+            if path.is_symlink():
+                resolved = path.resolve(strict=False)
+                _require_plugin_path(root, resolved, "源码符号链接")
+                digest.update(str(relative).encode())
+                digest.update(os.readlink(path).encode())
+                if resolved.is_file():
+                    digest.update(resolved.read_bytes())
+                continue
+            if not path.is_file():
+                continue
             resolved = path.resolve(strict=False)
-            _require_plugin_path(root, resolved, "源码符号链接")
+            _require_plugin_path(root, resolved, "源码文件")
             digest.update(str(relative).encode())
-            digest.update(os.readlink(path).encode())
-            if resolved.is_file():
-                digest.update(resolved.read_bytes())
-            continue
-        if not path.is_file():
-            continue
-        resolved = path.resolve(strict=False)
-        _require_plugin_path(root, resolved, "源码文件")
-        digest.update(str(relative).encode())
-        digest.update(path.read_bytes())
+            digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
+def _source_metadata_revision(plugin_dir: Path) -> bytes:
+    digest = hashlib.sha256()
+    excluded = {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+    }
+    for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
+        directories[:] = sorted(
+            name for name in directories if name not in excluded
+        )
+        current_path = Path(current)
+        for name in [*directories, *sorted(filenames)]:
+            path = current_path / name
+            relative = path.relative_to(plugin_dir)
+            try:
+                stat = path.lstat()
+            except FileNotFoundError:
+                continue
+            digest.update(str(relative).encode())
+            digest.update(str(stat.st_mtime_ns).encode())
+            digest.update(str(stat.st_size).encode())
+            if path.is_symlink():
+                digest.update(os.readlink(path).encode())
+    return digest.digest()
+
+
+def _path_metadata(path: Path) -> bytes:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return f"{path}:missing".encode()
+    return f"{path}:{stat.st_mtime_ns}:{stat.st_size}".encode()
 
 
 def _duplicates(values: list[str]) -> list[str]:
