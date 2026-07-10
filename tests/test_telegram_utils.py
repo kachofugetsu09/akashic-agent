@@ -67,6 +67,10 @@ async def test_outbound_limiter_retries_after_cooling_down(monkeypatch):
     )
     sleep_mock = AsyncMock()
     monkeypatch.setattr("infra.channels.telegram_utils.asyncio.sleep", sleep_mock)
+    monkeypatch.setattr(
+        "infra.channels.telegram_utils.asyncio.get_running_loop",
+        lambda: SimpleNamespace(time=lambda: 100.0),
+    )
     calls = 0
 
     async def action():
@@ -80,7 +84,7 @@ async def test_outbound_limiter_retries_after_cooling_down(monkeypatch):
 
     assert result == "ok"
     assert calls == 2
-    assert sleep_mock.await_args_list[0].args[0] >= 3.9
+    assert sleep_mock.await_args_list[0].args[0] == 4.0
 
 
 @pytest.mark.asyncio
