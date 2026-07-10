@@ -133,12 +133,12 @@ class ToolRegistry:
         cloned = ToolRegistry(backend=backend)
         excluded_types = excluded_source_types or set()
         excluded_pairs = excluded_sources or set()
-        names = {
+        names = [
             name
             for name, document in self._documents.items()
             if document.source_type not in excluded_types
             and (document.source_type, document.source_name) not in excluded_pairs
-        }
+        ]
         cloned._tools = {name: self._tools[name] for name in names}
         cloned._metadata = {name: self._metadata[name] for name in names}
         cloned._documents = {name: self._documents[name] for name in names}

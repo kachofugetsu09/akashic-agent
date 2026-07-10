@@ -136,6 +136,12 @@ class SkillsLoader:
             source_id="workspace",
             ignored_symlink_roots=self.ignored_workspace_symlink_roots,
         ):
+            if (
+                runtime_plugins is not None
+                and record.name in runtime_plugins.records
+                and record.root_dir.is_symlink()
+            ):
+                continue
             records[record.name] = record
 
         if runtime_plugins is not None:

@@ -120,6 +120,7 @@ class PluginManager:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
         self._tool_registry = tool_registry
+        self._plugin_mcp_server_names: set[str] = set()
         self._workspace = workspace
         self._session_manager = session_manager
         self._memory_engine = memory_engine
@@ -903,6 +904,7 @@ class PluginManager:
                 gate_result=gate_result,
                 state="prepared" if not activate else "activating",
             )
+            self._plugin_mcp_server_names.update(contributions.mcp_servers)
             catalog_generations = [
                 active_generation
                 for active_generation in self._active_generations.values()
@@ -1193,8 +1195,7 @@ class PluginManager:
             return None
         plugin_mcp_sources = {
             ("mcp", server_name)
-            for generation in generations.values()
-            for server_name in generation.contributions.mcp_servers
+            for server_name in self._plugin_mcp_server_names
         }
         registry = self._tool_registry.fork(
             excluded_source_types={"plugin"},

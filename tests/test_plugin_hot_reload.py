@@ -1856,6 +1856,72 @@ async def test_tool_schema_search_and_execute_share_snapshot_generation(
 
 
 @pytest.mark.asyncio
+async def test_removed_plugin_mcp_server_does_not_leak_from_live_registry(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "removed_mcp",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class RemovedMcpPlugin(Plugin):\n"
+        "    name = 'removed_mcp'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='removed_server', command=('python', 'server.py'))]\n",
+    )
+    _ = (plugin_dir / "server.py").write_text("", encoding="utf-8")
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+
+    class LegacyPluginMcpTool(Tool):
+        name = "mcp_removed_server__legacy"
+        description = "legacy"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return "legacy"
+
+    tools.register(
+        LegacyPluginMcpTool(),
+        source_type="mcp",
+        source_name="removed_server",
+    )
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class RemovedMcpPlugin(Plugin):\n"
+        "    name = 'removed_mcp'\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("removed_mcp")
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    registry = candidate.runtime_snapshot.tool_registry
+    assert registry is not None
+    assert registry.has_tool("mcp_removed_server__legacy") is False
+    await manager.discard_prepared("removed_mcp")
+    await manager.terminate_all()
+
+
+def test_tool_registry_fork_preserves_registration_order() -> None:
+    registry = ToolRegistry()
+
+    class OrderedTool(Tool):
+        name = "ordered_base"
+        description = "ordered"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return self.name
+
+    expected = [f"ordered_{index:02d}" for index in range(20)]
+    for name in expected:
+        tool_class = type(f"Tool_{name}", (OrderedTool,), {"name": name})
+        registry.register(tool_class())
+
+    assert registry.fork().get_registered_order() == expected
+
+
+@pytest.mark.asyncio
 async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins" / "snapshot_skill"
     for version in ("v1", "v2"):
@@ -1881,6 +1947,12 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     workspace.mkdir()
     manager = _manager(tmp_path, workspace=workspace)
     await manager.load_all()
+    workspace_skills = workspace / "skills"
+    workspace_skills.mkdir()
+    (workspace_skills / "snapshot-skill").symlink_to(
+        plugin_dir / "skills-v1" / "snapshot-skill",
+        target_is_directory=True,
+    )
     _ = (plugin_dir / "plugin.py").write_text(source("v2"), encoding="utf-8")
     candidate = await manager.prepare_candidate("snapshot_skill")
     assert candidate is not None
@@ -1904,6 +1976,10 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
     await entered.wait()
     await manager.publish_prepared("snapshot_skill")
+    _ = (plugin_dir / "skills-v1" / "snapshot-skill" / "SKILL.md").write_text(
+        "---\ndescription: mutated source\n---\nmutated v1\n",
+        encoding="utf-8",
+    )
     release.set()
     assert await old_turn == "done"
     await loop._process_with_runtime_admission(message)
