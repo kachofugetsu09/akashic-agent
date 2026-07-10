@@ -40,7 +40,9 @@ class _Event:
 
 
 class _RegisteredChannel:
-    name = "registered"
+    def __init__(self, *, fail_start: bool = False) -> None:
+        self.name = "registered"
+        self._fail_start = fail_start
 
     async def start(self, ctx: object) -> None:
         async def on_outbound(_message: object) -> None:
@@ -52,6 +54,8 @@ class _RegisteredChannel:
         ctx.event_bus.on(_Event, lambda event: event)
         ctx.bus.subscribe_outbound(self.name, on_outbound)
         ctx.push_tool.register_channel(self.name, text=send_text)
+        if self._fail_start:
+            raise RuntimeError("registered start failed")
 
     async def stop(self) -> None:
         return None
@@ -113,6 +117,8 @@ async def test_channel_host_swaps_plugin_generation():
     new = _Channel("new", events)
     host.add(old)  # type: ignore[arg-type]
     host.bind_plugin_channels({"chat": (old,)})  # type: ignore[arg-type]
+    await host.start_all()
+    events.clear()
 
     await host.swap_plugin_channels("chat", (old,), (new,))  # type: ignore[arg-type]
 
@@ -128,6 +134,8 @@ async def test_channel_host_restores_old_generation_when_start_fails():
     failed = _Channel("new", events, fail_start=True, fail_stop=True)
     host.add(old)  # type: ignore[arg-type]
     host.bind_plugin_channels({"chat": (old,)})  # type: ignore[arg-type]
+    await host.start_all()
+    events.clear()
 
     with pytest.raises(RuntimeError, match="start failed"):
         await host.swap_plugin_channels("chat", (old,), (failed,))  # type: ignore[arg-type]
@@ -142,7 +150,7 @@ async def test_channel_host_restores_old_generation_when_start_fails():
 
 
 @pytest.mark.asyncio
-async def test_channel_host_restores_every_old_channel_when_stop_fails():
+async def test_channel_host_keeps_failed_stop_channel_and_restores_stopped_ones():
     events: list[str] = []
     host = ChannelHost(_context)  # type: ignore[arg-type]
     first = _Channel("first", events, fail_stop=True)
@@ -151,6 +159,8 @@ async def test_channel_host_restores_every_old_channel_when_stop_fails():
     host.add(first)  # type: ignore[arg-type]
     host.add(second)  # type: ignore[arg-type]
     host.bind_plugin_channels({"chat": (first, second)})  # type: ignore[arg-type]
+    await host.start_all()
+    events.clear()
 
     with pytest.raises(RuntimeError, match="stop failed"):
         await host.swap_plugin_channels(  # type: ignore[arg-type]
@@ -163,9 +173,31 @@ async def test_channel_host_restores_every_old_channel_when_stop_fails():
     assert events == [
         "stop:second",
         "stop:first",
-        "start:first:ctx:first",
         "start:second:ctx:second",
     ]
+
+
+@pytest.mark.asyncio
+async def test_channel_host_rejects_name_conflict_before_stopping_old():
+    events: list[str] = []
+    host = ChannelHost(_context)  # type: ignore[arg-type]
+    core = _Channel("core", events)
+    old = _Channel("old", events)
+    conflict = _Channel("core", events)
+    host.add(core)  # type: ignore[arg-type]
+    host.add(old)  # type: ignore[arg-type]
+    host.bind_plugin_channels({"chat": (old,)})  # type: ignore[arg-type]
+    await host.start_all()
+    events.clear()
+
+    with pytest.raises(RuntimeError, match="名称冲突"):
+        await host.swap_plugin_channels(  # type: ignore[arg-type]
+            "chat",
+            (old,),
+            (conflict,),
+        )
+
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -207,3 +239,42 @@ async def test_channel_host_revokes_shared_registrations_on_stop():
         chat_id="1",
         message="hello",
     )
+
+
+@pytest.mark.asyncio
+async def test_channel_host_restores_shared_registrations_after_failed_swap():
+    event_bus = EventBus()
+    message_bus = MessageBus()
+    push_tool = MessagePushTool()
+    old = _RegisteredChannel()
+    failed = _RegisteredChannel(fail_start=True)
+    context = SimpleNamespace(
+        bus=message_bus,
+        session_manager=None,
+        event_bus=event_bus,
+        push_tool=push_tool,
+        attachment_store=None,
+        http_resources=None,
+        interrupt_controller=None,
+        bot_commands=[],
+        log="ctx:registered",
+    )
+    host = ChannelHost(lambda _channel: context)  # type: ignore[arg-type]
+    host.add(old)  # type: ignore[arg-type]
+    host.bind_plugin_channels({"chat": (old,)})  # type: ignore[arg-type]
+    await host.start_all()
+
+    with pytest.raises(RuntimeError, match="registered start failed"):
+        await host.swap_plugin_channels(  # type: ignore[arg-type]
+            "chat",
+            (old,),
+            (failed,),
+        )
+
+    assert event_bus.handler_count() == 1
+    assert len(message_bus._subscribers["registered"]) == 1
+    assert await push_tool.execute(
+        channel="registered",
+        chat_id="1",
+        message="hello",
+    ) == "文本已发送"

@@ -57,6 +57,12 @@ class ChannelHost:
         current = self._plugin_channels.get(plugin_id, ())
         if current != old_channels:
             raise RuntimeError(f"插件 Channel 代际不一致: {plugin_id}")
+        retained_names = {
+            channel.name for channel in self._channels if channel not in old_channels
+        }
+        new_names = [channel.name for channel in new_channels]
+        if len(new_names) != len(set(new_names)) or retained_names.intersection(new_names):
+            raise RuntimeError(f"Channel 名称冲突: {', '.join(new_names)}")
         old_positions = [
             self._channels.index(channel)
             for channel in old_channels
@@ -65,8 +71,8 @@ class ChannelHost:
         stopped_old: list[Channel] = []
         try:
             for channel in reversed(old_channels):
-                stopped_old.append(channel)
                 await self._stop_channel(channel)
+                stopped_old.append(channel)
         except BaseException as stop_error:
             restore_errors = await self._restore_channels(reversed(stopped_old))
             if restore_errors:
@@ -125,13 +131,11 @@ class ChannelHost:
         self._started.add(id(channel))
 
     async def _stop_channel(self, channel: Channel) -> None:
-        try:
-            await channel.stop()
-        finally:
-            resources = self._resources.pop(id(channel), None)
-            if resources is not None:
-                resources.close()
-            self._started.discard(id(channel))
+        await channel.stop()
+        resources = self._resources.pop(id(channel), None)
+        if resources is not None:
+            resources.close()
+        self._started.discard(id(channel))
 
     @property
     def channels(self) -> list[Channel]:

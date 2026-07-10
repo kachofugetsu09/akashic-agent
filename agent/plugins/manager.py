@@ -165,7 +165,6 @@ class PluginManager:
         self._job_host = PluginJobHost()
         self._proactive_host = PluginProactiveHost()
         self._snapshot_compiler = RuntimeSnapshotCompiler()
-        self._snapshot_drains: dict[str, tuple[PluginGeneration, ...]] = {}
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
 
@@ -383,6 +382,7 @@ class PluginManager:
         generation: PluginGeneration,
         *,
         state: str,
+        preserve_stable_alias: bool = False,
     ) -> None:
         if generation.initialization_started:
             terminator = getattr(generation.instance, "terminate", None)
@@ -397,13 +397,47 @@ class PluginManager:
                         )
                     )
         self._cleanup_failures.extend(await generation.scope.aclose())
+        _ = self._scopes.pop(generation.module_path, None)
+        self._loaded.discard(generation.module_path)
+        _ = self._active_plugins.pop(generation.module_path, None)
+        for metadata in plugin_registry.get_handlers_by_module_path(
+            generation.module_path
+        ):
+            if metadata.kind == MetadataKind.TOOL and self._tool_registry is not None:
+                self._tool_registry.unregister(
+                    metadata.tool_name or metadata.handler_name
+                )
         self._remove_module_tree(generation.module_path)
+        stable_alias = self._stable_aliases.get(generation.module_path)
+        if stable_alias is not None and not preserve_stable_alias:
+            _ = self._stable_aliases.pop(generation.module_path, None)
+            if plugin_registry.get_instance(stable_alias) is generation.instance:
+                self._remove_module_tree(stable_alias)
+            else:
+                self._fresh_importer.unregister(stable_alias)
         generation.state = state
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
-        generations = self._snapshot_drains.pop(snapshot.snapshot_id, ())
-        for generation in generations:
-            await self._dispose_generation(generation, state=generation.state)
+        state = "aborted" if snapshot.state == "aborted" else "retired"
+        current = self._snapshot_store.current
+        for generation in snapshot.generations.values():
+            if self._snapshot_store.generation_is_referenced_elsewhere(
+                generation,
+                excluding_snapshot_id=snapshot.snapshot_id,
+            ):
+                continue
+            replacement = (
+                current.generations.get(generation.plugin_id)
+                if current is not None
+                else None
+            )
+            await self._dispose_generation(
+                generation,
+                state=state,
+                preserve_stable_alias=(
+                    replacement is not None and replacement is not generation
+                ),
+            )
 
     async def prepare_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
@@ -497,9 +531,17 @@ class PluginManager:
                     check_id="dashboard",
                     reason=str(error) or type(error).__name__,
                 )
-                await self.discard_prepared(plugin_id)
+                channel_error: BaseException | None = None
                 if channels_switched and self._channel_switcher is not None:
-                    await self._channel_switcher(plugin_id, new_channels, old_channels)
+                    try:
+                        await self._channel_switcher(plugin_id, new_channels, old_channels)
+                    except BaseException as rollback_error:
+                        channel_error = rollback_error
+                await self.discard_prepared(plugin_id)
+                if channel_error is not None:
+                    raise RuntimeError(
+                        "Dashboard Gate 失败后旧 Channel 恢复失败"
+                    ) from channel_error
                 return self._publication_status(
                     plugin_id,
                     active=active,
@@ -518,7 +560,6 @@ class PluginManager:
         except (asyncio.CancelledError, Exception):
             _ = self._prepared_generations.pop(plugin_id, None)
             generation.state = "aborted"
-            self._snapshot_drains[snapshot.snapshot_id] = (generation,)
             channel_error: BaseException | None = None
             if channels_switched and self._channel_switcher is not None:
                 try:
@@ -536,7 +577,8 @@ class PluginManager:
         generation.state = "active"
         self._active_generations[plugin_id] = generation
         if active is not None:
-            active.state = "retained_compat"
+            active.state = "retired"
+        self._activate_published_generation(generation, active)
         self._channels = [
             channel
             for item in self._active_generations.values()
@@ -553,6 +595,32 @@ class PluginManager:
             json.dumps(result, ensure_ascii=False, sort_keys=True),
         )
         return result
+
+    def _activate_published_generation(
+        self,
+        generation: PluginGeneration,
+        previous: PluginGeneration | None,
+    ) -> None:
+        plugin_dir = Path(generation.instance.context.plugin_dir)
+        self._active_plugins[generation.module_path] = ActivePluginInfo(
+            plugin_id=generation.plugin_id,
+            plugin_dir=plugin_dir,
+            manifest=generation.contributions.manifest,
+            module_path=generation.module_path,
+            skill_roots=generation.contributions.skill_roots,
+            drift_skill_roots=generation.contributions.drift_skill_roots,
+            mcp_servers=generation.contributions.mcp_servers,
+        )
+        if previous is None:
+            return
+        stable_alias = self._stable_aliases.pop(previous.module_path, None)
+        if stable_alias is None:
+            return
+        self._stable_aliases[generation.module_path] = stable_alias
+        self._remove_module_tree(stable_alias)
+        self._fresh_importer.register(stable_alias, plugin_dir)
+        plugin_registry.register_instance(stable_alias, generation.instance)
+        sys.modules[stable_alias] = sys.modules[generation.module_path]
 
     async def _initialize_prepared_generation(
         self,
@@ -1214,6 +1282,7 @@ class PluginManager:
             instance.context.tool_registry = generation.runtime_snapshot.tool_registry
             load_phase = "initialize"
             initialization_started = True
+            generation.initialization_started = True
             await instance.initialize()
             load_phase = "publish"
             self._register_tools(instance, mp, tool_names)

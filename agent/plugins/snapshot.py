@@ -343,6 +343,22 @@ class RuntimeSnapshotStore:
     def retained_snapshot_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._snapshots))
 
+    def generation_is_referenced_elsewhere(
+        self,
+        generation: PluginGeneration,
+        *,
+        excluding_snapshot_id: str,
+    ) -> bool:
+        return any(
+            snapshot.snapshot_id != excluding_snapshot_id
+            and (
+                snapshot.state in {"published_pending", "committed"}
+                or snapshot.lease_count > 0
+            )
+            and any(item is generation for item in snapshot.generations.values())
+            for snapshot in self._snapshots.values()
+        )
+
     def install(self, snapshot: RuntimeSnapshot) -> None:
         if self._current is not None or self._pending is not None:
             raise RuntimeError("RuntimeSnapshotStore 已安装初始快照")

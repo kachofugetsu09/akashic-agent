@@ -1517,7 +1517,7 @@ async def test_publish_prepared_switches_snapshot_after_initialize(
     assert manager.generation("snapshot_publish") is candidate
     assert manager.current_snapshot is candidate.runtime_snapshot
     assert candidate.initialization_started is True
-    assert active.state == "retained_compat"
+    assert active.state == "retired"
     assert old_lease.snapshot is old_snapshot
     assert old_lease.snapshot.before_turn_modules[0].version == "v1"
     next_lease = manager.snapshot_store.lease()
@@ -2670,7 +2670,11 @@ async def test_dashboard_routes_follow_snapshot_generation(tmp_path: Path) -> No
             "from fastapi import FastAPI\n"
             "def register(app: FastAPI, plugin_dir, workspace):\n"
             "    @app.get('/api/dashboard/snapshot-version')\n"
-            f"    def version(): return {{'version': '{version}'}}\n",
+            f"    def version(): return {{'version': '{version}'}}\n"
+            "    class Closeable:\n"
+            "        def close(self):\n"
+            f"            (workspace / 'dashboard-{version}-closed').write_text('closed')\n"
+            "    return Closeable()\n",
             encoding="utf-8",
         )
 
@@ -2679,6 +2683,8 @@ async def test_dashboard_routes_follow_snapshot_generation(tmp_path: Path) -> No
     await manager.load_all()
     old_snapshot = manager.current_snapshot
     assert old_snapshot is not None
+    old_generation = old_snapshot.generations["snapshot_dashboard"]
+    old_lease = manager.snapshot_store.lease()
     app = create_dashboard_app(
         tmp_path / "workspace",
         memory_admin=SimpleNamespace(),
@@ -2695,7 +2701,104 @@ async def test_dashboard_routes_follow_snapshot_generation(tmp_path: Path) -> No
     assert TestClient(old_binding.app).get(  # type: ignore[attr-defined]
         "/api/dashboard/snapshot-version"
     ).json() == {"version": "v1"}
+    assert not (tmp_path / "workspace" / "dashboard-v1-closed").exists()
+    await old_lease.release()
+    assert (tmp_path / "workspace" / "dashboard-v1-closed").exists()
+    assert old_generation.scope.closed
+    assert f"{old_generation.module_path}.dashboard" not in sys.modules
     client.close()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_candidate_cannot_override_core_route(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "dashboard_conflict",
+        "from agent.plugins import Plugin\n"
+        "class DashboardConflictPlugin(Plugin):\n"
+        "    name = 'dashboard_conflict'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+
+    def write_dashboard(path: str) -> None:
+        _ = (plugin_dir / "dashboard.py").write_text(
+            "def register(app, plugin_dir, workspace):\n"
+            f"    @app.get('{path}')\n"
+            "    def route(): return {'owner': 'plugin'}\n",
+            encoding="utf-8",
+        )
+
+    write_dashboard("/api/dashboard/plugin-owned")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_generation = manager.generation("dashboard_conflict")
+    app = create_dashboard_app(
+        tmp_path / "workspace",
+        memory_admin=SimpleNamespace(),
+        plugin_manager=manager,
+    )
+    write_dashboard("/api/dashboard/sessions")
+    assert await manager.prepare_candidate("dashboard_conflict") is not None
+
+    result = await manager.publish_prepared("dashboard_conflict")
+
+    assert result["publication_state"] == "failed"
+    assert manager.generation("dashboard_conflict") is old_generation
+    assert TestClient(app).get("/api/dashboard/plugin-owned").json() == {
+        "owner": "plugin"
+    }
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_candidate_cannot_override_other_plugin(tmp_path: Path) -> None:
+    root = tmp_path / "plugins"
+    first_dir = _write_plugin(
+        root,
+        "dashboard_first",
+        "from agent.plugins import Plugin\n"
+        "class DashboardFirstPlugin(Plugin):\n"
+        "    name = 'dashboard_first'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+    second_dir = _write_plugin(
+        root,
+        "dashboard_second",
+        "from agent.plugins import Plugin\n"
+        "class DashboardSecondPlugin(Plugin):\n"
+        "    name = 'dashboard_second'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+
+    def write_dashboard(directory: Path, path: str) -> None:
+        _ = (directory / "dashboard.py").write_text(
+            "def register(app, plugin_dir, workspace):\n"
+            f"    @app.get('{path}')\n"
+            f"    def route(): return {{'owner': '{directory.name}'}}\n",
+            encoding="utf-8",
+        )
+
+    write_dashboard(first_dir, "/api/dashboard/first")
+    write_dashboard(second_dir, "/api/dashboard/second")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_generation = manager.generation("dashboard_second")
+    _ = create_dashboard_app(
+        tmp_path / "workspace",
+        memory_admin=SimpleNamespace(),
+        plugin_manager=manager,
+    )
+    write_dashboard(second_dir, "/api/dashboard/first")
+    assert await manager.prepare_candidate("dashboard_second") is not None
+
+    result = await manager.publish_prepared("dashboard_second")
+
+    assert result["publication_state"] == "failed"
+    assert manager.generation("dashboard_second") is old_generation
     await manager.terminate_all()
 
 
