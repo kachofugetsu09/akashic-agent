@@ -13,6 +13,16 @@ class McpServerSpec:
 
 
 @dataclass(frozen=True)
+class ManagedServiceSpec:
+    id: str
+    command: tuple[str, ...]
+    env: dict[str, str] = field(default_factory=dict)
+    cwd: str = "."
+    readiness_url: str = ""
+    startup_timeout_seconds: float = 15
+
+
+@dataclass(frozen=True)
 class ProactiveSourceSpec:
     id: str
     channels: tuple[Literal["alert", "content", "context"], ...]

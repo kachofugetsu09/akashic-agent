@@ -56,6 +56,7 @@ class PluginContributions:
     skill_roots: tuple[Path, ...] = ()
     drift_skill_roots: tuple[Path, ...] = ()
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    managed_services: dict[str, dict[str, Any]] = field(default_factory=dict)
     before_turn_modules: tuple[object, ...] = ()
     before_reasoning_modules: tuple[object, ...] = ()
     prompt_render_modules: tuple[object, ...] = ()

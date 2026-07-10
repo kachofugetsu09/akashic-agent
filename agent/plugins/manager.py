@@ -21,6 +21,7 @@ from pydantic import BaseModel, ValidationError
 
 from agent.plugins.manifest import load_plugin_manifest, write_plugin_manifest
 from agent.plugins.specs import (
+    ManagedServiceSpec,
     McpServerSpec,
     ProactiveSourceSpec,
     RegisteredProactiveSource,
@@ -133,6 +134,10 @@ class PluginManager:
             Awaitable[None],
         ] | None = None
         self._dashboard_preparer: Callable[[RuntimeSnapshot], None] | None = None
+        self._service_switcher: Callable[
+            [str, dict[str, dict[str, Any]], dict[str, dict[str, Any]]],
+            Awaitable[None],
+        ] | None = None
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
@@ -280,6 +285,15 @@ class PluginManager:
         preparer: Callable[[RuntimeSnapshot], None],
     ) -> None:
         self._dashboard_preparer = preparer
+
+    def bind_service_switcher(
+        self,
+        switcher: Callable[
+            [str, dict[str, dict[str, Any]], dict[str, dict[str, Any]]],
+            Awaitable[None],
+        ],
+    ) -> None:
+        self._service_switcher = switcher
 
     def job_catalog(self, generation_id: str) -> PreparedJobCatalog | None:
         return self._job_host.get(generation_id)
@@ -496,6 +510,32 @@ class PluginManager:
             )
             return result
 
+        old_services = (
+            active.contributions.managed_services if active is not None else {}
+        )
+        new_services = generation.contributions.managed_services
+        services_switched = False
+        if self._service_switcher is not None and old_services != new_services:
+            try:
+                await self._service_switcher(plugin_id, old_services, new_services)
+                services_switched = True
+            except (asyncio.CancelledError, Exception) as error:
+                self._record_failed_gate(
+                    plugin_id=plugin_id,
+                    revision=generation.source_revision,
+                    check_id="managed_services",
+                    reason=str(error) or type(error).__name__,
+                )
+                await self.discard_prepared(plugin_id)
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+                return self._publication_status(
+                    plugin_id,
+                    active=active,
+                    candidate=generation,
+                    publication_state="failed",
+                )
+
         old_channels = active.contributions.channels if active is not None else ()
         new_channels = generation.contributions.channels
         channels_switched = False
@@ -510,9 +550,23 @@ class PluginManager:
                     check_id="channels",
                     reason=str(error) or type(error).__name__,
                 )
+                service_error: BaseException | None = None
+                if services_switched and self._service_switcher is not None:
+                    try:
+                        await self._service_switcher(
+                            plugin_id,
+                            new_services,
+                            old_services,
+                        )
+                    except BaseException as rollback_error:
+                        service_error = rollback_error
                 await self.discard_prepared(plugin_id)
                 if isinstance(error, asyncio.CancelledError):
                     raise
+                if service_error is not None:
+                    raise RuntimeError(
+                        "Channel Gate 失败后旧 managed service 恢复失败"
+                    ) from service_error
                 return self._publication_status(
                     plugin_id,
                     active=active,
@@ -537,11 +591,25 @@ class PluginManager:
                         await self._channel_switcher(plugin_id, new_channels, old_channels)
                     except BaseException as rollback_error:
                         channel_error = rollback_error
+                service_error: BaseException | None = None
+                if services_switched and self._service_switcher is not None:
+                    try:
+                        await self._service_switcher(
+                            plugin_id,
+                            new_services,
+                            old_services,
+                        )
+                    except BaseException as rollback_error:
+                        service_error = rollback_error
                 await self.discard_prepared(plugin_id)
                 if channel_error is not None:
                     raise RuntimeError(
                         "Dashboard Gate 失败后旧 Channel 恢复失败"
                     ) from channel_error
+                if service_error is not None:
+                    raise RuntimeError(
+                        "Dashboard Gate 失败后旧 managed service 恢复失败"
+                    ) from service_error
                 return self._publication_status(
                     plugin_id,
                     active=active,
@@ -566,9 +634,23 @@ class PluginManager:
                     await self._channel_switcher(plugin_id, new_channels, old_channels)
                 except BaseException as error:
                     channel_error = error
+            service_error: BaseException | None = None
+            if services_switched and self._service_switcher is not None:
+                try:
+                    await self._service_switcher(
+                        plugin_id,
+                        new_services,
+                        old_services,
+                    )
+                except BaseException as error:
+                    service_error = error
             await self._snapshot_store.abort(transaction)
             if channel_error is not None:
                 raise RuntimeError("Snapshot abort 后旧 Channel 恢复失败") from channel_error
+            if service_error is not None:
+                raise RuntimeError(
+                    "Snapshot abort 后旧 managed service 恢复失败"
+                ) from service_error
             raise
 
         _ = self._prepared_generations.pop(plugin_id)
@@ -1058,6 +1140,7 @@ class PluginManager:
                 plugin_dir=plugin_dir,
                 data_dir=data_dir,
                 module_path=mp,
+                source_revision=source_revision,
             )
             gate_result = self._validate_candidate(
                 instance=instance,
@@ -1462,6 +1545,7 @@ class PluginManager:
         plugin_dir: Path,
         data_dir: Path,
         module_path: str,
+        source_revision: str,
     ) -> PluginContributions:
         cls = type(instance)
         sources: list[RegisteredProactiveSource] = []
@@ -1500,6 +1584,12 @@ class PluginManager:
                 plugin_dir,
                 data_dir,
                 cls.mcp_servers(),
+            ),
+            managed_services=_resolve_managed_services(
+                plugin_dir,
+                data_dir,
+                cls.managed_services(),
+                source_revision=source_revision,
             ),
             before_turn_modules=tuple(
                 _load_module_list(instance, "before_turn_modules")
@@ -2096,6 +2186,60 @@ def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | 
     if not path.is_relative_to(root) or path.suffix != ".py" or not path.is_file():
         raise RuntimeError(f"插件 dashboard module 无效: {declared}")
     return path
+
+
+def _resolve_managed_services(
+    plugin_dir: Path,
+    data_dir: Path,
+    declared: list[ManagedServiceSpec],
+    *,
+    source_revision: str,
+) -> dict[str, dict[str, Any]]:
+    services: dict[str, dict[str, Any]] = {}
+    plugin_root = plugin_dir.resolve(strict=False)
+    for spec in declared:
+        if (
+            not isinstance(spec, ManagedServiceSpec)
+            or not spec.id
+            or not spec.command
+            or spec.startup_timeout_seconds <= 0
+            or not all(isinstance(item, str) and item for item in spec.command)
+            or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in spec.env.items()
+            )
+            or not isinstance(spec.readiness_url, str)
+        ):
+            raise RuntimeError(f"插件 managed service 声明无效: {spec!r}")
+        if spec.id in services:
+            raise RuntimeError(f"插件 managed service 名称重复: {spec.id}")
+        command = [
+            _resolve_command_item(plugin_root, item, executable=index == 0)
+            for index, item in enumerate(spec.command)
+        ]
+        cwd_path = Path(spec.cwd)
+        resolved_cwd = (
+            cwd_path.resolve(strict=False)
+            if cwd_path.is_absolute()
+            else (plugin_root / cwd_path).resolve(strict=False)
+        )
+        _require_plugin_path(plugin_root, resolved_cwd, "managed service cwd")
+        cwd = str(resolved_cwd)
+        if _is_python_command(command[0]):
+            runtime_root = _resolve_mcp_runtime_root(plugin_dir, cwd, command)
+            if runtime_root is not None:
+                venv_python = _venv_python(runtime_root / ".venv")
+                if venv_python.exists():
+                    command[0] = str(venv_python)
+        services[spec.id] = {
+            "command": command,
+            "cwd": cwd,
+            "env": {**spec.env, "AKA_PLUGIN_DATA_DIR": str(data_dir)},
+            "readiness_url": spec.readiness_url,
+            "startup_timeout_seconds": spec.startup_timeout_seconds,
+            "revision": source_revision,
+        }
+    return services
 
 
 def _resolve_mcp_servers(

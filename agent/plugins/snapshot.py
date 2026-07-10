@@ -48,6 +48,9 @@ class RuntimeSnapshot:
     channels: Mapping[str, Channel]
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
+    managed_services: Mapping[str, Mapping[str, object]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     dashboard_bindings: tuple[object, ...] = ()
     tool_registry: ToolRegistry | None = None
     plugin_skill_index: SkillIndex | None = None
@@ -145,6 +148,13 @@ class RuntimeSnapshotCompiler:
             for generation in ordered
             if generation.mcp_catalog is not None
         }
+        managed_services = {
+            generation.plugin_id: MappingProxyType(
+                dict(generation.contributions.managed_services)
+            )
+            for generation in ordered
+            if generation.contributions.managed_services
+        }
         identity = "|".join(
             f"{generation.plugin_id}:{generation.generation_id}:"
             f"{generation.source_revision}:{generation.config_revision}"
@@ -177,6 +187,7 @@ class RuntimeSnapshotCompiler:
                 else None
             ),
             mcp_catalog_generation_ids=MappingProxyType(mcp_catalogs),
+            managed_services=MappingProxyType(managed_services),
             plugin_skill_index=(
                 catalog_owner.skill_catalog.normal_plugins
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None

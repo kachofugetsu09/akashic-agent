@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from infra.channels.contract import Channel
     from agent.plugins.context import PluginContext
     from agent.plugins.jobs import PluginJobSpec
-    from agent.plugins.specs import McpServerSpec, ProactiveSourceSpec
+    from agent.plugins.specs import ManagedServiceSpec, McpServerSpec, ProactiveSourceSpec
     from agent.plugins.generation import PluginSemanticCheck
     from agent.plugins.generation import PluginReadinessContext
 
@@ -49,6 +49,10 @@ class Plugin(ABC):
 
     @classmethod
     def mcp_servers(cls) -> list["McpServerSpec"]:
+        return []
+
+    @classmethod
+    def managed_services(cls) -> list["ManagedServiceSpec"]:
         return []
 
     def proactive_sources(self) -> list["ProactiveSourceSpec"]:

@@ -16,6 +16,7 @@ from bootstrap.proactive import build_memory_optimizer_task, build_proactive_run
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bus.event_bus import EventBus
 from agent.plugins.jobs import PluginJobRuntime
+from agent.plugins.service_host import PluginServiceHost
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -101,6 +102,7 @@ class AppRuntime:
         self.chat_task: asyncio.Task[None] | None = None
         self.web_chat_channel = None
         self.plugin_job_runtime: PluginJobRuntime | None = None
+        self.plugin_service_host: PluginServiceHost | None = None
         self.tasks: list[Awaitable[None]] = []
         self._memory_optimizer = None
         self._shutdown = False
@@ -137,6 +139,23 @@ class AppRuntime:
             self._install_plugin_reload_signal()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
+            if plugin_manager is not None:
+                self.plugin_service_host = PluginServiceHost()
+                snapshot = plugin_manager.current_snapshot
+                service_bindings = {
+                    plugin_id: {
+                        service_id: dict(spec)
+                        for service_id, spec in services.items()
+                    }
+                    for plugin_id, services in (
+                        snapshot.managed_services.items() if snapshot is not None else ()
+                    )
+                }
+                self.plugin_service_host.bind_plugin_services(service_bindings)
+                await self.plugin_service_host.start_all()
+                plugin_manager.bind_service_switcher(
+                    self.plugin_service_host.swap_plugin_services
+                )
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
             if self.config.channels.chat.enabled:
                 from infra.channels.web_chat_channel import WebChatChannel
@@ -312,6 +331,12 @@ class AppRuntime:
                 (
                     "channels.stop",
                     self.channel_host.stop_all if self.channel_host else _noop_async,
+                ),
+                (
+                    "plugin_services.stop",
+                    self.plugin_service_host.stop_all
+                    if self.plugin_service_host
+                    else _noop_async,
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 (

@@ -352,7 +352,7 @@ def _install_scope_plugin(sandbox: Path) -> Path:
     _ = (plugin_dir / "plugin.py").write_text(
         "from __future__ import annotations\n"
         "import asyncio\n"
-        "from agent.plugins import Plugin\n"
+        "from agent.plugins import ManagedServiceSpec, Plugin\n"
         "from bus.events_lifecycle import TurnCommitted\n"
         "class ScopeGateChannel:\n"
         "    name = 'scope-gate-channel'\n"
@@ -362,6 +362,9 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "class ScopeGatePlugin(Plugin):\n"
         "    name = 'scope_gate'\n"
         "    version = '1.0.0'\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        "        return [ManagedServiceSpec(id='probe', command=('python', 'service.py'), readiness_url='http://127.0.0.1:18766/')]\n"
         "    def channels(self): return [ScopeGateChannel(self)]\n"
         "    async def initialize(self):\n"
         "        self.context.kv_store.set('initialized', True)\n"
@@ -389,6 +392,22 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "        self.context.kv_store.set('event_started', True)\n"
         "        await asyncio.sleep(2)\n"
         "        self.context.kv_store.increment('events')\n",
+        encoding="utf-8",
+    )
+    _ = (plugin_dir / "service.py").write_text(
+        "import os, signal, sys\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "from pathlib import Path\n"
+        "data = Path(os.environ['AKA_PLUGIN_DATA_DIR'])\n"
+        "(data / 'service.started').write_text('started')\n"
+        "def stop(*args):\n"
+        "    (data / 'service.stopped').write_text('stopped')\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b'ok')\n"
+        "    def log_message(self, *args): pass\n"
+        "HTTPServer(('127.0.0.1', 18766), Handler).serve_forever()\n",
         encoding="utf-8",
     )
     return sandbox / "home/.akashic-plugin/data/scope_gate-gate/.kv.json"
@@ -1354,6 +1373,8 @@ def _run_runtime_smoke(
             if isinstance(raw_state, dict):
                 mapping = cast(dict[object, object], raw_state)
                 state = {str(key): value for key, value in mapping.items()}
+        state["service_started"] = (scope_state.parent / "service.started").exists()
+        state["service_stopped"] = (scope_state.parent / "service.stopped").exists()
         expected: dict[str, object] = {
             "initialized": True,
             "event_started": True,
@@ -1363,6 +1384,8 @@ def _run_runtime_smoke(
             "task_cancelled": True,
             "subscription_closed": True,
             "events": 1,
+            "service_started": True,
+            "service_stopped": True,
         }
         phase_passed = all(state.get(key) == value for key, value in expected.items())
         generation = state.get("generation")
