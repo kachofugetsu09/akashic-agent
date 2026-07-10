@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import os
+import secrets
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -46,6 +47,7 @@ from agent.plugins.generation import (
     PluginGeneration,
     PluginSemanticCheck,
 )
+from agent.plugins.importer import FreshPluginImporter
 from agent.lifecycle.phase import topo_sort_modules
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.lifecycle import ProactiveLifecycleBuilder
@@ -127,6 +129,8 @@ class PluginManager:
         self._stable_aliases: dict[str, str] = {}
         self._generation_sequence = 0
         self._candidate_prepare_lock = asyncio.Lock()
+        self._fresh_importer = FreshPluginImporter()
+        self._manager_namespace = secrets.token_hex(4)
 
     @property
     def loaded_count(self) -> int:
@@ -330,10 +334,28 @@ class PluginManager:
                 source_revision = ""
                 config_revision = ""
             current_prepared = self._prepared_generations.get(plugin_id)
-            if (
+            matches_active = (
                 source_revision == active.source_revision
                 and config_revision == active.config_revision
-            ) or (
+            )
+            if matches_active:
+                if current_prepared is None:
+                    continue
+                await self.discard_prepared(plugin_id)
+                result = {
+                    "plugin_id": plugin_id,
+                    "active_generation": active.generation_id,
+                    "prepared_generation": None,
+                    "gate_status": "active",
+                    "candidate_revision": source_revision,
+                }
+                results.append(result)
+                logger.info(
+                    "plugin_candidate_status %s",
+                    json.dumps(result, ensure_ascii=False, sort_keys=True),
+                )
+                continue
+            if (
                 current_prepared is not None
                 and source_revision == current_prepared.source_revision
                 and config_revision == current_prepared.config_revision
@@ -421,7 +443,7 @@ class PluginManager:
         )
         mp = (
             f"{stable_module_path}__g{self._generation_sequence}_"
-            f"{source_revision[:8]}"
+            f"{source_revision[:8]}_{self._manager_namespace}"
         )
         try:
             self._import_plugin(mp, Path(module_path))
@@ -978,15 +1000,11 @@ class PluginManager:
         )
 
     def _import_plugin(self, module_name: str, path: Path) -> None:
-        # 1. 把 plugin.py 当成包入口加载，允许数字前缀目录里的插件使用相对 import。
-        spec = importlib.util.spec_from_file_location(
-            module_name,
-            path,
-            submodule_search_locations=[str(path.parent)],
-        )
+        self._fresh_importer.register(module_name, path.parent)
+        spec = self._fresh_importer.root_spec(module_name, path)
         if spec is None or spec.loader is None:
+            self._fresh_importer.unregister(module_name)
             raise ImportError(f"无法加载插件文件: {path}")
-        # 2. 先注册到 sys.modules 再执行，避免插件内部相对 import 找不到自身
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         try:
@@ -996,6 +1014,7 @@ class PluginManager:
             raise
 
     def _remove_module_tree(self, module_name: str) -> None:
+        self._fresh_importer.unregister(module_name)
         plugin_registry.remove_module_tree(module_name)
         for imported_name in tuple(sys.modules):
             if imported_name == module_name or imported_name.startswith(f"{module_name}."):

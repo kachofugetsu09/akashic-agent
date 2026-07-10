@@ -594,21 +594,37 @@ def _exercise_candidate_prepare(
         stderr=subprocess.STDOUT,
         text=True,
     )
-    _, valid_status = _wait_candidate_status(
+    valid_statuses, valid_status = _wait_candidate_status(
         container_id,
         after=len(statuses),
         gate_status="passed",
     )
     time.sleep(0.2)
     after_valid = _read_json_object(state_path)
+    _ = source_path.write_text(_candidate_reload_source("v1"), encoding="utf-8")
+    return_signal = subprocess.run(
+        ["docker", "kill", "--signal", "HUP", container_id],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    _, return_status = _wait_candidate_status(
+        container_id,
+        after=len(valid_statuses),
+        gate_status="active",
+    )
     passed = (
         invalid_signal.returncode == 0
         and valid_signal.returncode == 0
+        and return_signal.returncode == 0
         and isinstance(initial_generation, str)
         and invalid_status.get("active_generation") == initial_generation
         and invalid_status.get("prepared_generation") is None
         and valid_status.get("active_generation") == initial_generation
         and isinstance(valid_status.get("prepared_generation"), str)
+        and return_status.get("active_generation") == initial_generation
+        and return_status.get("prepared_generation") is None
         and after_invalid.get("active_generation") == initial_generation
         and after_valid.get("active_generation") == initial_generation
         and after_valid.get("initialized_version") == "v1"
@@ -621,8 +637,10 @@ def _exercise_candidate_prepare(
         "after_invalid": after_invalid,
         "valid_status": valid_status,
         "after_valid": after_valid,
+        "return_status": return_status,
         "invalid_signal": invalid_signal.returncode,
         "valid_signal": valid_signal.returncode,
+        "return_signal": return_signal.returncode,
     }
 
 

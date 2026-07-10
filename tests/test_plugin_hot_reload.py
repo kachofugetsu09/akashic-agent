@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import os
+import py_compile
 import sys
 from pathlib import Path
 
@@ -569,3 +571,71 @@ async def test_source_symlink_cannot_escape_plugin_root(tmp_path: Path):
     gate = manager.latest_gate("linked_source")
     assert gate is not None and gate.status == "failed"
     assert gate.checks[0].check_id == "source_boundary"
+
+
+@pytest.mark.asyncio
+async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Path):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "fresh_source",
+        "from agent.plugins import Plugin\n"
+        "from . import helper\n"
+        "class FreshSourcePlugin(Plugin):\n"
+        "    name = 'fresh_source'\n"
+        "    version = 'v1'\n"
+        "    helper_value = helper.VALUE\n",
+    )
+    plugin_file = plugin_dir / "plugin.py"
+    helper_file = plugin_dir / "helper.py"
+    _ = helper_file.write_text("VALUE = 'v1'\n", encoding="utf-8")
+    plugin_stat = plugin_file.stat()
+    helper_stat = helper_file.stat()
+    _ = py_compile.compile(str(plugin_file), doraise=True)
+    _ = py_compile.compile(str(helper_file), doraise=True)
+    manager = _manager(tmp_path)
+    await manager.load_all()
+
+    _ = plugin_file.write_text(
+        plugin_file.read_text(encoding="utf-8").replace("'v1'", "'v2'"),
+        encoding="utf-8",
+    )
+    _ = helper_file.write_text("VALUE = 'v2'\n", encoding="utf-8")
+    os.utime(plugin_file, ns=(plugin_stat.st_atime_ns, plugin_stat.st_mtime_ns))
+    os.utime(helper_file, ns=(helper_stat.st_atime_ns, helper_stat.st_mtime_ns))
+
+    prepared = await manager.prepare_candidate("fresh_source")
+
+    assert prepared is not None
+    assert prepared.instance.version == "v2"  # type: ignore[attr-defined]
+    assert prepared.instance.helper_value == "v2"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_return_to_active_revision_discards_stale_prepared(tmp_path: Path):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "return_active",
+        "from agent.plugins import Plugin\n"
+        "class ReturnActivePlugin(Plugin):\n"
+        "    name = 'return_active'\n"
+        "    version = 'v1'\n",
+    )
+    plugin_file = plugin_dir / "plugin.py"
+    active_source = plugin_file.read_text(encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    _ = plugin_file.write_text(
+        active_source.replace("'v1'", "'v2'"),
+        encoding="utf-8",
+    )
+    first_scan = await manager.prepare_changed()
+    prepared = manager.prepared_generation("return_active")
+    assert first_scan[0]["gate_status"] == "passed"
+    assert prepared is not None
+
+    _ = plugin_file.write_text(active_source, encoding="utf-8")
+    second_scan = await manager.prepare_changed()
+
+    assert second_scan[0]["gate_status"] == "active"
+    assert manager.prepared_generation("return_active") is None
+    assert prepared.state == "discarded"
