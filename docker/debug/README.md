@@ -56,17 +56,13 @@ container
    └─ akashic-plugin-reload-gate
 ```
 
-先运行完整性 Gate：
+从宿主运行完整性 Gate：
 
 ```bash
-AKASHIC_DEBUG_PROFILE=plugin-reload-gate \
-docker compose -p akashic-plugin-reload-gate \
-  -f docker/debug/docker-compose.yml \
-  --profile plugin-gate run --rm akashic-plugin-gate \
-  python docker/debug/plugin_hot_reload_probe.py --scenario sandbox-integrity
+python docker/debug/plugin_hot_reload_probe.py --scenario sandbox-integrity
 ```
 
-该场景会检查挂载权限、沙盒路径和各 Git 仓库状态，并在隔离插件缓存中完成一次写入与更新。报告保存在 `docker/debug/profiles/plugin-reload-gate/reports/`。
+宿主控制器会在 `/tmp` 创建唯一 sandbox，拒绝仓库内路径，再启动容器检查挂载权限和沙盒路径。它还会审计各 Git 仓库状态，并在隔离插件缓存中完成一次写入与更新。报告路径会在运行结果中给出；Compose 未收到控制器设置的 `AKASHIC_GATE_SANDBOX` 时会拒绝启动。
 
 ## 第一次配置
 

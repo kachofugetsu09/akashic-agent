@@ -44,7 +44,7 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../..:/app:ro
-      - ./profiles/${AKASHIC_DEBUG_PROFILE:-plugin-reload-gate}:/sandbox
+      - ${AKASHIC_GATE_SANDBOX:?AKASHIC_GATE_SANDBOX must be set by plugin_hot_reload_probe.py}:/sandbox
       - ${AKASHIC_PLUGIN_SOURCE:-/mnt/data/coding/akashic-plugin}:/fixtures/plugins:ro
     tmpfs:
       - /tmp
