@@ -122,6 +122,7 @@ class ProactiveLoop:
     def _init_runtime_state(self, config: ProactiveConfig) -> None:
         self._running = False
         self._wake = asyncio.Event()
+        self._reload_lock = asyncio.Lock()
         self._stopped = asyncio.Event()
         self._stopped.set()
 
@@ -443,8 +444,12 @@ class ProactiveLoop:
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
+        async with self._reload_lock:
+            return await self._tick_admitted()
+
+    async def _tick_admitted(self) -> float | None:
         if self._runtime_snapshot_store is not None:
-            lease = self._runtime_snapshot_store.lease()
+            lease = await self._runtime_snapshot_store.acquire()
             from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 
             async with lease:
@@ -455,6 +460,13 @@ class ProactiveLoop:
                 finally:
                     reset_runtime_snapshot(token)
         return await self._tick_bound()
+
+    async def quiesce_for_reload(self) -> None:
+        async with self._reload_lock:
+            await self._stop_active_kernel()
+
+    async def resume_after_reload(self) -> None:
+        self._wake.set()
 
     async def _tick_bound(self) -> float | None:
         # 给本 tick 打上 session 归属，供 observe 全局错误采集关联；
@@ -507,7 +519,7 @@ class ProactiveLoop:
 
     async def _start_current_snapshot(self) -> None:
         assert self._runtime_snapshot_store is not None
-        lease = self._runtime_snapshot_store.lease()
+        lease = await self._runtime_snapshot_store.acquire()
         from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 
         async with lease:

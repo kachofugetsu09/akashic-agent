@@ -1252,6 +1252,90 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_snapshot_admission_waits_while_current_is_quiesced(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_admission",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotAdmissionPlugin(Plugin):\n"
+        "    name = 'snapshot_admission'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    snapshot = manager.current_snapshot
+    assert snapshot is not None
+    held = manager.snapshot_store.lease()
+    quiescing = asyncio.create_task(manager.snapshot_store.quiesce_current())
+    waiting = asyncio.create_task(manager.snapshot_store.acquire())
+    await asyncio.sleep(0)
+    assert not quiescing.done()
+    assert not waiting.done()
+
+    await held.release()
+    assert await quiescing is snapshot
+    assert not waiting.done()
+    await manager.snapshot_store.resume(snapshot)
+    admitted = await waiting
+    assert admitted.snapshot is snapshot
+
+    await admitted.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_managed_service_publish_drains_old_snapshot_before_switch(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "service_admission",
+        "from agent.plugins import ManagedServiceSpec, Plugin\n"
+        "class ServiceAdmissionPlugin(Plugin):\n"
+        "    name = 'service_admission'\n"
+        "    version = 'v1'\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        "        return [ManagedServiceSpec(id='worker', command=('python', 'service.py'))]\n",
+    )
+    _ = (plugin_dir / "service.py").write_text("pass\n", encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    held = manager.snapshot_store.lease()
+    switched = asyncio.Event()
+
+    async def switch_services(plugin_id, old_services, new_services) -> None:
+        assert plugin_id == "service_admission"
+        assert old_services["worker"]["revision"] != new_services["worker"]["revision"]
+        switched.set()
+
+    manager.bind_service_switcher(switch_services)
+    source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        source.replace("version = 'v1'", "version = 'v2'"),
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("service_admission") is not None
+    publishing = asyncio.create_task(manager.publish_prepared("service_admission"))
+    await asyncio.sleep(0)
+    waiting = asyncio.create_task(manager.snapshot_store.acquire())
+    await asyncio.sleep(0)
+    assert not switched.is_set()
+    assert not waiting.done()
+
+    await held.release()
+    result = await publishing
+    admitted = await waiting
+
+    assert result["publication_state"] == "committed"
+    assert switched.is_set()
+    assert admitted.snapshot is manager.current_snapshot
+    await admitted.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_runtime_snapshot_drain_retry_and_store_ownership(tmp_path: Path) -> None:
     _write_plugin(
         tmp_path / "plugins",
@@ -2513,6 +2597,7 @@ async def test_proactive_tick_keeps_one_snapshot_generation(tmp_path: Path) -> N
 
     loop = object.__new__(ProactiveLoop)
     loop._runtime_snapshot_store = manager.snapshot_store
+    loop._reload_lock = asyncio.Lock()
     loop._sense = SimpleNamespace(target_session_key=lambda: "cli:tick")
     loop._proactive_kernel = SimpleNamespace(run_tick=run_tick)
 

@@ -190,7 +190,7 @@ class SnapshotDashboardMiddleware:
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") == "http" and self._snapshot_store.current is not None:
-            lease = self._snapshot_store.lease()
+            lease = await self._snapshot_store.acquire()
             async with lease:
                 token = bind_runtime_snapshot(lease)
                 try:

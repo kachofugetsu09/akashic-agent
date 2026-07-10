@@ -35,6 +35,7 @@ class EventBus:
         self._observe_task: asyncio.Task[None] | None = None
         self._closed = False
         self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
+        self._pending_enqueue_tasks: set[asyncio.Task[None]] = set()
 
     def bind_runtime_snapshot_store(self, store: RuntimeSnapshotStore) -> None:
         self._runtime_snapshot_store = store
@@ -77,7 +78,7 @@ class EventBus:
         self,
         event: E,
     ) -> E:
-        lease = self._runtime_lease()
+        lease = await self._runtime_lease()
         if lease is not None:
             from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 
@@ -101,7 +102,7 @@ class EventBus:
         self,
         event: object,
         ) -> None:
-        lease = self._runtime_lease()
+        lease = await self._runtime_lease()
         if lease is not None:
             from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 
@@ -120,7 +121,7 @@ class EventBus:
         self,
         event: object,
     ) -> None:
-        lease = self._runtime_lease()
+        lease = await self._runtime_lease()
         if lease is not None:
             from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
 
@@ -166,6 +167,15 @@ class EventBus:
 
         snapshot_lease = lease_current_runtime_snapshot()
         if snapshot_lease is None and self._runtime_snapshot_store is not None:
+            snapshot = self._runtime_snapshot_store.current
+            if snapshot is not None and not snapshot.accepting_leases:
+                task = asyncio.create_task(
+                    self._enqueue_after_admission(event, queue),
+                    name="event_enqueue_admission",
+                )
+                self._pending_enqueue_tasks.add(task)
+                task.add_done_callback(self._pending_enqueue_tasks.discard)
+                return
             snapshot_lease = self._runtime_snapshot_store.lease()
         queue.put_nowait(
             _QueuedEvent(
@@ -174,7 +184,16 @@ class EventBus:
             )
         )
 
-    def _runtime_lease(self) -> RuntimeSnapshotLease | None:
+    async def _enqueue_after_admission(
+        self,
+        event: object,
+        queue: asyncio.Queue[_QueuedEvent],
+    ) -> None:
+        assert self._runtime_snapshot_store is not None
+        lease = await self._runtime_snapshot_store.acquire()
+        queue.put_nowait(_QueuedEvent(event=event, snapshot_lease=lease))
+
+    async def _runtime_lease(self) -> RuntimeSnapshotLease | None:
         if self._runtime_snapshot_store is None:
             return None
         from agent.plugins.snapshot import get_current_runtime_snapshot
@@ -183,7 +202,7 @@ class EventBus:
             return None
         if self._runtime_snapshot_store.current is None:
             return None
-        return self._runtime_snapshot_store.lease()
+        return await self._runtime_snapshot_store.acquire()
 
     async def drain(
         self,
@@ -198,6 +217,14 @@ class EventBus:
         self,
     ) -> None:
         self._closed = True
+        for task in self._pending_enqueue_tasks:
+            _ = task.cancel()
+        if self._pending_enqueue_tasks:
+            _ = await asyncio.gather(
+                *self._pending_enqueue_tasks,
+                return_exceptions=True,
+            )
+        self._pending_enqueue_tasks.clear()
         await self.drain()
         task = self._observe_task
         if task is None:

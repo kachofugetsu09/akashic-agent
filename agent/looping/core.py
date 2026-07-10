@@ -670,7 +670,7 @@ class AgentLoop:
                 reset_runtime_snapshot,
             )
 
-            lease = store.lease()
+            lease = await store.acquire()
             async with lease as snapshot:
                 token = bind_runtime_snapshot(lease)
                 try:

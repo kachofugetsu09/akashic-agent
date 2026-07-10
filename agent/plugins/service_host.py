@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -65,8 +66,11 @@ class PluginServiceHost:
         stopped: list[str] = []
         try:
             for service_id in sorted(changed.intersection(old_services), reverse=True):
-                await self._stop(plugin_id, service_id)
-                stopped.append(service_id)
+                try:
+                    await self._stop(plugin_id, service_id)
+                finally:
+                    if (plugin_id, service_id) not in self._running:
+                        stopped.append(service_id)
         except BaseException as stop_error:
             restore_errors = await self._restore(plugin_id, old_services, stopped)
             if restore_errors:
@@ -114,12 +118,18 @@ class PluginServiceHost:
         key = (plugin_id, service_id)
         if key in self._running:
             raise RuntimeError(f"managed service 已运行: {plugin_id}:{service_id}")
+        readiness_url = str(spec.get("readiness_url") or "")
+        if readiness_url and await asyncio.to_thread(_url_ready, readiness_url):
+            raise RuntimeError(
+                f"managed service readiness endpoint 已被占用: {readiness_url}"
+            )
         process = await asyncio.create_subprocess_exec(
             *spec["command"],
             cwd=spec["cwd"],
             env={**os.environ, **spec["env"]},
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=os.name != "nt",
         )
         running = _RunningService(spec=spec, process=process)
         self._running[key] = running
@@ -142,6 +152,11 @@ class PluginServiceHost:
                 _url_ready,
                 readiness_url,
             ):
+                await asyncio.sleep(0)
+                if service.process.returncode is not None:
+                    raise RuntimeError(
+                        f"managed service 启动失败: exit={service.process.returncode}"
+                    )
                 return
             await asyncio.sleep(0.1)
         raise RuntimeError("managed service 启动超时")
@@ -150,21 +165,27 @@ class PluginServiceHost:
         running = self._running.get((plugin_id, service_id))
         if running is None:
             return
-        process = running.process
-        if process.returncode is None:
+        key = (plugin_id, service_id)
+
+        async def reap() -> None:
+            process = running.process
             try:
-                process.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                _ = await asyncio.wait_for(process.wait(), timeout=5)
-            except TimeoutError:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                _ = await process.wait()
-        _ = self._running.pop((plugin_id, service_id), None)
+                if process.returncode is None:
+                    _signal_process(process, signal.SIGTERM)
+                    try:
+                        _ = await asyncio.wait_for(process.wait(), timeout=5)
+                    except TimeoutError:
+                        _signal_process(process, signal.SIGKILL)
+                        _ = await process.wait()
+            finally:
+                _ = self._running.pop(key, None)
+
+        task = asyncio.create_task(reap(), name=f"stop_service:{plugin_id}:{service_id}")
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            _ = await task
+            raise
 
 
 def _url_ready(url: str) -> bool:
@@ -173,3 +194,16 @@ def _url_ready(url: str) -> bool:
             return True
     except OSError:
         return False
+
+
+def _signal_process(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    try:
+        if os.name == "nt":
+            if sig == signal.SIGTERM:
+                process.terminate()
+            else:
+                process.kill()
+        else:
+            os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass

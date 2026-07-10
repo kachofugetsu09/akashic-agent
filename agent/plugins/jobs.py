@@ -136,6 +136,7 @@ class PluginJobRuntime:
         self._running = False
         self._bound = False
         self._subscriptions: list[EventSubscription] = []
+        self._pending_enqueue_tasks: set[asyncio.Task[None]] = set()
         self._stopped = asyncio.Event()
         self._stopped.set()
 
@@ -168,6 +169,14 @@ class PluginJobRuntime:
             for subscription in self._subscriptions:
                 subscription.close()
             self._subscriptions.clear()
+            for task in self._pending_enqueue_tasks:
+                _ = task.cancel()
+            if self._pending_enqueue_tasks:
+                _ = await asyncio.gather(
+                    *self._pending_enqueue_tasks,
+                    return_exceptions=True,
+                )
+            self._pending_enqueue_tasks.clear()
             self._bound = False
             self._running = False
             while not self._queue.empty():
@@ -195,6 +204,21 @@ class PluginJobRuntime:
         reason: str,
         event: object | None = None,
     ) -> None:
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        if (
+            self._snapshot_store is not None
+            and get_current_runtime_snapshot() is None
+            and self._snapshot_store.current is not None
+            and not self._snapshot_store.current.accepting_leases
+        ):
+            task = asyncio.create_task(
+                self._enqueue_after_admission(key, reason=reason, event=event),
+                name="plugin_job_enqueue_admission",
+            )
+            self._pending_enqueue_tasks.add(task)
+            task.add_done_callback(self._pending_enqueue_tasks.discard)
+            return
         job, snapshot_lease = self._resolve_job(key)
         if job is None:
             return
@@ -206,6 +230,30 @@ class PluginJobRuntime:
                 event=event,
                 job=job,
                 snapshot_lease=snapshot_lease,
+            )
+        )
+
+    async def _enqueue_after_admission(
+        self,
+        key: str,
+        *,
+        reason: str,
+        event: object | None,
+    ) -> None:
+        assert self._snapshot_store is not None
+        lease = await self._snapshot_store.acquire()
+        job = lease.snapshot.jobs.get(key)
+        if job is None or (job.spec.coalesce and key in self._queued_keys):
+            await lease.release()
+            return
+        self._queued_keys.add(key)
+        self._queue.put_nowait(
+            _JobRequest(
+                key=key,
+                reason=reason,
+                event=event,
+                job=job,
+                snapshot_lease=lease,
             )
         )
 

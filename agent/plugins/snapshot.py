@@ -59,6 +59,7 @@ class RuntimeSnapshot:
     )
     state: SnapshotState = "compiled"
     lease_count: int = 0
+    accepting_leases: bool = True
     _store_token: object | None = field(default=None, repr=False)
 
     def claim(self, store_token: object) -> None:
@@ -345,6 +346,7 @@ class RuntimeSnapshotStore:
         self._pending: SnapshotTransaction | None = None
         self._on_drained = on_drained
         self._token = object()
+        self._condition = asyncio.Condition()
 
     @property
     def current(self) -> RuntimeSnapshot | None:
@@ -378,7 +380,12 @@ class RuntimeSnapshotStore:
         self._current = snapshot
         self._snapshots[snapshot.snapshot_id] = snapshot
 
-    def begin_publish(self, candidate: RuntimeSnapshot) -> SnapshotTransaction:
+    def begin_publish(
+        self,
+        candidate: RuntimeSnapshot,
+        *,
+        admission_gated: bool = False,
+    ) -> SnapshotTransaction:
         if self._pending is not None:
             raise RuntimeError("已有 RuntimeSnapshot 发布事务")
         if candidate.snapshot_id in self._snapshots:
@@ -386,6 +393,7 @@ class RuntimeSnapshotStore:
         self._adopt(candidate)
         transaction = SnapshotTransaction(previous=self._current, candidate=candidate)
         candidate.state = "published_pending"
+        candidate.accepting_leases = not admission_gated
         self._snapshots[candidate.snapshot_id] = candidate
         self._current = candidate
         self._pending = transaction
@@ -394,18 +402,75 @@ class RuntimeSnapshotStore:
     async def commit(self, transaction: SnapshotTransaction) -> None:
         self._require_pending(transaction)
         transaction.candidate.state = "committed"
+        transaction.candidate.accepting_leases = True
         self._pending = None
         previous = transaction.previous
         if previous is not None:
             previous.state = "retired"
             await self._drain_if_ready(previous)
+        async with self._condition:
+            self._condition.notify_all()
 
     async def abort(self, transaction: SnapshotTransaction) -> None:
         self._require_pending(transaction)
         transaction.candidate.state = "aborted"
+        transaction.candidate.accepting_leases = False
         self._current = transaction.previous
+        if transaction.previous is not None:
+            transaction.previous.accepting_leases = True
         self._pending = None
         await self._drain_if_ready(transaction.candidate)
+        async with self._condition:
+            self._condition.notify_all()
+
+    async def quiesce_current(self) -> RuntimeSnapshot | None:
+        snapshot = self.pause_admission()
+        if snapshot is None:
+            return None
+        try:
+            await self.wait_for_no_leases(snapshot)
+        except BaseException:
+            await self.resume(snapshot)
+            raise
+        return snapshot
+
+    def pause_admission(self) -> RuntimeSnapshot | None:
+        snapshot = self._current
+        if snapshot is not None:
+            snapshot.accepting_leases = False
+        return snapshot
+
+    async def wait_for_no_leases(self, snapshot: RuntimeSnapshot) -> None:
+        async with self._condition:
+            while snapshot.lease_count:
+                await self._condition.wait()
+
+    async def resume(self, snapshot: RuntimeSnapshot | None) -> None:
+        if snapshot is None:
+            return
+        if self._current is snapshot and snapshot.state == "committed":
+            snapshot.accepting_leases = True
+        async with self._condition:
+            self._condition.notify_all()
+
+    async def acquire(
+        self,
+        snapshot_id: str | None = None,
+    ) -> RuntimeSnapshotLease:
+        async with self._condition:
+            while True:
+                snapshot = (
+                    self._current
+                    if snapshot_id is None
+                    else self._snapshots.get(snapshot_id)
+                )
+                if snapshot is None:
+                    raise RuntimeError("RuntimeSnapshot 不可用")
+                if snapshot.state not in {"published_pending", "committed"}:
+                    raise RuntimeError(f"RuntimeSnapshot 不可租用: {snapshot.state}")
+                if snapshot.accepting_leases:
+                    return self._claim_lease(snapshot)
+                await self._condition.wait()
 
     async def close(self) -> None:
         if self._pending is not None:
@@ -434,6 +499,11 @@ class RuntimeSnapshotStore:
             raise RuntimeError("RuntimeSnapshot 不可用")
         if snapshot.state not in {"published_pending", "committed"}:
             raise RuntimeError(f"RuntimeSnapshot 不可租用: {snapshot.state}")
+        if not snapshot.accepting_leases:
+            raise RuntimeError("RuntimeSnapshot 暂停接收新 lease")
+        return self._claim_lease(snapshot)
+
+    def _claim_lease(self, snapshot: RuntimeSnapshot) -> RuntimeSnapshotLease:
         snapshot.lease_count += 1
         for generation in snapshot.generations.values():
             generation.lease_count += 1
@@ -454,6 +524,8 @@ class RuntimeSnapshotStore:
         snapshot.lease_count -= 1
         for generation in snapshot.generations.values():
             generation.lease_count -= 1
+        async with self._condition:
+            self._condition.notify_all()
         await self._drain_if_ready(snapshot)
 
     async def _drain_if_ready(self, snapshot: RuntimeSnapshot) -> None:

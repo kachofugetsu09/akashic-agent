@@ -136,7 +136,6 @@ class AppRuntime:
             self.peer_process_manager = self.core.peer_process_manager
             self.peer_poller = self.core.peer_poller
             await self.core.start()
-            self._install_plugin_reload_signal()
 
             plugin_manager = getattr(self.core, "plugin_manager", None)
             if plugin_manager is not None:
@@ -277,7 +276,13 @@ class AppRuntime:
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
                 self.ipc.set_proactive_loop(self.proactive_loop)
+                if plugin_manager is not None:
+                    plugin_manager.bind_endpoint_admission(
+                        quiesce=self.proactive_loop.quiesce_for_reload,
+                        resume=self.proactive_loop.resume_after_reload,
+                    )
 
+            self._install_plugin_reload_signal()
             self._started = True
         except Exception:
             await self.shutdown()

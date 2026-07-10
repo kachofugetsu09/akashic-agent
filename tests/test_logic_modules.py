@@ -336,6 +336,13 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
         default_chat_id="42",
     )
     loop._running = False
+    loop._runtime_snapshot_store = None
+    loop._stopped = asyncio.Event()
+    loop._wake = asyncio.Event()
+    loop._reload_lock = asyncio.Lock()
+    loop._kernel_started = False
+    loop._active_kernel_lease = None
+    loop._active_snapshot_id = None
     loop._trace_proactive_rate_decision = MagicMock()
     loop._presence = SimpleNamespace(
         get_last_user_at=lambda session_key: datetime.now(timezone.utc)

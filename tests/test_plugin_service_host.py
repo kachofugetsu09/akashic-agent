@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import asyncio
 import sys
 import urllib.request
 from pathlib import Path
@@ -90,3 +91,68 @@ async def test_managed_service_restores_old_generation_on_failure(
 
     assert _read(port) == "v1"
     await host.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_managed_service_rejects_occupied_readiness_endpoint(
+    tmp_path: Path,
+) -> None:
+    service = tmp_path / "service.py"
+    failed = tmp_path / "failed.py"
+    _ = service.write_text(
+        "import os\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self): self.send_response(200); self.end_headers()\n"
+        "    def log_message(self, *args): pass\n"
+        "HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()\n",
+        encoding="utf-8",
+    )
+    _ = failed.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    port = _free_port()
+    existing = {"server": _service_spec(service, port, "existing")}
+    collision = {"server": _service_spec(failed, port, "candidate")}
+    host = PluginServiceHost()
+    host.bind_plugin_services({"existing": existing})  # type: ignore[arg-type]
+    await host.start_all()
+
+    with pytest.raises(RuntimeError, match="已被占用"):
+        await host.swap_plugin_services(  # type: ignore[arg-type]
+            "candidate",
+            {},
+            collision,
+        )
+
+    assert _read(port) == ""
+    await host.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_managed_service_stop_finishes_when_cancelled(tmp_path: Path) -> None:
+    service = tmp_path / "slow_stop.py"
+    _ = service.write_text(
+        "import os, signal, time\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "def stop(*args): time.sleep(0.2); raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self): self.send_response(200); self.end_headers()\n"
+        "    def log_message(self, *args): pass\n"
+        "HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()\n",
+        encoding="utf-8",
+    )
+    port = _free_port()
+    services = {"server": _service_spec(service, port, "v1")}
+    host = PluginServiceHost()
+    host.bind_plugin_services({"slow": services})  # type: ignore[arg-type]
+    await host.start_all()
+    stopping = asyncio.create_task(host.stop_all())
+    await asyncio.sleep(0.05)
+    stopping.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+
+    assert host._running == {}
+    with pytest.raises(OSError):
+        _read(port)

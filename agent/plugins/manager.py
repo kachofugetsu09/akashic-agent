@@ -138,6 +138,8 @@ class PluginManager:
             [str, dict[str, dict[str, Any]], dict[str, dict[str, Any]]],
             Awaitable[None],
         ] | None = None
+        self._endpoint_quiescer: Callable[[], Awaitable[None]] | None = None
+        self._endpoint_resumer: Callable[[], Awaitable[None]] | None = None
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
@@ -294,6 +296,15 @@ class PluginManager:
         ],
     ) -> None:
         self._service_switcher = switcher
+
+    def bind_endpoint_admission(
+        self,
+        *,
+        quiesce: Callable[[], Awaitable[None]],
+        resume: Callable[[], Awaitable[None]],
+    ) -> None:
+        self._endpoint_quiescer = quiesce
+        self._endpoint_resumer = resume
 
     def job_catalog(self, generation_id: str) -> PreparedJobCatalog | None:
         return self._job_host.get(generation_id)
@@ -514,6 +525,24 @@ class PluginManager:
             active.contributions.managed_services if active is not None else {}
         )
         new_services = generation.contributions.managed_services
+        old_channels = active.contributions.channels if active is not None else ()
+        new_channels = generation.contributions.channels
+        quiesced_snapshot: RuntimeSnapshot | None = None
+        if old_services != new_services or old_channels != new_channels:
+            quiesced_snapshot = self._snapshot_store.pause_admission()
+            try:
+                if self._endpoint_quiescer is not None:
+                    await self._endpoint_quiescer()
+                if quiesced_snapshot is not None:
+                    await self._snapshot_store.wait_for_no_leases(
+                        quiesced_snapshot
+                    )
+            except BaseException:
+                await self._snapshot_store.resume(quiesced_snapshot)
+                if self._endpoint_resumer is not None:
+                    await self._endpoint_resumer()
+                await self.discard_prepared(plugin_id)
+                raise
         services_switched = False
         if self._service_switcher is not None and old_services != new_services:
             try:
@@ -527,6 +556,9 @@ class PluginManager:
                     reason=str(error) or type(error).__name__,
                 )
                 await self.discard_prepared(plugin_id)
+                await self._snapshot_store.resume(quiesced_snapshot)
+                if self._endpoint_resumer is not None:
+                    await self._endpoint_resumer()
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 return self._publication_status(
@@ -536,8 +568,6 @@ class PluginManager:
                     publication_state="failed",
                 )
 
-        old_channels = active.contributions.channels if active is not None else ()
-        new_channels = generation.contributions.channels
         channels_switched = False
         if self._channel_switcher is not None and old_channels != new_channels:
             try:
@@ -561,6 +591,9 @@ class PluginManager:
                     except BaseException as rollback_error:
                         service_error = rollback_error
                 await self.discard_prepared(plugin_id)
+                await self._snapshot_store.resume(quiesced_snapshot)
+                if self._endpoint_resumer is not None:
+                    await self._endpoint_resumer()
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 if service_error is not None:
@@ -602,6 +635,9 @@ class PluginManager:
                     except BaseException as rollback_error:
                         service_error = rollback_error
                 await self.discard_prepared(plugin_id)
+                await self._snapshot_store.resume(quiesced_snapshot)
+                if self._endpoint_resumer is not None:
+                    await self._endpoint_resumer()
                 if channel_error is not None:
                     raise RuntimeError(
                         "Dashboard Gate 失败后旧 Channel 恢复失败"
@@ -618,7 +654,10 @@ class PluginManager:
                 )
         if generation.staged_event_bus is not None:
             generation.staged_event_bus.publish()
-        transaction = self._snapshot_store.begin_publish(snapshot)
+        transaction = self._snapshot_store.begin_publish(
+            snapshot,
+            admission_gated=quiesced_snapshot is not None,
+        )
         try:
             await asyncio.wait_for(
                 self._post_publish_invariants(generation, snapshot),
@@ -645,6 +684,8 @@ class PluginManager:
                 except BaseException as error:
                     service_error = error
             await self._snapshot_store.abort(transaction)
+            if self._endpoint_resumer is not None:
+                await self._endpoint_resumer()
             if channel_error is not None:
                 raise RuntimeError("Snapshot abort 后旧 Channel 恢复失败") from channel_error
             if service_error is not None:
@@ -652,6 +693,9 @@ class PluginManager:
                     "Snapshot abort 后旧 managed service 恢复失败"
                 ) from service_error
             raise
+
+        if self._endpoint_resumer is not None and quiesced_snapshot is not None:
+            await self._endpoint_resumer()
 
         _ = self._prepared_generations.pop(plugin_id)
         self._scopes[generation.module_path] = generation.scope
