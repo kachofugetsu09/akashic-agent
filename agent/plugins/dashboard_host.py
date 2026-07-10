@@ -215,15 +215,15 @@ def _plugin_routes(routes: Sequence[object]) -> tuple[APIRoute, ...]:
     if any(not isinstance(route, APIRoute) for route in routes):
         raise RuntimeError("dashboard module 只支持 HTTP API route")
     typed = tuple(route for route in routes if isinstance(route, APIRoute))
-    builtin_convertors = (
+    builtin_convertor_types = {
         StringConvertor,
         PathConvertor,
         IntegerConvertor,
         FloatConvertor,
         UUIDConvertor,
-    )
+    }
     if any(
-        not isinstance(convertor, builtin_convertors)
+        type(convertor) not in builtin_convertor_types
         for route in typed
         for convertor in route.param_convertors.values()
     ):

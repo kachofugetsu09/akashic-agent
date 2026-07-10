@@ -12,7 +12,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.jobs import PluginJobRuntime
@@ -22,6 +24,7 @@ from agent.looping.core import AgentLoop
 from agent.background.subagent_manager import SubagentManager
 from proactive_v2.loop import ProactiveLoop
 from bootstrap.dashboard_api import create_dashboard_app
+from agent.plugins.dashboard_host import _plugin_routes
 from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import Tool
@@ -2815,6 +2818,23 @@ async def test_dashboard_candidate_cannot_override_other_plugin(tmp_path: Path) 
     assert result["publication_state"] == "failed"
     assert manager.generation("dashboard_second") is old_generation
     await manager.terminate_all()
+
+
+def test_dashboard_rejects_custom_path_convertor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CustomConvertor(StringConvertor):
+        regex = "(?:x|z)"
+
+    monkeypatch.setitem(CONVERTOR_TYPES, "custom_gate", CustomConvertor())
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/api/dashboard/{value:custom_gate}")
+    def route() -> dict[str, bool]:
+        return {"ok": True}
+
+    with pytest.raises(RuntimeError, match="内建 path converter"):
+        _plugin_routes(app.routes)
 
 
 @pytest.mark.asyncio
