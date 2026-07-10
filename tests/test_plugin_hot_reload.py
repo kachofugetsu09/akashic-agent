@@ -2749,6 +2749,11 @@ async def test_dashboard_candidate_cannot_override_core_route(tmp_path: Path) ->
     assert TestClient(app).get("/api/dashboard/plugin-owned").json() == {
         "owner": "plugin"
     }
+    write_dashboard("/api/dashboard/{rest:path}")
+    assert await manager.prepare_candidate("dashboard_conflict") is not None
+    wildcard_result = await manager.publish_prepared("dashboard_conflict")
+    assert wildcard_result["publication_state"] == "failed"
+    assert manager.generation("dashboard_conflict") is old_generation
     await manager.terminate_all()
 
 
@@ -2782,7 +2787,7 @@ async def test_dashboard_candidate_cannot_override_other_plugin(tmp_path: Path) 
             encoding="utf-8",
         )
 
-    write_dashboard(first_dir, "/api/dashboard/first")
+    write_dashboard(first_dir, "/api/dashboard/items/{id}")
     write_dashboard(second_dir, "/api/dashboard/second")
     manager = _manager(tmp_path)
     await manager.load_all()
@@ -2792,7 +2797,7 @@ async def test_dashboard_candidate_cannot_override_other_plugin(tmp_path: Path) 
         memory_admin=SimpleNamespace(),
         plugin_manager=manager,
     )
-    write_dashboard(second_dir, "/api/dashboard/first")
+    write_dashboard(second_dir, "/api/dashboard/items/{name}")
     assert await manager.prepare_candidate("dashboard_second") is not None
 
     result = await manager.publish_prepared("dashboard_second")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import inspect
+import re
 import sys
 from dataclasses import dataclass
 from collections.abc import Sequence
@@ -45,7 +47,7 @@ class PluginDashboardHost:
         self._workspace = workspace
         self._memory_admin = memory_admin
         self._memory_store = memory_store
-        self._core_route_keys = _core_route_keys(core_routes)
+        self._core_routes = _core_routes(core_routes)
         self._bindings: dict[str, DashboardBinding] = {}
         self._unavailable: set[str] = set()
 
@@ -62,7 +64,7 @@ class PluginDashboardHost:
         tolerate_failures: bool,
     ) -> None:
         bindings: list[DashboardBinding] = []
-        occupied = set(self._core_route_keys)
+        occupied = list(self._core_routes)
         for generation in snapshot.generations.values():
             module_path = generation.contributions.dashboard_module
             generation_id = generation.generation_id
@@ -108,9 +110,9 @@ class PluginDashboardHost:
                     remove_binding,
                 )
             else:
-                _require_route_keys_available(binding, occupied)
+                _require_routes_available(binding, occupied)
             bindings.append(binding)
-            occupied.update(_binding_route_keys(binding))
+            occupied.extend(binding.routes)
         snapshot.dashboard_bindings = tuple(bindings)
 
     def _build_binding(
@@ -118,7 +120,7 @@ class PluginDashboardHost:
         generation: PluginGeneration,
         module_path: Path,
         *,
-        occupied: set[tuple[str, str]],
+        occupied: list[APIRoute],
     ) -> DashboardBinding:
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
         app.state.memory_admin = self._memory_admin
@@ -141,6 +143,7 @@ class PluginDashboardHost:
                 if callable(enabled) and not enabled(app)
                 else _closeables(register(app, module_path.parent, self._workspace))
             )
+            _validate_closeables(closeables)
             if app.router.on_startup or app.router.on_shutdown:
                 raise RuntimeError("dashboard module 不支持 startup/shutdown hook")
             routes = _plugin_routes(app.routes)
@@ -149,10 +152,16 @@ class PluginDashboardHost:
                 app=app,
                 routes=routes,
             )
-            _require_route_keys_available(binding, occupied)
+            _require_routes_available(binding, occupied)
         except BaseException:
             for closeable in reversed(closeables):
-                _ = closeable.close()  # type: ignore[attr-defined]
+                try:
+                    _ = closeable.close()  # type: ignore[attr-defined]
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "dashboard closeable 清理失败: %s",
+                        cleanup_error,
+                    )
             _ = sys.modules.pop(name, None)
             raise
 
@@ -202,28 +211,50 @@ def _plugin_routes(routes: Sequence[object]) -> tuple[APIRoute, ...]:
     return tuple(route for route in routes if isinstance(route, APIRoute))
 
 
-def _core_route_keys(routes: tuple[object, ...]) -> set[tuple[str, str]]:
-    return {
-        (route.path, method)
-        for route in routes
-        if isinstance(route, APIRoute)
-        for method in route.methods
-    }
+def _core_routes(routes: tuple[object, ...]) -> tuple[APIRoute, ...]:
+    return tuple(route for route in routes if isinstance(route, APIRoute))
 
 
-def _binding_route_keys(binding: DashboardBinding) -> set[tuple[str, str]]:
-    return {
-        (route.path, method)
-        for route in binding.routes
-        for method in route.methods
-    }
-
-
-def _require_route_keys_available(
+def _require_routes_available(
     binding: DashboardBinding,
-    occupied: set[tuple[str, str]],
+    occupied: list[APIRoute],
 ) -> None:
-    conflicts = sorted(_binding_route_keys(binding).intersection(occupied))
+    conflicts: list[str] = []
+    for index, route in enumerate(binding.routes):
+        for other in [*occupied, *binding.routes[:index]]:
+            methods = sorted(route.methods.intersection(other.methods))
+            if methods and _route_paths_overlap(route, other):
+                conflicts.append(
+                    f"{','.join(methods)} {route.path} <> {other.path}"
+                )
     if conflicts:
-        values = ", ".join(f"{method} {path}" for path, method in conflicts)
-        raise RuntimeError(f"dashboard route 冲突: {values}")
+        raise RuntimeError(f"dashboard route 冲突: {', '.join(conflicts)}")
+
+
+def _route_paths_overlap(first: APIRoute, second: APIRoute) -> bool:
+    first_sample = _sample_route_path(first)
+    second_sample = _sample_route_path(second)
+    return bool(
+        first.path_regex.fullmatch(second_sample)
+        or second.path_regex.fullmatch(first_sample)
+    )
+
+
+def _sample_route_path(route: APIRoute) -> str:
+    def replace(match: re.Match[str]) -> str:
+        convertor = route.param_convertors[match.group(1)]
+        regex = re.compile(f"^(?:{convertor.regex})$")
+        for candidate in ("x", "1", "1.0", "00000000-0000-0000-0000-000000000000", "x/y"):
+            if regex.fullmatch(candidate):
+                return candidate
+        raise RuntimeError(f"dashboard route convertor 不受支持: {route.path}")
+
+    return re.sub(r"\{([^}:]+)(?::[^}]+)?\}", replace, route.path)
+
+
+def _validate_closeables(closeables: list[object]) -> None:
+    if any(
+        inspect.iscoroutinefunction(getattr(closeable, "close", None))
+        for closeable in closeables
+    ):
+        raise RuntimeError("dashboard closeable.close 必须是同步函数")
