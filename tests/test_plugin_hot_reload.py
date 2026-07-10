@@ -17,6 +17,7 @@ from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.registry import plugin_registry
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from agent.looping.core import AgentLoop
+from proactive_v2.loop import ProactiveLoop
 from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import Tool
@@ -2333,14 +2334,16 @@ async def test_running_fanout_cancellation_releases_observer_leases() -> None:
     await store.close()
 
 
-def _snapshot_job_source(version: str) -> str:
+def _snapshot_job_source(version: str, *, event_trigger: bool = False) -> str:
+    triggers = "[EventTrigger(TurnCommitted)]" if event_trigger else "[]"
     return (
-        "from agent.plugins import Plugin, PluginJobSpec\n"
+        "from agent.plugins import EventTrigger, Plugin, PluginJobSpec\n"
         "from agent.plugins.snapshot import get_current_runtime_snapshot\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
         "class SnapshotJobPlugin(Plugin):\n"
         "    name = 'snapshot_job'\n"
         "    def jobs(self):\n"
-        "        return [PluginJobSpec(id='refresh', triggers=[], handler=self.refresh)]\n"
+        f"        return [PluginJobSpec(id='refresh', triggers={triggers}, handler=self.refresh)]\n"
         "    async def refresh(self, context):\n"
         f"        self.context.kv_store.increment('job_{version}')\n"
         "        snapshot = get_current_runtime_snapshot()\n"
@@ -2403,6 +2406,130 @@ async def test_job_queue_envelope_keeps_enqueued_snapshot_generation(
     runtime.stop()
     await running
     await event_bus.aclose()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_job_event_trigger_uses_event_snapshot_catalog(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_job",
+        _snapshot_job_source("v1", event_trigger=True),
+    )
+    event_bus = EventBus()
+    llm = SimpleNamespace()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        llm=llm,
+        installed_cache_root=tmp_path / "home/cache",
+    )
+    await manager.load_all()
+    old_lease = manager.snapshot_store.lease()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_job_source("v2", event_trigger=False),
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("snapshot_job") is not None
+    await manager.publish_prepared("snapshot_job")
+    runtime = PluginJobRuntime(
+        event_bus=event_bus,
+        llm=llm,
+        snapshot_store=manager.snapshot_store,
+    )
+    running = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0)
+    from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+    token = bind_runtime_snapshot(old_lease)
+    try:
+        await event_bus.fanout(
+            TurnCommitted(
+                session_key="cli:event",
+                channel="cli",
+                chat_id="event",
+                input_message="event",
+                persisted_user_message="event",
+                assistant_response="event",
+                tools_used=[],
+            )
+        )
+    finally:
+        reset_runtime_snapshot(token)
+        await old_lease.release()
+    state_path = tmp_path / "home/data/snapshot_job-builtin/.kv.json"
+    for _ in range(100):
+        if state_path.exists() and json.loads(
+            state_path.read_text(encoding="utf-8")
+        ).get("job_v1") == 1:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("v1 event job did not run")
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state.get("job_v2") is None
+    runtime.stop()
+    await running
+    await event_bus.aclose()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_proactive_tick_keeps_one_snapshot_generation(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_tick",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotTickPlugin(Plugin):\n"
+        "    name = 'snapshot_tick'\n"
+        "    version = 'v1'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    assert old_snapshot is not None
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[str] = []
+
+    async def run_tick(_session_key: str) -> None:
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        assert snapshot is not None
+        seen.append(snapshot.snapshot_id)
+        if len(seen) == 1:
+            entered.set()
+            await release.wait()
+
+    loop = object.__new__(ProactiveLoop)
+    loop._runtime_snapshot_store = manager.snapshot_store
+    loop._sense = SimpleNamespace(target_session_key=lambda: "cli:tick")
+    loop._proactive_kernel = SimpleNamespace(run_tick=run_tick)
+
+    async def switch_snapshot(_snapshot) -> None:
+        return None
+
+    loop._switch_snapshot = switch_snapshot
+    first_tick = asyncio.create_task(loop._tick())
+    await entered.wait()
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class SnapshotTickPlugin(Plugin):\n"
+        "    name = 'snapshot_tick'\n"
+        "    version = 'v2'\n",
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("snapshot_tick") is not None
+    await manager.publish_prepared("snapshot_tick")
+    new_snapshot = manager.current_snapshot
+    assert new_snapshot is not None
+    release.set()
+    await first_tick
+    await loop._tick()
+
+    assert seen == [old_snapshot.snapshot_id, new_snapshot.snapshot_id]
     await manager.terminate_all()
 
 

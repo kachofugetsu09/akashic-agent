@@ -1212,6 +1212,7 @@ class PluginManager:
                 catalog_generation=generation,
             )
             snapshot.tool_registry = self._compile_snapshot_tools(generations)
+            snapshot.tool_hooks = self._compile_snapshot_tool_hooks(generations)
             return snapshot
         except Exception as error:
             gate = _with_gate_check(
@@ -1274,6 +1275,29 @@ class PluginManager:
                         source_name=server.name,
                     )
         return registry
+
+    def _compile_snapshot_tool_hooks(
+        self,
+        generations: dict[str, PluginGeneration],
+    ) -> tuple[ToolHook, ...]:
+        hooks: list[ToolHook] = []
+        for generation in sorted(generations.values(), key=lambda item: item.plugin_id):
+            for metadata in plugin_registry.get_handlers_by_module_path(
+                generation.module_path
+            ):
+                if metadata.kind != MetadataKind.TOOL_HOOK:
+                    continue
+                hooks.append(
+                    _PluginToolHook(
+                        name=(
+                            f"plugin:{getattr(generation.instance, 'name', generation.module_path)}:"
+                            f"{metadata.handler_name}"
+                        ),
+                        handler=functools.partial(metadata.handler, generation.instance),
+                        tool_name_filter=metadata.hook_tool_name,
+                    )
+                )
+        return tuple(hooks)
 
     async def _publish_committed_snapshot(
         self,

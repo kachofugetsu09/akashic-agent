@@ -304,7 +304,7 @@ def _run_controller(*, scenario: str, phase: str) -> int:
     return 0 if report["status"] == "passed" else 1
 
 
-def _write_smoke_config(sandbox: Path) -> None:
+def _write_smoke_config(sandbox: Path, *, proactive_enabled: bool = False) -> None:
     config = sandbox / "config.toml"
     _ = config.write_text(
         "\n".join(
@@ -322,7 +322,7 @@ def _write_smoke_config(sandbox: Path) -> None:
                 "[channels]",
                 'socket = "/sandbox/akashic.sock"',
                 "",
-                "[channels.chat]",
+            "[channels.chat]",
                 "enabled = false",
                 "",
                 "[channels.telegram]",
@@ -335,7 +335,7 @@ def _write_smoke_config(sandbox: Path) -> None:
                 "",
                 "[proactive]",
                 'profile = "quiet"',
-                "enabled = false",
+                f"enabled = {'true' if proactive_enabled else 'false'}",
                 "",
             ]
         ),
@@ -1119,6 +1119,11 @@ def _exercise_candidate_prepare(
             0,
         )
         == 1
+        and cast(dict[str, int], initial_calls.get("v1", {})).get(
+            "poll_events",
+            0,
+        )
+        >= 1
         and all(
             cast(dict[str, int], after_valid_calls.get("v2", {})).get(tool, 0)
             == 0
@@ -1199,7 +1204,10 @@ def _run_runtime_smoke(
     env: dict[str, str],
     phase: str,
 ) -> tuple[bool, dict[str, object]]:
-    _write_smoke_config(sandbox)
+    _write_smoke_config(
+        sandbox,
+        proactive_enabled=phase in {"capability-hosts", "snapshot"},
+    )
     shutil.rmtree(
         sandbox / "home/.akashic-plugin/cache/gate",
         ignore_errors=True,

@@ -13,6 +13,7 @@ from agent.plugins.generation import PluginGeneration
 from agent.plugins.jobs import RegisteredPluginJob, plugin_job_key
 from agent.plugins.specs import RegisteredProactiveSource, proactive_source_key
 from agent.tools.registry import ToolRegistry
+from agent.tool_hooks import ToolHook
 from agent.skills import SkillIndex
 from bus.event_bus import Handler
 
@@ -38,6 +39,11 @@ class RuntimeSnapshot:
     after_turn_modules: tuple[object, ...]
     jobs: Mapping[str, RegisteredPluginJob]
     proactive_sources: Mapping[str, RegisteredProactiveSource]
+    proactive_modules: tuple[object, ...]
+    proactive_lifecycles: tuple[object, ...]
+    proactive_module_factories: tuple[object, ...]
+    proactive_runtime_factories: tuple[object, ...]
+    tool_hooks: tuple[ToolHook, ...]
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
     tool_registry: ToolRegistry | None = None
@@ -98,6 +104,26 @@ class RuntimeSnapshotCompiler:
             phases[field_name] = self._order_plugin_modules(modules)
         jobs = self._compile_jobs(ordered)
         sources = self._compile_sources(ordered)
+        proactive_modules = tuple(
+            module
+            for generation in ordered
+            for module in generation.contributions.proactive_modules
+        )
+        proactive_lifecycles = tuple(
+            lifecycle
+            for generation in ordered
+            for lifecycle in generation.contributions.proactive_lifecycles
+        )
+        proactive_module_factories = tuple(
+            factory
+            for generation in ordered
+            for factory in generation.contributions.proactive_module_factories
+        )
+        proactive_runtime_factories = tuple(
+            factory
+            for generation in ordered
+            for factory in generation.contributions.proactive_runtime_factories
+        )
         catalog_owner = catalog_generation or next(
             (generation for generation in reversed(ordered) if generation.skill_catalog),
             None,
@@ -129,6 +155,11 @@ class RuntimeSnapshotCompiler:
             generations=MappingProxyType(dict(generations)),
             jobs=MappingProxyType(jobs),
             proactive_sources=MappingProxyType(sources),
+            proactive_modules=proactive_modules,
+            proactive_lifecycles=proactive_lifecycles,
+            proactive_module_factories=proactive_module_factories,
+            proactive_runtime_factories=proactive_runtime_factories,
+            tool_hooks=(),
             skill_catalog_generation_id=(
                 catalog_owner.skill_catalog.generation_id
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None

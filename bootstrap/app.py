@@ -63,6 +63,15 @@ def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitabl
     return stop
 
 
+def _stop_proactive(runtime: object | None) -> Callable[[], Awaitable[None]]:
+    async def stop() -> None:
+        if runtime is not None:
+            runtime.stop()
+            await runtime.wait_stopped()
+
+    return stop
+
+
 class AppRuntime:
     def __init__(self, config: Config, workspace: Path) -> None:
         self.config = config
@@ -232,6 +241,9 @@ class AppRuntime:
                     if plugin_manager
                     else None
                 ),
+                runtime_snapshot_store=(
+                    plugin_manager.snapshot_store if plugin_manager else None
+                ),
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
@@ -278,6 +290,10 @@ class AppRuntime:
                 except asyncio.CancelledError:
                     pass
             await _run_cleanup_steps(
+                (
+                    "proactive.stop",
+                    _stop_proactive(self.proactive_loop),
+                ),
                 (
                     "plugin_jobs.stop",
                     _stop_plugin_jobs(self.plugin_job_runtime),

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryRetrievalApi
+    from agent.plugins.snapshot import RuntimeSnapshot, RuntimeSnapshotStore
 
 from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
@@ -84,6 +85,7 @@ class ProactiveLoop:
         proactive_module_factories: list[object] | None = None,
         proactive_runtime_factories: list[object] | None = None,
         proactive_sources: list[RegisteredProactiveSource] | None = None,
+        runtime_snapshot_store: RuntimeSnapshotStore | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -104,6 +106,11 @@ class ProactiveLoop:
         self._plugin_proactive_module_factories = proactive_module_factories or []
         self._plugin_proactive_runtime_factories = proactive_runtime_factories or []
         self._plugin_proactive_sources = proactive_sources or []
+        self._runtime_snapshot_store = runtime_snapshot_store
+        self._active_snapshot_id: str | None = None
+        self._kernel_started = False
+        if runtime_snapshot_store is not None and runtime_snapshot_store.current is not None:
+            self._apply_snapshot(runtime_snapshot_store.current)
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -111,6 +118,9 @@ class ProactiveLoop:
 
     def _init_runtime_state(self, config: ProactiveConfig) -> None:
         self._running = False
+        self._wake = asyncio.Event()
+        self._stopped = asyncio.Event()
+        self._stopped.set()
 
     def _build_state_store(
         self,
@@ -179,6 +189,8 @@ class ProactiveLoop:
         return factory(self._build_runtime_scope())
 
     def _build_mcp_runtime(self) -> McpRuntimeModule:
+        from agent.plugins.snapshot import get_current_runtime_lease
+
         gateway = SharedMcpGateway(
             Path(self._sessions.workspace),
             self._shared_tools,
@@ -186,6 +198,7 @@ class ProactiveLoop:
         return McpRuntimeModule(
             gateway=gateway,
             sources=self._plugin_proactive_sources,
+            runtime_snapshot_lease=get_current_runtime_lease(),
         )
 
     def _build_kernel(self) -> ProactiveKernel:
@@ -359,15 +372,23 @@ class ProactiveLoop:
 
     async def run(self) -> None:
         self._running = True
+        self._stopped.clear()
         logger.info(
             f"ProactiveLoop 已启动  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
-        await self._proactive_kernel.start()
+        if self._runtime_snapshot_store is not None:
+            await self._start_current_snapshot()
+        else:
+            await self._proactive_kernel.start()
+            self._kernel_started = True
         try:
             await self._run_loop()
         finally:
-            await self._proactive_kernel.stop()
+            if self._kernel_started:
+                await self._proactive_kernel.stop()
+                self._kernel_started = False
+            self._stopped.set()
 
     async def _run_loop(self) -> None:
         last_base_score: float | None = None
@@ -379,7 +400,13 @@ class ProactiveLoop:
                 else self._next_interval(last_base_score)
             )
             logger.info("[proactive] 下次 tick 间隔=%ds", interval)
-            await asyncio.sleep(interval)
+            self._wake.clear()
+            try:
+                _ = await asyncio.wait_for(self._wake.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+            if not self._running:
+                return
             try:
                 last_base_score = await self._tick()
                 result = self._proactive_kernel.last_result
@@ -401,11 +428,29 @@ class ProactiveLoop:
 
     def stop(self) -> None:
         self._running = False
+        self._wake.set()
+
+    async def wait_stopped(self) -> None:
+        _ = await self._stopped.wait()
 
     # ── internal ──────────────────────────────────────────────────
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
+        if self._runtime_snapshot_store is not None:
+            lease = self._runtime_snapshot_store.lease()
+            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+            async with lease:
+                token = bind_runtime_snapshot(lease)
+                try:
+                    await self._switch_snapshot(lease.snapshot)
+                    return await self._tick_bound()
+                finally:
+                    reset_runtime_snapshot(token)
+        return await self._tick_bound()
+
+    async def _tick_bound(self) -> float | None:
         # 给本 tick 打上 session 归属，供 observe 全局错误采集关联；
         # 纯埋点，依赖未就绪时静默跳过，绝不影响 tick 主流程。
         _ = current_session_key.set(self._target_session_key())
@@ -453,6 +498,42 @@ class ProactiveLoop:
                 )
             )
             return score
+
+    async def _start_current_snapshot(self) -> None:
+        assert self._runtime_snapshot_store is not None
+        lease = self._runtime_snapshot_store.lease()
+        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+        async with lease:
+            token = bind_runtime_snapshot(lease)
+            try:
+                await self._switch_snapshot(lease.snapshot)
+            finally:
+                reset_runtime_snapshot(token)
+
+    async def _switch_snapshot(self, snapshot: RuntimeSnapshot) -> None:
+        if self._active_snapshot_id == snapshot.snapshot_id and self._kernel_started:
+            return
+        if self._kernel_started:
+            await self._proactive_kernel.stop()
+        self._apply_snapshot(snapshot)
+        self._mcp_runtime = self._build_mcp_runtime()
+        self._proactive_kernel = self._build_kernel()
+        await self._proactive_kernel.start()
+        self._active_snapshot_id = snapshot.snapshot_id
+        self._kernel_started = True
+
+    def _apply_snapshot(self, snapshot: RuntimeSnapshot) -> None:
+        self._plugin_proactive_modules = list(snapshot.proactive_modules)
+        self._plugin_proactive_lifecycles = list(snapshot.proactive_lifecycles)
+        self._plugin_proactive_module_factories = list(
+            snapshot.proactive_module_factories
+        )
+        self._plugin_proactive_runtime_factories = list(
+            snapshot.proactive_runtime_factories
+        )
+        self._plugin_proactive_sources = list(snapshot.proactive_sources.values())
+        self._tool_hooks = list(snapshot.tool_hooks)
 
 
 def build_proactive_loop(**kwargs: Any) -> ProactiveLoop:
