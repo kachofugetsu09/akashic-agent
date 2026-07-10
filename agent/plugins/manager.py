@@ -358,6 +358,8 @@ class PluginManager:
                         if active.skill_catalog is not None
                         else []
                     ),
+                    "skill_descriptions": _skill_descriptions(active),
+                    "drift_skill_descriptions": _drift_skill_descriptions(active),
                 }
                 results.append(result)
                 logger.info(
@@ -387,6 +389,14 @@ class PluginManager:
                     list(prepared.skill_catalog.names)
                     if prepared is not None and prepared.skill_catalog is not None
                     else []
+                ),
+                "skill_descriptions": (
+                    _skill_descriptions(prepared) if prepared is not None else {}
+                ),
+                "drift_skill_descriptions": (
+                    _drift_skill_descriptions(prepared)
+                    if prepared is not None
+                    else {}
                 ),
             }
             results.append(result)
@@ -598,6 +608,7 @@ class PluginManager:
                 if active_generation.plugin_id != plugin_id
             ]
             catalog_generations.append(generation)
+            ignored_generations = [*self._active_generations.values(), generation]
             try:
                 skill_catalog = self._skill_host.prepare(
                     generation_id,
@@ -608,6 +619,16 @@ class PluginManager:
                     drift_roots=PluginSkillHost.roots_for(
                         catalog_generations,
                         drift=True,
+                    ),
+                    ignored_normal_roots=tuple(
+                        root
+                        for item in ignored_generations
+                        for root in item.contributions.skill_roots
+                    ),
+                    ignored_drift_roots=tuple(
+                        root
+                        for item in ignored_generations
+                        for root in item.contributions.drift_skill_roots
                     ),
                 )
             except Exception as error:
@@ -1572,6 +1593,26 @@ def _duplicates(values: list[str]) -> list[str]:
             duplicates.add(value)
         seen.add(value)
     return sorted(duplicates)
+
+
+def _skill_descriptions(generation: PluginGeneration) -> dict[str, str]:
+    catalog = generation.skill_catalog
+    if catalog is None:
+        return {}
+    return {
+        name: record.description
+        for name, record in sorted(catalog.normal.records.items())
+    }
+
+
+def _drift_skill_descriptions(generation: PluginGeneration) -> dict[str, str]:
+    catalog = generation.skill_catalog
+    if catalog is None:
+        return {}
+    return {
+        name: record.description
+        for name, record in sorted(catalog.drift.records.items())
+    }
 
 
 def _is_plugin_disabled(plugin_dir: Path) -> bool:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
+import shutil
+import tempfile
 from typing import TYPE_CHECKING
 
 from agent.skills import SkillIndex, SkillsLoader
@@ -13,6 +16,7 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class PreparedSkillCatalog:
     generation_id: str
+    snapshot_root: Path
     normal: SkillIndex
     drift: SkillIndex
 
@@ -32,30 +36,40 @@ class PluginSkillHost:
         *,
         normal_roots: dict[str, tuple[Path, ...]],
         drift_roots: dict[str, tuple[Path, ...]],
+        ignored_normal_roots: tuple[Path, ...],
+        ignored_drift_roots: tuple[Path, ...],
     ) -> PreparedSkillCatalog:
         self._validate_unique_names(normal_roots)
         self._validate_unique_names(drift_roots)
         workspace = self._workspace or Path("/__akashic_no_workspace__")
-        normal_targets = tuple(
-            root for roots in normal_roots.values() for root in roots
-        )
-        drift_targets = tuple(
-            root for roots in drift_roots.values() for root in roots
-        )
-        normal = SkillsLoader(
-            workspace,
-            plugin_roots=normal_roots,
-            ignored_workspace_symlink_roots=normal_targets,
-        ).build_index()
-        drift = SkillsLoader(
-            workspace,
-            builtin_skills_dir=None,
-            workspace_skills_dir=workspace / "drift" / "skills",
-            plugin_roots=drift_roots,
-            ignored_workspace_symlink_roots=drift_targets,
-        ).build_index()
+        snapshot_root = Path(tempfile.mkdtemp(prefix="akashic-skill-catalog-"))
+        try:
+            frozen_normal = self._snapshot_roots(
+                snapshot_root / "normal",
+                normal_roots,
+            )
+            frozen_drift = self._snapshot_roots(
+                snapshot_root / "drift",
+                drift_roots,
+            )
+            normal = SkillsLoader(
+                workspace,
+                plugin_roots=frozen_normal,
+                ignored_workspace_symlink_roots=ignored_normal_roots,
+            ).build_index()
+            drift = SkillsLoader(
+                workspace,
+                builtin_skills_dir=None,
+                workspace_skills_dir=workspace / "drift" / "skills",
+                plugin_roots=frozen_drift,
+                ignored_workspace_symlink_roots=ignored_drift_roots,
+            ).build_index()
+        except BaseException:
+            shutil.rmtree(snapshot_root)
+            raise
         catalog = PreparedSkillCatalog(
             generation_id=generation_id,
+            snapshot_root=snapshot_root,
             normal=normal,
             drift=drift,
         )
@@ -66,7 +80,9 @@ class PluginSkillHost:
         return self._catalogs.get(generation_id)
 
     def close(self, generation_id: str) -> None:
-        _ = self._catalogs.pop(generation_id, None)
+        catalog = self._catalogs.pop(generation_id, None)
+        if catalog is not None:
+            shutil.rmtree(catalog.snapshot_root)
 
     @staticmethod
     def roots_for(
@@ -99,3 +115,19 @@ class PluginSkillHost:
                             f"插件 Skill 名称重复: {skill_dir.name} ({owner}, {plugin_id})"
                         )
                     owners[skill_dir.name] = plugin_id
+
+    @staticmethod
+    def _snapshot_roots(
+        snapshot_dir: Path,
+        plugin_roots: dict[str, tuple[Path, ...]],
+    ) -> dict[str, tuple[Path, ...]]:
+        frozen: dict[str, tuple[Path, ...]] = {}
+        for plugin_id, roots in sorted(plugin_roots.items()):
+            owner = hashlib.sha256(plugin_id.encode()).hexdigest()[:12]
+            copies: list[Path] = []
+            for index, root in enumerate(roots):
+                target = snapshot_dir / owner / str(index)
+                _ = shutil.copytree(root, target)
+                copies.append(target)
+            frozen[plugin_id] = tuple(copies)
+        return frozen

@@ -456,12 +456,19 @@ def _install_candidate_plugins(
         encoding="utf-8",
     )
     reload_source = reload_plugin / "plugin.py"
-    reload_skill = reload_plugin / "skills-v2" / "candidate-v2"
-    reload_skill.mkdir(parents=True)
-    _ = (reload_skill / "SKILL.md").write_text(
-        "---\ndescription: candidate v2 skill\n---\ncandidate v2\n",
-        encoding="utf-8",
-    )
+    for version in ("v1", "v2"):
+        reload_skill = reload_plugin / f"skills-{version}" / "candidate-skill"
+        reload_skill.mkdir(parents=True)
+        _ = (reload_skill / "SKILL.md").write_text(
+            f"---\ndescription: candidate {version} skill\n---\ncandidate {version}\n",
+            encoding="utf-8",
+        )
+        reload_drift_skill = reload_plugin / f"drift-{version}" / "candidate-drift"
+        reload_drift_skill.mkdir(parents=True)
+        _ = (reload_drift_skill / "SKILL.md").write_text(
+            f"---\ndescription: candidate drift {version}\n---\ndrift {version}\n",
+            encoding="utf-8",
+        )
     _ = reload_source.write_text(_candidate_reload_source("v1"), encoding="utf-8")
     data = sandbox / "home/.akashic-plugin/data"
     return (
@@ -490,9 +497,10 @@ def _candidate_reload_source(version: str) -> str:
     skills = (
         "    @classmethod\n"
         "    def skill_roots(cls):\n"
-        "        return ('skills-v2',)\n"
-        if version == "v2"
-        else ""
+        f"        return ('skills-{version}',)\n"
+        "    @classmethod\n"
+        "    def drift_skill_roots(cls):\n"
+        f"        return ('drift-{version}',)\n"
     )
     return (
         "from __future__ import annotations\n"
@@ -629,6 +637,18 @@ def _exercise_candidate_prepare(
         gate_status="active",
     )
     valid_skills = valid_status.get("skills")
+    valid_descriptions = valid_status.get("skill_descriptions")
+    valid_drift_descriptions = valid_status.get("drift_skill_descriptions")
+    valid_description_map = (
+        cast(dict[object, object], valid_descriptions)
+        if isinstance(valid_descriptions, dict)
+        else {}
+    )
+    valid_drift_description_map = (
+        cast(dict[object, object], valid_drift_descriptions)
+        if isinstance(valid_drift_descriptions, dict)
+        else {}
+    )
     passed = (
         invalid_signal.returncode == 0
         and valid_signal.returncode == 0
@@ -639,7 +659,9 @@ def _exercise_candidate_prepare(
         and valid_status.get("active_generation") == initial_generation
         and isinstance(valid_status.get("prepared_generation"), str)
         and isinstance(valid_skills, list)
-        and "candidate-v2" in valid_skills
+        and "candidate-skill" in valid_skills
+        and valid_description_map.get("candidate-skill") == "candidate v2 skill"
+        and valid_drift_description_map.get("candidate-drift") == "candidate drift v2"
         and return_status.get("active_generation") == initial_generation
         and return_status.get("prepared_generation") is None
         and after_invalid.get("active_generation") == initial_generation

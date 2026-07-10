@@ -728,3 +728,65 @@ async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
     generation_id = first.generation_id
     await manager.terminate_all()
     assert manager.skill_catalog(generation_id) is None
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
+    tmp_path: Path,
+):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "skill_reload",
+        "from agent.plugins import Plugin\n"
+        "class SkillReloadPlugin(Plugin):\n"
+        "    name = 'skill_reload'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills-v1',)\n",
+    )
+    v1_skill = plugin_dir / "skills-v1" / "shared"
+    v1_skill.mkdir(parents=True)
+    _ = (v1_skill / "SKILL.md").write_text(
+        "---\ndescription: version one\n---\nbody v1\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    manager = _manager(tmp_path, workspace=workspace)
+    await manager.load_all()
+    active = manager.generation("skill_reload")
+    assert active is not None and active.skill_catalog is not None
+    active_record = active.skill_catalog.normal.get("shared")
+    assert active_record is not None
+
+    workspace_skills = workspace / "skills"
+    workspace_skills.mkdir(parents=True)
+    (workspace_skills / "shared").symlink_to(v1_skill, target_is_directory=True)
+    _ = (v1_skill / "SKILL.md").write_text(
+        "---\ndescription: changed old source\n---\nchanged old body\n",
+        encoding="utf-8",
+    )
+    v2_skill = plugin_dir / "skills-v2" / "shared"
+    v2_skill.mkdir(parents=True)
+    _ = (v2_skill / "SKILL.md").write_text(
+        "---\ndescription: version two\n---\nbody v2\n",
+        encoding="utf-8",
+    )
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class SkillReloadPlugin(Plugin):\n"
+        "    name = 'skill_reload'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills-v2',)\n",
+        encoding="utf-8",
+    )
+
+    prepared = await manager.prepare_candidate("skill_reload")
+
+    assert prepared is not None and prepared.skill_catalog is not None
+    prepared_record = prepared.skill_catalog.normal.get("shared")
+    assert prepared_record is not None
+    assert active_record.description == "version one"
+    assert "body v1" in active_record.skill_file.read_text(encoding="utf-8")
+    assert prepared_record.description == "version two"
+    assert prepared_record.source == "plugin"
+    assert "body v2" in prepared_record.skill_file.read_text(encoding="utf-8")
+    assert active_record.root_dir != prepared_record.root_dir
