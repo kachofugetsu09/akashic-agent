@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -45,3 +46,29 @@ async def test_kernel_route_stable_across_multiple_ticks() -> None:
     await loop._tick()
 
     assert loop._proactive_kernel.run_tick.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_start_failure_always_marks_loop_stopped() -> None:
+    loop = make_loop()
+    loop._running = False
+    loop._stopped = asyncio.Event()
+    loop._kernel_started = False
+    loop._active_kernel_lease = None
+    loop._cfg.default_channel = "cli"
+    loop._cfg.default_chat_id = "test"
+    loop._runtime_snapshot_store = object()
+
+    async def fail_start() -> None:
+        raise RuntimeError("start failed")
+
+    async def stop_active() -> None:
+        return None
+
+    loop._start_current_snapshot = fail_start
+    loop._stop_active_kernel = stop_active
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        await loop.run()
+
+    assert loop._stopped.is_set()

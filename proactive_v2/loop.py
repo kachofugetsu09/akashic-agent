@@ -17,11 +17,15 @@ import random as _random_module
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryRetrievalApi
-    from agent.plugins.snapshot import RuntimeSnapshot, RuntimeSnapshotStore
+    from agent.plugins.snapshot import (
+        RuntimeSnapshot,
+        RuntimeSnapshotLease,
+        RuntimeSnapshotStore,
+    )
 
 from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
@@ -109,8 +113,7 @@ class ProactiveLoop:
         self._runtime_snapshot_store = runtime_snapshot_store
         self._active_snapshot_id: str | None = None
         self._kernel_started = False
-        if runtime_snapshot_store is not None and runtime_snapshot_store.current is not None:
-            self._apply_snapshot(runtime_snapshot_store.current)
+        self._active_kernel_lease: RuntimeSnapshotLease | None = None
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -276,7 +279,8 @@ class ProactiveLoop:
         # 3. 构建发送编排器、传感器、MCP runtime 和主动链路 kernel。
         self._turn_orchestrator = self._build_turn_orchestrator()
         self._sense = self._build_sense()
-        self._mcp_runtime = self._build_mcp_runtime()
+        self._mcp_runtime: McpRuntimeModule
+        self._proactive_kernel: ProactiveKernel
         self._scheduler = ProactiveScheduler(
             cfg=self._cfg,
             presence=self._presence,
@@ -284,7 +288,9 @@ class ProactiveLoop:
             target_session_key_fn=self._target_session_key,
             trace_fn=self._trace_proactive_rate_decision,
         )
-        self._proactive_kernel = self._build_kernel()
+        if self._runtime_snapshot_store is None:
+            self._mcp_runtime = self._build_mcp_runtime()
+            self._proactive_kernel = self._build_kernel()
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
 
@@ -377,18 +383,18 @@ class ProactiveLoop:
             f"ProactiveLoop 已启动  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
-        if self._runtime_snapshot_store is not None:
-            await self._start_current_snapshot()
-        else:
-            await self._proactive_kernel.start()
-            self._kernel_started = True
         try:
+            if self._runtime_snapshot_store is not None:
+                await self._start_current_snapshot()
+            else:
+                await self._proactive_kernel.start()
+                self._kernel_started = True
             await self._run_loop()
         finally:
-            if self._kernel_started:
-                await self._proactive_kernel.stop()
-                self._kernel_started = False
-            self._stopped.set()
+            try:
+                await self._stop_active_kernel()
+            finally:
+                self._stopped.set()
 
     async def _run_loop(self) -> None:
         last_base_score: float | None = None
@@ -514,14 +520,79 @@ class ProactiveLoop:
     async def _switch_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         if self._active_snapshot_id == snapshot.snapshot_id and self._kernel_started:
             return
-        if self._kernel_started:
-            await self._proactive_kernel.stop()
-        self._apply_snapshot(snapshot)
-        self._mcp_runtime = self._build_mcp_runtime()
-        self._proactive_kernel = self._build_kernel()
-        await self._proactive_kernel.start()
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        source_lease = get_current_runtime_lease()
+        if source_lease is None or source_lease.snapshot is not snapshot:
+            raise RuntimeError("主动 kernel 切换缺少目标 Snapshot lease")
+        old_kernel = self._proactive_kernel if self._kernel_started else None
+        old_lease = self._active_kernel_lease
+        if old_kernel is not None and old_lease is not None:
+            await self._run_with_lease(old_lease, old_kernel.stop)
+            self._kernel_started = False
+        candidate_lease = source_lease.fork()
+        try:
+            candidate_kernel = await self._build_and_start_kernel(
+                snapshot,
+                candidate_lease,
+            )
+        except BaseException:
+            await candidate_lease.release()
+            if old_kernel is not None and old_lease is not None:
+                await self._run_with_lease(old_lease, old_kernel.start)
+                self._kernel_started = True
+            raise
+        if old_lease is not None:
+            await old_lease.release()
+        self._proactive_kernel = candidate_kernel
+        self._active_kernel_lease = candidate_lease
         self._active_snapshot_id = snapshot.snapshot_id
         self._kernel_started = True
+
+    async def _build_and_start_kernel(
+        self,
+        snapshot: RuntimeSnapshot,
+        lease: RuntimeSnapshotLease,
+    ) -> ProactiveKernel:
+        async def build_and_start() -> ProactiveKernel:
+            self._apply_snapshot(snapshot)
+            self._mcp_runtime = self._build_mcp_runtime()
+            kernel = self._build_kernel()
+            await kernel.start()
+            return kernel
+
+        return await self._run_with_lease(lease, build_and_start)
+
+    async def _stop_active_kernel(self) -> None:
+        lease = self._active_kernel_lease
+        stopped = not self._kernel_started
+        try:
+            if self._kernel_started:
+                if lease is None:
+                    await self._proactive_kernel.stop()
+                else:
+                    await self._run_with_lease(lease, self._proactive_kernel.stop)
+                self._kernel_started = False
+                stopped = True
+        finally:
+            if stopped:
+                self._active_snapshot_id = None
+                self._active_kernel_lease = None
+            if stopped and lease is not None:
+                await lease.release()
+
+    async def _run_with_lease(
+        self,
+        lease: RuntimeSnapshotLease,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+        token = bind_runtime_snapshot(lease)
+        try:
+            return await operation()
+        finally:
+            reset_runtime_snapshot(token)
 
     def _apply_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         self._plugin_proactive_modules = list(snapshot.proactive_modules)

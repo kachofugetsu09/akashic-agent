@@ -542,9 +542,10 @@ def _candidate_reload_source(version: str) -> str:
         "import asyncio\n"
         "from agent.plugins.snapshot import get_current_runtime_snapshot\n"
         "from agent.skills import SkillsLoader\n"
+        "from agent.tool_hooks import ToolExecutionRequest, ToolExecutor\n"
         "from bus.events_lifecycle import TurnCommitted\n"
         "from agent.plugins import (IntervalTrigger, McpServerSpec, Plugin, PluginJobSpec, "
-        "PluginSemanticCheck, ProactiveSourceSpec, tool)\n"
+        "PluginSemanticCheck, ProactiveSourceSpec, on_tool_pre, tool)\n"
         "class SnapshotBeforeTurn:\n"
         "    slot = 'candidate_reload.before_turn'\n"
         "    requires = ('before_turn.emit',)\n"
@@ -553,7 +554,8 @@ def _candidate_reload_source(version: str) -> str:
         f"        self.plugin.context.kv_store.increment('phase_runs_{version}')\n"
         "        registry = self.plugin.context.tool_registry\n"
         "        if registry is not None:\n"
-        "            value = await registry.execute('candidate_reload_tool', {}, raise_errors=True)\n"
+        "            execution = await ToolExecutor().execute(ToolExecutionRequest(call_id='gate', tool_name='candidate_reload_tool', arguments={}, source='passive'), lambda name, args: registry.execute(name, args, raise_errors=True))\n"
+        "            value = execution.output\n"
         f"            self.plugin.context.kv_store.set('phase_tool_version_{version}', str(value))\n"
         "        skill_body = SkillsLoader(self.plugin.context.workspace, runtime_catalog='normal').load_skill_body('candidate-skill')\n"
         f"        self.plugin.context.kv_store.set('phase_skill_body_{version}', skill_body)\n"
@@ -606,6 +608,9 @@ def _candidate_reload_source(version: str) -> str:
         "    async def run(self, event):\n"
         "        \"\"\"Candidate reload tool.\"\"\"\n"
         f"        return '{version}'\n"
+        "    @on_tool_pre(tool_name='candidate_reload_tool')\n"
+        "    async def before_candidate_tool(self, event):\n"
+        f"        self.context.kv_store.increment('phase_hook_version_{version}')\n"
         "    async def initialize(self):\n"
         f"{initialize}"
         "    async def _on_committed(self, event):\n"
@@ -1143,6 +1148,8 @@ def _exercise_candidate_prepare(
         and after_passive.get("phase_skill_body_v2") is None
         and _integer(after_passive.get("phase_event_version_v1")) >= 1
         and _integer(after_passive.get("phase_event_version_v2")) == 0
+        and _integer(after_passive.get("phase_hook_version_v1")) >= 1
+        and _integer(after_passive.get("phase_hook_version_v2")) == 0
         and after_passive.get("detached_snapshot_visible") is False
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"

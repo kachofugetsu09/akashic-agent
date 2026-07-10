@@ -9,6 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -21,6 +22,7 @@ from proactive_v2.loop import ProactiveLoop
 from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import Tool
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 
@@ -2530,6 +2532,98 @@ async def test_proactive_tick_keeps_one_snapshot_generation(tmp_path: Path) -> N
     await loop._tick()
 
     assert seen == [old_snapshot.snapshot_id, new_snapshot.snapshot_id]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_proactive_kernel_owns_snapshot_until_stopped(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_kernel",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotKernelPlugin(Plugin):\n"
+        "    name = 'snapshot_kernel'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    snapshot = manager.current_snapshot
+    assert snapshot is not None
+    kernel = SimpleNamespace(stop=AsyncMock())
+    loop = object.__new__(ProactiveLoop)
+    loop._kernel_started = False
+    loop._active_kernel_lease = None
+    loop._active_snapshot_id = None
+
+    async def build_and_start(_snapshot, _lease):
+        return kernel
+
+    loop._build_and_start_kernel = build_and_start
+    from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+    admission = manager.snapshot_store.lease()
+    token = bind_runtime_snapshot(admission)
+    try:
+        await loop._switch_snapshot(snapshot)
+    finally:
+        reset_runtime_snapshot(token)
+        await admission.release()
+
+    assert snapshot.lease_count == 1
+    await loop._stop_active_kernel()
+    assert snapshot.lease_count == 0
+    kernel.stop.assert_awaited_once()
+    await manager.terminate_all()
+
+
+def _snapshot_hook_source(version: str) -> str:
+    return (
+        "from agent.plugins import Plugin, on_tool_pre\n"
+        "class SnapshotHookPlugin(Plugin):\n"
+        "    name = 'snapshot_hook'\n"
+        "    @on_tool_pre(tool_name='target')\n"
+        "    async def hook(self, event):\n"
+        f"        return {{**event.arguments, 'version': '{version}'}}\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_hooks_follow_bound_snapshot_generation(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_hook",
+        _snapshot_hook_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_lease = manager.snapshot_store.lease()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_hook_source("v2"),
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("snapshot_hook") is not None
+    await manager.publish_prepared("snapshot_hook")
+    executor = ToolExecutor()
+    request = ToolExecutionRequest(
+        call_id="hook",
+        tool_name="target",
+        arguments={},
+        source="passive",
+    )
+    from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+    async def execute(lease):
+        token = bind_runtime_snapshot(lease)
+        try:
+            return await executor.execute(request, lambda _name, args: asyncio.sleep(0, result=args))
+        finally:
+            reset_runtime_snapshot(token)
+            await lease.release()
+
+    old_result = await execute(old_lease)
+    new_result = await execute(manager.snapshot_store.lease())
+
+    assert old_result.final_arguments == {"version": "v1"}
+    assert new_result.final_arguments == {"version": "v2"}
     await manager.terminate_all()
 
 
