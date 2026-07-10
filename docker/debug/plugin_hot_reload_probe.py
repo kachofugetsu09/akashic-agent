@@ -544,6 +544,10 @@ def _candidate_reload_source(version: str) -> str:
         "    def __init__(self, plugin): self.plugin = plugin\n"
         "    async def run(self, frame):\n"
         f"        self.plugin.context.kv_store.increment('phase_runs_{version}')\n"
+        "        registry = self.plugin.context.tool_registry\n"
+        "        if registry is not None:\n"
+        "            value = await registry.execute('candidate_reload_tool', {}, raise_errors=True)\n"
+        f"            self.plugin.context.kv_store.set('phase_tool_version_{version}', str(value))\n"
         "        self.plugin.context.create_task(self._probe_detached(), name='snapshot-detached-probe')\n"
         "        ctx = frame.slots['session:ctx']\n"
         f"        if '{version}' == 'v1' and ctx.content == 'block snapshot':\n"
@@ -1113,6 +1117,8 @@ def _exercise_candidate_prepare(
         and passive_response.get("content") == "snapshot-v1"
         and _integer(after_passive.get("phase_runs_v1")) >= 1
         and _integer(after_passive.get("phase_runs_v2")) == 0
+        and after_passive.get("phase_tool_version_v1") == "v1"
+        and after_passive.get("phase_tool_version_v2") is None
         and after_passive.get("detached_snapshot_visible") is False
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"

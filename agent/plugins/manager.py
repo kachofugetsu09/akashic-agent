@@ -120,6 +120,7 @@ class PluginManager:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
         self._tool_registry = tool_registry
+        self._base_tool_registry: Any = None
         self._workspace = workspace
         self._session_manager = session_manager
         self._memory_engine = memory_engine
@@ -338,10 +339,12 @@ class PluginManager:
         return mods
 
     async def load_all(self) -> None:
+        self._ensure_base_tool_registry()
         for mod in self.discover():
             _ = await self._load_one(mod)
 
     async def prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
+        self._ensure_base_tool_registry()
         await self.discard_prepared(plugin_id)
         for mod in self.discover():
             if _resolve_plugin_id(mod) == plugin_id:
@@ -368,7 +371,7 @@ class PluginManager:
                 except (asyncio.CancelledError, Exception) as error:
                     self._cleanup_failures.append(
                         CleanupFailure(
-                            resource=f"plugin:{plugin_id}:terminate",
+                            resource=f"plugin:{generation.plugin_id}:terminate",
                             error=str(error) or type(error).__name__,
                         )
                     )
@@ -496,6 +499,7 @@ class PluginManager:
         context.tool_registry = self._tool_registry
         generation.initialization_started = True
         await instance.initialize()
+        generation.minimum_resource_count = generation.scope.resource_count
 
     async def _post_publish_invariants(
         self,
@@ -1167,10 +1171,12 @@ class PluginManager:
         generations = dict(self._active_generations)
         generations[generation.plugin_id] = generation
         try:
-            return self._snapshot_compiler.compile(
+            snapshot = self._snapshot_compiler.compile(
                 generations,
                 catalog_generation=generation,
             )
+            snapshot.tool_registry = self._compile_snapshot_tools(generations)
+            return snapshot
         except Exception as error:
             gate = _with_gate_check(
                 generation.gate_result,
@@ -1181,6 +1187,53 @@ class PluginManager:
             generation.gate_result = gate
             self._gate_results[generation.plugin_id] = gate
             raise _CandidateRejected(gate) from error
+
+    def _ensure_base_tool_registry(self) -> None:
+        if self._base_tool_registry is None and self._tool_registry is not None:
+            self._base_tool_registry = self._tool_registry.fork()
+
+    def _compile_snapshot_tools(
+        self,
+        generations: dict[str, PluginGeneration],
+    ) -> Any:
+        if self._base_tool_registry is None:
+            return None
+        registry = self._base_tool_registry.fork()
+        for generation in sorted(generations.values(), key=lambda item: item.plugin_id):
+            plugin_name = getattr(
+                generation.instance,
+                "name",
+                generation.plugin_id,
+            )
+            for md in plugin_registry.get_handlers_by_module_path(
+                generation.module_path
+            ):
+                if md.kind != MetadataKind.TOOL:
+                    continue
+                tool = _build_plugin_tool(generation.instance, md)
+                if registry.has_tool(tool.name):
+                    raise RuntimeError(f"插件工具名称重复: {tool.name}")
+                registry.register(
+                    tool,
+                    risk=md.tool_risk or "read-write",
+                    always_on=bool(md.tool_always_on),
+                    search_hint=md.tool_search_hint,
+                    source_type="plugin",
+                    source_name=plugin_name,
+                )
+            if generation.mcp_catalog is None:
+                continue
+            for server in generation.mcp_catalog.servers.values():
+                for tool in server.tools:
+                    if registry.has_tool(tool.name):
+                        raise RuntimeError(f"MCP 工具名称重复: {tool.name}")
+                    registry.register(
+                        tool,
+                        risk="external-side-effect",
+                        source_type="mcp",
+                        source_name=server.name,
+                    )
+        return registry
 
     async def _publish_committed_snapshot(
         self,
@@ -1573,33 +1626,19 @@ class PluginManager:
     ) -> None:
         if self._tool_registry is None:
             return
-        from agent.tools.base import Tool as AgentTool
         for md in plugin_registry.get_handlers_by_module_path(module_path):
             # 1. 只处理 TOOL 类型元数据
             if md.kind != MetadataKind.TOOL:
                 continue
-            bound = functools.partial(md.handler, instance, None)
-            tool_name = md.tool_name or md.handler_name
-            description = (md.handler.__doc__ or "").strip()
-            schema = md.tool_schema or {"type": "object", "properties": {}, "required": []}
-            # 2. 动态创建 Tool 子类并绑定 execute
-            ToolCls = type(
-                f"PluginTool_{tool_name}",
-                (AgentTool,),
-                {
-                    "name": tool_name,
-                    "description": description,
-                    "parameters": schema,
-                    "execute": _make_execute(bound),
-                },
-            )
+            tool = _build_plugin_tool(instance, md)
+            tool_name = tool.name
             # 3. 注册到 ToolRegistry，标记来源为 plugin
             plugin_name = getattr(instance, "name", None) or module_path
             if self._tool_registry.has_tool(tool_name):
                 raise RuntimeError(f"插件工具名称重复: {tool_name}")
             tool_names.append(tool_name)
             self._tool_registry.register(
-                ToolCls(),
+                tool,
                 risk=md.tool_risk or "read-write",
                 always_on=bool(md.tool_always_on),
                 search_hint=md.tool_search_hint,
@@ -1945,6 +1984,25 @@ def _collect_skill_names(skill_roots: tuple[Path, ...]) -> list[str]:
             seen.add(child.name)
             names.append(child.name)
     return names
+
+
+def _build_plugin_tool(instance: Any, metadata: Any) -> Any:
+    from agent.tools.base import Tool as AgentTool
+
+    bound = functools.partial(metadata.handler, instance, None)
+    tool_name = metadata.tool_name or metadata.handler_name
+    tool_class = type(
+        f"PluginTool_{tool_name}",
+        (AgentTool,),
+        {
+            "name": tool_name,
+            "description": (metadata.handler.__doc__ or "").strip(),
+            "parameters": metadata.tool_schema
+            or {"type": "object", "properties": {}, "required": []},
+            "execute": _make_execute(bound),
+        },
+    )
+    return tool_class()
 
 
 def _make_execute(bound: Any) -> Any:

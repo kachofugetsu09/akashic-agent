@@ -1484,6 +1484,7 @@ async def test_publish_prepared_switches_snapshot_after_initialize(
     )
     candidate = await manager.prepare_candidate("snapshot_publish")
     assert candidate is not None
+
     assert candidate.initialization_started is False
 
     result = await manager.publish_prepared("snapshot_publish")
@@ -1560,6 +1561,11 @@ async def test_post_publish_invariant_failure_aborts_to_previous_snapshot(
     candidate = await manager.prepare_candidate("snapshot_publish")
     assert candidate is not None
 
+    async def fail_terminate() -> None:
+        raise RuntimeError("terminate failed")
+
+    candidate.instance.terminate = fail_terminate  # type: ignore[attr-defined]
+
     invariant_entered = asyncio.Event()
     invariant_release = asyncio.Event()
 
@@ -1587,6 +1593,10 @@ async def test_post_publish_invariant_failure_aborts_to_previous_snapshot(
     assert candidate.runtime_snapshot.state == "aborted"
     await candidate_lease.release()
     assert candidate.scope.closed is True
+    assert any(
+        failure.error == "terminate failed"
+        for failure in manager.cleanup_failures
+    )
     await manager.terminate_all()
 
 
@@ -1754,4 +1764,72 @@ async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot
         "snapshot_first": first,
         "snapshot_second": second,
     }
+    await manager.terminate_all()
+
+
+def _snapshot_tool_source(version: str) -> str:
+    return (
+        "from agent.plugins import Plugin, tool\n"
+        "class SnapshotToolPlugin(Plugin):\n"
+        "    name = 'snapshot_tool'\n"
+        "    @tool(name='snapshot_tool_value')\n"
+        "    async def value(self, event):\n"
+        f"        \"\"\"snapshot tool {version}\"\"\"\n"
+        f"        return '{version}'\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_schema_search_and_execute_share_snapshot_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_tool",
+        _snapshot_tool_source("v1"),
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_tool_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_tool")
+    assert candidate is not None
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = manager.snapshot_store
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[tuple[str, str, str]] = []
+
+    async def process(msg, **kwargs):
+        schema = tools.get_schemas(["snapshot_tool_value"])[0]
+        search = tools.search("snapshot tool", top_k=1)[0]
+        before = str(await tools.execute("snapshot_tool_value", {}))
+        entered.set()
+        await release.wait()
+        after = str(await tools.execute("snapshot_tool_value", {}))
+        seen.append((schema["function"]["description"], search["name"], before))
+        seen.append((schema["function"]["description"], search["name"], after))
+        return "done"
+
+    loop._process = process
+    message = SimpleNamespace(session_key="cli:snapshot-tool")
+    old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
+    await entered.wait()
+    await manager.publish_prepared("snapshot_tool")
+    release.set()
+    assert await old_turn == "done"
+    await loop._process_with_runtime_admission(message)
+
+    assert seen[:2] == [
+        ("snapshot tool v1", "snapshot_tool_value", "v1"),
+        ("snapshot tool v1", "snapshot_tool_value", "v1"),
+    ]
+    assert seen[2:] == [
+        ("snapshot tool v2", "snapshot_tool_value", "v2"),
+        ("snapshot tool v2", "snapshot_tool_value", "v2"),
+    ]
     await manager.terminate_all()

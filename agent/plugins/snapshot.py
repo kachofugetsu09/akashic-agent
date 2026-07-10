@@ -12,6 +12,7 @@ from agent.lifecycle.phase import topo_sort_modules
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.jobs import RegisteredPluginJob, plugin_job_key
 from agent.plugins.specs import RegisteredProactiveSource, proactive_source_key
+from agent.tools.registry import ToolRegistry
 
 
 SnapshotState = Literal[
@@ -37,6 +38,7 @@ class RuntimeSnapshot:
     proactive_sources: Mapping[str, RegisteredProactiveSource]
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
+    tool_registry: ToolRegistry | None = None
     state: SnapshotState = "compiled"
     lease_count: int = 0
     _store_token: object | None = field(default=None, repr=False)
