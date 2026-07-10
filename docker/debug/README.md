@@ -71,6 +71,13 @@ python docker/debug/plugin_hot_reload_probe.py \
   --scenario full-runtime --phase scope
 ```
 
+候选 Gate 场景会同时安装有效和无效插件，确认真实 Runtime 只初始化通过静态 Gate 的 generation：
+
+```bash
+python docker/debug/plugin_hot_reload_probe.py \
+  --scenario full-runtime --phase candidate
+```
+
 ## 第一次配置
 
 ```bash

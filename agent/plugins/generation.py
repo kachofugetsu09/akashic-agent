@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from agent.plugins.jobs import RegisteredPluginJob
+    from agent.plugins.scope import PluginScope
+    from agent.plugins.specs import RegisteredProactiveSource
+    from infra.channels.contract import Channel
+
+
+GateStatus = Literal["passed", "failed"]
+
+
+@dataclass(frozen=True)
+class PluginSemanticCheck:
+    check_id: str
+    passed: bool
+    evidence: object = ""
+
+
+@dataclass(frozen=True)
+class GateCheckResult:
+    check_id: str
+    status: GateStatus
+    evidence: object = ""
+
+
+@dataclass(frozen=True)
+class GateResult:
+    gate_id: str
+    plugin_id: str
+    candidate_revision: str
+    status: GateStatus
+    checks: tuple[GateCheckResult, ...]
+    failure_reason: str = ""
+
+
+@dataclass(frozen=True)
+class PluginContributions:
+    manifest: dict[str, object]
+    skill_roots: tuple[Path, ...] = ()
+    drift_skill_roots: tuple[Path, ...] = ()
+    mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    before_turn_modules: tuple[object, ...] = ()
+    before_reasoning_modules: tuple[object, ...] = ()
+    prompt_render_modules: tuple[object, ...] = ()
+    before_step_modules: tuple[object, ...] = ()
+    after_step_modules: tuple[object, ...] = ()
+    after_reasoning_modules: tuple[object, ...] = ()
+    after_turn_modules: tuple[object, ...] = ()
+    proactive_modules: tuple[object, ...] = ()
+    proactive_lifecycles: tuple[object, ...] = ()
+    proactive_module_factories: tuple[object, ...] = ()
+    proactive_runtime_factories: tuple[object, ...] = ()
+    proactive_sources: tuple[RegisteredProactiveSource, ...] = ()
+    jobs: tuple[RegisteredPluginJob, ...] = ()
+    channels: tuple[Channel, ...] = ()
+
+
+@dataclass
+class PluginGeneration:
+    plugin_id: str
+    generation_id: str
+    module_path: str
+    source_revision: str
+    config_revision: str
+    instance: object
+    scope: PluginScope
+    contributions: PluginContributions
+    gate_result: GateResult
+    state: str = "active"
+    lease_count: int = 0

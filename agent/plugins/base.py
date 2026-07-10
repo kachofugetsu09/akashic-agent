@@ -9,9 +9,11 @@ if TYPE_CHECKING:
     from agent.plugins.context import PluginContext
     from agent.plugins.jobs import PluginJobSpec
     from agent.plugins.specs import McpServerSpec, ProactiveSourceSpec
+    from agent.plugins.generation import PluginSemanticCheck
 
 
 class Plugin(ABC):
+    api_version: int = 1
     name: str | None = None
     version: str | None = None
     desc: str | None = None
@@ -26,6 +28,9 @@ class Plugin(ABC):
 
     async def initialize(self) -> None: ...
     async def terminate(self) -> None: ...
+
+    def static_semantic_checks(self) -> list["PluginSemanticCheck"]:
+        return []
 
     @classmethod
     def skill_roots(cls) -> tuple[str, ...]:

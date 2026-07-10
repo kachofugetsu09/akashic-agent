@@ -357,6 +357,7 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "    version = '1.0.0'\n"
         "    async def initialize(self):\n"
         "        self.context.kv_store.set('initialized', True)\n"
+        "        self.context.kv_store.set('generation', self.context.generation_id)\n"
         "        self.context.defer('subscription_check', self._check_subscription)\n"
         "        self.subscription = self.context.event_bus.on(TurnCommitted, self._handle)\n"
         "        self.context.create_task(self._worker(), name='scope-gate-worker')\n"
@@ -383,6 +384,37 @@ def _install_scope_plugin(sandbox: Path) -> Path:
     return sandbox / "home/.akashic-plugin/data/scope_gate-gate/.kv.json"
 
 
+def _install_candidate_plugins(sandbox: Path) -> tuple[Path, Path]:
+    cache = sandbox / "home/.akashic-plugin/cache/gate"
+    valid = cache / "candidate_valid/1.0.0"
+    invalid = cache / "candidate_invalid/1.0.0"
+    valid.mkdir(parents=True, exist_ok=True)
+    invalid.mkdir(parents=True, exist_ok=True)
+    _ = (valid / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class CandidateValidPlugin(Plugin):\n"
+        "    name = 'candidate_valid'\n"
+        "    async def initialize(self):\n"
+        "        self.context.kv_store.set('initialized', True)\n"
+        "        self.context.kv_store.set('generation', self.context.generation_id)\n",
+        encoding="utf-8",
+    )
+    _ = (invalid / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class CandidateInvalidPlugin(Plugin):\n"
+        "    name = 'candidate_invalid'\n"
+        "    api_version = 2\n"
+        "    async def initialize(self):\n"
+        "        self.context.kv_store.set('initialized', True)\n",
+        encoding="utf-8",
+    )
+    data = sandbox / "home/.akashic-plugin/data"
+    return (
+        data / "candidate_valid-gate/.kv.json",
+        data / "candidate_invalid-gate/.kv.json",
+    )
+
+
 def _run_runtime_smoke(
     *,
     repo: Path,
@@ -397,6 +429,9 @@ def _run_runtime_smoke(
         ignore_errors=True,
     )
     scope_state = _install_scope_plugin(sandbox) if phase == "scope" else None
+    candidate_states = (
+        _install_candidate_plugins(sandbox) if phase == "candidate" else None
+    )
     started = subprocess.run(
         [*compose, "up", "-d", "--no-build", "akashic-plugin-gate"],
         cwd=repo,
@@ -507,7 +542,32 @@ def _run_runtime_smoke(
             "events": 1,
         }
         phase_passed = all(state.get(key) == value for key, value in expected.items())
+        generation = state.get("generation")
+        phase_passed = phase_passed and isinstance(generation, str) and generation.startswith(
+            "scope_gate@gate:"
+        )
+        expected["generation"] = "scope_gate@gate:<revision>:<sequence>"
         phase_evidence = {"phase": phase, "state": state, "expected": expected}
+    if candidate_states is not None:
+        valid_path, invalid_path = candidate_states
+        valid_state: dict[str, object] = {}
+        if valid_path.exists():
+            raw_valid: object = json.loads(valid_path.read_text(encoding="utf-8"))
+            if isinstance(raw_valid, dict):
+                mapping = cast(dict[object, object], raw_valid)
+                valid_state = {str(key): value for key, value in mapping.items()}
+        generation = valid_state.get("generation")
+        phase_passed = (
+            valid_state.get("initialized") is True
+            and isinstance(generation, str)
+            and generation.startswith("candidate_valid@gate:")
+            and not invalid_path.exists()
+        )
+        phase_evidence = {
+            "phase": phase,
+            "valid": valid_state,
+            "invalid_initialized": invalid_path.exists(),
+        }
     passed = (
         started.returncode == 0
         and ipc_ready
@@ -575,7 +635,11 @@ def main() -> int:
         choices=("sandbox-integrity", "full-runtime"),
         default="sandbox-integrity",
     )
-    _ = parser.add_argument("--phase", choices=("smoke", "scope"), default="smoke")
+    _ = parser.add_argument(
+        "--phase",
+        choices=("smoke", "scope", "candidate"),
+        default="smoke",
+    )
     _ = parser.add_argument("--inside-container", action="store_true")
     args = parser.parse_args()
     if args.inside_container:

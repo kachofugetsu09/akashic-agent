@@ -30,6 +30,7 @@ class PluginContext:
     memory_engine: Any = None
     llm: "PluginLlmService | None" = None
     scope: "PluginScope | None" = None
+    generation_id: str = ""
 
     def create_task(
         self,

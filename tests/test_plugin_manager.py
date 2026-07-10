@@ -433,8 +433,10 @@ async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
     plugin_root = tmp_path / "plugins"
     plugin_dir = plugin_root / "failing"
     plugin_dir.mkdir(parents=True)
+    marker = tmp_path / "terminated"
     _ = (plugin_dir / "plugin.py").write_text(
         "import asyncio\n"
+        "from pathlib import Path\n"
         "from contextlib import suppress\n"
         "from agent.plugins import Plugin\n"
         "tasks = []\n"
@@ -447,7 +449,8 @@ async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
         "    async def terminate(self):\n"
         "        self.task.cancel()\n"
         "        with suppress(asyncio.CancelledError):\n"
-        "            await self.task\n",
+        "            await self.task\n"
+        f"        Path({str(marker)!r}).write_text(str(self.task.done()))\n",
         encoding="utf-8",
     )
     manager = PluginManager(
@@ -458,10 +461,8 @@ async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
 
     await manager.load_all()
 
-    module = sys.modules["akasic_plugin_plugins_failing"]
     assert manager.loaded_count == 0
-    assert len(module.tasks) == 1
-    assert module.tasks[0].done()
+    assert marker.read_text(encoding="utf-8") == "True"
 
 
 @pytest.mark.asyncio
@@ -499,9 +500,15 @@ async def test_plugin_initialize_cancellation_rolls_back(tmp_path: Path):
         installed_cache_root=tmp_path / "cache",
     )
     loading = asyncio.create_task(manager.load_all())
-    while "akasic_plugin_plugins_cancelled" not in sys.modules:
+    module_names: list[str] = []
+    while not module_names:
         await asyncio.sleep(0)
-    module = sys.modules["akasic_plugin_plugins_cancelled"]
+        module_names = [
+            name
+            for name in sys.modules
+            if name.startswith("akasic_plugin_plugins_cancelled__g")
+        ]
+    module = sys.modules[module_names[0]]
     await module.started.wait()
 
     loading.cancel()
@@ -935,6 +942,7 @@ from agent.plugins import Plugin
 
 
 class EarlyModule:
+    slot = "plugin.early"
     requires = ("session:session",)
 
     async def run(self, frame):
@@ -942,56 +950,69 @@ class EarlyModule:
 
 
 class LateModule:
+    slot = "plugin.late"
     requires = ("session:ctx",)
 
     async def run(self, frame):
         return frame
 
 class PromptTopModule:
+    slot = "plugin.prompt_top"
     async def run(self, frame):
         return frame
 
 class PromptBottomModule:
+    slot = "plugin.prompt_bottom"
     async def run(self, frame):
         return frame
 
 class BeforeReasoningBeforeEmitModule:
+    slot = "plugin.before_reasoning_before_emit"
     async def run(self, frame):
         return frame
 
 class BeforeReasoningAfterEmitModule:
+    slot = "plugin.before_reasoning_after_emit"
     async def run(self, frame):
         return frame
 
 class BeforeStepBeforeEmitModule:
+    slot = "plugin.before_step_before_emit"
     async def run(self, frame):
         return frame
 
 class BeforeStepAfterEmitModule:
+    slot = "plugin.before_step_after_emit"
     async def run(self, frame):
         return frame
 
 class AfterStepBeforeFanoutModule:
+    slot = "plugin.after_step_before_fanout"
     async def run(self, frame):
         return frame
 
 class AfterStepAfterFanoutModule:
+    slot = "plugin.after_step_after_fanout"
     async def run(self, frame):
         return frame
 
 class AfterReasoningBeforeEmitModule:
+    slot = "plugin.after_reasoning_before_emit"
     async def run(self, frame):
         return frame
 
 class AfterReasoningBeforePersistModule:
+    slot = "plugin.after_reasoning_before_persist"
     async def run(self, frame):
         return frame
 
 class AfterTurnBeforeCommitModule:
+    slot = "plugin.after_turn_before_commit"
     async def run(self, frame):
         return frame
 
 class AfterTurnBeforeFanoutModule:
+    slot = "plugin.after_turn_before_fanout"
     async def run(self, frame):
         return frame
 

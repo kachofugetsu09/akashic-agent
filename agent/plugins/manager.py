@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import importlib.util
 import inspect
 import logging
@@ -37,6 +38,15 @@ from agent.plugins.registry import MetadataKind, PluginEventType, plugin_registr
 from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.plugins.jobs import PluginJobSpec, PluginLlmService, RegisteredPluginJob
 from agent.plugins.scope import CleanupFailure, PluginScope, ScopedEventBus
+from agent.plugins.generation import (
+    GateCheckResult,
+    GateResult,
+    PluginContributions,
+    PluginGeneration,
+    PluginSemanticCheck,
+)
+from agent.lifecycle.phase import topo_sort_modules
+from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from agent.tool_hooks.base import ToolHook
 from agent.tool_hooks.types import HookContext, HookOutcome
 from bus.event_bus import EventBus
@@ -109,6 +119,10 @@ class PluginManager:
         self._active_plugins: dict[str, ActivePluginInfo] = {}
         self._scopes: dict[str, PluginScope] = {}
         self._cleanup_failures: list[CleanupFailure] = []
+        self._active_generations: dict[str, PluginGeneration] = {}
+        self._gate_results: dict[str, GateResult] = {}
+        self._stable_aliases: dict[str, str] = {}
+        self._generation_sequence = 0
 
     @property
     def loaded_count(self) -> int:
@@ -193,6 +207,12 @@ class PluginManager:
     def cleanup_failures(self) -> list[CleanupFailure]:
         return list(self._cleanup_failures)
 
+    def generation(self, plugin_id: str) -> PluginGeneration | None:
+        return self._active_generations.get(plugin_id)
+
+    def latest_gate(self, plugin_id: str) -> GateResult | None:
+        return self._gate_results.get(plugin_id)
+
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
         for mod in self.discover():
@@ -260,11 +280,11 @@ class PluginManager:
             await self._load_one(mod)
 
     async def _load_one(self, mod: dict[str, str]) -> None:
-        mp = mod["import_path"]
+        stable_module_path = mod["import_path"]
         plugin_dir = Path(mod["plugin_root"])
         initial_plugin_id = _resolve_plugin_id(mod)
         # 1. 幂等：已加载过直接跳过
-        if mp in self._loaded:
+        if initial_plugin_id in self._active_generations:
             return
         plugin_manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
         if plugin_manifest.get(initial_plugin_id, True) is False:
@@ -292,10 +312,34 @@ class PluginManager:
         job_count_before = len(self._jobs)
         module_path = mod["module_path"].strip()
         if module_path:
+            source_revision = _file_revision(Path(module_path))
+            config_revision = _file_revision(
+                _resolve_plugin_data_dir(
+                    mod["name"],
+                    mod,
+                    self._installed_cache_root,
+                )
+                / "config.local.toml"
+            )
+            self._generation_sequence += 1
+            generation_id = (
+                f"{initial_plugin_id}:{source_revision[:12]}:"
+                f"{self._generation_sequence}"
+            )
+            mp = (
+                f"{stable_module_path}__g{self._generation_sequence}_"
+                f"{source_revision[:8]}"
+            )
             try:
                 self._import_plugin(mp, Path(module_path))
             except Exception as e:
                 logger.warning("插件 %s 导入失败: %s", mod["name"], e)
+                self._record_failed_gate(
+                    plugin_id=initial_plugin_id,
+                    revision=source_revision,
+                    check_id="import",
+                    reason=str(e),
+                )
                 return
             cls = plugin_registry._classes.get(mp)
             if cls is None:
@@ -319,6 +363,13 @@ class PluginManager:
                 )
             except _PluginConfigError as e:
                 logger.warning("插件 %s 配置无效，跳过: %s", mod["name"], e)
+                plugin_registry.remove_plugin(mp)
+                self._record_failed_gate(
+                    plugin_id=plugin_id,
+                    revision=source_revision,
+                    check_id="config",
+                    reason=str(e),
+                )
                 return
             from agent.plugins.context import PluginContext, PluginKVStore
             scope = PluginScope(plugin_id)
@@ -335,12 +386,14 @@ class PluginManager:
                 memory_engine=self._memory_engine,
                 llm=self._llm,
                 scope=scope,
+                generation_id=generation_id,
             )
             plugin_registry.register_instance(mp, instance)
+            initialization_started = False
 
             async def rollback_load() -> None:
                 terminator = getattr(instance, "terminate", None)
-                if callable(terminator):
+                if initialization_started and callable(terminator):
                     try:
                         typed_terminator = cast(
                             Callable[[], Awaitable[None]],
@@ -356,6 +409,7 @@ class PluginManager:
                         )
                 self._cleanup_failures.extend(await scope.aclose())
                 plugin_registry.remove_plugin(mp)
+                _ = sys.modules.pop(mp, None)
                 for tool_name in tool_names:
                     if self._tool_registry is not None:
                         self._tool_registry.unregister(tool_name)
@@ -377,23 +431,28 @@ class PluginManager:
                 del self._jobs[job_count_before:]
 
             try:
+                contributions = self._collect_candidate_contributions(
+                    instance=instance,
+                    plugin_id=plugin_id,
+                    plugin_dir=plugin_dir,
+                    data_dir=data_dir,
+                    module_path=mp,
+                )
+                gate_result = self._validate_candidate(
+                    instance=instance,
+                    plugin_id=plugin_id,
+                    revision=source_revision,
+                    contributions=contributions,
+                )
+                self._gate_results[plugin_id] = gate_result
+                if gate_result.status == "failed":
+                    raise _CandidateRejected(gate_result)
                 self._bind_handlers(instance, mp, scope)
                 self._register_tools(instance, mp, tool_names)
                 self._bind_tool_hooks(instance, mp)
-                self._collect_before_turn_modules(instance)
-                self._collect_before_reasoning_modules(instance)
-                self._collect_prompt_render_modules(instance)
-                self._collect_before_step_modules(instance)
-                self._collect_after_step_modules(instance)
-                self._collect_after_reasoning_modules(instance)
-                self._collect_after_turn_modules(instance)
-                self._collect_proactive_modules(instance)
-                self._collect_proactive_lifecycles(instance)
-                self._collect_proactive_module_factories(instance)
-                self._collect_proactive_runtime_factories(instance)
-                self._collect_proactive_sources(instance, plugin_id)
-                self._collect_jobs(instance, plugin_id)
+                self._publish_contributions(contributions)
                 if hasattr(instance, "initialize"):
+                    initialization_started = True
                     await instance.initialize()
             except asyncio.CancelledError:
                 rollback_task = asyncio.create_task(
@@ -407,20 +466,34 @@ class PluginManager:
                         continue
                 await rollback_task
                 raise
+            except _CandidateRejected as error:
+                logger.warning(
+                    "插件 %s 候选验证失败: %s",
+                    mod["name"],
+                    error.gate.failure_reason,
+                )
+                await rollback_load()
+                return
             except Exception as e:
                 logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], e)
+                latest_gate = self._gate_results.get(plugin_id)
+                if (
+                    latest_gate is None
+                    or latest_gate.candidate_revision != source_revision
+                ):
+                    self._record_failed_gate(
+                        plugin_id=plugin_id,
+                        revision=source_revision,
+                        check_id="declarations",
+                        reason=str(e),
+                    )
                 await rollback_load()
                 return
             self._scopes[mp] = scope
-            manifest: dict[str, object] = {
-                "name": name,
-                "version": str(instance.version or ""),
-                "desc": str(instance.desc or ""),
-                "author": str(instance.author or ""),
-            }
-            skill_roots = _resolve_declared_roots(plugin_dir, cls.skill_roots())
-            drift_skill_roots = _resolve_declared_roots(plugin_dir, cls.drift_skill_roots())
-            mcp_servers = _resolve_mcp_servers(plugin_dir, data_dir, cls.mcp_servers())
+            manifest = contributions.manifest
+            skill_roots = contributions.skill_roots
+            drift_skill_roots = contributions.drift_skill_roots
+            mcp_servers = contributions.mcp_servers
         else:
             raise RuntimeError(f"插件缺少 plugin.py: {plugin_dir}")
         self._loaded.add(mp)
@@ -433,9 +506,292 @@ class PluginManager:
             drift_skill_roots=drift_skill_roots,
             mcp_servers=mcp_servers,
         )
+        generation = PluginGeneration(
+            plugin_id=plugin_id,
+            generation_id=generation_id,
+            module_path=mp,
+            source_revision=source_revision,
+            config_revision=config_revision,
+            instance=instance,
+            scope=scope,
+            contributions=contributions,
+            gate_result=gate_result,
+        )
+        self._active_generations[plugin_id] = generation
+        self._stable_aliases[mp] = stable_module_path
+        plugin_registry.register_instance(stable_module_path, instance)
+        sys.modules[stable_module_path] = sys.modules[mp]
         if instance is not None:
-            self._collect_channels(instance)
+            self._channels.extend(contributions.channels)
         logger.info("插件已加载: %s", mod["name"])
+
+    def _collect_candidate_contributions(
+        self,
+        *,
+        instance: Any,
+        plugin_id: str,
+        plugin_dir: Path,
+        data_dir: Path,
+        module_path: str,
+    ) -> PluginContributions:
+        cls = type(instance)
+        sources: list[RegisteredProactiveSource] = []
+        for source in _load_module_list(instance, "proactive_sources"):
+            if not isinstance(source, ProactiveSourceSpec):
+                raise RuntimeError(
+                    f"插件 {plugin_id}.proactive_sources 返回值不是 ProactiveSourceSpec"
+                )
+            sources.append(RegisteredProactiveSource(plugin_id=plugin_id, spec=source))
+        jobs: list[RegisteredPluginJob] = []
+        for spec in _load_module_list(instance, "jobs"):
+            if not isinstance(spec, PluginJobSpec):
+                raise RuntimeError(
+                    f"插件 {plugin_id}.jobs 返回值不是 PluginJobSpec"
+                )
+            jobs.append(
+                RegisteredPluginJob(
+                    plugin_id=plugin_id,
+                    plugin_context=instance.context,
+                    spec=spec,
+                )
+            )
+        return PluginContributions(
+            manifest={
+                "name": str(instance.name or ""),
+                "version": str(instance.version or ""),
+                "desc": str(instance.desc or ""),
+                "author": str(instance.author or ""),
+            },
+            skill_roots=_resolve_declared_roots(plugin_dir, cls.skill_roots()),
+            drift_skill_roots=_resolve_declared_roots(
+                plugin_dir,
+                cls.drift_skill_roots(),
+            ),
+            mcp_servers=_resolve_mcp_servers(
+                plugin_dir,
+                data_dir,
+                cls.mcp_servers(),
+            ),
+            before_turn_modules=tuple(
+                _load_module_list(instance, "before_turn_modules")
+            ),
+            before_reasoning_modules=tuple(
+                _load_module_list(instance, "before_reasoning_modules")
+            ),
+            prompt_render_modules=tuple(
+                _load_module_list(instance, "prompt_render_modules")
+            ),
+            before_step_modules=tuple(
+                _load_module_list(instance, "before_step_modules")
+            ),
+            after_step_modules=tuple(
+                _load_module_list(instance, "after_step_modules")
+            ),
+            after_reasoning_modules=tuple(
+                _load_module_list(instance, "after_reasoning_modules")
+            ),
+            after_turn_modules=tuple(
+                _load_module_list(instance, "after_turn_modules")
+            ),
+            proactive_modules=tuple(
+                _load_module_list(instance, "proactive_modules")
+            ),
+            proactive_lifecycles=tuple(
+                _load_module_list(instance, "proactive_lifecycles")
+            ),
+            proactive_module_factories=tuple(
+                _load_module_list(instance, "proactive_module_factories")
+            ),
+            proactive_runtime_factories=tuple(
+                _load_module_list(instance, "proactive_runtime_factories")
+            ),
+            proactive_sources=tuple(sources),
+            jobs=tuple(jobs),
+            channels=cast(
+                tuple[Channel, ...],
+                tuple(_load_module_list(instance, "channels")),
+            ),
+        )
+
+    def _validate_candidate(
+        self,
+        *,
+        instance: Any,
+        plugin_id: str,
+        revision: str,
+        contributions: PluginContributions,
+    ) -> GateResult:
+        checks: list[GateCheckResult] = []
+
+        def check(check_id: str, passed: bool, evidence: object = "") -> None:
+            checks.append(
+                GateCheckResult(
+                    check_id=check_id,
+                    status="passed" if passed else "failed",
+                    evidence=evidence,
+                )
+            )
+
+        check(
+            "api_version",
+            getattr(instance, "api_version", None) == 1,
+            getattr(instance, "api_version", None),
+        )
+        metadata = plugin_registry.get_handlers_by_module_path(type(instance).__module__)
+        tool_names = [
+            md.tool_name or md.handler_name
+            for md in metadata
+            if md.kind == MetadataKind.TOOL
+        ]
+        duplicate_tools = _duplicates(tool_names)
+        occupied_tools = (
+            sorted(name for name in tool_names if self._tool_registry.has_tool(name))
+            if self._tool_registry is not None
+            else []
+        )
+        check(
+            "tool_names",
+            not duplicate_tools and not occupied_tools,
+            {"duplicates": duplicate_tools, "occupied": occupied_tools},
+        )
+        source_ids = [source.spec.id for source in contributions.proactive_sources]
+        source_errors = [
+            source.spec.id
+            for source in contributions.proactive_sources
+            if not source.spec.id
+            or not source.spec.channels
+            or not source.spec.server
+            or not source.spec.fetch_tool
+            or source.spec.server not in contributions.mcp_servers
+        ]
+        check(
+            "proactive_sources",
+            not _duplicates(source_ids) and not source_errors,
+            {"duplicates": _duplicates(source_ids), "invalid": source_errors},
+        )
+        job_ids = [job.spec.id for job in contributions.jobs]
+        check(
+            "job_ids",
+            all(job_ids) and not _duplicates(job_ids) if job_ids else True,
+            _duplicates(job_ids),
+        )
+        channel_names = [
+            str(getattr(channel, "name", "")).strip()
+            for channel in contributions.channels
+        ]
+        occupied_channels = {
+            str(getattr(channel, "name", "")).strip() for channel in self._channels
+        }
+        check(
+            "channel_names",
+            (
+                all(channel_names)
+                and not _duplicates(channel_names)
+                and not occupied_channels.intersection(channel_names)
+            )
+            if channel_names
+            else True,
+            {
+                "duplicates": _duplicates(channel_names),
+                "occupied": sorted(occupied_channels.intersection(channel_names)),
+            },
+        )
+        phase_groups = (
+            contributions.before_turn_modules,
+            contributions.before_reasoning_modules,
+            contributions.prompt_render_modules,
+            contributions.before_step_modules,
+            contributions.after_step_modules,
+            contributions.after_reasoning_modules,
+            contributions.after_turn_modules,
+        )
+        try:
+            for modules in phase_groups:
+                _ = topo_sort_modules(modules)
+        except RuntimeError as error:
+            check("phase_graph", False, str(error))
+        else:
+            check("phase_graph", True)
+        lifecycle_ids = [
+            lifecycle.id
+            for lifecycle in contributions.proactive_lifecycles
+            if isinstance(lifecycle, ProactiveLifecycleSpec)
+        ]
+        check(
+            "proactive_lifecycles",
+            len(lifecycle_ids) == len(contributions.proactive_lifecycles)
+            and not _duplicates(lifecycle_ids),
+            _duplicates(lifecycle_ids),
+        )
+        try:
+            semantic_checks = instance.static_semantic_checks()
+        except Exception as error:
+            check("semantic_checks", False, str(error))
+        else:
+            invalid_semantic = [
+                semantic
+                for semantic in semantic_checks
+                if not isinstance(semantic, PluginSemanticCheck) or not semantic.passed
+            ]
+            check(
+                "semantic_checks",
+                not invalid_semantic,
+                [
+                    getattr(semantic, "evidence", repr(semantic))
+                    for semantic in invalid_semantic
+                ],
+            )
+        failed = [item for item in checks if item.status == "failed"]
+        return GateResult(
+            gate_id="G1/G3-static",
+            plugin_id=plugin_id,
+            candidate_revision=revision,
+            status="failed" if failed else "passed",
+            checks=tuple(checks),
+            failure_reason="; ".join(item.check_id for item in failed),
+        )
+
+    def _publish_contributions(self, contributions: PluginContributions) -> None:
+        self._before_turn_modules.extend(contributions.before_turn_modules)
+        self._before_reasoning_modules.extend(contributions.before_reasoning_modules)
+        self._prompt_render_modules.extend(contributions.prompt_render_modules)
+        self._before_step_modules.extend(contributions.before_step_modules)
+        self._after_step_modules.extend(contributions.after_step_modules)
+        self._after_reasoning_modules.extend(contributions.after_reasoning_modules)
+        self._after_turn_modules.extend(contributions.after_turn_modules)
+        self._proactive_modules.extend(contributions.proactive_modules)
+        self._proactive_lifecycles.extend(contributions.proactive_lifecycles)
+        self._proactive_module_factories.extend(
+            contributions.proactive_module_factories
+        )
+        self._proactive_runtime_factories.extend(
+            contributions.proactive_runtime_factories
+        )
+        self._proactive_sources.extend(contributions.proactive_sources)
+        self._jobs.extend(contributions.jobs)
+
+    def _record_failed_gate(
+        self,
+        *,
+        plugin_id: str,
+        revision: str,
+        check_id: str,
+        reason: str,
+    ) -> None:
+        self._gate_results[plugin_id] = GateResult(
+            gate_id="G1/G3-static",
+            plugin_id=plugin_id,
+            candidate_revision=revision,
+            status="failed",
+            checks=(
+                GateCheckResult(
+                    check_id=check_id,
+                    status="failed",
+                    evidence=reason,
+                ),
+            ),
+            failure_reason=reason,
+        )
 
     def _import_plugin(self, module_name: str, path: Path) -> None:
         # 1. 把 plugin.py 当成包入口加载，允许数字前缀目录里的插件使用相对 import。
@@ -449,7 +805,11 @@ class PluginManager:
         # 2. 先注册到 sys.modules 再执行，避免插件内部相对 import 找不到自身
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        try:
+            spec.loader.exec_module(module)  # type: ignore[union-attr]
+        except BaseException:
+            _ = sys.modules.pop(module_name, None)
+            raise
 
     def _register_tools(
         self,
@@ -525,130 +885,9 @@ class PluginManager:
             self._tool_hooks.append(hook)
             logger.info("插件 tool hook 已注册: %s", hook.name)
 
-    def _collect_before_turn_modules(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "before_turn_modules",
-            self._before_turn_modules,
-        )
-
-    def _collect_before_reasoning_modules(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "before_reasoning_modules",
-            self._before_reasoning_modules,
-        )
-
-    def _collect_prompt_render_modules(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "prompt_render_modules",
-            self._prompt_render_modules,
-        )
-
-    def _collect_before_step_modules(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "before_step_modules",
-            self._before_step_modules,
-        )
-
-    def _collect_after_step_modules(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "after_step_modules",
-            self._after_step_modules,
-        )
-
-    def _collect_after_reasoning_modules(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "after_reasoning_modules",
-            self._after_reasoning_modules,
-        )
-
-    def _collect_after_turn_modules(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "after_turn_modules",
-            self._after_turn_modules,
-        )
-
-    def _collect_proactive_modules(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "proactive_modules",
-            self._proactive_modules,
-        )
-
-    def _collect_proactive_lifecycles(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "proactive_lifecycles",
-            self._proactive_lifecycles,
-        )
-
-    def _collect_proactive_module_factories(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "proactive_module_factories",
-            self._proactive_module_factories,
-        )
-
-    def _collect_proactive_runtime_factories(self, instance: Any) -> None:
-        self._collect_phase_modules(
-            instance,
-            "proactive_runtime_factories",
-            self._proactive_runtime_factories,
-        )
-
-    def _collect_proactive_sources(self, instance: Any, plugin_id: str) -> None:
-        seen = {source.spec.id for source in self._proactive_sources if source.plugin_id == plugin_id}
-        for source in _load_module_list(instance, "proactive_sources"):
-            if not isinstance(source, ProactiveSourceSpec):
-                raise RuntimeError(
-                    f"插件 {plugin_id}.proactive_sources 返回值不是 ProactiveSourceSpec"
-                )
-            if not source.id or source.id in seen:
-                raise RuntimeError(f"插件 {plugin_id} proactive source id 重复或为空: {source.id!r}")
-            if not source.channels or not source.server or not source.fetch_tool:
-                raise RuntimeError(f"插件 {plugin_id} proactive source 声明不完整: {source.id}")
-            seen.add(source.id)
-            self._proactive_sources.append(
-                RegisteredProactiveSource(plugin_id=plugin_id, spec=source)
-            )
-
-    def _collect_channels(self, instance: Any) -> None:
-        for channel in _load_module_list(instance, "channels"):
-            self._channels.append(cast(Channel, channel))
-
-    def _collect_jobs(self, instance: Any, plugin_id: str) -> None:
-        for spec in _load_module_list(instance, "jobs"):
-            if not isinstance(spec, PluginJobSpec):
-                logger.warning("插件 %s.jobs 返回值不是 PluginJobSpec", type(instance).__name__)
-                continue
-            job_id = str(getattr(spec, "id", "") or "").strip()
-            if not job_id:
-                logger.warning("插件 %s.jobs 返回了缺少 id 的任务", type(instance).__name__)
-                continue
-            self._jobs.append(
-                RegisteredPluginJob(
-                    plugin_id=plugin_id,
-                    plugin_context=instance.context,
-                    spec=spec,
-                )
-            )
-
-    def _collect_phase_modules(
-        self,
-        instance: Any,
-        attr_name: str,
-        target: list[object],
-    ) -> None:
-        target.extend(_load_module_list(instance, attr_name))
-
     async def terminate_all(self) -> None:
         for mp in list(self._loaded):
+            active_info = self._active_plugins.get(mp)
             instance = plugin_registry.get_instance(mp)
             terminator = getattr(instance, "terminate", None)
             if callable(terminator):
@@ -674,6 +913,13 @@ class PluginManager:
                 if md.kind == MetadataKind.TOOL and self._tool_registry is not None:
                     self._tool_registry.unregister(md.tool_name or md.handler_name)
             plugin_registry.remove_plugin(mp)
+            _ = sys.modules.pop(mp, None)
+            stable_alias = self._stable_aliases.pop(mp, None)
+            if stable_alias is not None:
+                plugin_registry.remove_plugin(stable_alias)
+                _ = sys.modules.pop(stable_alias, None)
+            if active_info is not None:
+                _ = self._active_generations.pop(active_info.plugin_id, None)
             _ = self._active_plugins.pop(mp, None)
         self._loaded.clear()
         self._active_plugins.clear()
@@ -693,10 +939,18 @@ class PluginManager:
         self._jobs.clear()
         self._channels.clear()
         self._scopes.clear()
+        self._active_generations.clear()
+        self._stable_aliases.clear()
 
 
 class _PluginConfigError(Exception):
     pass
+
+
+class _CandidateRejected(Exception):
+    def __init__(self, gate: GateResult) -> None:
+        super().__init__(gate.failure_reason)
+        self.gate = gate
 
 
 def _load_plugin_config(
@@ -928,6 +1182,26 @@ class _PluginToolHook(ToolHook):
         if isinstance(result, dict):
             return HookOutcome(updated_input=cast("dict[str, Any]", result))
         return HookOutcome()
+
+
+def _file_revision(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(str(path.resolve(strict=False)).encode())
+    if path.is_file():
+        digest.update(path.read_bytes())
+    else:
+        digest.update(b"<missing>")
+    return digest.hexdigest()
+
+
+def _duplicates(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for value in values:
+        if value in seen:
+            duplicates.add(value)
+        seen.add(value)
+    return sorted(duplicates)
 
 
 def _is_plugin_disabled(plugin_dir: Path) -> bool:
