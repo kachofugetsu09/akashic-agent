@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import os
 import py_compile
+import shutil
 import sys
 from pathlib import Path
 
@@ -831,3 +832,37 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
 
     assert not active_snapshot.exists()
     assert not prepared_snapshot.exists()
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_cleanup_failure_is_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "skill_cleanup",
+        "from agent.plugins import Plugin\n"
+        "class SkillCleanupPlugin(Plugin):\n"
+        "    name = 'skill_cleanup'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    generation = manager.generation("skill_cleanup")
+    assert generation is not None and generation.skill_catalog is not None
+    snapshot_root = generation.skill_catalog.snapshot_root
+    real_rmtree = shutil.rmtree
+
+    def fail_snapshot_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+        if Path(path) == snapshot_root and not args and not kwargs:
+            raise OSError("snapshot cleanup failed")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", fail_snapshot_cleanup)
+    await manager.terminate_all()
+
+    assert any(
+        failure.resource == "skill_catalog"
+        and failure.error == "snapshot cleanup failed"
+        for failure in manager.cleanup_failures
+    )

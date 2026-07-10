@@ -41,7 +41,13 @@ class SkillSnapshot:
         )
 
     def cleanup(self) -> None:
-        _ = self._finalizer()
+        if not self._finalizer.alive:
+            return
+        try:
+            shutil.rmtree(self.root)
+        except FileNotFoundError:
+            pass
+        _ = self._finalizer.detach()
 
 
 class PluginSkillHost:
