@@ -166,6 +166,8 @@ class ScopedEventBus:
         handler: Handler[T],
     ) -> EventSubscription | _StagedEventSubscription[T]:
         if self._snapshot_managed:
+            if self._active:
+                raise RuntimeError("插件事件订阅只能在 initialize 中注册")
             subscription = _StagedEventSubscription(
                 self._event_bus,
                 event_type,
@@ -186,7 +188,7 @@ class ScopedEventBus:
 
     def staged_handlers(self) -> tuple[tuple[type[object], Handler[object]], ...]:
         return tuple(
-            (subscription.event_type, subscription.handler)
+            (subscription.event_type, subscription.dispatch)
             for subscription in self._pending
             if subscription.active
         )
@@ -241,9 +243,13 @@ class _StagedEventSubscription(Generic[T]):
     def event_type(self) -> type[object]:
         return self._event_type
 
-    @property
-    def handler(self) -> Handler[object]:
-        return cast(Handler[object], self._handler)
+    async def dispatch(self, event: object) -> object | None:
+        if not self._active:
+            return None
+        result = self._handler(cast(T, event))
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def activate(self) -> None:
         if not self._active or self._subscription is not None:

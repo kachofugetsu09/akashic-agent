@@ -2154,6 +2154,101 @@ async def test_queued_event_keeps_enqueued_snapshot_generation(
 
 
 @pytest.mark.asyncio
+async def test_snapshot_event_subscription_close_takes_effect_immediately(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_event",
+        "from agent.plugins import Plugin\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class SnapshotEventPlugin(Plugin):\n"
+        "    name = 'snapshot_event'\n"
+        "    async def initialize(self):\n"
+        "        self.subscription = self.context.event_bus.on(TurnCommitted, self.handle)\n"
+        "    def handle(self, event):\n"
+        "        self.context.kv_store.increment('events')\n",
+    )
+    event_bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    generation = manager.generation("snapshot_event")
+    assert generation is not None
+    generation.instance.subscription.close()
+    event = TurnCommitted(
+        session_key="cli:event",
+        channel="cli",
+        chat_id="event",
+        input_message="event",
+        persisted_user_message="event",
+        assistant_response="event",
+        tools_used=[],
+    )
+
+    await event_bus.fanout(event)
+
+    state_path = tmp_path / "home/data/snapshot_event-builtin/.kv.json"
+    assert not state_path.exists()
+    with pytest.raises(RuntimeError, match="只能在 initialize"):
+        generation.instance.context.event_bus.on(TurnCommitted, lambda _: None)
+    await event_bus.aclose()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_event_bus_shutdown_drains_snapshot_lease_before_plugins(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_event",
+        _snapshot_event_source("v1"),
+    )
+    event_bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:event",
+            channel="cli",
+            chat_id="event",
+            input_message="event",
+            persisted_user_message="event",
+            assistant_response="event",
+            tools_used=[],
+        )
+    )
+    state_path = tmp_path / "home/data/snapshot_event-builtin/.kv.json"
+    for _ in range(100):
+        if state_path.exists() and json.loads(
+            state_path.read_text(encoding="utf-8")
+        ).get("event_entered_v1") is True:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("queued event did not start")
+
+    closing = asyncio.create_task(event_bus.aclose())
+    await asyncio.sleep(0)
+    assert closing.done() is False
+    _ = (state_path.parent / "release-event-v1").write_text(
+        "released\n",
+        encoding="utf-8",
+    )
+    await closing
+    await manager.terminate_all()
+    assert manager.snapshot_store.current is None
+
+
+@pytest.mark.asyncio
 async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins" / "snapshot_skill"
     for version in ("v1", "v2"):

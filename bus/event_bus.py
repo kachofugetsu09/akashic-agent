@@ -182,8 +182,8 @@ class EventBus:
     async def aclose(
         self,
     ) -> None:
-        await self.drain()
         self._closed = True
+        await self.drain()
         task = self._observe_task
         if task is None:
             return
@@ -203,6 +203,16 @@ class EventBus:
             if inspect.isawaitable(result):
                 await result
             return True
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            logger.warning(
+                "observer cancelled for %s handler=%s",
+                type(event).__name__,
+                _handler_name(handler),
+            )
+            return False
         except Exception:
             logger.exception(
                 "observer error for %s handler=%s",

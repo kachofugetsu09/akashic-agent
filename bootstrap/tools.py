@@ -242,10 +242,10 @@ class CoreRuntime:
         return "\n".join(parts)
 
     async def stop(self) -> None:
+        await self.event_bus.aclose()
         if self.plugin_manager is not None:
             await self.plugin_manager.terminate_all()
         await self.mcp_registry.shutdown()
-        await self.event_bus.aclose()
         if self.peer_poller is not None:
             await self.peer_poller.stop()
         if self.peer_process_manager is not None:

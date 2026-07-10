@@ -373,13 +373,15 @@ def _install_scope_plugin(sandbox: Path) -> Path:
         "            self.context.kv_store.set('task_cancelled', True)\n"
         "    async def _emit(self):\n"
         "        await asyncio.sleep(0)\n"
-        "        await self.context.event_bus.fanout(TurnCommitted(\n"
+        "        self.context.event_bus.enqueue(TurnCommitted(\n"
         "            session_key='gate:scope', channel='gate', chat_id='scope',\n"
         "            input_message='scope', persisted_user_message='scope',\n"
         "            assistant_response='scope', tools_used=[]))\n"
         "    def _check_subscription(self):\n"
         "        self.context.kv_store.set('subscription_closed', not self.subscription.active)\n"
-        "    def _handle(self, event):\n"
+        "    async def _handle(self, event):\n"
+        "        self.context.kv_store.set('event_started', True)\n"
+        "        await asyncio.sleep(2)\n"
         "        self.context.kv_store.increment('events')\n",
         encoding="utf-8",
     )
