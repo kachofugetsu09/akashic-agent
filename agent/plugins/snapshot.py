@@ -109,7 +109,7 @@ class RuntimeSnapshotCompiler:
                 for generation in ordered
                 for module in getattr(generation.contributions, field_name)
             )
-            phases[field_name] = self._order_plugin_modules(modules)
+            phases[field_name] = self.order_plugin_modules(modules)
         jobs = self._compile_jobs(ordered)
         sources = self._compile_sources(ordered)
         proactive_modules = tuple(
@@ -206,7 +206,7 @@ class RuntimeSnapshotCompiler:
         )
 
     @staticmethod
-    def _order_plugin_modules(modules: tuple[object, ...]) -> tuple[object, ...]:
+    def order_plugin_modules(modules: tuple[object, ...]) -> tuple[object, ...]:
         slots = {
             str(slot)
             for slot in (getattr(module, "slot", None) for module in modules)

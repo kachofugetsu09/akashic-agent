@@ -305,7 +305,6 @@ class AppRuntime:
                     self.plugin_watcher.run(),
                     name="plugin_watcher",
                 )
-                self.tasks.append(self.plugin_watcher_task)
 
             self._install_plugin_reload_signal()
             self._started = True

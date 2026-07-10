@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -429,6 +430,7 @@ def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
     entries: list[str] = []
     observe_source = Path()
     for source_name, plugin_name in (
+        ("citation", "citation"),
         ("emotion", "emotion"),
         ("meme", "meme"),
         ("observe", "observe"),
@@ -448,7 +450,80 @@ def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
             observe_source = target / "plugin.py"
     manifest = sandbox / "home/.akashic-plugin/manifest.toml"
     manifest.parent.mkdir(parents=True, exist_ok=True)
+    driver = cache / "zz_gate_driver" / "1.0.0"
+    driver.mkdir(parents=True)
+    _ = (driver / "plugin.py").write_text(
+        "from __future__ import annotations\n"
+        "import asyncio\n"
+        "import sqlite3\n"
+        "from agent.plugins import Plugin\n"
+        "from agent.plugins.snapshot import get_current_runtime_snapshot\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class InspectRuntimeModules:\n"
+        "    slot = 'gate_driver.inspect_runtime_modules'\n"
+        "    requires = ('before_turn.acquire_session',)\n"
+        "    def __init__(self, plugin): self.plugin = plugin\n"
+        "    async def run(self, frame):\n"
+        "        snapshot = get_current_runtime_snapshot()\n"
+        "        slots = [] if snapshot is None else [getattr(item, 'slot', '') for item in snapshot.before_turn_modules + snapshot.prompt_render_modules]\n"
+        "        self.plugin.context.kv_store.set('phase_slots', slots)\n"
+        "        return frame\n"
+        "class GateDriverPlugin(Plugin):\n"
+        "    name = 'zz_gate_driver'\n"
+        "    def before_turn_modules(self): return [InspectRuntimeModules(self)]\n"
+        "    async def initialize(self):\n"
+        "        self.context.create_task(self._drive_feedback(), name='gate-feedback-driver')\n"
+        "    async def _drive_feedback(self):\n"
+        "        await asyncio.sleep(0.2)\n"
+        "        content = '/memorystatus 被回复消息：这是一条用于验证主动反馈工作链路的提醒消息【你当前新消息】谢谢'\n"
+        "        with sqlite3.connect(self.context.workspace / 'sessions.db') as connection:\n"
+        "            connection.execute(\"INSERT INTO messages (id, session_key, seq, role, content, extra, ts) VALUES (?, ?, ?, ?, ?, ?, ?)\", ('cli:snapshot-gate:1', 'cli:snapshot-gate', 1, 'user', content, '{}', '2026-07-11T00:01:00+00:00'))\n"
+        "            connection.execute(\"INSERT INTO messages (id, session_key, seq, role, content, extra, ts) VALUES (?, ?, ?, ?, ?, ?, ?)\", ('cli:snapshot-gate:2', 'cli:snapshot-gate', 2, 'assistant', '状态回复', '{}', '2026-07-11T00:01:01+00:00'))\n"
+        "            connection.execute(\"UPDATE sessions SET next_seq = 3 WHERE key = ?\", ('cli:snapshot-gate',))\n"
+        "        await self.context.event_bus.fanout(TurnCommitted(session_key='cli:snapshot-gate', channel='cli', chat_id='snapshot-gate', input_message=content, persisted_user_message=content, assistant_response='状态回复', tools_used=[]))\n",
+        encoding="utf-8",
+    )
+    entries.append('[plugins."zz_gate_driver@gate"]\nenabled = true\n')
     _ = manifest.write_text("\n".join(entries), encoding="utf-8")
+    workspace = sandbox / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(workspace / "sessions.db") as connection:
+        _ = connection.execute(
+            "CREATE TABLE sessions (key TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, last_consolidated INTEGER NOT NULL DEFAULT 0, "
+            "metadata TEXT, last_user_at TEXT, last_proactive_at TEXT, "
+            "next_seq INTEGER NOT NULL DEFAULT 0)"
+        )
+        _ = connection.execute(
+            "CREATE TABLE messages (id TEXT PRIMARY KEY, session_key TEXT NOT NULL, "
+            "seq INTEGER NOT NULL, role TEXT NOT NULL, content TEXT, tool_chain TEXT, "
+            "extra TEXT, ts TEXT NOT NULL, UNIQUE (session_key, seq))"
+        )
+        _ = connection.execute(
+            "INSERT INTO sessions "
+            "(key, created_at, updated_at, metadata, next_seq) VALUES (?, ?, ?, ?, ?)",
+            (
+                "cli:snapshot-gate",
+                "2026-07-11T00:00:00+00:00",
+                "2026-07-11T00:00:00+00:00",
+                "{}",
+                1,
+            ),
+        )
+        _ = connection.execute(
+            "INSERT INTO messages "
+            "(id, session_key, seq, role, content, extra, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "cli:snapshot-gate:0",
+                "cli:snapshot-gate",
+                0,
+                "assistant",
+                "这是一条用于验证主动反馈工作链路的提醒消息",
+                '{"proactive": true}',
+                "2026-07-11T00:00:00+00:00",
+            ),
+        )
     return observe_source
 
 
@@ -883,11 +958,46 @@ def _dashboard_plugins(container_id: str) -> list[str]:
     return [str(item) for item in value] if isinstance(value, list) else []
 
 
+def _wait_sqlite_count(path: Path, query: str) -> int:
+    deadline = time.monotonic() + 8
+    count = 0
+    while time.monotonic() < deadline:
+        if path.exists():
+            try:
+                with sqlite3.connect(path) as connection:
+                    row = connection.execute(query).fetchone()
+                count = int(row[0]) if row is not None else 0
+            except sqlite3.OperationalError:
+                count = 0
+            if count:
+                return count
+        time.sleep(0.1)
+    return count
+
+
 def _exercise_migrated_plugins(
     container_id: str,
     observe_source: Path,
     sandbox: Path,
 ) -> dict[str, object]:
+    status_response = _ipc_roundtrip(
+        sandbox / "akashic.sock",
+        "/memorystatus 被回复消息：这是一条用于验证主动反馈工作链路的提醒消息"
+        "【你当前新消息】谢谢",
+    )
+    feedback_count = _wait_sqlite_count(
+        sandbox / "workspace/proactive_feedback/proactive_feedback.db",
+        "SELECT count(*) FROM proactive_feedback_events",
+    )
+    driver_state = _read_json_object(
+        sandbox / "home/.akashic-plugin/data/zz_gate_driver-gate/.kv.json"
+    )
+    raw_slots = driver_state.get("phase_slots", [])
+    lifecycle_slots = (
+        {str(item) for item in raw_slots if isinstance(item, str)}
+        if isinstance(raw_slots, list)
+        else set()
+    )
     before = _snapshot_statuses(container_id)
     _ = observe_source.write_text(
         observe_source.read_text(encoding="utf-8") + "\n",
@@ -909,13 +1019,23 @@ def _exercise_migrated_plugins(
     }
     observe_db = sandbox / "workspace/observe/observe.db"
     passed = (
-        reloaded.get("old_generation") != reloaded.get("new_generation")
+        str(status_response.get("content", "")).startswith("🧠 记忆整理状态")
+        and feedback_count >= 1
+        and {
+            "meme.prompt",
+            "status_commands.memory_status",
+            "gate_driver.inspect_runtime_modules",
+        }.issubset(lifecycle_slots)
+        and reloaded.get("old_generation") != reloaded.get("new_generation")
         and isinstance(reloaded.get("new_generation"), str)
         and expected.issubset(plugins)
         and observe_db.exists()
     )
     return {
         "passed": passed,
+        "status_response": status_response.get("content"),
+        "proactive_feedback_events": feedback_count,
+        "lifecycle_slots": sorted(lifecycle_slots),
         "reloaded": reloaded,
         "dashboard_plugins": plugins,
         "observe_db": observe_db.exists(),

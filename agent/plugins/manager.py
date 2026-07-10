@@ -69,7 +69,6 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
 )
-from agent.lifecycle.phase import topo_sort_modules
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.lifecycle import ProactiveLifecycleBuilder
 from agent.tool_hooks.base import ToolHook
@@ -2035,7 +2034,9 @@ class PluginManager:
                     for generation in other_generations
                     for module in getattr(generation.contributions, field_name)
                 ]
-                _ = topo_sort_modules([*active_modules, *candidate_modules])
+                _ = RuntimeSnapshotCompiler.order_plugin_modules(
+                    tuple([*active_modules, *candidate_modules])
+                )
         except RuntimeError as error:
             check("phase_graph", False, str(error))
         else:

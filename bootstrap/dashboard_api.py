@@ -37,18 +37,21 @@ _DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets", "/plugins/")
 
 def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
     result: dict[str, Path] = {}
-    plugins_root = project_root / "plugins"
-    if plugins_root.is_dir():
-        for plugin_dir in sorted(plugins_root.iterdir()):
-            if not plugin_dir.is_dir():
-                continue
-            result[plugin_dir.name] = plugin_dir
-
     try:
         manifest = load_plugin_manifest()
     except Exception as e:
         logger.warning("插件清单读取失败: %s", e)
-        return result
+        manifest = {}
+    plugins_root = project_root / "plugins"
+    if plugins_root.is_dir():
+        for plugin_dir in sorted(plugins_root.iterdir()):
+            if (
+                not plugin_dir.is_dir()
+                or manifest.get(plugin_dir.name, True) is False
+            ):
+                continue
+            result[plugin_dir.name] = plugin_dir
+
     cache_root = Path.home() / ".akashic-plugin" / "cache"
     for source in resolve_plugin_sources([], installed_cache_root=cache_root):
         plugin_name = source.plugin_root.parent.name

@@ -6,10 +6,14 @@ import json
 import sqlite3
 import threading
 from datetime import datetime
+from pathlib import Path
 
 from fastapi.testclient import TestClient as _RawTestClient
 
-from bootstrap.dashboard_api import create_dashboard_app as _create_dashboard_app
+from bootstrap.dashboard_api import (
+    _dashboard_plugin_dirs,
+    create_dashboard_app as _create_dashboard_app,
+)
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
@@ -800,6 +804,24 @@ def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:
             }
         ],
     }
+
+
+def test_standalone_dashboard_honors_builtin_plugin_manifest(
+    tmp_path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    manifest_path = home / ".akashic-plugin" / "manifest.toml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        '[plugins.akasha]\nenabled = false\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    plugins = _dashboard_plugin_dirs(Path.cwd())
+
+    assert "akasha" not in plugins
+    assert "default_memory" in plugins
 
 
 def test_installed_plugin_dashboard_supports_relative_imports(tmp_path, monkeypatch) -> None:
