@@ -1288,6 +1288,11 @@ def _run_runtime_smoke(
                 candidate_states[5],
                 socket,
             )
+    _ = (
+        _wait_json_value(scope_state, "event_started", True)
+        if scope_state is not None and runtime_stable
+        else {}
+    )
     logs = subprocess.run(
         [*compose, "logs", "--no-color", "--tail", "200", "akashic-plugin-gate"],
         cwd=repo,
@@ -1327,6 +1332,7 @@ def _run_runtime_smoke(
                 state = {str(key): value for key, value in mapping.items()}
         expected: dict[str, object] = {
             "initialized": True,
+            "event_started": True,
             "terminated": True,
             "task_cancelled": True,
             "subscription_closed": True,

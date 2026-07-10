@@ -198,14 +198,18 @@ class EventBus:
         event: object,
         handler: Handler[object],
     ) -> bool:
+        handler_task = asyncio.create_task(
+            self._invoke_observer(handler, event),
+            name=f"event_observer:{_handler_name(handler)}",
+        )
         try:
-            result = handler(event)
-            if inspect.isawaitable(result):
-                await result
+            await asyncio.shield(handler_task)
             return True
         except asyncio.CancelledError:
             task = asyncio.current_task()
             if task is not None and task.cancelling():
+                _ = handler_task.cancel()
+                _ = await asyncio.gather(handler_task, return_exceptions=True)
                 raise
             logger.warning(
                 "observer cancelled for %s handler=%s",
@@ -220,6 +224,15 @@ class EventBus:
                 _handler_name(handler),
             )
             return False
+
+    async def _invoke_observer(
+        self,
+        handler: Handler[object],
+        event: object,
+    ) -> None:
+        result = handler(event)
+        if inspect.isawaitable(result):
+            await result
 
     def _ensure_observe_queue(
         self,
