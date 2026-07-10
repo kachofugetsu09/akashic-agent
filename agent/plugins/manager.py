@@ -894,7 +894,6 @@ class PluginManager:
             load_phase = "initialize"
             initialization_started = True
             await instance.initialize()
-            generation.runtime_snapshot = self._compile_generation_snapshot(generation)
             load_phase = "publish"
             self._register_tools(instance, mp, tool_names)
             self._bind_tool_hooks(instance, mp)

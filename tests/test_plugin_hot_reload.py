@@ -1295,7 +1295,9 @@ async def test_snapshot_compile_failure_does_not_publish_plugin(
         "second_snapshot",
         "from agent.plugins import Plugin\n"
         "class SecondSnapshotPlugin(Plugin):\n"
-        "    name = 'second_snapshot'\n",
+        "    name = 'second_snapshot'\n"
+        "    async def initialize(self):\n"
+        "        self.context.kv_store.set('initialized', True)\n",
     )
     compile_snapshot = manager._snapshot_compiler.compile
 
@@ -1315,4 +1317,6 @@ async def test_snapshot_compile_failure_does_not_publish_plugin(
     assert manager.loaded_count == 1
     assert manager.generation("second_snapshot") is None
     assert plugin_registry.get_instance("akasic_plugin_plugins_second_snapshot") is None
+    state = tmp_path / "home" / "data" / "second_snapshot-builtin" / ".kv.json"
+    assert not state.exists()
     await manager.terminate_all()
