@@ -242,17 +242,13 @@ def _require_routes_available(
     conflicts: list[str] = []
     for index, route in enumerate(binding.routes):
         for other in occupied:
-            methods = sorted(
-                (route.methods or set()).intersection(other.methods or set())
-            )
+            methods = _overlapping_methods(route, other)
             if methods and _route_paths_overlap(route, other):
                 conflicts.append(
                     f"{','.join(methods)} {route.path} <> {other.path}"
                 )
         for other in binding.routes[:index]:
-            methods = sorted(
-                (route.methods or set()).intersection(other.methods or set())
-            )
+            methods = _overlapping_methods(route, other)
             if (
                 methods
                 and _route_paths_overlap(route, other)
@@ -272,6 +268,16 @@ def _route_paths_overlap(first: APIRoute, second: APIRoute) -> bool:
         first.path_regex.fullmatch(second_sample)
         or second.path_regex.fullmatch(first_sample)
     )
+
+
+def _overlapping_methods(first: APIRoute, second: APIRoute) -> list[str]:
+    if first.methods is None and second.methods is None:
+        return ["*"]
+    if first.methods is None:
+        return sorted(second.methods or ())
+    if second.methods is None:
+        return sorted(first.methods)
+    return sorted(first.methods.intersection(second.methods))
 
 
 def _ordered_static_route_wins(first: APIRoute, second: APIRoute) -> bool:

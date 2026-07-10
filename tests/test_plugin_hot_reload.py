@@ -26,7 +26,11 @@ from agent.looping.core import AgentLoop
 from agent.background.subagent_manager import SubagentManager
 from proactive_v2.loop import ProactiveLoop
 from bootstrap.dashboard_api import create_dashboard_app
-from agent.plugins.dashboard_host import _plugin_routes
+from agent.plugins.dashboard_host import (
+    DashboardBinding,
+    _plugin_routes,
+    _require_routes_available,
+)
 from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import Tool
@@ -3325,6 +3329,30 @@ def test_dashboard_rejects_custom_path_convertor(
 
     with pytest.raises(RuntimeError, match="内建 path converter"):
         _plugin_routes(app.routes)
+
+
+def test_dashboard_treats_missing_methods_as_wildcard() -> None:
+    core_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    plugin_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @core_app.api_route("/api/dashboard/{rest:path}", methods=["GET"])
+    def core_route() -> dict[str, bool]:
+        return {"core": True}
+
+    @plugin_app.get("/api/dashboard/sessions")
+    def plugin_route() -> dict[str, bool]:
+        return {"plugin": True}
+
+    core_routes = _plugin_routes(core_app.routes)
+    core_routes[0].methods = None
+    binding = DashboardBinding(
+        plugin_id="wildcard",
+        app=plugin_app,
+        routes=_plugin_routes(plugin_app.routes),
+    )
+
+    with pytest.raises(RuntimeError, match="dashboard route 冲突"):
+        _require_routes_available(binding, list(core_routes))
 
 
 @pytest.mark.asyncio
