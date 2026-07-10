@@ -126,13 +126,13 @@ class EventBus:
         handlers = self._handlers_for(type(event))
         if not handlers:
             return
-        from agent.plugins.snapshot import lease_current_runtime_snapshot
+        from agent.plugins.snapshot import get_current_runtime_lease
 
-        leases = [lease_current_runtime_snapshot() for _ in handlers]
+        source_lease = get_current_runtime_lease()
         results = await asyncio.gather(
             *(
-                self._run_observer(event, handler, snapshot_lease)
-                for handler, snapshot_lease in zip(handlers, leases, strict=True)
+                self._run_observer(event, handler, source_lease)
+                for handler in handlers
             )
         )
         failed_count = results.count(False)
@@ -203,11 +203,12 @@ class EventBus:
         self,
         event: object,
         handler: Handler[object],
-        snapshot_lease: RuntimeSnapshotLease | None = None,
+        source_lease: RuntimeSnapshotLease | None = None,
     ) -> bool:
-        from agent.plugins.snapshot import lease_current_runtime_snapshot
+        from agent.plugins.snapshot import get_current_runtime_lease
 
-        snapshot_lease = snapshot_lease or lease_current_runtime_snapshot()
+        source_lease = source_lease or get_current_runtime_lease()
+        snapshot_lease = source_lease.fork() if source_lease is not None else None
         handler_task = asyncio.create_task(
             self._invoke_observer(handler, event, snapshot_lease),
             name=f"event_observer:{_handler_name(handler)}",

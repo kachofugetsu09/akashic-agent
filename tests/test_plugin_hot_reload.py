@@ -2282,6 +2282,57 @@ async def test_event_observers_keep_snapshot_binding_in_isolated_tasks() -> None
 
 
 @pytest.mark.asyncio
+async def test_cancelled_fanout_releases_unstarted_observer_leases() -> None:
+    event_bus = EventBus()
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    event_bus.bind_runtime_snapshot_store(store)
+
+    async def observe(_event: str) -> None:
+        await asyncio.sleep(0)
+
+    for _ in range(20):
+        event_bus.on(str, observe)
+
+    task = asyncio.current_task()
+    assert task is not None
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await event_bus.fanout("cancel")
+    await asyncio.sleep(0)
+
+    assert snapshot.lease_count == 0
+    await event_bus.aclose()
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_running_fanout_cancellation_releases_observer_leases() -> None:
+    event_bus = EventBus()
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    event_bus.bind_runtime_snapshot_store(store)
+    entered = asyncio.Event()
+
+    async def observe(_event: str) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    event_bus.on(str, observe)
+    fanout = asyncio.create_task(event_bus.fanout("cancel"))
+    await entered.wait()
+    _ = fanout.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await fanout
+
+    assert snapshot.lease_count == 0
+    await event_bus.aclose()
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins" / "snapshot_skill"
     for version in ("v1", "v2"):

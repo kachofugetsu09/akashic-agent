@@ -213,7 +213,7 @@ class RuntimeSnapshotLease:
         return not self._released
 
     def fork(self) -> RuntimeSnapshotLease:
-        return self._store.lease(self.snapshot.snapshot_id)
+        return self._store.fork_lease(self)
 
     async def __aenter__(self) -> RuntimeSnapshot:
         return self.snapshot
@@ -267,6 +267,11 @@ def get_current_runtime_snapshot() -> RuntimeSnapshot | None:
 
 
 def lease_current_runtime_snapshot() -> RuntimeSnapshotLease | None:
+    lease = get_current_runtime_lease()
+    return lease.fork() if lease is not None else None
+
+
+def get_current_runtime_lease() -> RuntimeSnapshotLease | None:
     binding = _current_runtime_binding.get()
     if (
         binding is None
@@ -274,7 +279,7 @@ def lease_current_runtime_snapshot() -> RuntimeSnapshotLease | None:
         or binding.owner_task is not asyncio.current_task()
     ):
         return None
-    return binding.lease.fork()
+    return binding.lease
 
 
 class RuntimeSnapshotStore:
@@ -360,6 +365,15 @@ class RuntimeSnapshotStore:
             raise RuntimeError("RuntimeSnapshot 不可用")
         if snapshot.state not in {"published_pending", "committed"}:
             raise RuntimeError(f"RuntimeSnapshot 不可租用: {snapshot.state}")
+        snapshot.lease_count += 1
+        for generation in snapshot.generations.values():
+            generation.lease_count += 1
+        return RuntimeSnapshotLease(self, snapshot)
+
+    def fork_lease(self, source: RuntimeSnapshotLease) -> RuntimeSnapshotLease:
+        snapshot = source.snapshot
+        if not source.active or self._snapshots.get(snapshot.snapshot_id) is not snapshot:
+            raise RuntimeError("RuntimeSnapshot lease 不可复制")
         snapshot.lease_count += 1
         for generation in snapshot.generations.values():
             generation.lease_count += 1
