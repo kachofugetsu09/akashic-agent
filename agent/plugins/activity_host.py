@@ -98,7 +98,10 @@ class PluginProactiveHost:
             key = proactive_source_key(source)
             if key in compiled:
                 raise RuntimeError(f"proactive source 稳定键重复: {key}")
-            compiled[key] = source
+            compiled[key] = replace(
+                source,
+                spec=replace(source.spec, channels=tuple(source.spec.channels)),
+            )
         catalog = PreparedProactiveCatalog(
             generation_id=generation_id,
             sources=MappingProxyType(compiled),

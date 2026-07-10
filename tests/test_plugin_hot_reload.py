@@ -922,28 +922,30 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
         "    name = 'mcp_ready'\n"
         "    def __init__(self):\n"
         "        self.job_spec = PluginJobSpec(id='refresh', triggers=[IntervalTrigger(3600)], handler=self.refresh)\n"
+        "        self.source_spec = ProactiveSourceSpec(id='feed', channels=['content'], server='feed', fetch_tool='fetch_events', ack_tool='ack_events', poll_tool='poll_events')\n"
         "    @classmethod\n"
         "    def mcp_servers(cls):\n"
         "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n"
         "    def proactive_sources(self):\n"
-        "        return [ProactiveSourceSpec(id='feed', channels=('content',), "
-        "server='feed', fetch_tool='fetch_events', ack_tool='ack_events', "
-        "poll_tool='poll_events')]\n"
+        "        return [self.source_spec]\n"
         "    def jobs(self):\n"
         "        return [self.job_spec]\n"
         "    async def initialize(self):\n"
         "        self.job_spec.triggers.append(object())\n"
+        "        self.source_spec.channels.append('invalid')\n"
         "    async def refresh(self, context):\n"
         "        return None\n"
         "    async def readiness_semantic_checks(self, context):\n"
         "        self.job_spec.triggers.append(object())\n"
+        "        self.source_spec.channels.append('invalid')\n"
         "        value = await context.mcp_catalog.servers['feed'].client.call('fetch_events', {})\n"
         "        job = context.job_catalog.jobs['mcp_ready:refresh']\n"
         "        source = context.proactive_catalog.sources['mcp_ready:feed']\n"
         "        owned = getattr(job.spec.handler, '__self__', None) is self\n"
         "        frozen = len(job.spec.triggers) == 1\n"
-        "        evidence = {'mcp': value, 'job_owned': owned, 'source': source.spec.id, 'frozen': frozen}\n"
-        "        return [PluginSemanticCheck('candidate_feed', value == '[]' and owned and frozen, evidence)]\n",
+        "        source_frozen = source.spec.channels == ('content',)\n"
+        "        evidence = {'mcp': value, 'job_owned': owned, 'source': source.spec.id, 'frozen': frozen, 'source_frozen': source_frozen}\n"
+        "        return [PluginSemanticCheck('candidate_feed', value == '[]' and owned and frozen and source_frozen, evidence)]\n",
     )
     _write_mcp_server(
         plugin_dir,
@@ -955,8 +957,10 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     active = manager.generation("mcp_ready")
     assert active is not None and active.job_catalog is not None
     active_job = manager.jobs[0]
+    active_source = manager.proactive_sources[0]
     assert isinstance(active_job.spec.triggers, tuple)
     assert len(active_job.spec.triggers) == 1
+    assert active_source.spec.channels == ("content",)
 
     prepared = await manager.prepare_candidate("mcp_ready")
 
@@ -980,6 +984,9 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     assert tuple(catalog.servers) == ("feed",)
     assert tuple(prepared.job_catalog.jobs) == ("mcp_ready:refresh",)
     assert tuple(prepared.proactive_catalog.sources) == ("mcp_ready:feed",)
+    assert prepared.proactive_catalog.sources["mcp_ready:feed"].spec.channels == (
+        "content",
+    )
     prepared_job = prepared.job_catalog.jobs["mcp_ready:refresh"]
     assert isinstance(prepared_job.spec.triggers, tuple)
     assert len(prepared_job.spec.triggers) == 1

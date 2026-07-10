@@ -756,7 +756,7 @@ def _exercise_candidate_prepare(
         after=len(statuses),
         gate_status="passed",
     )
-    time.sleep(1.2)
+    time.sleep(2.3)
     after_valid = _read_json_object(state_path)
     after_valid_calls = _mcp_call_counts(calls_path)
     after_valid_mcp_processes = _wait_process_count(
