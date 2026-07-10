@@ -549,7 +549,9 @@ def _candidate_reload_source(version: str) -> str:
         f"        ctx.abort_reply = 'snapshot-{version}'\n"
         "        return frame\n"
         "    async def _probe_detached(self):\n"
-        "        await asyncio.sleep(0.1)\n"
+        "        release = self.plugin.context.data_dir / 'release-detached-probe'\n"
+        "        while not release.exists():\n"
+        "            await asyncio.sleep(0.01)\n"
         "        self.plugin.context.kv_store.set('detached_snapshot_visible', get_current_runtime_snapshot() is not None)\n"
         "class CandidateReloadPlugin(Plugin):\n"
         "    name = 'candidate_reload'\n"
@@ -609,6 +611,16 @@ def _read_json_object(path: Path) -> dict[str, object]:
         return {}
     mapping = cast(dict[object, object], raw)
     return {str(key): value for key, value in mapping.items()}
+
+
+def _wait_json_value(path: Path, key: str, expected: object) -> dict[str, object]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        state = _read_json_object(path)
+        if state.get(key) == expected:
+            return state
+        time.sleep(0.05)
+    return _read_json_object(path)
 
 
 def _integer(value: object) -> int:
@@ -803,9 +815,15 @@ def _exercise_candidate_prepare(
     time.sleep(2.3)
     after_valid = _read_json_object(state_path)
     after_valid_calls = _mcp_call_counts(calls_path)
+    detached_release = state_path.parent / "release-detached-probe"
+    detached_release.unlink(missing_ok=True)
     passive_response = _ipc_roundtrip(socket_path, "snapshot lease gate")
-    time.sleep(0.2)
-    after_passive = _read_json_object(state_path)
+    _ = detached_release.write_text("released\n", encoding="utf-8")
+    after_passive = _wait_json_value(
+        state_path,
+        "detached_snapshot_visible",
+        False,
+    )
     after_valid_mcp_processes = _wait_process_count(
         container_id,
         "candidate_mcp_server.py",
