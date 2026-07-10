@@ -20,6 +20,7 @@ class PreparedSkillCatalog:
     snapshot: SkillSnapshot
     normal: SkillIndex
     drift: SkillIndex
+    normal_plugins: SkillIndex
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -92,8 +93,19 @@ class PluginSkillHost:
                 ignored_workspace_symlink_roots=ignored_drift_roots,
                 runtime_catalog=None,
             ).build_index()
+            normal_plugins = SkillsLoader(
+                workspace,
+                builtin_skills_dir=None,
+                workspace_skills_dir=snapshot_root / "no-workspace-skills",
+                plugin_roots=frozen_normal,
+                runtime_catalog=None,
+            ).build_index()
             normal = self._freeze_index(snapshot_root / "selected-normal", normal)
             drift = self._freeze_index(snapshot_root / "selected-drift", drift)
+            normal_plugins = self._freeze_index(
+                snapshot_root / "selected-normal-plugins",
+                normal_plugins,
+            )
         except BaseException:
             snapshot.cleanup()
             raise
@@ -102,6 +114,7 @@ class PluginSkillHost:
             snapshot=snapshot,
             normal=normal,
             drift=drift,
+            normal_plugins=normal_plugins,
         )
         self._catalogs[generation_id] = catalog
         return catalog

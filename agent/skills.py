@@ -52,7 +52,7 @@ class SkillsLoader:
         workspace_skills_dir: Path | None = None,
         plugin_roots: Mapping[str, tuple[Path, ...]] | None = None,
         ignored_workspace_symlink_roots: tuple[Path, ...] = (),
-        runtime_catalog: Literal["normal", "drift"] | None = "normal",
+        runtime_catalog: Literal["normal"] | None = None,
     ):
         self.workspace = workspace
         self.workspace_skills = workspace_skills_dir or workspace / "skills"
@@ -121,18 +121,13 @@ class SkillsLoader:
         return "\n".join(lines)
 
     def _build_index(self) -> SkillIndex:
-        if self.runtime_catalog is not None:
+        runtime_plugins: SkillIndex | None = None
+        if self.runtime_catalog == "normal":
             from agent.plugins.snapshot import get_current_runtime_snapshot
 
             snapshot = get_current_runtime_snapshot()
             if snapshot is not None:
-                index = (
-                    snapshot.normal_skill_index
-                    if self.runtime_catalog == "normal"
-                    else snapshot.drift_skill_index
-                )
-                if index is not None:
-                    return index
+                runtime_plugins = snapshot.plugin_skill_index
         records: dict[str, SkillRecord] = {}
 
         for record in self._scan_skills_dir(
@@ -143,15 +138,20 @@ class SkillsLoader:
         ):
             records[record.name] = record
 
-        for plugin_id, roots in sorted(self.plugin_roots.items()):
-            for root in roots:
-                for record in self._scan_skills_dir(
-                    root,
-                    source="plugin",
-                    source_id=plugin_id,
-                ):
-                    if record.name not in records:
-                        records[record.name] = record
+        if runtime_plugins is not None:
+            for record in runtime_plugins.records.values():
+                if record.name not in records:
+                    records[record.name] = record
+        else:
+            for plugin_id, roots in sorted(self.plugin_roots.items()):
+                for root in roots:
+                    for record in self._scan_skills_dir(
+                        root,
+                        source="plugin",
+                        source_id=plugin_id,
+                    ):
+                        if record.name not in records:
+                            records[record.name] = record
 
         if self.builtin_skills:
             for record in self._scan_skills_dir(

@@ -549,7 +549,7 @@ def _candidate_reload_source(version: str) -> str:
         "        if registry is not None:\n"
         "            value = await registry.execute('candidate_reload_tool', {}, raise_errors=True)\n"
         f"            self.plugin.context.kv_store.set('phase_tool_version_{version}', str(value))\n"
-        "        skill_body = SkillsLoader(self.plugin.context.workspace).load_skill_body('candidate-skill')\n"
+        "        skill_body = SkillsLoader(self.plugin.context.workspace, runtime_catalog='normal').load_skill_body('candidate-skill')\n"
         f"        self.plugin.context.kv_store.set('phase_skill_body_{version}', skill_body)\n"
         "        self.plugin.context.create_task(self._probe_detached(), name='snapshot-detached-probe')\n"
         "        ctx = frame.slots['session:ctx']\n"

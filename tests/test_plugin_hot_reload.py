@@ -1884,7 +1884,7 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
     _ = (plugin_dir / "plugin.py").write_text(source("v2"), encoding="utf-8")
     candidate = await manager.prepare_candidate("snapshot_skill")
     assert candidate is not None
-    skills = SkillsLoader(workspace)
+    skills = SkillsLoader(workspace, runtime_catalog="normal")
     loop = object.__new__(AgentLoop)
     loop._passive_runtime_lock = asyncio.Lock()
     loop._runtime_snapshot_store = manager.snapshot_store
@@ -1910,4 +1910,50 @@ async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
 
     assert seen[:2] == ["body v1", "body v1"]
     assert seen[2:] == ["body v2", "body v2"]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_workspace_skill_updates_without_plugin_snapshot_reload(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "workspace_skill_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class WorkspaceSkillSnapshotPlugin(Plugin):\n"
+        "    name = 'workspace_skill_snapshot'\n",
+    )
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / "skills" / "workspace-live"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    _ = skill_file.write_text(
+        "---\ndescription: workspace live\n---\nworkspace v1\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path, workspace=workspace)
+    await manager.load_all()
+    snapshot = manager.current_snapshot
+    skills = SkillsLoader(workspace, runtime_catalog="normal")
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = manager.snapshot_store
+    seen: list[str | None] = []
+
+    async def process(msg, **kwargs):
+        seen.append(skills.load_skill_body("workspace-live"))
+        return "done"
+
+    loop._process = process
+    message = SimpleNamespace(session_key="cli:workspace-skill")
+    await loop._process_with_runtime_admission(message)
+    _ = skill_file.write_text(
+        "---\ndescription: workspace live\n---\nworkspace v2\n",
+        encoding="utf-8",
+    )
+    await loop._process_with_runtime_admission(message)
+
+    assert manager.current_snapshot is snapshot
+    assert seen == ["workspace v1", "workspace v2"]
     await manager.terminate_all()

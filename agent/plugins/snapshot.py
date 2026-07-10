@@ -40,8 +40,7 @@ class RuntimeSnapshot:
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
     tool_registry: ToolRegistry | None = None
-    normal_skill_index: SkillIndex | None = None
-    drift_skill_index: SkillIndex | None = None
+    plugin_skill_index: SkillIndex | None = None
     state: SnapshotState = "compiled"
     lease_count: int = 0
     _store_token: object | None = field(default=None, repr=False)
@@ -132,13 +131,8 @@ class RuntimeSnapshotCompiler:
                 else None
             ),
             mcp_catalog_generation_ids=MappingProxyType(mcp_catalogs),
-            normal_skill_index=(
-                catalog_owner.skill_catalog.normal
-                if catalog_owner is not None and catalog_owner.skill_catalog is not None
-                else None
-            ),
-            drift_skill_index=(
-                catalog_owner.skill_catalog.drift
+            plugin_skill_index=(
+                catalog_owner.skill_catalog.normal_plugins
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None
                 else None
             ),
