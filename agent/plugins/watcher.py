@@ -18,8 +18,14 @@ class PluginWatcher:
         self._stopped = asyncio.Event()
 
     async def run(self) -> None:
-        revision = self._manager.watch_revision()
+        revision: str | None = None
+        scan_failed = False
         try:
+            try:
+                revision = self._manager.watch_revision()
+            except Exception:
+                scan_failed = True
+                logger.exception("插件热重载状态扫描失败")
             while self._running:
                 try:
                     await asyncio.wait_for(
@@ -31,9 +37,19 @@ class PluginWatcher:
                 self._wake.clear()
                 if not self._running:
                     break
-                forced = self._forced
+                forced = self._forced or scan_failed
                 self._forced = False
-                current_revision = self._manager.watch_revision()
+                try:
+                    current_revision = self._manager.watch_revision()
+                except Exception:
+                    scan_failed = True
+                    logger.exception("插件热重载状态扫描失败")
+                    continue
+                scan_failed = False
+                if revision is None:
+                    revision = current_revision
+                    if not forced:
+                        continue
                 if not forced and current_revision == revision:
                     continue
                 try:

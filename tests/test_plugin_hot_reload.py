@@ -2217,6 +2217,36 @@ async def test_plugin_watcher_reconciles_change_arriving_during_scan() -> None:
     assert manager.calls >= 2
 
 
+@pytest.mark.asyncio
+async def test_plugin_watcher_recovers_after_revision_scan_error() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.scans = 0
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            self.scans += 1
+            if self.scans == 1:
+                raise PermissionError("transient")
+            return "ready"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    for _ in range(100):
+        if manager.calls:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 1
+
+
 def _snapshot_tool_source(version: str) -> str:
     return (
         "from agent.plugins import Plugin, tool\n"
