@@ -1408,9 +1408,11 @@ async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
     loop._runtime_snapshot_store = store
     detached_seen: list[RuntimeSnapshot | None] = []
     detached_done = asyncio.Event()
+    detached_release = asyncio.Event()
+    detached_tasks: list[asyncio.Task[None]] = []
 
     async def detached() -> None:
-        await asyncio.sleep(0)
+        await detached_release.wait()
         from agent.plugins.snapshot import get_current_runtime_snapshot
 
         detached_seen.append(get_current_runtime_snapshot())
@@ -1420,14 +1422,16 @@ async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
         from agent.plugins.snapshot import get_current_runtime_snapshot
 
         assert get_current_runtime_snapshot() is snapshot
-        asyncio.create_task(detached())
-        await detached_done.wait()
-        assert get_current_runtime_snapshot() is snapshot
+        detached_tasks.append(asyncio.create_task(detached()))
         return "done"
 
     loop._process = process
     message = SimpleNamespace(session_key="cli:detached-snapshot")
     assert await loop._process_with_runtime_admission(message) == "done"
+    assert snapshot.lease_count == 0
+    detached_release.set()
+    await detached_done.wait()
     assert detached_seen == [None]
+    await detached_tasks[0]
     await store.close()
     await manager.terminate_all()

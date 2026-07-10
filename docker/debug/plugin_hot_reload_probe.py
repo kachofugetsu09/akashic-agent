@@ -549,7 +549,7 @@ def _candidate_reload_source(version: str) -> str:
         f"        ctx.abort_reply = 'snapshot-{version}'\n"
         "        return frame\n"
         "    async def _probe_detached(self):\n"
-        "        await asyncio.sleep(0)\n"
+        "        await asyncio.sleep(0.1)\n"
         "        self.plugin.context.kv_store.set('detached_snapshot_visible', get_current_runtime_snapshot() is not None)\n"
         "class CandidateReloadPlugin(Plugin):\n"
         "    name = 'candidate_reload'\n"
