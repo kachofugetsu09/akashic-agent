@@ -6,7 +6,7 @@
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |---|---|---|---|---|---|
-| 001 | 以验证门禁完成全插件热重载 | P1 | L | — | TODO |
+| 001 | 以验证门禁完成全插件热重载 | P1 | L | — | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED | REJECTED
 

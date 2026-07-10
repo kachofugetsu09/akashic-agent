@@ -13,6 +13,10 @@
 - **Depends on**: none
 - **Category**: migration
 - **Planned at**: commit `d2957df`, 2026-07-11
+- **State**: DONE
+- **Completed at**: 2026-07-11
+
+实现已收敛到 `RuntimeSnapshot` 单一发布点。安装、删除、清单启停、源码和私有配置变化由 Watcher 触发候选验证；被动执行、主动 tick、Job、Tool、MCP、Skill、Lifecycle、Channel、Dashboard 与托管服务统一按代际租约切换和排空。全部外部插件已迁移，Fitbit 的睡眠模型、数据目录和预测接口保持不变。
 
 ## Why this matters
 
@@ -379,19 +383,19 @@ Controller 复用 `context_probe.py` 的进程 readiness/cleanup；Runtime 保�
 
 ## Done criteria
 
-- [ ] G-1-G6 都有结构化结果和失败测试。
-- [ ] 任一候选验证失败时，旧 generation 保持可用。
-- [ ] 同一 turn/tick/job/request 不跨 generation。
-- [ ] 旧 generation drain 后没有 subscription、task、process、MCP client、Channel 或 Dashboard resource 残留。
-- [ ] 所有现有插件迁移完成，无旧 API 兼容壳。
-- [ ] Fitbit 模型、持久数据和预测契约保持不变。
-- [ ] `pytest -q tests/` 通过。
-- [ ] changed Python files 的 `pyright` 通过。
-- [ ] `npm run typecheck && npm run lint && npm run build` 通过。
-- [ ] Docker 完整 Runtime probe 通过。
-- [ ] Docker Gate 无法写核心仓库、任一插件仓库或宿主插件缓存，运行前后状态完全一致。
-- [ ] `_handbook/plugins-tutorial.md` 说明代际、Gate、热重载语义和进程重启边界。
-- [ ] 除已知 `private_runtime` 状态、核心仓库和本次迁移的插件仓库外，没有无关文件变更。
+- [x] G-1-G6 都有结构化结果和失败测试。
+- [x] 任一候选验证失败时，旧 generation 保持可用。
+- [x] 同一 turn/tick/job/request 不跨 generation。
+- [x] 旧 generation drain 后没有 subscription、task、process、MCP client、Channel 或 Dashboard resource 残留。
+- [x] 所有现有插件迁移完成，无旧 API 兼容壳。
+- [x] Fitbit 模型、持久数据和预测契约保持不变。
+- [x] `pytest -q tests/` 通过。
+- [x] changed Python files 的 `pyright` 通过。
+- [x] `npm run typecheck && npm run lint && npm run build` 通过。
+- [x] Docker 完整 Runtime probe 通过。
+- [x] Docker Gate 无法写核心仓库、任一插件仓库或宿主插件缓存，运行前后状态完全一致。
+- [x] `_handbook/plugins-tutorial.md` 说明代际、Gate、热重载语义和进程重启边界。
+- [x] 除已知 `private_runtime` 状态、核心仓库和本次迁移的插件仓库外，没有无关文件变更。
 
 ## STOP conditions
 
