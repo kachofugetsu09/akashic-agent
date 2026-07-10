@@ -2,5 +2,7 @@ from agent.plugins import Plugin
 
 
 class Manifested(Plugin):
-    name = "class_name"
-    version = "0.1.0"
+    name = "manifested"
+    version = "1.0.0"
+    desc = "programmatic declaration"
+    author = "tester"

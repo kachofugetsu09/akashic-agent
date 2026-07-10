@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
-from agent.config import Config
-from agent.plugins.aka_descriptor import PluginDescriptor, load_plugin_descriptor
-from agent.plugins.global_registry import load_plugin_registry
+from agent.plugins.manifest import load_plugin_manifest, plugins_root
+from agent.plugins.registry import plugin_registry
+from agent.plugins.specs import McpServerSpec
 
 
 def run_plugin_doctor(
@@ -15,28 +18,20 @@ def run_plugin_doctor(
     workspace: Path | None = None,
     plugins_home: Path | None = None,
 ) -> dict[str, Any]:
-    resolved_workspace = workspace or (Path.home() / ".akashic" / "workspace")
-    engine_name = _load_memory_engine_name(config_path)
-    registry = load_plugin_registry(plugins_home)
-    if plugin_id:
-        entry = registry.get(plugin_id)
-        if entry is None:
-            return {
-                "status": "broken",
-                "plugins": [],
-                "error": f"插件不存在: {plugin_id}",
-            }
-        plugins = [_inspect_plugin(plugin_id, entry, resolved_workspace, engine_name)]
-    else:
-        plugins = [
-            _inspect_plugin(current_id, entry, resolved_workspace, engine_name)
-            for current_id, entry in sorted(registry.items())
-        ]
+    _ = config_path
+    resolved_workspace = workspace or Path.home() / ".akashic" / "workspace"
+    manifest = load_plugin_manifest(plugins_home)
+    selected = [plugin_id] if plugin_id else sorted(manifest)
+    if plugin_id and plugin_id not in manifest:
+        return {"status": "broken", "plugins": [], "error": f"插件不存在: {plugin_id}"}
+    plugins = [
+        _inspect_plugin(current_id, manifest[current_id], resolved_workspace, plugins_home)
+        for current_id in selected
+    ]
     return {
-        "status": _merge_status([item["status"] for item in plugins]) if plugins else "healthy",
+        "status": _merge_status(item["status"] for item in plugins),
         "plugins": plugins,
         "workspace": str(resolved_workspace),
-        "memory_engine": engine_name,
     }
 
 
@@ -44,149 +39,91 @@ def format_plugin_doctor_report(report: dict[str, Any]) -> str:
     error = str(report.get("error") or "").strip()
     if error:
         return error
-    plugins = cast(list[dict[str, Any]], report.get("plugins") or [])
     lines: list[str] = []
-    for plugin in plugins:
+    for plugin in cast(list[dict[str, Any]], report.get("plugins") or []):
         lines.append(f"plugin doctor {plugin['plugin_id']}")
-        for check in cast(list[dict[str, str]], plugin.get("checks") or []):
-            lines.append(
-                f"- {check['name']}: {check['status']} - {check['detail']}"
-            )
-        lines.append(f"- result: {plugin['status']}")
-        lines.append("")
-    if not lines:
-        return "没有发现任何插件。"
-    return "\n".join(lines).rstrip()
+        for check in cast(list[dict[str, str]], plugin["checks"]):
+            lines.append(f"- {check['name']}: {check['status']} - {check['detail']}")
+        lines.extend([f"- result: {plugin['status']}", ""])
+    return "\n".join(lines).rstrip() if lines else "没有发现任何插件。"
 
 
 def _inspect_plugin(
     plugin_id: str,
-    entry: dict[str, object],
+    enabled: bool,
     workspace: Path,
-    memory_engine_name: str,
+    plugins_home: Path | None,
 ) -> dict[str, Any]:
-    plugin_root_text = str(entry.get("plugin_root") or "").strip()
-    plugin_root = Path(plugin_root_text) if plugin_root_text else None
-    descriptor = (
-        load_plugin_descriptor(plugin_root)
-        if plugin_root is not None and plugin_root.exists()
-        else None
-    )
-    checks = [
-        _check_install(plugin_root, descriptor),
-        _check_policy(entry),
-        _check_lifecycle(entry),
-        _check_skills(plugin_id, entry, workspace),
-        _check_mcp(entry, descriptor),
-    ]
-    status = _merge_status(check["status"] for check in checks)
+    plugin_root = _find_plugin_root(plugin_id, plugins_home)
+    checks = [_check("policy", "ok" if enabled else "warn", f"enabled={str(enabled).lower()}")]
+    if plugin_root is None:
+        checks.append(_check("install", "error", "未找到插件目录"))
+    else:
+        checks.append(_check("install", "ok", f"已发现 plugin.py: {plugin_root}"))
+        try:
+            plugin_class = _load_plugin_class(plugin_root)
+            checks.extend(_check_capabilities(plugin_class, plugin_root, workspace))
+        except Exception as e:
+            checks.append(_check("declaration", "error", str(e)))
     return {
         "plugin_id": plugin_id,
-        "status": status,
-        "memory_engine": memory_engine_name,
+        "status": _merge_status(check["status"] for check in checks),
         "checks": checks,
     }
 
 
-def _check_install(
-    plugin_root: Path | None,
-    descriptor: PluginDescriptor | None,
-) -> dict[str, str]:
-    if plugin_root is None:
-        return _check("install", "error", "缺少 plugin_root")
-    if not plugin_root.exists():
-        return _check("install", "error", f"plugin_root 不存在: {plugin_root}")
-    if descriptor is not None:
-        return _check("install", "ok", f"已发现 .aka-plugin/plugin.json: {plugin_root}")
-    if (plugin_root / "plugin.py").exists():
-        return _check("install", "ok", f"builtin 插件目录存在: {plugin_root}")
-    return _check("install", "error", f"目录存在但缺少插件声明: {plugin_root}")
+def _find_plugin_root(plugin_id: str, plugins_home: Path | None) -> Path | None:
+    name, separator, marketplace = plugin_id.partition("@")
+    if not separator:
+        root = Path(__file__).resolve().parents[2] / "plugins" / name
+        return root if (root / "plugin.py").exists() else None
+    base = plugins_root(plugins_home) / "cache" / marketplace / name
+    versions = sorted(path for path in base.iterdir() if path.is_dir()) if base.is_dir() else []
+    return versions[-1] if versions and (versions[-1] / "plugin.py").exists() else None
 
 
-def _check_policy(entry: dict[str, object]) -> dict[str, str]:
-    enabled = bool(entry.get("enabled", True))
-    local_disabled = bool(entry.get("local_disabled", False))
-    active = bool(entry.get("active", False))
-    status = "ok"
-    if not enabled or local_disabled or not active:
-        status = "warn"
-    detail = (
-        f"enabled={str(enabled).lower()} "
-        f"local_disabled={str(local_disabled).lower()} "
-        f"active={str(active).lower()}"
+def _load_plugin_class(plugin_root: Path) -> type:
+    module_name = f"akasic_plugin_doctor_{uuid.uuid4().hex}"
+    path = plugin_root / "plugin.py"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        path,
+        submodule_search_locations=[str(plugin_root)],
     )
-    return _check("policy", status, detail)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载 {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        plugin_class = plugin_registry._classes.get(module_name)
+        if plugin_class is None:
+            raise ValueError("plugin.py 未声明 Plugin 子类")
+        return plugin_class
+    finally:
+        plugin_registry.remove_plugin(module_name)
+        sys.modules.pop(module_name, None)
 
 
-def _check_lifecycle(entry: dict[str, object]) -> dict[str, str]:
-    capabilities = _as_dict(entry.get("capabilities"))
-    if not bool(capabilities.get("lifecycle", False)):
-        return _check("lifecycle", "n/a", "未声明 lifecycle")
-    lifecycle_entry = str(entry.get("lifecycle_entry") or "").strip()
-    if not lifecycle_entry:
-        return _check("lifecycle", "error", "capabilities.lifecycle=true 但缺少 lifecycle_entry")
-    if not Path(lifecycle_entry).exists():
-        return _check("lifecycle", "error", f"lifecycle_entry 不存在: {lifecycle_entry}")
-    if bool(entry.get("active", False)):
-        return _check("lifecycle", "ok", "声明存在且当前 active=true")
-    return _check("lifecycle", "warn", "声明存在但当前 active=false，可能需要重启或被运行态 gating")
-
-
-def _check_skills(
-    plugin_id: str,
-    entry: dict[str, object],
-    workspace: Path,
-) -> dict[str, str]:
-    capabilities = _as_dict(entry.get("capabilities"))
-    if not bool(capabilities.get("skills", False)):
-        return _check("skills", "n/a", "未声明 skills")
-    normal_skills = _as_str_list(entry.get("skills"))
-    drift_skills = _as_str_list(entry.get("drift_skills"))
-    normal_missing = [
-        name
-        for name in normal_skills
-        if not (workspace / "skills" / name).is_symlink()
-    ]
-    base_name = plugin_id.split("@", 1)[0]
-    drift_missing = [
-        name
-        for name in drift_skills
-        if not (workspace / "drift" / "skills" / f"{base_name}:{name}").is_symlink()
-    ]
-    expected = len(normal_skills) + len(drift_skills)
-    if expected == 0:
-        return _check("skills", "warn", "capabilities.skills=true 但 registry 里没有 skill")
-    missing = normal_missing + [f"{base_name}:{name}" for name in drift_missing]
-    if not missing:
-        return _check("skills", "ok", f"共 {expected} 个 skill 软链接已就位")
-    return _check("skills", "warn", f"缺少软链接: {', '.join(missing)}")
-
-
-def _check_mcp(
-    entry: dict[str, object],
-    descriptor: PluginDescriptor | None,
-) -> dict[str, str]:
-    capabilities = _as_dict(entry.get("capabilities"))
-    if not bool(capabilities.get("mcp", False)):
-        return _check("mcp", "n/a", "未声明 MCP")
-    server_names = _as_str_list(entry.get("mcp_servers"))
-    if not server_names:
-        return _check("mcp", "error", "capabilities.mcp=true 但 registry 里没有 mcp_servers")
-    if descriptor is None:
-        return _check("mcp", "warn", f"registry 声明了 {len(server_names)} 个 MCP server，未校验 manifest")
-    declared_servers = set(descriptor.mcp_servers.keys())
-    missing = [name for name in server_names if name not in declared_servers]
-    if missing:
-        return _check("mcp", "error", f"manifest 未声明 server: {', '.join(missing)}")
-    return _check("mcp", "ok", f"manifest 已声明 {len(server_names)} 个 MCP server")
+def _check_capabilities(plugin_class: type, plugin_root: Path, workspace: Path) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    for label, roots, target in (
+        ("skills", plugin_class.skill_roots(), workspace / "skills"),
+        ("drift_skills", plugin_class.drift_skill_roots(), workspace / "drift" / "skills"),
+    ):
+        missing = [raw for raw in roots if not (plugin_root / raw).is_dir()]
+        links = [child.name for raw in roots for child in (plugin_root / raw).iterdir() if child.is_dir()]
+        unlinked = [name for name in links if not (target / name).is_symlink()]
+        status = "error" if missing else "warn" if unlinked else "ok"
+        checks.append(_check(label, status, f"roots={len(roots)} missing={missing} unlinked={unlinked}"))
+    servers = plugin_class.mcp_servers()
+    invalid = [item for item in servers if not isinstance(item, McpServerSpec)]
+    checks.append(_check("mcp", "error" if invalid else "ok", f"servers={len(servers)}"))
+    return checks
 
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:
-    return {
-        "name": name,
-        "status": status,
-        "detail": detail,
-    }
+    return {"name": name, "status": status, "detail": detail}
 
 
 def _merge_status(statuses: Any) -> str:
@@ -196,33 +133,3 @@ def _merge_status(statuses: Any) -> str:
     if any(value in {"warn", "degraded"} for value in values):
         return "degraded"
     return "healthy"
-
-
-def _load_memory_engine_name(config_path: str) -> str:
-    try:
-        config = Config.load(config_path)
-    except Exception:
-        return ""
-    return (config.memory.engine or "").strip() or "default"
-
-
-def _as_dict(value: object) -> dict[str, object]:
-    if isinstance(value, dict):
-        return cast(dict[str, object], value)
-    return {}
-
-
-def _as_str_list(value: object) -> list[str]:
-    if isinstance(value, str):
-        stripped = value.strip()
-        return [stripped] if stripped else []
-    if not isinstance(value, list):
-        return []
-    result: list[str] = []
-    for item in cast(list[object], value):
-        if not isinstance(item, str):
-            continue
-        stripped = item.strip()
-        if stripped:
-            result.append(stripped)
-    return result

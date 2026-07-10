@@ -53,10 +53,17 @@ def _get_instance(name: str):
 @pytest.mark.asyncio
 async def test_plugin_config_model_validates_and_injects_config(tmp_path: Path):
     _write_typed_plugin(tmp_path)
+    plugins_home = tmp_path / ".akashic-plugin"
+    data_dir = plugins_home / "data" / "typed-builtin"
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.local.toml").write_text(
+        'api_key = "secret"\nmax_results = 9\n',
+        encoding="utf-8",
+    )
     manager = PluginManager(
         plugin_dirs=[tmp_path],
         event_bus=EventBus(),
-        plugin_configs={"typed": {"api_key": "secret", "max_results": 9}},
+        installed_cache_root=plugins_home / "cache",
     )
 
     await manager.load_all()
@@ -69,10 +76,14 @@ async def test_plugin_config_model_validates_and_injects_config(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_plugin_config_model_failure_skips_plugin(tmp_path: Path):
     _write_typed_plugin(tmp_path)
+    plugins_home = tmp_path / ".akashic-plugin"
+    data_dir = plugins_home / "data" / "typed-builtin"
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.local.toml").write_text('max_results = "bad"\n', encoding="utf-8")
     manager = PluginManager(
         plugin_dirs=[tmp_path],
         event_bus=EventBus(),
-        plugin_configs={"typed": {"max_results": "bad"}},
+        installed_cache_root=plugins_home / "cache",
     )
 
     await manager.load_all()
@@ -80,7 +91,7 @@ async def test_plugin_config_model_failure_skips_plugin(tmp_path: Path):
     assert manager.loaded_count == 0
 
 
-def test_config_load_resolves_plugin_env_and_legacy_qqbot(tmp_path: Path, monkeypatch):
+def test_config_load_ignores_plugin_owned_sections(tmp_path: Path, monkeypatch):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
@@ -110,6 +121,4 @@ allow_from = ["user-openid"]
 
     config = Config.load(config_path)
 
-    assert config.plugins["typed"]["api_key"] == "plugin-secret"
-    assert config.plugins["qqbot"]["client_secret"] == "qq-secret"
-    assert config.plugins["qqbot"]["allow_from"] == ["user-openid"]
+    assert not hasattr(config, "plugins")

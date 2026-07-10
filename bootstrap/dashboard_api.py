@@ -21,6 +21,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from agent.plugins.manifest import load_plugin_manifest
+from agent.plugins.source_resolver import resolve_plugin_sources
 
 from agent.memory import MemoryStore
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
@@ -46,34 +48,21 @@ def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
                 continue
             result[plugin_dir.name] = plugin_dir
 
-    registry_path = Path.home() / ".akashic-plugin" / "registry.json"
-    if not registry_path.exists():
-        return result
     try:
-        loaded = json.loads(registry_path.read_text(encoding="utf-8"))
+        manifest = load_plugin_manifest()
     except Exception as e:
-        logger.warning("插件注册表读取失败 (%s): %s", registry_path, e)
+        logger.warning("插件清单读取失败: %s", e)
         return result
-    if not isinstance(loaded, dict):
-        return result
-    raw_plugins = loaded.get("plugins")
-    if not isinstance(raw_plugins, dict):
-        return result
-    for raw_plugin_id, raw_entry in sorted(raw_plugins.items()):
-        if not isinstance(raw_plugin_id, str) or not isinstance(raw_entry, dict):
+    cache_root = Path.home() / ".akashic-plugin" / "cache"
+    for source in resolve_plugin_sources([], installed_cache_root=cache_root):
+        plugin_name = source.plugin_root.parent.name
+        plugin_id = f"{plugin_name}@{source.marketplace}"
+        if manifest.get(plugin_id, True) is False:
             continue
-        entry = cast(dict[str, object], raw_entry)
-        if str(entry.get("source_type") or "") != "installed":
-            continue
-        if entry.get("active") is False:
-            continue
-        plugin_root_text = str(entry.get("plugin_root") or "").strip()
-        if not plugin_root_text:
-            continue
-        plugin_root = Path(plugin_root_text).resolve(strict=False)
+        plugin_root = source.plugin_root.resolve(strict=False)
         if not plugin_root.is_dir() or _is_plugin_disabled(plugin_root):
             continue
-        result[raw_plugin_id] = plugin_root
+        result[plugin_id] = plugin_root
     return result
 
 

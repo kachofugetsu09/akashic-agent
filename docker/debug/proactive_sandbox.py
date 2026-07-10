@@ -107,7 +107,6 @@ def reset(workspace: Path) -> None:
     _assert_sandbox_path(workspace)
     shutil.rmtree(workspace, ignore_errors=True)
     workspace.mkdir(parents=True)
-    _write_sources(workspace)
     skill_dir = workspace / "drift" / "skills" / SKILL_NAME
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -128,7 +127,6 @@ def reset(workspace: Path) -> None:
 
 def inject_content(workspace: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    _write_sources(workspace)
     db_path = workspace / "feed-data" / "feed_mcp.sqlite3"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now(UTC).isoformat()
@@ -190,27 +188,6 @@ def clear_content(workspace: Path) -> None:
         conn.execute("DELETE FROM items")
 
 
-def _write_sources(workspace: Path) -> None:
-    (workspace / "proactive_sources.json").write_text(
-        json.dumps(
-            {
-                "sources": [
-                    {
-                        "server": "feed",
-                        "channel": "content",
-                        "get_tool": "get_proactive_events",
-                        "ack_tool": "acknowledge_events",
-                        "enabled": True,
-                    }
-                ]
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-
 def _config(mode: str) -> ProactiveConfig:
     return ProactiveConfig(
         enabled=True,
@@ -251,7 +228,6 @@ async def tick(
         tool_registry=tools,
         workspace=workspace,
         session_manager=sessions,
-        plugin_configs={"daynight_gate": {"enabled": False}},
         installed_cache_root=installed_cache,
     )
     mcp = McpServerRegistry(workspace / "mcp_servers.json", tools)
@@ -322,6 +298,7 @@ async def tick(
         proactive_lifecycles=plugins.proactive_lifecycles,
         proactive_module_factories=plugins.proactive_module_factories,
         proactive_runtime_factories=plugins.proactive_runtime_factories,
+        proactive_sources=plugins.proactive_sources,
     )
     try:
         await loop._proactive_kernel.start()

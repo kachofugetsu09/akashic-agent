@@ -20,6 +20,11 @@ from agent.plugins.jobs import (
     PluginJobContext,
     PluginJobSpec,
 )
+from agent.plugins.specs import (
+    McpServerSpec,
+    ProactiveSourceSpec,
+    RegisteredProactiveSource,
+)
 
 __all__ = [
     "Plugin",
@@ -30,6 +35,9 @@ __all__ = [
     "IntervalTrigger",
     "PluginJobContext",
     "PluginJobSpec",
+    "McpServerSpec",
+    "ProactiveSourceSpec",
+    "RegisteredProactiveSource",
     "on_before_turn",
     "on_before_reasoning",
     "on_before_step",

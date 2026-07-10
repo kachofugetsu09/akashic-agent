@@ -3,9 +3,10 @@ from __future__ import annotations
 import functools
 import importlib.util
 import inspect
-import json
 import logging
+import os
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
@@ -13,8 +14,12 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
-from agent.plugins.aka_descriptor import PluginDescriptor, load_plugin_descriptor
-from agent.plugins.global_registry import replace_plugin_registry
+from agent.plugins.manifest import load_plugin_manifest, write_plugin_manifest
+from agent.plugins.specs import (
+    McpServerSpec,
+    ProactiveSourceSpec,
+    RegisteredProactiveSource,
+)
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterStepCtx,
@@ -56,7 +61,7 @@ class ActivePluginInfo:
     plugin_dir: Path
     manifest: dict[str, object]
     module_path: str
-    declares_aka_plugin: bool = False
+    declares_aka_plugin: bool = True
     skill_roots: tuple[Path, ...] = ()
     drift_skill_roots: tuple[Path, ...] = ()
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -73,7 +78,6 @@ class PluginManager:
         session_manager: Any = None,
         memory_engine: Any = None,
         llm: PluginLlmService | None = None,
-        plugin_configs: dict[str, dict[str, Any]] | None = None,
         installed_cache_root: Path | None = None,
     ) -> None:
         self._dirs = plugin_dirs
@@ -83,7 +87,6 @@ class PluginManager:
         self._session_manager = session_manager
         self._memory_engine = memory_engine
         self._llm = llm
-        self._plugin_configs = plugin_configs or {}
         self._installed_cache_root = installed_cache_root
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
@@ -99,6 +102,7 @@ class PluginManager:
         self._proactive_lifecycles: list[object] = []
         self._proactive_module_factories: list[object] = []
         self._proactive_runtime_factories: list[object] = []
+        self._proactive_sources: list[RegisteredProactiveSource] = []
         self._jobs: list[RegisteredPluginJob] = []
         self._active_plugins: dict[str, ActivePluginInfo] = {}
 
@@ -159,6 +163,10 @@ class PluginManager:
         return list(self._proactive_runtime_factories)
 
     @property
+    def proactive_sources(self) -> list[RegisteredProactiveSource]:
+        return list(self._proactive_sources)
+
+    @property
     def jobs(self) -> list[RegisteredPluginJob]:
         return list(self._jobs)
 
@@ -171,57 +179,17 @@ class PluginManager:
         return list(self._dirs)
 
     def active_plugins(self) -> list[ActivePluginInfo]:
-        return list(self._active_plugins.values())
+        return [
+            plugin
+            for module_path, plugin in self._active_plugins.items()
+            if self._registry_active(module_path)
+        ]
 
-    def _plugin_policy(self, plugin_id: str) -> dict[str, Any]:
-        exact = self._plugin_configs.get(plugin_id)
-        if isinstance(exact, dict):
-            return exact
-        base_name = plugin_id.split("@", 1)[0]
-        fallback = self._plugin_configs.get(base_name)
-        if isinstance(fallback, dict):
-            return fallback
-        return {}
-
-    def sync_global_registry(self, *, plugins_home: Path | None = None) -> Path:
-        entries: dict[str, dict[str, object]] = {}
+    def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
+        entries = load_plugin_manifest(plugins_home)
         for mod in self.discover():
-            plugin_dir = Path(mod["plugin_root"])
-            descriptor = load_plugin_descriptor(plugin_dir)
-            plugin_id = _resolve_plugin_id(mod, descriptor)
-            plugin_policy = self._plugin_policy(plugin_id)
-            local_disabled = _is_plugin_disabled(plugin_dir)
-            skill_roots = _skill_roots_for_policy(plugin_policy, descriptor)
-            drift_skill_roots = _drift_skill_roots_for_policy(plugin_policy, descriptor)
-            mcp_servers = _mcp_servers_for_policy(plugin_policy, descriptor)
-            lifecycle_entry = (
-                _resolve_lifecycle_module_path(plugin_dir, descriptor)
-                if _capability_enabled(plugin_policy, "lifecycle")
-                else None
-            )
-            entries[plugin_id] = {
-                "plugin_id": plugin_id,
-                "name": descriptor.name if descriptor is not None else mod["name"],
-                "marketplace": mod.get("marketplace", "").strip(),
-                "source_type": mod.get("source_type", "builtin"),
-                "version": descriptor.version if descriptor is not None else "",
-                "description": descriptor.description if descriptor is not None else "",
-                "enabled": _plugin_enabled(plugin_policy),
-                "local_disabled": local_disabled,
-                "active": self._registry_active(mod["import_path"]),
-                "plugin_root": str(plugin_dir),
-                "data_dir": str(_resolve_plugin_data_dir(descriptor, mod) or ""),
-                "lifecycle_entry": str(lifecycle_entry or ""),
-                "capabilities": {
-                    "lifecycle": bool(lifecycle_entry),
-                    "skills": bool(skill_roots or drift_skill_roots),
-                    "mcp": bool(mcp_servers),
-                },
-                "skills": _collect_skill_names(skill_roots),
-                "drift_skills": _collect_skill_names(drift_skill_roots),
-                "mcp_servers": sorted(mcp_servers.keys()),
-            }
-        return replace_plugin_registry(entries, plugins_home=plugins_home)
+            entries.setdefault(_resolve_plugin_id(mod), True)
+        return write_plugin_manifest(entries, plugins_home=plugins_home)
 
     def _registry_active(self, module_path: str) -> bool:
         if module_path not in self._active_plugins:
@@ -261,15 +229,14 @@ class PluginManager:
             self._dirs,
             installed_cache_root=self._installed_cache_root,
         ):
-            descriptor = load_plugin_descriptor(source.plugin_root)
-            name = descriptor.name if descriptor is not None else source.plugin_root.name
+            name = source.plugin_root.parent.name if source.source_type == "installed" else source.plugin_root.name
             if name in seen_names and source.source_type == "builtin":
                 logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
                 continue
             seen_names.add(name)
             import_suffix = name.replace("-", "_").replace("@", "_")
             import_source = source.marketplace or source.plugin_root.parent.name
-            module_path = _resolve_lifecycle_module_path(source.plugin_root, descriptor)
+            module_path = source.plugin_root / "plugin.py"
             mods.append({
                 "name": name,
                 "plugin_root": str(source.plugin_root),
@@ -287,14 +254,13 @@ class PluginManager:
     async def _load_one(self, mod: dict[str, str]) -> None:
         mp = mod["import_path"]
         plugin_dir = Path(mod["plugin_root"])
-        descriptor = load_plugin_descriptor(plugin_dir)
-        initial_plugin_id = _resolve_plugin_id(mod, descriptor)
-        plugin_policy = self._plugin_policy(initial_plugin_id)
+        initial_plugin_id = _resolve_plugin_id(mod)
         # 1. 幂等：已加载过直接跳过
         if mp in self._loaded:
             return
-        if not _plugin_enabled(plugin_policy):
-            logger.info("插件已禁用（config.plugins）: %s", initial_plugin_id)
+        plugin_manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
+        if plugin_manifest.get(initial_plugin_id, True) is False:
+            logger.info("插件已禁用（manifest.toml）: %s", initial_plugin_id)
             return
         # 1b. 本地禁用标记存在时跳过
         if _is_plugin_disabled(plugin_dir):
@@ -314,8 +280,9 @@ class PluginManager:
         proactive_lifecycle_count_before = len(self._proactive_lifecycles)
         proactive_factory_count_before = len(self._proactive_module_factories)
         proactive_runtime_factory_count_before = len(self._proactive_runtime_factories)
+        proactive_source_count_before = len(self._proactive_sources)
         job_count_before = len(self._jobs)
-        module_path = mod["module_path"].strip() if _capability_enabled(plugin_policy, "lifecycle") else ""
+        module_path = mod["module_path"].strip()
         if module_path:
             try:
                 self._import_plugin(mp, Path(module_path))
@@ -327,17 +294,20 @@ class PluginManager:
                 logger.warning("插件 %s 未注册类", mod["name"])
                 return
             instance = cls()
-            manifest = _apply_manifest(instance, plugin_dir, descriptor)
-            plugin_id = (
-                _resolve_plugin_id(mod, descriptor)
-                if descriptor is not None
-                else str(instance.name) if instance.name else mod["name"]
-            )
+            name = str(instance.name or mod["name"]).strip()
+            if not name:
+                logger.warning("插件 %s 缺少 name", mod["name"])
+                return
+            plugin_id = f"{name}@{mod['marketplace']}" if mod["marketplace"] else name
+            if plugin_id != initial_plugin_id:
+                raise RuntimeError(
+                    f"插件目录身份与声明不一致: directory={initial_plugin_id} declared={plugin_id}"
+                )
+            data_dir = _resolve_plugin_data_dir(name, mod, self._installed_cache_root)
             try:
                 plugin_config = _load_plugin_config(
-                    plugin_dir,
+                    data_dir,
                     getattr(cls, "ConfigModel", None),
-                    self._plugin_policy(plugin_id) or self._plugin_policy(initial_plugin_id),
                 )
             except _PluginConfigError as e:
                 logger.warning("插件 %s 配置无效，跳过: %s", mod["name"], e)
@@ -348,8 +318,8 @@ class PluginManager:
                 tool_registry=self._tool_registry,
                 plugin_id=plugin_id,
                 plugin_dir=plugin_dir,
-                data_dir=_resolve_plugin_data_dir(descriptor, mod),
-                kv_store=PluginKVStore(plugin_dir / ".kv.json"),
+                data_dir=data_dir,
+                kv_store=PluginKVStore(data_dir / ".kv.json"),
                 config=plugin_config,
                 workspace=self._workspace,
                 session_manager=self._session_manager,
@@ -371,6 +341,7 @@ class PluginManager:
             self._collect_proactive_lifecycles(instance)
             self._collect_proactive_module_factories(instance)
             self._collect_proactive_runtime_factories(instance)
+            self._collect_proactive_sources(instance, plugin_id)
             self._collect_jobs(instance, plugin_id)
             try:
                 if hasattr(instance, "initialize"):
@@ -393,21 +364,29 @@ class PluginManager:
                 del self._proactive_lifecycles[proactive_lifecycle_count_before:]
                 del self._proactive_module_factories[proactive_factory_count_before:]
                 del self._proactive_runtime_factories[proactive_runtime_factory_count_before:]
+                del self._proactive_sources[proactive_source_count_before:]
                 del self._jobs[job_count_before:]
                 return
+            manifest: dict[str, object] = {
+                "name": name,
+                "version": str(instance.version or ""),
+                "desc": str(instance.desc or ""),
+                "author": str(instance.author or ""),
+            }
+            skill_roots = _resolve_declared_roots(plugin_dir, cls.skill_roots())
+            drift_skill_roots = _resolve_declared_roots(plugin_dir, cls.drift_skill_roots())
+            mcp_servers = _resolve_mcp_servers(plugin_dir, data_dir, cls.mcp_servers())
         else:
-            manifest = _descriptor_manifest(descriptor)
-            plugin_id = initial_plugin_id
+            raise RuntimeError(f"插件缺少 plugin.py: {plugin_dir}")
         self._loaded.add(mp)
         self._active_plugins[mp] = ActivePluginInfo(
             plugin_id=plugin_id,
             plugin_dir=plugin_dir,
             manifest=manifest,
             module_path=mp,
-            declares_aka_plugin=descriptor is not None,
-            skill_roots=_skill_roots_for_policy(plugin_policy, descriptor),
-            drift_skill_roots=_drift_skill_roots_for_policy(plugin_policy, descriptor),
-            mcp_servers=_mcp_servers_for_policy(plugin_policy, descriptor),
+            skill_roots=skill_roots,
+            drift_skill_roots=drift_skill_roots,
+            mcp_servers=mcp_servers,
         )
         if instance is not None:
             self._collect_channels(instance)
@@ -568,6 +547,22 @@ class PluginManager:
             self._proactive_runtime_factories,
         )
 
+    def _collect_proactive_sources(self, instance: Any, plugin_id: str) -> None:
+        seen = {source.spec.id for source in self._proactive_sources if source.plugin_id == plugin_id}
+        for source in _load_module_list(instance, "proactive_sources"):
+            if not isinstance(source, ProactiveSourceSpec):
+                raise RuntimeError(
+                    f"插件 {plugin_id}.proactive_sources 返回值不是 ProactiveSourceSpec"
+                )
+            if not source.id or source.id in seen:
+                raise RuntimeError(f"插件 {plugin_id} proactive source id 重复或为空: {source.id!r}")
+            if not source.channels or not source.server or not source.fetch_tool:
+                raise RuntimeError(f"插件 {plugin_id} proactive source 声明不完整: {source.id}")
+            seen.add(source.id)
+            self._proactive_sources.append(
+                RegisteredProactiveSource(plugin_id=plugin_id, spec=source)
+            )
+
     def _collect_channels(self, instance: Any) -> None:
         for channel in _load_module_list(instance, "channels"):
             self._channels.append(cast(Channel, channel))
@@ -625,6 +620,7 @@ class PluginManager:
         self._proactive_lifecycles.clear()
         self._proactive_module_factories.clear()
         self._proactive_runtime_factories.clear()
+        self._proactive_sources.clear()
         self._jobs.clear()
         self._channels.clear()
 
@@ -634,54 +630,23 @@ class _PluginConfigError(Exception):
 
 
 def _load_plugin_config(
-    plugin_dir: Path,
+    data_dir: Path,
     config_model: type[BaseModel] | None = None,
-    raw_config: dict[str, Any] | None = None,
 ) -> Any:
+    config_path = data_dir / "config.local.toml"
+    raw_config: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            raw_config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            raise _PluginConfigError(str(e)) from e
     if config_model is not None:
         try:
-            return config_model.model_validate(raw_config or {})
+            return config_model.model_validate(raw_config)
         except ValidationError as e:
             raise _PluginConfigError(_format_validation_error(e)) from e
-    # 1. 读取 _conf_schema.json，提取每个字段的 default 值
     from agent.plugins.config import PluginConfig
-    schema_path = plugin_dir / "_conf_schema.json"
-    if not schema_path.exists():
-        return None
-    try:
-        loaded = json.loads(schema_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.warning("_conf_schema.json 读取失败 (%s): %s", plugin_dir, e)
-        return None
-    if not isinstance(loaded, dict):
-        logger.warning("_conf_schema.json 格式错误，期望 dict (%s)", plugin_dir)
-        return None
-    raw: dict[str, object] = cast("dict[str, object]", loaded)
-    values: dict[str, Any] = {}
-    for key, spec in raw.items():
-        if not isinstance(key, str):
-            continue
-        if not isinstance(spec, dict):
-            continue
-        if "default" in spec:
-            values[key] = spec["default"]
-    # 2. 读取 plugin_config.json，用户级覆盖默认值
-    override_path = plugin_dir / "plugin_config.json"
-    if override_path.exists():
-        try:
-            override = json.loads(override_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning("plugin_config.json 读取失败 (%s): %s", plugin_dir, e)
-        else:
-            if isinstance(override, dict):
-                raw_override: dict[str, object] = cast("dict[str, object]", override)
-                for key, value in raw_override.items():
-                    if not isinstance(key, str):
-                        continue
-                    values[key] = value
-            else:
-                logger.warning("plugin_config.json 格式错误，期望 dict (%s)", plugin_dir)
-    return PluginConfig(values)
+    return PluginConfig(raw_config) if raw_config else None
 
 
 def _format_validation_error(error: ValidationError) -> str:
@@ -712,146 +677,106 @@ def _load_module_list(instance: Any, method_name: str) -> list[object]:
     return loaded
 
 
-_MANIFEST_FIELDS = ("name", "version", "desc", "author")
-
-
-def _apply_manifest(
-    instance: Any,
-    plugin_dir: Path,
-    descriptor: PluginDescriptor | None = None,
-) -> dict[str, object]:
-    if descriptor is not None:
-        raw = _descriptor_manifest(descriptor)
-        _apply_manifest_fields(instance, raw)
-        return raw
-    manifest_path = plugin_dir / "manifest.yaml"
-    if not manifest_path.exists():
-        return {}
-    try:
-        import yaml
-        loaded = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.warning("manifest.yaml 读取失败 (%s): %s", plugin_dir, e)
-        return {}
-    if not isinstance(loaded, dict):
-        logger.warning("manifest.yaml 格式错误，期望 dict (%s)", plugin_dir)
-        return {}
-    raw: dict[str, object] = cast("dict[str, object]", loaded)
-    _apply_manifest_fields(instance, raw)
-    return raw
-
-
-def _descriptor_manifest(descriptor: PluginDescriptor | None) -> dict[str, object]:
-    if descriptor is None:
-        return {}
-    return {
-        **descriptor.raw_manifest,
-        "name": descriptor.name,
-        "version": descriptor.version,
-        "desc": descriptor.description,
-    }
-
-
-def _apply_manifest_fields(instance: Any, raw: dict[str, object]) -> None:
-    for field in _MANIFEST_FIELDS:
-        val = raw.get(field)
-        if val is not None:
-            setattr(instance, field, str(val))
-
-
-def _resolve_lifecycle_module_path(
-    plugin_dir: Path,
-    descriptor: PluginDescriptor | None,
-) -> Path | None:
-    if descriptor is not None:
-        return descriptor.lifecycle_entry
-    plugin_py = plugin_dir / "plugin.py"
-    if plugin_py.exists():
-        return plugin_py
-    return None
-
-
-def _resolve_plugin_id(
-    mod: dict[str, str],
-    descriptor: PluginDescriptor | None,
-) -> str:
-    name = descriptor.name if descriptor is not None else mod["name"]
+def _resolve_plugin_id(mod: dict[str, str]) -> str:
+    name = mod["name"]
     marketplace = mod.get("marketplace", "").strip()
     if not marketplace:
         return name
     return f"{name}@{marketplace}"
 
 
-def _plugin_enabled(plugin_policy: dict[str, Any]) -> bool:
-    enabled = plugin_policy.get("enabled")
-    if isinstance(enabled, bool):
-        return enabled
-    return True
-
-
-def _capability_enabled(
-    plugin_policy: dict[str, Any],
-    capability: str,
-) -> bool:
-    capabilities = plugin_policy.get("capabilities")
-    if not isinstance(capabilities, dict):
-        return True
-    capability_value = capabilities.get(capability)
-    if not isinstance(capability_value, dict):
-        return True
-    enabled = capability_value.get("enabled")
-    if isinstance(enabled, bool):
-        return enabled
-    return True
-
-
-def _skill_roots_for_policy(
-    plugin_policy: dict[str, Any],
-    descriptor: PluginDescriptor | None,
-) -> tuple[Path, ...]:
-    if descriptor is None or not _capability_enabled(plugin_policy, "skills"):
-        return ()
-    return descriptor.skill_roots
-
-
-def _drift_skill_roots_for_policy(
-    plugin_policy: dict[str, Any],
-    descriptor: PluginDescriptor | None,
-) -> tuple[Path, ...]:
-    if descriptor is None or not _capability_enabled(plugin_policy, "skills"):
-        return ()
-    return descriptor.drift_skill_roots
-
-
-def _mcp_servers_for_policy(
-    plugin_policy: dict[str, Any],
-    descriptor: PluginDescriptor | None,
-) -> dict[str, dict[str, Any]]:
-    if descriptor is None or not _capability_enabled(plugin_policy, "mcp"):
-        return {}
-    raw_servers = descriptor.mcp_servers
-    configured_servers = plugin_policy.get("mcp_servers")
-    if not isinstance(configured_servers, dict):
-        return dict(raw_servers)
-    filtered: dict[str, dict[str, Any]] = {}
-    for server_name, config in raw_servers.items():
-        policy = configured_servers.get(server_name)
-        if isinstance(policy, dict):
-            enabled = policy.get("enabled")
-            if isinstance(enabled, bool) and not enabled:
-                continue
-        filtered[server_name] = dict(config)
-    return filtered
-
-
 def _resolve_plugin_data_dir(
-    descriptor: PluginDescriptor | None,
+    name: str,
     mod: dict[str, str],
-) -> Path | None:
+    installed_cache_root: Path | None,
+) -> Path:
     marketplace = mod.get("marketplace", "").strip()
-    if descriptor is None or not marketplace:
-        return None
-    return Path.home() / ".akashic-plugin" / "data" / f"{descriptor.name}-{marketplace}"
+    suffix = marketplace or "builtin"
+    data_dir = _plugins_home(installed_cache_root) / "data" / f"{name}-{suffix}"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
+def _plugins_home(installed_cache_root: Path | None) -> Path:
+    if installed_cache_root is not None:
+        return installed_cache_root.parent
+    return Path.home() / ".akashic-plugin"
+
+
+def _resolve_declared_roots(
+    plugin_dir: Path,
+    declared: tuple[str, ...],
+) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for raw_path in declared:
+        path = (plugin_dir / raw_path).resolve(strict=False)
+        if not path.is_dir():
+            raise RuntimeError(f"插件能力目录不存在: {path}")
+        roots.append(path)
+    return tuple(roots)
+
+
+def _resolve_mcp_servers(
+    plugin_dir: Path,
+    data_dir: Path,
+    declared: list[McpServerSpec],
+) -> dict[str, dict[str, Any]]:
+    servers: dict[str, dict[str, Any]] = {}
+    for spec in declared:
+        if not isinstance(spec, McpServerSpec) or not spec.name or not spec.command:
+            raise RuntimeError(f"插件 MCP server 声明无效: {spec!r}")
+        if spec.name in servers:
+            raise RuntimeError(f"插件 MCP server 名称重复: {spec.name}")
+        command = [_resolve_command_item(plugin_dir, item) for item in spec.command]
+        cwd_path = Path(spec.cwd)
+        cwd = (
+            str(cwd_path)
+            if cwd_path.is_absolute()
+            else str((plugin_dir / cwd_path).resolve(strict=False))
+        )
+        env = {**spec.env, "AKA_PLUGIN_DATA_DIR": str(data_dir)}
+        if _is_python_command(command[0]):
+            runtime_root = _resolve_mcp_runtime_root(plugin_dir, cwd, command)
+            if runtime_root is not None:
+                venv_python = _venv_python(runtime_root / ".venv")
+                if venv_python.exists():
+                    command[0] = str(venv_python)
+        servers[spec.name] = {"command": command, "env": env, "cwd": cwd}
+    return servers
+
+
+def _resolve_command_item(plugin_dir: Path, item: str) -> str:
+    path = Path(item)
+    if path.is_absolute() or ("/" not in item and "\\" not in item and not item.startswith(".")):
+        return item
+    return str((plugin_dir / path).resolve(strict=False))
+
+
+def _is_python_command(value: str) -> bool:
+    return Path(value).name.lower() in {"python", "python3", "python.exe"}
+
+
+def _resolve_mcp_runtime_root(
+    plugin_dir: Path,
+    cwd: str,
+    command: list[str],
+) -> Path | None:
+    candidates: list[Path] = []
+    if len(command) >= 2:
+        script_path = Path(command[1])
+        if script_path.is_absolute():
+            candidates.append(script_path.parent)
+    candidates.extend([Path(cwd), plugin_dir])
+    for candidate in candidates:
+        if (candidate / "requirements.txt").exists():
+            return candidate
+    return None
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
 
 
 def _collect_skill_names(skill_roots: tuple[Path, ...]) -> list[str]:

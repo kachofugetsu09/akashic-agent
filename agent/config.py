@@ -11,13 +11,11 @@ import sys
 import tomllib
 import zlib
 from pathlib import Path
-from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from agent.config_models import (
     ChannelsConfig,
     Config,
-    FitbitIntegrationConfig,
     MemoryConfig,
     MemoryEmbeddingConfig,
     PeerAgentConfig,
@@ -87,9 +85,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     proactive = _load_proactive_config(data)
     memory = _load_memory_config(data)
     peer_agents = _load_peer_agents_config(data)
-    fitbit = _load_fitbit_config(data)
     wiring = _load_wiring_config(data)
-    plugins = _load_plugins_config(data)
 
     return Config(
         provider=provider,
@@ -137,7 +133,6 @@ def load_config(path: str | Path = "config.toml") -> Config:
             llm_agent.get("base_url") or data.get("agent_base_url", "")
         ),
         memory=memory,
-        fitbit=fitbit,
         tool_search_enabled=bool(
             agent_tools.get("search_enabled", data.get("tool_search_enabled", False))
         ),
@@ -159,7 +154,6 @@ def load_config(path: str | Path = "config.toml") -> Config:
         vl_base_url=str(llm_vl.get("base_url") or data.get("vl_base_url", "")),
         peer_agents=peer_agents,
         wiring=wiring,
-        plugins=plugins,
     )
 
 
@@ -286,14 +280,6 @@ def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
     ]
 
 
-def _load_fitbit_config(data: dict) -> FitbitIntegrationConfig:
-    integrations = _as_dict(data.get("integrations"))
-    fitbit = _as_dict(integrations.get("fitbit"))
-    return FitbitIntegrationConfig(
-        enabled=bool(fitbit.get("enabled", False)),
-    )
-
-
 def _load_wiring_config(data: dict) -> WiringConfig:
     agent_cfg = _as_dict(data.get("agent"))
     raw = _as_dict(agent_cfg.get("wiring")) or data.get("wiring", {}) or {}
@@ -308,24 +294,6 @@ def _load_wiring_config(data: dict) -> WiringConfig:
         memory=str(raw.get("memory", "default") or "default"),
         toolsets=[str(name) for name in toolsets if str(name).strip()],
     )
-
-
-def _load_plugins_config(data: dict) -> dict[str, dict[str, Any]]:
-    plugins_data = _as_dict(data.get("plugins"))
-    plugins: dict[str, dict[str, Any]] = {}
-    for name, value in plugins_data.items():
-        if isinstance(name, str) and isinstance(value, dict):
-            plugins[name] = cast(dict[str, Any], _resolve_config_value(value))
-
-    legacy_qqbot = _as_dict(_as_dict(data.get("channels")).get("qqbot"))
-    if "qqbot" not in plugins and legacy_qqbot:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "[channels.qqbot] 已迁移到 [plugins.qqbot]，当前仍兼容旧配置"
-        )
-        plugins["qqbot"] = cast(dict[str, Any], _resolve_config_value(legacy_qqbot))
-    return plugins
 
 
 def _load_extra_body(data: dict) -> dict:

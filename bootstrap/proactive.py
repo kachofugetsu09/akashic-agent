@@ -7,6 +7,7 @@ from agent.config_models import Config
 from agent.looping.core import AgentLoop
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
+from agent.plugins.specs import RegisteredProactiveSource
 from agent.tools.message_push import MessagePushTool
 from bus.event_bus import EventBus
 from proactive_v2.loop import ProactiveLoop
@@ -55,6 +56,7 @@ def build_proactive_runtime(
     proactive_lifecycles: list[object] | None = None,
     proactive_module_factories: list[object] | None = None,
     proactive_runtime_factories: list[object] | None = None,
+    proactive_sources: list[RegisteredProactiveSource] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -89,6 +91,7 @@ def build_proactive_runtime(
         proactive_lifecycles=proactive_lifecycles,
         proactive_module_factories=proactive_module_factories,
         proactive_runtime_factories=proactive_runtime_factories,
+        proactive_sources=proactive_sources,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。

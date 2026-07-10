@@ -124,6 +124,7 @@ class AgentTickFactory:
     def _build_mcp_source(self) -> McpGatewaySource:
         return McpGatewaySource(
             self._deps.mcp_gateway,
+            self._deps.proactive_sources,
             content_limit=self._deps.cfg.agent_tick_content_limit,
         )
 

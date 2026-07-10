@@ -4,9 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-_AKA_PLUGIN_FILE = ".aka-plugin/plugin.json"
-
-
 @dataclass(frozen=True)
 class ResolvedPluginSource:
     plugin_root: Path
@@ -84,4 +81,4 @@ def _iter_installed_plugin_roots(installed_cache_root: Path) -> list[ResolvedPlu
 def _is_plugin_root(path: Path) -> bool:
     if not path.is_dir():
         return False
-    return (path / "plugin.py").exists() or (path / _AKA_PLUGIN_FILE).exists()
+    return (path / "plugin.py").exists()

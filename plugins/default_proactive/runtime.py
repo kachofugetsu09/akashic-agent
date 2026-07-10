@@ -479,6 +479,7 @@ class ProactiveFlowRuntime:
             content_limit=self._cfg.agent_tick_content_limit,
         )
         gw = DataGateway(
+            begin_fn=gateway_deps.begin_fn,
             alert_fn=gateway_deps.alert_fn,
             feed_fn=gateway_deps.feed_fn,
             context_fn=gateway_deps.context_fn,
@@ -504,18 +505,23 @@ class ProactiveFlowRuntime:
 
         # 2.2 把拉取结果灌入 ctx。
         ctx.mark_alerts_prefetched(gw_result.alerts)
-        fetched_contents = [
-            {
-                "id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"],
-                "event_id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"],
-                "ack_server": m["id"].split(":", 1)[0],
-                "title": m.get("title") or "",
-                "source": m.get("source") or "",
-                "url": m.get("url") or "",
-                "published_at": m.get("published_at") or "",
-            }
-            for m in gw_result.content_meta
-        ]
+        fetched_contents: list[dict[str, Any]] = []
+        for meta in gw_result.content_meta:
+            source_id, separator, event_id = str(meta["id"]).rpartition(":")
+            if not separator:
+                source_id = ""
+                event_id = str(meta["id"])
+            fetched_contents.append(
+                {
+                    "id": event_id,
+                    "event_id": event_id,
+                    "ack_server": source_id,
+                    "title": meta.get("title") or "",
+                    "source": meta.get("source") or "",
+                    "url": meta.get("url") or "",
+                    "published_at": meta.get("published_at") or "",
+                }
+            )
         ctx.mark_contents_prefetched(fetched_contents, gw_result.content_store)
         ctx.mark_context_prefetched(gw_result.context)
 

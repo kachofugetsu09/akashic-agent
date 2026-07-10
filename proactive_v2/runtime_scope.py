@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from agent.plugins.specs import RegisteredProactiveSource
 from agent.tool_hooks import ToolHook
 from agent.tools.registry import ToolRegistry
 from agent.turns.orchestrator import TurnOrchestrator
@@ -26,6 +27,7 @@ class ProactiveRuntimeScope:
     rng: Any
     workspace_context_fn: Callable[[], str]
     mcp_gateway: McpGateway
+    proactive_sources: list[RegisteredProactiveSource] = field(default_factory=list)
     shared_tools: ToolRegistry | None = None
     turn_orchestrator: TurnOrchestrator | None = None
     event_bus: EventBus | None = None

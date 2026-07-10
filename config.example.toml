@@ -87,38 +87,7 @@ websocket_open_timeout_seconds = 5.0
 # allow_from = ["your_qq_number"]
 # require_at = true
 
-[plugins.qqbot]
-# 官方 QQBot，和 NapCat QQ 通道并存。留空跳过。
-app_id = ""
-client_secret = ""
-# 私聊白名单使用官方 user_openid。
-allow_from = []
-
-# 当前实现仅启用私聊；群配置先保留为后续扩展占位。
-# [[plugins.qqbot.groups]]
-# group_openid = "GROUP_OPENID"
-# allow_from = ["MEMBER_OPENID"]
-# require_at = true
-# allow_proactive = false
-
-[plugins.feishu]
-# 飞书自建应用（长连接模式，无需公网回调）。留空跳过。
-# app_id / app_secret 来自开放平台「凭证与基础信息」。
-app_id = ""
-app_secret = ""
-# 私聊白名单填 open_id（ou_...）/ user_id / union_id，留空允许所有人。
-allow_from = []
-# 私有化部署改 domain，如 https://open.larksuite.com（Lark 国际版）。
-# domain = "https://open.feishu.cn"
-
-[plugins.daynight_gate]
-# 默认在北京时间凌晨降低主动 tick 过 gate 概率。
-enabled = true
-timezone = "Asia/Shanghai"
-start = "00:00"
-end = "06:00"
-pass_probability = 0.15
-reason = "quiet_hours"
+# 插件配置位于 ~/.akashic-plugin/data/<插件名>-<市场>/config.local.toml。
 
 # =============================================================================
 # 语义记忆
@@ -167,9 +136,6 @@ min_interval_hours = 3
 # =============================================================================
 # 其他集成（可选）
 # =============================================================================
-
-[integrations.fitbit]
-enabled = false
 
 # 可选：接入外部 Peer Agent（如 DeepResearch）
 # [[integrations.peer_agents]]

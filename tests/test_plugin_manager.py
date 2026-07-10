@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
 import shutil
 import tempfile
@@ -28,6 +29,7 @@ from proactive_v2.lifecycle import ProactiveLifecycleSpec
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "plugins"
+TEST_PLUGIN_HOME = Path(tempfile.gettempdir()) / f"akasic-plugin-tests-{os.getpid()}"
 
 
 @pytest.fixture(autouse=True)
@@ -36,14 +38,21 @@ def _clean_registry():
     plugin_registry._handlers._handlers.clear()
     plugin_registry._classes.clear()
     plugin_registry._instances.clear()
+    shutil.rmtree(TEST_PLUGIN_HOME, ignore_errors=True)
     yield
     plugin_registry._handlers._handlers.clear()
     plugin_registry._classes.clear()
     plugin_registry._instances.clear()
+    shutil.rmtree(TEST_PLUGIN_HOME, ignore_errors=True)
 
 
 def _make_manager(plugin_dirs: list[Path], *, event_bus: EventBus, tools: ToolRegistry | None = None) -> PluginManager:
-    return PluginManager(plugin_dirs=plugin_dirs, event_bus=event_bus, tool_registry=tools)
+    return PluginManager(
+        plugin_dirs=plugin_dirs,
+        event_bus=event_bus,
+        tool_registry=tools,
+        installed_cache_root=TEST_PLUGIN_HOME / "cache",
+    )
 
 
 class _FakePluginLlm:
@@ -162,18 +171,6 @@ async def test_installed_plugin_shadows_builtin_with_same_name(tmp_path: Path):
             "    name = 'shadow'\n",
             encoding="utf-8",
         )
-        (plugin_dir / ".aka-plugin").mkdir()
-        (plugin_dir / ".aka-plugin" / "plugin.json").write_text(
-            json.dumps(
-                {
-                    "name": "shadow",
-                    "version": "0.1.0",
-                    "description": "shadow plugin",
-                    "akashic": {"lifecycle": {"entry": "plugin.py"}},
-                }
-            ),
-            encoding="utf-8",
-        )
     bus = EventBus()
     mgr = PluginManager(
         plugin_dirs=[builtin_root],
@@ -194,6 +191,7 @@ async def test_plugin_job_runtime_runs_event_job():
         plugin_dirs=[FIXTURES_DIR],
         event_bus=bus,
         llm=llm,
+        installed_cache_root=TEST_PLUGIN_HOME / "cache",
     )
     await mgr.load_all()
     job = next(job for job in mgr.jobs if job.plugin_id == "jobber")
@@ -315,13 +313,13 @@ async def test_kv_store_persists_across_manager_instances():
         result = await bus2.emit(ctx)
         assert result.extra_metadata["turn_count"] == 2
 
-        kv_path = tmp_counter / ".kv.json"
+        kv_path = TEST_PLUGIN_HOME / "data" / "counter-builtin" / ".kv.json"
         assert kv_path.exists()
         data = json.loads(kv_path.read_text())
         assert data["turn_count"] == 2
 
 
-# ── manifest.yaml 测试 ────────────────────────────────────────────────────────
+# ── 程序化身份声明测试 ────────────────────────────────────────────────────────
 
 
 def _get_instance(name_or_id: str) -> Any:
@@ -336,7 +334,7 @@ def _get_instance(name_or_id: str) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_manifest_overrides_class_attributes():
+async def test_plugin_uses_class_attributes():
     bus = EventBus()
     # 用包含 manifested/ 子目录的父目录
     with tempfile.TemporaryDirectory() as tmp:
@@ -344,16 +342,16 @@ async def test_manifest_overrides_class_attributes():
         mgr = _make_manager([Path(tmp)], event_bus=bus)
         await mgr.load_all()
 
-        instance = _get_instance("manifest_name")
-        assert instance.name == "manifest_name"
-        assert instance.version == "0.2.0"
-        assert instance.desc == "from manifest"
+        instance = _get_instance("manifested")
+        assert instance.name == "manifested"
+        assert instance.version == "1.0.0"
+        assert instance.desc == "programmatic declaration"
         assert instance.author == "tester"
-        assert instance.context.plugin_id == "manifest_name"
+        assert instance.context.plugin_id == "manifested"
 
 
 @pytest.mark.asyncio
-async def test_active_plugins_exposes_loaded_manifest():
+async def test_active_plugins_exposes_programmatic_metadata():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "manifested", Path(tmp) / "manifested")
@@ -363,55 +361,33 @@ async def test_active_plugins_exposes_loaded_manifest():
 
         active = mgr.active_plugins()
         assert len(active) == 1
-        assert active[0].plugin_id == "manifest_name"
+        assert active[0].plugin_id == "manifested"
         assert active[0].plugin_dir == Path(tmp) / "manifested"
-        assert active[0].manifest["name"] == "manifest_name"
+        assert active[0].manifest["name"] == "manifested"
 
 
 @pytest.mark.asyncio
-async def test_loads_installed_aka_plugin_descriptor_without_lifecycle():
+async def test_loads_installed_programmatic_plugin():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         cache_root = Path(tmp) / "cache"
         plugin_root = cache_root / "lab" / "feed" / "0.1.0"
-        (plugin_root / ".aka-plugin").mkdir(parents=True)
+        plugin_root.mkdir(parents=True)
         (plugin_root / "skills" / "feed-manage").mkdir(parents=True)
         (plugin_root / "skills" / "feed-manage" / "SKILL.md").write_text(
             "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
             encoding="utf-8",
         )
-        (plugin_root / "mcp").mkdir()
-        (plugin_root / ".aka-plugin" / "plugin.json").write_text(
-            json.dumps(
-                {
-                    "name": "feed",
-                    "version": "0.1.0",
-                    "description": "feed plugin",
-                    "paths": {
-                        "skills": ["skills"],
-                        "mcp_servers": ["mcp/servers.json"],
-                    },
-                    "akashic": {
-                        "runtime": {"supports": ["skills", "mcp"]},
-                    },
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        (plugin_root / "mcp" / "servers.json").write_text(
-            json.dumps(
-                {
-                    "servers": {
-                        "feed": {
-                            "command": ["run_mcp.py"],
-                            "env": {"A": "1"},
-                            "cwd": ".",
-                        }
-                    }
-                },
-                ensure_ascii=False,
-            ),
+        (plugin_root / "plugin.py").write_text(
+            "from agent.plugins import McpServerSpec, Plugin\n"
+            "class FeedPlugin(Plugin):\n"
+            "    name = 'feed'\n"
+            "    version = '1.0.0'\n"
+            "    @classmethod\n"
+            "    def skill_roots(cls): return ('skills',)\n"
+            "    @classmethod\n"
+            "    def mcp_servers(cls):\n"
+            "        return [McpServerSpec(name='feed', command=('run_mcp.py',))]\n",
             encoding="utf-8",
         )
         (plugin_root / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
@@ -432,29 +408,26 @@ async def test_loads_installed_aka_plugin_descriptor_without_lifecycle():
 
 
 @pytest.mark.asyncio
-async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_path: Path):
+async def test_sync_manifest_covers_builtin_and_installed_plugins(tmp_path: Path):
     bus = EventBus()
     builtin_root = tmp_path / "plugins"
     shutil.copytree(FIXTURES_DIR / "hello", builtin_root / "hello")
 
     cache_root = tmp_path / "cache"
     installed_root = cache_root / "lab" / "feed" / "0.1.0"
-    (installed_root / ".aka-plugin").mkdir(parents=True)
+    installed_root.mkdir(parents=True)
     (installed_root / "skills" / "feed-manage").mkdir(parents=True)
     (installed_root / "skills" / "feed-manage" / "SKILL.md").write_text(
         "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
         encoding="utf-8",
     )
-    (installed_root / ".aka-plugin" / "plugin.json").write_text(
-        json.dumps(
-            {
-                "name": "feed",
-                "version": "0.1.0",
-                "description": "feed plugin",
-                "paths": {"skills": ["skills"]},
-            },
-            ensure_ascii=False,
-        ),
+    (installed_root / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills',)\n",
         encoding="utf-8",
     )
 
@@ -465,18 +438,15 @@ async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_pat
     )
     await mgr.load_all()
 
-    registry_path = mgr.sync_global_registry(plugins_home=tmp_path / ".akashic-plugin")
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
-
-    assert set(registry["plugins"]) == {"feed@lab", "hello"}
-    assert registry["plugins"]["feed@lab"]["source_type"] == "installed"
-    assert registry["plugins"]["feed@lab"]["skills"] == ["feed-manage"]
-    assert registry["plugins"]["feed@lab"]["active"] is True
-    assert registry["plugins"]["hello"]["source_type"] == "builtin"
+    manifest_path = mgr.sync_manifest(plugins_home=tmp_path / ".akashic-plugin")
+    import tomllib
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    assert set(manifest["plugins"]) == {"feed@lab", "hello"}
+    assert manifest["plugins"]["feed@lab"]["enabled"] is True
 
 
 @pytest.mark.asyncio
-async def test_sync_global_registry_marks_inactive_memory_plugin_when_engine_differs(
+async def test_active_plugins_excludes_inactive_memory_plugin(
     tmp_path: Path,
 ) -> None:
     bus = EventBus()
@@ -485,35 +455,20 @@ async def test_sync_global_registry_marks_inactive_memory_plugin_when_engine_dif
         event_bus=bus,
         workspace=tmp_path,
         memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+        installed_cache_root=tmp_path / ".akashic-plugin" / "cache",
     )
     await mgr.load_all()
 
-    registry_path = mgr.sync_global_registry(plugins_home=tmp_path / ".akashic-plugin")
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
-
-    assert registry["plugins"]["default_memory"]["active"] is False
-    assert registry["plugins"]["akasha"]["active"] is True
+    assert {plugin.plugin_id for plugin in mgr.active_plugins()} >= {"akasha"}
+    assert "default_memory" not in {plugin.plugin_id for plugin in mgr.active_plugins()}
 
 
 @pytest.mark.asyncio
-async def test_installed_plugin_uses_bare_name_config_fallback(tmp_path: Path):
+async def test_installed_plugin_reads_own_toml_config(tmp_path: Path):
     bus = EventBus()
     cache_root = tmp_path / "cache"
     installed_root = cache_root / "github" / "demo" / "0.1.0"
-    (installed_root / ".aka-plugin").mkdir(parents=True)
-    (installed_root / ".aka-plugin" / "plugin.json").write_text(
-        json.dumps(
-            {
-                "name": "demo",
-                "version": "0.1.0",
-                "akashic": {
-                    "lifecycle": {"entry": "plugin.py"},
-                },
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    installed_root.mkdir(parents=True)
     (installed_root / "plugin.py").write_text(
         "from pydantic import BaseModel\n"
         "from agent.plugins import Plugin\n"
@@ -528,17 +483,20 @@ async def test_installed_plugin_uses_bare_name_config_fallback(tmp_path: Path):
         "        return frame\n"
         "class DemoPlugin(Plugin):\n"
         "    name = 'demo'\n"
+        "    version = '1.0.0'\n"
         "    ConfigModel = DemoConfig\n"
         "    def before_turn_modules(self):\n"
         "        return [DemoModule(self.context.config.value)]\n",
         encoding="utf-8",
     )
+    data_dir = tmp_path / "data" / "demo-github"
+    data_dir.mkdir(parents=True)
+    (data_dir / "config.local.toml").write_text("value = 7\n", encoding="utf-8")
 
     mgr = PluginManager(
         plugin_dirs=[],
         installed_cache_root=cache_root,
         event_bus=bus,
-        plugin_configs={"demo": {"value": 7}},
     )
     await mgr.load_all()
 
@@ -718,11 +676,11 @@ class PhasePlugin(Plugin):
         ]
 
 
-# ── _conf_schema.json 测试 ────────────────────────────────────────────────────
+# ── config.local.toml 测试 ────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_conf_schema_defaults_injected_into_context():
+async def test_config_model_defaults_injected_into_context():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
@@ -733,7 +691,6 @@ async def test_conf_schema_defaults_injected_into_context():
         assert instance.context.config.api_key == "test-key"
         assert instance.context.config.max_results == 10
         assert instance.context.config.enabled is True
-        assert instance.context.config.get("missing", "fallback") == "fallback"
 
 
 @pytest.mark.asyncio
@@ -747,18 +704,16 @@ async def test_missing_conf_schema_leaves_config_none():
         assert instance.context.config is None
 
 
-# ── plugin_config.json 覆盖测试 ───────────────────────────────────────────────
-
-
 @pytest.mark.asyncio
-async def test_plugin_config_json_overrides_defaults():
-    """plugin_config.json 覆盖 _conf_schema.json 的 default，未覆盖字段保留原值。"""
+async def test_plugin_toml_overrides_defaults():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
-        override = {"api_key": "override-key", "enabled": False}
-        (Path(tmp) / "configured" / "plugin_config.json").write_text(
-            json.dumps(override)
+        data_dir = TEST_PLUGIN_HOME / "data" / "configured-builtin"
+        data_dir.mkdir(parents=True)
+        (data_dir / "config.local.toml").write_text(
+            'api_key = "override-key"\nenabled = false\n',
+            encoding="utf-8",
         )
         mgr = _make_manager([Path(tmp)], event_bus=bus)
         await mgr.load_all()
@@ -784,8 +739,7 @@ async def test_plugin_disabled_marker_skips_plugin():
 
 
 @pytest.mark.asyncio
-async def test_no_plugin_config_json_keeps_original_defaults():
-    """没有 plugin_config.json 时行为不变。"""
+async def test_no_plugin_toml_keeps_model_defaults():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")

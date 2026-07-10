@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import os
+import importlib.util
 import shutil
 import subprocess
 import sys
 import tempfile
-import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
-from agent.plugins.aka_descriptor import PluginDescriptor, load_plugin_descriptor
-from agent.plugins.global_registry import upsert_plugin_registry_entry
+from agent.plugins.manifest import upsert_plugin_manifest
+from agent.plugins.registry import plugin_registry
+from agent.plugins.specs import McpServerSpec
 
 
 @dataclass(frozen=True)
@@ -62,48 +63,25 @@ def install_git_plugin(
             ref_name=ref_name,
             sparse_paths=sparse_paths or [],
         )
-        descriptor = load_plugin_descriptor(clone_root)
-        if descriptor is None:
-            raise ValueError("插件缺少 .aka-plugin/plugin.json")
+        plugin_class = _load_plugin_class(clone_root)
+        plugin_name = str(getattr(plugin_class, "name", "") or "").strip()
+        plugin_version = str(getattr(plugin_class, "version", "") or "").strip()
+        if not plugin_name or not plugin_version:
+            raise ValueError("插件必须在 plugin.py 声明 name 和 version")
+        mcp_servers = _load_mcp_specs(plugin_class)
         install_result = _activate_plugin_version(
-            descriptor=descriptor,
+            plugin_name=plugin_name,
+            plugin_version=plugin_version,
+            mcp_servers=mcp_servers,
             marketplace=marketplace,
             clone_root=clone_root,
             cache_root=cache_root,
             data_root=data_root,
         )
-        installed_descriptor = load_plugin_descriptor(install_result.installed_path)
-        if installed_descriptor is None:
-            raise ValueError("安装后的插件缺少 .aka-plugin/plugin.json")
-        plugin_id = f"{descriptor.name}@{marketplace}"
-        _ = upsert_plugin_registry_entry(
+        plugin_id = f"{plugin_name}@{marketplace}"
+        _ = upsert_plugin_manifest(
             plugin_id,
-            {
-                "plugin_id": plugin_id,
-                "name": descriptor.name,
-                "marketplace": marketplace,
-                "source_type": "installed",
-                "version": descriptor.version,
-                "description": descriptor.description,
-                "enabled": True,
-                "local_disabled": False,
-                "active": False,
-                "plugin_root": str(install_result.installed_path),
-                "data_dir": str(install_result.data_path),
-                "lifecycle_entry": str(installed_descriptor.lifecycle_entry or ""),
-                "capabilities": {
-                    "lifecycle": bool(installed_descriptor.lifecycle_entry),
-                    "skills": bool(
-                        installed_descriptor.skill_roots
-                        or installed_descriptor.drift_skill_roots
-                    ),
-                    "mcp": bool(installed_descriptor.mcp_servers),
-                },
-                "skills": _collect_skill_names(installed_descriptor.skill_roots),
-                "drift_skills": _collect_skill_names(installed_descriptor.drift_skill_roots),
-                "mcp_servers": sorted(installed_descriptor.mcp_servers.keys()),
-                "install_source": source,
-            },
+            enabled=True,
             plugins_home=home,
         )
     return install_result
@@ -142,25 +120,27 @@ def _clone_git_source(
 
 def _activate_plugin_version(
     *,
-    descriptor: PluginDescriptor,
+    plugin_name: str,
+    plugin_version: str,
+    mcp_servers: list[McpServerSpec],
     marketplace: str,
     clone_root: Path,
     cache_root: Path,
     data_root: Path,
 ) -> PluginInstallResult:
-    data_path = data_root / f"{descriptor.name}-{marketplace}"
+    data_path = data_root / f"{plugin_name}-{marketplace}"
     data_path.mkdir(parents=True, exist_ok=True)
-    plugin_base = cache_root / descriptor.name
-    target_root = plugin_base / descriptor.version
+    plugin_base = cache_root / plugin_name
+    target_root = plugin_base / plugin_version
     plugin_base.mkdir(parents=True, exist_ok=True)
     if target_root.exists():
         shutil.rmtree(target_root)
     _ = shutil.copytree(clone_root, target_root)
-    _prepare_plugin_mcp_runtimes(target_root, descriptor, data_path)
-    _remove_old_versions(plugin_base, descriptor.version)
+    _prepare_plugin_mcp_runtimes(target_root, mcp_servers)
+    _remove_old_versions(plugin_base, plugin_version)
     return PluginInstallResult(
-        plugin_name=descriptor.name,
-        plugin_version=descriptor.version,
+        plugin_name=plugin_name,
+        plugin_version=plugin_version,
         marketplace=marketplace,
         installed_path=target_root,
         data_path=data_path,
@@ -179,101 +159,32 @@ def _remove_old_versions(
 
 def _prepare_plugin_mcp_runtimes(
     plugin_root: Path,
-    descriptor: PluginDescriptor,
-    data_path: Path,
+    servers: list[McpServerSpec],
 ) -> None:
-    for config_relpath in _manifest_mcp_config_paths(descriptor):
-        config_path = plugin_root / config_relpath
-        if not config_path.exists():
-            continue
-        loaded = json.loads(config_path.read_text(encoding="utf-8"))
-        if not isinstance(loaded, dict):
-            continue
-        loaded_dict = cast(dict[str, object], loaded)
-        servers = loaded_dict.get("servers")
-        if not isinstance(servers, dict):
-            continue
-        servers_dict = cast(dict[object, object], servers)
-        changed = False
-        for server_name, server_value in servers_dict.items():
-            if not isinstance(server_value, dict):
-                continue
-            server_dict = cast(dict[str, object], server_value)
-            _inject_plugin_env(server_dict, data_path)
-            if _prepare_single_mcp_server(
-                plugin_root=plugin_root,
-                server_name=str(server_name),
-                server=server_dict,
-            ):
-                changed = True
-                continue
-            changed = True
-        if changed:
-            _ = config_path.write_text(
-                json.dumps(loaded, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-
-
-def _manifest_mcp_config_paths(descriptor: PluginDescriptor) -> list[str]:
-    raw_paths = descriptor.raw_manifest.get("paths")
-    if not isinstance(raw_paths, dict):
-        return []
-    raw_paths_dict = cast(dict[str, object], raw_paths)
-    configs = raw_paths_dict.get("mcp_servers")
-    if isinstance(configs, str):
-        stripped = configs.strip()
-        return [stripped] if stripped else []
-    if not isinstance(configs, list):
-        return []
-    result: list[str] = []
-    for item in cast(list[object], configs):
-        if not isinstance(item, str):
-            continue
-        stripped = item.strip()
-        if stripped:
-            result.append(stripped)
-    return result
+    for server in servers:
+        _prepare_single_mcp_server(plugin_root=plugin_root, server=server)
 
 
 def _prepare_single_mcp_server(
     *,
     plugin_root: Path,
-    server_name: str,
-    server: dict[str, object],
-) -> bool:
-    command = server.get("command")
-    if not isinstance(command, list) or not command:
-        return False
-    command_items = [str(item) for item in cast(list[object], command)]
+    server: McpServerSpec,
+) -> None:
+    command_items = list(server.command)
     if not _is_python_command(command_items[0]):
-        return False
-    runtime_root = _resolve_mcp_runtime_root(plugin_root, server, command_items)
+        return
+    runtime_root = _resolve_mcp_runtime_root(plugin_root, server.cwd, command_items)
     if runtime_root is None:
-        return False
+        return
     requirements = runtime_root / "requirements.txt"
     if not requirements.exists():
-        return False
-    venv_python = _ensure_python_runtime(runtime_root, requirements, server_name)
-    if command_items[0] == str(venv_python):
-        return False
-    command_items[0] = str(venv_python)
-    server["command"] = command_items
-    return True
-
-
-def _inject_plugin_env(server: dict[str, object], data_path: Path) -> None:
-    env = server.get("env")
-    if not isinstance(env, dict):
-        env = {}
-        server["env"] = env
-    env_dict = cast(dict[str, object], env)
-    _ = env_dict.setdefault("AKA_PLUGIN_DATA_DIR", str(data_path))
+        return
+    _ensure_python_runtime(runtime_root, requirements, server.name)
 
 
 def _resolve_mcp_runtime_root(
     plugin_root: Path,
-    server: dict[str, object],
+    cwd_raw: str,
     command_items: list[str],
 ) -> Path | None:
     candidates: list[Path] = []
@@ -281,7 +192,6 @@ def _resolve_mcp_runtime_root(
         script_path = Path(command_items[1])
         if not script_path.is_absolute():
             candidates.append((plugin_root / script_path).resolve(strict=False).parent)
-    cwd_raw = str(server.get("cwd") or "").strip()
     if cwd_raw:
         cwd_path = Path(cwd_raw)
         resolved_cwd = (
@@ -295,6 +205,47 @@ def _resolve_mcp_runtime_root(
         if (candidate / "requirements.txt").exists():
             return candidate
     return None
+
+
+def _load_plugin_class(plugin_root: Path) -> type:
+    plugin_path = plugin_root / "plugin.py"
+    if not plugin_path.exists():
+        raise ValueError("插件缺少 plugin.py")
+    module_name = f"akasic_plugin_install_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        plugin_path,
+        submodule_search_locations=[str(plugin_root)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载插件文件: {plugin_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        plugin_class = plugin_registry._classes.get(module_name)
+        if plugin_class is None:
+            raise ValueError("plugin.py 未声明 Plugin 子类")
+        return plugin_class
+    finally:
+        plugin_registry.remove_plugin(module_name)
+        sys.modules.pop(module_name, None)
+
+
+def _load_mcp_specs(plugin_class: type) -> list[McpServerSpec]:
+    raw = plugin_class.mcp_servers()
+    if not isinstance(raw, list):
+        raise ValueError("mcp_servers() 必须返回 list")
+    result: list[McpServerSpec] = []
+    names: set[str] = set()
+    for item in raw:
+        if not isinstance(item, McpServerSpec) or not item.name or not item.command:
+            raise ValueError(f"MCP server 声明无效: {item!r}")
+        if item.name in names:
+            raise ValueError(f"MCP server 名称重复: {item.name}")
+        names.add(item.name)
+        result.append(item)
+    return result
 
 
 def _ensure_python_runtime(
@@ -325,22 +276,6 @@ def _venv_python_path(venv_dir: Path) -> Path:
 def _is_python_command(value: str) -> bool:
     name = Path(value).name.lower()
     return name in {"python", "python3", "python.exe"}
-
-
-def _collect_skill_names(skill_roots: tuple[Path, ...]) -> list[str]:
-    names: list[str] = []
-    seen: set[str] = set()
-    for root in skill_roots:
-        if not root.is_dir():
-            continue
-        for child in sorted(root.iterdir()):
-            if not child.is_dir() or not (child / "SKILL.md").exists():
-                continue
-            if child.name in seen:
-                continue
-            seen.add(child.name)
-            names.append(child.name)
-    return names
 
 
 def _run_git(args: list[str], cwd: Path | None = None) -> None:
