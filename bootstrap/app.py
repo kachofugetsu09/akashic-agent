@@ -17,6 +17,7 @@ from bootstrap.tools import CoreRuntime, build_core_runtime
 from bus.event_bus import EventBus
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.service_host import PluginServiceHost
+from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -73,6 +74,17 @@ def _stop_proactive(runtime: object | None) -> Callable[[], Awaitable[None]]:
     return stop
 
 
+def _stop_plugin_watcher(
+    watcher: PluginWatcher | None,
+) -> Callable[[], Awaitable[None]]:
+    async def stop() -> None:
+        if watcher is not None:
+            watcher.stop()
+            await watcher.wait_stopped()
+
+    return stop
+
+
 class AppRuntime:
     def __init__(self, config: Config, workspace: Path) -> None:
         self.config = config
@@ -103,6 +115,8 @@ class AppRuntime:
         self.web_chat_channel = None
         self.plugin_job_runtime: PluginJobRuntime | None = None
         self.plugin_service_host: PluginServiceHost | None = None
+        self.plugin_watcher: PluginWatcher | None = None
+        self.plugin_watcher_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
         self._memory_optimizer = None
         self._shutdown = False
@@ -187,6 +201,9 @@ class AppRuntime:
                 self.channel_host.bind_plugin_channels(channel_bindings)
                 plugin_manager.bind_channel_switcher(
                     self.channel_host.swap_plugin_channels
+                )
+                plugin_manager.bind_endpoint_switcher(
+                    self._swap_plugin_endpoints
                 )
 
             self.tasks = [
@@ -282,6 +299,14 @@ class AppRuntime:
                         resume=self.proactive_loop.resume_after_reload,
                     )
 
+            if plugin_manager is not None:
+                self.plugin_watcher = PluginWatcher(plugin_manager)
+                self.plugin_watcher_task = asyncio.create_task(
+                    self.plugin_watcher.run(),
+                    name="plugin_watcher",
+                )
+                self.tasks.append(self.plugin_watcher_task)
+
             self._install_plugin_reload_signal()
             self._started = True
         except Exception:
@@ -324,6 +349,10 @@ class AppRuntime:
                 except asyncio.CancelledError:
                     pass
             await _run_cleanup_steps(
+                (
+                    "plugin_watcher.stop",
+                    _stop_plugin_watcher(self.plugin_watcher),
+                ),
                 (
                     "proactive.stop",
                     _stop_proactive(self.proactive_loop),
@@ -373,9 +402,12 @@ class AppRuntime:
         manager = getattr(self.core, "plugin_manager", None)
         if manager is None or self._shutdown:
             return
+        if self.plugin_watcher is not None:
+            self.plugin_watcher.wake()
+            return
         task = asyncio.create_task(
-            manager.prepare_changed(),
-            name="plugin_candidate_scan",
+            manager.reconcile_changed(),
+            name="plugin_reload_scan",
         )
         self._plugin_candidate_tasks.add(task)
         task.add_done_callback(self._plugin_candidate_scan_done)
@@ -390,6 +422,54 @@ class AppRuntime:
                 "plugin candidate scan failed",
                 exc_info=(type(error), error, error.__traceback__),
             )
+
+    async def _swap_plugin_endpoints(
+        self,
+        plugin_id: str,
+        old_services: dict[str, dict[str, Any]],
+        new_services: dict[str, dict[str, Any]],
+        old_channels: tuple[Any, ...],
+        new_channels: tuple[Any, ...],
+    ) -> None:
+        assert self.channel_host is not None
+        assert self.plugin_service_host is not None
+        swap = (
+            self.channel_host.prepare_plugin_swap(
+                plugin_id,
+                old_channels,
+                new_channels,
+            )
+            if old_channels != new_channels
+            else None
+        )
+        if swap is not None:
+            await self.channel_host.stop_plugin_swap(swap)
+        services_switched = False
+        try:
+            if old_services != new_services:
+                await self.plugin_service_host.swap_plugin_services(
+                    plugin_id,
+                    old_services,
+                    new_services,
+                )
+                services_switched = True
+            if swap is not None:
+                await self.channel_host.start_plugin_swap(swap)
+        except BaseException as error:
+            if services_switched:
+                await self.plugin_service_host.swap_plugin_services(
+                    plugin_id,
+                    new_services,
+                    old_services,
+                )
+            if swap is not None:
+                try:
+                    await self.channel_host.restore_plugin_swap(swap)
+                except BaseException as restore_error:
+                    raise RuntimeError("插件旧端点恢复失败") from restore_error
+            raise error
+        if swap is not None:
+            self.channel_host.commit_plugin_swap(swap)
 
 
 def build_app_runtime(config: Config, workspace: Path | None = None) -> AppRuntime:

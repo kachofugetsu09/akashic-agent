@@ -140,6 +140,16 @@ class PluginManager:
         ] | None = None
         self._endpoint_quiescer: Callable[[], Awaitable[None]] | None = None
         self._endpoint_resumer: Callable[[], Awaitable[None]] | None = None
+        self._endpoint_switcher: Callable[
+            [
+                str,
+                dict[str, dict[str, Any]],
+                dict[str, dict[str, Any]],
+                tuple[Channel, ...],
+                tuple[Channel, ...],
+            ],
+            Awaitable[None],
+        ] | None = None
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
@@ -173,6 +183,7 @@ class PluginManager:
         self._proactive_host = PluginProactiveHost()
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
+        self._snapshot_skill_catalogs: dict[str, str] = {}
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
 
     @property
@@ -305,6 +316,21 @@ class PluginManager:
     ) -> None:
         self._endpoint_quiescer = quiesce
         self._endpoint_resumer = resume
+
+    def bind_endpoint_switcher(
+        self,
+        switcher: Callable[
+            [
+                str,
+                dict[str, dict[str, Any]],
+                dict[str, dict[str, Any]],
+                tuple[Channel, ...],
+                tuple[Channel, ...],
+            ],
+            Awaitable[None],
+        ],
+    ) -> None:
+        self._endpoint_switcher = switcher
 
     def job_catalog(self, generation_id: str) -> PreparedJobCatalog | None:
         return self._job_host.get(generation_id)
@@ -443,6 +469,9 @@ class PluginManager:
         generation.state = state
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
+        catalog_id = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
+        if catalog_id is not None:
+            self._skill_host.close(catalog_id)
         state = "aborted" if snapshot.state == "aborted" else "retired"
         current = self._snapshot_store.current
         for generation in snapshot.generations.values():
@@ -471,7 +500,22 @@ class PluginManager:
     async def reconcile_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
             results: list[dict[str, object]] = []
-            for plugin_id in sorted(tuple(self._active_generations)):
+            discovered = {
+                _resolve_plugin_id(mod): mod
+                for mod in self.discover()
+            }
+            manifest = load_plugin_manifest(
+                _plugins_home(self._installed_cache_root)
+            )
+            desired = {
+                plugin_id
+                for plugin_id, mod in discovered.items()
+                if manifest.get(plugin_id, True)
+                and not _is_plugin_disabled(Path(mod["plugin_root"]))
+            }
+            for plugin_id in sorted(set(self._active_generations) - desired):
+                results.append(await self._deactivate_plugin(plugin_id))
+            for plugin_id in sorted(desired.intersection(self._active_generations)):
                 prepared = await self._prepare_changed(
                     plugin_ids={plugin_id},
                     force_reprepare=True,
@@ -483,7 +527,166 @@ class PluginManager:
                     results.append(result)
                     continue
                 results.append(await self._publish_prepared(plugin_id))
+            for plugin_id in sorted(desired - set(self._active_generations)):
+                generation = await self._load_one(discovered[plugin_id], activate=False)
+                if generation is None:
+                    continue
+                results.append(await self._publish_prepared(plugin_id))
             return results
+
+    async def _deactivate_plugin(self, plugin_id: str) -> dict[str, object]:
+        active = self._active_generations[plugin_id]
+        generations = {
+            key: generation
+            for key, generation in self._active_generations.items()
+            if key != plugin_id
+        }
+        snapshot, catalog_id = self._compile_topology_snapshot(generations)
+        try:
+            self._compile_snapshot_event_handlers(snapshot)
+            if self._dashboard_preparer is not None:
+                self._dashboard_preparer(snapshot)
+        except BaseException:
+            self._skill_host.close(catalog_id)
+            raise
+
+        old_services = active.contributions.managed_services
+        old_channels = active.contributions.channels
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        if (old_services or old_channels) and get_current_runtime_lease() is not None:
+            self._skill_host.close(catalog_id)
+            raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换独占端点")
+        quiesced = (
+            self._snapshot_store.pause_admission()
+            if old_services or old_channels
+            else None
+        )
+        endpoints_switched = False
+        transaction = None
+        try:
+            if quiesced is not None:
+                if self._endpoint_quiescer is not None:
+                    await self._endpoint_quiescer()
+                await self._snapshot_store.wait_for_no_leases(quiesced)
+            if old_services or old_channels:
+                await self._switch_plugin_endpoints(
+                    plugin_id,
+                    old_services,
+                    {},
+                    old_channels,
+                    (),
+                )
+                endpoints_switched = True
+            self._snapshot_skill_catalogs[snapshot.snapshot_id] = catalog_id
+            transaction = self._snapshot_store.begin_publish(
+                snapshot,
+                admission_gated=quiesced is not None,
+            )
+            await self._post_snapshot_invariants(snapshot)
+            await self._snapshot_store.commit(transaction)
+        except BaseException:
+            endpoint_error: BaseException | None = None
+            if endpoints_switched:
+                try:
+                    await self._switch_plugin_endpoints(
+                        plugin_id,
+                        {},
+                        old_services,
+                        (),
+                        old_channels,
+                    )
+                except BaseException as error:
+                    endpoint_error = error
+            if transaction is not None and self._snapshot_store.current is snapshot:
+                await self._snapshot_store.abort(transaction)
+            else:
+                await self._snapshot_store.resume(quiesced)
+                _ = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
+                self._skill_host.close(catalog_id)
+            if self._endpoint_resumer is not None and quiesced is not None:
+                await self._endpoint_resumer()
+            if endpoint_error is not None:
+                raise RuntimeError("禁用插件后旧端点恢复失败") from endpoint_error
+            raise
+        if self._endpoint_resumer is not None and quiesced is not None:
+            await self._endpoint_resumer()
+        _ = self._active_generations.pop(plugin_id)
+        self._channels = [
+            channel
+            for generation in self._active_generations.values()
+            for channel in generation.contributions.channels
+        ]
+        return {
+            "plugin_id": plugin_id,
+            "old_generation": active.generation_id,
+            "new_generation": None,
+            "snapshot_id": snapshot.snapshot_id,
+            "publication_state": "disabled",
+        }
+
+    async def _switch_plugin_endpoints(
+        self,
+        plugin_id: str,
+        old_services: dict[str, dict[str, Any]],
+        new_services: dict[str, dict[str, Any]],
+        old_channels: tuple[Channel, ...],
+        new_channels: tuple[Channel, ...],
+    ) -> None:
+        services_changed = old_services != new_services
+        channels_changed = old_channels != new_channels
+        if self._endpoint_switcher is not None:
+            await self._endpoint_switcher(
+                plugin_id,
+                old_services,
+                new_services,
+                old_channels,
+                new_channels,
+            )
+            return
+        if services_changed and channels_changed:
+            raise RuntimeError("同时切换 managed service 与 Channel 需要统一端点宿主")
+        if services_changed:
+            if self._service_switcher is None:
+                raise RuntimeError("managed service 宿主未绑定")
+            await self._service_switcher(plugin_id, old_services, new_services)
+        if channels_changed:
+            if self._channel_switcher is None:
+                raise RuntimeError("Channel 宿主未绑定")
+            await self._channel_switcher(plugin_id, old_channels, new_channels)
+
+    def _compile_topology_snapshot(
+        self,
+        generations: dict[str, PluginGeneration],
+    ) -> tuple[RuntimeSnapshot, str]:
+        self._generation_sequence += 1
+        catalog_id = f"topology:{self._generation_sequence}:{secrets.token_hex(4)}"
+        ordered = list(generations.values())
+        catalog = self._skill_host.prepare(
+            catalog_id,
+            normal_roots=PluginSkillHost.roots_for(ordered, drift=False),
+            drift_roots=PluginSkillHost.roots_for(ordered, drift=True),
+            ignored_normal_roots=tuple(
+                root
+                for generation in ordered
+                for root in generation.contributions.skill_roots
+            ),
+            ignored_drift_roots=tuple(
+                root
+                for generation in ordered
+                for root in generation.contributions.drift_skill_roots
+            ),
+        )
+        try:
+            snapshot = self._snapshot_compiler.compile(generations)
+            snapshot.skill_catalog_generation_id = catalog_id
+            snapshot.plugin_skill_index = catalog.normal_plugins
+            snapshot.tool_registry = self._compile_snapshot_tools(generations)
+            snapshot.tool_hooks = self._compile_snapshot_tool_hooks(generations)
+            return snapshot, catalog_id
+        except BaseException:
+            self._skill_host.close(catalog_id)
+            raise
 
     async def publish_prepared(self, plugin_id: str) -> dict[str, object]:
         async with self._candidate_prepare_lock:
@@ -527,8 +730,35 @@ class PluginManager:
         new_services = generation.contributions.managed_services
         old_channels = active.contributions.channels if active is not None else ()
         new_channels = generation.contributions.channels
+        endpoint_changed = (
+            old_services != new_services or old_channels != new_channels
+        )
+        self._compile_snapshot_event_handlers(snapshot)
+        if self._dashboard_preparer is not None:
+            try:
+                self._dashboard_preparer(snapshot)
+            except Exception as error:
+                self._record_failed_gate(
+                    plugin_id=plugin_id,
+                    revision=generation.source_revision,
+                    check_id="dashboard",
+                    reason=str(error) or type(error).__name__,
+                )
+                await self.discard_prepared(plugin_id)
+                return self._publication_status(
+                    plugin_id,
+                    active=active,
+                    candidate=generation,
+                    publication_state="failed",
+                )
+
         quiesced_snapshot: RuntimeSnapshot | None = None
-        if old_services != new_services or old_channels != new_channels:
+        if endpoint_changed:
+            from agent.plugins.snapshot import get_current_runtime_lease
+
+            if get_current_runtime_lease() is not None:
+                await self.discard_prepared(plugin_id)
+                raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换独占端点")
             quiesced_snapshot = self._snapshot_store.pause_admission()
             try:
                 if self._endpoint_quiescer is not None:
@@ -543,109 +773,30 @@ class PluginManager:
                     await self._endpoint_resumer()
                 await self.discard_prepared(plugin_id)
                 raise
-        services_switched = False
-        if self._service_switcher is not None and old_services != new_services:
+        endpoints_switched = False
+        if endpoint_changed:
             try:
-                await self._service_switcher(plugin_id, old_services, new_services)
-                services_switched = True
+                await self._switch_plugin_endpoints(
+                    plugin_id,
+                    old_services,
+                    new_services,
+                    old_channels,
+                    new_channels,
+                )
+                endpoints_switched = True
             except (asyncio.CancelledError, Exception) as error:
                 self._record_failed_gate(
                     plugin_id=plugin_id,
                     revision=generation.source_revision,
-                    check_id="managed_services",
+                    check_id="endpoints",
                     reason=str(error) or type(error).__name__,
                 )
-                await self.discard_prepared(plugin_id)
                 await self._snapshot_store.resume(quiesced_snapshot)
                 if self._endpoint_resumer is not None:
                     await self._endpoint_resumer()
+                await self.discard_prepared(plugin_id)
                 if isinstance(error, asyncio.CancelledError):
                     raise
-                return self._publication_status(
-                    plugin_id,
-                    active=active,
-                    candidate=generation,
-                    publication_state="failed",
-                )
-
-        channels_switched = False
-        if self._channel_switcher is not None and old_channels != new_channels:
-            try:
-                await self._channel_switcher(plugin_id, old_channels, new_channels)
-                channels_switched = True
-            except (asyncio.CancelledError, Exception) as error:
-                self._record_failed_gate(
-                    plugin_id=plugin_id,
-                    revision=generation.source_revision,
-                    check_id="channels",
-                    reason=str(error) or type(error).__name__,
-                )
-                service_error: BaseException | None = None
-                if services_switched and self._service_switcher is not None:
-                    try:
-                        await self._service_switcher(
-                            plugin_id,
-                            new_services,
-                            old_services,
-                        )
-                    except BaseException as rollback_error:
-                        service_error = rollback_error
-                await self.discard_prepared(plugin_id)
-                await self._snapshot_store.resume(quiesced_snapshot)
-                if self._endpoint_resumer is not None:
-                    await self._endpoint_resumer()
-                if isinstance(error, asyncio.CancelledError):
-                    raise
-                if service_error is not None:
-                    raise RuntimeError(
-                        "Channel Gate 失败后旧 managed service 恢复失败"
-                    ) from service_error
-                return self._publication_status(
-                    plugin_id,
-                    active=active,
-                    candidate=generation,
-                    publication_state="failed",
-                )
-
-        self._compile_snapshot_event_handlers(snapshot)
-        if self._dashboard_preparer is not None:
-            try:
-                self._dashboard_preparer(snapshot)
-            except Exception as error:
-                self._record_failed_gate(
-                    plugin_id=plugin_id,
-                    revision=generation.source_revision,
-                    check_id="dashboard",
-                    reason=str(error) or type(error).__name__,
-                )
-                channel_error: BaseException | None = None
-                if channels_switched and self._channel_switcher is not None:
-                    try:
-                        await self._channel_switcher(plugin_id, new_channels, old_channels)
-                    except BaseException as rollback_error:
-                        channel_error = rollback_error
-                service_error: BaseException | None = None
-                if services_switched and self._service_switcher is not None:
-                    try:
-                        await self._service_switcher(
-                            plugin_id,
-                            new_services,
-                            old_services,
-                        )
-                    except BaseException as rollback_error:
-                        service_error = rollback_error
-                await self.discard_prepared(plugin_id)
-                await self._snapshot_store.resume(quiesced_snapshot)
-                if self._endpoint_resumer is not None:
-                    await self._endpoint_resumer()
-                if channel_error is not None:
-                    raise RuntimeError(
-                        "Dashboard Gate 失败后旧 Channel 恢复失败"
-                    ) from channel_error
-                if service_error is not None:
-                    raise RuntimeError(
-                        "Dashboard Gate 失败后旧 managed service 恢复失败"
-                    ) from service_error
                 return self._publication_status(
                     plugin_id,
                     active=active,
@@ -667,31 +818,23 @@ class PluginManager:
         except (asyncio.CancelledError, Exception):
             _ = self._prepared_generations.pop(plugin_id, None)
             generation.state = "aborted"
-            channel_error: BaseException | None = None
-            if channels_switched and self._channel_switcher is not None:
+            endpoint_error: BaseException | None = None
+            if endpoints_switched:
                 try:
-                    await self._channel_switcher(plugin_id, new_channels, old_channels)
-                except BaseException as error:
-                    channel_error = error
-            service_error: BaseException | None = None
-            if services_switched and self._service_switcher is not None:
-                try:
-                    await self._service_switcher(
+                    await self._switch_plugin_endpoints(
                         plugin_id,
                         new_services,
                         old_services,
+                        new_channels,
+                        old_channels,
                     )
                 except BaseException as error:
-                    service_error = error
+                    endpoint_error = error
             await self._snapshot_store.abort(transaction)
             if self._endpoint_resumer is not None:
                 await self._endpoint_resumer()
-            if channel_error is not None:
-                raise RuntimeError("Snapshot abort 后旧 Channel 恢复失败") from channel_error
-            if service_error is not None:
-                raise RuntimeError(
-                    "Snapshot abort 后旧 managed service 恢复失败"
-                ) from service_error
+            if endpoint_error is not None:
+                raise RuntimeError("Snapshot abort 后旧端点恢复失败") from endpoint_error
             raise
 
         if self._endpoint_resumer is not None and quiesced_snapshot is not None:
@@ -806,11 +949,17 @@ class PluginManager:
         generation: PluginGeneration,
         snapshot: RuntimeSnapshot,
     ) -> None:
+        await self._post_snapshot_invariants(snapshot)
+        if snapshot.generations.get(generation.plugin_id) is not generation:
+            raise RuntimeError("RuntimeSnapshot generation 不一致")
+
+    async def _post_snapshot_invariants(
+        self,
+        snapshot: RuntimeSnapshot,
+    ) -> None:
         await asyncio.sleep(0)
         if self.current_snapshot is not snapshot:
             raise RuntimeError("RuntimeSnapshot 发布指针不一致")
-        if snapshot.generations.get(generation.plugin_id) is not generation:
-            raise RuntimeError("RuntimeSnapshot generation 不一致")
         catalog_id = snapshot.skill_catalog_generation_id
         if catalog_id is not None and self._skill_host.get(catalog_id) is None:
             raise RuntimeError("RuntimeSnapshot skill catalog 不可用")

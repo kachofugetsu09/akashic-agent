@@ -143,12 +143,21 @@ class PluginServiceHost:
         timeout = float(service.spec["startup_timeout_seconds"])
         deadline = asyncio.get_running_loop().time() + timeout
         readiness_url = str(service.spec.get("readiness_url") or "")
+        if not readiness_url:
+            try:
+                exit_code = await asyncio.wait_for(
+                    asyncio.shield(service.process.wait()),
+                    timeout=min(0.2, timeout),
+                )
+            except TimeoutError:
+                return
+            raise RuntimeError(f"managed service 启动失败: exit={exit_code}")
         while asyncio.get_running_loop().time() < deadline:
             if service.process.returncode is not None:
                 raise RuntimeError(
                     f"managed service 启动失败: exit={service.process.returncode}"
                 )
-            if not readiness_url or await asyncio.to_thread(
+            if await asyncio.to_thread(
                 _url_ready,
                 readiness_url,
             ):

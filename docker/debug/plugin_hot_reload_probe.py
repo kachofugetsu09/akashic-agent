@@ -533,6 +533,17 @@ def _install_candidate_plugins(
         "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n",
         encoding="utf-8",
     )
+    _ = (reload_plugin / "candidate_service.py").write_text(
+        "import os\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        self.send_response(200); self.end_headers()\n"
+        "        self.wfile.write(os.environ['CANDIDATE_VERSION'].encode())\n"
+        "    def log_message(self, *args): pass\n"
+        "HTTPServer(('127.0.0.1', 18767), Handler).serve_forever()\n",
+        encoding="utf-8",
+    )
     _ = reload_source.write_text(_candidate_reload_source("v1"), encoding="utf-8")
     data = sandbox / "home/.akashic-plugin/data"
     (data / "candidate_reload-gate").mkdir(parents=True, exist_ok=True)
@@ -580,7 +591,7 @@ def _candidate_reload_source(version: str) -> str:
         "from agent.skills import SkillsLoader\n"
         "from agent.tool_hooks import ToolExecutionRequest, ToolExecutor\n"
         "from bus.events_lifecycle import TurnCommitted\n"
-        "from agent.plugins import (IntervalTrigger, McpServerSpec, Plugin, PluginJobSpec, "
+        "from agent.plugins import (IntervalTrigger, ManagedServiceSpec, McpServerSpec, Plugin, PluginJobSpec, "
         "PluginSemanticCheck, ProactiveSourceSpec, on_tool_pre, tool)\n"
         "class SnapshotBeforeTurn:\n"
         "    slot = 'candidate_reload.before_turn'\n"
@@ -619,6 +630,9 @@ def _candidate_reload_source(version: str) -> str:
         "    @classmethod\n"
         "    def mcp_servers(cls):\n"
         f"        return [McpServerSpec(name='candidate_feed', command=('python', 'candidate_mcp_server.py'), env={{'CANDIDATE_VERSION': '{version}'}})]\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        f"        return [ManagedServiceSpec(id='candidate_http', command=('python', 'candidate_service.py'), env={{'CANDIDATE_VERSION': '{version}'}}, readiness_url='http://127.0.0.1:18767/')]\n"
         "    def proactive_sources(self):\n"
         "        return [ProactiveSourceSpec(id='candidate_feed', channels=('content',), "
         "server='candidate_feed', fetch_tool='fetch_events', ack_tool='ack_events', "
@@ -792,6 +806,28 @@ def _container_process_count(container_id: str, marker: str) -> int:
         return -1
 
 
+def _candidate_service_version(container_id: str) -> str:
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            container_id,
+            "python",
+            "-c",
+            (
+                "import urllib.request; "
+                "print(urllib.request.urlopen('http://127.0.0.1:18767/', "
+                "timeout=2).read().decode())"
+            ),
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def _fitbit_runtime_probe(container_id: str) -> dict[str, object]:
     script = (
         "import json, urllib.request\n"
@@ -906,6 +942,11 @@ def _exercise_snapshot_publish(
 ) -> dict[str, object]:
     initial = _read_json_object(state_path)
     initial_generation = initial.get("active_generation")
+    initial_service_version = _candidate_service_version(container_id)
+    initial_service_processes = _container_process_count(
+        container_id,
+        "candidate_service.py",
+    )
     baseline_before = _candidate_statuses(container_id)
     _ = source_path.write_text("not valid python !!!\n", encoding="utf-8")
     baseline_signal = subprocess.run(
@@ -945,15 +986,20 @@ def _exercise_snapshot_publish(
             after=len(candidate_before),
             gate_status="passed",
         )
+        _ = turn_release.write_text("released\n", encoding="utf-8")
+        old_response = old_turn.result(timeout=10)
         _, publish_status = _wait_snapshot_status(
             container_id,
             after=len(publish_before),
             publication_state="committed",
         )
-        _ = turn_release.write_text("released\n", encoding="utf-8")
-        old_response = old_turn.result(timeout=10)
 
     new_response = _ipc_roundtrip(socket_path, "snapshot after publish")
+    final_service_version = _candidate_service_version(container_id)
+    final_service_processes = _container_process_count(
+        container_id,
+        "candidate_service.py",
+    )
     _ = detached_release.write_text("released\n", encoding="utf-8")
     final_state = _wait_json_value(
         state_path,
@@ -976,6 +1022,10 @@ def _exercise_snapshot_publish(
         and current_snapshot != initial_snapshot
         and old_response.get("content") == "snapshot-v1"
         and new_response.get("content") == "snapshot-v2"
+        and initial_service_version == "v1"
+        and final_service_version == "v2"
+        and initial_service_processes == 1
+        and final_service_processes == 1
         and _integer(final_state.get("phase_runs_v1")) >= 1
         and _integer(final_state.get("phase_runs_v2")) >= 1
         and final_state.get("detached_snapshot_visible") is False
@@ -989,6 +1039,12 @@ def _exercise_snapshot_publish(
         "publish_status": publish_status,
         "old_response": old_response,
         "new_response": new_response,
+        "managed_service": {
+            "initial_version": initial_service_version,
+            "final_version": final_service_version,
+            "initial_processes": initial_service_processes,
+            "final_processes": final_service_processes,
+        },
         "final_state": final_state,
         "signal": signal_result.returncode,
     }

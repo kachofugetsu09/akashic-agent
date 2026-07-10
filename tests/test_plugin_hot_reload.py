@@ -17,6 +17,8 @@ from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 
 from agent.plugins.manager import PluginManager
+from agent.plugins.manifest import write_plugin_manifest
+from agent.plugins.watcher import PluginWatcher
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.registry import plugin_registry
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
@@ -1285,6 +1287,49 @@ async def test_snapshot_admission_waits_while_current_is_quiesced(
 
 
 @pytest.mark.asyncio
+async def test_proactive_quiesce_does_not_deadlock_with_paused_tick(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "proactive_admission",
+        "from agent.plugins import Plugin\n"
+        "class ProactiveAdmissionPlugin(Plugin):\n"
+        "    name = 'proactive_admission'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    loop = object.__new__(ProactiveLoop)
+    loop._runtime_snapshot_store = manager.snapshot_store
+    loop._reload_lock = asyncio.Lock()
+    stopped = asyncio.Event()
+
+    async def stop_active_kernel() -> None:
+        stopped.set()
+
+    async def switch_snapshot(_snapshot) -> None:
+        return None
+
+    async def tick_bound() -> float:
+        return 1.0
+
+    loop._stop_active_kernel = stop_active_kernel
+    loop._switch_snapshot = switch_snapshot
+    loop._tick_bound = tick_bound
+    snapshot = manager.snapshot_store.pause_admission()
+    tick = asyncio.create_task(loop._tick())
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(loop.quiesce_for_reload(), timeout=0.2)
+
+    assert stopped.is_set()
+    assert not tick.done()
+    await manager.snapshot_store.resume(snapshot)
+    assert await tick == 1.0
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_managed_service_publish_drains_old_snapshot_before_switch(
     tmp_path: Path,
 ) -> None:
@@ -1332,6 +1377,54 @@ async def test_managed_service_publish_drains_old_snapshot_before_switch(
     assert switched.is_set()
     assert admitted.snapshot is manager.current_snapshot
     await admitted.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_endpoint_failure_resumes_admission_before_candidate_terminate(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "service_cleanup",
+        "from agent.plugins import ManagedServiceSpec, Plugin\n"
+        "class ServiceCleanupPlugin(Plugin):\n"
+        "    name = 'service_cleanup'\n"
+        "    version = 'v1'\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        "        return [ManagedServiceSpec(id='worker', command=('python', 'service.py'))]\n",
+    )
+    _ = (plugin_dir / "service.py").write_text("pass\n", encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        source.replace("version = 'v1'", "version = 'v2'"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("service_cleanup")
+    assert candidate is not None
+    terminated = asyncio.Event()
+
+    async def terminate() -> None:
+        lease = await manager.snapshot_store.acquire()
+        await lease.release()
+        terminated.set()
+
+    async def fail_switch(_plugin_id, _old, _new) -> None:
+        raise RuntimeError("endpoint failed")
+
+    candidate.instance.terminate = terminate  # type: ignore[method-assign]
+    manager.bind_service_switcher(fail_switch)
+
+    result = await asyncio.wait_for(
+        manager.publish_prepared("service_cleanup"),
+        timeout=1,
+    )
+
+    assert result["publication_state"] == "failed"
+    assert terminated.is_set()
     await manager.terminate_all()
 
 
@@ -1875,6 +1968,125 @@ async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot
         "snapshot_first": first,
         "snapshot_second": second,
     }
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_changed_disables_and_reenables_plugin_capabilities(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "topology",
+        "from agent.plugins import Plugin, tool\n"
+        "class TopologyPlugin(Plugin):\n"
+        "    name = 'topology'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills',)\n"
+        "    @tool(name='topology_value')\n"
+        "    async def value(self, event):\n"
+        "        \"\"\"Return topology value.\"\"\"\n"
+        "        return 'active'\n",
+    )
+    skill = plugin_dir / "skills" / "topology-skill"
+    skill.mkdir(parents=True)
+    _ = (skill / "SKILL.md").write_text(
+        "---\ndescription: topology\n---\ntopology\n",
+        encoding="utf-8",
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools, workspace=tmp_path / "workspace")
+    plugins_home = tmp_path / "home"
+    write_plugin_manifest({"topology": True}, plugins_home=plugins_home)
+    await manager.load_all()
+    assert tools.has_tool("topology_value")
+
+    write_plugin_manifest({"topology": False}, plugins_home=plugins_home)
+    disabled = await manager.reconcile_changed()
+
+    snapshot = manager.current_snapshot
+    assert disabled[0]["publication_state"] == "disabled"
+    assert snapshot is not None and snapshot.generations == {}
+    assert not snapshot.tool_registry.has_tool("topology_value")
+    assert "topology-skill" not in snapshot.plugin_skill_index.records
+    assert manager.generation("topology") is None
+
+    write_plugin_manifest({"topology": True}, plugins_home=plugins_home)
+    enabled = await manager.reconcile_changed()
+
+    snapshot = manager.current_snapshot
+    assert enabled[0]["publication_state"] == "committed"
+    assert snapshot is not None and "topology" in snapshot.generations
+    assert snapshot.tool_registry.has_tool("topology_value")
+    assert "topology-skill" in snapshot.plugin_skill_index.records
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_changed_adds_and_removes_discovered_plugin(
+    tmp_path: Path,
+) -> None:
+    plugins = tmp_path / "plugins"
+    _write_plugin(
+        plugins,
+        "anchor",
+        "from agent.plugins import Plugin\n"
+        "class AnchorPlugin(Plugin):\n"
+        "    name = 'anchor'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    added_dir = _write_plugin(
+        plugins,
+        "added",
+        "from agent.plugins import Plugin\n"
+        "class AddedPlugin(Plugin):\n"
+        "    name = 'added'\n",
+    )
+
+    added = await manager.reconcile_changed()
+    assert added[0]["publication_state"] == "committed"
+    assert manager.generation("added") is not None
+
+    shutil.rmtree(added_dir)
+    removed = await manager.reconcile_changed()
+    assert removed[0]["publication_state"] == "disabled"
+    assert manager.generation("added") is None
+    assert manager.current_snapshot is not None
+    assert set(manager.current_snapshot.generations) == {"anchor"}
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_reloads_source_without_signal(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "watched",
+        "from agent.plugins import Plugin\n"
+        "class WatchedPlugin(Plugin):\n"
+        "    name = 'watched'\n"
+        "    version = 'v1'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)
+    task = asyncio.create_task(watcher.run())
+    source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        source.replace("version = 'v1'", "version = 'v2'"),
+        encoding="utf-8",
+    )
+
+    for _ in range(100):
+        generation = manager.generation("watched")
+        if generation is not None and generation.instance.version == "v2":
+            break
+        await asyncio.sleep(0.01)
+
+    generation = manager.generation("watched")
+    assert generation is not None and generation.instance.version == "v2"
+    watcher.stop()
+    await task
     await manager.terminate_all()
 
 

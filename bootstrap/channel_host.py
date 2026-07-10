@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from collections.abc import Callable, Iterable
 
 from infra.channels.contract import Channel, ChannelContext
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ChannelSwap:
+    plugin_id: str
+    old_channels: tuple[Channel, ...]
+    new_channels: tuple[Channel, ...]
+    old_positions: tuple[int, ...]
+    stopped_old: list[Channel] = field(default_factory=list)
+    started_new: list[Channel] = field(default_factory=list)
 
 
 class ChannelHost:
@@ -54,6 +65,21 @@ class ChannelHost:
         old_channels: tuple[Channel, ...],
         new_channels: tuple[Channel, ...],
     ) -> None:
+        swap = self.prepare_plugin_swap(plugin_id, old_channels, new_channels)
+        await self.stop_plugin_swap(swap)
+        try:
+            await self.start_plugin_swap(swap)
+        except BaseException:
+            await self.restore_plugin_swap(swap)
+            raise
+        self.commit_plugin_swap(swap)
+
+    def prepare_plugin_swap(
+        self,
+        plugin_id: str,
+        old_channels: tuple[Channel, ...],
+        new_channels: tuple[Channel, ...],
+    ) -> ChannelSwap:
         current = self._plugin_channels.get(plugin_id, ())
         if current != old_channels:
             raise RuntimeError(f"插件 Channel 代际不一致: {plugin_id}")
@@ -63,48 +89,60 @@ class ChannelHost:
         new_names = [channel.name for channel in new_channels]
         if len(new_names) != len(set(new_names)) or retained_names.intersection(new_names):
             raise RuntimeError(f"Channel 名称冲突: {', '.join(new_names)}")
-        old_positions = [
+        old_positions = tuple(
             self._channels.index(channel)
             for channel in old_channels
             if channel in self._channels
-        ]
-        stopped_old: list[Channel] = []
+        )
+        return ChannelSwap(plugin_id, old_channels, new_channels, old_positions)
+
+    async def stop_plugin_swap(self, swap: ChannelSwap) -> None:
         try:
-            for channel in reversed(old_channels):
+            for channel in reversed(swap.old_channels):
                 await self._stop_channel(channel)
-                stopped_old.append(channel)
+                swap.stopped_old.append(channel)
         except BaseException as stop_error:
-            restore_errors = await self._restore_channels(reversed(stopped_old))
+            restore_errors = await self._restore_channels(reversed(swap.stopped_old))
+            swap.stopped_old.clear()
             if restore_errors:
                 raise RuntimeError(
                     "旧 Channel 恢复失败: " + "; ".join(restore_errors)
                 ) from stop_error
             raise stop_error
-        started: list[Channel] = []
+
+    async def start_plugin_swap(self, swap: ChannelSwap) -> None:
         try:
-            for channel in new_channels:
-                started.append(channel)
+            for channel in swap.new_channels:
+                swap.started_new.append(channel)
                 await self._start_channel(channel)
         except BaseException as start_error:
-            for channel in reversed(started):
+            for channel in reversed(swap.started_new):
                 try:
                     if id(channel) in self._started:
                         await self._stop_channel(channel)
                 except Exception:
                     logger.exception("候选 Channel 清理失败: %s", channel.name)
-            restore_errors = await self._restore_channels(old_channels)
-            if restore_errors:
-                raise RuntimeError(
-                    "旧 Channel 恢复失败: " + "; ".join(restore_errors)
-                ) from start_error
+            swap.started_new.clear()
             raise start_error
-        for channel in old_channels:
+
+    async def restore_plugin_swap(self, swap: ChannelSwap) -> None:
+        for channel in reversed(swap.started_new):
+            if id(channel) in self._started:
+                await self._stop_channel(channel)
+        swap.started_new.clear()
+        restore_errors = await self._restore_channels(reversed(swap.stopped_old))
+        swap.stopped_old.clear()
+        if restore_errors:
+            raise RuntimeError("旧 Channel 恢复失败: " + "; ".join(restore_errors))
+
+    def commit_plugin_swap(self, swap: ChannelSwap) -> None:
+        for channel in swap.old_channels:
             if channel in self._channels:
                 self._channels.remove(channel)
-        insert_at = min(old_positions, default=len(self._channels))
-        for offset, channel in enumerate(new_channels):
+        insert_at = min(swap.old_positions, default=len(self._channels))
+        for offset, channel in enumerate(swap.new_channels):
             self._channels.insert(insert_at + offset, channel)
-        self._plugin_channels[plugin_id] = new_channels
+        self._plugin_channels[swap.plugin_id] = swap.new_channels
 
     async def _restore_channels(self, channels: Iterable[Channel]) -> list[str]:
         errors: list[str] = []

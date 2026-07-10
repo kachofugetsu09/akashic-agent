@@ -444,8 +444,20 @@ class ProactiveLoop:
 
     async def _tick(self) -> float | None:
         """执行一次 proactive v2 tick。"""
-        async with self._reload_lock:
-            return await self._tick_admitted()
+        if self._runtime_snapshot_store is None:
+            async with self._reload_lock:
+                return await self._tick_bound()
+        lease = await self._runtime_snapshot_store.acquire()
+        from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+        async with lease:
+            token = bind_runtime_snapshot(lease)
+            try:
+                async with self._reload_lock:
+                    await self._switch_snapshot(lease.snapshot)
+                    return await self._tick_bound()
+            finally:
+                reset_runtime_snapshot(token)
 
     async def _tick_admitted(self) -> float | None:
         if self._runtime_snapshot_store is not None:

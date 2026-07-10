@@ -156,3 +156,28 @@ async def test_managed_service_stop_finishes_when_cancelled(tmp_path: Path) -> N
     assert host._running == {}
     with pytest.raises(OSError):
         _read(port)
+
+
+@pytest.mark.asyncio
+async def test_managed_service_without_readiness_rejects_fast_exit(
+    tmp_path: Path,
+) -> None:
+    failed = tmp_path / "failed.py"
+    _ = failed.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    spec = {
+        "worker": {
+            "command": [sys.executable, str(failed)],
+            "cwd": str(tmp_path),
+            "env": {},
+            "readiness_url": "",
+            "startup_timeout_seconds": 1,
+            "revision": "failed",
+        }
+    }
+    host = PluginServiceHost()
+    host.bind_plugin_services({"failed": {}})
+
+    with pytest.raises(RuntimeError, match="exit=7"):
+        await host.swap_plugin_services("failed", {}, spec)  # type: ignore[arg-type]
+
+    assert host._running == {}
