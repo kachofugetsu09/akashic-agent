@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 from typing import Any, cast
 
 from pathlib import Path
@@ -51,6 +52,19 @@ class _NamespacedMcpJsonTool(_McpJsonTool):
     name = "mcp_feed__get_proactive_events"
 
 
+class _FailingMcpTool(_McpJsonTool):
+    async def execute(self, **kwargs: Any) -> str:
+        _ = kwargs
+        raise RuntimeError("boom")
+
+
+class _SlowMcpTool(_McpJsonTool):
+    async def execute(self, **kwargs: Any) -> str:
+        _ = kwargs
+        await asyncio.sleep(1)
+        return "[]"
+
+
 @pytest.mark.asyncio
 async def test_shared_mcp_gateway_reuses_tool_registry(tmp_path: Path):
     tools = ToolRegistry()
@@ -79,6 +93,26 @@ async def test_shared_mcp_gateway_resolves_namespaced_mcp_tool(tmp_path: Path):
     result = await gateway.call("feed", "get_proactive_events", {})
 
     assert result == [{"kind": "content", "event_id": "1"}]
+
+
+@pytest.mark.asyncio
+async def test_shared_mcp_gateway_raises_registry_execution_error(tmp_path: Path):
+    tools = ToolRegistry()
+    tools.register(_FailingMcpTool(), source_type="mcp", source_name="feed")
+    gateway = mcp_sources.SharedMcpGateway(tmp_path, tools)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await gateway.call("feed", "get_proactive_events", {})
+
+
+@pytest.mark.asyncio
+async def test_shared_mcp_gateway_applies_timeout(tmp_path: Path):
+    tools = ToolRegistry()
+    tools.register(_SlowMcpTool(), source_type="mcp", source_name="feed")
+    gateway = mcp_sources.SharedMcpGateway(tmp_path, tools)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await gateway.call("feed", "get_proactive_events", {}, timeout=0.01)
 
 
 @pytest.mark.asyncio
@@ -157,6 +191,47 @@ async def test_fetch_context_data_async_accepts_list(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_content_events_async_raises_when_source_failed(monkeypatch):
+    monkeypatch.setattr(
+        mcp_sources,
+        "_load_sources",
+        lambda _w=None: [
+            {"channel": "content", "server": "feed", "get_tool": "get_events"},
+        ],
+    )
+    pool = _FakePool(
+        {("feed", "get_events"): []},
+        failures={("feed", "get_events")},
+    )
+
+    with pytest.raises(RuntimeError, match="feed"):
+        await mcp_sources.fetch_content_events_async(cast(Any, pool))
+
+
+@pytest.mark.asyncio
+async def test_fetch_content_events_async_keeps_results_when_one_source_failed(monkeypatch):
+    monkeypatch.setattr(
+        mcp_sources,
+        "_load_sources",
+        lambda _w=None: [
+            {"channel": "content", "server": "ok", "get_tool": "get_events"},
+            {"channel": "content", "server": "failed", "get_tool": "get_events"},
+        ],
+    )
+    pool = _FakePool(
+        {
+            ("ok", "get_events"): [{"kind": "content", "event_id": "1"}],
+            ("failed", "get_events"): [],
+        },
+        failures={("failed", "get_events")},
+    )
+
+    result = await mcp_sources.fetch_content_events_async(cast(Any, pool))
+
+    assert result == [{"kind": "content", "event_id": "1", "ack_server": "ok"}]
+
+
+@pytest.mark.asyncio
 async def test_poll_content_feeds_async_raises_when_any_source_failed(monkeypatch):
     monkeypatch.setattr(
         mcp_sources,
@@ -214,6 +289,22 @@ async def test_acknowledge_events_async_groups_by_ack_server(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_acknowledge_events_async_raises_when_ack_failed(monkeypatch):
+    monkeypatch.setattr(
+        mcp_sources,
+        "_load_sources",
+        lambda _w=None: [{"server": "feed", "ack_tool": "ack_events"}],
+    )
+    pool = _FakePool(
+        {("feed", "ack_events"): {"ok": True}},
+        failures={("feed", "ack_events")},
+    )
+
+    with pytest.raises(RuntimeError, match="feed"):
+        await mcp_sources.acknowledge_events_async(cast(Any, pool), [("feed", "a1")])
+
+
+@pytest.mark.asyncio
 async def test_acknowledge_content_entries_async_passes_feedback(monkeypatch):
     monkeypatch.setattr(
         mcp_sources,
@@ -234,3 +325,23 @@ async def test_acknowledge_content_entries_async_passes_feedback(monkeypatch):
         "ack_content",
         {"event_ids": ["evt-1", "evt-2"], "feedback": "interesting"},
     ) in pool.calls
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_content_entries_async_raises_when_ack_failed(monkeypatch):
+    monkeypatch.setattr(
+        mcp_sources,
+        "_load_sources",
+        lambda _w=None: [{"server": "feed", "ack_tool": "ack_content"}],
+    )
+    pool = _FakePool(
+        {("feed", "ack_content"): {"ok": True}},
+        failures={("feed", "ack_content")},
+    )
+
+    with pytest.raises(RuntimeError, match="feed"):
+        await mcp_sources.acknowledge_content_entries_async(
+            cast(Any, pool),
+            [("mcp:feed", "a1")],
+            feedback="interesting",
+        )

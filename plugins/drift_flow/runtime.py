@@ -32,6 +32,7 @@ from agent.prompting import (
 )
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_hooks.base import ToolHook
+from bus.events_lifecycle import DriftFinished
 from plugins.default_proactive.context import AgentTickContext
 from plugins.drift_flow.state import DriftStateStore, SkillMeta
 from plugins.drift_flow.tools import (
@@ -152,8 +153,11 @@ class DriftTurnPipeline:
         # 2.1 设置 ctx 标志位。
         ctx.drift_entered = True
         ctx.drift_finished = False
+        ctx.drift_message_staged = False
         ctx.drift_message_sent = False
         ctx.drift_selected_skill = ""
+        ctx.drift_finish_status = ""
+        ctx.drift_finish_briefing = ""
 
         # 2.2 构建 drift tool registry。
         tools = build_drift_tool_registry(
@@ -202,7 +206,7 @@ class DriftTurnPipeline:
                     if s["function"]["name"] in allowed_tool_names
                 ]
                 logger.info("[drift] selected_skill missing, forcing select_skill or idle_drift")
-            elif ctx.drift_message_sent:
+            elif ctx.drift_message_staged:
                 allowed_tool_names = set(_AFTER_SEND_TOOLS)
                 schemas = [
                     s for s in schemas
@@ -470,7 +474,7 @@ class DriftTurnPipeline:
 
     def _fallback_pause(self, ctx: AgentTickContext) -> None:
         skill_name = str(ctx.drift_selected_skill or "").strip() or "unknown"
-        message_result = "sent" if ctx.drift_message_sent else "silent"
+        message_result = "staged" if ctx.drift_message_staged else "silent"
         self._store.save_finish(
             skill_used=skill_name,
             status="paused",
@@ -481,20 +485,35 @@ class DriftTurnPipeline:
             now_utc=ctx.now_utc,
         )
         ctx.drift_finished = True
+        ctx.drift_finish_status = "paused"
+        ctx.drift_finish_briefing = "达到步数上限后模型未按要求调用 finish_drift，runtime 自动保存为 paused。"
 
     # ── 4. Finish ──────────────────────────────────────────────────────
 
     def _finish(self, ctx: AgentTickContext) -> None:
         """记录 drift 退出状态。"""
         logger.info(
-            "[drift] exit: finished=%s message_sent=%s selected_skill=%s",
+            "[drift] exit: finished=%s message_staged=%s selected_skill=%s",
             ctx.drift_finished,
-            ctx.drift_message_sent,
+            ctx.drift_message_staged,
             ctx.drift_selected_skill,
         )
 
-    def record_commit_result(self, sent: bool) -> None:
-        self._store.update_last_message_result("sent" if sent else "silent")
+    def record_commit_result(self, ctx: AgentTickContext, sent: bool) -> None:
+        message_result = "sent" if sent else "silent"
+        self._store.update_last_message_result(message_result)
+        event_bus = self._tool_deps.event_bus
+        if event_bus is not None:
+            event_bus.enqueue(
+                DriftFinished(
+                    session_key=ctx.session_key,
+                    skill_name=ctx.drift_selected_skill,
+                    status=ctx.drift_finish_status,
+                    briefing=ctx.drift_finish_briefing,
+                    message_result=message_result,
+                    timestamp=datetime.now(timezone.utc),
+                )
+            )
 
     # ── Prompt 构建 ────────────────────────────────────────────────────
 

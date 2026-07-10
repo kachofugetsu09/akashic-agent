@@ -21,6 +21,8 @@ from plugins.akasha.core import (
     AkashaNode,
     EdgeUpdate,
     CoreConfig,
+    DENSE_CANDIDATE_LIMIT,
+    DENSE_SEED_LIMIT,
     SourceMessage,
     activation_edge_updates,
     local_residual,
@@ -191,7 +193,7 @@ class AkashaReplayRuntime:
         graph_seed_keys = graph_seed_keys_from_snapshot(
             query_vec,
             snapshot,
-            limit=self._config.dense_top_k,
+            limit=DENSE_SEED_LIMIT,
         )
         now_ts = parse_ts_unix(message.ts)
         dense_items = dense_message_candidates(
@@ -199,9 +201,12 @@ class AkashaReplayRuntime:
             snapshot.nodes,
             snapshot.message_embeddings,
             snapshot.message_turn_keys,
-            limit=max(20, self._config.dense_top_k, CONTEXT_QUERY_LIMIT),
+            limit=DENSE_CANDIDATE_LIMIT,
         )
-        budget = recall_budget_from_dense(dense_items, self._core_config)
+        budget = recall_budget_from_dense(
+            dense_items,
+            self._config.dense_seed_threshold,
+        )
         candidates, _, trace = compute_candidates_from_snapshot(
             query_text,
             query_vec,
@@ -297,7 +302,10 @@ class AkashaReplayRuntime:
         message: SourceMessage,
         activation: ReplayActivation,
     ) -> None:
-        budget = recall_budget_from_dense(activation.dense_items, self._core_config)
+        budget = recall_budget_from_dense(
+            activation.dense_items,
+            self._config.dense_seed_threshold,
+        )
         dense_cards = _cards_from_candidates(
             self._source_db_path,
             self._config,
@@ -367,7 +375,6 @@ class AkashaReplayRuntime:
 
 def _core_config(config: AkashaConfig) -> CoreConfig:
     return CoreConfig(
-        dense_top_k=config.dense_top_k,
         dense_seed_threshold=config.dense_seed_threshold,
         activation_threshold=config.activation_threshold,
         cross_boost=config.cross_boost,
@@ -375,7 +382,6 @@ def _core_config(config: AkashaConfig) -> CoreConfig:
         nearby_dense_threshold=config.nearby_dense_threshold,
         soft_recall_threshold=config.soft_recall_threshold,
         soft_recall_direct_floor=config.soft_recall_direct_floor,
-        activate_limit=config.activate_limit,
     )
 
 

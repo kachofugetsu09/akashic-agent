@@ -44,6 +44,9 @@ HETERO_DEPRESSION_RATE = 0.05
 INITIAL_STRENGTH_BASE = 0.70
 INITIAL_STRENGTH_SALIENCE_BONUS = 0.30
 SALIENCE_CENTROID_SCALE = 2.0
+DENSE_SEED_LIMIT = 10
+DENSE_CANDIDATE_LIMIT = 20
+DEFAULT_ACTIVATION_LIMIT = 8
 
 
 def initial_strength(salience: float) -> float:
@@ -248,8 +251,7 @@ def idf_table_is_stale(
 
 @dataclass(frozen=True)
 class CoreConfig:
-    """算法配置。字段与 AkashaConfig 保持一致的命名和默认值。"""
-    dense_top_k: int = 10
+    """Akasha 算法配置。"""
     dense_seed_threshold: float = 0.675
     activation_threshold: float = 0.22
     cross_boost: float = 36.0
@@ -257,7 +259,6 @@ class CoreConfig:
     nearby_dense_threshold: float = 0.28
     soft_recall_threshold: float = 0.165
     soft_recall_direct_floor: float = 0.45
-    activate_limit: int = 8
 
 
 @dataclass(frozen=True)
@@ -864,7 +865,7 @@ def dense_message_candidates(
 
 def recall_budget_from_dense(
     dense_items: list[AkashaCandidate],
-    config: CoreConfig,
+    dense_seed_threshold: float,
 ) -> RecallBudget:
     scores = sorted(
         [max(0.0, item.direct or item.score) for item in dense_items],
@@ -875,13 +876,13 @@ def recall_budget_from_dense(
     top1 = scores[0]
     tail_mean = sum(scores[1:]) / len(scores[1:])
     tail_ratio = max(0.0, min(1.0, tail_mean / top1))
-    support = sum(1 for score in scores if score >= config.dense_seed_threshold)
+    support = sum(1 for score in scores if score >= dense_seed_threshold)
     support_ratio = support / len(scores)
     plateau = max(0.0, min(1.0, support_ratio * tail_ratio * tail_ratio))
     return RecallBudget(
-        dense_k=max(4, min(10, round(10 - 6 * plateau))),
-        ripple_k=max(8, min(16, round(8 + 8 * plateau))),
-        activation_k=max(6, min(12, round(6 + 6 * plateau))),
+        dense_k=round(10 - 6 * plateau),
+        ripple_k=round(8 + 8 * plateau),
+        activation_k=round(6 + 6 * plateau),
         plateau_strength=plateau,
         dense_support=support,
         tail_ratio=tail_ratio,
@@ -983,7 +984,7 @@ def seed_pool(
             seed_sources[key] = "Dense"
             seed_energy[key] = 1.0
     if not seed_sources:
-        for key, _ in ranked[:config.dense_top_k]:
+        for key, _ in ranked[:DENSE_SEED_LIMIT]:
             seed_sources[key] = "Dense(FB)"
             seed_energy[key] = 1.0
 
@@ -1313,7 +1314,7 @@ def score_candidates(
             )
     candidates.sort(key=lambda item: item.score, reverse=True)
     suppressed.sort(key=lambda item: item.score, reverse=True)
-    limit = return_limit or config.activate_limit
+    limit = return_limit or DEFAULT_ACTIVATION_LIMIT
     return candidates[:limit], suppressed[:limit]
 
 
@@ -1513,7 +1514,7 @@ def compute_candidates(
             query_vec, nodes, direct_scores_map, fan, now_ts,
             source_cursor, edges_by_src, edges_meta, graph_seed_keys,
         )
-        limit = return_limit or config.activate_limit
+        limit = return_limit or DEFAULT_ACTIVATION_LIMIT
         candidates = merge_active_candidates(candidates, graph_candidates, limit)
         active_keys = {item.key for item in candidates}
         suppressed = [item for item in suppressed if item.key not in active_keys]

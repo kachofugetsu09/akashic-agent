@@ -29,6 +29,7 @@ class ProactiveDeliverer:
     ) -> float | None:
         if self._turn_orchestrator is None:
             raise RuntimeError("proactive turn_orchestrator is required")
+        self.last_sent = None
         self.last_sent = await self._turn_orchestrator.handle_proactive_turn(
             result=decision.result,
             session_key=self._session_key,
@@ -36,6 +37,6 @@ class ProactiveDeliverer:
             chat_id=str(self._cfg.default_chat_id or "").strip(),
         )
         if ctx.drift_entered and (ctx.draft_message or ctx.draft_media):
-            ctx.drift_message_sent = self.last_sent
+            ctx.drift_message_sent = bool(self.last_sent)
         self._record_finish_fn(ctx, result=decision.result)
         return 0.0

@@ -84,7 +84,7 @@ class SendMessageTool(Tool):
         _ = (channel, chat_id)
         text = normalize_outbound_text(message or "").strip()
         media_paths = self._normalize_media(image=image, media=media)
-        if self._ctx.drift_message_sent:
+        if self._ctx.drift_message_staged:
             logger.info("[drift_tools] message_push rejected: already used")
             return json.dumps(
                 {"error": "message_push already used in this drift run"},
@@ -95,7 +95,7 @@ class SendMessageTool(Tool):
             return json.dumps({"error": "message or media is required"}, ensure_ascii=False)
         self._ctx.draft_message = text
         self._ctx.draft_media = media_paths
-        self._ctx.drift_message_sent = True
+        self._ctx.drift_message_staged = True
         logger.info("[drift_tools] message_push staged")
         return json.dumps({"ok": True}, ensure_ascii=False)
 
@@ -216,7 +216,7 @@ class FinishDriftTool(Tool):
                 },
                 ensure_ascii=False,
             )
-        message_result_value = "sent" if self._ctx.drift_message_sent else "silent"
+        message_result_value = "staged" if self._ctx.drift_message_staged else "silent"
         if cursor_update is not None and not isinstance(cursor_update, dict):
             return json.dumps(
                 {"error": "cursor_update must be an object"},
@@ -244,7 +244,9 @@ class FinishDriftTool(Tool):
             journal_append=journal_entries,
         )
         self._ctx.drift_finished = True
-        if self._event_bus is not None:
+        self._ctx.drift_finish_status = status_value
+        self._ctx.drift_finish_briefing = summary
+        if self._event_bus is not None and not self._ctx.drift_message_staged:
             self._event_bus.enqueue(
                 DriftFinished(
                     session_key=self._ctx.session_key,

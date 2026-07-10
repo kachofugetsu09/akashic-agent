@@ -28,6 +28,8 @@ from plugins.akasha.core import (
     AkashaCandidate,
     AkashaNode,
     CoreConfig,
+    DENSE_CANDIDATE_LIMIT,
+    DENSE_SEED_LIMIT,
     EdgeUpdate,
     RecallBudget,
     SourceMessage,
@@ -563,14 +565,17 @@ class AkashaMemoryEngine:
                 snapshot.nodes,
                 snapshot.message_embeddings,
                 snapshot.message_turn_keys,
-                limit=max(20, self._akasha_config.dense_top_k, request.limit),
+                limit=max(DENSE_CANDIDATE_LIMIT, request.limit),
                 message_index=snapshot.message_index,
             )
-            budget = _recall_budget_from_dense(dense_items, _core_config(self._akasha_config))
+            budget = _recall_budget_from_dense(
+                dense_items,
+                self._akasha_config.dense_seed_threshold,
+            )
             graph_seed_keys = _graph_seed_keys_from_snapshot(
                 query_vec,
                 snapshot,
-                limit=self._akasha_config.dense_top_k,
+                limit=DENSE_SEED_LIMIT,
             )
             activation_items, _, _ = _compute_candidates_from_snapshot(
                 query,
@@ -1093,7 +1098,6 @@ def _reinforce_boost_for_turn(
 
 def _core_config(config: AkashaConfig) -> CoreConfig:
     return CoreConfig(
-        dense_top_k=config.dense_top_k,
         dense_seed_threshold=config.dense_seed_threshold,
         activation_threshold=config.activation_threshold,
         cross_boost=config.cross_boost,
@@ -1101,7 +1105,6 @@ def _core_config(config: AkashaConfig) -> CoreConfig:
         nearby_dense_threshold=config.nearby_dense_threshold,
         soft_recall_threshold=config.soft_recall_threshold,
         soft_recall_direct_floor=config.soft_recall_direct_floor,
-        activate_limit=config.activate_limit,
     )
 
 

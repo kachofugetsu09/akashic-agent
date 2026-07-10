@@ -9,9 +9,6 @@ from typing import cast
 @dataclass(frozen=True)
 class AkashaConfig:
     db_path: str = ""
-    dense_top_k: int = 10
-    ripple_top_k: int = 10
-    activate_limit: int = 8
     inject_max_chars: int = 6000
     assistant_preview_chars: int = 0
     dense_seed_threshold: float = 0.675
@@ -35,9 +32,6 @@ def load_akasha_config(
     # 2. 把 TOML 字段收敛成强类型配置。
     return AkashaConfig(
         db_path=str(payload.get("db_path") or ""),
-        dense_top_k=_int_value(payload.get("dense_top_k"), 10),
-        ripple_top_k=_int_value(payload.get("ripple_top_k"), 10),
-        activate_limit=_int_value(payload.get("activate_limit"), 8),
         inject_max_chars=_int_value(payload.get("inject_max_chars"), 6000),
         assistant_preview_chars=_int_value(payload.get("assistant_preview_chars"), 0),
         dense_seed_threshold=_float_value(payload.get("dense_seed_threshold"), 0.675),
@@ -56,9 +50,6 @@ def render_akasha_config(config: AkashaConfig | None = None) -> str:
     cfg = config or AkashaConfig()
     return "\n".join([
         f'db_path = "{cfg.db_path}"',
-        f"dense_top_k = {cfg.dense_top_k}",
-        f"ripple_top_k = {cfg.ripple_top_k}",
-        f"activate_limit = {cfg.activate_limit}",
         f"inject_max_chars = {cfg.inject_max_chars}",
         f"assistant_preview_chars = {cfg.assistant_preview_chars}",
         f"dense_seed_threshold = {cfg.dense_seed_threshold}",

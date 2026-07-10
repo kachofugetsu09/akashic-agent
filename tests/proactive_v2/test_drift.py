@@ -48,7 +48,7 @@ def test_drift_commit_result_corrects_staged_message_result(tmp_path: Path):
         skill_used="explore-curiosity",
         status="completed",
         briefing="done",
-        message_result="sent",
+        message_result="staged",
         scratchpad_update=None,
         global_note_update=None,
         now_utc=datetime.now(timezone.utc),
@@ -586,6 +586,55 @@ async def test_finish_drift_saves_silent_message_result(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_finish_drift_emits_result_after_delivery(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(
+        now_utc=datetime.now(timezone.utc),
+        session_key="session",
+        drift_selected_skill="explore-curiosity",
+    )
+    events: list[Any] = []
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=_build_shared_tools(),
+            event_bus=SimpleNamespace(enqueue=events.append),
+        ),
+    )
+
+    await reg.execute("message_push", {"message": "hello"})
+    await reg.execute(
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "staged",
+        },
+    )
+
+    assert ctx.drift_message_staged is True
+    assert ctx.drift_message_sent is False
+    assert events == []
+
+    pipeline = _make_drift_pipeline(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=_build_shared_tools(),
+            event_bus=SimpleNamespace(enqueue=events.append),
+        ),
+    )
+    pipeline.record_commit_result(ctx, False)
+
+    assert events[0].message_result == "silent"
+    assert store.load_drift()["recent_runs"][-1]["message_result"] == "silent"
+
+
+@pytest.mark.asyncio
 async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
@@ -774,7 +823,7 @@ async def test_drift_pipeline_runs_and_finishes(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_drift_pipeline_restricts_tools_after_send_message(tmp_path: Path):
+async def test_drift_pipeline_restricts_tools_after_staging_message(tmp_path: Path):
     _write_skill(tmp_path)
     store = DriftStateStore(tmp_path)
     llm = FakeLLM(
@@ -806,7 +855,9 @@ async def test_drift_pipeline_restricts_tools_after_send_message(tmp_path: Path)
     assert llm.calls
     # FakeLLM 不记录 schemas，这里用行为结果兜底：send 后仍正常 finish。
     assert ctx.drift_finished is True
-    assert store.load_drift()["recent_runs"][-1]["message_result"] == "sent"
+    assert ctx.drift_message_staged is True
+    assert ctx.drift_message_sent is False
+    assert store.load_drift()["recent_runs"][-1]["message_result"] == "staged"
 
 
 @pytest.mark.asyncio
@@ -1034,9 +1085,18 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("delivered", "message_result"),
+    [(True, "sent"), (False, "silent")],
+)
+async def test_agent_tick_drift_emits_delivery_result(
+    tmp_path: Path,
+    delivered: bool,
+    message_result: str,
+):
     _write_skill(tmp_path)
-    sender = AsyncMock(return_value=True)
+    sender = AsyncMock(return_value=delivered)
+    events: list[Any] = []
 
     class _Session:
         def __init__(self) -> None:
@@ -1126,6 +1186,7 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
                     drift_dir=tmp_path,
                     store=DriftStateStore(tmp_path),
                     shared_tools=_build_shared_tools(),
+                    event_bus=SimpleNamespace(enqueue=events.append),
                 ),
                 max_steps=5,
             ),
@@ -1138,7 +1199,8 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
     sender.assert_awaited_once_with("hello from drift")
     gate.record_action.assert_called_once()
     assert tick.last_ctx.drift_entered is True
-    assert tick.last_ctx.drift_message_sent is True
+    assert tick.last_ctx.drift_message_sent is delivered
+    assert events[-1].message_result == message_result
 
 
 def _write_skill_with_mcp(

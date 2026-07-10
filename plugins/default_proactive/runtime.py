@@ -334,8 +334,8 @@ class ProactiveFlowRuntime:
             if self._any_action_gate is not None:
                 self._any_action_gate.record_action(now_utc=ctx.now_utc)
             logger.info(
-                "[proactive_v2] fetch: drift entered, message_sent=%s",
-                ctx.drift_message_sent,
+                "[proactive_v2] fetch: drift entered, message_staged=%s",
+                ctx.drift_message_staged,
             )
             self.last_ctx = ctx
             state.feed = FeedResult(drift_entered=True, base_score=0.0)
@@ -377,11 +377,13 @@ class ProactiveFlowRuntime:
         if state.decision is None:
             raise RuntimeError("主动链路缺少 ResolveResult")
         ctx = state.ctx
-        state.base_score = await self._deliver_execute(ctx, state.decision)
-        if ctx.drift_entered and (ctx.draft_message or ctx.draft_media):
-            sent = bool(self._deliverer.last_sent)
-            if self._drift_pipeline is not None:
-                self._drift_pipeline.record_commit_result(sent)
+        try:
+            state.base_score = await self._deliver_execute(ctx, state.decision)
+        finally:
+            if ctx.drift_entered and (ctx.draft_message or ctx.draft_media):
+                sent = bool(self._deliverer.last_sent)
+                if self._drift_pipeline is not None:
+                    self._drift_pipeline.record_commit_result(ctx, sent)
         logger.info(
             diagnostic_line(
                 "ProactiveFlowRuntime.run",
@@ -603,7 +605,7 @@ class ProactiveFlowRuntime:
     ) -> None:
         decision = result.decision if result is not None else ctx.terminal_action
         if ctx.drift_entered and result is None and decision is None:
-            decision = "reply" if ctx.drift_message_sent else "skip"
+            decision = "reply" if ctx.drift_message_staged else "skip"
         trace_extra = result.trace.extra if result is not None and result.trace is not None else {}
         skip_reason = str(trace_extra.get("skip_reason") or ctx.skip_reason or "")
         final_message = ""

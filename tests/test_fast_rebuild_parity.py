@@ -80,7 +80,6 @@ def _init_sessions(path: Path) -> None:
 
 def _core_config(config: AkashaConfig) -> core.CoreConfig:
     return core.CoreConfig(
-        dense_top_k=config.dense_top_k,
         dense_seed_threshold=config.dense_seed_threshold,
         activation_threshold=config.activation_threshold,
         cross_boost=config.cross_boost,
@@ -88,7 +87,6 @@ def _core_config(config: AkashaConfig) -> core.CoreConfig:
         nearby_dense_threshold=config.nearby_dense_threshold,
         soft_recall_threshold=config.soft_recall_threshold,
         soft_recall_direct_floor=config.soft_recall_direct_floor,
-        activate_limit=config.activate_limit,
     )
 
 
@@ -191,14 +189,17 @@ def _build_online_path(tmp_path: Path) -> Path:
                         snapshot.nodes,
                         snapshot.message_embeddings,
                         snapshot.message_turn_keys,
-                        limit=max(20, config.dense_top_k, 8),
+                        limit=core.DENSE_CANDIDATE_LIMIT,
                         message_index=snapshot.message_index,
                     )
-                    budget = core.recall_budget_from_dense(dense_items, core_config)
+                    budget = core.recall_budget_from_dense(
+                        dense_items,
+                        config.dense_seed_threshold,
+                    )
                     graph_seed_keys = core.graph_seed_keys_from_snapshot(
                         query_vec,
                         snapshot,
-                        limit=config.dense_top_k,
+                        limit=core.DENSE_SEED_LIMIT,
                     )
                     activation_items, _, _ = core.compute_candidates_from_snapshot(
                         user_message.content,

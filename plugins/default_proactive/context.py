@@ -39,8 +39,11 @@ class AgentTickContext:
     steps_taken: int = 0
     drift_entered: bool = False
     drift_finished: bool = False
+    drift_message_staged: bool = False
     drift_message_sent: bool = False
     drift_selected_skill: str = ""
+    drift_finish_status: str = ""
+    drift_finish_briefing: str = ""
     llm_call_count: int = 0
     cache_prompt_tokens: int = 0
     cache_hit_tokens: int = 0

@@ -50,7 +50,6 @@ class SharedMcpGateway:
         *,
         timeout: float | None = None,
     ) -> Any:
-        _ = timeout
         if self._tools is None:
             raise RuntimeError("共享 ToolRegistry 不可用")
         names = self._tools.get_tool_names_by_source("mcp", server)
@@ -61,7 +60,12 @@ class SharedMcpGateway:
         )
         if registered_name not in names:
             raise RuntimeError(f"MCP tool 不可用: {server}.{tool_name}")
-        result = await self._tools.execute(registered_name, args)
+        execution = self._tools.execute(registered_name, args, raise_errors=True)
+        result = (
+            await asyncio.wait_for(execution, timeout=timeout)
+            if timeout is not None
+            else await execution
+        )
         text = result.text if isinstance(result, ToolResult) else str(result)
         if text.strip().startswith(("[", "{")):
             return json.loads(text)
@@ -126,6 +130,8 @@ def _extract_context_items(data: Any, *, server: str) -> list[dict]:
 
 async def _fetch_by_channel_async(pool: McpGateway, *, channel: str) -> list[dict]:
     result: list[dict] = []
+    failed_servers: list[str] = []
+    succeeded_count = 0
     # 1. 先按 channel 从 proactive_sources.json 中挑出本轮该访问的源。
     for src in _iter_sources_by_channel(channel, pool._workspace):
         server = src.get("server", "")
@@ -140,6 +146,7 @@ async def _fetch_by_channel_async(pool: McpGateway, *, channel: str) -> list[dic
         try:
             # 3. 通过共享 MCP Gateway 调远端工具。
             data = await pool.call(server, get_tool, {})
+            succeeded_count += 1
             if channel == "context":
                 # 4a. context 通道不看 kind，直接把返回值规范成 list[dict]。
                 items = _extract_context_items(data, server=server)
@@ -152,7 +159,6 @@ async def _fetch_by_channel_async(pool: McpGateway, *, channel: str) -> list[dic
                 result.extend(events)
                 logger.debug("[mcp_sources] %s 返回 %d 条 %s 事件", server, len(events), channel)
         except Exception as e:
-            # 5. 单个源失败只记日志，不阻断其他源。
             logger.warning(
                 "[mcp_sources] fetch_%s %s.%s failed: %s",
                 channel,
@@ -160,6 +166,15 @@ async def _fetch_by_channel_async(pool: McpGateway, *, channel: str) -> list[dic
                 get_tool,
                 e,
             )
+            failed_servers.append(server)
+    if failed_servers and succeeded_count == 0:
+        raise RuntimeError(f"fetch_{channel} 以下源失败: {failed_servers}")
+    if failed_servers:
+        logger.warning(
+            "[mcp_sources] fetch_%s 部分源失败，保留其他源结果: %s",
+            channel,
+            failed_servers,
+        )
     return result
 
 
@@ -222,6 +237,7 @@ async def acknowledge_events_async(
     events: list[tuple[str, str]],
 ) -> None:
     ack_map = _build_ack_map(_load_sources(pool._workspace))
+    failed_servers: list[str] = []
     for ack_server, ack_id in events:
         if ack_server in ack_map and ack_id:
             ack_map[ack_server][1].append(ack_id)
@@ -233,6 +249,9 @@ async def acknowledge_events_async(
             logger.info("[mcp_sources] acked %d 事件 via %s.%s ids=%s", len(ids), server, ack_tool, ids)
         except Exception as e:
             logger.warning("[mcp_sources] ack failed %s.%s: %s", server, ack_tool, e)
+            failed_servers.append(server)
+    if failed_servers:
+        raise RuntimeError(f"ack 以下源失败: {failed_servers}")
 
 
 async def acknowledge_content_entries_async(
@@ -246,6 +265,7 @@ async def acknowledge_content_entries_async(
     if feedback not in {"interesting", "not_interesting"}:
         raise ValueError(f"invalid feedback: {feedback}")
     ack_map = _build_ack_map(_load_sources(pool._workspace))
+    failed_servers: list[str] = []
     for source_key, item_id in entries:
         if not source_key.startswith("mcp:"):
             continue
@@ -263,3 +283,6 @@ async def acknowledge_content_entries_async(
             await pool.call(server, ack_tool, args)
         except Exception as e:
             logger.warning("[mcp_sources] content ack failed %s.%s: %s", server, ack_tool, e)
+            failed_servers.append(server)
+    if failed_servers:
+        raise RuntimeError(f"content ack 以下源失败: {failed_servers}")
