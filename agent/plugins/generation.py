@@ -70,6 +70,7 @@ class PluginContributions:
     proactive_sources: tuple[RegisteredProactiveSource, ...] = ()
     jobs: tuple[RegisteredPluginJob, ...] = ()
     channels: tuple[Channel, ...] = ()
+    dashboard_module: Path | None = None
 
 
 @dataclass

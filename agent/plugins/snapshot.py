@@ -48,6 +48,7 @@ class RuntimeSnapshot:
     channels: Mapping[str, Channel]
     skill_catalog_generation_id: str | None
     mcp_catalog_generation_ids: Mapping[str, str]
+    dashboard_bindings: tuple[object, ...] = ()
     tool_registry: ToolRegistry | None = None
     plugin_skill_index: SkillIndex | None = None
     event_handlers: Mapping[type[object], tuple[Handler[object], ...]] = field(

@@ -119,6 +119,25 @@ class ChatLane:
                 state.condition.notify_all()
 
 
+class OutboundSubscription:
+    def __init__(
+        self,
+        bus: "MessageBus",
+        channel: str,
+        callback: Callable[[OutboundMessage], Awaitable[None]],
+    ) -> None:
+        self._bus = bus
+        self._channel = channel
+        self._callback = callback
+        self._active = True
+
+    def close(self) -> None:
+        if not self._active:
+            return
+        self._active = False
+        self._bus.unsubscribe_outbound(self._channel, self._callback)
+
+
 class MessageBus:
     """agent 与各 channel 之间的异步消息总线"""
 
@@ -152,9 +171,25 @@ class MessageBus:
         self,
         channel: str,
         callback: Callable[[OutboundMessage], Awaitable[None]],
-    ) -> None:
+    ) -> OutboundSubscription:
         """订阅某 channel 的出站消息"""
         self._subscribers.setdefault(channel, []).append(callback)
+        return OutboundSubscription(self, channel, callback)
+
+    def unsubscribe_outbound(
+        self,
+        channel: str,
+        callback: Callable[[OutboundMessage], Awaitable[None]],
+    ) -> None:
+        callbacks = self._subscribers.get(channel)
+        if callbacks is None:
+            return
+        try:
+            callbacks.remove(callback)
+        except ValueError:
+            return
+        if not callbacks:
+            del self._subscribers[channel]
 
     async def dispatch_outbound(self) -> None:
         """后台任务：将出站消息分发给对应 channel 的订阅者。

@@ -132,6 +132,7 @@ class PluginManager:
             [str, tuple[Channel, ...], tuple[Channel, ...]],
             Awaitable[None],
         ] | None = None
+        self._dashboard_preparer: Callable[[RuntimeSnapshot], None] | None = None
         self._loaded: set[str] = set()
         self._channels: list[Channel] = []
         self._tool_hooks: list[ToolHook] = []
@@ -274,6 +275,12 @@ class PluginManager:
         ],
     ) -> None:
         self._channel_switcher = switcher
+
+    def bind_dashboard_preparer(
+        self,
+        preparer: Callable[[RuntimeSnapshot], None],
+    ) -> None:
+        self._dashboard_preparer = preparer
 
     def job_catalog(self, generation_id: str) -> PreparedJobCatalog | None:
         return self._job_host.get(generation_id)
@@ -480,6 +487,25 @@ class PluginManager:
                 )
 
         self._compile_snapshot_event_handlers(snapshot)
+        if self._dashboard_preparer is not None:
+            try:
+                self._dashboard_preparer(snapshot)
+            except Exception as error:
+                self._record_failed_gate(
+                    plugin_id=plugin_id,
+                    revision=generation.source_revision,
+                    check_id="dashboard",
+                    reason=str(error) or type(error).__name__,
+                )
+                await self.discard_prepared(plugin_id)
+                if channels_switched and self._channel_switcher is not None:
+                    await self._channel_switcher(plugin_id, new_channels, old_channels)
+                return self._publication_status(
+                    plugin_id,
+                    active=active,
+                    candidate=generation,
+                    publication_state="failed",
+                )
         if generation.staged_event_bus is not None:
             generation.staged_event_bus.publish()
         transaction = self._snapshot_store.begin_publish(snapshot)
@@ -493,9 +519,15 @@ class PluginManager:
             _ = self._prepared_generations.pop(plugin_id, None)
             generation.state = "aborted"
             self._snapshot_drains[snapshot.snapshot_id] = (generation,)
-            await self._snapshot_store.abort(transaction)
+            channel_error: BaseException | None = None
             if channels_switched and self._channel_switcher is not None:
-                await self._channel_switcher(plugin_id, new_channels, old_channels)
+                try:
+                    await self._channel_switcher(plugin_id, new_channels, old_channels)
+                except BaseException as error:
+                    channel_error = error
+            await self._snapshot_store.abort(transaction)
+            if channel_error is not None:
+                raise RuntimeError("Snapshot abort 后旧 Channel 恢复失败") from channel_error
             raise
 
         _ = self._prepared_generations.pop(plugin_id)
@@ -505,6 +537,11 @@ class PluginManager:
         self._active_generations[plugin_id] = generation
         if active is not None:
             active.state = "retained_compat"
+        self._channels = [
+            channel
+            for item in self._active_generations.values()
+            for channel in item.contributions.channels
+        ]
         result = self._publication_status(
             plugin_id,
             active=active,
@@ -1434,6 +1471,10 @@ class PluginManager:
                 tuple[Channel, ...],
                 tuple(_load_module_list(instance, "channels")),
             ),
+            dashboard_module=_resolve_dashboard_module(
+                plugin_dir,
+                cls.dashboard_module(),
+            ),
         )
 
     def _validate_candidate(
@@ -1976,6 +2017,16 @@ def _resolve_declared_roots(
             raise RuntimeError(f"插件能力目录不存在: {path}")
         roots.append(path)
     return tuple(roots)
+
+
+def _resolve_dashboard_module(plugin_dir: Path, declared: str | None) -> Path | None:
+    if declared is None:
+        return None
+    path = (plugin_dir / declared).resolve(strict=False)
+    root = plugin_dir.resolve(strict=False)
+    if not path.is_relative_to(root) or path.suffix != ".py" or not path.is_file():
+        raise RuntimeError(f"插件 dashboard module 无效: {declared}")
+    return path
 
 
 def _resolve_mcp_servers(

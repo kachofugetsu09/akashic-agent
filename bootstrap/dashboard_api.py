@@ -687,6 +687,7 @@ def create_dashboard_app(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    plugin_manager: object | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
@@ -726,6 +727,25 @@ def create_dashboard_app(
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
     app.state.memory_store = memory_store or MemoryStore(workspace)
+    if plugin_manager is not None:
+        from agent.plugins.dashboard_host import (
+            PluginDashboardHost,
+            SnapshotDashboardMiddleware,
+        )
+
+        dashboard_host = PluginDashboardHost(
+            workspace=workspace,
+            memory_admin=memory_admin,
+            memory_store=app.state.memory_store,
+        )
+        snapshot = plugin_manager.current_snapshot
+        if snapshot is not None:
+            dashboard_host.prepare_initial_snapshot(snapshot)
+        plugin_manager.bind_dashboard_preparer(dashboard_host.prepare_snapshot)
+        app.add_middleware(
+            SnapshotDashboardMiddleware,
+            snapshot_store=plugin_manager.snapshot_store,
+        )
     # Vite build output is gitignored, so a fresh clone (or CI) may lack it. Keep
     # the directory present and mount without a dir check so app creation never
     # depends on the build having run; dashboard_index() reports if it's missing.
@@ -742,7 +762,7 @@ def create_dashboard_app(
         if not _plugin_dashboard_enabled(app, _plugin_dir):
             continue
         _build_plugin_panels_js(project_root, _plugin_dir)
-        if (_plugin_dir / "dashboard.py").exists():
+        if plugin_manager is None and (_plugin_dir / "dashboard.py").exists():
             plugin_closeables.extend(
                 _load_plugin_dashboard(app, _plugin_dir, workspace)
             )
@@ -1301,6 +1321,7 @@ def _build_dashboard_uvicorn_config(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    plugin_manager: object | None = None,
 ) -> uvicorn.Config:
     config = uvicorn.Config(
         create_dashboard_app(
@@ -1309,6 +1330,7 @@ def _build_dashboard_uvicorn_config(
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
             memory_store=memory_store,
+            plugin_manager=plugin_manager,
         ),
         host=host,
         port=port,
@@ -1327,6 +1349,7 @@ def build_dashboard_server(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    plugin_manager: object | None = None,
 ) -> uvicorn.Server:
     config = _build_dashboard_uvicorn_config(
         workspace=workspace,
@@ -1336,5 +1359,6 @@ def build_dashboard_server(
         manual_memory_optimizer=manual_memory_optimizer,
         memory_admin=memory_admin,
         memory_store=memory_store,
+        plugin_manager=plugin_manager,
     )
     return uvicorn.Server(config)

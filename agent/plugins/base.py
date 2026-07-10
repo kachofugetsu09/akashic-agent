@@ -92,3 +92,7 @@ class Plugin(ABC):
 
     def channels(self) -> list["Channel"]:
         return []
+
+    @classmethod
+    def dashboard_module(cls) -> str | None:
+        return None

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from agent.tools.message_push import MessagePushTool
 from bootstrap.channel_host import ChannelHost
+from bus.event_bus import EventBus
+from bus.queue import MessageBus
 
 
 class _Channel:
@@ -20,7 +25,7 @@ class _Channel:
         self._fail_stop = fail_stop
 
     async def start(self, ctx: object) -> None:
-        self._events.append(f"start:{self.name}:{ctx}")
+        self._events.append(f"start:{self.name}:{ctx.log}")
         if self._fail_start:
             raise RuntimeError("start failed")
 
@@ -30,19 +35,57 @@ class _Channel:
             raise RuntimeError("stop failed")
 
 
+class _Event:
+    pass
+
+
+class _RegisteredChannel:
+    name = "registered"
+
+    async def start(self, ctx: object) -> None:
+        async def on_outbound(_message: object) -> None:
+            return None
+
+        async def send_text(_chat_id: str, _message: str) -> None:
+            return None
+
+        ctx.event_bus.on(_Event, lambda event: event)
+        ctx.bus.subscribe_outbound(self.name, on_outbound)
+        ctx.push_tool.register_channel(self.name, text=send_text)
+
+    async def stop(self) -> None:
+        return None
+
+
+def _context(channel: _Channel) -> SimpleNamespace:
+    return SimpleNamespace(
+        bus=SimpleNamespace(),
+        session_manager=None,
+        event_bus=SimpleNamespace(),
+        push_tool=SimpleNamespace(),
+        attachment_store=None,
+        http_resources=None,
+        interrupt_controller=None,
+        bot_commands=[],
+        log=f"ctx:{channel.name}",
+    )
+
+
 @pytest.mark.asyncio
 async def test_channel_host_start_failure_does_not_block_others():
     events: list[str] = []
-    host = ChannelHost(lambda channel: f"ctx:{channel.name}")  # type: ignore[arg-type]
+    host = ChannelHost(_context)  # type: ignore[arg-type]
     host.add(_Channel("a", events))  # type: ignore[arg-type]
     host.add(_Channel("b", events, fail_start=True))  # type: ignore[arg-type]
     host.add(_Channel("c", events))  # type: ignore[arg-type]
 
-    await host.start_all()
+    with pytest.raises(RuntimeError, match="start failed"):
+        await host.start_all()
 
     assert events == [
         "start:a:ctx:a",
         "start:b:ctx:b",
+        "stop:b",
         "start:c:ctx:c",
     ]
 
@@ -50,10 +93,12 @@ async def test_channel_host_start_failure_does_not_block_others():
 @pytest.mark.asyncio
 async def test_channel_host_stops_in_reverse_order():
     events: list[str] = []
-    host = ChannelHost(lambda channel: f"ctx:{channel.name}")  # type: ignore[arg-type]
+    host = ChannelHost(_context)  # type: ignore[arg-type]
     host.add(_Channel("a", events))  # type: ignore[arg-type]
     host.add(_Channel("b", events, fail_stop=True))  # type: ignore[arg-type]
     host.add(_Channel("c", events))  # type: ignore[arg-type]
+    await host.start_all()
+    events.clear()
 
     await host.stop_all()
 
@@ -63,7 +108,7 @@ async def test_channel_host_stops_in_reverse_order():
 @pytest.mark.asyncio
 async def test_channel_host_swaps_plugin_generation():
     events: list[str] = []
-    host = ChannelHost(lambda channel: f"ctx:{channel.name}")  # type: ignore[arg-type]
+    host = ChannelHost(_context)  # type: ignore[arg-type]
     old = _Channel("old", events)
     new = _Channel("new", events)
     host.add(old)  # type: ignore[arg-type]
@@ -78,9 +123,9 @@ async def test_channel_host_swaps_plugin_generation():
 @pytest.mark.asyncio
 async def test_channel_host_restores_old_generation_when_start_fails():
     events: list[str] = []
-    host = ChannelHost(lambda channel: f"ctx:{channel.name}")  # type: ignore[arg-type]
+    host = ChannelHost(_context)  # type: ignore[arg-type]
     old = _Channel("old", events)
-    failed = _Channel("new", events, fail_start=True)
+    failed = _Channel("new", events, fail_start=True, fail_stop=True)
     host.add(old)  # type: ignore[arg-type]
     host.bind_plugin_channels({"chat": (old,)})  # type: ignore[arg-type]
 
@@ -94,3 +139,71 @@ async def test_channel_host_restores_old_generation_when_start_fails():
         "stop:new",
         "start:old:ctx:old",
     ]
+
+
+@pytest.mark.asyncio
+async def test_channel_host_restores_every_old_channel_when_stop_fails():
+    events: list[str] = []
+    host = ChannelHost(_context)  # type: ignore[arg-type]
+    first = _Channel("first", events, fail_stop=True)
+    second = _Channel("second", events)
+    replacement = _Channel("replacement", events)
+    host.add(first)  # type: ignore[arg-type]
+    host.add(second)  # type: ignore[arg-type]
+    host.bind_plugin_channels({"chat": (first, second)})  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await host.swap_plugin_channels(  # type: ignore[arg-type]
+            "chat",
+            (first, second),
+            (replacement,),
+        )
+
+    assert host.channels == [first, second]
+    assert events == [
+        "stop:second",
+        "stop:first",
+        "start:first:ctx:first",
+        "start:second:ctx:second",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_channel_host_revokes_shared_registrations_on_stop():
+    event_bus = EventBus()
+    message_bus = MessageBus()
+    push_tool = MessagePushTool()
+    channel = _RegisteredChannel()
+    context = SimpleNamespace(
+        bus=message_bus,
+        session_manager=None,
+        event_bus=event_bus,
+        push_tool=push_tool,
+        attachment_store=None,
+        http_resources=None,
+        interrupt_controller=None,
+        bot_commands=[],
+        log="ctx:registered",
+    )
+    host = ChannelHost(lambda _channel: context)  # type: ignore[arg-type]
+    host.add(channel)  # type: ignore[arg-type]
+
+    await host.start_all()
+
+    assert event_bus.handler_count() == 1
+    assert "registered" in message_bus._subscribers
+    assert await push_tool.execute(
+        channel="registered",
+        chat_id="1",
+        message="hello",
+    ) == "文本已发送"
+
+    await host.stop_all()
+
+    assert event_bus.handler_count() == 0
+    assert "registered" not in message_bus._subscribers
+    assert "未注册" in await push_tool.execute(
+        channel="registered",
+        chat_id="1",
+        message="hello",
+    )

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi.testclient import TestClient
 
 from agent.plugins.manager import PluginManager
 from agent.plugins.jobs import PluginJobRuntime
@@ -20,6 +21,7 @@ from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from agent.looping.core import AgentLoop
 from agent.background.subagent_manager import SubagentManager
 from proactive_v2.loop import ProactiveLoop
+from bootstrap.dashboard_api import create_dashboard_app
 from agent.skills import SkillsLoader
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import Tool
@@ -2649,6 +2651,52 @@ async def test_subagent_shutdown_releases_unstarted_snapshot_lease() -> None:
 
     assert snapshot.lease_count == 0
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_routes_follow_snapshot_generation(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_dashboard",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotDashboardPlugin(Plugin):\n"
+        "    name = 'snapshot_dashboard'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+
+    def write_dashboard(version: str) -> None:
+        _ = (plugin_dir / "dashboard.py").write_text(
+            "from fastapi import FastAPI\n"
+            "def register(app: FastAPI, plugin_dir, workspace):\n"
+            "    @app.get('/api/dashboard/snapshot-version')\n"
+            f"    def version(): return {{'version': '{version}'}}\n",
+            encoding="utf-8",
+        )
+
+    write_dashboard("v1")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    assert old_snapshot is not None
+    app = create_dashboard_app(
+        tmp_path / "workspace",
+        memory_admin=SimpleNamespace(),
+        plugin_manager=manager,
+    )
+    client = TestClient(app)
+    assert client.get("/api/dashboard/snapshot-version").json() == {"version": "v1"}
+    write_dashboard("v2")
+    assert await manager.prepare_candidate("snapshot_dashboard") is not None
+    await manager.publish_prepared("snapshot_dashboard")
+
+    assert client.get("/api/dashboard/snapshot-version").json() == {"version": "v2"}
+    old_binding = old_snapshot.dashboard_bindings[0]
+    assert TestClient(old_binding.app).get(  # type: ignore[attr-defined]
+        "/api/dashboard/snapshot-version"
+    ).json() == {"version": "v1"}
+    client.close()
+    await manager.terminate_all()
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,10 @@ class ContextPrepareRecordModule:
 
 
 class DefaultMemoryInspector(Plugin):
+    @classmethod
+    def dashboard_module(cls) -> str | None:
+        return "dashboard.py"
+
     name = "default_memory"
 
     @classmethod

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import inspect
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
@@ -245,7 +247,9 @@ class CoreRuntime:
         spawn_tool = self.tools.get_tool("spawn")
         shutdown = getattr(spawn_tool, "shutdown", None)
         if callable(shutdown):
-            await shutdown()
+            result = shutdown()
+            if inspect.isawaitable(result):
+                await cast(Awaitable[object], result)
         await self.event_bus.aclose()
         if self.plugin_manager is not None:
             await self.plugin_manager.terminate_all()
