@@ -51,6 +51,12 @@ from agent.plugins.generation import (
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.skill_host import PluginSkillHost, PreparedSkillCatalog
 from agent.plugins.mcp_host import PluginMcpHost, PreparedMcpCatalog
+from agent.plugins.activity_host import (
+    PluginJobHost,
+    PluginProactiveHost,
+    PreparedJobCatalog,
+    PreparedProactiveCatalog,
+)
 from agent.lifecycle.phase import topo_sort_modules
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.lifecycle import ProactiveLifecycleBuilder
@@ -136,6 +142,8 @@ class PluginManager:
         self._manager_namespace = secrets.token_hex(4)
         self._skill_host = PluginSkillHost(workspace)
         self._mcp_host = PluginMcpHost()
+        self._job_host = PluginJobHost()
+        self._proactive_host = PluginProactiveHost()
 
     @property
     def loaded_count(self) -> int:
@@ -234,6 +242,15 @@ class PluginManager:
 
     def mcp_catalog(self, generation_id: str) -> PreparedMcpCatalog | None:
         return self._mcp_host.get(generation_id)
+
+    def job_catalog(self, generation_id: str) -> PreparedJobCatalog | None:
+        return self._job_host.get(generation_id)
+
+    def proactive_catalog(
+        self,
+        generation_id: str,
+    ) -> PreparedProactiveCatalog | None:
+        return self._proactive_host.get(generation_id)
 
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
@@ -376,6 +393,8 @@ class PluginManager:
                         active,
                         "readiness_semantic_checks",
                     ),
+                    "jobs": _job_keys(active),
+                    "proactive_sources": _proactive_source_keys(active),
                 }
                 results.append(result)
                 logger.info(
@@ -427,6 +446,12 @@ class PluginManager:
                 "mcp_tools": _mcp_tool_names(prepared) if prepared is not None else [],
                 "readiness_checks": (
                     _gate_check_evidence(prepared, "readiness_semantic_checks")
+                    if prepared is not None
+                    else []
+                ),
+                "jobs": _job_keys(prepared) if prepared is not None else [],
+                "proactive_sources": (
+                    _proactive_source_keys(prepared)
                     if prepared is not None
                     else []
                 ),
@@ -685,6 +710,45 @@ class PluginManager:
                 "skill_catalog",
                 lambda: self._skill_host.close(generation_id),
             )
+            try:
+                job_catalog = self._job_host.prepare(
+                    generation_id,
+                    contributions.jobs,
+                )
+                scope.defer(
+                    "job_catalog",
+                    lambda: self._job_host.close(generation_id),
+                )
+                proactive_catalog = self._proactive_host.prepare(
+                    generation_id,
+                    contributions.proactive_sources,
+                )
+                scope.defer(
+                    "proactive_catalog",
+                    lambda: self._proactive_host.close(generation_id),
+                )
+            except Exception as error:
+                gate_result = _with_gate_check(
+                    gate_result,
+                    check_id="activity_catalogs",
+                    passed=False,
+                    evidence=str(error),
+                )
+                self._gate_results[plugin_id] = gate_result
+                raise _CandidateRejected(gate_result) from error
+            generation.job_catalog = job_catalog
+            generation.proactive_catalog = proactive_catalog
+            gate_result = _with_gate_check(
+                gate_result,
+                check_id="activity_catalogs",
+                passed=True,
+                evidence={
+                    "jobs": sorted(job_catalog.jobs),
+                    "proactive_sources": sorted(proactive_catalog.sources),
+                },
+            )
+            self._gate_results[plugin_id] = gate_result
+            generation.gate_result = gate_result
             if not activate:
                 try:
                     mcp_catalog = await self._mcp_host.prepare(
@@ -713,6 +777,8 @@ class PluginManager:
                         PluginReadinessContext(
                             generation_id=generation_id,
                             mcp_catalog=mcp_catalog,
+                            job_catalog=job_catalog,
+                            proactive_catalog=proactive_catalog,
                         )
                     )
                     if not isinstance(raw_readiness_checks, list):
@@ -1746,6 +1812,16 @@ def _skill_body_hashes(
 def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
     catalog = generation.mcp_catalog
     return list(catalog.tool_names) if catalog is not None else []
+
+
+def _job_keys(generation: PluginGeneration) -> list[str]:
+    catalog = generation.job_catalog
+    return sorted(catalog.jobs) if catalog is not None else []
+
+
+def _proactive_source_keys(generation: PluginGeneration) -> list[str]:
+    catalog = generation.proactive_catalog
+    return sorted(catalog.sources) if catalog is not None else []
 
 
 def _gate_check_evidence(

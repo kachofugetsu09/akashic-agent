@@ -65,6 +65,10 @@ class RegisteredPluginJob:
     spec: PluginJobSpec
 
 
+def plugin_job_key(job: RegisteredPluginJob) -> str:
+    return f"{job.plugin_id}:{job.spec.id}"
+
+
 @dataclass(frozen=True)
 class _JobRequest:
     key: str
@@ -115,7 +119,7 @@ class PluginJobRuntime:
     ) -> None:
         self._event_bus = event_bus
         self._llm = llm
-        self._jobs = {self._job_key(job): job for job in jobs}
+        self._jobs = {plugin_job_key(job): job for job in jobs}
         self._queue: asyncio.Queue[_JobRequest | None] = asyncio.Queue()
         self._queued_keys: set[str] = set()
         self._last_run_at: dict[str, datetime] = {}
@@ -257,7 +261,3 @@ class PluginJobRuntime:
             return False
         elapsed = (datetime.now(timezone.utc) - last).total_seconds()
         return elapsed < seconds
-
-    @staticmethod
-    def _job_key(job: RegisteredPluginJob) -> str:
-        return f"{job.plugin_id}:{job.spec.id}"

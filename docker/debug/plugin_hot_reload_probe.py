@@ -530,7 +530,8 @@ def _candidate_reload_source(version: str) -> str:
     return (
         "from __future__ import annotations\n"
         "import asyncio\n"
-        "from agent.plugins import McpServerSpec, Plugin, PluginSemanticCheck, ProactiveSourceSpec, tool\n"
+        "from agent.plugins import (IntervalTrigger, McpServerSpec, Plugin, PluginJobSpec, "
+        "PluginSemanticCheck, ProactiveSourceSpec, tool)\n"
         "class CandidateReloadPlugin(Plugin):\n"
         "    name = 'candidate_reload'\n"
         f"{skills}"
@@ -541,10 +542,18 @@ def _candidate_reload_source(version: str) -> str:
         "        return [ProactiveSourceSpec(id='candidate_feed', channels=('content',), "
         "server='candidate_feed', fetch_tool='fetch_events', ack_tool='ack_events', "
         "poll_tool='poll_events')]\n"
+        "    def jobs(self):\n"
+        "        return [PluginJobSpec(id='refresh', triggers=[IntervalTrigger(3600)], handler=self.refresh)]\n"
+        "    async def refresh(self, context):\n"
+        "        return None\n"
         "    async def readiness_semantic_checks(self, context):\n"
         "        server = context.mcp_catalog.servers['candidate_feed']\n"
         "        value = await server.client.call('candidate_version', {})\n"
-        f"        return [PluginSemanticCheck('candidate_mcp_version', value == '{version}', value)]\n"
+        "        job = context.job_catalog.jobs['candidate_reload@gate:refresh']\n"
+        "        source = context.proactive_catalog.sources['candidate_reload@gate:candidate_feed']\n"
+        "        owned = getattr(job.spec.handler, '__self__', None) is self\n"
+        "        evidence = {'mcp': value, 'job_owned': owned, 'source': source.spec.id}\n"
+        f"        return [PluginSemanticCheck('candidate_capabilities', value == '{version}' and owned, evidence)]\n"
         "    @tool(name='candidate_reload_tool')\n"
         "    async def run(self, event):\n"
         "        \"\"\"Candidate reload tool.\"\"\"\n"
@@ -753,6 +762,8 @@ def _exercise_candidate_prepare(
     return_drift_body_hashes = return_status.get("drift_skill_body_hashes")
     valid_mcp_tools = valid_status.get("mcp_tools")
     valid_readiness_checks = valid_status.get("readiness_checks")
+    valid_jobs = valid_status.get("jobs")
+    valid_sources = valid_status.get("proactive_sources")
     valid_description_map = (
         cast(dict[object, object], valid_descriptions)
         if isinstance(valid_descriptions, dict)
@@ -794,11 +805,20 @@ def _exercise_candidate_prepare(
         and valid_readiness_checks
         == [
             {
-                "check_id": "candidate_mcp_version",
+                "check_id": "candidate_capabilities",
                 "passed": True,
-                "evidence": "v2",
+                "evidence": {
+                    "mcp": "v2",
+                    "job_owned": True,
+                    "source": "candidate_feed",
+                },
             }
         ]
+        and valid_jobs == ["candidate_reload@gate:refresh"]
+        and valid_sources == ["candidate_reload@gate:candidate_feed"]
+        and return_status.get("jobs") == ["candidate_reload@gate:refresh"]
+        and return_status.get("proactive_sources")
+        == ["candidate_reload@gate:candidate_feed"]
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"
         and valid_drift_description_map.get("candidate-drift") == "candidate drift v2"

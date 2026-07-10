@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from infra.channels.contract import Channel
     from agent.plugins.skill_host import PreparedSkillCatalog
     from agent.plugins.mcp_host import PreparedMcpCatalog
+    from agent.plugins.activity_host import PreparedJobCatalog, PreparedProactiveCatalog
 
 
 GateStatus = Literal["passed", "failed"]
@@ -27,6 +28,8 @@ class PluginSemanticCheck:
 class PluginReadinessContext:
     generation_id: str
     mcp_catalog: PreparedMcpCatalog
+    job_catalog: PreparedJobCatalog
+    proactive_catalog: PreparedProactiveCatalog
 
 
 @dataclass(frozen=True)
@@ -81,5 +84,7 @@ class PluginGeneration:
     gate_result: GateResult
     skill_catalog: PreparedSkillCatalog | None = None
     mcp_catalog: PreparedMcpCatalog | None = None
+    job_catalog: PreparedJobCatalog | None = None
+    proactive_catalog: PreparedProactiveCatalog | None = None
     state: str = "active"
     lease_count: int = 0

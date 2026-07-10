@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Protocol
 
-from agent.plugins.specs import RegisteredProactiveSource
+from agent.plugins.specs import RegisteredProactiveSource, proactive_source_key
 from agent.tools.base import ToolResult
 from agent.tools.registry import ToolRegistry
 
@@ -58,7 +58,7 @@ class SharedMcpGateway:
 
 
 def source_key(source: RegisteredProactiveSource) -> str:
-    return f"{source.plugin_id}:{source.spec.id}"
+    return proactive_source_key(source)
 
 
 async def fetch_sources_async(

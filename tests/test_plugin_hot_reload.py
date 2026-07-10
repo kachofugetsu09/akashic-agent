@@ -916,7 +916,8 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "mcp_ready",
-        "from agent.plugins import McpServerSpec, Plugin, PluginSemanticCheck, ProactiveSourceSpec\n"
+        "from agent.plugins import (IntervalTrigger, McpServerSpec, Plugin, PluginJobSpec, "
+        "PluginSemanticCheck, ProactiveSourceSpec)\n"
         "class McpReadyPlugin(Plugin):\n"
         "    name = 'mcp_ready'\n"
         "    @classmethod\n"
@@ -926,9 +927,17 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
         "        return [ProactiveSourceSpec(id='feed', channels=('content',), "
         "server='feed', fetch_tool='fetch_events', ack_tool='ack_events', "
         "poll_tool='poll_events')]\n"
+        "    def jobs(self):\n"
+        "        return [PluginJobSpec(id='refresh', triggers=[IntervalTrigger(3600)], handler=self.refresh)]\n"
+        "    async def refresh(self, context):\n"
+        "        return None\n"
         "    async def readiness_semantic_checks(self, context):\n"
         "        value = await context.mcp_catalog.servers['feed'].client.call('fetch_events', {})\n"
-        "        return [PluginSemanticCheck('candidate_feed', value == '[]', value)]\n",
+        "        job = context.job_catalog.jobs['mcp_ready:refresh']\n"
+        "        source = context.proactive_catalog.sources['mcp_ready:feed']\n"
+        "        owned = getattr(job.spec.handler, '__self__', None) is self\n"
+        "        evidence = {'mcp': value, 'job_owned': owned, 'source': source.spec.id}\n"
+        "        return [PluginSemanticCheck('candidate_feed', value == '[]' and owned, evidence)]\n",
     )
     _write_mcp_server(
         plugin_dir,
@@ -937,10 +946,18 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     tools = ToolRegistry()
     manager = _manager(tmp_path, tools=tools)
     await manager.load_all()
+    active = manager.generation("mcp_ready")
+    assert active is not None and active.job_catalog is not None
+    active_job = manager.jobs[0]
 
     prepared = await manager.prepare_candidate("mcp_ready")
 
-    assert prepared is not None and prepared.mcp_catalog is not None
+    assert (
+        prepared is not None
+        and prepared.mcp_catalog is not None
+        and prepared.job_catalog is not None
+        and prepared.proactive_catalog is not None
+    )
     catalog = prepared.mcp_catalog
     server = catalog.servers["feed"]
     assert server.client.name == f"feed@{prepared.generation_id}"
@@ -952,6 +969,13 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     assert not any(prepared.generation_id in name for name in catalog.tool_names)
     assert tools.get_registered_names() == set()
     assert await server.tools[1].execute() == "[]"
+    assert tuple(catalog.servers) == ("feed",)
+    assert tuple(prepared.job_catalog.jobs) == ("mcp_ready:refresh",)
+    assert tuple(prepared.proactive_catalog.sources) == ("mcp_ready:feed",)
+    prepared_job = prepared.job_catalog.jobs["mcp_ready:refresh"]
+    assert prepared_job.spec.handler.__self__ is prepared.instance  # type: ignore[attr-defined]
+    assert manager.jobs == [active_job]
+    assert active_job.spec.handler.__self__ is active.instance  # type: ignore[attr-defined]
     lifecycle = tmp_path / "home" / "data" / "mcp_ready-builtin" / "mcp-lifecycle.log"
     await _wait_for_log(lifecycle, ["started"])
 
@@ -959,9 +983,35 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
 
     await _wait_for_log(lifecycle, ["started", "stopped"])
     assert manager.mcp_catalog(prepared.generation_id) is None
+    assert manager.job_catalog(prepared.generation_id) is None
+    assert manager.proactive_catalog(prepared.generation_id) is None
     assert server.client._process is None
     assert server.client._stderr_task is None
     await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_invalid_job_structure_fails_activity_catalog_gate(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "invalid_job",
+        "from agent.plugins import IntervalTrigger, Plugin, PluginJobSpec\n"
+        "class InvalidJobPlugin(Plugin):\n"
+        "    name = 'invalid_job'\n"
+        "    def jobs(self):\n"
+        "        return [PluginJobSpec(id='bad', triggers=[IntervalTrigger(0)], handler=self.run)]\n"
+        "    async def run(self, context):\n"
+        "        return None\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.generation("invalid_job") is None
+    gate = manager.latest_gate("invalid_job")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[-1].check_id == "activity_catalogs"
+    assert manager.jobs == []
 
 
 @pytest.mark.asyncio
