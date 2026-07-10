@@ -424,7 +424,10 @@ class PluginManager:
 
         transaction = self._snapshot_store.begin_publish(snapshot)
         try:
-            self._validate_published_snapshot(generation, snapshot)
+            await asyncio.wait_for(
+                self._post_publish_invariants(generation, snapshot),
+                timeout=5,
+            )
             await self._snapshot_store.commit(transaction)
         except (asyncio.CancelledError, Exception):
             await self._snapshot_store.abort(transaction)
@@ -476,11 +479,14 @@ class PluginManager:
         generation.initialization_started = True
         await instance.initialize()
 
-    def _validate_published_snapshot(
+    async def _post_publish_invariants(
         self,
         generation: PluginGeneration,
         snapshot: RuntimeSnapshot,
     ) -> None:
+        await asyncio.sleep(0)
+        if generation.scope.closed:
+            raise RuntimeError("候选插件作用域已关闭")
         if self.current_snapshot is not snapshot:
             raise RuntimeError("RuntimeSnapshot 发布指针不一致")
         if snapshot.generations.get(generation.plugin_id) is not generation:
@@ -489,8 +495,11 @@ class PluginManager:
         if catalog_id is not None and self._skill_host.get(catalog_id) is None:
             raise RuntimeError("RuntimeSnapshot skill catalog 不可用")
         for generation_id in snapshot.mcp_catalog_generation_ids.values():
-            if self._mcp_host.get(generation_id) is None:
+            catalog = self._mcp_host.get(generation_id)
+            if catalog is None:
                 raise RuntimeError("RuntimeSnapshot MCP catalog 不可用")
+            if any(not server.client.connected for server in catalog.servers.values()):
+                raise RuntimeError("RuntimeSnapshot MCP client 已断开")
         for item in snapshot.generations.values():
             if item.job_catalog is not None and self._job_host.get(
                 item.generation_id

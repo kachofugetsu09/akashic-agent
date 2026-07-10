@@ -32,6 +32,10 @@ class PluginScope:
     def resource_count(self) -> int:
         return len(self._cleanups)
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def defer(self, resource: str, cleanup: Cleanup) -> None:
         self._ensure_open()
         self._cleanups.append((resource, cleanup))

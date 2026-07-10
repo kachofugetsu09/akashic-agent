@@ -1539,6 +1539,46 @@ async def test_publish_prepared_initialize_failure_keeps_active_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_post_publish_invariant_failure_aborts_to_previous_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_publish")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None
+
+    async def fail_invariant(generation, snapshot) -> None:
+        assert manager.current_snapshot is snapshot
+        raise RuntimeError("post publish failed")
+
+    monkeypatch.setattr(manager, "_post_publish_invariants", fail_invariant)
+
+    with pytest.raises(RuntimeError, match="post publish failed"):
+        await manager.publish_prepared("snapshot_publish")
+
+    assert manager.current_snapshot is old_snapshot
+    assert manager.generation("snapshot_publish") is active
+    assert manager.prepared_generation("snapshot_publish") is None
+    assert candidate.state == "discarded"
+    assert candidate.runtime_snapshot is not None
+    assert candidate.runtime_snapshot.state == "aborted"
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot(
     tmp_path: Path,
 ) -> None:
