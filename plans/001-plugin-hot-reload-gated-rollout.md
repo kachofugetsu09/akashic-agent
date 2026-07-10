@@ -116,10 +116,10 @@
 | Frontend types | `npm run typecheck` | exit 0 |
 | Frontend lint | `npm run lint` | exit 0 |
 | Frontend build | `npm run build` | exit 0 |
-| Docker build | `docker compose -f docker/debug/docker-compose.yml build akashic-plugin-gate` | exit 0 |
+| Docker build | `python docker/debug/plugin_hot_reload_probe.py --scenario sandbox-integrity` | controller builds current Gate image before validation |
 | Sandbox integrity | `python docker/debug/plugin_hot_reload_probe.py --scenario sandbox-integrity` | host controller creates an external sandbox; exit 0, host state unchanged |
 | Docker runtime | `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase <phase>` | separate controller and Runtime container; exit 0, structured report passed |
-| Docker cleanup | `docker compose -p akashic-plugin-reload-gate -f docker/debug/docker-compose.yml --profile plugin-gate down --remove-orphans` | only dedicated Gate project is removed |
+| Docker cleanup | controller `finally` | unique Compose project is removed and cleanup result enters GateResult |
 
 ## Scope
 
@@ -142,6 +142,7 @@
 - `tests/test_plugin_hot_reload.py`（新增）
 - `tests_scenarios/test_plugin_hot_reload_runtime.py`（新增）
 - `docker/debug/docker-compose.yml`
+- `docker/debug/docker-compose.plugin-gate.yml`（新增）
 - `docker/debug/README.md`
 - `docker/debug/plugin_hot_reload_probe.py`（新增）
 - `_handbook/plugins-tutorial.md`
@@ -247,24 +248,24 @@
 
 **G1/G3 Verify**:
 
-- invalid Python、invalid config、重复 tool、phase cycle、缺失 MCP tool、失败 semantic check 都返回 failed GateResult。
+- invalid Python、invalid config、重复 tool、phase cycle、无效 MCP spec／source 引用、失败 semantic check 都返回 failed GateResult。
 - 每种失败后 active generation id、工具集合、EventBus handler 和 Runtime 行为保持不变。
 - v1 → invalid → v2 后只发布 v2，invalid 从未对外可见。
 - `pytest -q tests/test_plugin_hot_reload.py` → all pass。
-- 在 G-1 容器中执行 v1 → invalid → v2，真实 CoreRuntime 只发布 v2，前后宿主仓库状态一致。
+- `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase candidate` → 真实 `main.py` 中执行 v1 → invalid → v2，invalid 不改变 active generation。
 
 ### Step 3: 接入 Skills、MCP、Jobs 与 Proactive Host
 
-SkillCatalog 直接合并 workspace、builtin 和 active plugin roots，不再把插件软链接视为运行时真相源。Skill 文件变化使 catalog 失效，下一 turn/drift 获取新版；仅修改 Skill 不重启其他能力。
+Skill Host 能编译 workspace、builtin 和候选 plugin roots，不再把插件软链接视为运行时真相源；本阶段只建立候选 catalog 和失效能力，不切换在途 turn。
 
-MCP client 使用内部 generation identity。候选先完成 initialize、capability negotiation 和 tools/list，再把 wrapper 放入 candidate ToolCatalog。公开 server/tool 名不带 generation。同名 MCP 配置 fingerprint 变化必须启动新连接；旧调用 lease 归零后再断开旧连接。支持 `notifications/tools/list_changed` 触发下一执行边界的 catalog 更新。
+MCP client 使用内部 generation identity。候选先完成 initialize、capability negotiation 和 tools/list，再把 wrapper 放入 candidate ToolCatalog。公开 server/tool 名不带 generation；本阶段验证候选可预热和关闭，不实现 live routing。
 
-JobHost 使用稳定 `<plugin_id>:<job_id>` 保存调度状态。更新停止旧定义产生新请求，但已排队和已运行任务继续持有旧 lease；新触发使用新 handler。Proactive source 以稳定 source ID 保存 poll/ACK 状态，新 kernel 在 tick 边界切换。
+JobHost 使用稳定 `<plugin_id>:<job_id>` 保存调度状态，Proactive source 使用稳定 source ID 保存 poll/ACK 状态。本阶段只建立 candidate host、readiness 和 close；新旧 handler 路由与 tick 边界在 Step 4 的 snapshot lease 上实现。
 
 **G2 Verify**:
 
-- Skill v1 → v2：当前 turn 保持 v1，下一 turn 使用 v2，MCP PID 与 Channel instance 不变。
 - MCP initialize/tools/list 失败：旧 client 和旧 tool catalog 不变。
+- MCP spec 声明的远端 tool 缺失时 readiness 失败，候选 client 关闭。
 - Job、proactive source 和 MCP client 都能预热并由 scope 完整关闭。
 - `pytest -q tests/test_plugin_hot_reload.py tests/proactive_v2 tests/test_plugin_manager.py` → all pass。
 - `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase capability-hosts` → 真实 `main.py` 内完成 MCP、Job、tick readiness 与关闭；本阶段不提前要求跨代际发布。
@@ -275,7 +276,7 @@ RuntimeSnapshot 一次性包含 lifecycle graphs、event handlers、tool hooks�
 
 Passive turn、proactive tick、job、tool execution、EventBus queue envelope 和 Dashboard request 都在入口获取 snapshot lease，在完成时释放。同一次执行禁止重新读取 current snapshot。
 
-替换 `add_*_plugin_modules()` 的永久追加语义，改为从 snapshot 构建或选择 phase graph。Tool schema、tool search 和 tool execute 必须来自同一 snapshot。发布后发现失败时，为后续入口再次原子发布旧 snapshot；已经持有新 snapshot lease 的执行允许完成，新代际等待 lease 清零后再回收。
+替换 `add_*_plugin_modules()` 的永久追加语义，改为从 snapshot 构建或选择 phase graph。Tool schema、tool search 和 tool execute 必须来自同一 snapshot。发布 v2 时，v1 除执行 lease 外还保留 rollback hold；发布验收通过后才释放。若验收失败，先恢复 v1 的 active hold 并为后续入口再次原子发布 v1；已经持有 v2 lease 的执行允许完成，v2 等待 lease 清零后再回收。
 
 **G4 Verify**:
 
@@ -283,6 +284,7 @@ Passive turn、proactive tick、job、tool execution、EventBus queue envelope �
 - 阻塞 v1 tool call、EventBus queued event 和 proactive tick，重复同样断言。
 - Candidate snapshot 只要任一 graph/index 构建失败，current snapshot identity 不变。
 - v2 发布后触发 rollback：后续执行回到 v1，已经持有 v2 lease 的执行安全完成，最后 v2 才清理。
+- v1 rollback hold 在发布验收完成前始终保留其 MCP、Channel 和 Service；验收通过后才允许 v1 drain。
 - `pytest -q tests/test_plugin_hot_reload.py tests/proactive_v2` → all pass。
 - `python docker/debug/plugin_hot_reload_probe.py --scenario full-runtime --phase snapshot` → 真实 `main.py` 中阻塞 v1 turn，中途更新隔离 cache，当前 turn 保持 v1，下一 turn 使用 v2。
 
@@ -344,13 +346,13 @@ Watcher 只发送 invalidation hint。Reconciler 必须在启动、Watcher 事�
 
 扩展 host-side `docker/debug/plugin_hot_reload_probe.py`。Controller 启动独立 Runtime container，其 PID 1 由 entrypoint 执行 `python main.py`；Controller 通过 Unix socket 和共享的外部 sandbox 驱动 Runtime，不能让 probe 子进程冒充 Runtime。Controller 在隔离 cache 安装全能力测试插件，制造 active turn、MCP call、job、proactive tick 和 Dashboard request，再修改 sandbox 内源码、config 和 manifest。
 
-Controller 复用 `context_probe.py` 的进程 readiness/cleanup；Runtime 使用正式 wiring。为确定性 Gate 增加一个通用 provider factory seam：生产默认仍构造正式 provider，Docker Gate 通过正式依赖注入入口提供测试 provider，禁止 monkeypatch `AppRuntime.start()`。Probe 必须读取结构化 PluginStatus 和 GateResult，不依赖模糊日志关键词；连续执行成功发布、失败回滚、disable/re-enable、rapid revisions 和进程重启后恢复。
+Controller 复用 `context_probe.py` 的进程 readiness/cleanup；Runtime 保持正式 Provider wiring，通过同一 Compose network 的 OpenAI-compatible mock sidecar 和 `base_url` 获得确定性响应，不 monkeypatch `AppRuntime.start()`。触发入口分别为：IPC 驱动 passive turn、容器内 HTTP 驱动 Dashboard、sandbox 文件驱动 Watcher、短周期配置驱动 Job/Proactive、结构化 status API 读取 generation/Gate。连续执行成功发布、失败回滚、disable/re-enable、rapid revisions 和进程重启后恢复。
 
 使用独立 `plugin-reload-gate` profile，绝不挂载正式 workspace、正式 HOME 或宿主插件缓存。Fitbit 从只读 canonical source 复制到 sandbox cache 后安装；验证使用匿名 fixture 和测试凭据，没有可用测试凭据时只运行本地模型与 monitor 契约，不访问真实账户。
 
 **G6 Verify**:
 
-- `docker compose -f docker/debug/docker-compose.yml build akashic-plugin-gate` → exit 0。
+- host controller 使用独立 `docker-compose.plugin-gate.yml` 构建当前镜像 → exit 0。
 - 先运行 `sandbox-integrity`，再运行 `full-runtime`；所有 scenario 返回 passed GateResult。
 - `full-runtime` 报告必须证明 `main.py`、AppRuntime、Watcher、Reconciler 和 capability hosts 全部实际启动。
 - `pytest -q tests/`、`npm run typecheck`、`npm run lint`、`npm run build` → 全部 exit 0。
