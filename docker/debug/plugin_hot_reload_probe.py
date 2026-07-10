@@ -534,6 +534,7 @@ def _candidate_reload_source(version: str) -> str:
     return (
         "from __future__ import annotations\n"
         "import asyncio\n"
+        "from agent.plugins.snapshot import get_current_runtime_snapshot\n"
         "from agent.plugins import (IntervalTrigger, McpServerSpec, Plugin, PluginJobSpec, "
         "PluginSemanticCheck, ProactiveSourceSpec, tool)\n"
         "class SnapshotBeforeTurn:\n"
@@ -542,10 +543,14 @@ def _candidate_reload_source(version: str) -> str:
         "    def __init__(self, plugin): self.plugin = plugin\n"
         "    async def run(self, frame):\n"
         f"        self.plugin.context.kv_store.increment('phase_runs_{version}')\n"
+        "        self.plugin.context.create_task(self._probe_detached(), name='snapshot-detached-probe')\n"
         "        ctx = frame.slots['session:ctx']\n"
         "        ctx.abort = True\n"
         f"        ctx.abort_reply = 'snapshot-{version}'\n"
         "        return frame\n"
+        "    async def _probe_detached(self):\n"
+        "        await asyncio.sleep(0)\n"
+        "        self.plugin.context.kv_store.set('detached_snapshot_visible', get_current_runtime_snapshot() is not None)\n"
         "class CandidateReloadPlugin(Plugin):\n"
         "    name = 'candidate_reload'\n"
         f"{skills}"
@@ -799,6 +804,7 @@ def _exercise_candidate_prepare(
     after_valid = _read_json_object(state_path)
     after_valid_calls = _mcp_call_counts(calls_path)
     passive_response = _ipc_roundtrip(socket_path, "snapshot lease gate")
+    time.sleep(0.2)
     after_passive = _read_json_object(state_path)
     after_valid_mcp_processes = _wait_process_count(
         container_id,
@@ -945,6 +951,7 @@ def _exercise_candidate_prepare(
         and passive_response.get("content") == "snapshot-v1"
         and _integer(after_passive.get("phase_runs_v1")) >= 1
         and _integer(after_passive.get("phase_runs_v2")) == 0
+        and after_passive.get("detached_snapshot_visible") is False
         and "candidate-skill" in valid_skills
         and valid_description_map.get("candidate-skill") == "candidate v2 skill"
         and valid_drift_description_map.get("candidate-drift") == "candidate drift v2"

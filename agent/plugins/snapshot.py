@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -20,9 +21,6 @@ SnapshotState = Literal[
     "aborted",
     "retired",
 ]
-
-current_runtime_snapshot: ContextVar[RuntimeSnapshot | None]
-
 
 @dataclass
 class RuntimeSnapshot:
@@ -47,9 +45,6 @@ class RuntimeSnapshot:
         if self.state != "compiled" or self.lease_count or self._store_token is not None:
             raise RuntimeError("RuntimeSnapshot 不是可发布的全新 compiled 快照")
         self._store_token = store_token
-
-
-current_runtime_snapshot = ContextVar("current_runtime_snapshot", default=None)
 
 
 @dataclass(frozen=True)
@@ -200,6 +195,10 @@ class RuntimeSnapshotLease:
         self.snapshot = snapshot
         self._released = False
 
+    @property
+    def active(self) -> bool:
+        return not self._released
+
     async def __aenter__(self) -> RuntimeSnapshot:
         return self.snapshot
 
@@ -211,6 +210,44 @@ class RuntimeSnapshotLease:
             return
         self._released = True
         await self._store.release_lease(self.snapshot)
+
+
+@dataclass(frozen=True)
+class _RuntimeSnapshotBinding:
+    lease: RuntimeSnapshotLease
+    owner_task: asyncio.Task[object] | None
+
+
+_current_runtime_binding: ContextVar[_RuntimeSnapshotBinding | None] = ContextVar(
+    "current_runtime_binding",
+    default=None,
+)
+
+
+def bind_runtime_snapshot(
+    lease: RuntimeSnapshotLease,
+) -> Token[_RuntimeSnapshotBinding | None]:
+    return _current_runtime_binding.set(
+        _RuntimeSnapshotBinding(
+            lease=lease,
+            owner_task=asyncio.current_task(),
+        )
+    )
+
+
+def reset_runtime_snapshot(token: Token[_RuntimeSnapshotBinding | None]) -> None:
+    _current_runtime_binding.reset(token)
+
+
+def get_current_runtime_snapshot() -> RuntimeSnapshot | None:
+    binding = _current_runtime_binding.get()
+    if (
+        binding is None
+        or not binding.lease.active
+        or binding.owner_task is not asyncio.current_task()
+    ):
+        return None
+    return binding.lease.snapshot
 
 
 class RuntimeSnapshotStore:

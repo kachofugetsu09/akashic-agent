@@ -1354,14 +1354,14 @@ async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> N
     seen: list[str] = []
 
     async def process(msg, **kwargs):
-        from agent.plugins.snapshot import current_runtime_snapshot
+        from agent.plugins.snapshot import get_current_runtime_snapshot
 
-        snapshot = current_runtime_snapshot.get()
+        snapshot = get_current_runtime_snapshot()
         assert snapshot is not None
         seen.append(snapshot.snapshot_id)
         entered.set()
         await release.wait()
-        assert current_runtime_snapshot.get() is snapshot
+        assert get_current_runtime_snapshot() is snapshot
         seen.append(snapshot.snapshot_id)
         return "done"
 
@@ -1379,4 +1379,55 @@ async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> N
     assert seen[-2:] == [v2.snapshot_id, v2.snapshot_id]
     await store.close()
     await manager.discard_prepared("passive_snapshot")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "detached_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class DetachedSnapshotPlugin(Plugin):\n"
+        "    name = 'detached_snapshot'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    generation = manager.generation("detached_snapshot")
+    assert generation is not None
+    snapshot = RuntimeSnapshotCompiler().compile(
+        {"detached_snapshot": generation},
+        catalog_generation=generation,
+    )
+    store = RuntimeSnapshotStore()
+    store.install(snapshot)
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = store
+    detached_seen: list[RuntimeSnapshot | None] = []
+    detached_done = asyncio.Event()
+
+    async def detached() -> None:
+        await asyncio.sleep(0)
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        detached_seen.append(get_current_runtime_snapshot())
+        detached_done.set()
+
+    async def process(msg, **kwargs):
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        assert get_current_runtime_snapshot() is snapshot
+        asyncio.create_task(detached())
+        await detached_done.wait()
+        assert get_current_runtime_snapshot() is snapshot
+        return "done"
+
+    loop._process = process
+    message = SimpleNamespace(session_key="cli:detached-snapshot")
+    assert await loop._process_with_runtime_admission(message) == "done"
+    assert detached_seen == [None]
+    await store.close()
     await manager.terminate_all()

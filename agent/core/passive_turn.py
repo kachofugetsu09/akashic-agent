@@ -71,7 +71,7 @@ from agent.lifecycle.types import (
     TurnState,
     TurnPersistencePolicy,
 )
-from agent.plugins.snapshot import current_runtime_snapshot
+from agent.plugins.snapshot import get_current_runtime_snapshot
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -389,7 +389,7 @@ class PassiveTurnPipeline:
         )
 
     def _runtime_phase(self, name: str):
-        snapshot = current_runtime_snapshot.get()
+        snapshot = get_current_runtime_snapshot()
         if snapshot is None:
             return getattr(self, f"_{name}")
         modules = list(getattr(snapshot, f"{name}_modules"))
@@ -961,7 +961,7 @@ class DefaultReasoner(Reasoner):
     ) -> PromptRenderResult:
         if self._context is None:
             raise RuntimeError("DefaultReasoner.render_prompt requires context")
-        snapshot = current_runtime_snapshot.get()
+        snapshot = get_current_runtime_snapshot()
         if snapshot is not None:
             phase = self._build_prompt_render_phase(
                 self._context,
@@ -975,7 +975,7 @@ class DefaultReasoner(Reasoner):
     def _runtime_before_step_phase(
         self,
     ) -> Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame]:
-        snapshot = current_runtime_snapshot.get()
+        snapshot = get_current_runtime_snapshot()
         if snapshot is None:
             return self._before_step
         return self._build_before_step_phase(list(snapshot.before_step_modules))
@@ -983,7 +983,7 @@ class DefaultReasoner(Reasoner):
     def _runtime_after_step_phase(
         self,
     ) -> Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame]:
-        snapshot = current_runtime_snapshot.get()
+        snapshot = get_current_runtime_snapshot()
         if snapshot is None:
             return self._after_step
         return self._build_after_step_phase(list(snapshot.after_step_modules))

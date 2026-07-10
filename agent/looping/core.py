@@ -665,11 +665,14 @@ class AgentLoop:
                     busy_session_key=busy_session_key,
                     dispatch_outbound=dispatch_outbound,
                 )
-            from agent.plugins.snapshot import current_runtime_snapshot
+            from agent.plugins.snapshot import (
+                bind_runtime_snapshot,
+                reset_runtime_snapshot,
+            )
 
             lease = store.lease()
             async with lease as snapshot:
-                token = current_runtime_snapshot.set(snapshot)
+                token = bind_runtime_snapshot(lease)
                 try:
                     return await self._process(
                         msg,
@@ -678,7 +681,7 @@ class AgentLoop:
                         dispatch_outbound=dispatch_outbound,
                     )
                 finally:
-                    current_runtime_snapshot.reset(token)
+                    reset_runtime_snapshot(token)
 
     async def process_direct(
         self,
