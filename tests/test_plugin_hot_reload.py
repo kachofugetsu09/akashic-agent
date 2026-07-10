@@ -639,3 +639,28 @@ async def test_return_to_active_revision_discards_stale_prepared(tmp_path: Path)
     assert second_scan[0]["gate_status"] == "active"
     assert manager.prepared_generation("return_active") is None
     assert prepared.state == "discarded"
+
+
+@pytest.mark.asyncio
+async def test_terminating_one_manager_keeps_newer_stable_alias(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "shared_alias",
+        "from agent.plugins import Plugin\n"
+        "class SharedAliasPlugin(Plugin):\n"
+        "    name = 'shared_alias'\n",
+    )
+    first_manager = _manager(tmp_path)
+    second_manager = _manager(tmp_path)
+    await first_manager.load_all()
+    await second_manager.load_all()
+    second = second_manager.generation("shared_alias")
+    assert second is not None
+
+    await first_manager.terminate_all()
+
+    stable_alias = "akasic_plugin_plugins_shared_alias"
+    assert plugin_registry.get_instance(stable_alias) is second.instance
+    assert sys.modules[stable_alias] is sys.modules[second.module_path]
+
+    await second_manager.terminate_all()

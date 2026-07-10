@@ -1127,7 +1127,11 @@ class PluginManager:
             self._remove_module_tree(mp)
             stable_alias = self._stable_aliases.pop(mp, None)
             if stable_alias is not None:
-                self._remove_module_tree(stable_alias)
+                active_alias = plugin_registry.get_instance(stable_alias)
+                if active_alias is instance:
+                    self._remove_module_tree(stable_alias)
+                else:
+                    self._fresh_importer.unregister(stable_alias)
             if active_info is not None:
                 generation = self._active_generations.pop(active_info.plugin_id, None)
                 if generation is not None:
