@@ -258,6 +258,8 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     assert "没有被叫住时的自处" in prompt
     assert "默认应该行动一小步" in prompt
     assert "默认调用 select_skill" in prompt
+    assert "SKILL.md 是说明书，不是必须从头播放的脚本" in prompt
+    assert "本轮也可以暂时不继续 paused skill" in prompt
     assert "idle_drift 的 reason 必须写具体的时机或风险原因" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
     assert "message_result" not in prompt
@@ -286,10 +288,10 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
     )
     store.save_finish(
         skill_used="meme-auto-generate",
-        status="completed",
-        briefing="刚生成表情",
-        message_result="sent",
-        scratchpad_update=None,
+        status="paused",
+        briefing="计划已写入，生成服务暂时失败",
+        message_result="silent",
+        scratchpad_update="plan.json 已写入；若继续，直接执行生成步骤",
         global_note_update=None,
         now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
         cursor_update={"next_mode": "create_category"},
@@ -314,14 +316,16 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
     assert "选择依据：runtime_clock、status、上次 finish 时间" in runtime
     assert "必须以 runtime_clock 的完整日期和时间为准" in runtime
     assert "recent_raw_chat" in runtime
+    assert "SKILL.md 是能力说明书、约束和路径地图" in runtime
     assert "local_context 只在 select_skill 后作为执行上下文参考" in runtime
     assert "explore-curiosity: status=completed" in runtime
-    assert "meme-auto-generate: status=completed" in runtime
+    assert "meme-auto-generate: status=paused" in runtime
     assert "last_finish=2026-01-01T00:00:00+00:00" in runtime
     assert "last_finish=2026-01-02T00:00:00+00:00" in runtime
     assert "上次 finish：2026-01-01T00:00:00+00:00" in runtime
     assert "briefing=没有自然切口" in runtime
-    assert "briefing=刚生成表情" in runtime
+    assert "briefing=计划已写入，生成服务暂时失败" in runtime
+    assert "scratchpad=plan.json 已写入；若继续，直接执行生成步骤" in runtime
     assert 'cursor={"next_mode": "create_category"}' in runtime
     assert "本轮首选" not in runtime
     assert "首个工具调用" not in runtime

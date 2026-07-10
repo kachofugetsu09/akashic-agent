@@ -306,6 +306,17 @@ docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
   python docker/debug/proactive_sandbox.py status
 ```
 
+验证 paused skill 能从已有计划的停点继续，而不是重新执行说明书前置步骤：
+
+```bash
+AKASHIC_DEBUG_PROFILE=drift-current-runtime \
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/proactive_sandbox.py verify-paused-resume \
+  --config /sandbox/config.toml
+```
+
+探针会预置已读取需求、已生成 `plan.json`、执行阶段遇到临时 502 的状态。验证要求模型直接使用已有计划写出结果；若重新读取需求或重写计划则失败。
+
 `agent-loop-runtime` 场景会启动真实 `AgentLoop.run()`，读取 `config.toml`，但不启动 Telegram / QQ / CLI server。它用 fake reasoner 卡住 passive turn，再并发触发 drift 发送和 scheduler soft 的 `process_direct`，验证 runtime lock 与 ChatLane 的联动。
 
 ```text

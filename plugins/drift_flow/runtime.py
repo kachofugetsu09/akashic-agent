@@ -648,7 +648,10 @@ class DriftTurnPipeline:
             "下面按 skill 名称排列，顺序不代表优先级，也不是强制首选。",
             "选择依据：runtime_clock、status、上次 finish 时间、上次摘要、scratchpad、cursor、recent_raw_chat 和最近 runs。",
             "completed 表示上次主动行为已闭环，包含已行动、检查后无事可做、或判断不合时宜后静默结束。",
-            "paused 表示上次因工具、外部服务、步数上限或中间处理未完成而中断，必须根据 scratchpad 判断是否继续。",
+            "paused 表示存在一个可以续接的停点，不代表本轮必须立刻继续，也不代表要从头重做。",
+            "先判断本轮与已有停点的关系：从停点继续、暂时搁置、改做其他 skill，或在没有合适前情时自由探索。",
+            "如果决定继续 paused skill，应把 scratchpad、cursor 和已有工作文件视为进度依据，找到尚未完成的下一步。",
+            "SKILL.md 是能力说明书、约束和路径地图，不是每轮都要从第一条重新执行的清单。",
             "local_context 只在 select_skill 后作为执行上下文参考，其中 scratchpad 是自然语言前情，cursor 是结构化游标。",
             "用户回应与否不是 skill 状态；主动行为每轮都应自行重新判断。",
             "上次提问主题只作为短期去重信号：本轮可以换主题行动，也可以因时机不合适静默闭环。",
@@ -717,12 +720,19 @@ class DriftTurnPipeline:
             "completed 表示本轮主动行为已闭环，包含已行动、检查后无事可做、或判断当前不合时宜后静默结束。"
             "paused 只用于系统自己没完成的情况，例如工具失败、外部服务不可用、步数上限、或处理中间文件尚未写完；"
             "paused 必须在 scratchpad_update 写清已经做到哪里、卡住原因、下次从哪里继续。"
+            "paused 保存的是可续接停点：下轮可以继续、延后或改做别的事；若选择继续，应从未完成处接上，而不是重新开始。"
             "paused 和 idle 只能描述系统自己的进度、时机或选择，不描述用户需要做什么。\n\n"
+            "【自我定位】\n"
+            "调用首个工具前，先在内部确认：上一轮在做什么、哪些步骤和产物已经完成、为何停下、当前最自然的下一步是什么。"
+            "已有计划和工作文件是过去行动留下的进度，不要仅因为进入了新一轮 Drift 就重新创建。"
+            "SKILL.md 是说明书，不是必须从头播放的脚本；只执行当前决定所需要的部分。\n\n"
             "【执行规则】\n"
             "1. 先根据 context frame 比较所有可用 skill 和最近聊天气氛。"
             "Drift 的含义是没有正在服务用户时，自己尝试做一点合适的小事；"
             "skill 上次 completed 不代表不能再做，只代表上次已闭环。"
             "默认调用 select_skill(skill_name)，让被选 skill 自己完成一个原子动作。"
+            "选择 paused skill 表示接回原来的意图；select_skill 返回 local_context 后，先定位停点，再执行最小的未完成动作。"
+            "本轮也可以暂时不继续 paused skill，改选其他 skill；不要为了续接而续接。"
             "只有最近刚主动打扰过、当前气氛不适合、或所有 skill 都会产生明显低价值重复时，才调用 idle_drift(reason) 静默结束。"
             "idle_drift 的 reason 必须写具体的时机或风险原因，不能只写 completed、无用户交互、无新信号。\n"
             "2. 选中 skill 后执行一个原子动作；需要更多上下文时，只读取 SKILL.md 声明的 working files。"
