@@ -25,3 +25,26 @@ services:
       - "host.docker.internal:host-gateway"
     stdin_open: true
     tty: true
+
+  akashic-plugin-gate:
+    profiles:
+      - plugin-gate
+    build:
+      context: ../..
+      dockerfile: docker/debug/Dockerfile
+    image: akashic-agent-debug:latest
+    working_dir: /app
+    read_only: true
+    environment:
+      AKASHIC_DEBUG_CONFIG: /sandbox/config.toml
+      AKASHIC_DEBUG_WORKSPACE: /sandbox/workspace
+      AKASHIC_HOST_GID: "${GID:-1000}"
+      AKASHIC_HOST_UID: "${UID:-1000}"
+      HOME: /sandbox/home
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../..:/app:ro
+      - ./profiles/${AKASHIC_DEBUG_PROFILE:-plugin-reload-gate}:/sandbox
+      - ${AKASHIC_PLUGIN_SOURCE:-/mnt/data/coding/akashic-plugin}:/fixtures/plugins:ro
+    tmpfs:
+      - /tmp

@@ -37,6 +37,37 @@ container
 - 启动脚本会拒绝 `/sandbox` 外的 config/workspace 路径。
 - `profiles/` 已加入 `.gitignore`，不要提交调试 bot token 和测试记忆。
 
+## 插件变更 Gate
+
+`akashic-plugin-gate` 用于在真实 Runtime 中验证插件系统改动。它不会复用普通调试容器的可写源码挂载或宿主插件缓存。
+
+```text
+┌─ 宿主
+│  ├─ akasic-agent             只读挂载到 /app
+│  └─ akashic-plugin/*         只读挂载到 /fixtures/plugins
+├─ 容器
+│  ├─ root filesystem          只读
+│  ├─ /tmp                     tmpfs
+│  └─ /sandbox                 唯一持久可写目录
+│     ├─ home/.akashic-plugin/cache
+│     ├─ workspace
+│     └─ reports
+└─ Compose project
+   └─ akashic-plugin-reload-gate
+```
+
+先运行完整性 Gate：
+
+```bash
+AKASHIC_DEBUG_PROFILE=plugin-reload-gate \
+docker compose -p akashic-plugin-reload-gate \
+  -f docker/debug/docker-compose.yml \
+  --profile plugin-gate run --rm akashic-plugin-gate \
+  python docker/debug/plugin_hot_reload_probe.py --scenario sandbox-integrity
+```
+
+该场景会检查挂载权限、沙盒路径和各 Git 仓库状态，并在隔离插件缓存中完成一次写入与更新。报告保存在 `docker/debug/profiles/plugin-reload-gate/reports/`。
+
 ## 第一次配置
 
 ```bash
