@@ -38,12 +38,20 @@ python main.py plugin-doctor --plugin <name>@github
 
 ## 启用与禁用
 
-只修改 `manifest.toml` 对应条目的 `enabled`。运行中的 watcher 会自动完成启停，不需要重启进程。
+使用管理命令修改 `manifest.toml` 对应条目的 `enabled`。运行中的 watcher 会自动完成启停，不需要重启进程。
 
-```toml
-[plugins."demo@github"]
-enabled = false
+```bash
+python main.py plugin-disable demo@github
+python main.py plugin-enable demo@github
 ```
+
+## 卸载
+
+```bash
+python main.py plugin-uninstall demo@github
+```
+
+卸载删除 manifest 条目与 cache，始终保留插件 data。不要手动删除 data、配置、Token、数据库或模型。
 
 ## 配置
 

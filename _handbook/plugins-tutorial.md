@@ -168,6 +168,16 @@ python main.py plugin-install \
 python main.py plugin-doctor --plugin demo@github
 ```
 
+运行中的 Runtime 会自动应用启停和卸载变化：
+
+```bash
+python main.py plugin-disable demo@github
+python main.py plugin-enable demo@github
+python main.py plugin-uninstall demo@github
+```
+
+`plugin-disable` 与 `plugin-enable` 只修改全局 `manifest.toml`。`plugin-uninstall` 删除插件的 manifest 条目和全部 cache 版本，但始终保留 `data/demo-github/`，重新安装后会继续复用原配置与持久数据。
+
 安装后检查：
 
 ```text

@@ -10,7 +10,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.plugins.manifest import upsert_plugin_manifest
+from agent.plugins.manifest import (
+    remove_plugin_manifest_entry,
+    set_plugin_enabled,
+    upsert_plugin_manifest,
+)
 from agent.plugins.registry import plugin_registry
 from agent.plugins.specs import McpServerSpec
 
@@ -37,6 +41,53 @@ def plugin_data_root(
     marketplace: str,
 ) -> Path:
     return aka_plugins_root() / "data" / f"{plugin_name}-{marketplace}"
+
+
+def set_installed_plugin_enabled(
+    plugin_id: str,
+    *,
+    enabled: bool,
+    plugins_home: Path | None = None,
+) -> Path:
+    home = plugins_home or aka_plugins_root()
+    _split_installed_plugin_id(plugin_id)
+    return set_plugin_enabled(
+        plugin_id,
+        enabled=enabled,
+        plugins_home=home,
+    )
+
+
+def uninstall_plugin(
+    plugin_id: str,
+    *,
+    plugins_home: Path | None = None,
+) -> tuple[Path, Path]:
+    home = plugins_home or aka_plugins_root()
+    plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
+    cache_path = home / "cache" / marketplace / plugin_name
+    data_path = home / "data" / f"{plugin_name}-{marketplace}"
+    if not cache_path.is_dir():
+        raise ValueError(f"插件缓存不存在: {plugin_id}")
+    _ = set_plugin_enabled(plugin_id, enabled=False, plugins_home=home)
+    shutil.rmtree(cache_path)
+    _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
+    return cache_path, data_path
+
+
+def _split_installed_plugin_id(plugin_id: str) -> tuple[str, str]:
+    plugin_name, separator, marketplace = plugin_id.rpartition("@")
+    if (
+        not separator
+        or not plugin_name
+        or not marketplace
+        or Path(plugin_name).name != plugin_name
+        or Path(marketplace).name != marketplace
+        or plugin_name in {".", ".."}
+        or marketplace in {".", ".."}
+    ):
+        raise ValueError(f"无效的已安装插件 ID: {plugin_id}")
+    return plugin_name, marketplace
 
 
 def install_git_plugin(

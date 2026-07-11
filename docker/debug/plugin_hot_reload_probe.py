@@ -452,6 +452,32 @@ def _install_fitbit_plugin(sandbox: Path, plugin_root: Path) -> Path:
     return sandbox / "home/.akashic-plugin/data/fitbit-gate"
 
 
+def _install_management_plugin(sandbox: Path) -> tuple[Path, Path, Path]:
+    cache = sandbox / "home/.akashic-plugin/cache/gate/management/1.0.0"
+    data = sandbox / "home/.akashic-plugin/data/management-gate"
+    manifest = sandbox / "home/.akashic-plugin/manifest.toml"
+    cache.mkdir(parents=True, exist_ok=True)
+    data.mkdir(parents=True, exist_ok=True)
+    _ = (cache / "plugin.py").write_text(
+        "from agent.plugins import Plugin, tool\n"
+        "class ManagementPlugin(Plugin):\n"
+        "    name = 'management'\n"
+        "    version = '1.0.0'\n"
+        "    @tool(name='management_probe')\n"
+        "    async def probe(self, event):\n"
+        "        \"\"\"Return the management probe state.\"\"\"\n"
+        "        return 'ok'\n",
+        encoding="utf-8",
+    )
+    _ = (data / "retained.txt").write_text("keep", encoding="utf-8")
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    _ = manifest.write_text(
+        '[plugins."management@gate"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+    return cache.parent, data, manifest
+
+
 def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
     cache = sandbox / "home/.akashic-plugin/cache/gate"
     entries: list[str] = []
@@ -1189,6 +1215,83 @@ def _exercise_all_plugins(
             or result.get("publication_state") != "disabled"
         },
     }
+
+
+def _exercise_plugin_management(
+    container_id: str,
+    cache: Path,
+    data: Path,
+    manifest: Path,
+) -> dict[str, object]:
+    commands: dict[str, dict[str, object]] = {}
+
+    def run(command: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["docker", "exec", container_id, "python", "main.py", command, "management@gate"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+    before = len(_snapshot_statuses(container_id))
+    disabled_command = run("plugin-disable")
+    _, disabled = _wait_snapshot_status(
+        container_id,
+        after=before,
+        publication_state="disabled",
+        plugin_id="management@gate",
+    )
+    commands["disable"] = {
+        "returncode": disabled_command.returncode,
+        "output": disabled_command.stdout.strip(),
+        "status": disabled,
+    }
+
+    before = len(_snapshot_statuses(container_id))
+    enabled_command = run("plugin-enable")
+    _, enabled = _wait_snapshot_status(
+        container_id,
+        after=before,
+        publication_state="committed",
+        plugin_id="management@gate",
+    )
+    commands["enable"] = {
+        "returncode": enabled_command.returncode,
+        "output": enabled_command.stdout.strip(),
+        "status": enabled,
+    }
+
+    before = len(_snapshot_statuses(container_id))
+    uninstall_command = run("plugin-uninstall")
+    _, uninstalled = _wait_snapshot_status(
+        container_id,
+        after=before,
+        publication_state="disabled",
+        plugin_id="management@gate",
+    )
+    commands["uninstall"] = {
+        "returncode": uninstall_command.returncode,
+        "output": uninstall_command.stdout.strip(),
+        "status": uninstalled,
+    }
+    manifest_text = manifest.read_text(encoding="utf-8")
+    passed = (
+        all(item["returncode"] == 0 for item in commands.values())
+        and disabled.get("publication_state") == "disabled"
+        and enabled.get("publication_state") == "committed"
+        and uninstalled.get("publication_state") == "disabled"
+        and not cache.exists()
+        and (data / "retained.txt").read_text(encoding="utf-8") == "keep"
+        and "management@gate" not in manifest_text
+    )
+    return {
+        "passed": passed,
+        "commands": commands,
+        "cache_removed": not cache.exists(),
+        "data_retained": (data / "retained.txt").exists(),
+        "manifest_entry_removed": "management@gate" not in manifest_text,
+    }
 def _fitbit_runtime_probe(container_id: str) -> dict[str, object]:
     script = (
         "import json, urllib.request\n"
@@ -1837,6 +1940,7 @@ def _run_runtime_smoke(
         if phase == "fitbit"
         else None
     )
+    management = _install_management_plugin(sandbox) if phase == "management" else None
     migrated_observe = (
         _install_migrated_plugins(
             sandbox,
@@ -1926,6 +2030,7 @@ def _run_runtime_smoke(
     candidate_prepare: dict[str, object] = {}
     migrated_probe: dict[str, object] = {}
     all_plugins_probe: dict[str, object] = {}
+    management_probe: dict[str, object] = {}
     fitbit_probe: dict[str, object] = {}
     fitbit_processes = -1
     fitbit_reload: dict[str, object] = {}
@@ -2009,6 +2114,13 @@ def _run_runtime_smoke(
             container_id,
             all_plugins[0],
             all_plugins[1],
+        )
+    if management is not None and container_id and runtime_stable:
+        management_probe = _exercise_plugin_management(
+            container_id,
+            management[0],
+            management[1],
+            management[2],
         )
     _ = (
         _wait_json_value(scope_state, "event_started", True)
@@ -2147,6 +2259,9 @@ def _run_runtime_smoke(
     if all_plugins is not None:
         phase_passed = all_plugins_probe.get("passed") is True
         phase_evidence = {"phase": phase, **all_plugins_probe}
+    if management is not None:
+        phase_passed = management_probe.get("passed") is True
+        phase_evidence = {"phase": phase, **management_probe}
     passed = (
         started.returncode == 0
         and ipc_ready
@@ -2226,6 +2341,7 @@ def main() -> int:
             "plugins",
             "all-plugins",
             "fitbit",
+            "management",
         ),
         default="smoke",
     )

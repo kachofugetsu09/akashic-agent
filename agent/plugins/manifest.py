@@ -45,6 +45,31 @@ def upsert_plugin_manifest(
     return write_plugin_manifest(entries, plugins_home=plugins_home)
 
 
+def set_plugin_enabled(
+    plugin_id: str,
+    *,
+    enabled: bool,
+    plugins_home: Path | None = None,
+) -> Path:
+    entries = load_plugin_manifest(plugins_home)
+    if plugin_id not in entries:
+        raise ValueError(f"插件未安装: {plugin_id}")
+    entries[plugin_id] = enabled
+    return write_plugin_manifest(entries, plugins_home=plugins_home)
+
+
+def remove_plugin_manifest_entry(
+    plugin_id: str,
+    *,
+    plugins_home: Path | None = None,
+) -> Path:
+    entries = load_plugin_manifest(plugins_home)
+    if plugin_id not in entries:
+        raise ValueError(f"插件未安装: {plugin_id}")
+    del entries[plugin_id]
+    return write_plugin_manifest(entries, plugins_home=plugins_home)
+
+
 def write_plugin_manifest(
     entries: Mapping[str, bool],
     *,
@@ -52,7 +77,7 @@ def write_plugin_manifest(
 ) -> Path:
     path = manifest_path(plugins_home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = []
+    lines = ["[plugins]", ""]
     for plugin_id, enabled in sorted(entries.items()):
         escaped = plugin_id.replace("\\", "\\\\").replace('"', '\\"')
         lines.extend(
