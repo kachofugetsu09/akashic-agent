@@ -68,7 +68,7 @@ python main.py plugin-doctor <name>@github
 ├─ 安装缓存
 │  └─ 目标能力的具体文件或声明确实存在
 ├─ Runtime
-│  ├─ candidate 与 snapshot 已发布
+│  ├─ candidate 已通过 Gate，snapshot 已发布
 │  └─ 新请求能实际使用目标能力
 └─ 外部依赖
    ├─ CLI 从稳定目录运行
