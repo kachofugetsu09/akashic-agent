@@ -4,7 +4,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Mapping, cast
 
 import yaml
 
@@ -20,6 +20,7 @@ class SkillRecord:
     source_id: str
     root_dir: Path
     skill_file: Path
+    content: str
     description: str
     when_to_use: str
     config: dict[str, Any]
@@ -43,13 +44,30 @@ class SkillIndex:
 
 
 class SkillsLoader:
-    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        builtin_skills_dir: Path | None = BUILTIN_SKILLS_DIR,
+        *,
+        workspace_skills_dir: Path | None = None,
+        plugin_roots: Mapping[str, tuple[Path, ...]] | None = None,
+        ignored_workspace_symlink_roots: tuple[Path, ...] = (),
+        runtime_catalog: Literal["normal"] | None = None,
+    ):
         self.workspace = workspace
-        self.workspace_skills = workspace / "skills"
-        self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
+        self.workspace_skills = workspace_skills_dir or workspace / "skills"
+        self.builtin_skills = builtin_skills_dir
+        self.plugin_roots = dict(plugin_roots or {})
+        self.ignored_workspace_symlink_roots = tuple(
+            root.resolve(strict=False) for root in ignored_workspace_symlink_roots
+        )
+        self.runtime_catalog = runtime_catalog
 
     def list_skill_records(self, filter_unavailable: bool = True) -> list[SkillRecord]:
-        return self._build_index().list_records(filter_unavailable=filter_unavailable)
+        return self.build_index().list_records(filter_unavailable=filter_unavailable)
+
+    def build_index(self) -> SkillIndex:
+        return self._build_index()
 
     def load_skills_for_context(self, skill_names: list[str]) -> str:
         parts: list[str] = []
@@ -64,8 +82,7 @@ class SkillsLoader:
         record = self.load_skill_record(name)
         if record is None:
             return None
-        content = record.skill_file.read_text(encoding="utf-8")
-        return self._strip_frontmatter(content)
+        return self._strip_frontmatter(record.content)
 
     def load_skill_record(self, name: str) -> SkillRecord | None:
         return self._build_index().get(name)
@@ -104,14 +121,43 @@ class SkillsLoader:
         return "\n".join(lines)
 
     def _build_index(self) -> SkillIndex:
+        runtime_plugins: SkillIndex | None = None
+        if self.runtime_catalog == "normal":
+            from agent.plugins.snapshot import get_current_runtime_snapshot
+
+            snapshot = get_current_runtime_snapshot()
+            if snapshot is not None:
+                runtime_plugins = snapshot.plugin_skill_index
         records: dict[str, SkillRecord] = {}
 
         for record in self._scan_skills_dir(
             self.workspace_skills,
             source="workspace",
             source_id="workspace",
+            ignored_symlink_roots=self.ignored_workspace_symlink_roots,
         ):
+            if (
+                runtime_plugins is not None
+                and record.name in runtime_plugins.records
+                and record.root_dir.is_symlink()
+            ):
+                continue
             records[record.name] = record
+
+        if runtime_plugins is not None:
+            for record in runtime_plugins.records.values():
+                if record.name not in records:
+                    records[record.name] = record
+        else:
+            for plugin_id, roots in sorted(self.plugin_roots.items()):
+                for root in roots:
+                    for record in self._scan_skills_dir(
+                        root,
+                        source="plugin",
+                        source_id=plugin_id,
+                    ):
+                        if record.name not in records:
+                            records[record.name] = record
 
         if self.builtin_skills:
             for record in self._scan_skills_dir(
@@ -131,12 +177,17 @@ class SkillsLoader:
         source: SkillSource,
         source_id: str,
         name_prefix: str = "",
+        ignored_symlink_roots: tuple[Path, ...] = (),
     ) -> list[SkillRecord]:
         if not skills_dir.exists():
             return []
 
         records: list[SkillRecord] = []
         for skill_dir in sorted(skills_dir.iterdir(), key=lambda item: item.name):
+            if skill_dir.is_symlink() and ignored_symlink_roots:
+                target = skill_dir.resolve(strict=False)
+                if any(target.is_relative_to(root) for root in ignored_symlink_roots):
+                    continue
             if not skill_dir.is_dir():
                 continue
             skill_file = skill_dir / "SKILL.md"
@@ -174,6 +225,7 @@ class SkillsLoader:
             source_id=source_id,
             root_dir=root_dir,
             skill_file=skill_file,
+            content=content,
             description=meta.get("description") or name,
             when_to_use=meta.get("when_to_use", ""),
             config=config,

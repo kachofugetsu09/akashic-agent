@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass, field
 
 import pytest
@@ -130,3 +131,31 @@ async def test_event_bus_enqueue_runs_observers_in_background():
 
     assert observed == ["ok"]
     await event_bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_event_bus_self_cancelled_observer_does_not_stall_close():
+    event_bus = EventBus()
+    observed: list[str] = []
+
+    async def cancel_self(event: _FakeLifecycleEvent) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()
+        await asyncio.sleep(0)
+
+    event_bus.on(_FakeLifecycleEvent, cancel_self)
+    event_bus.on(_FakeLifecycleEvent, lambda event: observed.append(event.content))
+    for content in ("first", "second"):
+        event_bus.enqueue(
+            _FakeLifecycleEvent(
+                session_key="telegram:123",
+                channel="telegram",
+                chat_id="123",
+                content=content,
+            )
+        )
+
+    await asyncio.wait_for(event_bus.aclose(), timeout=1)
+
+    assert observed == ["first", "second"]

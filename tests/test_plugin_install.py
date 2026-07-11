@@ -6,7 +6,11 @@ import tomllib
 from pathlib import Path
 
 import agent.plugins.install as install_module
-from agent.plugins.install import install_git_plugin
+from agent.plugins.install import (
+    install_git_plugin,
+    set_installed_plugin_enabled,
+    uninstall_plugin,
+)
 
 
 def test_install_git_plugin_uses_programmatic_declaration(tmp_path: Path) -> None:
@@ -79,6 +83,106 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
         ("feed pip install", result.installed_path / "mcp"),
     ]
     assert not (result.installed_path / "mcp" / "servers.json").exists()
+
+
+def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> None:
+    home = tmp_path / "plugins-home"
+    cache = home / "cache" / "github" / "fitbit" / "1.0.0"
+    data = home / "data" / "fitbit-github"
+    cache.mkdir(parents=True)
+    data.mkdir(parents=True)
+    (cache / "plugin.py").write_text("", encoding="utf-8")
+    state = data / "sleep-model.bin"
+    state.write_bytes(b"model")
+    (home / "manifest.toml").write_text(
+        '[plugins."fitbit@github"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+
+    set_installed_plugin_enabled(
+        "fitbit@github",
+        enabled=False,
+        plugins_home=home,
+    )
+    manifest = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
+    assert manifest["plugins"]["fitbit@github"]["enabled"] is False
+
+    set_installed_plugin_enabled(
+        "fitbit@github",
+        enabled=True,
+        plugins_home=home,
+    )
+    disabled_before_removal = False
+
+    def wait_until_disabled(plugin_id: str) -> None:
+        nonlocal disabled_before_removal
+        current = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
+        disabled_before_removal = (
+            plugin_id == "fitbit@github"
+            and current["plugins"][plugin_id]["enabled"] is False
+            and cache.parent.exists()
+            and state.exists()
+        )
+
+    removed_cache, retained_data = uninstall_plugin(
+        "fitbit@github",
+        plugins_home=home,
+        wait_until_disabled=wait_until_disabled,
+    )
+
+    assert disabled_before_removal
+    assert removed_cache == home / "cache" / "github" / "fitbit"
+    assert not removed_cache.exists()
+    assert retained_data == data
+    assert state.read_bytes() == b"model"
+    assert tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8")) == {
+        "plugins": {}
+    }
+
+
+def test_plugin_management_rejects_non_installed_plugin_id(tmp_path: Path) -> None:
+    home = tmp_path / "plugins-home"
+    (home / "cache" / "github" / "fitbit").mkdir(parents=True)
+    (home / "manifest.toml").parent.mkdir(parents=True, exist_ok=True)
+    (home / "manifest.toml").write_text("", encoding="utf-8")
+
+    for plugin_id in (
+        "fitbit",
+        "../fitbit@github",
+        "fitbit@../github",
+        "fitbit\ncorrupt@github",
+    ):
+        try:
+            set_installed_plugin_enabled(
+                plugin_id,
+                enabled=False,
+                plugins_home=home,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"应拒绝插件 ID: {plugin_id}")
+
+
+def test_uninstall_converges_when_cache_is_already_missing(tmp_path: Path) -> None:
+    home = tmp_path / "plugins-home"
+    data = home / "data" / "feed-github"
+    data.mkdir(parents=True)
+    state = data / "state.db"
+    state.write_bytes(b"keep")
+    (home / "manifest.toml").write_text(
+        '[plugins."feed@github"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+
+    cache, retained = uninstall_plugin("feed@github", plugins_home=home)
+
+    assert not cache.exists()
+    assert retained == data
+    assert state.read_bytes() == b"keep"
+    assert tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8")) == {
+        "plugins": {}
+    }
 
 
 def _commit(repo: Path) -> None:

@@ -121,12 +121,54 @@ class ToolRegistry:
         self._documents: dict[str, ToolDocument] = {}
         self._context: dict[str, str] = {}
         self._backend: SearchBackend = backend or KeywordSearchBackend()
+        self._snapshot_view = False
+
+    def fork(
+        self,
+        *,
+        excluded_source_types: set[str] | None = None,
+        excluded_sources: set[tuple[str, str]] | None = None,
+    ) -> "ToolRegistry":
+        backend = deepcopy(self._backend)
+        cloned = ToolRegistry(backend=backend)
+        excluded_types = excluded_source_types or set()
+        excluded_pairs = excluded_sources or set()
+        names = [
+            name
+            for name, document in self._documents.items()
+            if document.source_type not in excluded_types
+            and (document.source_type, document.source_name) not in excluded_pairs
+        ]
+        cloned._tools = {name: self._tools[name] for name in names}
+        cloned._metadata = {name: self._metadata[name] for name in names}
+        cloned._documents = {name: self._documents[name] for name in names}
+        cloned._context = dict(self._context)
+        cloned._backend.rebuild(list(cloned._documents.values()))
+        cloned._snapshot_view = True
+        return cloned
+
+    def _runtime_view(self) -> "ToolRegistry":
+        if self._snapshot_view:
+            return self
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is None or snapshot.tool_registry is None:
+            return self
+        return snapshot.tool_registry
 
     def set_context(self, **kwargs: str) -> None:
         """设置当前会话上下文（channel、chat_id 等），供工具按需读取。"""
+        view = self._runtime_view()
+        if view is not self:
+            view.set_context(**kwargs)
+            return
         self._context.update(kwargs)
 
     def get_context(self) -> dict[str, str]:
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_context()
         return self._context
 
     def register(
@@ -161,13 +203,22 @@ class ToolRegistry:
         logger.debug(f"注销工具: {name}")
 
     def has_tool(self, name: str) -> bool:
+        view = self._runtime_view()
+        if view is not self:
+            return view.has_tool(name)
         return name in self._tools
 
     def get_tool(self, name: str) -> "Tool | None":
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_tool(name)
         return self._tools.get(name)
 
     def get_registered_names(self) -> set[str]:
         """返回当前已注册工具名集合。"""
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_registered_names()
         return set(self._tools.keys())
 
     def get_schemas(
@@ -178,6 +229,9 @@ class ToolRegistry:
 
         names 为 None 时返回全量；传 set 时按注册顺序过滤；传 list/tuple 时按调用方顺序返回。
         """
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_schemas(names)
         if names is None:
             return [
                 _with_progress_description(t.to_schema(), t)
@@ -196,16 +250,25 @@ class ToolRegistry:
         ]
 
     def get_registered_order(self, names: AbstractSet[str] | None = None) -> list[str]:
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_registered_order(names)
         if names is None:
             return list(self._tools.keys())
         return [name for name in self._tools.keys() if name in names]
 
     def get_always_on_names(self) -> set[str]:
         """返回标记为 always_on 的工具名称集合。"""
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_always_on_names()
         return {name for name, meta in self._metadata.items() if meta.always_on}
 
     def get_documents(self) -> list[ToolDocument]:
         """返回所有已注册工具的索引文档列表。"""
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_documents()
         return list(self._documents.values())
 
     def get_deferred_names(
@@ -217,6 +280,9 @@ class ToolRegistry:
         deferred = 全量注册工具 - always_on - meta_tools - visible
         格式: {"builtin": [...], "mcp": {"server_name": [...], ...}}
         """
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_deferred_names(visible)
         always_on = self.get_always_on_names()
         excluded = always_on | _META_TOOLS | (visible or set())
         builtin: list[str] = []
@@ -242,6 +308,9 @@ class ToolRegistry:
         *,
         raise_errors: bool = False,
     ) -> str | ToolResult:
+        view = self._runtime_view()
+        if view is not self:
+            return await view.execute(name, arguments, raise_errors=raise_errors)
         tool = self._tools.get(name)
         if tool is None:
             if raise_errors:
@@ -265,6 +334,9 @@ class ToolRegistry:
 
         供 select: 精确加载路径使用，why_matched 固定为"名称:精确匹配"。
         """
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_schemas_as_doc_results(names)
         results: list[dict[str, Any]] = []
         for name in names:
             doc = self._documents.get(name)
@@ -282,6 +354,9 @@ class ToolRegistry:
 
     def get_mcp_server_names(self) -> set[str]:
         """返回当前已注册的所有 MCP server 名称。"""
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_mcp_server_names()
         return {
             doc.source_name
             for doc in self._documents.values()
@@ -290,6 +365,9 @@ class ToolRegistry:
 
     def get_tool_names_by_source(self, source_type: str, source_name: str) -> set[str]:
         """返回指定来源的所有工具名。"""
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_tool_names_by_source(source_type, source_name)
         return {
             name
             for name, doc in self._documents.items()
@@ -308,6 +386,9 @@ class ToolRegistry:
         excluded_names: 调用方（当前 turn）传入的排除集合，通常为已可见工具名。
         meta_tools 始终被排除。搜索逻辑委托给 SearchBackend。
         """
+        view = self._runtime_view()
+        if view is not self:
+            return view.search(query, top_k, allowed_risk, excluded_names)
         excluded = _META_TOOLS | (excluded_names or set())
         return cast(
             list[dict[str, Any]],

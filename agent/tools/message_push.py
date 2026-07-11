@@ -12,6 +12,20 @@ from bus.queue import ChatLane
 logger = logging.getLogger(__name__)
 
 
+class ChannelRegistration:
+    def __init__(self, tool: "MessagePushTool", channel: str, token: object) -> None:
+        self._tool = tool
+        self._channel = channel
+        self._token = token
+        self._active = True
+
+    def close(self) -> None:
+        if not self._active:
+            return
+        self._active = False
+        self._tool.unregister_channel(self._channel, self._token)
+
+
 class MessagePushTool(Tool):
     name = "message_push"
     description = (
@@ -49,6 +63,7 @@ class MessagePushTool(Tool):
     def __init__(self, chat_lane: ChatLane | None = None) -> None:
         # channel -> {type: sender_fn}
         self._senders: dict[str, dict[str, Callable[..., Awaitable[None]]]] = {}
+        self._registration_tokens: dict[str, object] = {}
         self._chat_lane = chat_lane
 
     def register_channel(
@@ -58,14 +73,18 @@ class MessagePushTool(Tool):
         stream_text: Callable[[str, str], Awaitable[None]] | None = None,
         file: Callable[[str, str, str | None], Awaitable[None]] | None = None,
         image: Callable[[str, str], Awaitable[None]] | None = None,
-    ) -> None:
+    ) -> ChannelRegistration:
         """注册渠道的各类 sender。
         - text(chat_id, message)
         - stream_text(chat_id, message)
         - file(chat_id, file_path, name=None)
         - image(chat_id, image_path_or_url)
         """
+        if channel in self._senders:
+            raise RuntimeError(f"message_push 渠道名称重复: {channel}")
         self._senders[channel] = {}
+        token = object()
+        self._registration_tokens[channel] = token
         if text:
             self._senders[channel]["text"] = text
         if stream_text:
@@ -77,6 +96,13 @@ class MessagePushTool(Tool):
         logger.debug(
             f"message_push: 注册渠道 {channel!r}  支持: {list(self._senders[channel])}"
         )
+        return ChannelRegistration(self, channel, token)
+
+    def unregister_channel(self, channel: str, token: object) -> None:
+        if self._registration_tokens.get(channel) is not token:
+            return
+        _ = self._registration_tokens.pop(channel, None)
+        _ = self._senders.pop(channel, None)
 
     async def execute(self, **kwargs: Any) -> str:
         channel: str = kwargs["channel"]

@@ -119,6 +119,7 @@ def test_stream_event_sink_respects_suppression_flag():
 async def test_process_direct_suppresses_stream_and_memory_when_requested():
     loop = object.__new__(AgentLoop)
     loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = None
     loop._process = AsyncMock(
         return_value=OutboundMessage(
             channel="telegram",
@@ -155,6 +156,7 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
 async def test_process_direct_waits_for_passive_runtime_admission():
     loop = object.__new__(AgentLoop)
     loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = None
     events: list[str] = []
 
     async def _process(

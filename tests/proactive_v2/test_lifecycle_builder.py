@@ -107,3 +107,27 @@ def test_missing_terminal_slot_fails_compilation():
                 terminal_slots=("run:next_wakeup",),
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_start_failure_rolls_back_started_modules():
+    calls: list[str] = []
+
+    class StartModule(_Module):
+        async def start(self) -> None:
+            calls.append(f"start:{self.slot}")
+            if self.slot == "b":
+                raise RuntimeError("start failed")
+
+        async def stop(self) -> None:
+            calls.append(f"stop:{self.slot}")
+
+    lifecycle = ProactiveLifecycleBuilder().build(
+        ProactiveLifecycleSpec(id="test"),
+        [StartModule("a", calls), StartModule("b", calls)],
+    )
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        await lifecycle.start()
+
+    assert calls == ["start:a", "start:b", "stop:b", "stop:a"]

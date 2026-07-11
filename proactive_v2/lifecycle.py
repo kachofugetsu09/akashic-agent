@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import logging
 from typing import cast
 
 from agent.lifecycle.phase import inspect_phase, topo_sort_modules
 from proactive_v2.frame import ProactiveFrame
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,16 +47,36 @@ class CompiledProactiveLifecycle:
         self._modules = modules
 
     async def start(self) -> None:
-        for binding in self._modules:
-            starter = getattr(binding.module, "start", None)
-            if starter is not None:
-                await starter()
+        started: list[_CompiledModule] = []
+        try:
+            for binding in self._modules:
+                starter = getattr(binding.module, "start", None)
+                started.append(binding)
+                if starter is not None:
+                    await starter()
+        except BaseException:
+            for binding in reversed(started):
+                stopper = getattr(binding.module, "stop", None)
+                if stopper is None:
+                    continue
+                try:
+                    await stopper()
+                except Exception:
+                    logger.exception("主动 Lifecycle 启动回滚失败: %s", binding.slot)
+            raise
 
     async def stop(self) -> None:
+        first_error: Exception | None = None
         for binding in reversed(self._modules):
             stopper = getattr(binding.module, "stop", None)
             if stopper is not None:
-                await stopper()
+                try:
+                    await stopper()
+                except Exception as error:
+                    logger.exception("主动 Lifecycle 停止失败: %s", binding.slot)
+                    first_error = first_error or error
+        if first_error is not None:
+            raise first_error
 
     async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
         for binding in self._modules:

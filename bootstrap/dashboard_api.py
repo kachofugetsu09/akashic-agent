@@ -35,24 +35,19 @@ logger = logging.getLogger(__name__)
 _DASHBOARD_ACCESS_PREFIXES = ("/api/dashboard", "/assets", "/plugins/")
 
 
-def _is_plugin_disabled(plugin_dir: Path) -> bool:
-    return (plugin_dir / "plugin.disabled").exists()
-
-
 def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
     result: dict[str, Path] = {}
+    manifest = load_plugin_manifest()
     plugins_root = project_root / "plugins"
     if plugins_root.is_dir():
         for plugin_dir in sorted(plugins_root.iterdir()):
-            if not plugin_dir.is_dir() or _is_plugin_disabled(plugin_dir):
+            if (
+                not plugin_dir.is_dir()
+                or manifest.get(plugin_dir.name, True) is False
+            ):
                 continue
             result[plugin_dir.name] = plugin_dir
 
-    try:
-        manifest = load_plugin_manifest()
-    except Exception as e:
-        logger.warning("插件清单读取失败: %s", e)
-        return result
     cache_root = Path.home() / ".akashic-plugin" / "cache"
     for source in resolve_plugin_sources([], installed_cache_root=cache_root):
         plugin_name = source.plugin_root.parent.name
@@ -60,7 +55,7 @@ def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
         if manifest.get(plugin_id, True) is False:
             continue
         plugin_root = source.plugin_root.resolve(strict=False)
-        if not plugin_root.is_dir() or _is_plugin_disabled(plugin_root):
+        if not plugin_root.is_dir():
             continue
         result[plugin_id] = plugin_root
     return result
@@ -687,6 +682,7 @@ def create_dashboard_app(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    plugin_manager: object | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
@@ -739,10 +735,10 @@ def create_dashboard_app(
 
     # Compile TypeScript plugin panels and mount plugin routes
     for _plugin_id, _plugin_dir in sorted(plugin_dirs.items()):
-        if not _plugin_dashboard_enabled(app, _plugin_dir):
+        if plugin_manager is None and not _plugin_dashboard_enabled(app, _plugin_dir):
             continue
         _build_plugin_panels_js(project_root, _plugin_dir)
-        if (_plugin_dir / "dashboard.py").exists():
+        if plugin_manager is None and (_plugin_dir / "dashboard.py").exists():
             plugin_closeables.extend(
                 _load_plugin_dashboard(app, _plugin_dir, workspace)
             )
@@ -765,7 +761,7 @@ def create_dashboard_app(
     def list_dashboard_plugins() -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for plugin_id, plugin_dir in sorted(_dashboard_plugin_dirs(project_root).items()):
-            if not _plugin_dashboard_enabled(app, plugin_dir):
+            if not dashboard_plugin_enabled(plugin_id, plugin_dir):
                 continue
             _build_plugin_panels_js(project_root, plugin_dir)
             panels: list[dict[str, Any]] = []
@@ -788,7 +784,10 @@ def create_dashboard_app(
             _dashboard_plugin_dirs(project_root),
             plugin_id,
         )
-        if _is_plugin_disabled(plugin_dir) or not _plugin_dashboard_enabled(app, plugin_dir):
+        if not dashboard_plugin_enabled(
+            plugin_id,
+            plugin_dir,
+        ):
             raise HTTPException(status_code=404, detail="plugin panel not found")
         _build_plugin_panels_js(project_root, plugin_dir)
         js_path = plugin_dir / f"{panel_name}.js"
@@ -804,7 +803,10 @@ def create_dashboard_app(
             _dashboard_plugin_dirs(project_root),
             plugin_id,
         )
-        if _is_plugin_disabled(plugin_dir) or not _plugin_dashboard_enabled(app, plugin_dir):
+        if not dashboard_plugin_enabled(
+            plugin_id,
+            plugin_dir,
+        ):
             raise HTTPException(status_code=404, detail="plugin panel css not found")
         css_path = plugin_dir / f"{panel_name}.css"
         if not css_path.exists():
@@ -1265,6 +1267,42 @@ def create_dashboard_app(
             "tick_id": tick_id,
         }
 
+    if plugin_manager is not None:
+        from agent.plugins.dashboard_host import (
+            DashboardBinding,
+            PluginDashboardHost,
+            SnapshotDashboardMiddleware,
+        )
+
+        dashboard_host = PluginDashboardHost(
+            workspace=workspace,
+            memory_admin=memory_admin,
+            memory_store=app.state.memory_store,
+            core_routes=tuple(app.routes),
+        )
+        snapshot = plugin_manager.current_snapshot
+        if snapshot is not None:
+            dashboard_host.prepare_initial_snapshot(snapshot)
+        plugin_manager.bind_dashboard_preparer(dashboard_host.prepare_snapshot)
+        app.add_middleware(
+            SnapshotDashboardMiddleware,
+            snapshot_store=plugin_manager.snapshot_store,
+        )
+
+        def dashboard_plugin_enabled(plugin_id: str, plugin_dir: Path) -> bool:
+            _ = plugin_dir
+            current = plugin_manager.current_snapshot
+            return current is not None and any(
+                isinstance(binding, DashboardBinding)
+                and binding.plugin_id == plugin_id
+                and binding.routes
+                for binding in current.dashboard_bindings
+            )
+    else:
+        def dashboard_plugin_enabled(plugin_id: str, plugin_dir: Path) -> bool:
+            _ = plugin_id
+            return _plugin_dashboard_enabled(app, plugin_dir)
+
     return app
 
 
@@ -1301,6 +1339,7 @@ def _build_dashboard_uvicorn_config(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    plugin_manager: object | None = None,
 ) -> uvicorn.Config:
     config = uvicorn.Config(
         create_dashboard_app(
@@ -1309,6 +1348,7 @@ def _build_dashboard_uvicorn_config(
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
             memory_store=memory_store,
+            plugin_manager=plugin_manager,
         ),
         host=host,
         port=port,
@@ -1327,6 +1367,7 @@ def build_dashboard_server(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    plugin_manager: object | None = None,
 ) -> uvicorn.Server:
     config = _build_dashboard_uvicorn_config(
         workspace=workspace,
@@ -1336,5 +1377,6 @@ def build_dashboard_server(
         manual_memory_optimizer=manual_memory_optimizer,
         memory_admin=memory_admin,
         memory_store=memory_store,
+        plugin_manager=plugin_manager,
     )
     return uvicorn.Server(config)

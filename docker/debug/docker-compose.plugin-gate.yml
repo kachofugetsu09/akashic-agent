@@ -1,0 +1,23 @@
+services:
+  akashic-plugin-gate:
+    build:
+      context: ../..
+      dockerfile: docker/debug/Dockerfile
+    image: akashic-agent-plugin-gate:latest
+    working_dir: /app
+    read_only: true
+    environment:
+      AKASHIC_DEBUG_CONFIG: /sandbox/config.toml
+      AKASHIC_DEBUG_WORKSPACE: /sandbox/workspace
+      AKASHIC_HOST_GID: "${GID:?set by plugin_hot_reload_probe.py}"
+      AKASHIC_HOST_UID: "${UID:?set by plugin_hot_reload_probe.py}"
+      AKASHIC_PLUGIN_LOG_LEVEL: DEBUG
+      HOME: /sandbox/home
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../..:/app:ro
+      - ${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}:/sandbox
+      - ${AKASHIC_GATE_SANDBOX:?set by plugin_hot_reload_probe.py}/static:/app/static
+      - ${AKASHIC_PLUGIN_SOURCE:?set by plugin_hot_reload_probe.py}:/fixtures/plugins:ro
+    tmpfs:
+      - /tmp

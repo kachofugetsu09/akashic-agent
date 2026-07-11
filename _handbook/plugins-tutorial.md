@@ -168,6 +168,16 @@ python main.py plugin-install \
 python main.py plugin-doctor --plugin demo@github
 ```
 
+运行中的 Runtime 会自动应用启停和卸载变化：
+
+```bash
+python main.py plugin-disable demo@github
+python main.py plugin-enable demo@github
+python main.py plugin-uninstall demo@github
+```
+
+`plugin-disable` 与 `plugin-enable` 只修改全局 `manifest.toml`。`plugin-uninstall` 删除插件的 manifest 条目和全部 cache 版本，但始终保留 `data/demo-github/`，重新安装后会继续复用原配置与持久数据。
+
 安装后检查：
 
 ```text
@@ -175,7 +185,28 @@ python main.py plugin-doctor --plugin demo@github
 ├─ cache/github/demo/<version>/plugin.py 存在
 ├─ data/demo-github/config.local.toml 可通过 schema 验证
 ├─ 声明的 skills 与 MCP 入口存在
-└─ 重启后 doctor 与运行日志无加载错误
+└─ watcher 发布 committed snapshot，运行日志无加载错误
+```
+
+## 热重载
+
+Runtime 每秒检查插件清单、源码和本地配置的元数据。发现变化后先构建完整候选代际，通过声明、资源 readiness 与插件语义检查后再一次性发布。
+
+```text
+┌─ 变化入口
+│  ├─ 安装或删除插件目录
+│  ├─ manifest.toml enabled 改变
+│  ├─ plugin.py 或插件资源改变
+│  └─ config.local.toml 改变
+├─ Candidate Gate
+│  ├─ 编译 lifecycle、tool、skill、MCP、job、proactive
+│  ├─ 预热 Dashboard、Channel 与 managed service
+│  └─ 失败时丢弃候选，旧代继续服务
+├─ RuntimeSnapshot 原子发布
+│  ├─ 已开始的执行继续持有旧快照
+│  └─ 新执行只租用新快照
+└─ Drain
+   └─ 最后一个旧 lease 释放后关闭旧资源
 ```
 
 ## 升级边界
@@ -187,4 +218,19 @@ python main.py plugin-doctor --plugin demo@github
    └─ 必须保留：配置、数据库、Token、模型、日志
 ```
 
-插件需要后台服务时，由插件的 `initialize()` 启动，由 `terminate()` 停止。MCP bridge 只连接服务，不应再维护第二套进程所有权。
+插件需要独占后台服务时，通过 `managed_services()` 声明；短期异步任务使用 `self.context.create_task()`。MCP bridge 只连接服务，不应再维护第二套进程所有权。
+
+## 仍需重启的边界
+
+热重载只替换插件代际，不替换宿主进程本身。
+
+```text
+┌─ 可热重载
+│  ├─ Python 插件源码与资源
+│  ├─ config.local.toml
+│  └─ MCP、Skill、Job、Channel、Dashboard 与 managed service 声明
+└─ 必须重启 Runtime
+   ├─ CPython 或核心 Runtime ABI 变化
+   ├─ 已载入的原生动态库升级
+   └─ Runtime 自身依赖与启动参数变化
+```

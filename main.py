@@ -17,7 +17,11 @@ from pathlib import Path
 
 from agent.config import Config
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
-from agent.plugins.install import install_git_plugin
+from agent.plugins.install import (
+    install_git_plugin,
+    set_installed_plugin_enabled,
+    uninstall_plugin,
+)
 from bootstrap.app import build_app_runtime
 from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
@@ -64,6 +68,25 @@ def _parse_csv_flag(value: str | None) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _wait_plugin_disabled(config_path: str, plugin_id: str) -> None:
+    if not Path(config_path).is_file():
+        return
+    from infra.channels.cli import request_command
+
+    socket_path = Config.load(config_path).channels.socket
+    result = asyncio.run(
+        request_command(
+            socket_path,
+            "plugin-disable-and-drain",
+            plugin_id=plugin_id,
+        )
+    )
+    if result is None:
+        return
+    if result.get("ok") is not True:
+        raise RuntimeError(str(result.get("message", "插件停用失败")))
 
 
 def connect_cli(config_path: str = "config.toml") -> None:
@@ -212,6 +235,42 @@ if __name__ == "__main__":
         print(f"版本: {result.plugin_version}")
         print(f"代码: {result.installed_path}")
         print(f"数据: {result.data_path}")
+        sys.exit(0)
+
+    if args and args[0] in {"plugin-enable", "plugin-disable"}:
+        if len(args) < 2 or args[1].startswith("--"):
+            print(f"{args[0]} 缺少插件 ID")
+            sys.exit(1)
+        plugin_id = args[1]
+        enabled = args[0] == "plugin-enable"
+        try:
+            manifest = set_installed_plugin_enabled(plugin_id, enabled=enabled)
+        except ValueError as exc:
+            print(str(exc))
+            sys.exit(1)
+        print(f"插件已{'启用' if enabled else '禁用'}: {plugin_id}")
+        print(f"清单: {manifest}")
+        sys.exit(0)
+
+    if args and args[0] == "plugin-uninstall":
+        if len(args) < 2 or args[1].startswith("--"):
+            print("plugin-uninstall 缺少插件 ID")
+            sys.exit(1)
+        plugin_id = args[1]
+        try:
+            cache_path, data_path = uninstall_plugin(
+                plugin_id,
+                wait_until_disabled=lambda target: _wait_plugin_disabled(
+                    config_path,
+                    target,
+                ),
+            )
+        except (ValueError, RuntimeError) as exc:
+            print(str(exc))
+            sys.exit(1)
+        print(f"插件已卸载: {plugin_id}")
+        print(f"已删除代码: {cache_path}")
+        print(f"已保留数据: {data_path}")
         sys.exit(0)
 
     if args and args[0] == "plugin-doctor":

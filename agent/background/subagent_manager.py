@@ -7,6 +7,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent.background.runtime import (
     AgentBackgroundJobRunner,
@@ -31,6 +32,9 @@ from core.net.http import HttpRequester
 from prompts.background import build_spawn_subagent_prompt
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from agent.plugins.snapshot import RuntimeSnapshotLease
 
 _RESULT_MAX_CHARS = 12_000
 _SYNC_RESULT_MAX_CHARS = 100_000
@@ -78,6 +82,7 @@ class SubagentManager:
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._running_jobs: dict[str, RunningSubagentJob] = {}
         self._cancel_announced: set[str] = set()
+        self._snapshot_release_tasks: set[asyncio.Task[None]] = set()
 
     def add_tool_hooks(self, hooks: list[ToolHook]) -> None:
         object.__setattr__(self._runtime, "tool_hooks", list(hooks))
@@ -173,6 +178,9 @@ class SubagentManager:
             },
         )
         # 2. 再把真正执行逻辑放到后台 task 中，避免阻塞当前会话。
+        from agent.plugins.snapshot import lease_current_runtime_snapshot
+
+        snapshot_lease = lease_current_runtime_snapshot()
         bg_task = asyncio.create_task(
             self._run_subagent(
                 job_id=job_id,
@@ -184,6 +192,7 @@ class SubagentManager:
                 decision=decision,
                 profile=profile,
                 retry_count=retry_count,
+                snapshot_lease=snapshot_lease,
             ),
             name=f"spawn:{job_id}",
         )
@@ -200,7 +209,9 @@ class SubagentManager:
             retry_count=retry_count,
             started_at=datetime.now(timezone.utc).isoformat(),
         )
-        bg_task.add_done_callback(lambda _: self._forget_running_job(job_id))
+        bg_task.add_done_callback(
+            lambda _: self._finish_background_job(job_id, snapshot_lease)
+        )
         logger.info(
             "[spawn] started job_id=%s label=%r profile=%s retry_count=%d origin=%s:%s reason=%s confidence=%s",
             job_id,
@@ -253,7 +264,28 @@ class SubagentManager:
         decision: SpawnDecision | None,
         profile: str = PROFILE_RESEARCH,
         retry_count: int = 0,
+        snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> None:
+        if snapshot_lease is not None:
+            from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+            async with snapshot_lease:
+                token = bind_runtime_snapshot(snapshot_lease)
+                try:
+                    await self._run_subagent(
+                        job_id=job_id,
+                        task=task,
+                        label=label,
+                        task_dir=task_dir,
+                        origin_channel=origin_channel,
+                        origin_chat_id=origin_chat_id,
+                        decision=decision,
+                        profile=profile,
+                        retry_count=retry_count,
+                    )
+                finally:
+                    reset_runtime_snapshot(token)
+            return
         """运行后台 subagent，并把统一结果协议回灌给主 agent。"""
         job_runner = AgentBackgroundJobRunner(
             lambda: self._build_subagent(task_dir=task_dir, profile=profile)
@@ -335,6 +367,34 @@ class SubagentManager:
                 "decision": _decision_payload(decision),
             },
         )
+
+    def _finish_background_job(
+        self,
+        job_id: str,
+        snapshot_lease: RuntimeSnapshotLease | None,
+    ) -> None:
+        self._forget_running_job(job_id)
+        if snapshot_lease is not None and snapshot_lease.active:
+            task = asyncio.create_task(
+                snapshot_lease.release(),
+                name=f"spawn_snapshot_release:{job_id}",
+            )
+            self._snapshot_release_tasks.add(task)
+            task.add_done_callback(self._snapshot_release_tasks.discard)
+
+    async def shutdown(self) -> None:
+        tasks = list(self._running_tasks.values())
+        for task in tasks:
+            _ = task.cancel()
+        if tasks:
+            _ = await asyncio.gather(*tasks, return_exceptions=True)
+        while self._snapshot_release_tasks:
+            release_tasks = tuple(self._snapshot_release_tasks)
+            self._snapshot_release_tasks.difference_update(release_tasks)
+            _ = await asyncio.gather(
+                *release_tasks,
+                return_exceptions=True,
+            )
 
     async def _announce_cancelled_job(self, job: RunningSubagentJob) -> None:
         await self._announce_result(

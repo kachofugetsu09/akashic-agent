@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sys
+from typing import cast
 
 from agent.config import DEFAULT_SOCKET, _normalize_cli_socket_endpoint
 
@@ -80,6 +81,41 @@ class CLIClient:
                 break
             data = json.loads(line)
             print(f"\n{data['content']}\n> ", end="", flush=True)
+
+
+async def request_command(
+    socket_path: str,
+    command: str,
+    **payload: object,
+) -> dict[str, object] | None:
+    endpoint = _normalize_endpoint(socket_path)
+    try:
+        tcp_endpoint = _parse_tcp_endpoint(endpoint)
+        if tcp_endpoint is not None:
+            reader, writer = await asyncio.open_connection(*tcp_endpoint)
+        else:
+            if not hasattr(asyncio, "open_unix_connection"):
+                return None
+            reader, writer = await asyncio.open_unix_connection(endpoint)
+    except (FileNotFoundError, ConnectionRefusedError, OSError):
+        return None
+    try:
+        request = {"type": "command", "command": command, **payload}
+        writer.write((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
+        await writer.drain()
+        line = await reader.readline()
+        if not line:
+            raise RuntimeError("Runtime 未返回插件管理结果")
+        result: object = json.loads(line)
+        if not isinstance(result, dict):
+            raise RuntimeError("Runtime 返回了无效的插件管理结果")
+        typed = cast(dict[str, object], result)
+        if typed.get("type") != "command_result":
+            raise RuntimeError("Runtime 返回了未知的插件管理结果")
+        return typed
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 def _print_banner() -> None:

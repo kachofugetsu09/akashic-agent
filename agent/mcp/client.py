@@ -7,7 +7,7 @@ import os
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +54,15 @@ class McpClient:
         self._tool_infos: list[McpToolInfo] = []
         self._recent_stdout: deque[str] = deque(maxlen=8)
         self._recent_stderr: deque[str] = deque(maxlen=8)
+        self._stderr_task: asyncio.Task[None] | None = None
 
     @property
     def tool_infos(self) -> list[McpToolInfo]:
         return self._tool_infos
+
+    @property
+    def connected(self) -> bool:
+        return self._process is not None and self._process.returncode is None
 
     async def connect(self) -> list[McpToolInfo]:
         try:
@@ -65,7 +70,7 @@ class McpClient:
                 self._connect_impl(),
                 timeout=_CONNECT_TIMEOUT,
             )
-        except Exception:
+        except BaseException:
             await self.disconnect()
             raise
 
@@ -82,7 +87,10 @@ class McpClient:
             cwd=self.cwd,
             limit=_STREAM_LIMIT,
         )
-        _ = asyncio.create_task(self._drain_stderr())
+        self._stderr_task = asyncio.create_task(
+            self._drain_stderr(),
+            name=f"mcp_stderr:{self.name}",
+        )
 
         # initialize 握手
         init_id = self._new_id()
@@ -98,7 +106,8 @@ class McpClient:
                 },
             }
         )
-        _ = await self._recv(expected_id=init_id, stage="initialize")
+        init_response = await self._recv(expected_id=init_id, stage="initialize")
+        _ = self._response_result(init_response, "initialize")
 
         # initialized 通知（无 id，不等响应）
         await self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -108,17 +117,31 @@ class McpClient:
         await self._send(
             {"jsonrpc": "2.0", "id": list_id, "method": "tools/list", "params": {}}
         )
-        resp = await self._recv(expected_id=list_id, stage="tools/list")
-
-        raw_tools = resp.get("result", {}).get("tools", [])
-        self._tool_infos = [
-            McpToolInfo(
-                name=t["name"],
-                description=t.get("description", ""),
-                input_schema=t.get("inputSchema", {"type": "object", "properties": {}}),
+        response = await self._recv(expected_id=list_id, stage="tools/list")
+        result = self._response_result(response, "tools/list")
+        raw_tools: object = result.get("tools", [])
+        if not isinstance(raw_tools, list):
+            raise RuntimeError(f"MCP server {self.name!r} tools/list.tools 不是 list")
+        tool_infos: list[McpToolInfo] = []
+        for raw_tool in cast(list[object], raw_tools):
+            if not isinstance(raw_tool, dict):
+                raise RuntimeError(f"MCP server {self.name!r} 返回了无效 tool")
+            tool = cast(dict[str, Any], raw_tool)
+            name = tool.get("name")
+            schema = tool.get(
+                "inputSchema",
+                {"type": "object", "properties": {}},
             )
-            for t in raw_tools
-        ]
+            if not isinstance(name, str) or not name or not isinstance(schema, dict):
+                raise RuntimeError(f"MCP server {self.name!r} 返回了无效 tool")
+            tool_infos.append(
+                McpToolInfo(
+                    name=name,
+                    description=str(tool.get("description") or ""),
+                    input_schema=cast(dict[str, Any], schema),
+                )
+            )
+        self._tool_infos = tool_infos
         logger.debug(
             "[mcp] %r 已连接，工具：%s", self.name, [t.name for t in self._tool_infos]
         )
@@ -165,27 +188,43 @@ class McpClient:
         if self._process is None:
             return
         process = self._process
+        stopped = False
         try:
             if process.stdin is not None:
                 process.stdin.close()
-            _ = await asyncio.wait_for(
-                process.wait(),
-                timeout=_DISCONNECT_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            process.terminate()
             try:
                 _ = await asyncio.wait_for(
                     process.wait(),
                     timeout=_DISCONNECT_TIMEOUT,
                 )
+                stopped = True
             except asyncio.TimeoutError:
-                process.kill()
-                _ = await process.wait()
-        except Exception as e:
-            logger.warning("[mcp] 断开 %r 时出错: %s", self.name, e)
+                process.terminate()
+                try:
+                    _ = await asyncio.wait_for(
+                        process.wait(),
+                        timeout=_DISCONNECT_TIMEOUT,
+                    )
+                    stopped = True
+                except asyncio.TimeoutError:
+                    process.kill()
+                    _ = await process.wait()
+                    stopped = True
         finally:
-            self._process = None
+            try:
+                if not stopped:
+                    process.kill()
+                    _ = await process.wait()
+                    stopped = True
+            finally:
+                if stopped:
+                    self._process = None
+                stderr_task = self._stderr_task
+                self._stderr_task = None
+                if stderr_task is not None:
+                    if not stderr_task.done():
+                        _ = stderr_task.cancel()
+                    _ = await asyncio.gather(stderr_task, return_exceptions=True)
 
     def _new_id(self) -> int:
         i = self._next_id
@@ -228,10 +267,13 @@ class McpClient:
                 continue
             self._recent_stdout.append(text[:500])
             try:
-                msg = json.loads(text)
+                raw_message: object = json.loads(text)
             except json.JSONDecodeError:
                 logger.debug("[mcp:%s] 非 JSON 输出: %s", self.name, text[:200])
                 continue
+            if not isinstance(raw_message, dict):
+                raise RuntimeError(f"MCP server {self.name!r} 返回了非对象响应")
+            msg = cast(dict[str, Any], raw_message)
             # 跳过通知（有 method 但无 id）
             if "method" in msg and "id" not in msg:
                 logger.debug("[mcp:%s] <- notification: %s", self.name, text[:400])
@@ -248,19 +290,32 @@ class McpClient:
             logger.debug("[mcp:%s] <- %s", self.name, text[:400])
             return msg
 
+    def _response_result(
+        self,
+        response: dict[str, Any],
+        stage: str,
+    ) -> dict[str, Any]:
+        if "error" in response:
+            raise RuntimeError(
+                f"MCP server {self.name!r} {stage} 失败: {response['error']}"
+            )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"MCP server {self.name!r} {stage} 返回了无效 result"
+            )
+        return cast(dict[str, Any], result)
+
     async def _drain_stderr(self) -> None:
         """后台读取 stderr，防止缓冲区阻塞。"""
         assert self._process and self._process.stderr
-        try:
-            while True:
-                line = await self._process.stderr.readline()
-                if not line:
-                    break
-                text = line.decode().rstrip()
-                self._recent_stderr.append(text[:500])
-                logger.debug("[mcp:%s] stderr: %s", self.name, text)
-        except Exception:
-            pass
+        while True:
+            line = await self._process.stderr.readline()
+            if not line:
+                break
+            text = line.decode().rstrip()
+            self._recent_stderr.append(text[:500])
+            logger.debug("[mcp:%s] stderr: %s", self.name, text)
 
     def _build_timeout_message(
         self,

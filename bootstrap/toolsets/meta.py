@@ -37,7 +37,7 @@ class CommonMetaToolsetProvider(ToolsetProvider):
             push_tool=deps.push_tool,
         )
         registry.register(
-            LoadSkillTool(SkillsLoader(deps.workspace)),
+            LoadSkillTool(SkillsLoader(deps.workspace, runtime_catalog="normal")),
             always_on=True,
             risk="read-only",
             search_hint="技能 skill SKILL.md 使用能力 先 load_skill 不要 read_file 猜路径",

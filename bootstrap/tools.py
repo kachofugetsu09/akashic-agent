@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import inspect
-
 import logging
+import inspect
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
@@ -89,7 +89,7 @@ class CoreRuntime:
     workspace: Path | None = None
 
     async def start(self) -> None:
-        self.mcp_registry.start_connect_all_background()
+        await self.mcp_registry.load_and_connect_all()
 
         if (
             self.peer_poller is not None
@@ -127,37 +127,11 @@ class CoreRuntime:
                     link_result.removed,
                     link_result.skipped,
                 )
-            sync_plugin_servers = getattr(self.mcp_registry, "sync_plugin_servers", None)
-            if callable(sync_plugin_servers):
-                sync_result = sync_plugin_servers(self.plugin_manager.active_plugins())
-                if inspect.isawaitable(sync_result):
-                    await sync_result
             sync_manifest = getattr(self.plugin_manager, "sync_manifest", None)
             if callable(sync_manifest):
                 manifest_path = sync_manifest()
                 logger.info("插件清单已同步: %s", manifest_path)
             logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
-            self.loop.add_before_turn_plugin_modules(
-                self.plugin_manager.before_turn_modules,
-            )
-            self.loop.add_before_reasoning_plugin_modules(
-                self.plugin_manager.before_reasoning_modules,
-            )
-            self.loop.add_prompt_render_plugin_modules(
-                self.plugin_manager.prompt_render_modules,
-            )
-            self.loop.add_before_step_plugin_modules(
-                self.plugin_manager.before_step_modules,
-            )
-            self.loop.add_after_step_plugin_modules(
-                self.plugin_manager.after_step_modules,
-            )
-            self.loop.add_after_reasoning_plugin_modules(
-                self.plugin_manager.after_reasoning_modules,
-            )
-            self.loop.add_after_turn_plugin_modules(
-                self.plugin_manager.after_turn_modules,
-            )
             if self.plugin_manager.tool_hooks:
                 self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
                 spawn_tool = self.tools.get_tool("spawn")
@@ -270,10 +244,16 @@ class CoreRuntime:
         return "\n".join(parts)
 
     async def stop(self) -> None:
+        spawn_tool = self.tools.get_tool("spawn")
+        shutdown = getattr(spawn_tool, "shutdown", None)
+        if callable(shutdown):
+            result = shutdown()
+            if inspect.isawaitable(result):
+                await cast(Awaitable[object], result)
+        await self.event_bus.aclose()
         if self.plugin_manager is not None:
             await self.plugin_manager.terminate_all()
         await self.mcp_registry.shutdown()
-        await self.event_bus.aclose()
         if self.peer_poller is not None:
             await self.peer_poller.stop()
         if self.peer_process_manager is not None:
@@ -537,7 +517,9 @@ def build_core_runtime(
             max_tokens=config.max_tokens,
         ),
         installed_cache_root=_resolve_installed_plugin_cache_root(),
+        user_mcp_server_names=mcp_registry.connected_server_names,
     )
+    loop.bind_runtime_snapshot_store(plugin_manager.snapshot_store)
 
     return CoreRuntime(
         config=config,

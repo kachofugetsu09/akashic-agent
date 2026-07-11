@@ -76,6 +76,13 @@ class PluginHandlerRegistry:
     def remove_by_module_path(self, mp: str) -> None:
         self._handlers = [h for h in self._handlers if h.plugin_module_path != mp]
 
+    def module_paths_under(self, root: str) -> set[str]:
+        return {
+            handler.plugin_module_path
+            for handler in self._handlers
+            if handler.plugin_module_path.startswith(f"{root}.")
+        }
+
 
 class PluginRegistry:
     def __init__(self) -> None:
@@ -88,6 +95,9 @@ class PluginRegistry:
 
     def register_instance(self, mp: str, inst: object) -> None:
         self._instances[mp] = inst
+
+    def get_class(self, mp: str) -> type | None:
+        return self._classes.get(mp)
 
     def get_instance(self, mp: str) -> object | None:
         return self._instances.get(mp)
@@ -102,6 +112,16 @@ class PluginRegistry:
         self._handlers.remove_by_module_path(mp)
         _ = self._classes.pop(mp, None)
         _ = self._instances.pop(mp, None)
+
+    def remove_module_tree(self, root: str) -> None:
+        module_paths = {
+            root,
+            *(path for path in self._classes if path.startswith(f"{root}.")),
+            *(path for path in self._instances if path.startswith(f"{root}.")),
+            *self._handlers.module_paths_under(root),
+        }
+        for module_path in module_paths:
+            self.remove_plugin(module_path)
 
 
 plugin_registry = PluginRegistry()

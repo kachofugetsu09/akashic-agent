@@ -1,0 +1,3496 @@
+from __future__ import annotations
+
+import asyncio
+import importlib
+import json
+import logging
+import os
+import py_compile
+import shutil
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.convertors import CONVERTOR_TYPES, StringConvertor
+
+from agent.plugins.manager import PluginManager
+from agent.plugins.manifest import write_plugin_manifest
+from agent.plugins.watcher import PluginWatcher
+from agent.plugins.jobs import PluginJobRuntime
+from agent.plugins.registry import plugin_registry
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    RuntimeSnapshotCompiler,
+    RuntimeSnapshotStore,
+)
+from agent.looping.core import AgentLoop
+from agent.background.subagent_manager import SubagentManager
+from proactive_v2.loop import ProactiveLoop
+from bootstrap.dashboard_api import create_dashboard_app
+from agent.plugins.dashboard_host import (
+    DashboardBinding,
+    _plugin_routes,
+    _require_routes_available,
+)
+from agent.skills import SkillsLoader
+from agent.tools.registry import ToolRegistry
+from agent.tools.base import Tool
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
+from bus.event_bus import EventBus
+from bus.events_lifecycle import TurnCommitted
+
+
+@pytest.fixture(autouse=True)
+def _clean_registry():
+    plugin_registry._handlers._handlers.clear()
+    plugin_registry._classes.clear()
+    plugin_registry._instances.clear()
+    yield
+    plugin_registry._handlers._handlers.clear()
+    plugin_registry._classes.clear()
+    plugin_registry._instances.clear()
+
+
+def _write_plugin(root: Path, name: str, source: str) -> Path:
+    plugin_dir = root / name
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(source, encoding="utf-8")
+    return plugin_dir
+
+
+def _manager(
+    tmp_path: Path,
+    *,
+    tools: ToolRegistry | None = None,
+    workspace: Path | None = None,
+    user_mcp_server_names=None,
+) -> PluginManager:
+    return PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=EventBus(),
+        tool_registry=tools,
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+        user_mcp_server_names=user_mcp_server_names,
+    )
+
+
+def _write_mcp_server(plugin_dir: Path, tools: tuple[str, ...]) -> None:
+    tool_items = ", ".join(
+        repr(
+            {
+                "name": name,
+                "description": name,
+                "inputSchema": {"type": "object", "properties": {}},
+            }
+        )
+        for name in tools
+    )
+    _ = (plugin_dir / "server.py").write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "log = Path(os.environ['AKA_PLUGIN_DATA_DIR']) / 'mcp-lifecycle.log'\n"
+        "log.parent.mkdir(parents=True, exist_ok=True)\n"
+        "with log.open('a', encoding='utf-8') as f: f.write('started\\n')\n"
+        "try:\n"
+        "    for line in sys.stdin:\n"
+        "        msg = json.loads(line)\n"
+        "        if 'id' not in msg:\n"
+        "            continue\n"
+        "        method = msg.get('method')\n"
+        "        result = {}\n"
+        f"        if method == 'tools/list': result = {{'tools': [{tool_items}]}}\n"
+        "        elif method == 'tools/call': result = {'content': [{'type': 'text', 'text': '[]'}]}\n"
+        "        print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n"
+        "finally:\n"
+        "    with log.open('a', encoding='utf-8') as f: f.write('stopped\\n')\n",
+        encoding="utf-8",
+    )
+
+
+async def _wait_for_log(path: Path, expected: list[str]) -> None:
+    for _ in range(100):
+        if path.exists() and path.read_text(encoding="utf-8").splitlines() == expected:
+            return
+        await asyncio.sleep(0.01)
+    assert path.read_text(encoding="utf-8").splitlines() == expected
+
+
+@pytest.mark.asyncio
+async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "candidate",
+        "from agent.plugins import Plugin, PluginSemanticCheck\n"
+        "class CandidatePlugin(Plugin):\n"
+        "    name = 'candidate'\n"
+        "    def static_semantic_checks(self):\n"
+        "        return [PluginSemanticCheck('fixture', True, 'ok')]\n"
+        "    async def initialize(self):\n"
+        "        self.context.kv_store.set('generation', self.context.generation_id)\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    generation = manager.generation("candidate")
+    gate = manager.latest_gate("candidate")
+    assert generation is not None
+    assert gate is not None and gate.status == "passed"
+    assert generation.module_path.startswith("akasic_plugin_plugins_candidate__g")
+    assert generation.generation_id == generation.instance.context.generation_id
+    assert plugin_registry.get_instance("akasic_plugin_plugins_candidate") is generation.instance
+    assert generation.contributions.manifest["name"] == "candidate"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "source", "failed_check"),
+    [
+        (
+            "bad_api",
+            "from agent.plugins import Plugin\n"
+            "class BadApiPlugin(Plugin):\n"
+            "    name = 'bad_api'\n"
+            "    api_version = 2\n",
+            "api_version",
+        ),
+        (
+            "bad_semantic",
+            "from agent.plugins import Plugin, PluginSemanticCheck\n"
+            "class BadSemanticPlugin(Plugin):\n"
+            "    name = 'bad_semantic'\n"
+            "    def static_semantic_checks(self):\n"
+            "        return [PluginSemanticCheck('model', False, 'missing')]\n",
+            "semantic_checks",
+        ),
+        (
+            "bad_source",
+            "from agent.plugins import Plugin, ProactiveSourceSpec\n"
+            "class BadSourcePlugin(Plugin):\n"
+            "    name = 'bad_source'\n"
+            "    def proactive_sources(self):\n"
+            "        return [ProactiveSourceSpec(id='feed', channels=('content',), "
+            "server='missing', fetch_tool='fetch')]\n",
+            "proactive_sources",
+        ),
+        (
+            "phase_cycle",
+            "from agent.plugins import Plugin\n"
+            "class A:\n"
+            "    slot = 'plugin.a'\n"
+            "    requires = ('plugin.b',)\n"
+            "class B:\n"
+            "    slot = 'plugin.b'\n"
+            "    requires = ('plugin.a',)\n"
+            "class PhaseCyclePlugin(Plugin):\n"
+            "    name = 'phase_cycle'\n"
+            "    def before_turn_modules(self): return [A(), B()]\n",
+            "phase_graph",
+        ),
+        (
+            "duplicate_tool",
+            "from agent.plugins import Plugin, tool\n"
+            "class DuplicateToolPlugin(Plugin):\n"
+            "    name = 'duplicate_tool'\n"
+            "    @tool(name='same')\n"
+            "    async def first(self, event):\n"
+            "        \"\"\"First.\"\"\"\n"
+            "        return 'first'\n"
+            "    @tool(name='same')\n"
+            "    async def second(self, event):\n"
+            "        \"\"\"Second.\"\"\"\n"
+            "        return 'second'\n",
+            "tool_names",
+        ),
+    ],
+)
+async def test_failed_candidate_never_initializes(
+    tmp_path: Path,
+    name: str,
+    source: str,
+    failed_check: str,
+):
+    plugin_dir = _write_plugin(tmp_path / "plugins", name, source)
+    marker = plugin_dir / "initialized"
+    with (plugin_dir / "plugin.py").open("a", encoding="utf-8") as file:
+        _ = file.write(
+            "    async def initialize(self):\n"
+            f"        open({str(marker)!r}, 'w').write('bad')\n"
+        )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate(name)
+    assert manager.loaded_count == 0
+    assert manager.generation(name) is None
+    assert gate is not None and gate.status == "failed"
+    assert failed_check in {check.check_id for check in gate.checks if check.status == "failed"}
+    assert not marker.exists()
+    assert tools.get_registered_names() == set()
+    assert not any(module.startswith(f"akasic_plugin_plugins_{name}__g") for module in sys.modules)
+
+
+@pytest.mark.asyncio
+async def test_import_failure_returns_gate_result(tmp_path: Path):
+    _write_plugin(tmp_path / "plugins", "broken", "this is not python !!!\n")
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("broken")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "import"
+    assert not any(module.startswith("akasic_plugin_plugins_broken__g") for module in sys.modules)
+
+
+@pytest.mark.asyncio
+async def test_candidate_declarations_are_collected_once(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "once",
+        "from agent.plugins import Plugin\n"
+        "calls = 0\n"
+        "class Module:\n"
+        "    slot = 'plugin.once'\n"
+        "    requires = ()\n"
+        "class OncePlugin(Plugin):\n"
+        "    name = 'once'\n"
+        "    def before_turn_modules(self):\n"
+        "        global calls\n"
+        "        calls += 1\n"
+        "        return [Module()]\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    generation = manager.generation("once")
+    assert generation is not None
+    module = sys.modules[generation.module_path]
+    assert module.calls == 1
+    assert len(manager.before_turn_modules) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_source_gets_new_generation_namespace_after_restart(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "repeat",
+        "from agent.plugins import Plugin\n"
+        "class RepeatPlugin(Plugin):\n"
+        "    name = 'repeat'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    first = manager.generation("repeat")
+    assert first is not None
+
+    await manager.terminate_all()
+    await manager.load_all()
+
+    second = manager.generation("repeat")
+    assert second is not None
+    assert first.state == "retired"
+    assert second.generation_id != first.generation_id
+    assert second.module_path != first.module_path
+
+
+@pytest.mark.asyncio
+async def test_candidate_declaration_cannot_write_plugin_kv(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "readonly",
+        "from agent.plugins import Plugin\n"
+        "class ReadonlyPlugin(Plugin):\n"
+        "    name = 'readonly'\n"
+        "    def before_turn_modules(self):\n"
+        "        self.context.kv_store.set('leaked', True)\n"
+        "        return []\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("readonly")
+    kv_path = tmp_path / "home" / "data" / "readonly-builtin" / ".kv.json"
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "declarations"
+    assert not kv_path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "declaration",
+    (
+        "raise RuntimeError('declaration failed')",
+        "return 'not-a-list'",
+        "return None",
+    ),
+)
+async def test_invalid_declaration_fails_gate(tmp_path: Path, declaration: str):
+    _write_plugin(
+        tmp_path / "plugins",
+        "invalid_declaration",
+        "from agent.plugins import Plugin\n"
+        "class InvalidDeclarationPlugin(Plugin):\n"
+        "    name = 'invalid_declaration'\n"
+        "    def before_turn_modules(self):\n"
+        f"        {declaration}\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("invalid_declaration")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "declarations"
+    assert manager.generation("invalid_declaration") is None
+
+
+@pytest.mark.asyncio
+async def test_candidate_phase_graph_includes_active_plugins(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "first",
+        "from agent.plugins import Plugin\n"
+        "class Module:\n"
+        "    slot = 'plugin.shared'\n"
+        "class FirstPlugin(Plugin):\n"
+        "    name = 'first'\n"
+        "    def before_turn_modules(self): return [Module()]\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    _write_plugin(
+        tmp_path / "plugins",
+        "second",
+        "from agent.plugins import Plugin\n"
+        "class Module:\n"
+        "    slot = 'plugin.shared'\n"
+        "class SecondPlugin(Plugin):\n"
+        "    name = 'second'\n"
+        "    def before_turn_modules(self): return [Module()]\n",
+    )
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("second")
+    assert manager.generation("first") is not None
+    assert manager.generation("second") is None
+    assert gate is not None and gate.status == "failed"
+    assert "phase_graph" in {
+        check.check_id for check in gate.checks if check.status == "failed"
+    }
+
+
+@pytest.mark.asyncio
+async def test_initialize_failure_replaces_passed_gate(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "init_failure",
+        "from agent.plugins import Plugin\n"
+        "class InitFailurePlugin(Plugin):\n"
+        "    name = 'init_failure'\n"
+        "    async def initialize(self): raise RuntimeError('init failed')\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("init_failure")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "initialize"
+    assert manager.generation("init_failure") is None
+
+
+@pytest.mark.asyncio
+async def test_generation_module_tree_is_removed_on_config_failure_and_terminate(
+    tmp_path: Path,
+):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "module_tree",
+        "from pydantic import BaseModel\n"
+        "from agent.plugins import Plugin\n"
+        "from . import child\n"
+        "class Config(BaseModel):\n"
+        "    required: str\n"
+        "class ModuleTreePlugin(Plugin):\n"
+        "    name = 'module_tree'\n"
+        "    ConfigModel = Config\n",
+    )
+    _ = (plugin_dir / "child.py").write_text("value = 1\n", encoding="utf-8")
+    config_dir = tmp_path / "home" / "data" / "module_tree-builtin"
+    config_dir.mkdir(parents=True)
+    _ = (config_dir / "config.local.toml").write_text("", encoding="utf-8")
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.latest_gate("module_tree").status == "failed"  # type: ignore[union-attr]
+    assert not any("plugins_module_tree__g" in name for name in sys.modules)
+
+    _ = (config_dir / "config.local.toml").write_text(
+        "required = 'ok'\n",
+        encoding="utf-8",
+    )
+    await manager.load_all()
+    generation = manager.generation("module_tree")
+    assert generation is not None
+    assert f"{generation.module_path}.child" in sys.modules
+    stable_child = importlib.import_module("akasic_plugin_plugins_module_tree.child")
+    assert stable_child.value == 1
+
+    await manager.terminate_all()
+
+    assert not any("plugins_module_tree__g" in name for name in sys.modules)
+    assert "akasic_plugin_plugins_module_tree.child" not in sys.modules
+
+
+@pytest.mark.asyncio
+async def test_candidate_is_not_published_before_initialize_finishes(tmp_path: Path):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "pending",
+        "import asyncio\n"
+        "from agent.plugins import Plugin, tool\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class PendingPlugin(Plugin):\n"
+        "    name = 'pending'\n"
+        "    @tool(name='pending_tool')\n"
+        "    async def pending_tool(self, event):\n"
+        "        \"\"\"Pending tool.\"\"\"\n"
+        "        return 'ready'\n"
+        "    async def initialize(self):\n"
+        "        self.context.event_bus.on(TurnCommitted, self.on_turn)\n"
+        "        while not (self.context.plugin_dir / 'release').exists():\n"
+        "            await asyncio.sleep(0.01)\n"
+        "    def on_turn(self, event): return None\n",
+    )
+    tools = ToolRegistry()
+    event_bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        tool_registry=tools,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+
+    loading = asyncio.create_task(manager.load_all())
+    while manager.latest_gate("pending") is None:
+        await asyncio.sleep(0.01)
+
+    assert manager.latest_gate("pending").status == "passed"  # type: ignore[union-attr]
+    assert manager.generation("pending") is None
+    assert tools.get_tool("pending_tool") is None
+    assert event_bus.handler_count() == 0
+
+    _ = (plugin_dir / "release").write_text("ok", encoding="utf-8")
+    await loading
+
+    assert manager.generation("pending") is not None
+    assert tools.get_tool("pending_tool") is not None
+    assert event_bus.handler_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_prepare_same_plugin_keeps_active_generation_until_snapshot_publish(
+    tmp_path: Path,
+):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "replaceable",
+        "from agent.plugins import Plugin, tool\n"
+        "class ReplaceablePlugin(Plugin):\n"
+        "    name = 'replaceable'\n"
+        "    @tool(name='replaceable_tool')\n"
+        "    async def run(self, event):\n"
+        "        \"\"\"Replaceable tool.\"\"\"\n"
+        "        return 'v1'\n",
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+
+    active = manager.generation("replaceable")
+    assert active is not None
+
+    _ = (plugin_dir / "plugin.py").write_text("not valid python !!!\n", encoding="utf-8")
+    rejected = await manager.prepare_candidate("replaceable")
+
+    assert rejected is None
+    assert manager.generation("replaceable") is active
+    assert manager.prepared_generation("replaceable") is None
+    assert manager.latest_gate("replaceable").status == "failed"  # type: ignore[union-attr]
+    assert tools.get_tool("replaceable_tool") is not None
+
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin, tool\n"
+        "class ReplaceablePlugin(Plugin):\n"
+        "    name = 'replaceable'\n"
+        "    @tool(name='replaceable_tool')\n"
+        "    async def run(self, event):\n"
+        "        \"\"\"Replaceable tool.\"\"\"\n"
+        "        return 'v2'\n"
+        "    async def initialize(self):\n"
+        "        self.context.kv_store.set('initialized_v2', True)\n",
+        encoding="utf-8",
+    )
+    prepared = await manager.prepare_candidate("replaceable")
+
+    assert prepared is not None and prepared.state == "prepared"
+    assert manager.generation("replaceable") is active
+    assert manager.prepared_generation("replaceable") is prepared
+    assert manager.latest_gate("replaceable").status == "passed"  # type: ignore[union-attr]
+    assert not (
+        tmp_path / "home" / "data" / "replaceable-builtin" / ".kv.json"
+    ).exists()
+    assert tools.get_tool("replaceable_tool") is not None
+
+    await manager.discard_prepared("replaceable")
+
+    assert prepared.state == "discarded"
+    assert manager.prepared_generation("replaceable") is None
+
+
+@pytest.mark.asyncio
+async def test_source_revision_includes_helper_changes(tmp_path: Path):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "revision",
+        "from agent.plugins import Plugin\n"
+        "from . import helper\n"
+        "class RevisionPlugin(Plugin):\n"
+        "    name = 'revision'\n",
+    )
+    helper = plugin_dir / "helper.py"
+    _ = helper.write_text("value = 1\n", encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("revision")
+    assert active is not None
+
+    _ = helper.write_text("value = 2\n", encoding="utf-8")
+    prepared = await manager.prepare_candidate("revision")
+
+    assert prepared is not None
+    assert prepared.source_revision != active.source_revision
+
+
+@pytest.mark.asyncio
+async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
+    outside = tmp_path / "plugins" / "outside" / "skill"
+    outside.mkdir(parents=True)
+    _ = (outside / "SKILL.md").write_text("# outside\n", encoding="utf-8")
+    _write_plugin(
+        tmp_path / "plugins",
+        "escaped",
+        "from agent.plugins import Plugin\n"
+        "class EscapedPlugin(Plugin):\n"
+        "    name = 'escaped'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('../outside',)\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("escaped")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "declarations"
+
+
+@pytest.mark.asyncio
+async def test_proactive_lifecycle_structure_fails_static_gate(tmp_path: Path):
+    _write_plugin(
+        tmp_path / "plugins",
+        "bad_lifecycle",
+        "from agent.plugins import Plugin\n"
+        "from proactive_v2.lifecycle import ProactiveLifecycleSpec\n"
+        "class BadLifecyclePlugin(Plugin):\n"
+        "    name = 'bad_lifecycle'\n"
+        "    def proactive_lifecycles(self):\n"
+        "        return [ProactiveLifecycleSpec(id='bad', modules=(object(),))]\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("bad_lifecycle")
+    assert gate is not None and gate.status == "failed"
+    assert "proactive_lifecycle_structure" in {
+        check.check_id for check in gate.checks if check.status == "failed"
+    }
+
+
+@pytest.mark.asyncio
+async def test_source_symlink_cannot_escape_plugin_root(tmp_path: Path):
+    outside = tmp_path / "outside.py"
+    _ = outside.write_text("value = 1\n", encoding="utf-8")
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "linked_source",
+        "from agent.plugins import Plugin\n"
+        "from . import helper\n"
+        "class LinkedSourcePlugin(Plugin):\n"
+        "    name = 'linked_source'\n",
+    )
+    (plugin_dir / "helper.py").symlink_to(outside)
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("linked_source")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[0].check_id == "source_boundary"
+
+
+@pytest.mark.asyncio
+async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Path):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "fresh_source",
+        "from agent.plugins import Plugin\n"
+        "from . import helper\n"
+        "class FreshSourcePlugin(Plugin):\n"
+        "    name = 'fresh_source'\n"
+        "    version = 'v1'\n"
+        "    helper_value = helper.VALUE\n",
+    )
+    plugin_file = plugin_dir / "plugin.py"
+    helper_file = plugin_dir / "helper.py"
+    _ = helper_file.write_text("VALUE = 'v1'\n", encoding="utf-8")
+    plugin_stat = plugin_file.stat()
+    helper_stat = helper_file.stat()
+    _ = py_compile.compile(str(plugin_file), doraise=True)
+    _ = py_compile.compile(str(helper_file), doraise=True)
+    manager = _manager(tmp_path)
+    await manager.load_all()
+
+    _ = plugin_file.write_text(
+        plugin_file.read_text(encoding="utf-8").replace("'v1'", "'v2'"),
+        encoding="utf-8",
+    )
+    _ = helper_file.write_text("VALUE = 'v2'\n", encoding="utf-8")
+    os.utime(plugin_file, ns=(plugin_stat.st_atime_ns, plugin_stat.st_mtime_ns))
+    os.utime(helper_file, ns=(helper_stat.st_atime_ns, helper_stat.st_mtime_ns))
+
+    prepared = await manager.prepare_candidate("fresh_source")
+
+    assert prepared is not None
+    assert prepared.instance.version == "v2"  # type: ignore[attr-defined]
+    assert prepared.instance.helper_value == "v2"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_return_to_active_revision_discards_stale_prepared(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "return_active",
+        "from agent.plugins import Plugin\n"
+        "class ReturnActivePlugin(Plugin):\n"
+        "    name = 'return_active'\n"
+        "    version = 'v1'\n",
+    )
+    plugin_file = plugin_dir / "plugin.py"
+    active_source = plugin_file.read_text(encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    caplog.set_level(logging.INFO, logger="agent.plugins.manager")
+    _ = plugin_file.write_text(
+        active_source.replace("'v1'", "'v2'"),
+        encoding="utf-8",
+    )
+    first_scan = await manager.prepare_changed()
+    prepared = manager.prepared_generation("return_active")
+    assert first_scan[0]["gate_status"] == "passed"
+    assert prepared is not None
+
+    _ = plugin_file.write_text(active_source, encoding="utf-8")
+    second_scan = await manager.prepare_changed()
+
+    assert second_scan[0]["gate_status"] == "active"
+    assert manager.prepared_generation("return_active") is None
+    assert prepared.state == "discarded"
+    status_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("plugin_candidate_status ")
+    ]
+    assert status_logs
+    assert "counts=skills:" in status_logs[-1]
+    assert "skill_descriptions" not in status_logs[-1]
+
+
+@pytest.mark.asyncio
+async def test_terminating_one_manager_keeps_newer_stable_alias(tmp_path: Path):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "shared_alias",
+        "from agent.plugins import Plugin\n"
+        "class SharedAliasPlugin(Plugin):\n"
+        "    name = 'shared_alias'\n",
+    )
+    child = plugin_dir / "child.py"
+    _ = child.write_text("value = 'v1'\n", encoding="utf-8")
+    first_manager = _manager(tmp_path)
+    second_manager = _manager(tmp_path)
+    await first_manager.load_all()
+    stable_alias = "akasic_plugin_plugins_shared_alias"
+    first_child = importlib.import_module(f"{stable_alias}.child")
+    assert first_child.value == "v1"
+    _ = child.write_text("value = 'v2'\n", encoding="utf-8")
+    await second_manager.load_all()
+    second = second_manager.generation("shared_alias")
+    assert second is not None
+    second_child = importlib.import_module(f"{stable_alias}.child")
+    assert second_child.value == "v2"
+    assert second_child is not first_child
+
+    await first_manager.terminate_all()
+
+    assert plugin_registry.get_instance(stable_alias) is second.instance
+    assert sys.modules[stable_alias] is sys.modules[second.module_path]
+
+    await second_manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
+    first_dir = _write_plugin(
+        tmp_path / "plugins",
+        "first_skills",
+        "from agent.plugins import Plugin\n"
+        "class FirstSkillsPlugin(Plugin):\n"
+        "    name = 'first_skills'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills',)\n",
+    )
+    first_skill = first_dir / "skills" / "shared"
+    first_skill.mkdir(parents=True)
+    _ = (first_skill / "SKILL.md").write_text(
+        "---\ndescription: first\n---\nfirst\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path, workspace=tmp_path / "workspace")
+    await manager.load_all()
+    first = manager.generation("first_skills")
+    assert first is not None and first.skill_catalog is not None
+    assert first.skill_catalog.normal.get("shared").source_id == "first_skills"  # type: ignore[union-attr]
+
+    second_dir = _write_plugin(
+        tmp_path / "plugins",
+        "second_skills",
+        "from agent.plugins import Plugin\n"
+        "class SecondSkillsPlugin(Plugin):\n"
+        "    name = 'second_skills'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills',)\n",
+    )
+    second_skill = second_dir / "skills" / "shared"
+    second_skill.mkdir(parents=True)
+    _ = (second_skill / "SKILL.md").write_text(
+        "---\ndescription: second\n---\nsecond\n",
+        encoding="utf-8",
+    )
+
+    await manager.load_all()
+
+    gate = manager.latest_gate("second_skills")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[-1].check_id == "skill_catalog"
+    assert manager.generation("second_skills") is None
+    generation_id = first.generation_id
+    await manager.terminate_all()
+    assert manager.skill_catalog(generation_id) is None
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
+    tmp_path: Path,
+):
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "skill_reload",
+        "from agent.plugins import Plugin\n"
+        "class SkillReloadPlugin(Plugin):\n"
+        "    name = 'skill_reload'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills-v1',)\n",
+    )
+    v1_skill = plugin_dir / "skills-v1" / "shared"
+    v1_skill.mkdir(parents=True)
+    _ = (v1_skill / "SKILL.md").write_text(
+        "---\ndescription: version one\n---\nbody v1\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace_skill = workspace / "skills" / "personal"
+    workspace_skill.mkdir(parents=True)
+    _ = (workspace_skill / "SKILL.md").write_text(
+        "---\ndescription: workspace one\n---\nworkspace body v1\n",
+        encoding="utf-8",
+    )
+    workspace_drift = workspace / "drift" / "skills" / "personal-drift"
+    workspace_drift.mkdir(parents=True)
+    _ = (workspace_drift / "SKILL.md").write_text(
+        "---\ndescription: drift workspace one\n---\ndrift workspace v1\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path, workspace=workspace)
+    await manager.load_all()
+    active = manager.generation("skill_reload")
+    assert active is not None and active.skill_catalog is not None
+    active_record = active.skill_catalog.normal.get("shared")
+    assert active_record is not None
+    active_workspace = active.skill_catalog.normal.get("personal")
+    active_workspace_drift = active.skill_catalog.drift.get("personal-drift")
+    assert active_workspace is not None
+    assert active_workspace_drift is not None
+
+    workspace_skills = workspace / "skills"
+    workspace_skills.mkdir(parents=True, exist_ok=True)
+    (workspace_skills / "shared").symlink_to(v1_skill, target_is_directory=True)
+    _ = (v1_skill / "SKILL.md").write_text(
+        "---\ndescription: changed old source\n---\nchanged old body\n",
+        encoding="utf-8",
+    )
+    _ = (workspace_skill / "SKILL.md").write_text(
+        "---\ndescription: workspace two\n---\nworkspace body v2\n",
+        encoding="utf-8",
+    )
+    _ = (workspace_drift / "SKILL.md").write_text(
+        "---\ndescription: drift workspace two\n---\ndrift workspace v2\n",
+        encoding="utf-8",
+    )
+    v2_skill = plugin_dir / "skills-v2" / "shared"
+    v2_skill.mkdir(parents=True)
+    _ = (v2_skill / "SKILL.md").write_text(
+        "---\ndescription: version two\n---\nbody v2\n",
+        encoding="utf-8",
+    )
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class SkillReloadPlugin(Plugin):\n"
+        "    name = 'skill_reload'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills-v2',)\n",
+        encoding="utf-8",
+    )
+
+    prepared = await manager.prepare_candidate("skill_reload")
+
+    assert prepared is not None and prepared.skill_catalog is not None
+    prepared_record = prepared.skill_catalog.normal.get("shared")
+    assert prepared_record is not None
+    assert active_record.description == "version one"
+    assert "body v1" in active_record.skill_file.read_text(encoding="utf-8")
+    assert prepared_record.description == "version two"
+    assert prepared_record.source == "plugin"
+    assert "body v2" in prepared_record.skill_file.read_text(encoding="utf-8")
+    assert active_record.root_dir != prepared_record.root_dir
+    prepared_workspace = prepared.skill_catalog.normal.get("personal")
+    prepared_workspace_drift = prepared.skill_catalog.drift.get("personal-drift")
+    assert prepared_workspace is not None
+    assert prepared_workspace_drift is not None
+    assert "workspace body v1" in active_workspace.content
+    assert "workspace body v1" in active_workspace.skill_file.read_text(encoding="utf-8")
+    assert "workspace body v2" in prepared_workspace.content
+    assert "drift workspace v1" in active_workspace_drift.content
+    assert "drift workspace v2" in prepared_workspace_drift.content
+    active_snapshot = active.skill_catalog.snapshot_root
+    prepared_snapshot = prepared.skill_catalog.snapshot_root
+
+    await manager.discard_prepared("skill_reload")
+    await manager.terminate_all()
+
+    assert not active_snapshot.exists()
+    assert not prepared_snapshot.exists()
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_cleanup_failure_is_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "skill_cleanup",
+        "from agent.plugins import Plugin\n"
+        "class SkillCleanupPlugin(Plugin):\n"
+        "    name = 'skill_cleanup'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    generation = manager.generation("skill_cleanup")
+    assert generation is not None and generation.skill_catalog is not None
+    snapshot_root = generation.skill_catalog.snapshot_root
+    real_rmtree = shutil.rmtree
+
+    def fail_snapshot_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
+        if Path(path) == snapshot_root and not args and not kwargs:
+            raise OSError("snapshot cleanup failed")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", fail_snapshot_cleanup)
+    await manager.terminate_all()
+
+    assert any(
+        failure.resource == "skill_catalog"
+        and failure.error == "snapshot cleanup failed"
+        for failure in manager.cleanup_failures
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_ready",
+        "from agent.plugins import (IntervalTrigger, McpServerSpec, Plugin, PluginJobSpec, "
+        "PluginSemanticCheck, ProactiveSourceSpec)\n"
+        "class McpReadyPlugin(Plugin):\n"
+        "    name = 'mcp_ready'\n"
+        "    def __init__(self):\n"
+        "        self.job_spec = PluginJobSpec(id='refresh', triggers=[IntervalTrigger(3600)], handler=self.refresh)\n"
+        "        self.source_spec = ProactiveSourceSpec(id='feed', channels=['content'], server='feed', fetch_tool='fetch_events', ack_tool='ack_events', poll_tool='poll_events')\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n"
+        "    def proactive_sources(self):\n"
+        "        return [self.source_spec]\n"
+        "    def jobs(self):\n"
+        "        return [self.job_spec]\n"
+        "    async def initialize(self):\n"
+        "        self.job_spec.triggers.append(object())\n"
+        "        self.source_spec.channels.append('invalid')\n"
+        "    async def refresh(self, context):\n"
+        "        return None\n"
+        "    async def readiness_semantic_checks(self, context):\n"
+        "        self.job_spec.triggers.append(object())\n"
+        "        self.source_spec.channels.append('invalid')\n"
+        "        value = await context.mcp_catalog.servers['feed'].client.call('fetch_events', {})\n"
+        "        job = context.job_catalog.jobs['mcp_ready:refresh']\n"
+        "        source = context.proactive_catalog.sources['mcp_ready:feed']\n"
+        "        owned = getattr(job.spec.handler, '__self__', None) is self\n"
+        "        frozen = len(job.spec.triggers) == 1\n"
+        "        source_frozen = source.spec.channels == ('content',)\n"
+        "        evidence = {'mcp': value, 'job_owned': owned, 'source': source.spec.id, 'frozen': frozen, 'source_frozen': source_frozen}\n"
+        "        return [PluginSemanticCheck('candidate_feed', value == '[]' and owned and frozen and source_frozen, evidence)]\n",
+    )
+    _write_mcp_server(
+        plugin_dir,
+        ("fetch_events", "ack_events", "poll_events"),
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+    active = manager.generation("mcp_ready")
+    assert active is not None and active.job_catalog is not None
+    active_job = manager.jobs[0]
+    active_source = manager.proactive_sources[0]
+    assert isinstance(active_job.spec.triggers, tuple)
+    assert len(active_job.spec.triggers) == 1
+    assert active_source.spec.channels == ("content",)
+
+    prepared = await manager.prepare_candidate("mcp_ready")
+
+    assert (
+        prepared is not None
+        and prepared.mcp_catalog is not None
+        and prepared.job_catalog is not None
+        and prepared.proactive_catalog is not None
+    )
+    catalog = prepared.mcp_catalog
+    server = catalog.servers["feed"]
+    assert server.client.name == f"feed@{prepared.generation_id}"
+    assert catalog.tool_names == (
+        "mcp_feed__ack_events",
+        "mcp_feed__fetch_events",
+        "mcp_feed__poll_events",
+    )
+    assert not any(prepared.generation_id in name for name in catalog.tool_names)
+    assert tools.get_registered_names() == set()
+    assert await server.tools[1].execute() == "[]"
+    assert tuple(catalog.servers) == ("feed",)
+    assert tuple(prepared.job_catalog.jobs) == ("mcp_ready:refresh",)
+    assert tuple(prepared.proactive_catalog.sources) == ("mcp_ready:feed",)
+    assert prepared.proactive_catalog.sources["mcp_ready:feed"].spec.channels == (
+        "content",
+    )
+    prepared_job = prepared.job_catalog.jobs["mcp_ready:refresh"]
+    assert isinstance(prepared_job.spec.triggers, tuple)
+    assert len(prepared_job.spec.triggers) == 1
+    assert prepared_job.spec.handler.__self__ is prepared.instance  # type: ignore[attr-defined]
+    assert manager.jobs == [active_job]
+    assert active_job.spec.handler.__self__ is active.instance  # type: ignore[attr-defined]
+    lifecycle = tmp_path / "home" / "data" / "mcp_ready-builtin" / "mcp-lifecycle.log"
+    await _wait_for_log(lifecycle, ["started", "started"])
+
+    await manager.discard_prepared("mcp_ready")
+
+    await _wait_for_log(lifecycle, ["started", "started", "stopped"])
+    assert manager.mcp_catalog(prepared.generation_id) is None
+    assert manager.job_catalog(prepared.generation_id) is None
+    assert manager.proactive_catalog(prepared.generation_id) is None
+    assert server.client._process is None
+    assert server.client._stderr_task is None
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_invalid_job_structure_fails_activity_catalog_gate(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "invalid_job",
+        "from agent.plugins import IntervalTrigger, Plugin, PluginJobSpec\n"
+        "class InvalidJobPlugin(Plugin):\n"
+        "    name = 'invalid_job'\n"
+        "    def jobs(self):\n"
+        "        return [PluginJobSpec(id='bad', triggers=[IntervalTrigger(0)], handler=self.run)]\n"
+        "    async def run(self, context):\n"
+        "        return None\n",
+    )
+    manager = _manager(tmp_path)
+
+    await manager.load_all()
+
+    assert manager.generation("invalid_job") is None
+    gate = manager.latest_gate("invalid_job")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[-1].check_id == "activity_catalogs"
+    assert manager.jobs == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing_tool", "semantic"])
+async def test_candidate_mcp_readiness_failure_closes_process(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    readiness = (
+        "    async def readiness_semantic_checks(self, context):\n"
+        "        return [PluginSemanticCheck('remote', False, 'not ready')]\n"
+        if failure == "semantic"
+        else ""
+    )
+    fetch_tool = "missing" if failure == "missing_tool" else "fetch_events"
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_rejected",
+        "from agent.plugins import (McpServerSpec, Plugin, PluginSemanticCheck, "
+        "ProactiveSourceSpec)\n"
+        "class McpRejectedPlugin(Plugin):\n"
+        "    name = 'mcp_rejected'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n"
+        "    def proactive_sources(self):\n"
+        f"        return [ProactiveSourceSpec(id='feed', channels=('content',), server='feed', fetch_tool='{fetch_tool}')]\n"
+        + readiness,
+    )
+    _write_mcp_server(plugin_dir, ("fetch_events",))
+    invalid_source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class McpRejectedPlugin(Plugin):\n"
+        "    name = 'mcp_rejected'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    _ = (plugin_dir / "plugin.py").write_text(invalid_source, encoding="utf-8")
+
+    prepared = await manager.prepare_candidate("mcp_rejected")
+
+    assert prepared is None
+    assert manager.prepared_generation("mcp_rejected") is None
+    gate = manager.latest_gate("mcp_rejected")
+    assert gate is not None and gate.status == "failed"
+    failed_checks = {check.check_id for check in gate.checks if check.status == "failed"}
+    assert (
+        "mcp_readiness" if failure == "missing_tool" else "readiness_semantic_checks"
+    ) in failed_checks
+    lifecycle = tmp_path / "home" / "data" / "mcp_rejected-builtin" / "mcp-lifecycle.log"
+    await _wait_for_log(lifecycle, ["started", "started", "stopped"])
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_mcp_handshake_failure_closes_process(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_handshake",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class McpHandshakePlugin(Plugin):\n"
+        "    name = 'mcp_handshake'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='broken', command=('python', 'server.py'))]\n",
+    )
+    _ = (plugin_dir / "server.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "log = Path(os.environ['AKA_PLUGIN_DATA_DIR']) / 'mcp-lifecycle.log'\n"
+        "log.parent.mkdir(parents=True, exist_ok=True)\n"
+        "log.write_text('started\\nstopped\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+
+    prepared = await manager.prepare_candidate("mcp_handshake")
+
+    assert prepared is None
+    gate = manager.latest_gate("mcp_handshake")
+    assert gate is not None and gate.status == "failed"
+    assert gate.checks[-1].check_id == "mcp_readiness"
+    lifecycle = tmp_path / "home" / "data" / "mcp_handshake-builtin" / "mcp-lifecycle.log"
+    await _wait_for_log(lifecycle, ["started", "stopped"])
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_candidate_mcp_cleanup_failure_is_reported_and_catalog_removed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_cleanup",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class McpCleanupPlugin(Plugin):\n"
+        "    name = 'mcp_cleanup'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='cleanup', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("health",))
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    prepared = await manager.prepare_candidate("mcp_cleanup")
+    assert prepared is not None and prepared.mcp_catalog is not None
+    client = prepared.mcp_catalog.servers["cleanup"].client
+    async def fail_before_disconnect() -> None:
+        raise OSError("mcp cleanup failed")
+
+    monkeypatch.setattr(client, "disconnect", fail_before_disconnect)
+    await manager.discard_prepared("mcp_cleanup")
+
+    assert manager.mcp_catalog(prepared.generation_id) is None
+    assert client.connected is False
+    assert any(
+        failure.resource == "mcp_catalog"
+        and "mcp cleanup failed" in failure.error
+        for failure in manager.cleanup_failures
+    )
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot",
+        "from agent.plugins import Plugin\n"
+        "class A:\n"
+        "    slot = 'snapshot.a'\n"
+        "    requires = ()\n"
+        "class B:\n"
+        "    slot = 'snapshot.b'\n"
+        "    requires = ('snapshot.a',)\n"
+        "class SnapshotPlugin(Plugin):\n"
+        "    name = 'snapshot'\n"
+        "    def before_turn_modules(self): return [B(), A()]\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot")
+    installed = manager.current_snapshot
+    prepared = await manager.prepare_candidate("snapshot")
+    assert active is not None and prepared is not None and installed is not None
+    assert installed.generations["snapshot"] is active
+    assert installed.state == "committed"
+    assert manager.current_snapshot is installed
+    assert [module.slot for module in installed.before_turn_modules] == [
+        "snapshot.a",
+        "snapshot.b",
+    ]
+    compiler = RuntimeSnapshotCompiler()
+    v1 = compiler.compile({"snapshot": active}, catalog_generation=active)
+    v2 = compiler.compile({"snapshot": prepared}, catalog_generation=prepared)
+    drained: list[str] = []
+
+    async def on_drained(snapshot) -> None:
+        drained.append(snapshot.snapshot_id)
+
+    store = RuntimeSnapshotStore(on_drained)
+    store.install(v1)
+    v1_lease = store.lease()
+    assert v1_lease.snapshot is v1
+    transaction = store.begin_publish(v2)
+    assert store.current is v2
+    v2_lease = store.lease()
+
+    await store.abort(transaction)
+
+    assert store.current is v1
+    assert drained == []
+    await v2_lease.release()
+    assert drained == [v2.snapshot_id]
+    await v1_lease.release()
+    assert active.lease_count == 0
+    assert prepared.lease_count == 0
+
+    next_v2 = compiler.compile({"snapshot": prepared}, catalog_generation=prepared)
+    held_v1 = store.lease()
+    committed = store.begin_publish(next_v2)
+    await store.commit(committed)
+
+    assert store.current is next_v2
+    assert drained == [v2.snapshot_id]
+    with pytest.raises(RuntimeError, match="不可租用"):
+        _ = store.lease(v1.snapshot_id)
+    await held_v1.release()
+    assert drained == [v2.snapshot_id, v1.snapshot_id]
+    await store.close()
+    assert drained == [v2.snapshot_id, v1.snapshot_id, next_v2.snapshot_id]
+    await manager.discard_prepared("snapshot")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_admission_waits_while_current_is_quiesced(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_admission",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotAdmissionPlugin(Plugin):\n"
+        "    name = 'snapshot_admission'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    snapshot = manager.current_snapshot
+    assert snapshot is not None
+    held = manager.snapshot_store.lease()
+    quiescing = asyncio.create_task(manager.snapshot_store.quiesce_current())
+    waiting = asyncio.create_task(manager.snapshot_store.acquire())
+    await asyncio.sleep(0)
+    assert not quiescing.done()
+    assert not waiting.done()
+
+    await held.release()
+    assert await quiescing is snapshot
+    assert not waiting.done()
+    await manager.snapshot_store.resume(snapshot)
+    admitted = await waiting
+    assert admitted.snapshot is snapshot
+
+    await admitted.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_proactive_quiesce_does_not_deadlock_with_paused_tick(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "proactive_admission",
+        "from agent.plugins import Plugin\n"
+        "class ProactiveAdmissionPlugin(Plugin):\n"
+        "    name = 'proactive_admission'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    loop = object.__new__(ProactiveLoop)
+    loop._runtime_snapshot_store = manager.snapshot_store
+    loop._reload_lock = asyncio.Lock()
+    stopped = asyncio.Event()
+
+    async def stop_active_kernel() -> None:
+        stopped.set()
+
+    async def switch_snapshot(_snapshot) -> None:
+        return None
+
+    async def tick_bound() -> float:
+        return 1.0
+
+    loop._stop_active_kernel = stop_active_kernel
+    loop._switch_snapshot = switch_snapshot
+    loop._tick_bound = tick_bound
+    snapshot = manager.snapshot_store.pause_admission()
+    tick = asyncio.create_task(loop._tick())
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(loop.quiesce_for_reload(), timeout=0.2)
+
+    assert stopped.is_set()
+    assert not tick.done()
+    await manager.snapshot_store.resume(snapshot)
+    assert await tick == 1.0
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_managed_service_publish_drains_old_snapshot_before_switch(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "service_admission",
+        "from agent.plugins import ManagedServiceSpec, Plugin\n"
+        "class ServiceAdmissionPlugin(Plugin):\n"
+        "    name = 'service_admission'\n"
+        "    version = 'v1'\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        "        return [ManagedServiceSpec(id='worker', command=('python', 'service.py'))]\n",
+    )
+    _ = (plugin_dir / "service.py").write_text("pass\n", encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    held = manager.snapshot_store.lease()
+    switched = asyncio.Event()
+
+    async def switch_services(plugin_id, old_services, new_services) -> None:
+        assert plugin_id == "service_admission"
+        assert old_services["worker"]["revision"] != new_services["worker"]["revision"]
+        switched.set()
+
+    manager.bind_service_switcher(switch_services)
+    source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        source.replace("version = 'v1'", "version = 'v2'"),
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("service_admission") is not None
+    publishing = asyncio.create_task(manager.publish_prepared("service_admission"))
+    await asyncio.sleep(0)
+    waiting = asyncio.create_task(manager.snapshot_store.acquire())
+    await asyncio.sleep(0)
+    assert not switched.is_set()
+    assert not waiting.done()
+
+    await held.release()
+    result = await publishing
+    admitted = await waiting
+
+    assert result["publication_state"] == "committed"
+    assert switched.is_set()
+    assert admitted.snapshot is manager.current_snapshot
+    await admitted.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_endpoint_failure_resumes_admission_before_candidate_terminate(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "service_cleanup",
+        "from agent.plugins import ManagedServiceSpec, Plugin\n"
+        "class ServiceCleanupPlugin(Plugin):\n"
+        "    name = 'service_cleanup'\n"
+        "    version = 'v1'\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        "        return [ManagedServiceSpec(id='worker', command=('python', 'service.py'))]\n",
+    )
+    _ = (plugin_dir / "service.py").write_text("pass\n", encoding="utf-8")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        source.replace("version = 'v1'", "version = 'v2'"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("service_cleanup")
+    assert candidate is not None
+    terminated = asyncio.Event()
+
+    async def terminate() -> None:
+        lease = await manager.snapshot_store.acquire()
+        await lease.release()
+        terminated.set()
+
+    async def fail_switch(_plugin_id, _old, _new) -> None:
+        raise RuntimeError("endpoint failed")
+
+    candidate.instance.terminate = terminate  # type: ignore[method-assign]
+    manager.bind_service_switcher(fail_switch)
+
+    result = await asyncio.wait_for(
+        manager.publish_prepared("service_cleanup"),
+        timeout=1,
+    )
+
+    assert result["publication_state"] == "failed"
+    assert terminated.is_set()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_runtime_snapshot_drain_retry_and_store_ownership(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_owner",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotOwnerPlugin(Plugin):\n"
+        "    name = 'snapshot_owner'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_owner")
+    prepared = await manager.prepare_candidate("snapshot_owner")
+    assert active is not None and prepared is not None
+    compiler = RuntimeSnapshotCompiler()
+    v1 = compiler.compile({"snapshot_owner": active}, catalog_generation=active)
+    v2 = compiler.compile(
+        {"snapshot_owner": prepared},
+        catalog_generation=prepared,
+    )
+    attempts = 0
+
+    async def fail_once(snapshot) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("drain failed")
+
+    store = RuntimeSnapshotStore(fail_once)
+    store.install(v1)
+    lease = store.lease()
+    with pytest.raises(RuntimeError, match="仍有 lease"):
+        await store.close()
+    assert store.current is v1
+    await lease.release()
+    transaction = store.begin_publish(v2)
+
+    with pytest.raises(RuntimeError, match="drain failed"):
+        await store.commit(transaction)
+
+    assert store.current is v2
+    assert v1.snapshot_id in store.retained_snapshot_ids
+    await store.retry_drains()
+    assert v1.snapshot_id not in store.retained_snapshot_ids
+    other_store = RuntimeSnapshotStore()
+    with pytest.raises(RuntimeError, match="全新 compiled"):
+        other_store.install(v2)
+    await store.close()
+    await manager.discard_prepared("snapshot_owner")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_compile_failure_does_not_publish_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins = tmp_path / "plugins"
+    _write_plugin(
+        plugins,
+        "first_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class FirstSnapshotPlugin(Plugin):\n"
+        "    name = 'first_snapshot'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    current = manager.current_snapshot
+    assert current is not None
+    _write_plugin(
+        plugins,
+        "second_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class SecondSnapshotPlugin(Plugin):\n"
+        "    name = 'second_snapshot'\n"
+        "    async def initialize(self):\n"
+        "        self.context.kv_store.set('initialized', True)\n",
+    )
+    compile_snapshot = manager._snapshot_compiler.compile
+
+    def fail_second(generations, *, catalog_generation=None):
+        if "second_snapshot" in generations:
+            raise RuntimeError("snapshot compile failed")
+        return compile_snapshot(
+            generations,
+            catalog_generation=catalog_generation,
+        )
+
+    monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_second)
+
+    await manager.load_all()
+
+    assert manager.current_snapshot is current
+    assert manager.loaded_count == 1
+    assert manager.generation("second_snapshot") is None
+    assert plugin_registry.get_instance("akasic_plugin_plugins_second_snapshot") is None
+    state = tmp_path / "home" / "data" / "second_snapshot-builtin" / ".kv.json"
+    assert not state.exists()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "passive_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class PassiveSnapshotPlugin(Plugin):\n"
+        "    name = 'passive_snapshot'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("passive_snapshot")
+    prepared = await manager.prepare_candidate("passive_snapshot")
+    assert active is not None and prepared is not None
+    compiler = RuntimeSnapshotCompiler()
+    v1 = compiler.compile({"passive_snapshot": active}, catalog_generation=active)
+    v2 = compiler.compile(
+        {"passive_snapshot": prepared},
+        catalog_generation=prepared,
+    )
+    store = RuntimeSnapshotStore()
+    store.install(v1)
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = store
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[str] = []
+
+    async def process(msg, **kwargs):
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        assert snapshot is not None
+        seen.append(snapshot.snapshot_id)
+        entered.set()
+        await release.wait()
+        assert get_current_runtime_snapshot() is snapshot
+        seen.append(snapshot.snapshot_id)
+        return "done"
+
+    loop._process = process
+    message = cast(Any, SimpleNamespace(session_key="cli:snapshot"))
+    running = asyncio.create_task(loop._process_with_runtime_admission(message))
+    await entered.wait()
+    transaction = store.begin_publish(v2)
+    await store.commit(transaction)
+    release.set()
+
+    assert await running == "done"
+    assert seen == [v1.snapshot_id, v1.snapshot_id]
+    await loop._process_with_runtime_admission(message)
+    assert seen[-2:] == [v2.snapshot_id, v2.snapshot_id]
+    await store.close()
+    await manager.discard_prepared("passive_snapshot")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_passive_runtime_snapshot_does_not_leak_to_detached_task(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "detached_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class DetachedSnapshotPlugin(Plugin):\n"
+        "    name = 'detached_snapshot'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    generation = manager.generation("detached_snapshot")
+    assert generation is not None
+    snapshot = RuntimeSnapshotCompiler().compile(
+        {"detached_snapshot": generation},
+        catalog_generation=generation,
+    )
+    store = RuntimeSnapshotStore()
+    store.install(snapshot)
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = store
+    detached_seen: list[RuntimeSnapshot | None] = []
+    detached_done = asyncio.Event()
+    detached_release = asyncio.Event()
+    detached_tasks: list[asyncio.Task[None]] = []
+
+    async def detached() -> None:
+        await detached_release.wait()
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        detached_seen.append(get_current_runtime_snapshot())
+        detached_done.set()
+
+    async def process(msg, **kwargs):
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        assert get_current_runtime_snapshot() is snapshot
+        detached_tasks.append(asyncio.create_task(detached()))
+        return "done"
+
+    loop._process = process
+    message = cast(Any, SimpleNamespace(session_key="cli:detached-snapshot"))
+    assert await loop._process_with_runtime_admission(message) == "done"
+    assert snapshot.lease_count == 0
+    detached_release.set()
+    await detached_done.wait()
+    assert detached_seen == [None]
+    await detached_tasks[0]
+    await store.close()
+    await manager.terminate_all()
+
+
+def _snapshot_publish_source(version: str, *, fail_initialize: bool = False) -> str:
+    initialize = (
+        "        self.context.kv_store.set('initialized', 'v2')\n"
+        "        raise RuntimeError('initialize failed')\n"
+        if fail_initialize
+        else f"        self.context.kv_store.set('initialized', '{version}')\n"
+    )
+    return (
+        "from agent.plugins import Plugin\n"
+        "class SnapshotModule:\n"
+        "    slot = 'snapshot_publish.before_turn'\n"
+        "    requires = ('before_turn.emit',)\n"
+        f"    version = '{version}'\n"
+        "    async def run(self, frame): return frame\n"
+        "class SnapshotPublishPlugin(Plugin):\n"
+        "    name = 'snapshot_publish'\n"
+        "    def before_turn_modules(self): return [SnapshotModule()]\n"
+        "    async def initialize(self):\n"
+        f"{initialize}"
+        "    async def terminate(self):\n"
+        "        self.context.kv_store.set('terminated', True)\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_prepared_switches_snapshot_after_initialize(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_publish")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    old_lease = manager.snapshot_store.lease()
+
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None
+
+    assert candidate.initialization_started is False
+
+    result = await manager.publish_prepared("snapshot_publish")
+
+    assert result["publication_state"] == "committed"
+    assert manager.generation("snapshot_publish") is candidate
+    assert manager.current_snapshot is candidate.runtime_snapshot
+    assert candidate.initialization_started is True
+    assert active.state == "retired"
+    assert old_lease.snapshot is old_snapshot
+    assert old_lease.snapshot.before_turn_modules[0].version == "v1"
+    next_lease = manager.snapshot_store.lease()
+    assert next_lease.snapshot.before_turn_modules[0].version == "v2"
+    state = tmp_path / "home" / "data" / "snapshot_publish-builtin" / ".kv.json"
+    state_value: object = json.loads(state.read_text(encoding="utf-8"))
+    assert isinstance(state_value, dict)
+    assert state_value["initialized"] == "v2"
+
+    await next_lease.release()
+    await old_lease.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_publish_prepared_initialize_failure_keeps_active_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_publish")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2", fail_initialize=True),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None
+
+    result = await manager.publish_prepared("snapshot_publish")
+
+    assert result["publication_state"] == "failed"
+    assert manager.generation("snapshot_publish") is active
+    assert manager.current_snapshot is old_snapshot
+    assert manager.prepared_generation("snapshot_publish") is None
+    assert candidate.state == "discarded"
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_post_publish_invariant_failure_aborts_to_previous_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    active = manager.generation("snapshot_publish")
+    old_snapshot = manager.current_snapshot
+    assert active is not None and old_snapshot is not None
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None
+
+    async def fail_terminate() -> None:
+        raise RuntimeError("terminate failed")
+
+    candidate.instance.terminate = fail_terminate  # type: ignore[attr-defined]
+
+    invariant_entered = asyncio.Event()
+    invariant_release = asyncio.Event()
+
+    async def fail_invariant(generation, snapshot) -> None:
+        assert manager.current_snapshot is snapshot
+        invariant_entered.set()
+        await invariant_release.wait()
+        raise RuntimeError("post publish failed")
+
+    monkeypatch.setattr(manager, "_post_publish_invariants", fail_invariant)
+
+    publishing = asyncio.create_task(manager.publish_prepared("snapshot_publish"))
+    await invariant_entered.wait()
+    candidate_lease = manager.snapshot_store.lease()
+    invariant_release.set()
+    with pytest.raises(RuntimeError, match="post publish failed"):
+        await publishing
+
+    assert manager.current_snapshot is old_snapshot
+    assert manager.generation("snapshot_publish") is active
+    assert manager.prepared_generation("snapshot_publish") is None
+    assert candidate.state == "aborted"
+    assert candidate.scope.closed is False
+    assert candidate.runtime_snapshot is not None
+    assert candidate.runtime_snapshot.state == "aborted"
+    await candidate_lease.release()
+    assert candidate.scope.closed is True
+    assert any(
+        failure.error == "terminate failed"
+        for failure in manager.cleanup_failures
+    )
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_post_publish_invariant_timeout_aborts_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None and old_snapshot is not None
+
+    async def never_finishes(generation, snapshot) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_post_publish_invariants", never_finishes)
+    manager.POST_PUBLISH_TIMEOUT_SECONDS = 0.01
+
+    with pytest.raises(TimeoutError):
+        await manager.publish_prepared("snapshot_publish")
+
+    assert manager.current_snapshot is old_snapshot
+    assert candidate.state == "aborted"
+    assert candidate.scope.closed is True
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publish_waits_for_candidate_lease_before_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_publish",
+        _snapshot_publish_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_publish_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_publish")
+    assert candidate is not None and old_snapshot is not None
+    entered = asyncio.Event()
+
+    async def wait_forever(generation, snapshot) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "_post_publish_invariants", wait_forever)
+    publishing = asyncio.create_task(manager.publish_prepared("snapshot_publish"))
+    await entered.wait()
+    lease = manager.snapshot_store.lease()
+    publishing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await publishing
+
+    assert manager.current_snapshot is old_snapshot
+    assert candidate.scope.closed is False
+    await lease.release()
+    assert candidate.scope.closed is True
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_dead_candidate_mcp_aborts_post_publish_invariant(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_mcp",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class SnapshotMcpPlugin(Plugin):\n"
+        "    name = 'snapshot_mcp'\n"
+        "    version = 'v1'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='snapshot', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("version",))
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    plugin_file = plugin_dir / "plugin.py"
+    _ = plugin_file.write_text(
+        plugin_file.read_text(encoding="utf-8").replace("'v1'", "'v2'"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_mcp")
+    assert candidate is not None and candidate.mcp_catalog is not None
+    client = candidate.mcp_catalog.servers["snapshot"].client
+    process = client._process
+    assert process is not None
+    process.kill()
+    await process.wait()
+    assert client.connected is False
+
+    with pytest.raises(RuntimeError, match="MCP client 已断开"):
+        await manager.publish_prepared("snapshot_mcp")
+
+    assert manager.current_snapshot is old_snapshot
+    assert candidate.scope.closed is True
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugins = tmp_path / "plugins"
+
+    def source(name: str, version: str) -> str:
+        class_name = "".join(part.title() for part in name.split("_"))
+        return (
+            "from agent.plugins import Plugin\n"
+            f"class {class_name}Plugin(Plugin):\n"
+            f"    name = '{name}'\n"
+            f"    version = '{version}'\n"
+        )
+
+    first_dir = _write_plugin(plugins, "snapshot_first", source("snapshot_first", "v1"))
+    second_dir = _write_plugin(
+        plugins,
+        "snapshot_second",
+        source("snapshot_second", "v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    _ = (first_dir / "plugin.py").write_text(
+        source("snapshot_first", "v2"),
+        encoding="utf-8",
+    )
+    _ = (second_dir / "plugin.py").write_text(
+        source("snapshot_second", "v2"),
+        encoding="utf-8",
+    )
+
+    results = await manager.reconcile_changed()
+
+    assert [result["publication_state"] for result in results] == [
+        "committed",
+        "committed",
+    ]
+    first = manager.generation("snapshot_first")
+    second = manager.generation("snapshot_second")
+    snapshot = manager.current_snapshot
+    assert first is not None and second is not None and snapshot is not None
+    assert first.instance.version == "v2"  # type: ignore[attr-defined]
+    assert second.instance.version == "v2"  # type: ignore[attr-defined]
+    assert snapshot.generations == {
+        "snapshot_first": first,
+        "snapshot_second": second,
+    }
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_changed_disables_and_reenables_plugin_capabilities(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "topology",
+        "from agent.plugins import Plugin, tool\n"
+        "class TopologyPlugin(Plugin):\n"
+        "    name = 'topology'\n"
+        "    @classmethod\n"
+        "    def skill_roots(cls): return ('skills',)\n"
+        "    @tool(name='topology_value')\n"
+        "    async def value(self, event):\n"
+        "        \"\"\"Return topology value.\"\"\"\n"
+        "        return 'active'\n",
+    )
+    skill = plugin_dir / "skills" / "topology-skill"
+    skill.mkdir(parents=True)
+    _ = (skill / "SKILL.md").write_text(
+        "---\ndescription: topology\n---\ntopology\n",
+        encoding="utf-8",
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools, workspace=tmp_path / "workspace")
+    plugins_home = tmp_path / "home"
+    write_plugin_manifest({"topology": True}, plugins_home=plugins_home)
+    await manager.load_all()
+    assert tools.has_tool("topology_value")
+
+    write_plugin_manifest({"topology": False}, plugins_home=plugins_home)
+    disabled = await manager.reconcile_changed()
+
+    snapshot = manager.current_snapshot
+    assert disabled[0]["publication_state"] == "disabled"
+    assert snapshot is not None and snapshot.generations == {}
+    assert not snapshot.tool_registry.has_tool("topology_value")
+    assert "topology-skill" not in snapshot.plugin_skill_index.records
+    assert manager.generation("topology") is None
+
+    write_plugin_manifest({"topology": True}, plugins_home=plugins_home)
+    enabled = await manager.reconcile_changed()
+
+    snapshot = manager.current_snapshot
+    assert enabled[0]["publication_state"] == "committed"
+    assert snapshot is not None and "topology" in snapshot.generations
+    assert snapshot.tool_registry.has_tool("topology_value")
+    assert "topology-skill" in snapshot.plugin_skill_index.records
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_repeated_disable_with_retained_snapshot_keeps_unique_id_and_alias(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "retained_topology",
+        "from agent.plugins import Plugin\n"
+        "class RetainedTopologyPlugin(Plugin):\n"
+        "    name = 'retained_topology'\n",
+    )
+    manager = _manager(tmp_path)
+    plugins_home = tmp_path / "home"
+    write_plugin_manifest({"retained_topology": True}, plugins_home=plugins_home)
+    await manager.load_all()
+    alias = "akasic_plugin_plugins_retained_topology"
+
+    write_plugin_manifest({"retained_topology": False}, plugins_home=plugins_home)
+    await manager.reconcile_changed()
+    first_disabled = manager.current_snapshot
+    assert first_disabled is not None
+    retained = manager.snapshot_store.lease()
+
+    write_plugin_manifest({"retained_topology": True}, plugins_home=plugins_home)
+    await manager.reconcile_changed()
+    reenabled = manager.generation("retained_topology")
+    assert reenabled is not None
+    assert sys.modules[alias] is sys.modules[reenabled.module_path]
+
+    write_plugin_manifest({"retained_topology": False}, plugins_home=plugins_home)
+    await manager.reconcile_changed()
+    second_disabled = manager.current_snapshot
+    assert second_disabled is not None
+    assert second_disabled.snapshot_id != first_disabled.snapshot_id
+
+    await retained.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_publish_cancellation_after_store_commit_keeps_manager_consistent(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "commit_cancel",
+        "from agent.plugins import Plugin\n"
+        "class CommitCancelPlugin(Plugin):\n"
+        "    name = 'commit_cancel'\n"
+        "    version = 'v1'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        source.replace("version = 'v1'", "version = 'v2'"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("commit_cancel")
+    assert candidate is not None
+    committed = asyncio.Event()
+    release = asyncio.Event()
+    original_commit = manager.snapshot_store.commit
+
+    async def delayed_commit(transaction) -> None:
+        await original_commit(transaction)
+        committed.set()
+        await release.wait()
+
+    manager.snapshot_store.commit = delayed_commit  # type: ignore[method-assign]
+    publishing = asyncio.create_task(manager.publish_prepared("commit_cancel"))
+    await committed.wait()
+    publishing.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await publishing
+
+    active = manager.generation("commit_cancel")
+    alias = "akasic_plugin_plugins_commit_cancel"
+    assert active is candidate
+    assert manager.prepared_generation("commit_cancel") is None
+    assert manager.current_snapshot is candidate.runtime_snapshot
+    assert sys.modules[alias] is sys.modules[candidate.module_path]
+    manager.snapshot_store.commit = original_commit  # type: ignore[method-assign]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_changed_adds_and_removes_discovered_plugin(
+    tmp_path: Path,
+) -> None:
+    plugins = tmp_path / "plugins"
+    _write_plugin(
+        plugins,
+        "anchor",
+        "from agent.plugins import Plugin\n"
+        "class AnchorPlugin(Plugin):\n"
+        "    name = 'anchor'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    added_dir = _write_plugin(
+        plugins,
+        "added",
+        "from agent.plugins import Plugin\n"
+        "class AddedPlugin(Plugin):\n"
+        "    name = 'added'\n",
+    )
+
+    added = await manager.reconcile_changed()
+    assert added[0]["publication_state"] == "committed"
+    assert manager.generation("added") is not None
+
+    shutil.rmtree(added_dir)
+    removed = await manager.reconcile_changed()
+    assert removed[0]["publication_state"] == "disabled"
+    assert manager.generation("added") is None
+    assert manager.current_snapshot is not None
+    assert set(manager.current_snapshot.generations) == {"anchor"}
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_reloads_source_without_signal(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "watched",
+        "from agent.plugins import Plugin\n"
+        "class WatchedPlugin(Plugin):\n"
+        "    name = 'watched'\n"
+        "    version = 'v1'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    source = (plugin_dir / "plugin.py").read_text(encoding="utf-8")
+    _ = (plugin_dir / "plugin.py").write_text(
+        source.replace("version = 'v1'", "version = 'v2'"),
+        encoding="utf-8",
+    )
+
+    for _ in range(100):
+        generation = manager.generation("watched")
+        if generation is not None and generation.instance.version == "v2":
+            break
+        await asyncio.sleep(0.01)
+
+    generation = manager.generation("watched")
+    assert generation is not None and generation.instance.version == "v2"
+    watcher.stop()
+    await task
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_reconciles_change_arriving_during_scan() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.revision = "a"
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def watch_revision(self) -> str:
+            return self.revision
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                await self.release.wait()
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    await asyncio.sleep(0)
+    manager.revision = "b"
+    await manager.started.wait()
+    manager.revision = "c"
+    manager.release.set()
+    for _ in range(100):
+        if manager.calls >= 2:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_watcher_recovers_after_revision_scan_error() -> None:
+    class Manager:
+        def __init__(self) -> None:
+            self.scans = 0
+            self.calls = 0
+
+        def watch_revision(self) -> str:
+            self.scans += 1
+            if self.scans == 1:
+                raise PermissionError("transient")
+            return "ready"
+
+        async def reconcile_changed(self) -> list[dict[str, object]]:
+            self.calls += 1
+            return []
+
+    manager = Manager()
+    watcher = PluginWatcher(manager, interval_seconds=0.01)  # type: ignore[arg-type]
+    task = asyncio.create_task(watcher.run())
+    for _ in range(100):
+        if manager.calls:
+            break
+        await asyncio.sleep(0.01)
+
+    watcher.stop()
+    await task
+    assert manager.calls == 1
+
+
+def _snapshot_tool_source(version: str) -> str:
+    return (
+        "from agent.plugins import Plugin, tool\n"
+        "class SnapshotToolPlugin(Plugin):\n"
+        "    name = 'snapshot_tool'\n"
+        "    @tool(name='snapshot_tool_value')\n"
+        "    async def value(self, event):\n"
+        f"        \"\"\"snapshot tool {version}\"\"\"\n"
+        f"        return '{version}'\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_schema_search_and_execute_share_snapshot_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_tool",
+        _snapshot_tool_source("v1"),
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+
+    class LateMcpTool(Tool):
+        name = "mcp_late__value"
+        description = "late mcp"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return "late"
+
+    tools.register(
+        LateMcpTool(),
+        source_type="mcp",
+        source_name="late",
+    )
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_tool_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_tool")
+    assert candidate is not None
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = manager.snapshot_store
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[tuple[str, str, str]] = []
+    late_seen: list[str] = []
+
+    async def process(msg, **kwargs):
+        schema = tools.get_schemas(["snapshot_tool_value"])[0]
+        search = tools.search("snapshot tool", top_k=1)[0]
+        before = str(await tools.execute("snapshot_tool_value", {}))
+        late_seen.append(str(await tools.execute("mcp_late__value", {})))
+        entered.set()
+        await release.wait()
+        after = str(await tools.execute("snapshot_tool_value", {}))
+        seen.append((schema["function"]["description"], search["name"], before))
+        seen.append((schema["function"]["description"], search["name"], after))
+        return "done"
+
+    loop._process = process
+    message = cast(Any, SimpleNamespace(session_key="cli:snapshot-tool"))
+    old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
+    await entered.wait()
+    await manager.publish_prepared("snapshot_tool")
+    release.set()
+    assert await old_turn == "done"
+    await loop._process_with_runtime_admission(message)
+
+    assert seen[:2] == [
+        ("snapshot tool v1", "snapshot_tool_value", "v1"),
+        ("snapshot tool v1", "snapshot_tool_value", "v1"),
+    ]
+    assert seen[2:] == [
+        ("snapshot tool v2", "snapshot_tool_value", "v2"),
+        ("snapshot tool v2", "snapshot_tool_value", "v2"),
+    ]
+    assert late_seen == ["工具 'mcp_late__value' 不存在", "late"]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_removed_plugin_mcp_server_releases_name_for_user_registry(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "removed_mcp",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class RemovedMcpPlugin(Plugin):\n"
+        "    name = 'removed_mcp'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='removed_server', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("legacy",))
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+
+    class LegacyPluginMcpTool(Tool):
+        name = "mcp_removed_server__legacy"
+        description = "legacy"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return "legacy"
+
+    tools.register(
+        LegacyPluginMcpTool(),
+        source_type="mcp",
+        source_name="removed_server",
+    )
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class RemovedMcpPlugin(Plugin):\n"
+        "    name = 'removed_mcp'\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("removed_mcp")
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    registry = candidate.runtime_snapshot.tool_registry
+    assert registry is not None
+    assert registry.has_tool("mcp_removed_server__legacy") is True
+    await manager.discard_prepared("removed_mcp")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_plugin_mcp_server_cannot_replace_user_registry_server(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "mcp_collision",
+        "from agent.plugins import Plugin\n"
+        "class McpCollisionPlugin(Plugin):\n"
+        "    name = 'mcp_collision'\n",
+    )
+    tools = ToolRegistry()
+    manager = _manager(
+        tmp_path,
+        tools=tools,
+        user_mcp_server_names=lambda: {"user_server"},
+    )
+    await manager.load_all()
+
+    class UserMcpTool(Tool):
+        name = "mcp_user_server__value"
+        description = "user"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return "user"
+
+    tools.register(UserMcpTool(), source_type="mcp", source_name="user_server")
+    _write_mcp_server(plugin_dir, ("value",))
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class McpCollisionPlugin(Plugin):\n"
+        "    name = 'mcp_collision'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='user_server', command=('python', 'server.py'))]\n",
+        encoding="utf-8",
+    )
+
+    assert await manager.prepare_candidate("mcp_collision") is None
+    assert await tools.execute("mcp_user_server__value", {}) == "user"
+    await manager.terminate_all()
+
+
+def test_tool_registry_fork_preserves_registration_order() -> None:
+    registry = ToolRegistry()
+
+    class OrderedTool(Tool):
+        name = "ordered_base"
+        description = "ordered"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return self.name
+
+    expected = [f"ordered_{index:02d}" for index in range(20)]
+    for name in expected:
+        tool_class = type(f"Tool_{name}", (OrderedTool,), {"name": name})
+        registry.register(tool_class())
+
+    assert registry.fork().get_registered_order() == expected
+
+
+@pytest.mark.asyncio
+async def test_failed_candidate_mcp_name_does_not_hide_user_mcp(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "candidate_mcp_pollution",
+        "from agent.plugins import Plugin\n"
+        "class CandidateMcpPollutionPlugin(Plugin):\n"
+        "    name = 'candidate_mcp_pollution'\n"
+        "    version = 'v1'\n",
+    )
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+
+    class UserMcpTool(Tool):
+        name = "mcp_candidate_failed__user"
+        description = "user mcp"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self) -> str:
+            return "user"
+
+    tools.register(
+        UserMcpTool(),
+        source_type="mcp",
+        source_name="candidate_failed",
+    )
+    _ = (plugin_dir / "fail.py").write_text(
+        "raise RuntimeError('candidate failed')\n",
+        encoding="utf-8",
+    )
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class CandidateMcpPollutionPlugin(Plugin):\n"
+        "    name = 'candidate_mcp_pollution'\n"
+        "    version = 'v2'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='candidate_failed', command=('python', 'fail.py'))]\n",
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("candidate_mcp_pollution") is None
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class CandidateMcpPollutionPlugin(Plugin):\n"
+        "    name = 'candidate_mcp_pollution'\n"
+        "    version = 'v3'\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("candidate_mcp_pollution")
+    assert candidate is not None and candidate.runtime_snapshot is not None
+    registry = candidate.runtime_snapshot.tool_registry
+    assert registry is not None
+    assert registry.has_tool("mcp_candidate_failed__user") is True
+    await manager.discard_prepared("candidate_mcp_pollution")
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_initial_plugin_mcp_tool_is_visible_in_first_snapshot(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "initial_mcp_snapshot",
+        "from agent.plugins import McpServerSpec, Plugin\n"
+        "class InitialMcpSnapshotPlugin(Plugin):\n"
+        "    name = 'initial_mcp_snapshot'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='initial_snapshot', command=('python', 'server.py'))]\n",
+    )
+    _write_mcp_server(plugin_dir, ("version",))
+    tools = ToolRegistry()
+    manager = _manager(tmp_path, tools=tools)
+    await manager.load_all()
+    generation = manager.generation("initial_mcp_snapshot")
+    assert generation is not None and generation.mcp_catalog is not None
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = manager.snapshot_store
+    seen: list[str] = []
+
+    async def process(msg, **kwargs):
+        seen.append(
+            str(await tools.execute("mcp_initial_snapshot__version", {}))
+        )
+        return "done"
+
+    loop._process = process
+    message = cast(Any, SimpleNamespace(session_key="cli:initial-mcp"))
+    await loop._process_with_runtime_admission(message)
+
+    assert seen == ["[]"]
+    await manager.terminate_all()
+
+
+def _snapshot_event_source(version: str) -> str:
+    wait = (
+        "        self.context.kv_store.set('event_entered_v1', True)\n"
+        "        release = self.context.data_dir / 'release-event-v1'\n"
+        "        while not release.exists():\n"
+        "            await asyncio.sleep(0.01)\n"
+        if version == "v1"
+        else ""
+    )
+    return (
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class SnapshotEventPlugin(Plugin):\n"
+        "    name = 'snapshot_event'\n"
+        "    async def initialize(self):\n"
+        "        self.context.event_bus.on(TurnCommitted, self.handle)\n"
+        "    async def handle(self, event):\n"
+        f"{wait}"
+        f"        self.context.kv_store.increment('event_finished_{version}')\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_queued_event_keeps_enqueued_snapshot_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_event",
+        _snapshot_event_source("v1"),
+    )
+    event_bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_event_source("v2"),
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("snapshot_event")
+    assert candidate is not None
+    event = TurnCommitted(
+        session_key="cli:event",
+        channel="cli",
+        chat_id="event",
+        input_message="event",
+        persisted_user_message="event",
+        assistant_response="event",
+        tools_used=[],
+    )
+    event_bus.enqueue(event)
+    state_path = tmp_path / "home" / "data" / "snapshot_event-builtin" / ".kv.json"
+    for _ in range(100):
+        if state_path.exists():
+            state: object = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(state, dict) and state.get("event_entered_v1") is True:
+                break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("v1 queued event did not start")
+
+    await manager.publish_prepared("snapshot_event")
+    _ = (state_path.parent / "release-event-v1").write_text(
+        "released\n",
+        encoding="utf-8",
+    )
+    await event_bus.drain()
+    await event_bus.fanout(event)
+    state = cast(
+        dict[str, object],
+        json.loads(state_path.read_text(encoding="utf-8")),
+    )
+
+    assert state["event_finished_v1"] == 1
+    assert state["event_finished_v2"] == 1
+    assert event_bus.handler_count() == 0
+    await manager.terminate_all()
+    await event_bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_event_subscription_close_takes_effect_immediately(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_event",
+        "from agent.plugins import Plugin\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class SnapshotEventPlugin(Plugin):\n"
+        "    name = 'snapshot_event'\n"
+        "    async def initialize(self):\n"
+        "        self.subscription = self.context.event_bus.on(TurnCommitted, self.handle)\n"
+        "    def handle(self, event):\n"
+        "        self.context.kv_store.increment('events')\n",
+    )
+    event_bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    generation = manager.generation("snapshot_event")
+    assert generation is not None
+    generation.instance.subscription.close()
+    event = TurnCommitted(
+        session_key="cli:event",
+        channel="cli",
+        chat_id="event",
+        input_message="event",
+        persisted_user_message="event",
+        assistant_response="event",
+        tools_used=[],
+    )
+
+    await event_bus.fanout(event)
+
+    state_path = tmp_path / "home/data/snapshot_event-builtin/.kv.json"
+    assert not state_path.exists()
+    with pytest.raises(RuntimeError, match="只能在 initialize"):
+        generation.instance.context.event_bus.on(TurnCommitted, lambda _: None)
+    await event_bus.aclose()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_event_bus_shutdown_drains_snapshot_lease_before_plugins(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_event",
+        _snapshot_event_source("v1"),
+    )
+    event_bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await manager.load_all()
+    event_bus.enqueue(
+        TurnCommitted(
+            session_key="cli:event",
+            channel="cli",
+            chat_id="event",
+            input_message="event",
+            persisted_user_message="event",
+            assistant_response="event",
+            tools_used=[],
+        )
+    )
+    state_path = tmp_path / "home/data/snapshot_event-builtin/.kv.json"
+    for _ in range(100):
+        if state_path.exists() and json.loads(
+            state_path.read_text(encoding="utf-8")
+        ).get("event_entered_v1") is True:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("queued event did not start")
+
+    closing = asyncio.create_task(event_bus.aclose())
+    await asyncio.sleep(0)
+    assert closing.done() is False
+    _ = (state_path.parent / "release-event-v1").write_text(
+        "released\n",
+        encoding="utf-8",
+    )
+    await closing
+    await manager.terminate_all()
+    assert manager.snapshot_store.current is None
+
+
+@pytest.mark.asyncio
+async def test_event_observers_keep_snapshot_binding_in_isolated_tasks() -> None:
+    event_bus = EventBus()
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    event_bus.bind_runtime_snapshot_store(store)
+    seen: list[str | None] = []
+
+    async def observe_snapshot(_event: str) -> None:
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        current = get_current_runtime_snapshot()
+        seen.append(current.snapshot_id if current is not None else None)
+
+    event_bus.on(str, observe_snapshot)
+
+    await event_bus.observe("observe")
+    await event_bus.fanout("fanout")
+    event_bus.enqueue("queued")
+    await event_bus.drain()
+
+    assert seen == [snapshot.snapshot_id] * 3
+    await event_bus.aclose()
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_fanout_releases_unstarted_observer_leases() -> None:
+    event_bus = EventBus()
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    event_bus.bind_runtime_snapshot_store(store)
+
+    async def observe(_event: str) -> None:
+        await asyncio.sleep(0)
+
+    for _ in range(20):
+        event_bus.on(str, observe)
+
+    task = asyncio.current_task()
+    assert task is not None
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await event_bus.fanout("cancel")
+    await asyncio.sleep(0)
+
+    assert snapshot.lease_count == 0
+    await event_bus.aclose()
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_running_fanout_cancellation_releases_observer_leases() -> None:
+    event_bus = EventBus()
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    event_bus.bind_runtime_snapshot_store(store)
+    entered = asyncio.Event()
+
+    async def observe(_event: str) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    event_bus.on(str, observe)
+    fanout = asyncio.create_task(event_bus.fanout("cancel"))
+    await entered.wait()
+    _ = fanout.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await fanout
+
+    assert snapshot.lease_count == 0
+    await event_bus.aclose()
+    await store.close()
+
+
+def _snapshot_job_source(version: str, *, event_trigger: bool = False) -> str:
+    triggers = "[EventTrigger(TurnCommitted)]" if event_trigger else "[]"
+    return (
+        "from agent.plugins import EventTrigger, Plugin, PluginJobSpec\n"
+        "from agent.plugins.snapshot import get_current_runtime_snapshot\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class SnapshotJobPlugin(Plugin):\n"
+        "    name = 'snapshot_job'\n"
+        "    def jobs(self):\n"
+        f"        return [PluginJobSpec(id='refresh', triggers={triggers}, handler=self.refresh)]\n"
+        "    async def refresh(self, context):\n"
+        f"        self.context.kv_store.increment('job_{version}')\n"
+        "        snapshot = get_current_runtime_snapshot()\n"
+        f"        self.context.kv_store.set('snapshot_{version}', snapshot.snapshot_id if snapshot else None)\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_job_queue_envelope_keeps_enqueued_snapshot_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_job",
+        _snapshot_job_source("v1"),
+    )
+    event_bus = EventBus()
+    llm = cast(Any, SimpleNamespace())
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        llm=llm,
+        installed_cache_root=tmp_path / "home/cache",
+    )
+    await manager.load_all()
+    runtime = PluginJobRuntime(
+        event_bus=event_bus,
+        llm=llm,
+        snapshot_store=manager.snapshot_store,
+    )
+    runtime.enqueue("snapshot_job:refresh", reason="manual")
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_job_source("v2"),
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("snapshot_job") is not None
+    result = await manager.publish_prepared("snapshot_job")
+    assert result["publication_state"] == "committed"
+    running = asyncio.create_task(runtime.run())
+    state_path = tmp_path / "home/data/snapshot_job-builtin/.kv.json"
+    for _ in range(100):
+        if state_path.exists() and json.loads(
+            state_path.read_text(encoding="utf-8")
+        ).get("job_v1") == 1:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("v1 job did not run")
+
+    runtime.enqueue("snapshot_job:refresh", reason="manual")
+    for _ in range(100):
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if state.get("job_v2") == 1:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("v2 job did not run")
+
+    assert state["snapshot_v1"] != state["snapshot_v2"]
+    runtime.stop()
+    await running
+    await event_bus.aclose()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_job_event_trigger_uses_event_snapshot_catalog(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_job",
+        _snapshot_job_source("v1", event_trigger=True),
+    )
+    event_bus = EventBus()
+    llm = cast(Any, SimpleNamespace())
+    manager = PluginManager(
+        plugin_dirs=[tmp_path / "plugins"],
+        event_bus=event_bus,
+        llm=llm,
+        installed_cache_root=tmp_path / "home/cache",
+    )
+    await manager.load_all()
+    old_lease = manager.snapshot_store.lease()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_job_source("v2", event_trigger=False),
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("snapshot_job") is not None
+    await manager.publish_prepared("snapshot_job")
+    runtime = PluginJobRuntime(
+        event_bus=event_bus,
+        llm=llm,
+        snapshot_store=manager.snapshot_store,
+    )
+    running = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0)
+    from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+    token = bind_runtime_snapshot(old_lease)
+    try:
+        await event_bus.fanout(
+            TurnCommitted(
+                session_key="cli:event",
+                channel="cli",
+                chat_id="event",
+                input_message="event",
+                persisted_user_message="event",
+                assistant_response="event",
+                tools_used=[],
+            )
+        )
+    finally:
+        reset_runtime_snapshot(token)
+        await old_lease.release()
+    state_path = tmp_path / "home/data/snapshot_job-builtin/.kv.json"
+    for _ in range(100):
+        if state_path.exists() and json.loads(
+            state_path.read_text(encoding="utf-8")
+        ).get("job_v1") == 1:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("v1 event job did not run")
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state.get("job_v2") is None
+    runtime.stop()
+    await running
+    await event_bus.aclose()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_proactive_tick_keeps_one_snapshot_generation(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_tick",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotTickPlugin(Plugin):\n"
+        "    name = 'snapshot_tick'\n"
+        "    version = 'v1'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    assert old_snapshot is not None
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[str] = []
+
+    async def run_tick(_session_key: str) -> None:
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        assert snapshot is not None
+        seen.append(snapshot.snapshot_id)
+        if len(seen) == 1:
+            entered.set()
+            await release.wait()
+
+    loop = object.__new__(ProactiveLoop)
+    loop._runtime_snapshot_store = manager.snapshot_store
+    loop._reload_lock = asyncio.Lock()
+    loop._sense = SimpleNamespace(target_session_key=lambda: "cli:tick")
+    loop._proactive_kernel = SimpleNamespace(run_tick=run_tick)
+
+    async def switch_snapshot(_snapshot) -> None:
+        return None
+
+    loop._switch_snapshot = switch_snapshot
+    first_tick = asyncio.create_task(loop._tick())
+    await entered.wait()
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class SnapshotTickPlugin(Plugin):\n"
+        "    name = 'snapshot_tick'\n"
+        "    version = 'v2'\n",
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("snapshot_tick") is not None
+    await manager.publish_prepared("snapshot_tick")
+    new_snapshot = manager.current_snapshot
+    assert new_snapshot is not None
+    release.set()
+    await first_tick
+    await loop._tick()
+
+    assert seen == [old_snapshot.snapshot_id, new_snapshot.snapshot_id]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_proactive_kernel_owns_snapshot_until_stopped(tmp_path: Path) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_kernel",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotKernelPlugin(Plugin):\n"
+        "    name = 'snapshot_kernel'\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    snapshot = manager.current_snapshot
+    assert snapshot is not None
+    kernel = SimpleNamespace(stop=AsyncMock())
+    loop = object.__new__(ProactiveLoop)
+    loop._kernel_started = False
+    loop._active_kernel_lease = None
+    loop._active_snapshot_id = None
+
+    async def build_and_start(_snapshot, _lease):
+        return kernel
+
+    loop._build_and_start_kernel = build_and_start
+    from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+    admission = manager.snapshot_store.lease()
+    token = bind_runtime_snapshot(admission)
+    try:
+        await loop._switch_snapshot(snapshot)
+    finally:
+        reset_runtime_snapshot(token)
+        await admission.release()
+
+    assert snapshot.lease_count == 1
+    await loop._stop_active_kernel()
+    assert snapshot.lease_count == 0
+    kernel.stop.assert_awaited_once()
+    await manager.terminate_all()
+
+
+def _snapshot_hook_source(version: str) -> str:
+    return (
+        "from agent.plugins import Plugin, on_tool_pre\n"
+        "class SnapshotHookPlugin(Plugin):\n"
+        "    name = 'snapshot_hook'\n"
+        "    @on_tool_pre(tool_name='target')\n"
+        "    async def hook(self, event):\n"
+        f"        return {{**event.arguments, 'version': '{version}'}}\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_hooks_follow_bound_snapshot_generation(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_hook",
+        _snapshot_hook_source("v1"),
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_lease = manager.snapshot_store.lease()
+    _ = (plugin_dir / "plugin.py").write_text(
+        _snapshot_hook_source("v2"),
+        encoding="utf-8",
+    )
+    assert await manager.prepare_candidate("snapshot_hook") is not None
+    await manager.publish_prepared("snapshot_hook")
+    executor = ToolExecutor()
+    request = ToolExecutionRequest(
+        call_id="hook",
+        tool_name="target",
+        arguments={},
+        source="passive",
+    )
+    from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
+
+    async def execute(lease):
+        token = bind_runtime_snapshot(lease)
+        try:
+            return await executor.execute(request, lambda _name, args: asyncio.sleep(0, result=args))
+        finally:
+            reset_runtime_snapshot(token)
+            await lease.release()
+
+    old_result = await execute(old_lease)
+    new_result = await execute(manager.snapshot_store.lease())
+
+    assert old_result.final_arguments == {"version": "v1"}
+    assert new_result.final_arguments == {"version": "v2"}
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_subagent_shutdown_releases_unstarted_snapshot_lease() -> None:
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({})
+    store.install(snapshot)
+    snapshot_lease = store.lease()
+    manager = object.__new__(SubagentManager)
+    manager._running_tasks = {}
+    manager._running_jobs = {}
+    manager._cancel_announced = set()
+    manager._snapshot_release_tasks = set()
+    async def wait_forever() -> None:
+        _ = await asyncio.Event().wait()
+
+    task = asyncio.create_task(wait_forever())
+    manager._running_tasks["job"] = task
+    task.add_done_callback(
+        lambda _: manager._finish_background_job("job", snapshot_lease)
+    )
+
+    await manager.shutdown()
+
+    assert snapshot.lease_count == 0
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_routes_follow_snapshot_generation(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "snapshot_dashboard",
+        "from agent.plugins import Plugin\n"
+        "class SnapshotDashboardPlugin(Plugin):\n"
+        "    name = 'snapshot_dashboard'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+
+    def write_dashboard(version: str) -> None:
+        _ = (plugin_dir / "dashboard.py").write_text(
+            "from fastapi import FastAPI\n"
+            "def register(app: FastAPI, plugin_dir, workspace):\n"
+            "    @app.get('/api/dashboard/snapshot-version')\n"
+            f"    def version(): return {{'version': '{version}'}}\n"
+            "    class Closeable:\n"
+            "        def close(self):\n"
+            f"            (workspace / 'dashboard-{version}-closed').write_text('closed')\n"
+            "    return Closeable()\n",
+            encoding="utf-8",
+        )
+
+    write_dashboard("v1")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_snapshot = manager.current_snapshot
+    assert old_snapshot is not None
+    old_generation = old_snapshot.generations["snapshot_dashboard"]
+    old_lease = manager.snapshot_store.lease()
+    app = create_dashboard_app(
+        tmp_path / "workspace",
+        memory_admin=cast(Any, SimpleNamespace()),
+        plugin_manager=manager,
+    )
+    client = TestClient(app)
+    assert client.get("/api/dashboard/snapshot-version").json() == {"version": "v1"}
+    write_dashboard("v2")
+    assert await manager.prepare_candidate("snapshot_dashboard") is not None
+    await manager.publish_prepared("snapshot_dashboard")
+
+    assert client.get("/api/dashboard/snapshot-version").json() == {"version": "v2"}
+    old_binding = old_snapshot.dashboard_bindings[0]
+    assert TestClient(old_binding.app).get(  # type: ignore[attr-defined]
+        "/api/dashboard/snapshot-version"
+    ).json() == {"version": "v1"}
+    assert not (tmp_path / "workspace" / "dashboard-v1-closed").exists()
+    await old_lease.release()
+    assert (tmp_path / "workspace" / "dashboard-v1-closed").exists()
+    assert old_generation.scope.closed
+    assert f"{old_generation.module_path}.dashboard" not in sys.modules
+    client.close()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_candidate_cannot_override_core_route(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "dashboard_conflict",
+        "from agent.plugins import Plugin\n"
+        "class DashboardConflictPlugin(Plugin):\n"
+        "    name = 'dashboard_conflict'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+
+    def write_dashboard(path: str, *, async_close: bool = False) -> None:
+        cleanup = (
+            "    class Closeable:\n"
+            "        async def close(self):\n"
+            "            (workspace / 'async-dashboard-closed').write_text('closed')\n"
+            "    return Closeable()\n"
+            if async_close
+            else ""
+        )
+        _ = (plugin_dir / "dashboard.py").write_text(
+            "def register(app, plugin_dir, workspace):\n"
+            f"    @app.get('{path}')\n"
+            "    def route(): return {'owner': 'plugin'}\n"
+            f"{cleanup}",
+            encoding="utf-8",
+        )
+
+    write_dashboard("/api/dashboard/plugin-owned")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_generation = manager.generation("dashboard_conflict")
+    app = create_dashboard_app(
+        tmp_path / "workspace",
+        memory_admin=cast(Any, SimpleNamespace()),
+        plugin_manager=manager,
+    )
+    write_dashboard("/api/dashboard/sessions", async_close=True)
+    assert await manager.prepare_candidate("dashboard_conflict") is not None
+
+    result = await manager.publish_prepared("dashboard_conflict")
+
+    assert result["publication_state"] == "failed"
+    assert manager.generation("dashboard_conflict") is old_generation
+    assert (tmp_path / "workspace" / "async-dashboard-closed").exists()
+    assert TestClient(app).get("/api/dashboard/plugin-owned").json() == {
+        "owner": "plugin"
+    }
+    write_dashboard("/api/dashboard/{rest:path}")
+    assert await manager.prepare_candidate("dashboard_conflict") is not None
+    wildcard_result = await manager.publish_prepared("dashboard_conflict")
+    assert wildcard_result["publication_state"] == "failed"
+    assert manager.generation("dashboard_conflict") is old_generation
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_candidate_cannot_override_other_plugin(tmp_path: Path) -> None:
+    root = tmp_path / "plugins"
+    first_dir = _write_plugin(
+        root,
+        "dashboard_first",
+        "from agent.plugins import Plugin\n"
+        "class DashboardFirstPlugin(Plugin):\n"
+        "    name = 'dashboard_first'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+    second_dir = _write_plugin(
+        root,
+        "dashboard_second",
+        "from agent.plugins import Plugin\n"
+        "class DashboardSecondPlugin(Plugin):\n"
+        "    name = 'dashboard_second'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+
+    def write_dashboard(directory: Path, path: str) -> None:
+        _ = (directory / "dashboard.py").write_text(
+            "def register(app, plugin_dir, workspace):\n"
+            f"    @app.get('{path}')\n"
+            f"    def route(): return {{'owner': '{directory.name}'}}\n",
+            encoding="utf-8",
+        )
+
+    write_dashboard(first_dir, "/api/dashboard/items/{id}")
+    write_dashboard(second_dir, "/api/dashboard/second")
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    old_generation = manager.generation("dashboard_second")
+    _ = create_dashboard_app(
+        tmp_path / "workspace",
+        memory_admin=cast(Any, SimpleNamespace()),
+        plugin_manager=manager,
+    )
+    write_dashboard(second_dir, "/api/dashboard/items/{name}")
+    assert await manager.prepare_candidate("dashboard_second") is not None
+
+    result = await manager.publish_prepared("dashboard_second")
+
+    assert result["publication_state"] == "failed"
+    assert manager.generation("dashboard_second") is old_generation
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_allows_static_route_before_dynamic_route(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "dashboard_ordered",
+        "from agent.plugins import Plugin\n"
+        "class DashboardOrderedPlugin(Plugin):\n"
+        "    name = 'dashboard_ordered'\n"
+        "    @classmethod\n"
+        "    def dashboard_module(cls): return 'dashboard.py'\n",
+    )
+    _ = (plugin_dir / "dashboard.py").write_text(
+        "def register(app, plugin_dir, workspace):\n"
+        "    @app.get('/api/dashboard/items/overview')\n"
+        "    def overview(): return {'route': 'overview'}\n"
+        "    @app.get('/api/dashboard/items/{item_id}')\n"
+        "    def detail(item_id): return {'route': item_id}\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    app = create_dashboard_app(
+        tmp_path / "workspace",
+        memory_admin=cast(Any, SimpleNamespace()),
+        plugin_manager=manager,
+    )
+    client = TestClient(app)
+
+    assert client.get("/api/dashboard/items/overview").json() == {
+        "route": "overview"
+    }
+    assert client.get("/api/dashboard/items/42").json() == {"route": "42"}
+    client.close()
+    await manager.terminate_all()
+
+
+def test_dashboard_rejects_custom_path_convertor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CustomConvertor(StringConvertor):
+        regex = "(?:x|z)"
+
+    monkeypatch.setitem(CONVERTOR_TYPES, "custom_gate", CustomConvertor())
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/api/dashboard/{value:custom_gate}")
+    def route() -> dict[str, bool]:
+        return {"ok": True}
+
+    with pytest.raises(RuntimeError, match="内建 path converter"):
+        _plugin_routes(app.routes)
+
+
+@pytest.mark.parametrize("wildcard_methods", [None, set()])
+def test_dashboard_treats_missing_methods_as_wildcard(
+    wildcard_methods: set[str] | None,
+) -> None:
+    core_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    plugin_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @core_app.api_route("/api/dashboard/{rest:path}", methods=["GET"])
+    def core_route() -> dict[str, bool]:
+        return {"core": True}
+
+    @plugin_app.get("/api/dashboard/sessions")
+    def plugin_route() -> dict[str, bool]:
+        return {"plugin": True}
+
+    core_routes = _plugin_routes(core_app.routes)
+    core_routes[0].methods = wildcard_methods
+    binding = DashboardBinding(
+        plugin_id="wildcard",
+        app=plugin_app,
+        routes=_plugin_routes(plugin_app.routes),
+    )
+
+    with pytest.raises(RuntimeError, match="dashboard route 冲突"):
+        _require_routes_available(binding, list(core_routes))
+
+
+@pytest.mark.asyncio
+async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins" / "snapshot_skill"
+    for version in ("v1", "v2"):
+        skill_dir = plugin_dir / f"skills-{version}" / "snapshot-skill"
+        skill_dir.mkdir(parents=True)
+        _ = (skill_dir / "SKILL.md").write_text(
+            f"---\ndescription: snapshot skill {version}\n---\nbody {version}\n",
+            encoding="utf-8",
+        )
+
+    def source(version: str) -> str:
+        return (
+            "from agent.plugins import Plugin\n"
+            "class SnapshotSkillPlugin(Plugin):\n"
+            "    name = 'snapshot_skill'\n"
+            "    @classmethod\n"
+            "    def skill_roots(cls):\n"
+            f"        return ('skills-{version}',)\n"
+        )
+
+    _ = (plugin_dir / "plugin.py").write_text(source("v1"), encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = _manager(tmp_path, workspace=workspace)
+    await manager.load_all()
+    workspace_skills = workspace / "skills"
+    workspace_skills.mkdir()
+    (workspace_skills / "snapshot-skill").symlink_to(
+        plugin_dir / "skills-v1" / "snapshot-skill",
+        target_is_directory=True,
+    )
+    _ = (plugin_dir / "plugin.py").write_text(source("v2"), encoding="utf-8")
+    candidate = await manager.prepare_candidate("snapshot_skill")
+    assert candidate is not None
+    skills = SkillsLoader(workspace, runtime_catalog="normal")
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = manager.snapshot_store
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[str | None] = []
+
+    async def process(msg, **kwargs):
+        seen.append(skills.load_skill_body("snapshot-skill"))
+        entered.set()
+        await release.wait()
+        seen.append(skills.load_skill_body("snapshot-skill"))
+        return "done"
+
+    loop._process = process
+    message = cast(Any, SimpleNamespace(session_key="cli:snapshot-skill"))
+    old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
+    await entered.wait()
+    await manager.publish_prepared("snapshot_skill")
+    _ = (plugin_dir / "skills-v1" / "snapshot-skill" / "SKILL.md").write_text(
+        "---\ndescription: mutated source\n---\nmutated v1\n",
+        encoding="utf-8",
+    )
+    release.set()
+    assert await old_turn == "done"
+    await loop._process_with_runtime_admission(message)
+
+    assert seen[:2] == ["body v1", "body v1"]
+    assert seen[2:] == ["body v2", "body v2"]
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_workspace_skill_updates_without_plugin_snapshot_reload(
+    tmp_path: Path,
+) -> None:
+    _write_plugin(
+        tmp_path / "plugins",
+        "workspace_skill_snapshot",
+        "from agent.plugins import Plugin\n"
+        "class WorkspaceSkillSnapshotPlugin(Plugin):\n"
+        "    name = 'workspace_skill_snapshot'\n",
+    )
+    workspace = tmp_path / "workspace"
+    skill_dir = workspace / "skills" / "workspace-live"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    _ = skill_file.write_text(
+        "---\ndescription: workspace live\n---\nworkspace v1\n",
+        encoding="utf-8",
+    )
+    manager = _manager(tmp_path, workspace=workspace)
+    await manager.load_all()
+    snapshot = manager.current_snapshot
+    skills = SkillsLoader(workspace, runtime_catalog="normal")
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    loop._runtime_snapshot_store = manager.snapshot_store
+    seen: list[str | None] = []
+
+    async def process(msg, **kwargs):
+        seen.append(skills.load_skill_body("workspace-live"))
+        return "done"
+
+    loop._process = process
+    message = cast(Any, SimpleNamespace(session_key="cli:workspace-skill"))
+    await loop._process_with_runtime_admission(message)
+    _ = skill_file.write_text(
+        "---\ndescription: workspace live\n---\nworkspace v2\n",
+        encoding="utf-8",
+    )
+    await loop._process_with_runtime_admission(message)
+
+    assert manager.current_snapshot is snapshot
+    assert seen == ["workspace v1", "workspace v2"]
+    await manager.terminate_all()

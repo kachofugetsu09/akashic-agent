@@ -29,6 +29,19 @@ class ToolExecutor:
     def add_hooks(self, hooks: Sequence[ToolHook]) -> None:
         self._hooks.extend(hooks)
 
+    def _runtime_hooks(self) -> list[ToolHook]:
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is not None:
+            fixed = [
+                hook
+                for hook in self._hooks
+                if not getattr(hook, "snapshot_managed", False)
+            ]
+            return [*fixed, *snapshot.tool_hooks]
+        return self._hooks
+
     async def execute(
         self,
         request: ToolExecutionRequest,
@@ -189,7 +202,7 @@ class ToolExecutor:
         extra_messages: list[str],
         traces: list[HookTraceItem],
     ) -> tuple[str, dict[str, Any]]:
-        for hook in self._hooks:
+        for hook in self._runtime_hooks():
             if hook.event != "pre_tool_use":
                 continue
             ctx = HookContext(
@@ -241,7 +254,7 @@ class ToolExecutor:
         traces: list[HookTraceItem],
         fail_open: bool = False,
     ) -> None:
-        for hook in self._hooks:
+        for hook in self._runtime_hooks():
             if hook.event != ctx.event:
                 continue
             try:

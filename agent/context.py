@@ -232,7 +232,7 @@ class ContextBuilder:
         vl_available: bool = False,
     ):
         self.workspace = workspace
-        self.skills = SkillsLoader(workspace)
+        self.skills = SkillsLoader(workspace, runtime_catalog="normal")
         self.memory = memory
         self._system_prompt_builder = SystemPromptBuilder(
             [

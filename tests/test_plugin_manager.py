@@ -5,6 +5,8 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -17,10 +19,13 @@ import pytest
 from agent.core.passive_turn import ContextStore as _  # noqa: F401
 from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCallCtx, BeforeTurnCtx
 from agent.plugins.manager import PluginManager
-from agent.plugins.jobs import PluginJobRuntime
+from agent.plugins.jobs import PluginJobRuntime, PluginJobSpec, RegisteredPluginJob
 from agent.plugins.registry import plugin_registry
+from agent.plugins.scope import PluginScope
 from agent.tool_hooks import ToolHook
+from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from agent.tools.search_backend import KeywordSearchBackend
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten, RetrievalCompleted, RetrievalHitSummary
@@ -200,6 +205,7 @@ async def test_plugin_job_runtime_runs_event_job():
         llm=llm,
         jobs=[job],
     )
+    handler_count = bus.handler_count()
     task = asyncio.create_task(runtime.run())
     await asyncio.sleep(0)
     await bus.fanout(
@@ -223,6 +229,418 @@ async def test_plugin_job_runtime_runs_event_job():
         "has_event": True,
         "context_llm": True,
     }
+    assert bus.handler_count() == handler_count
+
+    restarted = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0)
+    assert not restarted.done()
+    runtime.stop()
+    await restarted
+    assert bus.handler_count() == handler_count
+
+
+@pytest.mark.asyncio
+async def test_plugin_job_runtime_restarts_after_stop_during_job():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(_context: Any) -> None:
+        started.set()
+        await release.wait()
+
+    job = RegisteredPluginJob(
+        plugin_id="blocking",
+        plugin_context=None,
+        spec=PluginJobSpec(id="blocking", triggers=[], handler=handler),
+    )
+    runtime = PluginJobRuntime(
+        event_bus=EventBus(),
+        llm=_FakePluginLlm(),
+        jobs=[job],
+    )
+    running = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0)
+    runtime.enqueue("blocking:blocking", reason="test")
+    await started.wait()
+
+    runtime.stop()
+    release.set()
+    await running
+
+    restarted = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0)
+    assert not restarted.done()
+    runtime.stop()
+    await restarted
+
+
+@pytest.mark.asyncio
+async def test_plugin_job_runtime_coalesces_legacy_queue():
+    calls = 0
+
+    async def handler(_context: Any) -> None:
+        nonlocal calls
+        calls += 1
+
+    job = RegisteredPluginJob(
+        plugin_id="coalesce",
+        plugin_context=None,
+        spec=PluginJobSpec(id="refresh", triggers=[], handler=handler),
+    )
+    runtime = PluginJobRuntime(
+        event_bus=EventBus(),
+        llm=_FakePluginLlm(),
+        jobs=[job],
+    )
+    runtime.enqueue("coalesce:refresh", reason="test")
+    runtime.enqueue("coalesce:refresh", reason="test")
+    running = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0.05)
+    runtime.stop()
+    await running
+
+    assert calls == 1
+
+@pytest.mark.asyncio
+async def test_event_subscription_can_be_closed():
+    bus = EventBus()
+    called: list[str] = []
+    subscription = bus.on(str, lambda event: called.append(event))
+
+    await bus.fanout("first")
+    subscription.close()
+    await bus.fanout("second")
+
+    assert called == ["first"]
+    assert bus.handler_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_observe_keeps_current_handler_snapshot():
+    bus = EventBus()
+    called: list[str] = []
+    first = None
+
+    def close_first(_event: str) -> None:
+        called.append("first")
+        assert first is not None
+        first.close()
+
+    first = bus.on(str, close_first)
+    _ = bus.on(str, lambda _event: called.append("second"))
+
+    await bus.observe("event")
+
+    assert called == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_cleans_in_reverse_order_after_failure():
+    scope = PluginScope("scope-test")
+    cleaned: list[str] = []
+
+    def fail() -> None:
+        cleaned.append("fail")
+        raise RuntimeError("cleanup failed")
+
+    scope.defer("first", lambda: cleaned.append("first"))
+    scope.defer("failure", fail)
+    scope.defer("last", lambda: cleaned.append("last"))
+
+    failures = await scope.aclose()
+
+    assert cleaned == ["last", "fail", "first"]
+    assert [(item.resource, item.error) for item in failures] == [
+        ("failure", "cleanup failed")
+    ]
+    assert scope.resource_count == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_continues_after_cancelled_cleanup():
+    scope = PluginScope("cancelled-cleanup")
+    cleaned: list[str] = []
+
+    def cancelled() -> None:
+        raise asyncio.CancelledError
+
+    scope.defer("last", lambda: cleaned.append("last"))
+    scope.defer("cancelled", cancelled)
+    scope.defer("first", lambda: cleaned.append("first"))
+
+    failures = await scope.aclose()
+
+    assert cleaned == ["first", "last"]
+    assert [failure.resource for failure in failures] == ["cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_scope_terminates_process():
+    scope = PluginScope("process-test")
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    scope.track_process(process, name="sleep")
+
+    failures = await scope.aclose()
+
+    assert failures == []
+    assert process.poll() is not None
+
+
+@pytest.mark.asyncio
+async def test_closed_plugin_scope_does_not_create_resources():
+    scope = PluginScope("closed")
+    bus = EventBus()
+    _ = await scope.aclose()
+
+    with pytest.raises(RuntimeError, match="作用域已关闭"):
+        _ = scope.subscribe(bus, str, lambda _event: None)
+
+    async def wait() -> None:
+        await asyncio.Event().wait()
+
+    with pytest.raises(RuntimeError, match="作用域已关闭"):
+        _ = scope.create_task(wait())
+
+    assert bus.handler_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_manager_scope_cleans_legacy_resources(tmp_path: Path):
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "scoped"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from __future__ import annotations\n"
+        "import asyncio\n"
+        "from agent.plugins import Plugin\n"
+        "from bus.events_lifecycle import TurnCommitted\n"
+        "class ScopedPlugin(Plugin):\n"
+        "    name = 'scoped'\n"
+        "    async def initialize(self):\n"
+        "        self.context.event_bus.on(TurnCommitted, self._handle)\n"
+        "        self.task = self.context.create_task(self._run(), name='scoped-worker')\n"
+        "        self.context.defer('marker', lambda: self.context.kv_store.set('closed', True))\n"
+        "    async def terminate(self):\n"
+        "        raise RuntimeError('terminate failed')\n"
+        "    async def _run(self):\n"
+        "        await asyncio.Event().wait()\n"
+        "    def _handle(self, event):\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=bus,
+        installed_cache_root=tmp_path / "cache",
+    )
+    for _ in range(20):
+        await manager.load_all()
+        instance = plugin_registry.get_instance("akasic_plugin_plugins_scoped")
+        assert instance is not None
+        task = instance.task
+        assert bus.handler_count() == 0
+
+        await manager.terminate_all()
+
+        assert bus.handler_count() == 0
+        assert task.done()
+    data_dir = tmp_path / "data" / "scoped-builtin"
+    assert json.loads((data_dir / ".kv.json").read_text(encoding="utf-8")) == {
+        "closed": True
+    }
+    assert len(manager.cleanup_failures) == 20
+
+
+@pytest.mark.asyncio
+async def test_plugin_initialize_failure_calls_terminate(tmp_path: Path):
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "failing"
+    plugin_dir.mkdir(parents=True)
+    marker = tmp_path / "terminated"
+    _ = (plugin_dir / "plugin.py").write_text(
+        "import asyncio\n"
+        "from pathlib import Path\n"
+        "from contextlib import suppress\n"
+        "from agent.plugins import Plugin\n"
+        "tasks = []\n"
+        "class FailingPlugin(Plugin):\n"
+        "    name = 'failing'\n"
+        "    async def initialize(self):\n"
+        "        self.task = asyncio.create_task(asyncio.Event().wait())\n"
+        "        tasks.append(self.task)\n"
+        "        raise RuntimeError('init failed')\n"
+        "    async def terminate(self):\n"
+        "        self.task.cancel()\n"
+        "        with suppress(asyncio.CancelledError):\n"
+        "            await self.task\n"
+        f"        Path({str(marker)!r}).write_text(str(self.task.done()))\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=EventBus(),
+        installed_cache_root=tmp_path / "cache",
+    )
+
+    await manager.load_all()
+
+    assert manager.loaded_count == 0
+    assert marker.read_text(encoding="utf-8") == "True"
+
+
+@pytest.mark.asyncio
+async def test_plugin_initialize_cancellation_rolls_back(tmp_path: Path):
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "cancelled"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "import asyncio\n"
+        "from contextlib import suppress\n"
+        "from agent.plugins import Plugin\n"
+        "started = asyncio.Event()\n"
+        "terminate_started = asyncio.Event()\n"
+        "release_terminate = asyncio.Event()\n"
+        "tasks = []\n"
+        "class CancelledPlugin(Plugin):\n"
+        "    name = 'cancelled'\n"
+        "    async def initialize(self):\n"
+        "        self.task = asyncio.create_task(asyncio.Event().wait())\n"
+        "        tasks.append(self.task)\n"
+        "        started.set()\n"
+        "        await asyncio.Event().wait()\n"
+        "    async def terminate(self):\n"
+        "        terminate_started.set()\n"
+        "        await release_terminate.wait()\n"
+        "        self.task.cancel()\n"
+        "        with suppress(asyncio.CancelledError):\n"
+        "            await self.task\n",
+        encoding="utf-8",
+    )
+    bus = EventBus()
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=bus,
+        installed_cache_root=tmp_path / "cache",
+    )
+    loading = asyncio.create_task(manager.load_all())
+    module_names: list[str] = []
+    while not module_names:
+        await asyncio.sleep(0)
+        module_names = [
+            name
+            for name in sys.modules
+            if name.startswith("akasic_plugin_plugins_cancelled__g")
+        ]
+    module = sys.modules[module_names[0]]
+    await module.started.wait()
+
+    loading.cancel()
+    await module.terminate_started.wait()
+    loading.cancel()
+    await asyncio.sleep(0)
+    assert not loading.done()
+    module.release_terminate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await loading
+
+    assert manager.loaded_count == 0
+    assert plugin_registry.get_instance("akasic_plugin_plugins_cancelled") is None
+    assert module.tasks[0].done()
+    assert bus.handler_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_tool_registration_failure_rolls_back(tmp_path: Path):
+    class FailingBackend(KeywordSearchBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.add_count = 0
+
+        def add(self, document: Any) -> None:
+            self.add_count += 1
+            if self.add_count == 2:
+                raise RuntimeError("index failed")
+            super().add(document)
+
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "tool_failure"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin, tool\n"
+        "class ToolFailurePlugin(Plugin):\n"
+        "    name = 'tool_failure'\n"
+        "    @tool(name='first')\n"
+        "    async def first(self, event):\n"
+        "        \"\"\"First tool.\"\"\"\n"
+        "        return 'first'\n"
+        "    @tool(name='second')\n"
+        "    async def second(self, event):\n"
+        "        \"\"\"Second tool.\"\"\"\n"
+        "        return 'second'\n",
+        encoding="utf-8",
+    )
+    backend = FailingBackend()
+    tools = ToolRegistry(backend=backend)
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=EventBus(),
+        tool_registry=tools,
+        installed_cache_root=tmp_path / "cache",
+    )
+
+    await manager.load_all()
+
+    assert manager.loaded_count == 0
+    assert tools.get_registered_names() == set()
+    assert backend.add_count == 0
+    gate = manager.latest_gate("tool_failure")
+    assert gate is not None
+    assert gate.status == "failed"
+    assert any(check.check_id == "runtime_snapshot" for check in gate.checks)
+
+
+@pytest.mark.asyncio
+async def test_plugin_duplicate_tool_preserves_existing_tool(tmp_path: Path):
+    class ExistingTool(Tool):
+        name = "existing"
+        description = "Existing tool."
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, **kwargs: Any) -> str:
+            return "existing"
+
+    plugin_root = tmp_path / "plugins"
+    plugin_dir = plugin_root / "duplicate_tool"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin, tool\n"
+        "class DuplicateToolPlugin(Plugin):\n"
+        "    name = 'duplicate_tool'\n"
+        "    @tool(name='existing')\n"
+        "    async def existing(self, event):\n"
+        "        \"\"\"Duplicate tool.\"\"\"\n"
+        "        return 'plugin'\n",
+        encoding="utf-8",
+    )
+    tools = ToolRegistry()
+    existing = ExistingTool()
+    tools.register(existing)
+    manager = PluginManager(
+        plugin_dirs=[plugin_root],
+        event_bus=EventBus(),
+        tool_registry=tools,
+        installed_cache_root=tmp_path / "cache",
+    )
+
+    await manager.load_all()
+
+    assert manager.loaded_count == 0
+    assert tools.get_tool("existing") is existing
 
 
 # ── lifecycle hook 触发测试 ────────────────────────────────────────────────────
@@ -387,10 +805,18 @@ async def test_loads_installed_programmatic_plugin():
             "    def skill_roots(cls): return ('skills',)\n"
             "    @classmethod\n"
             "    def mcp_servers(cls):\n"
-            "        return [McpServerSpec(name='feed', command=('run_mcp.py',))]\n",
+            "        return [McpServerSpec(name='feed', command=('python', 'run_mcp.py'))]\n",
             encoding="utf-8",
         )
-        (plugin_root / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
+        (plugin_root / "run_mcp.py").write_text(
+            "import json, sys\n"
+            "for line in sys.stdin:\n"
+            "    msg = json.loads(line)\n"
+            "    if 'id' not in msg: continue\n"
+            "    result = {'tools': []} if msg.get('method') == 'tools/list' else {}\n"
+            "    print(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}), flush=True)\n",
+            encoding="utf-8",
+        )
 
         mgr = PluginManager(
             plugin_dirs=[],
@@ -405,6 +831,7 @@ async def test_loads_installed_programmatic_plugin():
         assert active[0].skill_roots == (plugin_root / "skills",)
         assert "feed" in active[0].mcp_servers
         assert mgr.loaded_count == 1
+        await mgr.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -556,6 +983,7 @@ from agent.plugins import Plugin
 
 
 class EarlyModule:
+    slot = "plugin.early"
     requires = ("session:session",)
 
     async def run(self, frame):
@@ -563,56 +991,69 @@ class EarlyModule:
 
 
 class LateModule:
+    slot = "plugin.late"
     requires = ("session:ctx",)
 
     async def run(self, frame):
         return frame
 
 class PromptTopModule:
+    slot = "plugin.prompt_top"
     async def run(self, frame):
         return frame
 
 class PromptBottomModule:
+    slot = "plugin.prompt_bottom"
     async def run(self, frame):
         return frame
 
 class BeforeReasoningBeforeEmitModule:
+    slot = "plugin.before_reasoning_before_emit"
     async def run(self, frame):
         return frame
 
 class BeforeReasoningAfterEmitModule:
+    slot = "plugin.before_reasoning_after_emit"
     async def run(self, frame):
         return frame
 
 class BeforeStepBeforeEmitModule:
+    slot = "plugin.before_step_before_emit"
     async def run(self, frame):
         return frame
 
 class BeforeStepAfterEmitModule:
+    slot = "plugin.before_step_after_emit"
     async def run(self, frame):
         return frame
 
 class AfterStepBeforeFanoutModule:
+    slot = "plugin.after_step_before_fanout"
     async def run(self, frame):
         return frame
 
 class AfterStepAfterFanoutModule:
+    slot = "plugin.after_step_after_fanout"
     async def run(self, frame):
         return frame
 
 class AfterReasoningBeforeEmitModule:
+    slot = "plugin.after_reasoning_before_emit"
     async def run(self, frame):
         return frame
 
 class AfterReasoningBeforePersistModule:
+    slot = "plugin.after_reasoning_before_persist"
     async def run(self, frame):
         return frame
 
 class AfterTurnBeforeCommitModule:
+    slot = "plugin.after_turn_before_commit"
     async def run(self, frame):
         return frame
 
 class AfterTurnBeforeFanoutModule:
+    slot = "plugin.after_turn_before_fanout"
     async def run(self, frame):
         return frame
 
@@ -725,11 +1166,16 @@ async def test_plugin_toml_overrides_defaults():
 
 
 @pytest.mark.asyncio
-async def test_plugin_disabled_marker_skips_plugin():
+async def test_manifest_disables_builtin_plugin():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
-        (Path(tmp) / "configured" / "plugin.disabled").write_text("", encoding="utf-8")
+        from agent.plugins.manifest import write_plugin_manifest
+
+        write_plugin_manifest(
+            {"configured": False},
+            plugins_home=TEST_PLUGIN_HOME,
+        )
         mgr = _make_manager([Path(tmp)], event_bus=bus)
         await mgr.load_all()
 
@@ -1145,6 +1591,8 @@ async def test_add_tool_hooks_propagates_to_tool_executor():
 async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     from bootstrap.tools import CoreRuntime
 
+    startup_order: list[str] = []
+
     class FakePluginManager:
         def __init__(self) -> None:
             self.tool_hooks = [object()]
@@ -1158,6 +1606,7 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
             self.loaded_count = 0
 
         async def load_all(self) -> None:
+            startup_order.append("plugins")
             self.loaded_count = 1
 
     class FakeLoop:
@@ -1224,7 +1673,8 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
             self.received_hooks = list(hooks)
 
     class FakeMcpRegistry:
-        def start_connect_all_background(self) -> None:
+        async def load_and_connect_all(self) -> None:
+            startup_order.append("mcp")
             return None
 
         async def shutdown(self) -> None:
@@ -1256,13 +1706,14 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
 
     await runtime.start()
 
+    assert startup_order == ["mcp", "plugins"]
     assert plugin_manager.loaded_count == 1
-    assert loop.received_before_turn == plugin_manager.before_turn_modules
-    assert loop.received_before_reasoning == plugin_manager.before_reasoning_modules
-    assert loop.received_prompt_render == plugin_manager.prompt_render_modules
-    assert loop.received_before_step == plugin_manager.before_step_modules
-    assert loop.received_after_step == plugin_manager.after_step_modules
-    assert loop.received_after_reasoning == plugin_manager.after_reasoning_modules
-    assert loop.received_after_turn == plugin_manager.after_turn_modules
+    assert loop.received_before_turn is None
+    assert loop.received_before_reasoning is None
+    assert loop.received_prompt_render is None
+    assert loop.received_before_step is None
+    assert loop.received_after_step is None
+    assert loop.received_after_reasoning is None
+    assert loop.received_after_turn is None
     assert loop.received_hooks == plugin_manager.tool_hooks
     assert spawn_tool.received_hooks == plugin_manager.tool_hooks

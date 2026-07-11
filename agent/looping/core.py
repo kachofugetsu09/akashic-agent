@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import time
@@ -57,6 +59,7 @@ if TYPE_CHECKING:
     from core.memory.markdown import MemoryProfileApi
     from core.memory.runtime import MemoryRuntime
     from agent.tool_hooks.base import ToolHook
+    from agent.plugins.snapshot import RuntimeSnapshotStore
 
 logger = logging.getLogger("agent.loop")
 _MANUAL_CONSOLIDATION_TIMEOUT_SECONDS = 30.0
@@ -126,6 +129,7 @@ class AgentLoop:
         self._processing_state = deps.processing_state
         self._event_bus = deps.event_bus or EventBus()
         self._passive_runtime_lock = asyncio.Lock()
+        self._runtime_snapshot_store: RuntimeSnapshotStore | None = None
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task] = {}
@@ -169,6 +173,9 @@ class AgentLoop:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
         if callable(setter):
             _ = setter(self._wrap_stream_sink_factory(factory))
+
+    def bind_runtime_snapshot_store(self, store: RuntimeSnapshotStore) -> None:
+        self._runtime_snapshot_store = store
 
     def _configure_stream_events(self) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
@@ -652,12 +659,31 @@ class AgentLoop:
         if self._passive_runtime_lock.locked():
             logger.info("[runtime_admission] 等待 passive runtime session=%s", key)
         async with self._passive_runtime_lock:
-            return await self._process(
-                msg,
-                session_key=session_key,
-                busy_session_key=busy_session_key,
-                dispatch_outbound=dispatch_outbound,
+            store = self._runtime_snapshot_store
+            if store is None or store.current is None:
+                return await self._process(
+                    msg,
+                    session_key=session_key,
+                    busy_session_key=busy_session_key,
+                    dispatch_outbound=dispatch_outbound,
+                )
+            from agent.plugins.snapshot import (
+                bind_runtime_snapshot,
+                reset_runtime_snapshot,
             )
+
+            lease = await store.acquire()
+            async with lease as snapshot:
+                token = bind_runtime_snapshot(lease)
+                try:
+                    return await self._process(
+                        msg,
+                        session_key=session_key,
+                        busy_session_key=busy_session_key,
+                        dispatch_outbound=dispatch_outbound,
+                    )
+                finally:
+                    reset_runtime_snapshot(token)
 
     async def process_direct(
         self,

@@ -40,6 +40,10 @@ class AkashaLastCommandModule:
 
 
 class AkashaPlugin(Plugin):
+    @classmethod
+    def dashboard_module(cls) -> str | None:
+        return "dashboard.py"
+
     name = "akasha"
 
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
@@ -48,8 +52,6 @@ class AkashaPlugin(Plugin):
         return [("akashalast", "查看上一轮 Akasha 检索诊断")]
 
     def before_turn_modules(self) -> list[object]:
-        if not self.is_active():
-            return []
         return [AkashaLastCommandModule(self)]
 
     def is_active(self) -> bool:

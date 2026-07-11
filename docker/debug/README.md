@@ -37,6 +37,47 @@ container
 - 启动脚本会拒绝 `/sandbox` 外的 config/workspace 路径。
 - `profiles/` 已加入 `.gitignore`，不要提交调试 bot token 和测试记忆。
 
+## 插件变更 Gate
+
+`akashic-plugin-gate` 用于在真实 Runtime 中验证插件系统改动。它不会复用普通调试容器的可写源码挂载或宿主插件缓存。
+
+```text
+┌─ 宿主
+│  ├─ akasic-agent             只读挂载到 /app
+│  └─ akashic-plugin/*         只读挂载到 /fixtures/plugins
+├─ 容器
+│  ├─ root filesystem          只读
+│  ├─ /tmp                     tmpfs
+│  └─ /sandbox                 唯一持久可写目录
+│     ├─ home/.akashic-plugin/cache
+│     ├─ workspace
+│     └─ reports
+└─ Compose project
+   └─ akashic-plugin-reload-gate
+```
+
+从宿主运行完整性 Gate：
+
+```bash
+python docker/debug/plugin_hot_reload_probe.py --scenario sandbox-integrity
+```
+
+宿主控制器会在 `/tmp` 创建唯一 sandbox，拒绝仓库内路径，再通过独立的 `docker-compose.plugin-gate.yml` 启动容器。普通 `docker-compose.yml` 不受 Gate 环境变量影响。控制器会审计各 Git 仓库状态，并在隔离插件缓存中完成一次写入与更新；Runtime 需要的 `static/` 也覆盖到外部 sandbox，不会写 `/app`。
+
+插件资源作用域场景会安装一次性测试插件，并在真实 `main.py` 的启动和关闭过程中验证订阅、任务与清理回调：
+
+```bash
+python docker/debug/plugin_hot_reload_probe.py \
+  --scenario full-runtime --phase scope
+```
+
+候选 Gate 场景会同时安装有效和无效插件，确认真实 Runtime 只初始化通过静态 Gate 的 generation：
+
+```bash
+python docker/debug/plugin_hot_reload_probe.py \
+  --scenario full-runtime --phase candidate
+```
+
 ## 第一次配置
 
 ```bash

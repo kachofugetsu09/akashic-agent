@@ -363,6 +363,11 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     loop = SimpleNamespace()
     channel = IPCServerChannel(bus, str(tmp_path / "agent.sock"), None)
 
+    async def noop(data: dict[str, object]) -> str:
+        return str(data["command"])
+
+    channel.register_command("noop", noop)
+
     server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
     chmod = MagicMock()
     monkeypatch.setattr("infra.channels.ipc_server.os.chmod", chmod)
@@ -411,6 +416,7 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     assert inbound.content == "hello"
     assert any("command_result" in payload.decode() for payload in writes)
     assert any('"ok": false' in payload.decode() for payload in writes)
+    assert any('"ok": true' in payload.decode() for payload in writes)
     assert any("unknown command" in payload.decode() for payload in writes)
 
     msg = OutboundMessage(channel="cli", chat_id="missing", content="hi")
@@ -568,6 +574,49 @@ async def test_mcp_client_disconnect_kills_after_terminate_timeout(
     assert proc.stdin.closed is True
     assert proc.terminated is True
     assert proc.killed is True
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_disconnect_reports_cleanup_error() -> None:
+    proc = _Proc([])
+    proc.stdin.close = MagicMock(side_effect=OSError("stdin close failed"))
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(OSError, match="stdin close failed"):
+        await client.disconnect()
+
+    assert proc.killed is True
+    assert client._process is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["initialize", "tools/list"])
+async def test_mcp_client_rejects_json_rpc_error_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    responses = (
+        [b'{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"bad init"}}\n']
+        if stage == "initialize"
+        else [
+            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            b'{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"bad list"}}\n',
+        ]
+    )
+    proc = _Proc(responses)
+    monkeypatch.setattr(
+        "agent.mcp.client.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    )
+    client = McpClient("broken", ["python", "server.py"])
+
+    with pytest.raises(RuntimeError, match=stage):
+        await client.connect()
+
+    assert client._process is None
+    assert client._stderr_task is None
+    assert proc.stdin.closed is True
 
 
 @pytest.mark.asyncio

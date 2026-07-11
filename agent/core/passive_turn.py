@@ -71,6 +71,7 @@ from agent.lifecycle.types import (
     TurnState,
     TurnPersistencePolicy,
 )
+from agent.plugins.snapshot import get_current_runtime_snapshot
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -308,7 +309,10 @@ class PassiveTurnPipeline:
         self._after_turn_plugin_modules.extend(modules)
         self._after_turn = self._build_after_turn_phase()
 
-    def _build_before_turn_phase(self) -> Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]:
+    def _build_before_turn_phase(
+        self,
+        plugin_modules: list[object] | None = None,
+    ) -> Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]:
         return Phase(
             default_before_turn_modules(
                 self._bus,
@@ -316,13 +320,19 @@ class PassiveTurnPipeline:
                 self._context_store,
                 keep_count=self._history_window,
                 consolidator=self._memory_consolidator,
-                plugin_modules=cast("list[Any]", self._before_turn_plugin_modules),
+                plugin_modules=cast(
+                    "list[Any]",
+                    self._before_turn_plugin_modules
+                    if plugin_modules is None
+                    else plugin_modules,
+                ),
             ),
             frame_factory=BeforeTurnFrame,
         )
 
     def _build_before_reasoning_phase(
         self,
+        plugin_modules: list[object] | None = None,
     ) -> Phase[BeforeReasoningInput, BeforeReasoningCtx, BeforeReasoningFrame]:
         return Phase(
             default_before_reasoning_modules(
@@ -330,25 +340,37 @@ class PassiveTurnPipeline:
                 self._tools,
                 self._session.session_manager,
                 self._context,
-                plugin_modules=cast("list[Any]", self._before_reasoning_plugin_modules),
+                plugin_modules=cast(
+                    "list[Any]",
+                    self._before_reasoning_plugin_modules
+                    if plugin_modules is None
+                    else plugin_modules,
+                ),
             ),
             frame_factory=BeforeReasoningFrame,
         )
 
     def _build_after_reasoning_phase(
         self,
+        plugin_modules: list[object] | None = None,
     ) -> Phase[AfterReasoningInput, AfterReasoningResult, AfterReasoningFrame]:
         return Phase(
             default_after_reasoning_modules(
                 self._bus,
                 self._session,
-                plugin_modules=cast("list[Any]", self._after_reasoning_plugin_modules),
+                plugin_modules=cast(
+                    "list[Any]",
+                    self._after_reasoning_plugin_modules
+                    if plugin_modules is None
+                    else plugin_modules,
+                ),
             ),
             frame_factory=AfterReasoningFrame,
         )
 
     def _build_after_turn_phase(
         self,
+        plugin_modules: list[object] | None = None,
     ) -> Phase[TurnSnapshot, OutboundMessage, AfterTurnFrame]:
         return Phase(
             default_after_turn_modules(
@@ -356,10 +378,22 @@ class PassiveTurnPipeline:
                 self._outbound_port,
                 self._context,
                 self._history_window,
-                plugin_modules=cast("list[Any]", self._after_turn_plugin_modules),
+                plugin_modules=cast(
+                    "list[Any]",
+                    self._after_turn_plugin_modules
+                    if plugin_modules is None
+                    else plugin_modules,
+                ),
             ),
             frame_factory=AfterTurnFrame,
         )
+
+    def _runtime_phase(self, name: str):
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is None:
+            return getattr(self, f"_{name}")
+        modules = list(getattr(snapshot, f"{name}_modules"))
+        return getattr(self, f"_build_{name}_phase")(modules)
 
     # 核心方法：处理一条普通被动消息，并提交最终出站结果。
     async def run(
@@ -393,7 +427,7 @@ class PassiveTurnPipeline:
             try:
                 # Phase 1: BeforeTurn 模块链（会话、上下文、BeforeTurn 事件）。
                 with diagnostic_context(phase="before_turn"):
-                    before_turn = await self._before_turn.run(state)
+                    before_turn = await self._runtime_phase("before_turn").run(state)
                 # TurnState 存内部默认 metadata；BeforeTurnCtx 存插件导出，同名 key 以后者覆盖。
                 state.extra_metadata.update(before_turn.extra_metadata)
                 if before_turn.abort:
@@ -433,7 +467,7 @@ class PassiveTurnPipeline:
 
                 # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
                 with diagnostic_context(phase="before_reasoning"):
-                    before_reasoning = await self._before_reasoning.run(
+                    before_reasoning = await self._runtime_phase("before_reasoning").run(
                         BeforeReasoningInput(state=state, before_turn=before_turn)
                     )
                 if before_reasoning.abort:
@@ -528,7 +562,7 @@ class PassiveTurnPipeline:
             try:
                 # Phase 5: AfterReasoning 模块链（parse、AfterReasoning 事件、持久化、出站消息）。
                 with diagnostic_context(phase="after_reasoning"):
-                    after_reasoning = await self._after_reasoning.run(
+                    after_reasoning = await self._runtime_phase("after_reasoning").run(
                         AfterReasoningInput(state=state, turn_result=turn_result)
                     )
             except Exception as exc:
@@ -564,7 +598,7 @@ class PassiveTurnPipeline:
             try:
                 # Phase 6: AfterTurn 模块链（TurnCommitted fanout、AfterTurn fanout、dispatch）。
                 with diagnostic_context(phase="after_turn"):
-                    outbound = await self._after_turn.run(
+                    outbound = await self._runtime_phase("after_turn").run(
                         TurnSnapshot(
                             state=state,
                             outbound=after_reasoning.outbound,
@@ -619,10 +653,10 @@ class PassiveTurnPipeline:
             session=self._session.session_manager.get_or_create(session_key),
             persistence=persistence or _persistence_from_metadata(msg.metadata),
         )
-        after_reasoning = await self._after_reasoning.run(
+        after_reasoning = await self._runtime_phase("after_reasoning").run(
             AfterReasoningInput(state=state, turn_result=turn_result)
         )
-        return await self._after_turn.run(
+        return await self._runtime_phase("after_turn").run(
             TurnSnapshot(
                 state=state,
                 outbound=after_reasoning.outbound,
@@ -870,20 +904,34 @@ class DefaultReasoner(Reasoner):
 
     def _build_before_step_phase(
         self,
+        plugin_modules: list[object] | None = None,
     ) -> Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame]:
         return Phase(
             default_before_step_modules(
                 self._bus,
-                plugin_modules=cast("list[Any]", self._before_step_plugin_modules),
+                plugin_modules=cast(
+                    "list[Any]",
+                    self._before_step_plugin_modules
+                    if plugin_modules is None
+                    else plugin_modules,
+                ),
             ),
             frame_factory=BeforeStepFrame,
         )
 
-    def _build_after_step_phase(self) -> Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame]:
+    def _build_after_step_phase(
+        self,
+        plugin_modules: list[object] | None = None,
+    ) -> Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame]:
         return Phase(
             default_after_step_modules(
                 self._bus,
-                plugin_modules=cast("list[Any]", self._after_step_plugin_modules),
+                plugin_modules=cast(
+                    "list[Any]",
+                    self._after_step_plugin_modules
+                    if plugin_modules is None
+                    else plugin_modules,
+                ),
             ),
             frame_factory=AfterStepFrame,
         )
@@ -891,12 +939,18 @@ class DefaultReasoner(Reasoner):
     def _build_prompt_render_phase(
         self,
         context: "ContextBuilder",
+        plugin_modules: list[object] | None = None,
     ) -> Phase[PromptRenderInput, PromptRenderResult, PromptRenderFrame]:
         return Phase(
             default_prompt_render_modules(
                 self._bus,
                 context,
-                plugin_modules=cast("list[Any]", self._prompt_render_plugin_modules),
+                plugin_modules=cast(
+                    "list[Any]",
+                    self._prompt_render_plugin_modules
+                    if plugin_modules is None
+                    else plugin_modules,
+                ),
             ),
             frame_factory=PromptRenderFrame,
         )
@@ -907,9 +961,32 @@ class DefaultReasoner(Reasoner):
     ) -> PromptRenderResult:
         if self._context is None:
             raise RuntimeError("DefaultReasoner.render_prompt requires context")
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is not None:
+            phase = self._build_prompt_render_phase(
+                self._context,
+                list(snapshot.prompt_render_modules),
+            )
+            return await phase.run(input)
         if self._prompt_render is None:
             self._prompt_render = self._build_prompt_render_phase(self._context)
         return await self._prompt_render.run(input)
+
+    def _runtime_before_step_phase(
+        self,
+    ) -> Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame]:
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is None:
+            return self._before_step
+        return self._build_before_step_phase(list(snapshot.before_step_modules))
+
+    def _runtime_after_step_phase(
+        self,
+    ) -> Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame]:
+        snapshot = get_current_runtime_snapshot()
+        if snapshot is None:
+            return self._after_step
+        return self._build_after_step_phase(list(snapshot.after_step_modules))
 
     def set_stream_sink_factory(
         self,
@@ -1159,7 +1236,7 @@ class DefaultReasoner(Reasoner):
             ):
                 break
             # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
-            step_ctx = await self._before_step.run(BeforeStepInput(
+            step_ctx = await self._runtime_before_step_phase().run(BeforeStepInput(
                 session_key=tool_event_session_key,
                 channel=tool_event_channel,
                 chat_id=tool_event_chat_id,
@@ -1602,7 +1679,7 @@ class DefaultReasoner(Reasoner):
                 tool_chain.append(tool_chain_group)
                 pressure_tokens = support.estimate_messages_tokens(messages)
                 # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
-                after_step = await self._after_step.run(AfterStepCtx(
+                after_step = await self._runtime_after_step_phase().run(AfterStepCtx(
                     session_key=tool_event_session_key,
                     channel=tool_event_channel,
                     chat_id=tool_event_chat_id,
@@ -1683,7 +1760,7 @@ class DefaultReasoner(Reasoner):
             )
             messages.append({"role": "assistant", "content": response.content})
             # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
-            _ = await self._after_step.run(AfterStepCtx(
+            _ = await self._runtime_after_step_phase().run(AfterStepCtx(
                 session_key=tool_event_session_key,
                 channel=tool_event_channel,
                 chat_id=tool_event_chat_id,

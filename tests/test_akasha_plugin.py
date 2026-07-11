@@ -1138,10 +1138,10 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
         store.close()
 
 
-def test_akashalast_command_only_registers_for_akasha_engine(tmp_path: Path) -> None:
+def test_akashalast_command_only_exposes_for_akasha_engine(tmp_path: Path) -> None:
     akasha = AkashaPlugin()
     akasha.context = PluginContext(
-        event_bus=None,
+        event_bus=cast(Any, None),
         tool_registry=None,
         plugin_id="akasha",
         plugin_dir=tmp_path,
@@ -1152,7 +1152,7 @@ def test_akashalast_command_only_registers_for_akasha_engine(tmp_path: Path) -> 
     )
     default = AkashaPlugin()
     default.context = PluginContext(
-        event_bus=None,
+        event_bus=cast(Any, None),
         tool_registry=None,
         plugin_id="akasha",
         plugin_dir=tmp_path,
@@ -1165,7 +1165,7 @@ def test_akashalast_command_only_registers_for_akasha_engine(tmp_path: Path) -> 
     assert akasha.telegram_bot_commands() == [("akashalast", "查看上一轮 Akasha 检索诊断")]
     assert len(akasha.before_turn_modules()) == 1
     assert default.telegram_bot_commands() == []
-    assert default.before_turn_modules() == []
+    assert len(default.before_turn_modules()) == 1
 
 
 def test_akashalast_renders_latest_query_log(tmp_path: Path) -> None:
@@ -1227,7 +1227,7 @@ def test_akashalast_renders_latest_query_log(tmp_path: Path) -> None:
 
     plugin = AkashaPlugin()
     plugin.context = PluginContext(
-        event_bus=None,
+        event_bus=cast(Any, None),
         tool_registry=None,
         plugin_id="akasha",
         plugin_dir=tmp_path,
