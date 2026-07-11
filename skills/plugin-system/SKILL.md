@@ -36,6 +36,23 @@ python main.py plugin-install --source <repo_or_url> --marketplace github
 python main.py plugin-doctor --plugin <name>@github
 ```
 
+## 更新已有插件
+
+不要直接修改 `~/.akashic-plugin/cache`。先修改插件的可编辑源码仓库；个人插件通常位于 `/mnt/data/coding/akashic-plugin/<plugin-name>`。如果只知道已安装插件而找不到源码仓库，先确认其 Git remote 或向用户询问。
+
+```text
+┌─ 修改插件源码仓库
+├─ 运行插件自身测试
+├─ 提交并推送源码
+├─ 用原 source 与 marketplace 再次执行 plugin-install
+├─ watcher 自动准备并发布新代际
+└─ plugin-doctor 加一次真实行为验证
+```
+
+重新执行 `plugin-install` 即更新：它替换 cache 中的已安装版本，但保留 data 与配置。运行中的 watcher 会自动热重载，不要重启 Agent。
+
+如果用户指定把现有项目中的 skill 收入某个插件，应复制或适配到该插件源码的 `skills/<skill-name>/`，再走上述更新流程；不要改写原项目，也不要先落到 workspace。
+
 ## 启用与禁用
 
 使用管理命令修改 `manifest.toml` 对应条目的 `enabled`。运行中的 watcher 会自动完成启停，不需要重启进程。
@@ -75,7 +92,7 @@ python main.py plugin-uninstall demo@github
 ## 热重载验证
 
 ```text
-┌─ 修改 cache、manifest.toml 或 config.local.toml
+┌─ plugin-install 更新 cache，或修改 manifest.toml/config.local.toml
 ├─ 等待 watcher 生成候选代际
 ├─ 检查 candidate 与 snapshot Gate 日志
 ├─ 发起一次新请求验证新能力
