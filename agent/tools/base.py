@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -71,6 +72,16 @@ class Tool(ABC):
     @abstractmethod
     async def execute(self, **kwargs: Any) -> str | ToolResult:
         """执行工具，返回字符串结果"""
+
+    async def execute_with_timeout(
+        self,
+        arguments: dict[str, Any],
+        execution_timeout: float | None = None,
+    ) -> str | ToolResult:
+        execution = self.execute(**arguments)
+        if execution_timeout is None:
+            return await execution
+        return await asyncio.wait_for(execution, timeout=execution_timeout)
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:
         """校验参数，返回错误列表（空列表表示校验通过）"""

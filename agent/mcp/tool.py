@@ -38,3 +38,14 @@ class McpToolWrapper(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         return await self._client.call(self._info.name, kwargs)
+
+    async def execute_with_timeout(
+        self,
+        arguments: dict[str, Any],
+        execution_timeout: float | None = None,
+    ) -> str:
+        return await self._client.call(
+            self._info.name,
+            arguments,
+            timeout=execution_timeout,
+        )

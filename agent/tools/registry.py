@@ -307,10 +307,16 @@ class ToolRegistry:
         arguments: dict[str, Any],
         *,
         raise_errors: bool = False,
+        execution_timeout: float | None = None,
     ) -> str | ToolResult:
         view = self._runtime_view()
         if view is not self:
-            return await view.execute(name, arguments, raise_errors=raise_errors)
+            return await view.execute(
+                name,
+                arguments,
+                raise_errors=raise_errors,
+                execution_timeout=execution_timeout,
+            )
         tool = self._tools.get(name)
         if tool is None:
             if raise_errors:
@@ -322,7 +328,10 @@ class ToolRegistry:
             merged: dict[str, Any] = {**self._context, **arguments}
             if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
                 merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
-            return await tool.execute(**merged)
+            return await tool.execute_with_timeout(
+                merged,
+                execution_timeout=execution_timeout,
+            )
         except Exception as e:
             logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
             if raise_errors:
