@@ -193,11 +193,21 @@ class ProactiveLoop:
         return factory(self._build_runtime_scope())
 
     def _build_mcp_runtime(self) -> McpRuntimeModule:
-        from agent.plugins.snapshot import get_current_runtime_lease
+        from agent.plugins.snapshot import (
+            get_current_runtime_lease,
+            get_current_runtime_snapshot,
+        )
+
+        snapshot = get_current_runtime_snapshot()
+        tools = (
+            snapshot.tool_registry
+            if snapshot is not None and snapshot.tool_registry is not None
+            else self._shared_tools
+        )
 
         gateway = SharedMcpGateway(
             Path(self._sessions.workspace),
-            self._shared_tools,
+            tools,
         )
         return McpRuntimeModule(
             gateway=gateway,

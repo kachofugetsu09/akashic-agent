@@ -333,41 +333,59 @@ def _run_controller(*, scenario: str, phase: str) -> int:
     return 0 if report["status"] == "passed" else 1
 
 
-def _write_smoke_config(sandbox: Path, *, proactive_enabled: bool = False) -> None:
+def _write_smoke_config(
+    sandbox: Path,
+    *,
+    proactive_enabled: bool = False,
+    fast_tick: bool = False,
+) -> None:
     config = sandbox / "config.toml"
-    _ = config.write_text(
-        "\n".join(
+    lines = [
+        'provider = "openai"',
+        'model = "plugin-gate"',
+        'api_key = "gate-not-used"',
+        'system_prompt = "plugin gate"',
+        "max_iterations = 1",
+        "max_tokens = 64",
+        "memory_window = 4",
+        "memory_optimizer_enabled = false",
+        "spawn_enabled = false",
+        "",
+        "[channels]",
+        'socket = "/sandbox/akashic.sock"',
+        "",
+        "[channels.chat]",
+        "enabled = false",
+        "",
+        "[channels.telegram]",
+        "enabled = false",
+        'token = ""',
+        "",
+        "[channels.qq]",
+        "enabled = false",
+        'bot_uin = ""',
+        "",
+        "[proactive]",
+        'profile = "quiet"',
+        f"enabled = {'true' if proactive_enabled else 'false'}",
+        "",
+    ]
+    if fast_tick:
+        lines.extend(
             [
-                'provider = "openai"',
-                'model = "plugin-gate"',
-                'api_key = "gate-not-used"',
-                'system_prompt = "plugin gate"',
-                "max_iterations = 1",
-                "max_tokens = 64",
-                "memory_window = 4",
-                "memory_optimizer_enabled = false",
-                "spawn_enabled = false",
+                "[proactive.overrides.trigger]",
+                "tick_interval_s0 = 1",
+                "tick_interval_s1 = 1",
+                "tick_jitter = 0.0",
                 "",
-                "[channels]",
-                'socket = "/sandbox/akashic.sock"',
-                "",
-            "[channels.chat]",
-                "enabled = false",
-                "",
-                "[channels.telegram]",
-                "enabled = false",
-                'token = ""',
-                "",
-                "[channels.qq]",
-                "enabled = false",
-                'bot_uin = ""',
-                "",
-                "[proactive]",
-                'profile = "quiet"',
-                f"enabled = {'true' if proactive_enabled else 'false'}",
+                "[proactive.target]",
+                'channel = "cli"',
+                'chat_id = "gate"',
                 "",
             ]
-        ),
+        )
+    _ = config.write_text(
+        "\n".join(lines),
         encoding="utf-8",
     )
 
@@ -496,6 +514,48 @@ def _install_management_plugin(sandbox: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )
     return cache.parent, data, manifest
+
+
+def _install_proactive_fetch_plugin(sandbox: Path) -> Path:
+    cache = sandbox / "home/.akashic-plugin/cache/gate/proactive_fetch/1.0.0"
+    data = sandbox / "home/.akashic-plugin/data/proactive_fetch-gate"
+    manifest = sandbox / "home/.akashic-plugin/manifest.toml"
+    cache.mkdir(parents=True, exist_ok=True)
+    data.mkdir(parents=True, exist_ok=True)
+    _ = (cache / "plugin.py").write_text(
+        "from agent.plugins import McpServerSpec, Plugin, ProactiveSourceSpec\n"
+        "class ProactiveFetchPlugin(Plugin):\n"
+        "    name = 'proactive_fetch'\n"
+        "    version = '1.0.0'\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='proactive_fetch', command=('python', 'mcp_server.py'))]\n"
+        "    def proactive_sources(self):\n"
+        "        return [ProactiveSourceSpec(id='context', channels=('context',), server='proactive_fetch', fetch_tool='get_context')]\n",
+        encoding="utf-8",
+    )
+    _ = (cache / "mcp_server.py").write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "calls = Path(os.environ['AKA_PLUGIN_DATA_DIR']) / 'fetch_calls.jsonl'\n"
+        "tools = [{'name': 'get_context', 'description': 'Get context.', 'inputSchema': {'type': 'object', 'properties': {}}}]\n"
+        "for line in sys.stdin:\n"
+        "    message = json.loads(line)\n"
+        "    if 'id' not in message: continue\n"
+        "    method = message.get('method')\n"
+        "    result = {'tools': tools} if method == 'tools/list' else {}\n"
+        "    if method == 'tools/call':\n"
+        "        with calls.open('a', encoding='utf-8') as stream: stream.write(json.dumps(message['params']['name']) + '\\n')\n"
+        "        result = {'content': [{'type': 'text', 'text': '{\"available\": true}'}]}\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}), flush=True)\n",
+        encoding="utf-8",
+    )
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    _ = manifest.write_text(
+        '[plugins."proactive_fetch@gate"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+    return data / "fetch_calls.jsonl"
 
 
 def _install_migrated_plugins(sandbox: Path, plugin_root: Path) -> Path:
@@ -2000,7 +2060,13 @@ def _run_runtime_smoke(
 ) -> tuple[bool, dict[str, object]]:
     _write_smoke_config(
         sandbox,
-        proactive_enabled=phase in {"capability-hosts", "snapshot", "fitbit"},
+        proactive_enabled=phase in {
+            "capability-hosts",
+            "snapshot",
+            "fitbit",
+            "proactive-fetch",
+        },
+        fast_tick=phase == "proactive-fetch",
     )
     shutil.rmtree(
         sandbox / "home/.akashic-plugin/cache/gate",
@@ -2013,6 +2079,11 @@ def _run_runtime_smoke(
         else None
     )
     management = _install_management_plugin(sandbox) if phase == "management" else None
+    proactive_fetch_calls = (
+        _install_proactive_fetch_plugin(sandbox)
+        if phase == "proactive-fetch"
+        else None
+    )
     migrated_observe = (
         _install_migrated_plugins(
             sandbox,
@@ -2103,6 +2174,7 @@ def _run_runtime_smoke(
     migrated_probe: dict[str, object] = {}
     all_plugins_probe: dict[str, object] = {}
     management_probe: dict[str, object] = {}
+    proactive_fetch_probe: dict[str, object] = {}
     fitbit_probe: dict[str, object] = {}
     fitbit_processes = -1
     fitbit_reload: dict[str, object] = {}
@@ -2194,6 +2266,19 @@ def _run_runtime_smoke(
             management[1],
             management[2],
         )
+    if proactive_fetch_calls is not None and container_id and runtime_stable:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not proactive_fetch_calls.exists():
+            time.sleep(0.1)
+        calls = (
+            proactive_fetch_calls.read_text(encoding="utf-8").splitlines()
+            if proactive_fetch_calls.exists()
+            else []
+        )
+        proactive_fetch_probe = {
+            "passed": '"get_context"' in calls,
+            "calls": calls,
+        }
     _ = (
         _wait_json_value(scope_state, "event_started", True)
         if scope_state is not None and runtime_stable
@@ -2334,6 +2419,9 @@ def _run_runtime_smoke(
     if management is not None:
         phase_passed = management_probe.get("passed") is True
         phase_evidence = {"phase": phase, **management_probe}
+    if proactive_fetch_calls is not None:
+        phase_passed = proactive_fetch_probe.get("passed") is True
+        phase_evidence = {"phase": phase, **proactive_fetch_probe}
     passed = (
         started.returncode == 0
         and ipc_ready
@@ -2414,6 +2502,7 @@ def main() -> int:
             "all-plugins",
             "fitbit",
             "management",
+            "proactive-fetch",
         ),
         default="smoke",
     )
