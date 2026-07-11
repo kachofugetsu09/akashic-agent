@@ -179,7 +179,19 @@ class AgentTickFactory:
         if not self._deps.cfg.drift_enabled:
             return None
         drift_dir = Path(self._deps.state_store.workspace_dir) / "drift"
-        store = DriftStateStore(drift_dir)
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        plugin_skill_roots = (
+            tuple(
+                root
+                for generation in snapshot.active_generations()
+                for root in generation.contributions.drift_skill_roots
+            )
+            if snapshot is not None
+            else ()
+        )
+        store = DriftStateStore(drift_dir, plugin_skill_roots=plugin_skill_roots)
         return DriftTurnPipeline(
             DriftTurnPipelineDeps(
                 store=store,

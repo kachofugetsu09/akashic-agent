@@ -888,6 +888,20 @@ async def test_active_plugins_excludes_inactive_memory_plugin(
 
     assert {plugin.plugin_id for plugin in mgr.active_plugins()} >= {"akasha"}
     assert "default_memory" not in {plugin.plugin_id for plugin in mgr.active_plugins()}
+    snapshot = mgr.current_snapshot
+    assert snapshot is not None
+    active_generations = snapshot.active_generations()
+    assert {generation.plugin_id for generation in active_generations} >= {"akasha"}
+    assert "default_memory" not in {
+        generation.plugin_id for generation in active_generations
+    }
+    assert not any(
+        root.name == "skills"
+        and root.parent.name == "drift"
+        and generation.plugin_id == "default_memory"
+        for generation in active_generations
+        for root in generation.contributions.drift_skill_roots
+    )
 
 
 @pytest.mark.asyncio

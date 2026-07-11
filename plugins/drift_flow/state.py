@@ -54,6 +54,7 @@ class DriftStateStore:
         builtin_skills_dir: Path | None = None,
         include_builtin_skills: bool = False,
         builtin_skill_names: set[str] | None = None,
+        plugin_skill_roots: tuple[Path, ...] = (),
     ) -> None:
         self.drift_dir = drift_dir.expanduser()
         self.skills_dir = self.drift_dir / "skills"
@@ -65,6 +66,9 @@ class DriftStateStore:
         )
         self.include_builtin_skills = include_builtin_skills
         self.builtin_skill_names = set(builtin_skill_names or set())
+        self.plugin_skill_roots = tuple(
+            root.expanduser().resolve(strict=False) for root in plugin_skill_roots
+        )
         self._last_saved_run_id: int | None = None
         self._last_saved_run_at: str = ""
         self.skills_dir.mkdir(parents=True, exist_ok=True)
@@ -290,6 +294,10 @@ class DriftStateStore:
             builtin_dir = self.builtin_skills_dir / name
             if (builtin_dir / "SKILL.md").exists():
                 return builtin_dir
+        for root in self.plugin_skill_roots:
+            plugin_dir = root / name
+            if (plugin_dir / "SKILL.md").exists():
+                return plugin_dir
         return None
 
     def save_finish(
@@ -488,6 +496,7 @@ class DriftStateStore:
         roots: list[tuple[Path, bool]] = [(self.skills_dir, False)]
         if self.include_builtin_skills and self.builtin_skills_dir is not None:
             roots.append((self.builtin_skills_dir, True))
+        roots.extend((root, False) for root in self.plugin_skill_roots)
         return roots
 
     def _load_skill_meta(self, skill_dir: Path, *, builtin: bool) -> SkillMeta | None:

@@ -68,6 +68,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
+    plugin_is_active,
 )
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.lifecycle import ProactiveLifecycleBuilder
@@ -389,14 +390,7 @@ class PluginManager:
         instance = plugin_registry.get_instance(module_path)
         if instance is None:
             return True
-        checker = getattr(instance, "is_active", None)
-        if not callable(checker):
-            return True
-        try:
-            return bool(checker())
-        except Exception as e:
-            logger.warning("插件 active 状态检查失败 (%s): %s", module_path, e)
-            return True
+        return plugin_is_active(instance, plugin_id=module_path)
 
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
