@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from contextvars import ContextVar, Token
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -17,6 +18,8 @@ from agent.tool_hooks import ToolHook
 from agent.skills import SkillIndex
 from bus.event_bus import Handler
 from infra.channels.contract import Channel
+
+logger = logging.getLogger(__name__)
 
 
 SnapshotState = Literal[
@@ -62,10 +65,28 @@ class RuntimeSnapshot:
     accepting_leases: bool = True
     _store_token: object | None = field(default=None, repr=False)
 
+    def active_generations(self) -> tuple[PluginGeneration, ...]:
+        return tuple(
+            generation
+            for generation in self.generations.values()
+            if plugin_is_active(generation.instance, plugin_id=generation.plugin_id)
+        )
+
     def claim(self, store_token: object) -> None:
         if self.state != "compiled" or self.lease_count or self._store_token is not None:
             raise RuntimeError("RuntimeSnapshot 不是可发布的全新 compiled 快照")
         self._store_token = store_token
+
+
+def plugin_is_active(instance: object, *, plugin_id: str) -> bool:
+    checker = getattr(instance, "is_active", None)
+    if not callable(checker):
+        return True
+    try:
+        return bool(checker())
+    except Exception as error:
+        logger.warning("插件 active 状态检查失败 (%s): %s", plugin_id, error)
+        return True
 
 
 @dataclass(frozen=True)
