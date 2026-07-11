@@ -11,6 +11,7 @@ services:
       AKASHIC_DEBUG_WORKSPACE: /sandbox/workspace
       AKASHIC_HOST_GID: "${GID:?set by plugin_hot_reload_probe.py}"
       AKASHIC_HOST_UID: "${UID:?set by plugin_hot_reload_probe.py}"
+      AKASHIC_PLUGIN_LOG_LEVEL: DEBUG
       HOME: /sandbox/home
       PYTHONUNBUFFERED: "1"
     volumes:

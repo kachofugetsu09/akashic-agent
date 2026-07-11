@@ -1023,7 +1023,7 @@ def _candidate_statuses(container_id: str) -> list[dict[str, object]]:
         stderr=subprocess.STDOUT,
         text=True,
     ).stdout
-    marker = "plugin_candidate_status "
+    marker = "plugin_candidate_status_detail "
     statuses: list[dict[str, object]] = []
     for line in logs.splitlines():
         if marker not in line:

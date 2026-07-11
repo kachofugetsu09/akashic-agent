@@ -1168,10 +1168,7 @@ class PluginManager:
                     ),
                 }
                 results.append(result)
-                logger.info(
-                    "plugin_candidate_status %s",
-                    json.dumps(result, ensure_ascii=False, sort_keys=True),
-                )
+                _log_candidate_status(result)
                 continue
             if (
                 current_prepared is not None
@@ -1241,10 +1238,7 @@ class PluginManager:
                 ),
             }
             results.append(result)
-            logger.info(
-                "plugin_candidate_status %s",
-                json.dumps(result, ensure_ascii=False, sort_keys=True),
-            )
+            _log_candidate_status(result)
         return results
 
     async def _load_one(
@@ -2853,6 +2847,27 @@ def _skill_body_hashes(
 def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
     catalog = generation.mcp_catalog
     return list(catalog.tool_names) if catalog is not None else []
+
+
+def _log_candidate_status(result: dict[str, object]) -> None:
+    logger.info(
+        "plugin_candidate_status plugin=%s gate=%s active=%s prepared=%s "
+        "revision=%s counts=skills:%d,drift_skills:%d,mcp:%d,jobs:%d,sources:%d",
+        result["plugin_id"],
+        result["gate_status"],
+        result["active_generation"],
+        result["prepared_generation"] or "-",
+        str(result["candidate_revision"])[:12],
+        len(cast(list[object], result["skills"])),
+        len(cast(dict[object, object], result["drift_skill_descriptions"])),
+        len(cast(list[object], result["mcp_tools"])),
+        len(cast(list[object], result["jobs"])),
+        len(cast(list[object], result["proactive_sources"])),
+    )
+    logger.debug(
+        "plugin_candidate_status_detail %s",
+        json.dumps(result, ensure_ascii=False, sort_keys=True),
+    )
 
 
 def _job_keys(generation: PluginGeneration) -> list[str]:

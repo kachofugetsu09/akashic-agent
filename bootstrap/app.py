@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -30,6 +31,9 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     stream=sys.stdout,
     force=True,
+)
+logging.getLogger("agent.plugins.manager").setLevel(
+    os.environ.get("AKASHIC_PLUGIN_LOG_LEVEL", "INFO").upper()
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)

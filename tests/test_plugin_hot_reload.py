@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 import os
 import py_compile
 import shutil
@@ -690,7 +691,10 @@ async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_return_to_active_revision_discards_stale_prepared(tmp_path: Path):
+async def test_return_to_active_revision_discards_stale_prepared(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+):
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "return_active",
@@ -703,6 +707,7 @@ async def test_return_to_active_revision_discards_stale_prepared(tmp_path: Path)
     active_source = plugin_file.read_text(encoding="utf-8")
     manager = _manager(tmp_path)
     await manager.load_all()
+    caplog.set_level(logging.INFO, logger="agent.plugins.manager")
     _ = plugin_file.write_text(
         active_source.replace("'v1'", "'v2'"),
         encoding="utf-8",
@@ -718,6 +723,14 @@ async def test_return_to_active_revision_discards_stale_prepared(tmp_path: Path)
     assert second_scan[0]["gate_status"] == "active"
     assert manager.prepared_generation("return_active") is None
     assert prepared.state == "discarded"
+    status_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("plugin_candidate_status ")
+    ]
+    assert status_logs
+    assert "counts=skills:" in status_logs[-1]
+    assert "skill_descriptions" not in status_logs[-1]
 
 
 @pytest.mark.asyncio
