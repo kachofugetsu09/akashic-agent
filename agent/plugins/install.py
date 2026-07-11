@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import os
 import importlib.util
+import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,15 +64,17 @@ def uninstall_plugin(
     plugin_id: str,
     *,
     plugins_home: Path | None = None,
+    wait_until_disabled: Callable[[str], None] | None = None,
 ) -> tuple[Path, Path]:
     home = plugins_home or aka_plugins_root()
     plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
     cache_path = home / "cache" / marketplace / plugin_name
     data_path = home / "data" / f"{plugin_name}-{marketplace}"
-    if not cache_path.is_dir():
-        raise ValueError(f"插件缓存不存在: {plugin_id}")
     _ = set_plugin_enabled(plugin_id, enabled=False, plugins_home=home)
-    shutil.rmtree(cache_path)
+    if wait_until_disabled is not None:
+        wait_until_disabled(plugin_id)
+    if cache_path.exists():
+        shutil.rmtree(cache_path)
     _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
     return cache_path, data_path
 
@@ -81,10 +85,8 @@ def _split_installed_plugin_id(plugin_id: str) -> tuple[str, str]:
         not separator
         or not plugin_name
         or not marketplace
-        or Path(plugin_name).name != plugin_name
-        or Path(marketplace).name != marketplace
-        or plugin_name in {".", ".."}
-        or marketplace in {".", ".."}
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", plugin_name) is None
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", marketplace) is None
     ):
         raise ValueError(f"无效的已安装插件 ID: {plugin_id}")
     return plugin_name, marketplace

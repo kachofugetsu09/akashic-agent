@@ -363,6 +363,11 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     loop = SimpleNamespace()
     channel = IPCServerChannel(bus, str(tmp_path / "agent.sock"), None)
 
+    async def noop(data: dict[str, object]) -> str:
+        return str(data["command"])
+
+    channel.register_command("noop", noop)
+
     server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
     chmod = MagicMock()
     monkeypatch.setattr("infra.channels.ipc_server.os.chmod", chmod)
@@ -411,6 +416,7 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     assert inbound.content == "hello"
     assert any("command_result" in payload.decode() for payload in writes)
     assert any('"ok": false' in payload.decode() for payload in writes)
+    assert any('"ok": true' in payload.decode() for payload in writes)
     assert any("unknown command" in payload.decode() for payload in writes)
 
     msg = OutboundMessage(channel="cli", chat_id="missing", content="hi")

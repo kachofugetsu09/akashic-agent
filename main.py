@@ -70,6 +70,25 @@ def _parse_csv_flag(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _wait_plugin_disabled(config_path: str, plugin_id: str) -> None:
+    if not Path(config_path).is_file():
+        return
+    from infra.channels.cli import request_command
+
+    socket_path = Config.load(config_path).channels.socket
+    result = asyncio.run(
+        request_command(
+            socket_path,
+            "plugin-disable-and-drain",
+            plugin_id=plugin_id,
+        )
+    )
+    if result is None:
+        return
+    if result.get("ok") is not True:
+        raise RuntimeError(str(result.get("message", "插件停用失败")))
+
+
 def connect_cli(config_path: str = "config.toml") -> None:
     socket_path = Config.load(config_path).channels.socket
     try:
@@ -239,8 +258,14 @@ if __name__ == "__main__":
             sys.exit(1)
         plugin_id = args[1]
         try:
-            cache_path, data_path = uninstall_plugin(plugin_id)
-        except ValueError as exc:
+            cache_path, data_path = uninstall_plugin(
+                plugin_id,
+                wait_until_disabled=lambda target: _wait_plugin_disabled(
+                    config_path,
+                    target,
+                ),
+            )
+        except (ValueError, RuntimeError) as exc:
             print(str(exc))
             sys.exit(1)
         print(f"插件已卸载: {plugin_id}")

@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CHANNEL = "cli"
+CommandHandler = Callable[[dict[str, object]], Awaitable[str]]
 
 
 def _parse_tcp_endpoint(endpoint: str) -> tuple[str, int] | None:
@@ -56,7 +58,11 @@ class IPCServerChannel:
         self._default_session_key = default_session_key.strip()
         self._writers: dict[str, asyncio.StreamWriter] = {}
         self._server: asyncio.AbstractServer | None = None
+        self._command_handlers: dict[str, CommandHandler] = {}
         bus.subscribe_outbound(CHANNEL, self._on_response)
+
+    def register_command(self, name: str, handler: CommandHandler) -> None:
+        self._command_handlers[name] = handler
 
     async def start(self) -> None:
         tcp_endpoint = _parse_tcp_endpoint(self._socket_path)
@@ -148,12 +154,25 @@ class IPCServerChannel:
 
     async def _handle_command(
         self,
-        data: dict,
+        data: dict[str, object],
         chat_id: str,
         writer: asyncio.StreamWriter,
     ) -> None:
         cmd = data.get("command", "")
         logger.info("[cli] received command cmd=%r session=%s", cmd, chat_id)
+        handler = self._command_handlers.get(str(cmd))
+        if handler is not None:
+            try:
+                message = await handler(data)
+            except (ValueError, RuntimeError) as error:
+                await self._write_command_result(
+                    writer,
+                    ok=False,
+                    message=str(error),
+                )
+                return
+            await self._write_command_result(writer, ok=True, message=message)
+            return
         await self._write_command_result(
             writer,
             ok=False,

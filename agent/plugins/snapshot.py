@@ -526,9 +526,18 @@ class RuntimeSnapshotStore:
         snapshot.lease_count -= 1
         for generation in snapshot.generations.values():
             generation.lease_count -= 1
+        await self._drain_if_ready(snapshot)
         async with self._condition:
             self._condition.notify_all()
-        await self._drain_if_ready(snapshot)
+
+    async def wait_for_generation_drained(
+        self,
+        generation: PluginGeneration,
+    ) -> None:
+        async with self._condition:
+            while generation.lease_count:
+                await self._condition.wait()
+        await self.retry_drains()
 
     async def _drain_if_ready(self, snapshot: RuntimeSnapshot) -> None:
         if snapshot.state not in {"retired", "aborted"} or snapshot.lease_count:

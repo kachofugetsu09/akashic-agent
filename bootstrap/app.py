@@ -192,6 +192,11 @@ class AppRuntime:
                 interrupt_controller=self.agent_loop,
                 plugin_channels=plugin_channels,
             )
+            if plugin_manager is not None:
+                self.ipc.register_command(
+                    "plugin-disable-and-drain",
+                    self._disable_and_drain_plugin,
+                )
             await self.channel_host.start_all()
             if plugin_manager is not None:
                 channel_bindings = {
@@ -410,6 +415,16 @@ class AppRuntime:
         )
         self._plugin_candidate_tasks.add(task)
         task.add_done_callback(self._plugin_candidate_scan_done)
+
+    async def _disable_and_drain_plugin(self, data: dict[str, object]) -> str:
+        plugin_id = str(data.get("plugin_id", "")).strip()
+        if not plugin_id:
+            raise ValueError("缺少插件 ID")
+        manager = getattr(self.core, "plugin_manager", None)
+        if manager is None:
+            raise RuntimeError("插件 Runtime 不可用")
+        await manager.reconcile_disabled_and_drain(plugin_id)
+        return f"插件已停用并排空: {plugin_id}"
 
     def _plugin_candidate_scan_done(self, task: asyncio.Task[Any]) -> None:
         self._plugin_candidate_tasks.discard(task)

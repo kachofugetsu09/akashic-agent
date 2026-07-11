@@ -112,11 +112,25 @@ def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> No
         enabled=True,
         plugins_home=home,
     )
+    disabled_before_removal = False
+
+    def wait_until_disabled(plugin_id: str) -> None:
+        nonlocal disabled_before_removal
+        current = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
+        disabled_before_removal = (
+            plugin_id == "fitbit@github"
+            and current["plugins"][plugin_id]["enabled"] is False
+            and cache.parent.exists()
+            and state.exists()
+        )
+
     removed_cache, retained_data = uninstall_plugin(
         "fitbit@github",
         plugins_home=home,
+        wait_until_disabled=wait_until_disabled,
     )
 
+    assert disabled_before_removal
     assert removed_cache == home / "cache" / "github" / "fitbit"
     assert not removed_cache.exists()
     assert retained_data == data
@@ -132,7 +146,12 @@ def test_plugin_management_rejects_non_installed_plugin_id(tmp_path: Path) -> No
     (home / "manifest.toml").parent.mkdir(parents=True, exist_ok=True)
     (home / "manifest.toml").write_text("", encoding="utf-8")
 
-    for plugin_id in ("fitbit", "../fitbit@github", "fitbit@../github"):
+    for plugin_id in (
+        "fitbit",
+        "../fitbit@github",
+        "fitbit@../github",
+        "fitbit\ncorrupt@github",
+    ):
         try:
             set_installed_plugin_enabled(
                 plugin_id,
@@ -143,6 +162,27 @@ def test_plugin_management_rejects_non_installed_plugin_id(tmp_path: Path) -> No
             pass
         else:
             raise AssertionError(f"应拒绝插件 ID: {plugin_id}")
+
+
+def test_uninstall_converges_when_cache_is_already_missing(tmp_path: Path) -> None:
+    home = tmp_path / "plugins-home"
+    data = home / "data" / "feed-github"
+    data.mkdir(parents=True)
+    state = data / "state.db"
+    state.write_bytes(b"keep")
+    (home / "manifest.toml").write_text(
+        '[plugins."feed@github"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+
+    cache, retained = uninstall_plugin("feed@github", plugins_home=home)
+
+    assert not cache.exists()
+    assert retained == data
+    assert state.read_bytes() == b"keep"
+    assert tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8")) == {
+        "plugins": {}
+    }
 
 
 def _commit(repo: Path) -> None:

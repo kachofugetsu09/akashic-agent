@@ -561,6 +561,21 @@ class PluginManager:
                 results.append(await self._publish_prepared(plugin_id))
             return results
 
+    async def reconcile_disabled_and_drain(self, plugin_id: str) -> None:
+        async with self._candidate_prepare_lock:
+            manifest = load_plugin_manifest(
+                _plugins_home(self._installed_cache_root)
+            )
+            if manifest.get(plugin_id, False):
+                raise RuntimeError(f"插件尚未禁用: {plugin_id}")
+            active = self._active_generations.get(plugin_id)
+            if active is None:
+                return
+            await self._deactivate_plugin(plugin_id)
+            await self._snapshot_store.wait_for_generation_drained(active)
+            if not active.scope.closed:
+                raise RuntimeError(f"插件旧代资源尚未关闭: {plugin_id}")
+
     async def _deactivate_plugin(self, plugin_id: str) -> dict[str, object]:
         active = self._active_generations[plugin_id]
         generations = {

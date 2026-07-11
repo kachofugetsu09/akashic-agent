@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -459,14 +460,33 @@ def _install_management_plugin(sandbox: Path) -> tuple[Path, Path, Path]:
     cache.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True, exist_ok=True)
     _ = (cache / "plugin.py").write_text(
-        "from agent.plugins import Plugin, tool\n"
+        "from agent.plugins import ManagedServiceSpec, Plugin, tool\n"
         "class ManagementPlugin(Plugin):\n"
         "    name = 'management'\n"
         "    version = '1.0.0'\n"
+        "    @classmethod\n"
+        "    def managed_services(cls):\n"
+        "        return [ManagedServiceSpec(id='probe', command=('python', 'management_service.py'), readiness_url='http://127.0.0.1:18768/')]\n"
         "    @tool(name='management_probe')\n"
         "    async def probe(self, event):\n"
         "        \"\"\"Return the management probe state.\"\"\"\n"
         "        return 'ok'\n",
+        encoding="utf-8",
+    )
+    _ = (cache / "management_service.py").write_text(
+        "import os, signal, sys\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "from pathlib import Path\n"
+        "data = Path(os.environ['AKA_PLUGIN_DATA_DIR'])\n"
+        "(data / 'service.started').write_text('started')\n"
+        "def stop(*args):\n"
+        "    (data / 'service.stopped').write_text('stopped')\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b'ok')\n"
+        "    def log_message(self, *args): pass\n"
+        "HTTPServer(('127.0.0.1', 18768), Handler).serve_forever()\n",
         encoding="utf-8",
     )
     _ = (data / "retained.txt").write_text("keep", encoding="utf-8")
@@ -1224,10 +1244,23 @@ def _exercise_plugin_management(
     manifest: Path,
 ) -> dict[str, object]:
     commands: dict[str, dict[str, object]] = {}
+    service_states = {"initial": _management_service_ready(container_id)}
 
     def run(command: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["docker", "exec", container_id, "python", "main.py", command, "management@gate"],
+            [
+                "docker",
+                "exec",
+                "--user",
+                f"{os.getuid()}:{os.getgid()}",
+                container_id,
+                "python",
+                "main.py",
+                command,
+                "management@gate",
+                "--config",
+                "/sandbox/config.toml",
+            ],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1247,6 +1280,12 @@ def _exercise_plugin_management(
         "output": disabled_command.stdout.strip(),
         "status": disabled,
     }
+    service_states["disabled"] = _wait_process_count(
+        container_id,
+        "management_service.py",
+        lambda count: count == 0,
+    ) == 0
+    (data / "service.stopped").unlink(missing_ok=True)
 
     before = len(_snapshot_statuses(container_id))
     enabled_command = run("plugin-enable")
@@ -1261,6 +1300,7 @@ def _exercise_plugin_management(
         "output": enabled_command.stdout.strip(),
         "status": enabled,
     }
+    service_states["enabled"] = _management_service_ready(container_id)
 
     before = len(_snapshot_statuses(container_id))
     uninstall_command = run("plugin-uninstall")
@@ -1275,23 +1315,55 @@ def _exercise_plugin_management(
         "output": uninstall_command.stdout.strip(),
         "status": uninstalled,
     }
-    manifest_text = manifest.read_text(encoding="utf-8")
+    service_states["uninstalled"] = _wait_process_count(
+        container_id,
+        "management_service.py",
+        lambda count: count == 0,
+    ) == 0
+    manifest_data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    manifest_plugins = manifest_data.get("plugins", {})
     passed = (
         all(item["returncode"] == 0 for item in commands.values())
         and disabled.get("publication_state") == "disabled"
         and enabled.get("publication_state") == "committed"
         and uninstalled.get("publication_state") == "disabled"
+        and service_states == {
+            "initial": True,
+            "disabled": True,
+            "enabled": True,
+            "uninstalled": True,
+        }
+        and (data / "service.stopped").exists()
         and not cache.exists()
         and (data / "retained.txt").read_text(encoding="utf-8") == "keep"
-        and "management@gate" not in manifest_text
+        and "management@gate" not in manifest_plugins
     )
     return {
         "passed": passed,
         "commands": commands,
+        "service_states": service_states,
+        "service_stopped": (data / "service.stopped").exists(),
         "cache_removed": not cache.exists(),
         "data_retained": (data / "retained.txt").exists(),
-        "manifest_entry_removed": "management@gate" not in manifest_text,
+        "manifest_entry_removed": "management@gate" not in manifest_plugins,
     }
+
+
+def _management_service_ready(container_id: str) -> bool:
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            container_id,
+            "python",
+            "-c",
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18768/', timeout=2).read()",
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
 def _fitbit_runtime_probe(container_id: str) -> dict[str, object]:
     script = (
         "import json, urllib.request\n"

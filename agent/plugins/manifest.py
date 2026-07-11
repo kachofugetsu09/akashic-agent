@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Mapping, cast
@@ -87,5 +89,16 @@ def write_plugin_manifest(
                 "",
             ]
         )
-    path.write_text("\n".join(lines), encoding="utf-8")
+    content = "\n".join(lines)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix="manifest-",
+        suffix=".toml",
+        delete=False,
+    ) as stream:
+        _ = stream.write(content)
+        temporary = Path(stream.name)
+    os.replace(temporary, path)
     return path
