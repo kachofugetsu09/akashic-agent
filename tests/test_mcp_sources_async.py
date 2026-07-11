@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.mcp.client import McpClient, McpToolInfo
+from agent.mcp.tool import McpToolWrapper
 from agent.plugins.specs import ProactiveSourceSpec, RegisteredProactiveSource
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
@@ -75,6 +78,38 @@ async def test_shared_mcp_gateway_applies_timeout(tmp_path: Path) -> None:
     gateway = mcp_sources.SharedMcpGateway(tmp_path, tools)
     with pytest.raises(asyncio.TimeoutError):
         await gateway.call("feed", "get_proactive_events", {}, timeout=0.01)
+
+
+@pytest.mark.asyncio
+async def test_shared_mcp_gateway_forwards_timeout_to_mcp_client(
+    tmp_path: Path,
+) -> None:
+    client = AsyncMock()
+    client.name = "feed"
+    client.call.return_value = "[]"
+    tool = McpToolWrapper(
+        cast(McpClient, client),
+        McpToolInfo(
+            name="get_proactive_events",
+            description="test",
+            input_schema={"type": "object", "properties": {}},
+        ),
+    )
+    tools = ToolRegistry()
+    tools.register(tool, source_type="mcp", source_name="feed")
+    gateway = mcp_sources.SharedMcpGateway(tmp_path, tools)
+
+    assert await gateway.call(
+        "feed",
+        "get_proactive_events",
+        {},
+        timeout=12.0,
+    ) == []
+    client.call.assert_awaited_once_with(
+        "get_proactive_events",
+        {},
+        timeout=12.0,
+    )
 
 
 @pytest.mark.asyncio
