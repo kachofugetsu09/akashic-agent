@@ -33,7 +33,7 @@ python main.py plugin-install --source <repo_or_url> --marketplace github
 安装后检查 manifest、cache、data，并运行：
 
 ```bash
-python main.py plugin-doctor --plugin <name>@github
+python main.py plugin-doctor <name>@github
 ```
 
 ## 更新已有插件
@@ -46,7 +46,8 @@ python main.py plugin-doctor --plugin <name>@github
 ├─ 提交并推送源码
 ├─ 用原 source 与 marketplace 再次执行 plugin-install
 ├─ watcher 自动准备并发布新代际
-└─ plugin-doctor 加一次真实行为验证
+├─ 运行 plugin-doctor 检查结构与配置
+└─ 发起一次新请求验证真实行为
 ```
 
 重新执行 `plugin-install` 即更新：它替换 cache 中的已安装版本，但保留 data 与配置。运行中的 watcher 会自动热重载，不要重启 Agent。
