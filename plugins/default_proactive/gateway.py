@@ -27,6 +27,7 @@ class GatewayResult:
 
 @dataclass
 class GatewayDeps:
+    begin_fn: Any = None
     alert_fn: Any = None
     feed_fn: Any = None
     context_fn: Any = None
@@ -45,7 +46,9 @@ class DataGateway:
         web_fetch_tool: Any = None,
         max_chars: int = 8_000,
         content_limit: int = 5,
+        begin_fn: Any = None,
     ) -> None:
+        self._begin_fn = begin_fn
         self._alert_fn = alert_fn
         self._feed_fn = feed_fn
         self._context_fn = context_fn
@@ -55,6 +58,8 @@ class DataGateway:
 
     async def run(self) -> GatewayResult:
         """并行拉取所有数据源，返回 GatewayResult。单源失败不影响其他源。"""
+        if self._begin_fn is not None:
+            self._begin_fn()
         # 1. 在 agent 真正开始决策前，先把三路输入源并行预取完：
         #    alerts / context / content。
         alerts_task = asyncio.create_task(self._fetch_alerts())

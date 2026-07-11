@@ -298,7 +298,7 @@ def test_config_load_accepts_dev_model_alias(tmp_path: Path):
     assert cfg.dev_mode is True
 
 
-def test_config_load_skips_unfilled_channels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_config_load_skips_unfilled_channels(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
         cfg_path,
@@ -322,64 +322,15 @@ def test_config_load_skips_unfilled_channels(tmp_path: Path, monkeypatch: pytest
                     "bot_uin": "",
                     "allow_from": ["42"],
                 },
-                "qqbot": {
-                    "app_id": "app",
-                    "client_secret": "${QQBOT_SECRET}",
-                    "allow_from": ["user-openid"],
-                    "groups": [
-                        {
-                            "group_openid": "group-openid",
-                            "allow_from": ["member-openid"],
-                            "require_at": True,
-                            "allow_proactive": True,
-                        }
-                    ],
-                },
             },
         },
     )
 
-    monkeypatch.setenv("QQBOT_SECRET", "secret")
     cfg = Config.load(cfg_path)
 
     assert cfg.channels.telegram is None
     assert cfg.channels.qq is None
-    assert cfg.plugins["qqbot"]["app_id"] == "app"
-    assert cfg.plugins["qqbot"]["client_secret"] == "secret"
-    assert cfg.plugins["qqbot"]["allow_from"] == ["user-openid"]
-    assert cfg.plugins["qqbot"]["groups"][0]["group_openid"] == "group-openid"
-    assert cfg.plugins["qqbot"]["groups"][0]["allow_from"] == ["member-openid"]
-    assert cfg.plugins["qqbot"]["groups"][0]["require_at"] is True
-    assert cfg.plugins["qqbot"]["groups"][0]["allow_proactive"] is True
     assert cfg.channels.socket == DEFAULT_SOCKET
-
-
-def test_config_load_reads_fitbit_integration_block(tmp_path: Path):
-    cfg_path = tmp_path / "config.toml"
-    _write_toml(
-        cfg_path,
-        {
-            "llm": {
-                "provider": "openai",
-                "main": {
-                    "model": "m",
-                    "api_key": "k",
-                },
-            },
-            "agent": {
-                "system_prompt": "s",
-            },
-            "integrations": {
-                "fitbit": {
-                    "enabled": True,
-                }
-            },
-        },
-    )
-
-    cfg = Config.load(cfg_path)
-
-    assert cfg.fitbit.enabled is True
 
 
 def test_config_load_reads_toml_layout(tmp_path: Path):
@@ -403,8 +354,6 @@ memory_window = 12
 [channels]
 socket = "/tmp/toml-akashic.sock"
 
-[integrations.fitbit]
-enabled = true
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -421,7 +370,6 @@ enabled = true
         assert cfg.channels.socket.startswith("127.0.0.1:")
     else:
         assert cfg.channels.socket == "/tmp/toml-akashic.sock"
-    assert cfg.fitbit.enabled is True
 
 
 def test_config_load_reads_qq_websocket_timeout(tmp_path: Path):

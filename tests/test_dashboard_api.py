@@ -769,7 +769,7 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
 def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:
     _seed_workspace(tmp_path)
     home = tmp_path / "home"
-    plugin_dir = tmp_path / "installed" / "status_commands" / "0.1.0"
+    plugin_dir = home / ".akashic-plugin" / "cache" / "github" / "status_commands" / "1.0.0"
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "dashboard.py").write_text(
         "from fastapi import FastAPI\n"
@@ -778,23 +778,13 @@ def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
     (plugin_dir / "dashboard_panel.js").write_text("export default {};\n", encoding="utf-8")
-    registry_dir = home / ".akashic-plugin"
-    registry_dir.mkdir(parents=True, exist_ok=True)
-    (registry_dir / "registry.json").write_text(
-        json.dumps(
-            {
-                "plugins": {
-                    "status_commands@github": {
-                        "plugin_id": "status_commands@github",
-                        "source_type": "installed",
-                        "active": True,
-                        "plugin_root": str(plugin_dir),
-                    }
-                }
-            }
-        ),
+    (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\nclass StatusPlugin(Plugin):\n    name='status_commands'\n    version='1.0.0'\n",
         encoding="utf-8",
     )
+    manifest_path = home / ".akashic-plugin" / "manifest.toml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text('[plugins."status_commands@github"]\nenabled = true\n', encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
 
     with TestClient(create_dashboard_app(tmp_path)) as client:
@@ -815,7 +805,7 @@ def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:
 def test_installed_plugin_dashboard_supports_relative_imports(tmp_path, monkeypatch) -> None:
     _seed_workspace(tmp_path)
     home = tmp_path / "home"
-    plugin_dir = tmp_path / "installed" / "observe" / "0.1.0"
+    plugin_dir = home / ".akashic-plugin" / "cache" / "github" / "observe" / "1.0.0"
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "db.py").write_text(
         "def ping():\n"
@@ -831,23 +821,13 @@ def test_installed_plugin_dashboard_supports_relative_imports(tmp_path, monkeypa
         "        return {'value': ping()}\n",
         encoding="utf-8",
     )
-    registry_dir = home / ".akashic-plugin"
-    registry_dir.mkdir(parents=True, exist_ok=True)
-    (registry_dir / "registry.json").write_text(
-        json.dumps(
-            {
-                "plugins": {
-                    "observe@github": {
-                        "plugin_id": "observe@github",
-                        "source_type": "installed",
-                        "active": True,
-                        "plugin_root": str(plugin_dir),
-                    }
-                }
-            }
-        ),
+    (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\nclass ObservePlugin(Plugin):\n    name='observe'\n    version='1.0.0'\n",
         encoding="utf-8",
     )
+    manifest_path = home / ".akashic-plugin" / "manifest.toml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text('[plugins."observe@github"]\nenabled = true\n', encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
 
     with TestClient(create_dashboard_app(tmp_path)) as client:

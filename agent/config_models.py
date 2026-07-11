@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from proactive_v2.config import ProactiveConfig
 
@@ -27,14 +26,6 @@ class QQChannelConfig:
     allow_from: list[str] = field(default_factory=list)
     groups: list[QQGroupConfig] = field(default_factory=list)
     websocket_open_timeout_seconds: float = 5.0
-
-
-@dataclass
-class QQBotGroupConfig:
-    group_openid: str
-    allow_from: list[str] = field(default_factory=list)
-    require_at: bool = True
-    allow_proactive: bool = False
 
 
 @dataclass
@@ -67,11 +58,6 @@ class MemoryConfig:
     enabled: bool = False
     engine: str = ""
     embedding: MemoryEmbeddingConfig = field(default_factory=MemoryEmbeddingConfig)
-
-
-@dataclass
-class FitbitIntegrationConfig:
-    enabled: bool = False
 
 
 @dataclass
@@ -122,7 +108,6 @@ class Config:
     agent_api_key: str = ""
     agent_base_url: str = ""
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-    fitbit: FitbitIntegrationConfig = field(default_factory=FitbitIntegrationConfig)
     multimodal: bool = True
     vl_model: str = ""
     vl_api_key: str = ""
@@ -132,7 +117,6 @@ class Config:
     dev_mode: bool = False
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
-    plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path = "config.toml") -> Config:
@@ -144,12 +128,10 @@ class Config:
 __all__ = [
     "ChannelsConfig",
     "Config",
-    "FitbitIntegrationConfig",
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "PeerAgentConfig",
     "QQChannelConfig",
-    "QQBotGroupConfig",
     "QQGroupConfig",
     "TelegramChannelConfig",
     "WebChatConfig",

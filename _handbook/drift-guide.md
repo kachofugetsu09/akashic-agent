@@ -15,37 +15,58 @@ Drift 是一个**你写模型可以做什么、模型照着执行**的后台任�
 
 当 proactive gateway 拉完数据发现三路都空时，agent 不空转，而是进入 Drift 模式利用空闲时间做后台工作。简单说：**没新闻可推的时候就干点后台活儿**。
 
-```
-tick
-  └── DataGateway.run() → 无 alert / 无 content / 无 context
-       └── DriftTurnPipeline.run()
-            ├── scan_skills()      读取 drift/skills/*/SKILL.md
-            ├── filter_skills()   跳过 requires_mcp 未满足的 skill
-            ├── build_context()   注入记忆、近期上下文、Drift Briefing
-            └── tool_loop(max_steps)
-                 ├── read_file / write_file / edit_file
-                 ├── recall_memory / web_fetch / web_search
-                 ├── fetch_messages / search_messages / shell
-                 ├── message_push      最多一次
-                 ├── mount_server      可挂载 MCP server
-                 ├── finish_drift      必须声明 status / message_result
-                 └── wrap_up           步数耗尽时只允许 finish_drift
+```text
+┌─ proactive gateway 无 alert / content / context
+│  └─ DriftTurnPipeline
+│     ├─ 扫描并比较 drift skills
+│     ├─ 注入记忆、近期上下文与连续性前情
+│     ├─ select_skill 或 idle_drift
+│     └─ 执行一个原子动作
+│        ├─ 可选 message_push（最多一次）
+│        └─ finish_drift
+│           ├─ completed / paused
+│           ├─ skill continuum
+│           ├─ self_update
+│           └─ self_observation journal
+└─ done
 ```
 
 ## Drift 的核心约束
 
 1. **每次重新选择**：不默认继续上次的 skill，每轮重新比较所有 skill
-2. **message_push 限制**：最多推送一次用户消息；推送后只允许 write_file / edit_file / finish_drift 收尾
-3. **必须 finish_drift**：执行结束前必须调用，填写 `status` 和 `message_result`
-4. **message_result 与实际一致**：
-   - `"sent"` — 本轮成功调用了 `message_push`
-   - `"silent"` — 本轮没有推送消息
-5. **status 表示本轮进度**：
+2. **message_push 是 fire-and-forget**：最多推送一次；成功后本轮动作已经完成，只能调用 `finish_drift`。未来真有用户回答时，它会作为新会话上下文和记忆进入，但 Drift 不保存“等待回答”，也不能推断“用户没回”
+3. **必须 finish_drift**：执行结束前必须调用，填写 `status`、`briefing` 和 `self_update`
+4. **message_result 由 runtime 记录**：调用过 `message_push` 就是 sent，否则是 silent，不由 skill 自报
+5. **status 表示系统自己的进度**：
    - `"completed"` — 本轮小闭环已完成，不强行生成下一步
    - `"paused"` — 本轮没做完，必须在 `scratchpad_update` 写清下次从哪里继续
-   - `"waiting"` — 等用户回复或外部条件，必须写清等待什么
 6. **到达 max_steps 会收尾**：如果模型没主动调 finish_drift，runtime 会进入 wrap-up phase，只允许调用 `finish_drift` 保存接续点
 7. **最小间隔**：`drift.min_interval_hours` 控制连续两次 drift 的最小间隔
+
+## Drift 的自我连续性
+
+Drift 会被反复触发。它既要保留当前意图，也要能从多轮行为中形成可修正的暂定认识。
+
+```text
+┌─ self_state
+│  ├─ 上轮意图与选择原因
+│  └─ 宽松的 next_tendency，不是下一轮指令
+├─ recent_drift_runs
+│  └─ 最近真实做过的活动
+└─ self_observation journal
+   ├─ question       首次提出暂定观察
+   ├─ reinforce      后续重复证据加强
+   └─ revise         反例或主动变化修正
+```
+
+`finish_drift.self_update` 必须包含：
+
+- `reflection`：本轮与近期行为是什么关系。
+- `pattern`：`ordinary`、`repeat`、`change` 或 `contradiction`。
+- `next_tendency`：下次可能想做什么的宽松倾向，不能写等待用户回答。
+- `observation`：当 pattern 不是 ordinary 时必填，保存 statement、basis 和 effect。
+
+这些观察只属于 Drift 自身的空闲行为，不写入用户长期记忆，也不是稳定人格结论。
 
 ---
 
@@ -58,11 +79,9 @@ tick
 | 文件 | 维护方式 | 说明 |
 |------|---------|------|
 | `drift/skills/<name>/SKILL.md` | **你写** | drift 任务定义，agent 每轮当 system prompt 读。也可以让主 agent 用内置 skill `create-drift-skill` 帮你生成 |
-| `drift/drift.db` | **runtime 写** | 保存每个 skill 的 run_count、last_status、briefing、scratchpad 和轻量 state_json |
+| `drift/drift.db` | **runtime 写** | 保存 run、skill continuum、cursor、journal、self_state 和 self_observation |
 | `drift/skills/<name>/*.md` | **按 skill 需要读写** | 工作文件（audited.md、读书笔记、临时材料等），不是系统级连续性的唯一来源 |
 | `drift/skills/<name>/scripts/*.py` | **你写** | 固定脚本，skill 通过 `shell` 工具调用 |
-| `drift/drift.json` | **兼容旧数据** | 旧 recent_runs 兜底读取，新运行写入 `drift.db` |
-| `drift/drift_note.md` | **兼容旧笔记** | 新跨轮次前情优先通过 `drift.db` 的 scratchpad 注入 |
 
 内置了一个 skill 放仓库里（`agent/skills/`），用来创建新的 drift skill。
 
@@ -99,10 +118,10 @@ description: <一句话描述>
 1. 脚本抽样（`sample_memory_for_audit.py`）→ 随机选一条未审计的记忆
 2. `fetch_messages` 读取原始消息上下文
 3. 对比摘要与原文做"高置信可疑判断"
-4. 干净 → 静默记录（`message_result="silent"`）
-5. 可疑 → 发消息告诉用户哪条记忆为什么可疑（`message_result="sent"`）
+4. 干净 → 静默记录
+5. 可疑 → 发消息告诉用户哪条记忆为什么可疑
 
-**实际运行记录**（`drift.json`）：
+**实际运行记录**（`drift.db`）：
 ```json
 {
   "skill": "audit-dirty-memories",
@@ -126,7 +145,7 @@ description: <一句话描述>
 1. 阅读 Drift Briefing 里的本 skill 前情，避免短期重复
 2. 基于长期记忆、最近上下文和当前状态，现场判断一个轻量自然的问题
 3. 如果适合聊天，`message_push` 发送
-4. 如果不适合打扰，`finish_drift(status="waiting")`
+4. 如果不适合打扰，`finish_drift(status="completed")` 静默闭环
 
 **实际运行记录**：
 ```json
@@ -144,16 +163,17 @@ description: <一句话描述>
 - 优先问：音乐偏好、开源项目、运动习惯、食物口味、日常消遣
 - 禁止问太大、太虚、太像采访的问题
 - 避开长期记忆里已经明确有答案的信息
+- `message_push` 成功后本轮立即闭环，不保存“等待回答”。用户以后真的回答时，由会话和记忆链路自然关联
 
 ### 案例三：review-drift-gaps（Drift 自我反思）
 
-**目标**：定期回顾 Drift 全局行动历史，找出长期 paused、waiting 或反复失败的方向。
+**目标**：定期回顾 Drift 全局行动历史，找出长期 paused 或反复失败的方向。
 
 **工作流程**：
 1. 读取 `drift.db` 里的 recent runs 和 skill_continuum
-2. 找出长期 paused、waiting 或最近频繁失败的 skill
+2. 找出长期 paused 或最近频繁失败的 skill
 3. 生成轻量健康摘要
-4. `finish_drift(status="completed", message_result="silent")`
+4. `finish_drift(status="completed", self_update={...})`
 
 **核心逻辑**：
 - 显式跳过自身（review-drift-gaps）
@@ -186,8 +206,8 @@ description: 每天备份一次 conversation 精华到 notion
 
 ## 要求
 - 不调用 message_push（此 skill 纯后台）
-- 完成同步后调用 `finish_drift(status="completed", briefing="同步了 X 条内容", message_result="silent")`
-- 如果没做完，调用 `finish_drift(status="paused", briefing="同步中断", scratchpad_update="下次从 ... 继续", message_result="silent")`
+- 完成同步后调用 `finish_drift(status="completed", briefing="同步了 X 条内容", self_update={...})`
+- 如果没做完，调用 `finish_drift(status="paused", briefing="同步中断", scratchpad_update="下次从 ... 继续", self_update={...})`
 ```
 
 ### 关键工具
@@ -203,9 +223,8 @@ description: 每天备份一次 conversation 精华到 notion
 | `finish_drift` | 保存状态并结束本轮 |
 
 ### 注意事项
-- `finish_drift` 的 `message_result` 必须和本轮实际动作一致
-- `finish_drift.status` 必须是 `completed`、`paused` 或 `waiting`
-- `completed` 不需要编造下一步；`paused` / `waiting` 必须写 `scratchpad_update`
+- `finish_drift.status` 必须是 `completed` 或 `paused`
+- `completed` 不需要编造执行断点；`paused` 必须写 `scratchpad_update`
 - 连续性前情由 runtime 写入 `drift.db`，下一轮通过 Drift Briefing 注入
 - 工作文件可以继续使用，但不要把它们写成模型必须手工维护的复杂状态机
 - 只读工具（read_file / fetch_messages 等）放在前面，写操作放在后面

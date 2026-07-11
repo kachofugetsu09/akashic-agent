@@ -33,6 +33,10 @@ class ContextPrepareRecordModule:
 class DefaultMemoryInspector(Plugin):
     name = "default_memory"
 
+    @classmethod
+    def drift_skill_roots(cls) -> tuple[str, ...]:
+        return ("drift/skills",)
+
     async def initialize(self) -> None:
         self._active = _is_memory_engine(self.context.memory_engine, "default")
         self._lock = threading.RLock()

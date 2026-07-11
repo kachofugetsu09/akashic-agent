@@ -42,6 +42,23 @@ def _write_skill(root: Path, name: str = "explore-curiosity") -> Path:
     return skill_dir
 
 
+def _select_input(skill_name: str, *, decision: str = "explore") -> dict[str, str]:
+    return {
+        "skill_name": skill_name,
+        "decision": decision,
+        "intention": f"做一点 {skill_name}",
+        "reason": "当前适合做一个小动作",
+    }
+
+
+def _self_update(next_tendency: str = "下次根据当时状态自由选择") -> dict[str, str]:
+    return {
+        "next_tendency": next_tendency,
+        "reflection": "本轮是一次普通闭环，没有形成需要保存的新观察",
+        "pattern": "ordinary",
+    }
+
+
 def test_drift_commit_result_corrects_staged_message_result(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     store.save_finish(
@@ -236,7 +253,10 @@ async def test_drift_message_push_sends_media(tmp_path: Path):
             "media": ["/tmp/two.png"],
         },
     )
-    assert json.loads(cast(Any, raw))["ok"] is True
+    payload = json.loads(cast(Any, raw))
+    assert payload["ok"] is True
+    assert payload["delivery_semantics"] == "completed_fire_and_forget"
+    assert payload["reply_state"] == "not_tracked"
     assert ctx.draft_message == "新表情来啦"
     assert ctx.draft_media == ["/tmp/one.png", "/tmp/two.png"]
 
@@ -258,6 +278,19 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     assert "没有被叫住时的自处" in prompt
     assert "默认应该行动一小步" in prompt
     assert "默认调用 select_skill" in prompt
+    assert "SKILL.md 是说明书，不是必须从头播放的脚本" in prompt
+    assert "local_context 明确已经完成的读文件、查重、规划、写计划等前置动作" in prompt
+    assert "不必无目的地重新读取" in prompt
+    assert "本轮也可以暂时不继续 paused skill" in prompt
+    assert "过去的自己留下的意图和倾向" in prompt
+    assert "self_update.next_tendency" in prompt
+    assert "没有新发现就省略" in prompt
+    assert "recent_drift_runs 是自己刚刚真实度过的空闲时间" in prompt
+    assert "是否只是逐字复制 next_tendency" in prompt
+    assert "把可反复进行的小活动沉淀成新 skill" in prompt
+    assert "现有 skill 能做，不等于此刻就想做" in prompt
+    assert "message_push 是 fire-and-forget" in prompt
+    assert "回答尚未出现不是可靠事件" in prompt
     assert "idle_drift 的 reason 必须写具体的时机或风险原因" in prompt
     assert "路径由 drift mount resolver 解析" in prompt
     assert "message_result" not in prompt
@@ -268,6 +301,37 @@ async def test_drift_system_prompt_discourages_stuck_skill_and_lists_new_tools(t
     assert "shell" in prompt
     assert is_context_frame(runtime)
     assert "drift_skills" in runtime
+
+
+def test_drift_tool_descriptions_include_metacognition_examples(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    tools = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(drift_dir=tmp_path, store=store),
+    )
+    schemas = {
+        schema["function"]["name"]: schema["function"]["parameters"]
+        for schema in tools.get_schemas()
+    }
+
+    select_properties = schemas["select_skill"]["properties"]
+    finish_properties = schemas["finish_drift"]["properties"]
+    self_properties = finish_properties["self_update"]["properties"]
+    assert "<example>" in select_properties["reason"]["description"]
+    assert "不要只写" in select_properties["reason"]["description"]
+    assert "<example>" in self_properties["next_tendency"]["description"]
+    assert "不是下一轮必须执行" in self_properties["next_tendency"]["description"]
+    assert "<example>" in self_properties["observation"]["description"]
+    assert "近期多轮" in self_properties["observation"]["description"]
+    assert "recent_drift_runs" in self_properties["reflection"]["description"]
+    assert self_properties["pattern"]["enum"] == [
+        "ordinary", "repeat", "change", "contradiction"
+    ]
+    assert "发现重复模式" in finish_properties["self_update"]["description"]
+    assert "普通一轮无新发现" in finish_properties["self_update"]["description"]
+    assert "创建元能力" in select_properties["reason"]["description"]
 
 
 @pytest.mark.asyncio
@@ -284,15 +348,23 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
         global_note_update=None,
         now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
+    store.save_self_choice(
+        skill_name="meme-auto-generate",
+        intention="继续完成已经计划好的图片",
+        decision="continue",
+        reason="计划已经存在，只差执行",
+        now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
     store.save_finish(
         skill_used="meme-auto-generate",
-        status="completed",
-        briefing="刚生成表情",
-        message_result="sent",
-        scratchpad_update=None,
+        status="paused",
+        briefing="计划已写入，生成服务暂时失败",
+        message_result="silent",
+        scratchpad_update="plan.json 已写入；若继续，直接执行生成步骤",
         global_note_update=None,
         now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
         cursor_update={"next_mode": "create_category"},
+        self_update={"next_tendency": "服务恢复后再继续，也可以先做别的"},
     )
     pipeline = _make_drift_pipeline(
         store=store,
@@ -307,6 +379,11 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
         (await pipeline._build_runtime_context_message(store.scan_skills(), ctx=ctx))["content"]
     )
     assert "drift_selection_context" in runtime
+    assert "drift_self_state" in runtime
+    assert "drift_self_observations" in runtime
+    assert "继续完成已经计划好的图片" in runtime
+    assert "计划已经存在，只差执行" in runtime
+    assert "服务恢复后再继续，也可以先做别的" in runtime
     assert "runtime_clock" in runtime
     assert "current_time_utc=2026-01-03T12:34:00+00:00" in runtime
     assert "current_time_local=" in runtime
@@ -314,19 +391,77 @@ async def test_drift_runtime_context_provides_skill_selection_state(tmp_path: Pa
     assert "选择依据：runtime_clock、status、上次 finish 时间" in runtime
     assert "必须以 runtime_clock 的完整日期和时间为准" in runtime
     assert "recent_raw_chat" in runtime
+    assert "SKILL.md 是能力说明书、约束和路径地图" in runtime
+    assert "local_context 记录的已完成进度高于 SKILL.md" in runtime
     assert "local_context 只在 select_skill 后作为执行上下文参考" in runtime
     assert "explore-curiosity: status=completed" in runtime
-    assert "meme-auto-generate: status=completed" in runtime
+    assert "meme-auto-generate: status=paused" in runtime
     assert "last_finish=2026-01-01T00:00:00+00:00" in runtime
     assert "last_finish=2026-01-02T00:00:00+00:00" in runtime
     assert "上次 finish：2026-01-01T00:00:00+00:00" in runtime
     assert "briefing=没有自然切口" in runtime
-    assert "briefing=刚生成表情" in runtime
+    assert "briefing=计划已写入，生成服务暂时失败" in runtime
+    assert "scratchpad=plan.json 已写入；若继续，直接执行生成步骤" in runtime
     assert 'cursor={"next_mode": "create_category"}' in runtime
     assert "本轮首选" not in runtime
     assert "首个工具调用" not in runtime
     assert runtime.index("drift_selection_context") < runtime.index("long_term_memory")
     assert runtime.index("## recent_drift_runs") < runtime.index("## runtime_clock")
+
+
+@pytest.mark.asyncio
+async def test_drift_runtime_context_treats_self_observations_as_tentative(tmp_path: Path):
+    _write_skill(tmp_path, name="explore-curiosity")
+    _write_skill(tmp_path, name="quiet-organize")
+    store = DriftStateStore(tmp_path)
+    store.save_finish(
+        skill_used="explore-curiosity",
+        status="completed",
+        briefing="整理了旧问题",
+        message_result="silent",
+        scratchpad_update=None,
+        global_note_update=None,
+        now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        journal_append=[{
+            "entry_type": "self_observation",
+            "key": "question",
+            "payload": {
+                "statement": "我似乎喜欢回看未完的问题",
+                "basis": "主动选择了一条旧问题",
+                "effect": "question",
+            },
+        }],
+    )
+    store.save_finish(
+        skill_used="quiet-organize",
+        status="completed",
+        briefing="整理了零散材料",
+        message_result="silent",
+        scratchpad_update=None,
+        global_note_update=None,
+        now_utc=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        journal_append=[{
+            "entry_type": "self_observation",
+            "key": "reinforce",
+            "payload": {
+                "statement": "我喜欢把零散材料连成线",
+                "basis": "再次主动整理了互不相邻的材料",
+                "effect": "reinforce",
+            },
+        }],
+    )
+    pipeline = _make_drift_pipeline(
+        store=store,
+        tool_deps=DriftToolDeps(drift_dir=tmp_path, store=store),
+    )
+
+    runtime = str((await pipeline._build_runtime_context_message(store.scan_skills()))["content"])
+
+    assert "drift_self_observations" in runtime
+    assert "不是长期记忆、人格结论或行动命令" in runtime
+    assert "单次观察不能定义自己" in runtime
+    assert "explore-curiosity [question]" in runtime
+    assert "quiet-organize [reinforce]" in runtime
 
 
 @pytest.mark.asyncio
@@ -413,6 +548,10 @@ async def test_drift_pipeline_can_idle_before_selecting_skill(tmp_path: Path):
     assert recent["skill"] == "idle"
     assert recent["message_result"] == "silent"
     assert "主动打扰价值不高" in recent["briefing"]
+    self_state = store.load_self_state()
+    assert self_state["last_decision"] == "rest"
+    assert self_state["decision_reason"] == "最近对话刚结束，主动打扰价值不高"
+    assert self_state["next_tendency"] == "等待更合适的时机再自由选择"
 
 
 @pytest.mark.asyncio
@@ -511,7 +650,7 @@ async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_pat
         tmp_path,
         ctx,
         "select_skill",
-        {"skill_name": "explore-curiosity"},
+        _select_input("explore-curiosity"),
         store=store,
     )
     payload = json.loads(cast(Any, raw))
@@ -524,6 +663,41 @@ async def test_select_skill_records_selected_skill_and_returns_skill_doc(tmp_pat
     assert payload["local_context"]["cursor"]["last_topic"] == "音乐"
     assert payload["local_context"]["journal_recent"][0]["entry_type"] == "curiosity_asked"
     assert ctx.drift_selected_skill == "explore-curiosity"
+    self_state = store.load_self_state()
+    assert self_state["current_skill"] == "explore-curiosity"
+    assert self_state["last_decision"] == "explore"
+    assert self_state["current_intention"] == "做一点 explore-curiosity"
+    assert self_state["decision_reason"] == "当前适合做一个小动作"
+    assert self_state["next_tendency"] == ""
+
+
+@pytest.mark.asyncio
+async def test_select_paused_skill_returns_resume_guidance(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    store.save_finish(
+        skill_used="explore-curiosity",
+        status="paused",
+        briefing="计划已写，执行失败",
+        message_result="silent",
+        scratchpad_update="plan.json 已存在，下一步执行计划",
+        global_note_update=None,
+        now_utc=datetime.now(timezone.utc),
+        cursor_update={"phase": "execute_plan"},
+    )
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "select_skill",
+        _select_input("explore-curiosity", decision="continue"),
+        store=store,
+    )
+    payload = json.loads(cast(Any, raw))
+
+    assert "paused skill 的可续接停点" in payload["runtime_guidance"]
+    assert "只执行停点后的最小下一步" in payload["runtime_guidance"]
 
 
 @pytest.mark.asyncio
@@ -558,6 +732,7 @@ async def test_finish_drift_rejects_unknown_skill(tmp_path: Path):
             "skill_used": "missing",
             "status": "completed",
             "briefing": "x",
+            "self_update": _self_update(),
         },
         store=store,
     )
@@ -577,6 +752,7 @@ async def test_finish_drift_saves_silent_message_result(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "completed",
             "briefing": "x",
+            "self_update": _self_update(),
         },
         store=store,
     )
@@ -612,6 +788,7 @@ async def test_finish_drift_emits_result_after_delivery(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "completed",
             "briefing": "staged",
+            "self_update": _self_update(),
         },
     )
 
@@ -647,6 +824,7 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
             "skill_used": "explore-curiosity",
             "status": "completed",
             "briefing": "问了音乐偏好",
+            "self_update": _self_update(),
             "cursor_update": {
                 "last_topic": "music",
                 "last_asked_at": "2026-01-01T00:00:00+00:00",
@@ -669,6 +847,161 @@ async def test_finish_drift_saves_cursor_and_journal(tmp_path: Path):
     assert continuum["cursor"]["last_asked_at"] == "2026-01-01T00:00:00+00:00"
     assert journal[0]["entry_type"] == "curiosity_asked"
     assert journal[0]["key"] == "music"
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_saves_optional_self_observation(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "把零散想法整理成了一条线",
+            "self_update": {
+                "next_tendency": "下次看心情再决定",
+                "reflection": "本轮与近期行为形成了一条值得暂定记录的新线索",
+                "pattern": "repeat",
+                "observation": {
+                    "statement": "我似乎喜欢把零散材料连成线",
+                    "basis": "这轮没有被要求，但主动整理了三条旧笔记的关系",
+                    "effect": "question",
+                },
+            },
+        },
+        store=store,
+    )
+
+    assert json.loads(cast(Any, raw))["ok"] is True
+    observations = store.load_recent_self_observations()
+    assert observations[0]["skill_name"] == "explore-curiosity"
+    assert observations[0]["payload"]["effect"] == "question"
+    assert observations[0]["payload"]["statement"] == "我似乎喜欢把零散材料连成线"
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_does_not_force_self_observation(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "完成普通检查",
+            "self_update": _self_update(),
+        },
+        store=store,
+    )
+
+    assert json.loads(cast(Any, raw))["ok"] is True
+    assert store.load_recent_self_observations() == []
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_rejects_invalid_self_observation(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "完成检查",
+            "self_update": {
+                "next_tendency": "下次自由选择",
+                "reflection": "本轮试图形成一条观察",
+                "pattern": "repeat",
+                "observation": {
+                    "statement": "我就是这样的人",
+                    "basis": "只有这一次",
+                    "effect": "confirm",
+                },
+            },
+        },
+        store=store,
+    )
+
+    assert "observation.effect" in json.loads(cast(Any, raw))["error"]
+    assert store.load_recent_self_observations() == []
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_requires_observation_for_declared_pattern(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "连续做了同类动作",
+            "self_update": {
+                "next_tendency": "下次自由选择",
+                "reflection": "最近三轮都做了同类动作",
+                "pattern": "repeat",
+            },
+        },
+        store=store,
+    )
+
+    assert "observation is required when pattern is repeat" in json.loads(cast(Any, raw))["error"]
+
+
+@pytest.mark.asyncio
+async def test_finish_drift_updates_self_state_without_losing_choice(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "select_skill",
+        {
+            "skill_name": "explore-curiosity",
+            "decision": "continue",
+            "intention": "把上次没想完的问题继续想一点",
+            "reason": "已有停点仍然自然",
+        },
+        store=store,
+    )
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "finish_drift",
+        {
+            "skill_used": "explore-curiosity",
+            "status": "completed",
+            "briefing": "想清楚了一个问题",
+            "self_update": {
+                "current_intention": "暂时把这个问题放下",
+                "next_tendency": "下次想自由看看别的东西",
+                "reflection": "本轮主动结束了原意图，没有形成新的重复模式",
+                "pattern": "ordinary",
+            },
+        },
+        store=store,
+    )
+
+    assert json.loads(cast(Any, raw))["ok"] is True
+    self_state = store.load_self_state()
+    assert self_state["last_decision"] == "continue"
+    assert self_state["decision_reason"] == "已有停点仍然自然"
+    assert self_state["current_intention"] == "暂时把这个问题放下"
+    assert self_state["next_tendency"] == "下次想自由看看别的东西"
 
 
 @pytest.mark.asyncio
@@ -777,13 +1110,14 @@ async def test_drift_pipeline_runs_and_finishes(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     llm = FakeLLM(
         [
-            ("select_skill", {"skill_name": "explore-curiosity"}),
+            ("select_skill", _select_input("explore-curiosity")),
             (
                 "finish_drift",
                 {
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "问了一个问题",
+                    "self_update": _self_update(),
                 },
             ),
         ]
@@ -828,7 +1162,7 @@ async def test_drift_pipeline_restricts_tools_after_staging_message(tmp_path: Pa
     store = DriftStateStore(tmp_path)
     llm = FakeLLM(
         [
-            ("select_skill", {"skill_name": "explore-curiosity"}),
+            ("select_skill", _select_input("explore-curiosity")),
             ("message_push", {"message": "hello\\n\\nfrom drift"}),
             (
                 "finish_drift",
@@ -836,6 +1170,7 @@ async def test_drift_pipeline_restricts_tools_after_staging_message(tmp_path: Pa
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "sent",
+                    "self_update": _self_update(),
                 },
             ),
         ]
@@ -870,7 +1205,7 @@ async def test_drift_pipeline_wraps_up_at_step_limit(tmp_path: Path):
         captured.append(([s["function"]["name"] for s in schemas], tool_choice))
         step = len(captured)
         if step == 1:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         if step == 2:
             return {
                 "name": "write_file",
@@ -889,6 +1224,7 @@ async def test_drift_pipeline_wraps_up_at_step_limit(tmp_path: Path):
                     "status": "paused",
                     "briefing": "读了 skill 并写了中间状态",
                     "scratchpad_update": "下次继续检查 state.json",
+                    "self_update": _self_update(),
                 },
             }
         return None
@@ -930,10 +1266,11 @@ async def test_drift_pipeline_does_not_restrict_before_step_limit(tmp_path: Path
                     "status": "paused",
                     "briefing": "达到步数上限后停止继续读取",
                     "scratchpad_update": "下次根据已读 SKILL.md 继续判断是否要行动",
+                    "self_update": _self_update(),
                 },
             }
         if len(captured) == 1:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         return {
             "name": "read_file",
             "input": {"path": "skills/explore-curiosity/SKILL.md"},
@@ -972,7 +1309,7 @@ async def test_drift_pipeline_fallback_pauses_when_wrap_up_ignores_finish(tmp_pa
     async def llm(messages: list[dict], schemas: list[dict], tool_choice: str | dict = "auto"):
         step = len([m for m in messages if m.get("role") == "tool"]) + 1
         if step == 1:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         if step == 2:
             return {"name": "read_file", "input": {"path": "skills/explore-curiosity/queue.md"}}
         return {"name": "read_file", "input": {"path": "skills/explore-curiosity/state.json"}}
@@ -1003,7 +1340,7 @@ async def test_drift_pipeline_wrap_up_retries_non_finish_once(tmp_path: Path):
     async def llm(messages: list[dict], schemas: list[dict], tool_choice: str | dict = "auto"):
         nonlocal wrap_up_calls
         if len([m for m in messages if m.get("role") == "tool"]) == 0:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         wrap_up_calls += 1
         if wrap_up_calls == 1:
             return {"name": "read_file", "input": {"path": "skills/explore-curiosity/queue.md"}}
@@ -1014,6 +1351,7 @@ async def test_drift_pipeline_wrap_up_retries_non_finish_once(tmp_path: Path):
                 "status": "paused",
                 "briefing": "读了 skill，但还没有完成动作",
                 "scratchpad_update": "下次从 explore-curiosity 的自然问题判断继续",
+                "self_update": _self_update(),
             },
         }
 
@@ -1042,13 +1380,14 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
     gate.should_act.return_value = (True, {})
     llm = FakeLLM(
         [
-            ("select_skill", {"skill_name": "explore-curiosity"}),
+            ("select_skill", _select_input("explore-curiosity")),
             (
                 "finish_drift",
                 {
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "整理了漂移状态",
+                    "self_update": _self_update(),
                 },
             ),
         ]
@@ -1134,7 +1473,7 @@ async def test_agent_tick_drift_emits_delivery_result(
     gate.should_act.return_value = (True, {})
     llm = FakeLLM(
         [
-            ("select_skill", {"skill_name": "explore-curiosity"}),
+            ("select_skill", _select_input("explore-curiosity")),
             ("message_push", {"message": "hello from drift"}),
             (
                 "finish_drift",
@@ -1142,6 +1481,7 @@ async def test_agent_tick_drift_emits_delivery_result(
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "发出一条消息",
+                    "self_update": _self_update(),
                 },
             ),
         ]
@@ -1322,7 +1662,10 @@ async def test_drift_readfile_accepts_builtin_skill_shorthand_path(tmp_path: Pat
         {"path": "skills/create-drift-skill/SKILL.md"},
         store=store,
     )
-    assert "创建 Drift Skill" in str(raw)
+    content = str(raw)
+    assert "创建 Drift Skill" in content
+    assert "从下一轮 Drift 起进入候选列表" in content
+    assert "不执行新活动本身" in content
 
 
 @pytest.mark.asyncio
@@ -1352,13 +1695,14 @@ async def test_drift_pipeline_keeps_skills_when_mcp_available(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     shared = _build_shared_tools_with_mcp("calendar")
     llm = FakeLLM([
-        ("select_skill", {"skill_name": "needs-cal"}),
+        ("select_skill", _select_input("needs-cal")),
         (
             "finish_drift",
             {
                 "skill_used": "needs-cal",
                 "status": "completed",
                 "briefing": "done",
+                "self_update": _self_update(),
             },
         ),
     ])
@@ -1492,7 +1836,7 @@ async def test_drift_pipeline_executes_mounted_mcp_tool(tmp_path: Path):
         captured_schemas.append([s["function"]["name"] for s in schemas])
         step = len(captured_schemas)
         if step == 1:
-            return {"name": "select_skill", "input": {"skill_name": "explore-curiosity"}}
+            return {"name": "select_skill", "input": _select_input("explore-curiosity")}
         if step == 2:
             return {"name": "mount_server", "input": {"server": "calendar"}}
         if step == 3:
@@ -1504,6 +1848,7 @@ async def test_drift_pipeline_executes_mounted_mcp_tool(tmp_path: Path):
                     "skill_used": "explore-curiosity",
                     "status": "completed",
                     "briefing": "used cal",
+                    "self_update": _self_update(),
                 },
             }
         return None

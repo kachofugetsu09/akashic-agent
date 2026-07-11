@@ -38,7 +38,7 @@ Akashic 理想上的动作应该是：
 安装插件
 ├─ 识别这是一个 GitHub 插件仓库
 ├─ 执行 plugin-install
-├─ 检查 registry / skills / mcp_servers
+├─ 检查 manifest.toml 与 plugin.py 声明的能力
 └─ 提醒你重启后生效
 ```
 

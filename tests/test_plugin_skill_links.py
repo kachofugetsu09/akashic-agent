@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
-import yaml
 from agent.plugins.manager import ActivePluginInfo
 from agent.plugins.skill_links import PluginSkillLinker
 from agent.skills import SkillsLoader
@@ -47,7 +46,7 @@ def _write_plugin_drift_skill(
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
-        f"name: {plugin_id}:{skill_name}\n"
+        f"name: {skill_name}\n"
         "description: 插件 Drift 技能\n"
         "---\n"
         f"{body}\n",
@@ -66,6 +65,12 @@ def _plugin_info(
         plugin_dir=plugin_dir,
         manifest=manifest or {},
         module_path=f"test_{plugin_id}",
+        skill_roots=((plugin_dir / "skills",) if (plugin_dir / "skills").is_dir() else ()),
+        drift_skill_roots=(
+            (plugin_dir / "drift" / "skills",)
+            if (plugin_dir / "drift" / "skills").is_dir()
+            else ()
+        ),
     )
 
 
@@ -84,12 +89,12 @@ def test_plugin_skill_linker_creates_workspace_symlink(tmp_path: Path) -> None:
         memory_engine=None,
     ).sync([_plugin_info("foo", plugin_dir)])
 
-    link = workspace / "skills" / "foo:bar"
+    link = workspace / "skills" / "bar"
     assert result.expected == 1
     assert result.created == 1
     assert link.is_symlink()
     loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
-    assert loader.load_skill_body("foo:bar") == "plugin skill body"
+    assert loader.load_skill_body("bar") == "plugin skill body"
 
 
 def test_plugin_skill_linker_removes_stale_link(tmp_path: Path) -> None:
@@ -106,7 +111,7 @@ def test_plugin_skill_linker_removes_stale_link(tmp_path: Path) -> None:
     result = linker.sync([])
 
     assert result.removed == 1
-    assert not (workspace / "skills" / "foo:bar").exists()
+    assert not (workspace / "skills" / "bar").exists()
 
 
 def test_plugin_skill_linker_removes_broken_plugin_link(tmp_path: Path) -> None:
@@ -131,7 +136,7 @@ def test_plugin_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     plugin_dir = _write_plugin_skill(plugin_root, "foo", "bar")
-    user_skill = workspace / "skills" / "foo:bar"
+    user_skill = workspace / "skills" / "bar"
     user_skill.mkdir(parents=True)
     (user_skill / "SKILL.md").write_text("user body", encoding="utf-8")
 
@@ -146,7 +151,7 @@ def test_plugin_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
     assert "plugin skill body" in (user_skill / "SKILL.md").read_text(encoding="utf-8")
 
 
-def test_plugin_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
+def test_plugin_skill_linker_does_not_interpret_runtime_policy(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     plugin_dir = _write_plugin_skill(plugin_root, "akasha", "memory")
@@ -176,10 +181,10 @@ def test_plugin_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
         memory_engine=_memory_engine("default"),
     ).sync([plugin])
 
-    assert disabled.expected == 0
+    assert disabled.expected == 1
     assert enabled.expected == 1
-    assert removed.removed == 1
-    assert not (workspace / "skills" / "akasha:memory").is_symlink()
+    assert removed.removed == 0
+    assert (workspace / "skills" / "memory").is_symlink()
 
 
 def test_aka_plugin_skill_is_exposed_with_bare_name(tmp_path: Path) -> None:
@@ -300,15 +305,15 @@ def test_plugin_drift_skill_linker_creates_workspace_symlink(tmp_path: Path) -> 
         memory_engine=None,
     ).sync([_plugin_info("foo", plugin_dir)])
 
-    link = workspace / "drift" / "skills" / "foo:daily"
+    link = workspace / "drift" / "skills" / "daily"
     store = DriftStateStore(workspace / "drift")
     skills = store.scan_skills()
-    skill_dir = store.skill_dir_for("foo:daily")
+    skill_dir = store.skill_dir_for("daily")
 
     assert result.expected == 1
     assert result.created == 1
     assert link.is_symlink()
-    assert {skill.name for skill in skills} == {"foo:daily"}
+    assert {skill.name for skill in skills} == {"daily"}
     assert skill_dir is not None
     assert skill_dir == link
     assert "plugin drift skill body" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
@@ -328,14 +333,14 @@ def test_plugin_drift_skill_linker_removes_stale_link(tmp_path: Path) -> None:
     result = linker.sync([])
 
     assert result.removed == 1
-    assert not (workspace / "drift" / "skills" / "foo:daily").exists()
+    assert not (workspace / "drift" / "skills" / "daily").exists()
 
 
 def test_plugin_drift_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     plugin_dir = _write_plugin_drift_skill(plugin_root, "foo", "daily")
-    user_skill = workspace / "drift" / "skills" / "foo:daily"
+    user_skill = workspace / "drift" / "skills" / "daily"
     user_skill.mkdir(parents=True)
     (user_skill / "SKILL.md").write_text("user body", encoding="utf-8")
 
@@ -350,7 +355,7 @@ def test_plugin_drift_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> 
     assert "plugin drift skill body" in (user_skill / "SKILL.md").read_text(encoding="utf-8")
 
 
-def test_plugin_drift_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
+def test_plugin_drift_skill_linker_does_not_interpret_runtime_policy(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
     plugin_dir = _write_plugin_drift_skill(plugin_root, "akasha", "daily")
@@ -375,25 +380,17 @@ def test_plugin_drift_skill_linker_filters_by_memory_engine(tmp_path: Path) -> N
         memory_engine=_memory_engine("akasha"),
     ).sync([plugin])
 
-    assert disabled.expected == 0
+    assert disabled.expected == 1
     assert enabled.expected == 1
-    assert (workspace / "drift" / "skills" / "akasha:daily").is_symlink()
+    assert (workspace / "drift" / "skills" / "daily").is_symlink()
 
 
-def test_default_memory_audit_drift_skill_is_gated_by_memory_engine(tmp_path: Path) -> None:
+def test_default_memory_declared_drift_skill_is_linked_when_plugin_is_active(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = Path(__file__).parents[1] / "plugins"
     plugin_dir = plugin_root / "default_memory"
-    loaded = yaml.safe_load((plugin_dir / "manifest.yaml").read_text(encoding="utf-8"))
-    manifest = cast(dict[str, object], loaded)
-    plugin = _plugin_info("default_memory", plugin_dir, manifest)
-    link = workspace / "drift" / "skills" / "default_memory:audit-dirty-memories"
-
-    disabled = PluginSkillLinker(
-        workspace=workspace,
-        plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("akasha"),
-    ).sync([plugin])
+    plugin = _plugin_info("default_memory", plugin_dir)
+    link = workspace / "drift" / "skills" / "audit-dirty-memories"
     enabled = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
@@ -401,16 +398,15 @@ def test_default_memory_audit_drift_skill_is_gated_by_memory_engine(tmp_path: Pa
     ).sync([plugin])
     skills = DriftStateStore(workspace / "drift").scan_skills()
 
-    assert disabled.expected == 0
     assert enabled.expected == 1
     assert link.is_symlink()
-    assert {skill.name for skill in skills} == {"default_memory:audit-dirty-memories"}
+    assert {skill.name for skill in skills} == {"audit-dirty-memories"}
 
     removed = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
         memory_engine=_memory_engine("akasha"),
-    ).sync([plugin])
+    ).sync([])
 
     assert removed.removed == 1
     assert not link.is_symlink()

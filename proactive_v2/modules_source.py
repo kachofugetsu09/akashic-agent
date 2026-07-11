@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
+from agent.plugins.specs import RegisteredProactiveSource
 from proactive_v2 import mcp_sources
-from proactive_v2.config import ProactiveConfig
 from proactive_v2.frame import ProactiveFrame
 from proactive_v2.mcp_sources import McpGateway
 
@@ -16,14 +17,13 @@ class McpRuntimeModule:
     def __init__(
         self,
         *,
-        cfg: ProactiveConfig,
         gateway: McpGateway,
+        sources: list[RegisteredProactiveSource],
     ) -> None:
-        self._cfg = cfg
         self._pool = gateway
-        self._poll_lock = asyncio.Lock()
+        self._sources = [source for source in sources if source.spec.poll_tool]
         self._running = False
-        self._poll_task: asyncio.Task[None] | None = None
+        self._tasks: list[asyncio.Task[None]] = []
 
     @property
     def pool(self) -> McpGateway:
@@ -31,40 +31,37 @@ class McpRuntimeModule:
 
     async def start(self) -> None:
         self._running = True
-        await self._poll_once()
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        for source in self._sources:
+            await self._poll_once(source)
+            self._tasks.append(
+                asyncio.create_task(
+                    self._poll_loop(source),
+                    name=f"proactive_poll:{mcp_sources.source_key(source)}",
+                )
+            )
 
     async def stop(self) -> None:
         self._running = False
-        if self._poll_task is not None:
-            self._poll_task.cancel()
-            try:
-                await self._poll_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("[proactive] source poll 已关闭")
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
 
     async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
         return frame
 
-    async def _poll_once(self) -> None:
-        if self._poll_lock.locked():
-            logger.debug("[proactive] feed poll 仍在进行,跳过本次")
-            return
-        async with self._poll_lock:
-            try:
-                await mcp_sources.poll_content_feeds_async(self._pool)
-                logger.info("[proactive] feed poll 完成")
-            except Exception as e:
-                logger.warning("[proactive] feed poll 系统级失败: %s", e)
+    async def _poll_once(self, source: RegisteredProactiveSource) -> None:
+        key = mcp_sources.source_key(source)
+        try:
+            await mcp_sources.poll_source_async(self._pool, source)
+            logger.info("[proactive.source] poll 完成: %s", key)
+        except Exception as e:
+            logger.warning("[proactive.source] poll 失败 %s: %s", key, e)
 
-    async def _poll_loop(self) -> None:
+    async def _poll_loop(self, source: RegisteredProactiveSource) -> None:
+        interval = max(1, int(source.spec.poll_interval_seconds))
         while self._running:
-            interval = max(
-                1,
-                int(self._cfg.feed_poller_interval_seconds),
-            )
             await asyncio.sleep(interval)
-            if not self._running:
-                break
-            await self._poll_once()
+            if self._running:
+                await self._poll_once(source)

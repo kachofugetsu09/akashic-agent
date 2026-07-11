@@ -16,6 +16,8 @@ from plugins.default_proactive.outbound_text import normalize_outbound_text
 
 logger = logging.getLogger(__name__)
 
+_DRIFT_DECISIONS = {"continue", "defer", "switch", "explore"}
+
 
 def _clip_text(text: object, limit: int) -> str:
     value = str(text or "").strip()
@@ -46,7 +48,10 @@ class SendMessageTool(Tool):
     def description(self) -> str:
         return (
             "向用户发送一条消息，可附带图片。单次 Drift run 最多只能调用一次。\n"
-            "channel 和 chat_id 在 Drift 上下文中已由配置预设，可省略不填。"
+            "channel 和 chat_id 在 Drift 上下文中已由配置预设，可省略不填。\n"
+            "这是 fire-and-forget：发送成功即完成本轮动作，不创建等待回复的状态。"
+            "未来若出现用户回答，它会作为新的会话上下文和记忆自然进入；"
+            "不得记录‘等用户回复’，也不得把‘没有回复’当成可观测事实。"
         )
 
     @property
@@ -97,7 +102,15 @@ class SendMessageTool(Tool):
         self._ctx.draft_media = media_paths
         self._ctx.drift_message_staged = True
         logger.info("[drift_tools] message_push staged")
-        return json.dumps({"ok": True}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "delivery_semantics": "completed_fire_and_forget",
+                "reply_state": "not_tracked",
+                "next": "finish_drift_without_waiting_for_user",
+            },
+            ensure_ascii=False,
+        )
 
     @staticmethod
     def _normalize_media(*, image: str = "", media: list[str] | str | None = None) -> list[str]:
@@ -149,7 +162,11 @@ class FinishDriftTool(Tool):
                 "briefing": {"type": "string", "description": "本轮做了什么的一句话摘要"},
                 "scratchpad_update": {
                     "type": "string",
-                    "description": "下次进入本 skill 时需要注入的自然语言前情",
+                    "description": (
+                        "下次进入本 skill 时需要注入的自然语言前情，只记录系统自己的进度。"
+                        "<example>已生成 plan.json，下次从执行计划继续。</example>"
+                        "<example>不要：已向用户提问，等待用户回复。</example>"
+                    ),
                 },
                 "cursor_update": {
                     "type": "object",
@@ -169,8 +186,94 @@ class FinishDriftTool(Tool):
                     },
                 },
                 "global_note_update": {"type": "string"},
+                "self_update": {
+                    "type": "object",
+                    "description": (
+                        "收尾后的自我连续性更新，不保存执行断点或长期人格事实。"
+                        "先对照本轮与 recent_drift_runs：有真实重复、反例或变化时写 observation，普通一轮则省略。"
+                        "<example name=\"发现重复模式\">{\"pattern\":\"repeat\","
+                        "\"reflection\":\"最近几轮反复选择了提问\","
+                        "\"next_tendency\":\"下次看当时心情，不急着继续提问\","
+                        "\"observation\":{\"statement\":\"我不确定时似乎容易选择向用户提问\","
+                        "\"basis\":\"最近三轮有两轮都选择了提问\",\"effect\":\"question\"}}</example>"
+                        "<example name=\"普通一轮无新发现\">{\"pattern\":\"ordinary\","
+                        "\"reflection\":\"本轮只是一次普通闭环，没有形成新的重复或变化\",\"next_tendency\":"
+                        "\"下次可能想安静整理点东西，也可以临时换别的活动\"}</example>"
+                    ),
+                    "properties": {
+                        "current_intention": {
+                            "type": "string",
+                            "description": "如果本轮改变了原意图，写更新后的意图",
+                        },
+                        "reflection": {
+                            "type": "string",
+                            "description": (
+                                "用一句话对照本轮与 recent_drift_runs：是在自由延续、主动变化，"
+                                "还是可能只走了最省事的路径；只负责看见，不强迫换活动。"
+                                "<example>最近三轮都在审计，因为它低打扰且工具可用；"
+                                "这可能是当下自然节奏，也可能是我在选择最省事的现成活动。</example>"
+                            ),
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "enum": ["ordinary", "repeat", "change", "contradiction"],
+                            "description": (
+                                "本轮与近期行为的关系。ordinary=没有形成模式；repeat=重复出现；"
+                                "change=主动换了做法；contradiction=出现反例。"
+                                "选择 repeat/change/contradiction 时必须同时写 observation，"
+                                "让看见的变化能够跨轮保留。"
+                                "<example>连续三轮选择同类活动用 repeat；首次普通执行用 ordinary。</example>"
+                            ),
+                        },
+                        "next_tendency": {
+                            "type": "string",
+                            "description": (
+                                "下次空闲时可能想继续、搁置或探索的宽松倾向，不是下一轮必须执行的题目或步骤。"
+                                "不能写等待用户回答、如果用户没回答就怎样；未来回答出现时会自然成为新上下文。"
+                                "<example>可以：下次可能想做点安静、不打扰用户的整理，也可以看当时心情换别的。</example>"
+                                "<example>不要：下次问用户最近单曲循环哪首歌。</example>"
+                            ),
+                        },
+                        "observation": {
+                            "type": "object",
+                            "description": (
+                                "仅当本轮与近期多轮的实际选择形成了重复、反例或变化时，"
+                                "留下可被后续 Drift 质疑或修正的暂定观察；没有则省略。"
+                                "<example>{\"statement\":\"我不确定时似乎容易连续选择向用户提问\","
+                                "\"basis\":\"最近三轮都选择了提问\",\"effect\":\"question\"}</example>"
+                            ),
+                            "properties": {
+                                "statement": {
+                                    "type": "string",
+                                    "description": (
+                                        "关于自己在 Drift 中如何选择或行动的暂定观察，避免写成稳定人格结论。"
+                                        "<example>我似乎会在没有明确念头时选择最容易执行的活动。</example>"
+                                    ),
+                                },
+                                "basis": {
+                                    "type": "string",
+                                    "description": (
+                                        "本轮以及可见近期 runs 支持这条观察的具体行为证据。"
+                                        "<example>四轮里三次选择同一 skill，理由都直接沿用了上轮 next_tendency。</example>"
+                                    ),
+                                },
+                                "effect": {
+                                    "type": "string",
+                                    "enum": ["question", "reinforce", "revise"],
+                                    "description": (
+                                        "question=首次提出暂定观察；reinforce=后来再次出现同类证据；"
+                                        "revise=出现反例或情境变化。"
+                                        "<example>先写 question；后续确实再次发生才写 reinforce；主动换了做法可写 revise。</example>"
+                                    ),
+                                },
+                            },
+                            "required": ["statement", "basis", "effect"],
+                        },
+                    },
+                    "required": ["next_tendency", "reflection", "pattern"],
+                },
             },
-            "required": ["skill_used", "status", "briefing"],
+            "required": ["skill_used", "status", "briefing", "self_update"],
         }
 
     async def execute(
@@ -182,6 +285,7 @@ class FinishDriftTool(Tool):
         cursor_update: dict[str, Any] | None = None,
         journal_append: list[dict[str, Any]] | dict[str, Any] | None = None,
         global_note_update: str | None = None,
+        self_update: dict[str, Any] | None = None,
     ) -> str:
         skill_name = str(skill_used or "").strip()
         if skill_name not in self._store.valid_skill_names():
@@ -225,6 +329,48 @@ class FinishDriftTool(Tool):
         journal_entries, journal_error = self._normalize_journal_append(journal_append)
         if journal_error:
             return json.dumps({"error": journal_error}, ensure_ascii=False)
+        if not isinstance(self_update, dict):
+            return json.dumps({"error": "self_update must be an object"}, ensure_ascii=False)
+        next_tendency = str(self_update.get("next_tendency") or "").strip()
+        if not next_tendency:
+            return json.dumps(
+                {"error": "self_update.next_tendency is required"},
+                ensure_ascii=False,
+            )
+        reflection = str(self_update.get("reflection") or "").strip()
+        if not reflection:
+            return json.dumps(
+                {"error": "self_update.reflection is required"},
+                ensure_ascii=False,
+            )
+        pattern = str(self_update.get("pattern") or "").strip()
+        if pattern not in {"ordinary", "repeat", "change", "contradiction"}:
+            return json.dumps(
+                {"error": "self_update.pattern must be one of: ordinary, repeat, change, contradiction"},
+                ensure_ascii=False,
+            )
+        normalized_self_update = {
+            "current_intention": str(self_update.get("current_intention") or "").strip(),
+            "next_tendency": next_tendency,
+        }
+        observation, observation_error = self._normalize_self_observation(
+            self_update.get("observation")
+        )
+        if observation_error:
+            return json.dumps({"error": observation_error}, ensure_ascii=False)
+        if pattern != "ordinary" and observation is None:
+            return json.dumps(
+                {"error": f"self_update.observation is required when pattern is {pattern}"},
+                ensure_ascii=False,
+            )
+        if observation is not None:
+            journal_entries.append(
+                {
+                    "entry_type": "self_observation",
+                    "key": observation["effect"],
+                    "payload": observation,
+                }
+            )
         note_text = (
             str(global_note_update).strip()
             if global_note_update is not None
@@ -242,6 +388,7 @@ class FinishDriftTool(Tool):
             now_utc=self._ctx.now_utc,
             cursor_update=cursor_update,
             journal_append=journal_entries,
+            self_update=normalized_self_update,
         )
         self._ctx.drift_finished = True
         self._ctx.drift_finish_status = status_value
@@ -264,6 +411,27 @@ class FinishDriftTool(Tool):
             summary[:120],
         )
         return json.dumps({"ok": True}, ensure_ascii=False)
+
+    @staticmethod
+    def _normalize_self_observation(raw: Any) -> tuple[dict[str, str] | None, str]:
+        if raw is None:
+            return None, ""
+        if not isinstance(raw, dict):
+            return None, "self_update.observation must be an object"
+        effect = str(raw.get("effect") or "").strip()
+        if effect not in {"question", "reinforce", "revise"}:
+            return None, "self_update.observation.effect must be one of: question, reinforce, revise"
+        statement = str(raw.get("statement") or "").strip()
+        basis = str(raw.get("basis") or "").strip()
+        if not statement:
+            return None, "self_update.observation.statement is required"
+        if not basis:
+            return None, "self_update.observation.basis is required"
+        return {
+            "statement": _clip_text(statement, 500),
+            "basis": _clip_text(basis, 500),
+            "effect": effect,
+        }, ""
 
     @staticmethod
     def _normalize_journal_append(
@@ -304,7 +472,7 @@ class SelectSkillTool(Tool):
 
     @property
     def description(self) -> str:
-        return "声明本轮 Drift 选中的 skill，并返回该 skill 的 SKILL.md 内容和 local_context。"
+        return "声明本轮 Drift 的意图与选择，并返回所选 skill 的说明和 local_context。"
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -315,14 +483,56 @@ class SelectSkillTool(Tool):
                     "type": "string",
                     "description": "本轮要执行的 drift skill 名称",
                 },
+                "decision": {
+                    "type": "string",
+                    "enum": sorted(_DRIFT_DECISIONS),
+                    "description": "本轮与既有意图的关系：继续、延后、切换或自由探索",
+                },
+                "intention": {
+                    "type": "string",
+                    "description": (
+                        "这轮此刻真正想做的一件小事，不照抄上轮 next_tendency。"
+                        "<example>翻一小段旧记录，看看有没有值得继续发展的兴趣。</example>"
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "结合当前状态、近期 runs 和已有 skill 覆盖范围，说明为什么此刻这样选择；"
+                        "可以延续上轮倾向，但必须是现在仍然想做，而不是因为它写在那里。"
+                        "<example>最近三轮都在主动提问，这轮不再复制上轮建议，"
+                        "改选一个安静的活动。</example>"
+                        "<example>现有 skill 都偏向提问或维护，但我此刻想反复做一种尚未被覆盖的小活动，"
+                        "因此选择候选中的创建元能力，先把它设计成以后可自由选择的 skill。</example>"
+                        "<example>不要只写：上轮说下次问音乐，所以这轮问音乐。</example>"
+                    ),
+                },
             },
-            "required": ["skill_name"],
+            "required": ["skill_name", "decision", "intention", "reason"],
         }
 
-    async def execute(self, skill_name: str) -> str:
+    async def execute(
+        self,
+        skill_name: str,
+        decision: str = "",
+        intention: str = "",
+        reason: str = "",
+    ) -> str:
         name = str(skill_name or "").strip()
+        decision_value = str(decision or "").strip()
+        intention_text = str(intention or "").strip()
+        reason_text = str(reason or "").strip()
         if name not in self._store.valid_skill_names():
             return json.dumps({"error": f"unknown skill: {name}"}, ensure_ascii=False)
+        if decision_value not in _DRIFT_DECISIONS:
+            return json.dumps(
+                {"error": "decision must be one of: continue, defer, switch, explore"},
+                ensure_ascii=False,
+            )
+        if not intention_text:
+            return json.dumps({"error": "intention is required"}, ensure_ascii=False)
+        if not reason_text:
+            return json.dumps({"error": "reason is required"}, ensure_ascii=False)
         selected = str(self._ctx.drift_selected_skill or "").strip()
         if selected and selected != name:
             return json.dumps(
@@ -338,6 +548,13 @@ class SelectSkillTool(Tool):
         except OSError as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
         self._ctx.drift_selected_skill = name
+        self._store.save_self_choice(
+            skill_name=name,
+            intention=intention_text,
+            decision=decision_value,
+            reason=reason_text,
+            now_utc=self._ctx.now_utc,
+        )
         continuum = self._store.load_skill_continuum(name)
         journal_recent = self._store.load_skill_journal(name, limit=8)
         return json.dumps(
@@ -355,6 +572,13 @@ class SelectSkillTool(Tool):
                     "cursor": continuum.get("cursor") or {},
                     "journal_recent": journal_recent,
                 },
+                "runtime_guidance": (
+                    "这是 paused skill 的可续接停点。SKILL.md 是完整能力说明书，不是本轮从头执行清单。"
+                    "先用 local_context 区分已完成与未完成步骤；如果继续，只执行停点后的最小下一步。"
+                    "不要仅为遵循完整流程而重复读取、查重、规划或重建已有产物。"
+                    if str(continuum.get("last_status") or "") == "paused"
+                    else "本 skill 上轮已闭环；根据当前目标选择本轮实际需要的说明书部分。"
+                ),
             },
             ensure_ascii=False,
         )
@@ -398,6 +622,13 @@ class IdleDriftTool(Tool):
             )
 
         self._ctx.drift_selected_skill = "idle"
+        self._store.save_self_choice(
+            skill_name="idle",
+            intention="本轮暂时不行动",
+            decision="rest",
+            reason=reason_text,
+            now_utc=self._ctx.now_utc,
+        )
         self._store.save_finish(
             skill_used="idle",
             status="completed",
@@ -406,6 +637,7 @@ class IdleDriftTool(Tool):
             scratchpad_update=None,
             global_note_update=None,
             now_utc=self._ctx.now_utc,
+            self_update={"next_tendency": "等待更合适的时机再自由选择"},
         )
         self._ctx.drift_finished = True
         logger.info("[drift_tools] idle_drift ok reason=%s", reason_text[:120])
@@ -676,7 +908,7 @@ def build_drift_tool_registry(
     tools = ToolRegistry()
     drift_dir = deps.drift_dir
     resolver = DriftPathResolver(drift_dir, deps.store)
-    tools.register(SelectSkillTool(ctx, deps.store), risk="read-only")
+    tools.register(SelectSkillTool(ctx, deps.store), risk="write")
     tools.register(IdleDriftTool(ctx, deps.store), risk="write")
     tools.register(
         DriftReadFileTool(resolver),

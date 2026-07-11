@@ -223,6 +223,11 @@ class AppRuntime:
                     if plugin_manager
                     else None
                 ),
+                proactive_sources=(
+                    list(plugin_manager.proactive_sources)
+                    if plugin_manager
+                    else None
+                ),
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:

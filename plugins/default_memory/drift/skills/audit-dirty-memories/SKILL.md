@@ -1,5 +1,5 @@
 ---
-name: default_memory:audit-dirty-memories
+name: audit-dirty-memories
 description: 随机抽检 default memory 的长期记忆，回溯 source_ref 原始上下文，识别疑似脏记忆并向用户汇报证据。
 ---
 

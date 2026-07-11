@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from infra.channels.contract import Channel
     from agent.plugins.context import PluginContext
     from agent.plugins.jobs import PluginJobSpec
+    from agent.plugins.specs import McpServerSpec, ProactiveSourceSpec
 
 
 class Plugin(ABC):
@@ -25,6 +26,21 @@ class Plugin(ABC):
 
     async def initialize(self) -> None: ...
     async def terminate(self) -> None: ...
+
+    @classmethod
+    def skill_roots(cls) -> tuple[str, ...]:
+        return ()
+
+    @classmethod
+    def drift_skill_roots(cls) -> tuple[str, ...]:
+        return ()
+
+    @classmethod
+    def mcp_servers(cls) -> list["McpServerSpec"]:
+        return []
+
+    def proactive_sources(self) -> list["ProactiveSourceSpec"]:
+        return []
 
     def before_turn_modules(self) -> list[object]:
         return []

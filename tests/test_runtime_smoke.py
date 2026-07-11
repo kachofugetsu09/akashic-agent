@@ -282,9 +282,7 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert json.loads(
         (workspace / "mcp_servers.json").read_text(encoding="utf-8")
     ) == {"servers": {}}
-    assert json.loads(
-        (workspace / "proactive_sources.json").read_text(encoding="utf-8")
-    ) == {"sources": []}
+    assert not (workspace / "proactive_sources.json").exists()
     assert (workspace / "proactive.db").exists()
     assert (workspace / "skills").is_dir()
     assert (workspace / "drift" / "skills").is_dir()

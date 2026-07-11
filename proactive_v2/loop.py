@@ -26,6 +26,7 @@ from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
 from agent.core.proactive_kernel import ProactiveKernel
 from agent.provider import LLMProvider
+from agent.plugins.specs import RegisteredProactiveSource
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
@@ -82,6 +83,7 @@ class ProactiveLoop:
         proactive_lifecycles: list[object] | None = None,
         proactive_module_factories: list[object] | None = None,
         proactive_runtime_factories: list[object] | None = None,
+        proactive_sources: list[RegisteredProactiveSource] | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -101,6 +103,7 @@ class ProactiveLoop:
         self._plugin_proactive_lifecycles = proactive_lifecycles or []
         self._plugin_proactive_module_factories = proactive_module_factories or []
         self._plugin_proactive_runtime_factories = proactive_runtime_factories or []
+        self._plugin_proactive_sources = proactive_sources or []
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -155,6 +158,7 @@ class ProactiveLoop:
             shared_tools=self._shared_tools,
             event_bus=self._event_bus,
             mcp_gateway=self._mcp_runtime.pool,
+            proactive_sources=self._plugin_proactive_sources,
             tool_hooks=self._tool_hooks,
             schedule_fn=self._scheduler.next_interval,
         )
@@ -180,8 +184,8 @@ class ProactiveLoop:
             self._shared_tools,
         )
         return McpRuntimeModule(
-            cfg=self._cfg,
             gateway=gateway,
+            sources=self._plugin_proactive_sources,
         )
 
     def _build_kernel(self) -> ProactiveKernel:

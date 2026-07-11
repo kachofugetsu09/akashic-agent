@@ -220,6 +220,11 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
         encoding="utf-8",
     )
     _ok(f"{memory_config_path} 已生成")
+    qqbot_config_path = _qqbot_local_config_path()
+    qqbot_config_path.parent.mkdir(parents=True, exist_ok=True)
+    _ = qqbot_config_path.write_text(_render_qqbot_config(answers), encoding="utf-8")
+    qqbot_config_path.chmod(0o600)
+    _ok(f"{qqbot_config_path} 已生成")
 
     _validate_config(config_path)
 
@@ -386,7 +391,7 @@ def _phase_qqbot(a: WizardAnswers) -> None:
             a.proactive_chat_id = f"c2c:{openid}"
     else:
         _warn("未收到消息，allow_from 留空")
-        _hint("启动后可在 config.toml 的 [plugins.qqbot] 中手动填入 allow_from")
+        _hint("启动后可在 QQBot 插件的 config.local.toml 中手动填入 allow_from")
 
 
 def _phase_memory(a: WizardAnswers) -> None:
@@ -734,26 +739,23 @@ def _render_channels(a: WizardAnswers) -> str:
         "",
     ]
 
-    if a.qqbot_app_id:
-        allow = ", ".join(f'"{u}"' for u in ([a.qqbot_user_openid] if a.qqbot_user_openid else []))
-        lines += [
-            "[plugins.qqbot]",
-            f'app_id = "{a.qqbot_app_id}"',
-            f'client_secret = "{a.qqbot_client_secret}"',
-            f"allow_from = [{allow}]",
-            "",
-        ]
-    else:
-        lines += [
-            "# 官方 QQBot（如需启用，填写后取消注释）",
-            "# [plugins.qqbot]",
-            '# app_id = ""',
-            '# client_secret = ""',
-            '# allow_from = []  # 用户的 user_openid，发一条消息后可从日志获取',
-            "",
-        ]
-
     return "\n".join(lines)
+
+
+def _render_qqbot_config(a: WizardAnswers) -> str:
+    allow = ", ".join(
+        f'"{user}"' for user in ([a.qqbot_user_openid] if a.qqbot_user_openid else [])
+    )
+    return "\n".join([
+        f'app_id = "{a.qqbot_app_id}"',
+        f'client_secret = "{a.qqbot_client_secret}"',
+        f"allow_from = [{allow}]",
+        "",
+    ])
+
+
+def _qqbot_local_config_path() -> Path:
+    return Path.home() / ".akashic-plugin" / "data" / "qqbot-github" / "config.local.toml"
 
 
 def _render_memory(a: WizardAnswers) -> str:
@@ -807,9 +809,6 @@ def _render_proactive(a: WizardAnswers) -> str:
 
 def _render_integrations() -> str:
     return """\
-[integrations.fitbit]
-enabled = false
-
 # 可选：接入外部 Peer Agent（如 DeepResearch）
 # [[integrations.peer_agents]]
 # name = "DeepResearch Agent"
@@ -837,7 +836,7 @@ def _print_completion(a: WizardAnswers) -> None:
         if a.proactive_channel == "qqbot" or (not a.tg_token and a.qqbot_app_id):
             _hint("启动后向 bot 发任意消息，日志中会出现 user_openid")
             _hint("将其填入 config.toml：")
-            _hint("[plugins.qqbot]")
+            _hint("~/.akashic-plugin/data/qqbot-github/config.local.toml")
             _hint('allow_from = ["<user_openid>"]')
             _hint("[proactive.target]")
             _hint('channel = "qqbot"')
@@ -855,5 +854,5 @@ def _print_completion(a: WizardAnswers) -> None:
         click.echo()
         _warn("QQBot allow_from 为空，启动后所有私聊请求会被拒绝")
         _hint("向 bot 发一条消息，日志里找到 user_openid，填入 config.toml：")
-        _hint("[plugins.qqbot]")
+        _hint("~/.akashic-plugin/data/qqbot-github/config.local.toml")
         _hint('allow_from = ["<user_openid>"]')

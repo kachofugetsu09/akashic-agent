@@ -132,10 +132,10 @@ class CoreRuntime:
                 sync_result = sync_plugin_servers(self.plugin_manager.active_plugins())
                 if inspect.isawaitable(sync_result):
                     await sync_result
-            sync_global_registry = getattr(self.plugin_manager, "sync_global_registry", None)
-            if callable(sync_global_registry):
-                registry_path = sync_global_registry()
-                logger.info("插件全局注册表已同步: %s", registry_path)
+            sync_manifest = getattr(self.plugin_manager, "sync_manifest", None)
+            if callable(sync_manifest):
+                manifest_path = sync_manifest()
+                logger.info("插件清单已同步: %s", manifest_path)
             logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
             self.loop.add_before_turn_plugin_modules(
                 self.plugin_manager.before_turn_modules,
@@ -536,7 +536,6 @@ def build_core_runtime(
             model=config.model,
             max_tokens=config.max_tokens,
         ),
-        plugin_configs=config.plugins,
         installed_cache_root=_resolve_installed_plugin_cache_root(),
     )
 

@@ -116,6 +116,47 @@ class DriftStateStore:
     def load_skill_continuum(self, skill_name: str) -> dict[str, Any]:
         return self._load_continuum(skill_name)
 
+    def load_self_state(self) -> dict[str, str]:
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT current_skill, current_intention, last_decision,
+                       decision_reason, next_tendency, updated_at
+                FROM self_state
+                WHERE id = 1
+                """
+            ).fetchone()
+        if row is None:
+            return {}
+        return {
+            "current_skill": str(row["current_skill"] or ""),
+            "current_intention": str(row["current_intention"] or ""),
+            "last_decision": str(row["last_decision"] or ""),
+            "decision_reason": str(row["decision_reason"] or ""),
+            "next_tendency": str(row["next_tendency"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    def save_self_choice(
+        self,
+        *,
+        skill_name: str,
+        intention: str,
+        decision: str,
+        reason: str,
+        now_utc: datetime,
+    ) -> None:
+        with self._connection() as conn:
+            self._upsert_self_state(
+                conn=conn,
+                current_skill=skill_name,
+                current_intention=intention,
+                last_decision=decision,
+                decision_reason=reason,
+                next_tendency="",
+                updated_at=now_utc.isoformat(),
+            )
+
     def load_skill_journal(
         self,
         skill_name: str,
@@ -162,6 +203,28 @@ class DriftStateStore:
                 }
             )
         return result
+
+    def load_recent_self_observations(self, *, limit: int = 12) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT skill_name, payload_json, run_id, created_at
+                FROM skill_journal
+                WHERE entry_type = 'self_observation'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [
+            {
+                "skill_name": str(row["skill_name"] or ""),
+                "payload": self._decode_json_object(row["payload_json"]),
+                "run_id": int(row["run_id"] or 0) if row["run_id"] is not None else None,
+                "created_at": str(row["created_at"] or ""),
+            }
+            for row in reversed(rows)
+        ]
 
     def load_briefing(self, skills: list[SkillMeta]) -> str:
         recent_rows = self._load_recent_runs_from_db(limit=5)
@@ -241,6 +304,7 @@ class DriftStateStore:
         now_utc: datetime,
         cursor_update: dict[str, Any] | None = None,
         journal_append: list[dict[str, Any]] | None = None,
+        self_update: dict[str, str] | None = None,
     ) -> None:
         skill_name = str(skill_used or "").strip()
         status_value = str(status or "").strip()
@@ -334,6 +398,21 @@ class DriftStateStore:
                 entries=journal_append or [],
                 created_at=now_utc.isoformat(),
             )
+            if self_update is not None:
+                self_state = self._load_self_state_from_connection(conn)
+                self._upsert_self_state(
+                    conn=conn,
+                    current_skill=skill_name,
+                    current_intention=str(
+                        self_update.get("current_intention")
+                        or self_state.get("current_intention")
+                        or ""
+                    ),
+                    last_decision=str(self_state.get("last_decision") or ""),
+                    decision_reason=str(self_state.get("decision_reason") or ""),
+                    next_tendency=str(self_update.get("next_tendency") or ""),
+                    updated_at=now_utc.isoformat(),
+                )
             if global_note_update is not None and str(global_note_update).strip():
                 _ = conn.execute(
                     """
@@ -494,6 +573,16 @@ class DriftStateStore:
                     updated_at TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS self_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    current_skill TEXT NOT NULL DEFAULT '',
+                    current_intention TEXT NOT NULL DEFAULT '',
+                    last_decision TEXT NOT NULL DEFAULT '',
+                    decision_reason TEXT NOT NULL DEFAULT '',
+                    next_tendency TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS run_steps (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id INTEGER,
@@ -574,6 +663,59 @@ class DriftStateStore:
             "cursor": self._decode_json_object(row["cursor_json"]),
             "updated_at": str(row["updated_at"] or ""),
         }
+
+    @staticmethod
+    def _load_self_state_from_connection(conn: sqlite3.Connection) -> dict[str, str]:
+        row = conn.execute(
+            """
+            SELECT current_intention, last_decision, decision_reason
+            FROM self_state
+            WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return {}
+        return {
+            "current_intention": str(row["current_intention"] or ""),
+            "last_decision": str(row["last_decision"] or ""),
+            "decision_reason": str(row["decision_reason"] or ""),
+        }
+
+    @staticmethod
+    def _upsert_self_state(
+        *,
+        conn: sqlite3.Connection,
+        current_skill: str,
+        current_intention: str,
+        last_decision: str,
+        decision_reason: str,
+        next_tendency: str,
+        updated_at: str,
+    ) -> None:
+        _ = conn.execute(
+            """
+            INSERT INTO self_state (
+                id, current_skill, current_intention, last_decision,
+                decision_reason, next_tendency, updated_at
+            )
+            VALUES (1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                current_skill = excluded.current_skill,
+                current_intention = excluded.current_intention,
+                last_decision = excluded.last_decision,
+                decision_reason = excluded.decision_reason,
+                next_tendency = excluded.next_tendency,
+                updated_at = excluded.updated_at
+            """,
+            (
+                _clip(current_skill, 80),
+                _clip(current_intention, 500),
+                _clip(last_decision, 40),
+                _clip(decision_reason, 500),
+                _clip(next_tendency, 500),
+                updated_at,
+            ),
+        )
 
     @staticmethod
     def _decode_json_object(raw: Any) -> dict[str, Any]:

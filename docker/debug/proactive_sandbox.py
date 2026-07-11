@@ -28,10 +28,12 @@ from bootstrap.providers import build_providers
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.state import ProactiveStateStore
+from plugins.drift_flow.state import DriftStateStore
 from session.manager import SessionManager
 
 EVENT_ID = "sandbox_content_001"
 SKILL_NAME = "sandbox_probe"
+PAUSED_SKILL_NAME = "paused-plan-probe"
 
 
 class SandboxProvider:
@@ -107,7 +109,6 @@ def reset(workspace: Path) -> None:
     _assert_sandbox_path(workspace)
     shutil.rmtree(workspace, ignore_errors=True)
     workspace.mkdir(parents=True)
-    _write_sources(workspace)
     skill_dir = workspace / "drift" / "skills" / SKILL_NAME
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -128,7 +129,6 @@ def reset(workspace: Path) -> None:
 
 def inject_content(workspace: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    _write_sources(workspace)
     db_path = workspace / "feed-data" / "feed_mcp.sqlite3"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now(UTC).isoformat()
@@ -190,25 +190,109 @@ def clear_content(workspace: Path) -> None:
         conn.execute("DELETE FROM items")
 
 
-def _write_sources(workspace: Path) -> None:
-    (workspace / "proactive_sources.json").write_text(
+def prepare_paused_resume(workspace: Path) -> None:
+    _assert_sandbox_path(workspace)
+    shutil.rmtree(workspace, ignore_errors=True)
+    skill_dir = workspace / "drift" / "skills" / PAUSED_SKILL_NAME
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {PAUSED_SKILL_NAME}\n"
+        "description: 根据需求制定计划并产出结果，用于验证 paused 续接认知。\n"
+        "---\n\n"
+        "# Paused Plan Probe\n\n"
+        "这是一份能力说明书。完整工作路径如下：\n\n"
+        "1. 读取 `skills/paused-plan-probe/requirements.md`。\n"
+        "2. 根据需求创建 `skills/paused-plan-probe/plan.json`。\n"
+        "3. 读取计划，将其中的 `output` 写入 `skills/paused-plan-probe/result.txt`。\n"
+        "4. 调用 `finish_drift(status=\"completed\", message_result=\"silent\")`。\n\n"
+        "结合 local_context 判断当前位于哪一步，只执行本轮需要的部分。\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "requirements.md").write_text(
+        "产出内容必须是：continued-from-existing-plan\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "plan.json").write_text(
         json.dumps(
             {
-                "sources": [
-                    {
-                        "server": "feed",
-                        "channel": "content",
-                        "get_tool": "get_proactive_events",
-                        "ack_tool": "acknowledge_events",
-                        "enabled": True,
-                    }
-                ]
+                "output": "continued-from-existing-plan",
+                "next_action": "write_result",
             },
             ensure_ascii=False,
             indent=2,
-        ),
+        )
+        + "\n",
         encoding="utf-8",
     )
+    (workspace / "PROACTIVE_CONTEXT.md").write_text(
+        "# Proactive Context\n\n当前是 paused 断点续接沙盒。\n",
+        encoding="utf-8",
+    )
+    store = DriftStateStore(workspace / "drift")
+    store.save_finish(
+        skill_used=PAUSED_SKILL_NAME,
+        status="paused",
+        briefing="计划已生成，但执行阶段遇到临时 502，结果文件尚未写入。",
+        message_result="silent",
+        scratchpad_update=(
+            "requirements.md 已读取，plan.json 已创建。上次在执行计划时遇到临时 502；"
+            "result.txt 尚未生成，下次仍从 execute_plan 继续。也允许暂时延后。"
+        ),
+        global_note_update=None,
+        now_utc=datetime.now(UTC),
+        cursor_update={
+            "phase": "execute_plan",
+            "plan_path": f"skills/{PAUSED_SKILL_NAME}/plan.json",
+            "next_action": "write_result",
+        },
+    )
+
+
+async def verify_paused_resume(
+    workspace: Path,
+    config_path: Path,
+) -> dict[str, Any]:
+    prepare_paused_resume(workspace)
+    result = await tick(workspace, "drift", config_path)
+    drift_steps = _query_all(
+        workspace / "drift" / "drift.db",
+        """
+        SELECT step_index, tool_name, input_preview, output_preview
+        FROM run_steps
+        WHERE run_id = (SELECT id FROM runs ORDER BY id DESC LIMIT 1)
+        ORDER BY step_index, id
+        """,
+    )
+    skill_dir = workspace / "drift" / "skills" / PAUSED_SKILL_NAME
+    result_path = skill_dir / "result.txt"
+    plan_path = f"skills/{PAUSED_SKILL_NAME}/plan.json"
+    requirements_path = f"skills/{PAUSED_SKILL_NAME}/requirements.md"
+    restarted = False
+    for step in drift_steps:
+        raw = str(step.get("input_preview") or "")
+        if step.get("tool_name") == "read_file" and requirements_path in raw:
+            restarted = True
+        if step.get("tool_name") in {"write_file", "edit_file"} and plan_path in raw:
+            restarted = True
+    if not result_path.exists():
+        raise AssertionError(f"模型没有从 paused 计划产出 result.txt: {drift_steps}")
+    if restarted:
+        raise AssertionError(f"模型重新执行了已完成的前置步骤: {drift_steps}")
+    result_text = result_path.read_text(encoding="utf-8").strip()
+    if "continued-from-existing-plan" not in result_text:
+        raise AssertionError(f"result.txt 未使用已有计划: {result_text!r}")
+    return {
+        "ok": True,
+        "runtime": result,
+        "drift": _query_one(
+            workspace / "drift" / "drift.db",
+            "SELECT id, skill_name, status, briefing FROM runs ORDER BY id DESC LIMIT 1",
+        ),
+        "drift_steps": drift_steps,
+        "result": result_text,
+        "restarted_completed_steps": restarted,
+    }
 
 
 def _config(mode: str) -> ProactiveConfig:
@@ -251,7 +335,6 @@ async def tick(
         tool_registry=tools,
         workspace=workspace,
         session_manager=sessions,
-        plugin_configs={"daynight_gate": {"enabled": False}},
         installed_cache_root=installed_cache,
     )
     mcp = McpServerRegistry(workspace / "mcp_servers.json", tools)
@@ -279,7 +362,6 @@ async def tick(
         proactive_config.message_dedupe_enabled = False
         proactive_config.delivery_dedupe_hours = 0
         proactive_config.drift_enabled = mode == "drift"
-        proactive_config.drift_max_steps = 8
         proactive_config.drift_min_interval_hours = 0
         model = app_config.model
         max_tokens = app_config.max_tokens
@@ -322,6 +404,7 @@ async def tick(
         proactive_lifecycles=plugins.proactive_lifecycles,
         proactive_module_factories=plugins.proactive_module_factories,
         proactive_runtime_factories=plugins.proactive_runtime_factories,
+        proactive_sources=plugins.proactive_sources,
     )
     try:
         await loop._proactive_kernel.start()
@@ -447,7 +530,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="主动链路 Docker 操作沙盒")
     parser.add_argument(
         "command",
-        choices=["reset", "inject-content", "clear-content", "tick-content", "tick-drift", "status", "run-all"],
+        choices=[
+            "reset",
+            "inject-content",
+            "clear-content",
+            "tick-content",
+            "tick-drift",
+            "verify-paused-resume",
+            "status",
+            "run-all",
+        ],
     )
     parser.add_argument("--workspace", type=Path, default=_workspace_from_env())
     parser.add_argument("--config", type=Path)
@@ -467,6 +559,10 @@ def main() -> None:
         result = asyncio.run(tick(workspace, "content", args.config))
     elif args.command == "tick-drift":
         result = asyncio.run(tick(workspace, "drift", args.config))
+    elif args.command == "verify-paused-resume":
+        if args.config is None:
+            raise SystemExit("verify-paused-resume 必须通过 --config 使用真实模型")
+        result = asyncio.run(verify_paused_resume(workspace, args.config))
     elif args.command == "status":
         result = status(workspace)
     else:

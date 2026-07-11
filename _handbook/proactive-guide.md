@@ -1,493 +1,130 @@
-# Proactive 主动推送
+# Proactive 主动推送指南
 
-akashic 不只是被动回复——它每 N 秒/分钟跑一轮 tick，检查你订阅的信息源，自主决定"现在该不该给你发消息、发什么"。没有内容可推时就进入 **Drift 空闲任务**。
-
-## 先理解它是什么
-
-> 把 proactive 和 drift 想成两个**独立的小 agent**，各带一套固定工具，各自醒来干活。
-
-### Proactive：一个定时醒来的"要不要发消息"决策器
-
-Proactive 本质上是：
-
-1. **一套固定工具**：`recall_memory`、`get_content`、`web_fetch`、`mark_interesting`、`mark_not_interesting`、`get_recent_chat`、`message_push`、`finish_turn`
-2. **一组内建 phase module**：gate、source、prompt、judge、resolve、deliver、schedule 各自负责一段
-3. **一个 MCP 数据源模块**：从你配置的 server 拉 alert / content / context
-
-每次 tick 做的事非常机械：**把 MCP server 返回的数据灌进 prompt → LLM 按 prompt 指令逐条判断 → 调用工具写分类结果 → 如果有内容值得推就 message_push 完事**。
+Proactive 的轮询、判断和投递由核心 runtime 负责；插件只声明信息源并通过 MCP 提供数据。不再使用 `~/.akashic/workspace/proactive_sources.json`。
 
 ```text
-┌─ 外部 MCP server 数据
-├─ PROACTIVE_CONTEXT.md 规则
-└─ 长期记忆
-   │
-   ▼
-┌─ ProactivePromptBuilder
-│  └─ 构建 system prompt + runtime context
-│
-▼
-┌─ ProactiveJudge
-│  └─ LLM 调工具做 mark_interesting / mark_not_interesting
-│
-▼
-┌─ ProactiveResolver
-│  ├─ 有 interesting → message_push → 去重 → 发给你
-│  └─ 没有内容 → finish_turn(skip)
+┌─ 插件 plugin.py
+│  ├─ 声明 MCP server
+│  └─ 声明一个或多个 ProactiveSourceSpec
+├─ 核心 runtime
+│  ├─ 按 poll_interval_seconds 调用 poll_tool
+│  ├─ 每个 tick 调用 fetch_tool
+│  └─ 将同一份快照分发给各通道
+├─ proactive 判断
+│  ├─ alert   ──> 紧急事件
+│  ├─ content ──> 候选内容
+│  └─ context ──> 背景状态
+└─ 投递成功
+   └─ 按原 source 与 event_id 调用 ack_tool
+```
+## 三种通道
+
+| 通道 | 用途 | 是否触发推送 | ACK |
+|---|---|---:|---:|
+| `alert` | 健康告警、日程提醒、异常 | 是 | 通常需要 |
+| `content` | RSS、新闻、社区内容 | 经过兴趣判断 | 通常需要 |
+| `context` | 睡眠、在线状态、环境状态 | 否，只辅助判断 | 不需要 |
+
+一个插件可以同时声明多个 source，也可以让一个 source 提供多个通道。
+
+## 插件声明
+
+```python
+from agent.plugins import McpServerSpec, Plugin, ProactiveSourceSpec
+
+
+class SourcePlugin(Plugin):
+    name = "source"
+    version = "1.0.0"
+
+    @classmethod
+    def mcp_servers(cls) -> list[McpServerSpec]:
+        return [McpServerSpec(name="source", command=("python", "mcp/run.py"))]
+
+    def proactive_sources(self) -> list[ProactiveSourceSpec]:
+        if not self.context.config.proactive.enabled:
+            return []
+        return [
+            ProactiveSourceSpec(
+                id="updates",
+                channels=("alert", "content"),
+                server="source",
+                fetch_tool="get_proactive_events",
+                ack_tool="acknowledge_events",
+                poll_tool="poll_updates",
+                poll_interval_seconds=300,
+            )
+        ]
 ```
 
-**决策逻辑在哪里？都在 prompt 里。** 你没有写代码，你写的是 `PROACTIVE_CONTEXT.md` 里的白名单/黑名单/过滤规则，以及 `proactive_sources.json` 里告诉它去哪拉数据。剩下的"这条内容发不发"的判断，全是 LLM 自己根据 prompt 做的。
+`poll_tool` 可省略。省略时，核心仍按 tick 调用 `fetch_tool`，但不会要求上游先执行刷新动作。
 
-### Drift：一个没东西可推时才醒来的"后台干活"执行器
-
-当 proactive 拉了一圈发现——没有 alert、没有 content、context fallback 也没开——它会进入 Drift。
-
-Drift 跟 proactive 的**根本区别在于控制方式**：
-
-| | Proactive | Drift |
-|---|---|---|
-| **行为由谁定义** | 固定 system prompt（代码里写死的） | `SKILL.md` 文件（你写的，放在 `drift/skills/` 下） |
-| **做什么** | 分类、筛选、决定推不推 | 你定义什么就做什么（审记忆、问问题、自我诊断...） |
-| **工具** | 推送决策专用工具（mark_*, message_push, finish_turn） | 通用工具（read_file, write_file, fetch_messages, shell...）+ 可 message_push 一次 |
-| **收尾** | finish_turn(decision=reply/skip) | finish_drift(message_result=sent/silent) |
-
-写一个 drift skill 就是写一份 `SKILL.md`，告诉模型：
-- 你这次的任务是什么
-- 有哪些工作文件（读什么、写什么）
-- 每一步怎么做（像 SOP 一样）
-- 什么时候发消息、什么时候静默
-
-**proactive 是"筛选推送引擎"，drift 是"用户可编程后台任务"。**
-
-### 两者的关系
-
-```text
-┌─ proactive tick
-│  └─ DataGateway 拉数据
-│     ├─ 有 alert/content
-│     │  └─ 跑 proactive judge（prompt 驱动）
-│     └─ 啥都没有
-│        └─ 跑 drift（SKILL.md 驱动）
-```
-
-就这么简单。下面展开讲怎么配、怎么跑。
-
----
-
-## 配置步骤
-
-### 哪些你写、哪些 agent 写
-
-配 proactive 涉及的 workspace 文件分两类：
-
-| 文件 | 维护方式 | 说明 |
-|------|---------|------|
-| `config.toml` | **你写** | 全局开关、profile、target、agent/drift 参数 |
-| `mcp_servers.json` | **你写** | MCP server 启动命令和环境变量。也可以通过对话让 agent 调 `mcp_add` 工具写 |
-| `proactive_sources.json` | **你写** | 声明哪个 MCP server 提供哪类数据（alert/content/context） |
-| `PROACTIVE_CONTEXT.md` | **agent 维护** | 主 agent（被动回复时）通过对话帮你写和改。proactive agent 只读不写 |
-| `schedules.json` | **都行** | 你可以手动写，也可以让主 agent 调内置的 `schedule` 工具增删改 |
-| `drift/skills/*/SKILL.md` | **你写** | Drift 的任务定义。也可以用内置 skill `create-drift-skill` 让 agent 帮你生成 |
-| `memory/*.md` | **agent 维护** | 长期记忆、自我认知、近期上下文——全部由主 agent 通过被动对话自动读写 |
-| `drift/drift.json` | **agent 维护** | Drift runner 自动写运行记录，不用管 |
-| `proactive_quota.json` | **agent 维护** | AnyAction gate 自动写配额计数，不用管 |
-
-### 1. 开启 proactive（config.toml）
+## 插件内关闭主动链路
 
 ```toml
+# ~/.akashic-plugin/data/source-github/config.local.toml
 [proactive]
-enabled = true
-profile = "daily"           # daily / quiet / dev_verify
-
-[proactive.target]
-channel = "telegram"
-chat_id = "7674283004"
-
-[proactive.agent]
-max_steps = 20
-content_limit = 5
-web_fetch_max_chars = 8000
-context_prob = 0.03
-delivery_cooldown_hours = 0
-
-[proactive.drift]
-enabled = true
-max_steps = 30
-min_interval_hours = 1
+enabled = false
+poll_interval_seconds = 600
 ```
 
-Web Chatbox 会随主进程默认启动在 `http://127.0.0.1:6322`，适合本机被动对话和调试。它的 session key 形如 `web:<uuid>`，其中 `<uuid>` 才是 message_push 的 `chat_id`。因为浏览器断开时 Web 推送不会作为独立 proactive 消息持久入库，长期主动推送仍建议使用 Telegram / QQBot。
+关闭主动信息源不等于关闭整个插件。插件的普通 MCP 工具、skills 与其他生命周期能力仍可继续工作。若要关闭整个插件，修改全局 `manifest.toml`。
 
-```text
-proactive delivery target
-├─ telegram
-│  └─ chat_id = Telegram user id
-├─ qqbot
-│  └─ chat_id = c2c:USER_OPENID
-└─ web
-   └─ 本机调试可用；不推荐作为长期主动推送目标
-```
+## MCP 返回协议
 
-### 2. 注册 MCP server（`~/.akashic/workspace/mcp_servers.json`）
-
-```json
-{
-  "servers": {
-    "fitbit": {
-      "command": ["/path/to/fitbit-mcp/.venv/bin/python", "/path/to/fitbit-mcp/run_mcp.py"],
-      "env": {},
-      "cwd": "/path/to/fitbit-mcp"
-    },
-    "feed": {
-      "command": ["/path/to/feed-mcp/.venv/bin/python", "/path/to/feed-mcp/run_mcp.py"],
-      "env": {},
-      "cwd": "/path/to/feed-mcp"
-    }
-  }
-}
-```
-
-MCP server 通过 stdio 与 agent 通信，启动时 `McpClientPool.connect_all()` 建立常驻连接。也可以用内置工具 `mcp_add` 让 agent 帮你加。
-
-### 3. 声明信息源（`~/.akashic/workspace/proactive_sources.json`）
-
-把 MCP server 的工具映射到 proactive 通道：
-
-```json
-{
-  "sources": [
-    {
-      "server": "fitbit",
-      "channel": "alert",
-      "get_tool": "get_proactive_events",
-      "ack_tool": "acknowledge_events",
-      "enabled": true
-    },
-    {
-      "server": "fitbit",
-      "channel": "context",
-      "get_tool": "get_sleep_context",
-      "enabled": true
-    },
-    {
-      "server": "feed",
-      "channel": "content",
-      "get_tool": "get_proactive_events",
-      "ack_tool": "acknowledge_events",
-      "poll_tool": "poll_feeds",
-      "enabled": true
-    },
-    {
-      "server": "steam",
-      "channel": "context",
-      "get_tool": "get_steam_context",
-      "enabled": true
-    }
-  ]
-}
-```
-
-| 字段 | 说明 |
-|------|------|
-| `server` | 对应 `mcp_servers.json` 里的 key |
-| `channel` | `"alert"` / `"content"` / `"context"` |
-| `get_tool` | MCP tool 名。content/alert 默认 `get_proactive_events`，context 默认 `get_context` |
-| `ack_tool` | 确认工具。alert/content 需要，context 不需要（不走 ACK） |
-| `poll_tool` | content 专用：周期拉新的 tool（如 `poll_feeds`） |
-
-### 4. 写推送规则（`~/.akashic/workspace/PROACTIVE_CONTEXT.md`）
-
-这是主被动 loop 共享的规则面板。你通过**被动对话**让主 agent 帮你写和维护。proactive agent 每轮只读。
-
-```
-# Proactive Context
-
-## CS2 新闻推送过滤规则
-
-**白名单队伍**：HLTV Top 15（每周一更新）+ TyLoo + BC.Game + 100 Thieves
-**过滤逻辑**：仅推送白名单队伍及选手相关新闻，其他一律过滤
-```
-
-规则要点：写结论不写过程、主 agent 负责维护、proactive agent 每轮读取。**怎么改：直接跟 agent 聊天说"帮我在 proactive context 里加一条规则..."**。
-
-### 5. 定时任务（`schedules.json`）
-
-手动写或通过主 agent 对话让它调 `schedule` 工具增删：
+alert/content 的 `fetch_tool` 返回 JSON 数组：
 
 ```json
 [
   {
-    "trigger": "every",
-    "tier": "soft",
-    "cron_expr": "0 7 * * *",
-    "timezone": "Asia/Shanghai",
-    "channel": "telegram",
-    "chat_id": "7674283004",
-    "prompt": "查询北京今天全天天气预报...",
-    "name": "通勤天气决策",
-    "enabled": true
+    "event_id": "event-1",
+    "kind": "alert",
+    "source_type": "calendar",
+    "source_name": "work",
+    "title": "会议即将开始",
+    "content": "项目周会将在 10 分钟后开始",
+    "severity": "medium",
+    "published_at": "2026-07-10T17:00:00+08:00"
   }
 ]
 ```
 
-### 6. tick 间隔——不是固定的
-
-tick 不是一个 cron，它是一个**根据你上次说话时间动态变化**的间隔。
-
-```text
-┌─ 你上次发消息的时间
-│
-▼
-┌─ ProactiveScheduler
-│  ├─ compute_energy(last_user_at) → 当前"电量" [0, 1]
-│  │  ├─ 刚聊完 → 电量 ≈ 1.0（满）
-│  │  └─ 半天没聊 → 电量 ≈ 0.0（空）
-│  ├─ d_energy = 1 - energy → "饥渴度"
-│  ├─ base_score = w_e × d_energy
-│  └─ next_tick_from_score(base_score)
-│     ├─ base_score > 0.20 → s1
-│     └─ base_score ≤ 0.20 → s0（最慢）
-```
-
-**直觉**：你刚说完话，agent 不想烦你，慢悠悠地查（8 分钟一次）。你半天没动静，agent 觉得"该找点东西了"，加速查到 4 分钟一次。
-
-三种预设只是调整这张"饥渴→间隔"的映射表：
-
-| 预设 | s0（不饿） | s1（很饿） | 适用场景 |
-|------|-----------|------------|----------|
-| `daily` | 8 min | 4 min | 日常 |
-| `dev_verify` | 1 min | 30 s | 开发调试 |
-| `quiet` | 30 min | 15 min | 低打扰 |
-
-每次 tick 后重新算，间隔持续变化——不是定时器，是自适应循环。
-
-### 7. 微调参数（overrides）
-
-```toml
-[proactive.overrides.gate]
-judge_send_threshold = 0.65    # 提高发送门槛
-
-[proactive.overrides.trigger]
-tick_interval_s0 = 600         # 不饿时 10 分钟
-tick_interval_s1 = 180         # 很饿时至少 3 分钟
-```
-
----
-
-## 系统怎么跑的（技术展开）
-
-```text
-┌─ ProactiveLoop.run()
-│  ├─ ProactiveKernel.start()
-│  │  └─ McpRuntimeModule.start()
-│  │     ├─ McpClientPool.connect_all()
-│  │     └─ feed poll loop（后台调用 poll_feeds）
-│  │
-│  └─ tick loop（自适应频率）
-│     ├─ ProactiveScheduler.next_interval(score)
-│     └─ ProactiveKernel.run_tick()
-│        └─ LegacyPipelineModule.run()
-│           └─ ProactiveTurnPipeline.run()
-│              ├─ ProactiveGateChain
-│              │  └─ target / busy / cooldown / AnyAction / context gate
-│              ├─ DataGateway.run()
-│              │  ├─ alert
-│              │  ├─ content
-│              │  └─ context
-│              ├─ ProactivePromptBuilder
-│              │  └─ system prompt + runtime context
-│              ├─ ProactiveJudge
-│              │  └─ LLM 工具循环 + 补分类 + 反思收尾
-│              ├─ ProactiveResolver
-│              │  └─ skip / delivery 去重 / message 去重 / ACK side effects
-│              └─ ProactiveDeliverer
-│                 └─ tick log + TurnOrchestrator 发送
-```
-
-关键设计点：
-- **ProactiveLoop 保持薄**：只负责 start/stop、sleep、run_tick，不直接管理 MCP 或 energy 算法
-- **常驻 MCP 连接**：由 `McpRuntimeModule` 生命周期管理，避免每次 tick 重启子进程
-- **数据先到齐再决策**：三路预取在 agent loop 之前完成，单源失败不影响其他源
-- **去重分层**：delivery 级（同一批内容不重复发）+ message 级（语义去重，新消息和最近主动消息如果实质重复也跳过）
-- **ACK 机制**：每个被消费的事件都要 ACK，带不同 TTL（cited 168h / interesting uncited 24h / discarded 720h）
-
----
-
-## 数据从哪来——MCP 接口契约
-
-三种事件通道各有自己的 MCP tool 约定和返回 schema。这是**写 MCP server 的人需要遵守的合同**——只要满足这个合同，你的数据源就能被 proactive 消费。
-
-### 1. Alert 通道
-
-**设计语义**：高优先级、时效性强的告警，bypass 内容评分，直接透传 agent。
-
-**MCP tool 约定**：`get_proactive_events()` 返回 `list[dict]`，每个 dict 的 `kind` 为 `"alert"`。
-
-**标准 schema**（以 fitbit 为例）：
+context 返回一个 JSON 对象或对象数组：
 
 ```json
-{
-  "event_id": "fb_20260508_001",
-  "kind": "alert",
-  "source_type": "health_event",
-  "source_name": "fitbit",
-  "title": "hr_elevated_rest",
-  "content": "静息心率异常升高：当前 92 bpm（基线 68 bpm），持续 15 分钟",
-  "severity": "high",
-  "published_at": "2026-05-08T14:30:00",
-  "suggested_tone": "关切但不过度紧张",
-  "metrics": {"current_bpm": 92, "baseline_bpm": 68, "duration_min": 15}
-}
-```
-
-| 字段 | 类型 | 必须 | 说明 |
-|------|------|------|------|
-| `event_id` | string | 是 | ACK 的唯一标识 |
-| `kind` | string | 是 | 固定 `"alert"` |
-| `source_name` | string | 是 | 可读来源名 |
-| `title` | string | 是 | 事件类型 |
-| `content` | string | 是 | 人类可读告警正文 |
-| `severity` | string | 否 | `"high"` / `"medium"`。`"high"` 时 bypass 评分直接推 |
-| `published_at` | string | 否 | ISO 时间戳 |
-| `suggested_tone` | string | 否 | LLM 语气提示 |
-| `metrics` | dict | 否 | 结构化指标，最多 8 key，value 最长 60 字符 |
-
-**ACK tool**：`acknowledge_events(event_ids: list[str])` — alert 走独立 ACK 通道，无 TTL（一次性消费）。
-
-**真实实现**：`~/.akashic/workspace/mcp/fitbit-mcp/src/mcp_bridge.py`：
-
-```python
-@mcp.tool()
-def get_proactive_events() -> str:
-    data = _fetch_agent_payload(timeout=5)
-    raw_events = data.get("health_events") or []
-    events = [_to_standard_event(e) for e in raw_events]
-    return json.dumps(events, ensure_ascii=False)
-```
-
-### 2. Content 通道
-
-**设计语义**：内容流（RSS 新闻、社交更新），参与评分分类，走去重和 ACK。
-
-**MCP tool 约定**：`get_proactive_events()` 返回 `list[dict]`，每个 dict 的 `kind` 为 `"content"`。
-
-**标准 schema**（以 feed-mcp 为例）：
-
-```json
-{
-  "event_id": "rss_abc123",
-  "kind": "content",
-  "source_type": "rss",
-  "source_name": "HLTV.org",
-  "title": "Vitality win BLAST Open Spring 2026",
-  "content": "Vitality defeated NAVI 2-0...",
-  "url": "https://www.hltv.org/news/40001/vitality-win-blast",
-  "published_at": "2026-05-08T12:00:00",
-  "display_text": "Vitality 2-0 NAVI · BLAST · 2026-05-08"
-}
-```
-
-| 字段 | 类型 | 必须 | 说明 |
-|------|------|------|------|
-| `event_id` | string | 是 | ACK 的唯一标识 |
-| `kind` | string | 是 | 固定 `"content"` |
-| `source_name` | string | 是 | 可读来源名 |
-| `title` | string | 是 | 标题，agent 先看这个做初筛 |
-| `url` | string | 是 | 原文链接，gateway 会据此预取正文 |
-| `content` | string | 否 | 短摘要。详细正文由 gateway 通过 web_fetch 从 url 抓取 |
-| `published_at` | string | 否 | ISO 时间戳 |
-| `display_text` | string | 否 | 紧凑展示文本 |
-
-**处理流程**：
-1. gateway 调 `get_proactive_events` → 拿到 meta 列表
-2. 并行 web_fetch 每个 `url` → 正文截断后存 content_store hashmap
-3. agent 在 loop 中通过 `get_content` 工具按需取正文
-4. 分类后 ACK 带 TTL
-
-**Poll tool**（content 专用）：`poll_feeds()` — 后台周期性调用，让 MCP server 去真正抓取 RSS/API。
-
-**真实实现**：`~/.akashic/workspace/mcp/feed-mcp/src/feed_backend.py:1284`：
-
-```python
-def get_proactive_events() -> list[dict[str, Any]]:
-    rows = conn.execute("""
-        SELECT i.event_id, i.source_type, i.source_name, i.title,
-               i.content, i.url, i.published_at
-        FROM items i LEFT JOIN acked_items a ON a.event_id = i.event_id
-        WHERE a.event_id IS NULL
-          AND coalesce(i.published_at, i.first_seen_at) >= ?
-        ORDER BY coalesce(i.published_at, i.first_seen_at) DESC LIMIT ?
-    """, (published_after, cfg.max_content_events)).fetchall()
-    return [{
-        "event_id": row["event_id"], "kind": "content",
-        "source_type": row["source_type"], "source_name": row["source_name"],
-        "title": row["title"], "content": row["content"],
-        "url": row["url"], "published_at": row["published_at"],
-        "display_text": _build_display_text(row),
-    } for row in rows]
-```
-
-### 3. Context 通道
-
-**设计语义**：背景上下文——不是事件流，不参与评分，不做 ACK。alert 和 content 都空时，以低概率注入作为"没东西推时能不能找点话说"的 fallback。
-
-**与 alert/content 的根本不同**：
-- 没有 event_id，不走去重，不做 ACK
-- 不触发推送决策，只在 alert 和 content 都为空时才被 agent 看到
-- 注入有概率阀（`context_prob`，默认 3%）和日配额（`context_only_daily_max`，默认 1 次/天）
-
-**MCP tool 约定**：每个 context 源定义独立 tool（命名习惯 `get_<name>_context`），返回单个 dict 或 list[dict]。没有强 schema 要求，只有语义约定：
-
-```json
-// fitbit sleep context
 {
   "available": true,
-  "summary": "用户当前可能已经睡着（概率 0.87），数据延迟约 5 分钟。",
-  "sleep": {"state": "sleeping", "prob": 0.87, "prob_source": "hrv"}
-}
-
-// steam game context
-{
-  "available": true,
-  "games": [{"name": "CS2", "recent_2w_hours": 12.5, "all_time_hours": 2340.0}],
-  "realtime": {"online_status": "in-game", "currently_playing": "Counter-Strike 2"}
+  "topic": "用户睡眠状态",
+  "summary": "用户当前更可能醒着",
+  "hint": "这是概率判断，不能当作事实确认"
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `available` | 数据是否可用。false 时 agent 不应据此做推断 |
-| `_source` | framework 自动注入，标记来自哪个 MCP server |
-| `summary` / `hint` | 人类可读说明和判断指引 |
+ACK 工具接收 `event_ids: list[str]`。只确认已经成功投递的原始事件，不能用标题或 URL 代替 ID。
 
-**真实实现**：
-- fitbit sleep：`~/.akashic/workspace/mcp/fitbit-mcp/src/mcp_bridge.py:136`
-- steam game：`~/.akashic/workspace/mcp/steam-mcp/steam_proactive.py`
+## 轮询语义
 
----
-
-## 一个完整的实际例子
-
-以 fitbit 告警从数据源到用户收到消息的完整链路：
-
+```text
+┌─ runtime 启动
+│  └─ 为带 poll_tool 的 source 创建周期任务
+├─ 周期到期
+│  └─ 调用 poll_tool 更新上游缓存
+├─ proactive tick
+│  └─ 每个 source 调用一次 fetch_tool
+├─ 通道筛选与决策
+└─ 投递成功后精确 ACK
 ```
-1. fitbit-mcp 后台运行，周期性拉 Fitbit API
-   └── 检测到静息心率异常 → 写入内部事件队列
 
-2. proactive loop tick
-   └── McpRuntimeModule 已持有 pool
-       └── DataGateway._fetch_alerts()
-           └── pool.call("fitbit", "get_proactive_events", {})
-           └── 返回 [{"event_id":"fb_001","kind":"alert","title":"hr_elevated_rest",...}]
+source 的稳定身份是 `<plugin_id>:<source_id>`。公共调度层只理解 source、channel、interval 和工具名，不硬编码插件名。
 
-3. ProactiveJudge（LLM 决策）
-   └── system prompt："本轮如有 Alert → 整合所有 Alert → message_push → finish_turn"
-   └── LLM 调 message_push: "你的静息心率在过去15分钟异常升高（92 bpm，基线68）。建议留意。"
-   └── evidence: ["fitbit:fb_001"]
-   └── finish_turn(decision=reply)
+## 验证清单
 
-4. ProactiveResolver → delivery 去重通过 → 消息语义去重通过
-
-5. ProactiveDeliverer → Telegram 发送
-
-6. ACK: acknowledge_events(event_ids=["fb_001"]) → fitbit-mcp 标记已处理
+```text
+┌─ plugin.py 能被导入
+├─ MCP server 能建立 stdio 连接
+├─ fetch_tool 返回合法 JSON
+├─ kind 与声明通道一致
+├─ context 不会单独触发推送
+├─ 重复 tick 不会重复投递已 ACK 事件
+└─ proactive.enabled = false 时 source 列表为空
 ```

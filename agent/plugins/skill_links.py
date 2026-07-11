@@ -4,20 +4,11 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Mapping, Sequence, cast
+from typing import Mapping, Sequence
 
 from agent.plugins.manager import ActivePluginInfo
 
 logger = logging.getLogger(__name__)
-
-PluginSkillPolicyKind = Literal["plugin_loaded", "memory_engine"]
-
-
-@dataclass(frozen=True)
-class PluginSkillPolicy:
-    kind: PluginSkillPolicyKind
-    engine: str = ""
-
 
 @dataclass(frozen=True)
 class PluginSkillSyncResult:
@@ -121,9 +112,6 @@ class PluginSkillLinker:
             if not _is_safe_name(plugin.plugin_id):
                 logger.warning("插件 skill 跳过非法 plugin_id: %s", plugin.plugin_id)
                 continue
-            policy = parse_skill_policy(plugin.plugin_id, plugin.manifest, manifest_key)
-            if not self._policy_enabled(plugin.plugin_id, policy):
-                continue
             for skill_dir in _iter_plugin_skill_dirs(plugin, plugin_subpath):
                 if not _is_safe_name(skill_dir.name):
                     logger.warning(
@@ -132,12 +120,7 @@ class PluginSkillLinker:
                         skill_dir.name,
                     )
                     continue
-                if plugin.declares_aka_plugin and manifest_key == "skills":
-                    link_name = skill_dir.name
-                elif plugin.declares_aka_plugin and manifest_key == "drift_skills":
-                    link_name = skill_dir.name
-                else:
-                    link_name = f"{plugin.plugin_id}:{skill_dir.name}"
+                link_name = skill_dir.name
                 target = skill_dir.resolve(strict=False)
                 existing = expected.get(link_name)
                 if existing is not None and existing != target:
@@ -145,16 +128,6 @@ class PluginSkillLinker:
                     continue
                 expected[link_name] = target
         return expected
-
-    def _policy_enabled(
-        self,
-        plugin_id: str,
-        policy: PluginSkillPolicy,
-    ) -> bool:
-        if policy.kind == "plugin_loaded":
-            return True
-        engine_name = _memory_engine_name(self._memory_engine, plugin_id)
-        return bool(policy.engine and engine_name == policy.engine)
 
     def _ensure_link(
         self,
@@ -229,36 +202,6 @@ class PluginSkillLinker:
         )
 
 
-def parse_skill_policy(
-    plugin_id: str,
-    manifest: Mapping[str, object],
-    section: str = "skills",
-) -> PluginSkillPolicy:
-    raw_skills = manifest.get(section)
-    if not isinstance(raw_skills, dict):
-        return PluginSkillPolicy(kind="plugin_loaded")
-    skills = cast(Mapping[str, object], raw_skills)
-    raw_policy = skills.get("enabled_when")
-    if not isinstance(raw_policy, dict):
-        return PluginSkillPolicy(kind="plugin_loaded")
-    policy = cast(Mapping[str, object], raw_policy)
-
-    kind = str(policy.get("kind") or "plugin_loaded").strip()
-    if kind == "plugin_loaded":
-        return PluginSkillPolicy(kind="plugin_loaded")
-    if kind == "memory_engine":
-        engine = str(policy.get("engine") or "").strip()
-        if engine:
-            return PluginSkillPolicy(kind="memory_engine", engine=engine)
-
-    logger.warning(
-        "插件 %s 的 %s.enabled_when 无效，使用 plugin_loaded",
-        plugin_id,
-        section,
-    )
-    return PluginSkillPolicy(kind="plugin_loaded")
-
-
 def _iter_plugin_skill_dirs(
     plugin: ActivePluginInfo,
     plugin_subpath: Sequence[str],
@@ -282,33 +225,10 @@ def _resolve_skill_roots(
     plugin_subpath: Sequence[str],
 ) -> tuple[Path, ...]:
     if tuple(plugin_subpath) == ("skills",):
-        if plugin.declares_aka_plugin:
-            return plugin.skill_roots
-        if plugin.skill_roots:
-            return plugin.skill_roots
+        return plugin.skill_roots
     if tuple(plugin_subpath) == ("drift", "skills"):
-        if plugin.declares_aka_plugin:
-            return plugin.drift_skill_roots
-        if plugin.drift_skill_roots:
-            return plugin.drift_skill_roots
-    return (plugin.plugin_dir.joinpath(*plugin_subpath),)
-
-
-def _memory_engine_name(
-    memory_engine: object | None,
-    plugin_id: str,
-) -> str:
-    if memory_engine is None:
-        return ""
-    describe = getattr(memory_engine, "describe", None)
-    if not callable(describe):
-        return ""
-    try:
-        descriptor = describe()
-    except Exception as e:
-        logger.warning("插件 %s 读取 memory engine 描述失败: %s", plugin_id, e)
-        return ""
-    return str(getattr(descriptor, "name", "") or "")
+        return plugin.drift_skill_roots
+    return ()
 
 
 def _is_safe_name(name: str) -> bool:
