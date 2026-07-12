@@ -136,15 +136,30 @@ const highlighterCache = new Map<
 >();
 
 // Token cache
+const TOKEN_CACHE_LIMIT = 128;
 const tokensCache = new Map<string, TokenizedCode>();
+const pendingHighlights = new Map<string, Promise<void>>();
 
 // Subscribers for async token updates
 const subscribers = new Map<string, Set<(result: TokenizedCode) => void>>();
 
 const getTokensCacheKey = (code: string, language: BundledLanguage) => {
-  const start = code.slice(0, 100);
-  const end = code.length > 100 ? code.slice(-100) : "";
-  return `${language}:${code.length}:${start}:${end}`;
+  return `${language}\0${code}`;
+};
+
+const getCachedTokens = (key: string): TokenizedCode | undefined => {
+  const cached = tokensCache.get(key);
+  if (!cached) return undefined;
+  tokensCache.delete(key);
+  tokensCache.set(key, cached);
+  return cached;
+};
+
+const cacheTokens = (key: string, value: TokenizedCode): void => {
+  tokensCache.set(key, value);
+  if (tokensCache.size <= TOKEN_CACHE_LIMIT) return;
+  const oldestKey = tokensCache.keys().next().value;
+  if (oldestKey !== undefined) tokensCache.delete(oldestKey);
 };
 
 const getHighlighter = (
@@ -190,7 +205,7 @@ export const highlightCode = (
   const tokensCacheKey = getTokensCacheKey(code, language);
 
   // Return cached result if available
-  const cached = tokensCache.get(tokensCacheKey);
+  const cached = getCachedTokens(tokensCacheKey);
   if (cached) {
     return cached;
   }
@@ -203,8 +218,10 @@ export const highlightCode = (
     subscribers.get(tokensCacheKey)?.add(callback);
   }
 
-  // Start highlighting in background - fire-and-forget async pattern
-  getHighlighter(language)
+  if (pendingHighlights.has(tokensCacheKey)) return null;
+
+  // 同一代码只启动一次异步高亮，render 与 effect 共用结果。
+  const pending = getHighlighter(language)
     // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-then)
     .then((highlighter) => {
       const availableLangs = highlighter.getLoadedLanguages();
@@ -224,8 +241,7 @@ export const highlightCode = (
         tokens: result.tokens,
       };
 
-      // Cache the result
-      tokensCache.set(tokensCacheKey, tokenized);
+      cacheTokens(tokensCacheKey, tokenized);
 
       // Notify all subscribers
       const subs = subscribers.get(tokensCacheKey);
@@ -240,7 +256,11 @@ export const highlightCode = (
     .catch((error) => {
       console.error("Failed to highlight code:", error);
       subscribers.delete(tokensCacheKey);
+    })
+    .finally(() => {
+      pendingHighlights.delete(tokensCacheKey);
     });
+  pendingHighlights.set(tokensCacheKey, pending);
 
   return null;
 };
