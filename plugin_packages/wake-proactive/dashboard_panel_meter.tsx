@@ -79,7 +79,14 @@ function MeterPage(): ReactElement {
           <div className="meter-threshold"><span>兴奋阈值 {data.threshold.toFixed(2)}</span></div>
           <div className="meter-fluid accumulated" style={{ height: `${accumulated}%` }} />
           <div className="meter-fluid pressure" style={{ bottom: `${accumulated}%`, height: `${pressure}%` }} />
-          <div className="water-surface" style={{ bottom: `${Math.min(98, accumulated + pressure)}%` }}><i /><i /><i /></div>
+          <div
+            className={`water-surface ${data.preference_pressure > 0 ? "pressure-surface" : ""}`}
+            style={{ bottom: `${Math.min(98, accumulated + pressure)}%` }}
+          >
+            <svg viewBox="0 0 180 18" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M0 10 Q22 2 45 10 T90 10 T135 10 T180 10 V18 H0 Z" />
+            </svg>
+          </div>
           <div className="water-bubbles"><i /><i /><i /></div>
         </div>
         <div className="meter-scale"><span>125%</span><span>阈值</span><span>50%</span><span>0</span></div>

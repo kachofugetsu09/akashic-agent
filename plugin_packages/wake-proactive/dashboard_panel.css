@@ -39,12 +39,11 @@
 [data-akashic-plugin="wake-meter"] .meter-fluid.accumulated { bottom: 0; background: #41b8e7; }
 [data-akashic-plugin="wake-meter"] .meter-fluid.pressure { background: #ffc84b; }
 [data-akashic-plugin="wake-meter"] .is-crossed .meter-fluid.pressure { background: #ff6f5a; }
-[data-akashic-plugin="wake-meter"] .water-surface { position: absolute; left: -8px; right: -8px; z-index: 5; height: 14px; transition: bottom .65s cubic-bezier(.2,.8,.2,1); animation: water-bob 2.2s ease-in-out infinite alternate; }
-[data-akashic-plugin="wake-meter"] .water-surface i { position: absolute; bottom: -6px; width: 68px; height: 24px; border: 4px solid #07090c; border-radius: 50%; background: #8be0f6; }
-[data-akashic-plugin="wake-meter"] .water-surface i:nth-child(1) { left: -12px; }
-[data-akashic-plugin="wake-meter"] .water-surface i:nth-child(2) { left: 50px; bottom: -2px; }
-[data-akashic-plugin="wake-meter"] .water-surface i:nth-child(3) { right: -12px; }
-[data-akashic-plugin="wake-meter"] .is-crossed .water-surface i { background: #ff9b87; }
+[data-akashic-plugin="wake-meter"] .water-surface { position: absolute; left: -3px; right: -3px; z-index: 5; height: 18px; color: #8be0f6; transition: bottom .65s cubic-bezier(.2,.8,.2,1); animation: water-bob 2.2s ease-in-out infinite alternate; }
+[data-akashic-plugin="wake-meter"] .water-surface svg { display: block; width: 100%; height: 18px; overflow: visible; }
+[data-akashic-plugin="wake-meter"] .water-surface path { fill: currentColor; stroke: #07090c; stroke-width: 3px; vector-effect: non-scaling-stroke; }
+[data-akashic-plugin="wake-meter"] .water-surface.pressure-surface { color: #ffe08a; }
+[data-akashic-plugin="wake-meter"] .is-crossed .water-surface { color: #ff9b87; }
 [data-akashic-plugin="wake-meter"] .water-bubbles { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
 [data-akashic-plugin="wake-meter"] .water-bubbles i { position: absolute; width: 9px; height: 9px; border: 3px solid #087ca9; border-radius: 50%; }
 [data-akashic-plugin="wake-meter"] .water-bubbles i:nth-child(1) { left: 28px; bottom: 18%; }
