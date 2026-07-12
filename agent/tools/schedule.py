@@ -100,7 +100,7 @@ class ScheduleTool(Tool):
         message = kwargs.get("message")
         prompt = kwargs.get("prompt")
         channel = kwargs.get("channel", "")
-        chat_id = str(kwargs.get("chat_id", ""))
+        chat_id = kwargs.get("chat_id", "")
         tz = kwargs.get("timezone") or self._default_tz
         name = kwargs.get("name")
         request_time = kwargs.get("request_time")
@@ -109,6 +109,24 @@ class ScheduleTool(Tool):
             return f"错误：tier 须为 instant 或 soft，收到 {tier!r}"
         if trigger not in ("at", "after", "every"):
             return f"错误：trigger 须为 at/after/every，收到 {trigger!r}"
+        if not isinstance(when, str):
+            return f"错误：when 必须是字符串，收到 {when!r}"
+        if not isinstance(channel, str):
+            return f"错误：channel 必须是字符串，收到 {channel!r}"
+        if not isinstance(chat_id, str):
+            return f"错误：chat_id 必须是字符串，收到 {chat_id!r}"
+        if not isinstance(tz, str):
+            return f"错误：timezone 必须是字符串，收到 {tz!r}"
+        if trigger == "after" and request_time is not None and not isinstance(
+            request_time, str
+        ):
+            return f"错误：request_time 必须是 ISO 字符串，收到 {request_time!r}"
+        if message is not None and not isinstance(message, str):
+            return f"错误：message 必须是字符串，收到 {message!r}"
+        if prompt is not None and not isinstance(prompt, str):
+            return f"错误：prompt 必须是字符串，收到 {prompt!r}"
+        if name is not None and not isinstance(name, str):
+            return f"错误：name 必须是字符串，收到 {name!r}"
         if tier == "instant" and not message:
             return "错误：tier=instant 时 message 为必填项"
         if tier == "soft" and not prompt:
@@ -124,7 +142,7 @@ class ScheduleTool(Tool):
         # 2. 计算首次触发时间
         try:
             fire_at = compute_fire_at(trigger, when, tz, request_time)
-        except ValueError as e:
+        except (TypeError, ValueError, OverflowError) as e:
             return f"错误：{e}"
 
         # 3. 解析循环调度参数
@@ -137,7 +155,7 @@ class ScheduleTool(Tool):
                 else:
                     iv = parse_duration(when)
                     interval_seconds = int(iv.total_seconds())
-            except ValueError as e:
+            except (TypeError, ValueError, OverflowError) as e:
                 return f"错误：{e}"
 
         # 4. 构建并注册任务

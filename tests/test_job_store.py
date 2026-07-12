@@ -61,6 +61,30 @@ class TestJobStoreLoadSave:
         with pytest.raises(ValueError, match=rf"path={path} index=0 field=fire_at"):
             store.load()
 
+    def test_load_rejects_invalid_interval_type(self, tmp_path):
+        path = tmp_path / "jobs.json"
+        job = make_job(trigger="every", interval_seconds=60)
+        store = JobStore(path)
+        store.save({job.id: job})
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload[0]["interval_seconds"] = "60"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=rf"path={path} index=0"):
+            store.load()
+
+    def test_load_rejects_missing_persisted_id(self, tmp_path):
+        path = tmp_path / "jobs.json"
+        job = make_job()
+        store = JobStore(path)
+        store.save({job.id: job})
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload[0]["id"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=rf"path={path} index=0"):
+            store.load()
+
     def test_save_and_load_roundtrip(self, tmp_path):
         store = JobStore(tmp_path / "jobs.json")
         job = make_job(name="test-job")

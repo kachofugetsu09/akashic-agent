@@ -1,8 +1,9 @@
 """Tests for SchedulerService: tick, execution, misfire, rescheduling."""
 
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -297,6 +298,138 @@ async def test_every_soft_cron_pretrigger_advances_past_current_boundary(
     await drain_tasks()
 
     assert mock_loop.process_direct.call_count == 1
+
+
+async def test_cancel_inflight_every_job_does_not_reschedule(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_push(**kwargs):
+        started.set()
+        await release.wait()
+        return "文本已发送"
+
+    mock_push.execute.side_effect = blocked_push
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        interval_seconds=60,
+    )
+    svc._jobs[job.id] = job
+
+    await svc._tick()
+    await started.wait()
+    assert svc.cancel_job(job.id) is True
+    release.set()
+    await drain_tasks()
+
+    assert job.id not in svc._jobs
+    assert svc.store.load() == []
+
+
+async def test_run_cancellation_cleans_up_inflight_tasks(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_push(**kwargs):
+        started.set()
+        await release.wait()
+        return "文本已发送"
+
+    mock_push.execute.side_effect = blocked_push
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        interval_seconds=60,
+    )
+    svc._jobs[job.id] = job
+
+    runner = asyncio.create_task(svc.run())
+    await asyncio.sleep(0)
+    await svc._tick()
+    await started.wait()
+    runner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+
+    assert svc._tasks == set()
+    assert svc._in_flight == set()
+    assert job.id in svc._jobs
+    assert svc.store.load()[0].id == job.id
+    release.set()
+
+
+def test_advance_every_jumps_over_long_misfire_window(
+    tmp_path, mock_push, mock_loop, fixed_now
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(days=365),
+        interval_seconds=1,
+    )
+
+    assert svc._advance_every(job, fixed_now) == fixed_now + timedelta(seconds=1)
+
+
+@pytest.mark.parametrize("interval_seconds", [0, None])
+def test_advance_every_rejects_invalid_interval(
+    tmp_path, mock_push, mock_loop, fixed_now, interval_seconds
+):
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now,
+        interval_seconds=interval_seconds,
+    )
+
+    with pytest.raises(ValueError, match="interval_seconds 必须为正数"):
+        svc._advance_every(job, fixed_now)
+
+
+@pytest.mark.asyncio
+async def test_run_shutdown_logs_non_cancelled_background_failure(
+    tmp_path, mock_push, mock_loop, fixed_now, caplog
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_push(**kwargs):
+        started.set()
+        await release.wait()
+        return "文本已发送"
+
+    mock_push.execute.side_effect = blocked_push
+    svc = make_service(tmp_path, mock_push, mock_loop, fixed_now)
+    svc.store.save = MagicMock(side_effect=RuntimeError("persist failed"))
+    job = make_job(
+        trigger="every",
+        tier="instant",
+        fire_at=fixed_now - timedelta(seconds=1),
+        interval_seconds=60,
+    )
+    svc._jobs[job.id] = job
+
+    runner = asyncio.create_task(svc.run())
+    await asyncio.sleep(0)
+    await svc._tick()
+    await started.wait()
+    caplog.set_level(logging.ERROR, logger="agent.scheduler")
+    runner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+
+    assert caplog.text.count("scheduler 后台任务异常") == 1
 
 
 # ── Misfire handling ─────────────────────────────────────────────

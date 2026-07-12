@@ -77,6 +77,15 @@ class TestParseWhenAt:
         result = parse_when_at("09:00", tz, _now_fn=lambda: ref)
         assert result.tzinfo is not None
 
+    def test_hhmm_normalizes_injected_clock_to_requested_timezone(self):
+        from zoneinfo import ZoneInfo
+
+        ref_utc = datetime(2025, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+        result = parse_when_at(
+            "09:00", "Asia/Shanghai", _now_fn=lambda: ref_utc
+        )
+        assert result == datetime(2025, 6, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
     def test_invalid_raises(self):
         with pytest.raises(ValueError, match="无法解析时间"):
             parse_when_at("not-a-time", "UTC")
@@ -109,3 +118,30 @@ class TestNextCronFire:
         after = datetime(2025, 6, 1, 8, 1, 0, tzinfo=timezone.utc)
         result = next_cron_fire("*/5 * * * *", "UTC", after)
         assert result == datetime(2025, 6, 1, 8, 5, 0, tzinfo=timezone.utc)
+
+    def test_six_field_cron_supports_seconds(self):
+        after = datetime(2025, 6, 1, 8, 0, 0, tzinfo=timezone.utc)
+        result = next_cron_fire("*/5 * * * * *", "UTC", after)
+        assert result == datetime(2025, 6, 1, 8, 0, 5, tzinfo=timezone.utc)
+
+    @pytest.mark.parametrize(
+        ("cron_expr", "expected"),
+        [
+            ("0 9 * * 0", datetime(2025, 6, 2, 9, tzinfo=timezone.utc)),
+            ("0 0 9 * * 0", datetime(2025, 6, 2, 9, tzinfo=timezone.utc)),
+        ],
+    )
+    def test_numeric_cron_weekday_uses_apscheduler_weekday_zero(
+        self, cron_expr, expected
+    ):
+        after = datetime(2025, 6, 2, 8, tzinfo=timezone.utc)
+        assert next_cron_fire(cron_expr, "UTC", after) == expected
+
+    @pytest.mark.parametrize("cron_expr", ["0 9 * *", "0 0 0 1 1 * *"])
+    def test_invalid_cron_field_count_raises(self, cron_expr):
+        with pytest.raises(ValueError, match="无效的 cron 表达式"):
+            next_cron_fire(
+                cron_expr,
+                "UTC",
+                datetime(2025, 6, 1, 8, tzinfo=timezone.utc),
+            )

@@ -85,6 +85,43 @@ async def test_invalid_when_returns_error(tmp_path, mock_push, mock_loop):
     assert "错误" in result
 
 
+async def test_after_rejects_non_string_request_time(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+
+    result = await tool.execute(
+        tier="instant",
+        trigger="after",
+        when="5m",
+        channel="tg",
+        chat_id="1",
+        message="hi",
+        request_time=123,
+    )
+
+    assert "错误" in result
+    assert "request_time" in result
+
+
+@pytest.mark.parametrize("chat_id", [None, 123])
+async def test_rejects_non_string_chat_id(tmp_path, mock_push, mock_loop, chat_id):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+
+    result = await tool.execute(
+        tier="instant",
+        trigger="after",
+        when="5m",
+        channel="tg",
+        chat_id=chat_id,
+        message="hi",
+    )
+
+    assert "错误" in result
+    assert "chat_id" in result
+    assert svc.list_jobs() == []
+
+
 # ── ScheduleTool: successful registration ────────────────────────
 
 

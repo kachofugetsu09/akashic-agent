@@ -8,7 +8,7 @@ core.common.timekit — 统一时间工具集。
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 __all__ = [
     "utcnow",
@@ -39,7 +39,7 @@ def parse_iso(ts: str | None) -> datetime | None:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
-    except Exception:
+    except (AttributeError, TypeError, ValueError, OverflowError):
         return None
 
 
@@ -60,7 +60,7 @@ def safe_zone(name: str, *, logger=None) -> ZoneInfo:
     """
     try:
         return ZoneInfo(name)
-    except Exception:
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
         if logger is not None:
             logger.warning("[timekit] 无效时区 %r，回退到 UTC", name)
         return ZoneInfo("UTC")
