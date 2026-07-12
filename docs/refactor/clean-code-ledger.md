@@ -976,3 +976,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手 `typecheck`、`lint`、`build` 通过；主线合入前主审再次运行 typecheck/lint 均通过，`git diff --check` 通过；build 仅有既有大 chunk warning。
 - 残余风险：前端外部边界目前依赖静态检查和真实 build，缺少可执行组件测试；后续引入 test runner 应优先覆盖请求竞态、socket close 与 legacy dispatch 最新状态。
+
+### `c7fb6a87` `fix(proactive): decouple source cache refresh`
+
+- 范围：ProactiveSourceSpec、default/wake source 读取契约、插件 MCP 工具校验、开发文档与热重载探针；同步审计 Feed、Steam、Calendar、Fitbit 四个已启用 proactive MCP。
+- 原问题：外部数据刷新由 `default_proactive` 私有 `DefaultSourcePollModule` 持有；启用互斥的 `wake_proactive` 后该模块随默认流程消失，`fetch_tool` 只能读到旧缓存。
+- 为什么这样修改：缓存新鲜度属于 MCP 的外部 API/持久化边界，收回各 MCP 自己的 lifespan、后台服务或按需读取路径；两套 proactive 只通过 `fetch_sources_async()` 并发读取稳定快照。
+- 不变量与拥有层：MCP 拥有外部抓取、刷新周期和缓存；proactive runtime 拥有读取、通道归类、决策与 ACK。source 稳定键、分页、单源故障隔离、事件 ID、排序和投递语义不变。
+- 能力变化：删除宿主 `poll_tool/poll_interval_seconds` API 和 105 行默认流程后台 poller；切换 proactive package 不再影响缓存刷新。Fitbit 删除原本未被实际使用的 source interval 声明，监控服务自己的 5 分钟轮询保持。
+- 外部插件：Feed `8aaeab3` 已由 FastMCP lifespan 持续刷新并让首次读取等待刷新结果；Steam `326c055` 在快照过期时按需刷新；Fitbit `a680ac6` 合入 GitHub main、升至 `1.1.1` 并从 GitHub 重装；Calendar 每次读取直接查询 live API，无本地陈旧缓存问题。
+- 性能变化：default runtime 不再创建或持有 source 轮询 task；同一 tick 的 source 读取仍由 `asyncio.gather` 并发执行。网络刷新从 agent 主动链移出后，不再绑定 proactive 生命周期。
+- 测试新增/调整：默认 phase graph 明确不含 `default.source.poll`；source、MCP catalog、热重载和探针契约移除宿主轮询字段；未删除业务场景测试，只删除已废弃 poller 的实现测试。
+- 验证结果：主仓库定向 `184 passed`，全量 `1724 passed`，范围 pyright `0 errors`（45 个既有 warnings），skill 校验通过；Fitbit `5 passed`、pyright `0 errors`；运行缓存与源码一致，plugin doctor 为 healthy。
+- 残余风险：Feed 的网络刷新仍受各订阅源可用性影响，但系统级刷新失败会显式暴露且后台继续重试；不再由 proactive runtime 提供第二套隐藏 fallback。
