@@ -110,7 +110,10 @@ window.AkashicDashboard.registerPlugin({
   layout: "workbench",
   rowKey: "id",
   columns: [],
-  async getCount() { return null; },
+  async getCount() {
+    const data = await api<MeterData>("/api/dashboard/wake-proactive/meter");
+    return data.unread_count;
+  },
   async fetchPage() { return { items: [], total: 0 }; },
   Main: MeterPage,
 });
