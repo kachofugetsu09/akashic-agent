@@ -17,12 +17,18 @@ import pytest
 import numpy as np
 from fastapi import FastAPI
 
+from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
 from plugins.akasha.config import AkashaConfig, load_akasha_config, render_akasha_config
-from plugins.akasha.dashboard import register as register_akasha_dashboard
+import plugins.akasha.dashboard as akasha_dashboard
+from plugins.akasha.dashboard import (
+    AkashaGraphReader,
+    _json_items as dashboard_json_items,
+    register as register_akasha_dashboard,
+)
 from plugins.akasha.engine import (
     ActivationTrace,
     AkashaCard,
@@ -42,6 +48,7 @@ from plugins.akasha.core import (
     reinforce_boost_from_payload,
     serialize_f32,
 )
+import plugins.akasha.graph_snapshot as graph_snapshot
 from plugins.akasha.plugin import AkashaPlugin
 from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage, _turn_messages
 from plugins.akasha.store import (
@@ -118,6 +125,161 @@ def test_akasha_dashboard_exposes_invalid_plugin_config(tmp_path: Path) -> None:
 
     with pytest.raises(tomllib.TOMLDecodeError):
         register_akasha_dashboard(FastAPI(), tmp_path, tmp_path / "workspace")
+
+
+def test_graph_snapshot_distinguishes_missing_from_corruption(tmp_path: Path) -> None:
+    snapshot_path = tmp_path / "memory" / "akasha_graph_snapshot.json"
+
+    assert graph_snapshot.load_snapshot(snapshot_path) is None
+    snapshot_path.parent.mkdir()
+    snapshot_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="图快照读取失败"):
+        graph_snapshot.load_snapshot(snapshot_path)
+
+
+def test_graph_reader_surfaces_background_rebuild_failure(tmp_path: Path, monkeypatch) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    reader = AkashaGraphReader(
+        store,
+        akasha_db_path=store.db_path,
+        sessions_db_path=tmp_path / "sessions.db",
+        snapshot_path=tmp_path / "memory" / "akasha_graph_snapshot.json",
+    )
+
+    def fail_rebuild(**_: object) -> dict[str, object]:
+        raise RuntimeError("rebuild boom")
+
+    monkeypatch.setattr(graph_snapshot, "build_snapshot_to_file", fail_rebuild)
+    monkeypatch.setattr(
+        "plugins.akasha.dashboard.build_snapshot_to_file",
+        fail_rebuild,
+    )
+    try:
+        reader._rebuild_in_background()
+
+        with pytest.raises(RuntimeError, match="后台重建失败"):
+            reader.get_global_graph()
+        with pytest.raises(RuntimeError, match="后台重建失败"):
+            reader.close()
+    finally:
+        store.close()
+
+
+def test_graph_reader_caches_signature_until_external_graph_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    reader = AkashaGraphReader(
+        store,
+        akasha_db_path=store.db_path,
+        sessions_db_path=tmp_path / "sessions.db",
+        snapshot_path=tmp_path / "memory" / "akasha_graph_snapshot.json",
+    )
+    calls = 0
+    original = akasha_dashboard.read_graph_signature
+
+    def counted(path: Path):
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(akasha_dashboard, "read_graph_signature", counted)
+    try:
+        first = reader._current_graph_signature()
+        assert reader._current_graph_signature() == first
+        assert calls == 1
+
+        with closing(sqlite3.connect(str(store.db_path))) as db:
+            db.execute(
+                "INSERT INTO akasha_edges "
+                "(src_key, dst_key, weight, co_count, last_used_ts) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("external-src", "external-dst", 1.0, 1, 1.0),
+            )
+            db.commit()
+
+        second = reader._current_graph_signature()
+        assert calls == 2
+        assert second.edge_count == first.edge_count + 1
+    finally:
+        store.close()
+
+
+def test_akasha_dashboard_closeables_close_reader_before_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closeables = register_akasha_dashboard(
+        FastAPI(),
+        tmp_path / "plugin",
+        tmp_path / "workspace",
+    )
+
+    assert isinstance(closeables[0], AkashaStore)
+    assert isinstance(closeables[1], AkashaGraphReader)
+
+    close_order: list[str] = []
+    for name, closeable in zip(("store", "reader"), closeables):
+        original_close = closeable.close
+
+        def close(*, _name=name, _original=original_close) -> None:
+            close_order.append(_name)
+            _original()
+
+        monkeypatch.setattr(closeable, "close", close)
+
+    for closeable in reversed(closeables):
+        closeable.close()
+
+    assert close_order == ["reader", "store"]
+
+
+def test_graph_cache_rejects_orphan_message_embedding(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    embedding_store = MessageEmbeddingStore(db_path)
+    store = AkashaStore(tmp_path / "akasha.db")
+    embedding_store.upsert(
+        message_id="orphan-message",
+        content="已从 messages 删除",
+        model="m",
+        embedding=[1.0, 0.0],
+    )
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._session_db_path = db_path
+    engine._store = store
+    engine._embedding_store = embedding_store
+    engine._config = SimpleNamespace(
+        memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
+    )
+    engine._graph_lock = threading.RLock()
+    try:
+        with pytest.raises(ValueError, match=r"count=1.*orphan-message"):
+            engine._load_graph_cache()
+    finally:
+        embedding_store.close()
+        store.close()
+
+
+def test_engine_owns_event_subscription_lifetime() -> None:
+    event_bus = EventBus()
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._event_bus = event_bus
+    engine.closeables = []
+
+    engine._wire_events()
+
+    assert event_bus.handler_count() == 1
+    for closeable in engine.closeables:
+        closeable.close()
+    assert event_bus.handler_count() == 0
+
+
+def test_diagnostic_json_rejects_corruption() -> None:
+    with pytest.raises(ValueError, match="JSON 损坏"):
+        dashboard_json_items("{")
 
 
 def _init_sessions_db(path: Path) -> None:
@@ -1065,6 +1227,7 @@ async def test_runtime_writes_message_embeddings_to_sessions_db(tmp_path: Path) 
     engine._nodes = {}
     engine._message_embeddings = {}
     engine._message_turn_keys = {}
+    engine._message_timestamps = {}
     engine._message_index = build_dense_message_index({})
     try:
         await engine._on_turn_committed(
@@ -1099,6 +1262,46 @@ async def test_runtime_writes_message_embeddings_to_sessions_db(tmp_path: Path) 
         graph_store.close()
 
 
+@pytest.mark.asyncio
+async def test_runtime_rejects_partial_embedding_batch(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    graph_store = AkashaStore(tmp_path / "akasha.db")
+    embedding_store = MessageEmbeddingStore(db_path)
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._session_db_path = db_path
+    engine._store = graph_store
+    engine._embedding_store = embedding_store
+    engine._embedder = SimpleNamespace(
+        embed_batch=AsyncMock(return_value=[[1.0, 0.0]])
+    )
+    engine._config = SimpleNamespace(
+        memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
+    )
+    try:
+        with pytest.raises(ValueError, match="数量与已提交消息数量不一致"):
+            await engine._on_turn_committed(
+                TurnCommitted(
+                    session_key="s",
+                    channel="telegram",
+                    chat_id="1",
+                    input_message="第一条用户消息需要完整展示",
+                    persisted_user_message="第一条用户消息需要完整展示",
+                    assistant_response="第一条助手回复会被截断展示并保留引用",
+                    tools_used=[],
+                )
+            )
+
+        assert embedding_store.get(
+            message_id="s:0",
+            content="第一条用户消息需要完整展示",
+            model="m",
+        ) is None
+    finally:
+        embedding_store.close()
+        graph_store.close()
+
+
 def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
@@ -1121,6 +1324,7 @@ def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> No
 
 def test_historical_snapshot_excludes_future_messages_nodes_and_edges(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
@@ -1136,6 +1340,11 @@ def test_historical_snapshot_excludes_future_messages_nodes_and_edges(
             model="m",
             embedding=vector,
         )
+    monkeypatch.setattr(
+        embedding_store,
+        "list_until",
+        lambda **_: pytest.fail("historical snapshot must use the engine cache"),
+    )
     cutoff = datetime.fromisoformat("2026-01-01T00:00:00.500000+00:00").timestamp()
     past_node = AkashaNode(
         key="s:0",
@@ -1166,16 +1375,37 @@ def test_historical_snapshot_excludes_future_messages_nodes_and_edges(
         edges_meta={("s:0", "s:2"): cutoff + 10},
         fan={"s:0": 1, "s:2": 1},
         edges_by_src={"s:0": {"s:2": 1.0}},
-        message_embeddings={},
+        message_embeddings={
+            "s:0": np.array([1.0, 0.0], dtype=np.float32),
+            "s:1": np.array([0.0, 1.0], dtype=np.float32),
+            "s:2": np.array([0.0, 1.0], dtype=np.float32),
+        },
         message_turn_keys={"s:0": "s:0", "s:1": "s:0", "s:2": "s:2"},
-        message_index=build_dense_message_index({}),
+        message_index=build_dense_message_index({
+            "s:0": np.array([1.0, 0.0], dtype=np.float32),
+            "s:1": np.array([0.0, 1.0], dtype=np.float32),
+            "s:2": np.array([0.0, 1.0], dtype=np.float32),
+        }),
     )
     engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
     engine._embedding_store = embedding_store
+    engine._graph_lock = threading.RLock()
+    engine._nodes = snapshot.nodes
+    engine._edges = snapshot.edges
+    engine._edges_meta = snapshot.edges_meta
+    engine._edges_by_src = snapshot.edges_by_src
+    engine._fan = snapshot.fan
+    engine._message_embeddings = snapshot.message_embeddings
+    engine._message_turn_keys = snapshot.message_turn_keys
+    engine._message_index = snapshot.message_index
+    engine._message_timestamps = {
+        "s:0": datetime.fromisoformat("2026-01-01T00:00:00+00:00").timestamp(),
+        "s:1": datetime.fromisoformat("2026-01-01T00:00:01+00:00").timestamp(),
+        "s:2": datetime.fromisoformat("2026-01-01T00:00:02+00:00").timestamp(),
+    }
     engine._config = SimpleNamespace(
         memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
     )
-    engine._graph_snapshot = lambda: snapshot
     try:
         visible = engine._graph_snapshot_at(cutoff)
         card = _load_turn_card(

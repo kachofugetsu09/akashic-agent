@@ -5,6 +5,7 @@ import math
 import re
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -12,6 +13,8 @@ from typing import Any, cast
 import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
+
+from infra.persistence.json_store import atomic_write_text
 
 BIG_COMMUNITY_SIZE = 8
 LAYOUT_EDGE_LIMIT = 5000
@@ -45,16 +48,35 @@ def default_snapshot_path(workspace: Path) -> Path:
 
 
 def load_snapshot(path: Path) -> dict[str, Any] | None:
+    """读取并校验图快照，区分文件缺失和快照损坏。"""
+
     if not path.exists():
         return None
     try:
-        return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
-    except Exception:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Akasha 图快照读取失败: path={path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Akasha 图快照必须是 JSON 对象: path={path}")
+    payload_dict = cast(dict[str, object], payload)
+    expected_types: tuple[tuple[str, type[object]], ...] = (
+        ("nodes", list),
+        ("edges", list),
+        ("legend", list),
+        ("meta", dict),
+    )
+    for key, expected_type in expected_types:
+        if not isinstance(payload_dict.get(key), expected_type):
+            raise ValueError(
+                f"Akasha 图快照字段类型错误: path={path} field={key}"
+            )
+    return cast(dict[str, Any], payload)
 
 
 def read_graph_signature(akasha_db_path: Path) -> GraphSnapshotSignature:
-    with sqlite3.connect(str(akasha_db_path)) as db:
+    with closing(sqlite3.connect(str(akasha_db_path))) as db:
         node_row = db.execute(
             "SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), '') AS max_updated_at FROM akasha_nodes"
         ).fetchone()
@@ -76,7 +98,6 @@ def build_snapshot_to_file(
     snapshot_path: Path,
     config: GraphSnapshotConfig | None = None,
 ) -> dict[str, Any]:
-    import uuid
     prev_snapshot = load_snapshot(snapshot_path)
     payload = build_snapshot(
         akasha_db_path=akasha_db_path,
@@ -85,12 +106,11 @@ def build_snapshot_to_file(
         prev_snapshot=prev_snapshot,
     )
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = snapshot_path.with_name(snapshot_path.name + f".{uuid.uuid4().hex}.tmp")
-    _ = tmp_path.write_text(
+    atomic_write_text(
+        snapshot_path,
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
+        domain="akasha.graph_snapshot",
     )
-    _ = tmp_path.replace(snapshot_path)
     return payload
 
 
@@ -648,14 +668,11 @@ def _as_int(value: object) -> int:
 
 def _normalized_embedding(value: object) -> NDArray[np.float32] | None:
     if not isinstance(value, bytes | bytearray | memoryview):
-        return None
-    try:
-        emb = np.frombuffer(cast(Any, value), dtype=np.float32).copy()
-    except Exception:
-        return None
+        raise ValueError("Akasha 图节点 embedding 必须是 BLOB")
+    emb = np.frombuffer(cast(Any, value), dtype=np.float32).copy()
     norm = float(np.linalg.norm(emb))
     if norm <= 0:
-        return None
+        raise ValueError("Akasha 图节点 embedding 为空或全零")
     return emb / norm
 
 
