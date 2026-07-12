@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false, reportUnusedCallResult=false
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 from datetime import datetime
 from pathlib import Path
@@ -587,6 +588,48 @@ def test_memory_extra_json_shape_corruption_fails_at_retrieval_boundary(
 
     with pytest.raises(ValueError, match=item_id):
         store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0)
+
+
+def test_memory_embedding_shape_corruption_fails_at_retrieval_boundary(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    try:
+        result = store.upsert_item("event", "损坏的 embedding", [1.0, 0.0])
+        item_id = result.removeprefix("new:")
+        store._db.execute(
+            "UPDATE memory_items SET embedding = ? WHERE id = ?",
+            ("[1.0, \"bad\"]", item_id),
+        )
+        store._db.commit()
+        store._vec_enabled = False
+
+        with pytest.raises(ValueError, match=item_id):
+            store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0)
+    finally:
+        store.close()
+
+
+def test_memory_store_serializes_shared_connection_writes(tmp_path: Path) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    try:
+        def write_item(_index: int) -> str:
+            return store.upsert_item(
+                "event",
+                "并发写入的同一条事件",
+                [1.0, 0.0],
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(write_item, range(32)))
+
+        items = store.list_by_type("event")
+        assert len(items) == 1
+        assert items[0]["reinforcement"] == 32
+        assert sum(result.startswith("new:") for result in results) == 1
+        assert all(result.endswith(results[0].split(":", 1)[1]) for result in results)
+    finally:
+        store.close()
 
 
 def test_vec_insert_failure_falls_back_to_fullscan(tmp_path: Path) -> None:

@@ -51,14 +51,23 @@ class QueryRewriter:
             )
         )
         procedure_task = asyncio.create_task(self._rewrite_procedure_query(user_msg))
-        done, pending = await asyncio.wait(
-            {main_task, procedure_task},
-            timeout=self._timeout_s,
-        )
-        for task in pending:
-            _ = task.cancel()
-        if not done:
-            return fallback
+        tasks = {main_task, procedure_task}
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=self._timeout_s)
+            for task in pending:
+                _ = task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not done:
+                return fallback
+        finally:
+            # 3. 无论超时还是调用方取消，都回收本轮创建的所有 task。
+            for task in tasks:
+                if not task.done():
+                    _ = task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 4. 读取已完成 task 的结果；单一路径失败不影响另一条改写结果。
         if main_task in done:
             try:
                 raw_output = main_task.result()
@@ -70,7 +79,7 @@ class QueryRewriter:
             except Exception:
                 procedure_query = ""
 
-        # 3. 最后解析；history 结构无效则回退原始消息，但保留 procedure 改写。
+        # 5. 最后解析；history 结构无效则回退原始消息，但保留 procedure 改写。
         decision = self._parse_output(raw_output)
         if decision is None:
             return self._build_decision(

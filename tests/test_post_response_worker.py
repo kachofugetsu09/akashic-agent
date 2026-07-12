@@ -2,6 +2,8 @@ import asyncio
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
+import pytest
+
 from core.memory.events import TurnIngested
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -109,6 +111,27 @@ def test_post_worker_handle_delegates_turn_ingested_event():
         channel="cli",
         chat_id="1",
     )
+
+
+@pytest.mark.asyncio
+async def test_post_worker_exposes_unexpected_storage_failure():
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+    worker._handle_invalidations = AsyncMock(
+        side_effect=RuntimeError("memory database unavailable")
+    )
+
+    with pytest.raises(RuntimeError, match="memory database unavailable"):
+        await worker.run(
+            user_msg="旧流程不对",
+            agent_response="收到",
+            tool_chain=[],
+            source_ref="test@post_response",
+        )
 
 
 def test_build_procedure_rule_schema_prefers_explicit_rule_schema():

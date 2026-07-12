@@ -6,10 +6,76 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 from core.net.http import HttpRequester, RequestBudget, get_default_http_requester
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_embedding_response(
+    raw_response: object,
+    *,
+    expected_count: int,
+    expected_dimension: int | None = None,
+) -> list[list[float]]:
+    """校验 embedding provider 返回的 indexed batch，并按 index 恢复输入顺序。"""
+    if not isinstance(raw_response, dict):
+        raise ValueError("embedding provider response 必须是 JSON object")
+    raw_data = raw_response.get("data")
+    if not isinstance(raw_data, list):
+        raise ValueError("embedding provider response.data 必须是 JSON array")
+
+    by_index: dict[int, list[float]] = {}
+    response_dimension: int | None = None
+    for position, raw_item in enumerate(raw_data):
+        if not isinstance(raw_item, dict):
+            raise ValueError(f"embedding provider data[{position}] 必须是 JSON object")
+        raw_index = raw_item.get("index")
+        if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+            raise ValueError(f"embedding provider data[{position}].index 无效")
+        if raw_index < 0 or raw_index >= expected_count or raw_index in by_index:
+            raise ValueError(
+                f"embedding provider data[{position}].index 超出范围或重复: {raw_index}"
+            )
+
+        raw_embedding = raw_item.get("embedding")
+        if not isinstance(raw_embedding, list) or not raw_embedding:
+            raise ValueError(
+                f"embedding provider data[{position}].embedding 必须是非空 JSON array"
+            )
+        embedding: list[float] = []
+        for value_position, value in enumerate(raw_embedding):
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ValueError(
+                    f"embedding provider data[{position}].embedding[{value_position}] 无效"
+                )
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                raise ValueError(
+                    f"embedding provider data[{position}].embedding[{value_position}] 不是有限数字"
+                )
+            embedding.append(numeric)
+        dimension = len(embedding)
+        if expected_dimension is not None and dimension != expected_dimension:
+            raise ValueError(
+                f"embedding provider data[{position}].embedding 维度错误: "
+                f"expected={expected_dimension} actual={dimension}"
+            )
+        if response_dimension is None:
+            response_dimension = dimension
+        elif dimension != response_dimension:
+            raise ValueError(
+                "embedding provider response.data 向量维度不一致"
+            )
+        by_index[raw_index] = embedding
+
+    expected_indexes = set(range(expected_count))
+    if set(by_index) != expected_indexes:
+        raise ValueError(
+            "embedding provider response.data 缺少结果或包含多余结果"
+        )
+    return [by_index[index] for index in range(expected_count)]
 
 
 class Embedder:
@@ -60,9 +126,13 @@ class Embedder:
                 budget=RequestBudget(total_timeout_s=40.0),
             )
             resp.raise_for_status()
-            data = resp.json()["data"]
-            data.sort(key=lambda x: x["index"])
-            results.extend(d["embedding"] for d in data)
+            results.extend(
+                _parse_embedding_response(
+                    resp.json(),
+                    expected_count=len(batch),
+                    expected_dimension=self._output_dimensionality,
+                )
+            )
 
             if i + self.MAX_BATCH < len(truncated):
                 await asyncio.sleep(0.3)

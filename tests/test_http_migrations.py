@@ -128,7 +128,7 @@ async def test_embedder_sends_configured_output_dimension():
         return httpx.Response(
             200,
             request=request,
-            json={"data": [{"index": 0, "embedding": [0.1, 0.2]}]},
+            json={"data": [{"index": 0, "embedding": [0.1] * 768}]},
         )
 
     requester = _build_requester(_handler)
@@ -141,7 +141,81 @@ async def test_embedder_sends_configured_output_dimension():
             requester=requester,
         )
         vectors = await embedder.embed_batch(["first"])
-        assert vectors == [[0.1, 0.2]]
+        assert len(vectors) == 1
+        assert len(vectors[0]) == 768
+        assert vectors[0][0] == 0.1
         assert embedder.model_id == "text-embedding-v4"
+    finally:
+        await requester.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_embedder_rejects_malformed_provider_embedding_payload():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={"data": [{"index": 0, "embedding": [0.1, "bad"]}]},
+        )
+
+    requester = _build_requester(_handler)
+    try:
+        embedder = Embedder(
+            base_url="https://embeddings.example.com/v1",
+            api_key="test-key",
+            requester=requester,
+        )
+        with pytest.raises(ValueError, match="embedding provider"):
+            await embedder.embed_batch(["first"])
+    finally:
+        await requester.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_embedder_rejects_configured_embedding_dimension_mismatch():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={"data": [{"index": 0, "embedding": [0.1]}]},
+        )
+
+    requester = _build_requester(_handler)
+    try:
+        embedder = Embedder(
+            base_url="https://embeddings.example.com/v1",
+            api_key="test-key",
+            output_dimensionality=2,
+            requester=requester,
+        )
+        with pytest.raises(ValueError, match="维度错误"):
+            await embedder.embed_batch(["first"])
+    finally:
+        await requester.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_embedder_rejects_inconsistent_batch_dimensions_without_configured_size():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "data": [
+                    {"index": 0, "embedding": [0.1, 0.2]},
+                    {"index": 1, "embedding": [0.3, 0.4, 0.5]},
+                ]
+            },
+        )
+
+    requester = _build_requester(_handler)
+    try:
+        embedder = Embedder(
+            base_url="https://embeddings.example.com/v1",
+            api_key="test-key",
+            requester=requester,
+        )
+        with pytest.raises(ValueError, match="维度不一致"):
+            await embedder.embed_batch(["first", "second"])
     finally:
         await requester.client.aclose()

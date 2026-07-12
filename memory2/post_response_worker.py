@@ -112,8 +112,9 @@ class PostResponseMemoryWorker:
                 source_ref or "-",
                 token_budget,
             )
-        except Exception as e:
-            logger.warning(f"post_response_memorize run failed: {e}")
+        except Exception:
+            logger.exception("post_response_memorize run failed")
+            raise
 
     @staticmethod
     def _consume_budget(remain: int, cost: int) -> tuple[bool, int]:

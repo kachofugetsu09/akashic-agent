@@ -297,9 +297,10 @@ class Memorizer:
         if not merged_summary or not item_id:
             return
 
-        row = self._store._db.execute(
-            "SELECT memory_type, extra_json FROM memory_items WHERE id=?", (item_id,)
-        ).fetchone()
+        with self._store._lock:
+            row = self._store._db.execute(
+                "SELECT memory_type, extra_json FROM memory_items WHERE id=?", (item_id,)
+            ).fetchone()
         if not row:
             logger.warning("merge_item: item %s not found", item_id)
             return

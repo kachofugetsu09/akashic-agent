@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -166,3 +167,26 @@ async def test_latency_ms_is_non_negative_int():
     result = await rewriter.decide(user_msg="test", recent_history="")
     assert isinstance(result.latency_ms, int)
     assert result.latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_decide_waits_for_timed_out_tasks_to_finish_cancellation():
+    client = MagicMock()
+    cancelled = asyncio.Event()
+
+    async def _chat(*, messages, **kwargs):
+        prompt = messages[0]["content"]
+        if "只输出一行检索 query" in prompt:
+            try:
+                await asyncio.sleep(3600)
+            finally:
+                cancelled.set()
+        return "<decision>RETRIEVE</decision><history_query>q</history_query>"
+
+    client.chat = AsyncMock(side_effect=_chat)
+    rewriter = QueryRewriter(llm_client=client, timeout_ms=100)
+
+    result = await rewriter.decide(user_msg="查一下", recent_history="")
+
+    assert result.needs_episodic is True
+    assert cancelled.is_set()

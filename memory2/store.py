@@ -13,10 +13,11 @@ import sqlite3
 import struct
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
-from typing import cast
+from typing import ParamSpec, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -44,6 +45,8 @@ _EmbeddingRow = tuple[
 ]
 _TIME_FILTER_MARGIN = timedelta(days=2)
 _TIME_FILTER_KEYWORD_CANDIDATE_LIMIT = 1000
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -149,10 +152,29 @@ def _json_object(raw: object, *, context: str = "memory extra_json") -> dict[str
     return cast(dict[str, object], data)
 
 
-def _json_embedding(raw: object) -> list[float] | None:
-    if not raw:
+def _json_embedding(
+    raw: object,
+    *,
+    context: str = "memory embedding",
+) -> list[float] | None:
+    if raw is None or raw == "":
         return None
-    return cast(list[float], json.loads(str(raw)))
+    try:
+        data = json.loads(str(raw))
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"{context} JSON 损坏") from exc
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"{context} 必须是非空 JSON array")
+
+    embedding: list[float] = []
+    for index, value in enumerate(data):
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError(f"{context} 第 {index} 个值不是数字")
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise ValueError(f"{context} 第 {index} 个值不是有限数字")
+        embedding.append(numeric)
+    return embedding
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -268,6 +290,18 @@ def _time_prefilter_clauses(
     return clauses, params
 
 
+def _synchronized(method: Callable[_P, _R]) -> Callable[_P, _R]:
+    """串行化共享 SQLite 连接上的所有存储操作。"""
+
+    @wraps(method)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        store = cast("MemoryStore2", args[0])
+        with store._lock:
+            return method(*args, **kwargs)
+
+    return wrapped
+
+
 class MemoryStore2:
     def __init__(self, db_path: str | Path, vec_dim: int = VEC_DIM) -> None:
         self.db_path = Path(db_path)
@@ -314,6 +348,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 self._vec_enabled = True
                 self._migrate_existing_to_vec()
                 logger.info("sqlite-vec 已启用（dim=%d）", self._vec_dim)
+            except ValueError:
+                raise
             except Exception as exc:
                 self._vec_enabled = False
                 self._vec_init_error = str(exc)
@@ -337,15 +373,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             if rowid in existing:
                 continue
             try:
-                emb = json.loads(emb_json)
-                if len(emb) != self._vec_dim:
+                emb = _json_embedding(
+                    emb_json,
+                    context=f"memory item rowid {rowid} embedding",
+                )
+                if emb is None or len(emb) != self._vec_dim:
                     continue
                 self._db.execute(
                     "INSERT INTO vec_items(rowid, embedding) VALUES (?, ?)",
                     (rowid, _emb_to_blob(emb)),
                 )
                 migrated += 1
-            except Exception as exc:
+            except ValueError:
+                raise
+            except (OverflowError, sqlite3.Error, struct.error) as exc:
                 logger.debug("vec migrate skip rowid %s: %s", rowid, exc)
         if migrated:
             self._db.commit()
@@ -389,6 +430,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
     # 生命周期
     # ------------------------------------------------------------------
 
+    @_synchronized
     def close(self) -> None:
         if self._closed:
             return
@@ -404,6 +446,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
     # 写操作
     # ------------------------------------------------------------------
 
+    @_synchronized
     def upsert_item(
         self,
         memory_type: str,
@@ -465,6 +508,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
         return f"new:{item_id}"
 
+    @_synchronized
     def upsert_consolidation_event(
         self,
         *,
@@ -558,6 +602,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 pass
             raise
 
+    @_synchronized
     def has_consolidation_source_ref(self, source_ref: str) -> bool:
         row = self._db.execute(
             "SELECT 1 FROM consolidation_events WHERE source_ref=? LIMIT 1",
@@ -565,6 +610,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         ).fetchone()
         return row is not None
 
+    @_synchronized
     def mark_superseded(self, item_id: str) -> None:
         """将指定条目标记为已退休。"""
         self._db.execute(
@@ -573,6 +619,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         )
         self._db.commit()
 
+    @_synchronized
     def mark_superseded_batch(self, ids: list[str]) -> None:
         if not ids:
             return
@@ -583,6 +630,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         )
         self._db.commit()
 
+    @_synchronized
     def get_items_by_ids(self, ids: list[str]) -> list[dict[str, object]]:
         if not ids:
             return []
@@ -622,6 +670,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             }
         return [by_id[item_id] for item_id in ids if item_id in by_id]
 
+    @_synchronized
     def record_replacements(
         self,
         *,
@@ -669,6 +718,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         self._db.commit()
         return len(rows)
 
+    @_synchronized
     def list_replacements(self) -> list[dict]:
         rows = self._db.execute(
             "SELECT old_item_id, old_memory_type, old_summary, old_source_ref, "
@@ -704,6 +754,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             )
         return result
 
+    @_synchronized
     def reinforce_items_batch(self, ids: list[str], emotional_weight: int = 0) -> None:
         if not ids:
             return
@@ -719,6 +770,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
     # 读操作
     # ------------------------------------------------------------------
 
+    @_synchronized
     def list_items_for_dashboard(
         self,
         *,
@@ -836,6 +888,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 )
             return items, total
 
+    @_synchronized
     def get_item_for_dashboard(
         self,
         item_id: str,
@@ -866,7 +919,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             created_at,
             updated_at,
         ) = row
-        embedding = json.loads(embedding_json) if embedding_json else None
+        embedding = _json_embedding(
+            embedding_json,
+            context=f"memory item {row_id} embedding",
+        )
         return {
             "id": row_id,
             "memory_type": memory_type,
@@ -887,6 +943,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             "embedding": embedding if include_embedding else None,
         }
 
+    @_synchronized
     def update_item_for_dashboard(
         self,
         item_id: str,
@@ -934,6 +991,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 return None
         return self.get_item_for_dashboard(item_id)
 
+    @_synchronized
     def delete_item(self, item_id: str) -> bool:
         with self._lock:
             row = self._db.execute(
@@ -950,6 +1008,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             self._db.commit()
             return cur.rowcount > 0
 
+    @_synchronized
     def delete_items_batch(self, ids: list[str]) -> int:
         if not ids:
             return 0
@@ -970,6 +1029,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             self._db.commit()
             return int(cur.rowcount or 0)
 
+    @_synchronized
     def find_similar_items_for_dashboard(
         self,
         item_id: str,
@@ -996,6 +1056,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         filtered = [item for item in results if item.get("id") != item_id]
         return filtered[: max(1, top_k)]
 
+    @_synchronized
     def get_all_with_embedding(self, include_superseded: bool = False) -> list[_EmbeddingRow]:
         """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at, source_ref)]
         extra_json_dict 中注入 _reinforcement / _updated_at / _emotional_weight
@@ -1021,7 +1082,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 source_ref,
                 emotional_weight,
             ) = row
-            emb = _json_embedding(emb_json)
+            emb = _json_embedding(
+                emb_json,
+                context=f"memory item {row_id} embedding",
+            )
             extra = _json_object(
                 extra_json, context=f"memory item {row_id} extra_json"
             )
@@ -1096,7 +1160,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             ) = row
             if not _is_memory_time_in_range(happened_at, time_start, time_end):
                 continue
-            emb = _json_embedding(emb_json)
+            emb = _json_embedding(
+                emb_json,
+                context=f"memory item {row_id} embedding",
+            )
             extra = _json_object(
                 extra_json, context=f"memory item {row_id} extra_json"
             )
@@ -1116,6 +1183,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             )
         return result
 
+    @_synchronized
     def vector_search(
         self,
         query_vec: list[float],
@@ -1179,6 +1247,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             hotness_half_life_days=hotness_half_life_days,
         )
 
+    @_synchronized
     def vector_search_batch(
         self,
         query_vecs: list[list[float]],
@@ -1529,6 +1598,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         scored.sort(key=_result_score, reverse=True)
         return scored[:top_k]
 
+    @_synchronized
     def merge_item_raw(
         self,
         item_id: str,
@@ -1595,6 +1665,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                     embedding=new_embedding,
                 )
 
+    @_synchronized
     def list_by_type(self, memory_type: str) -> list[dict[str, object]]:
         rows = self._db.execute(
             "SELECT id, memory_type, summary, extra_json, happened_at, reinforcement, emotional_weight "
@@ -1618,6 +1689,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             )
         return result
 
+    @_synchronized
     def list_events_by_time_range(
         self,
         time_start: datetime,
@@ -1662,6 +1734,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         selected.sort(key=lambda item: item[0])
         return [item for _, item in selected]
 
+    @_synchronized
     def find_similar_recent_events(
         self,
         embedding: list[float],
@@ -1683,12 +1756,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         for row_id, emb_json in rows:
             if not emb_json:
                 continue
-            score = _cosine_similarity(embedding, json.loads(emb_json))
+            stored_embedding = _json_embedding(
+                emb_json,
+                context=f"memory item {row_id} embedding",
+            )
+            if stored_embedding is None:
+                raise ValueError(f"memory item {row_id} embedding 为空")
+            score = _cosine_similarity(embedding, stored_embedding)
             if score >= float(threshold):
                 scored.append((row_id, score))
         scored.sort(key=lambda item: item[1], reverse=True)
         return [row_id for row_id, _score in scored[: max(1, int(top_k))]]
 
+    @_synchronized
     def delete_by_source_ref(self, source_ref: str) -> int:
         """删除指定 source_ref 的所有条目，返回删除行数。"""
         rowids = [
@@ -1704,6 +1784,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         self._db.commit()
         return cur.rowcount
 
+    @_synchronized
     def has_item_by_source_ref(
         self,
         source_ref: str,
@@ -1722,6 +1803,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             ).fetchone()
         return row is not None
 
+    @_synchronized
     def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict[str, object]]:
         """对 trigger_tags 做纯关键字匹配，无需向量检索。
 
@@ -1783,6 +1865,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
         return matched
 
+    @_synchronized
     def keyword_search_summary(
         self,
         terms: list[str],
