@@ -781,3 +781,16 @@
 - 测试删除及原因：无。
 - 验证结果：Steam 插件 `7 passed`；pyright `0 errors, 0 warnings`；GitHub main 已推送；安装 1.1.0；真实 context 刷新成功，freshness `0.0h`、2 个近期游戏、无刷新错误；旧 1.0.0 generation 排空后仅保留 1.1.0 MCP 进程。
 - 残余风险：Recently Played 和 Player Summary 是两个独立 Steam API 请求；其中一条失败时 context 会明确区分 snapshot 与 realtime 的降级状态，不提供跨 API 原子快照。
+
+### `05ab66b3` `fix(runtime): restore session context after turn and tick`
+
+- 范围：被动 turn 与 proactive tick 的 `current_session_key` 生命周期。
+- 原问题：两个长链路入口调用 `ContextVar.set()` 后没有 reset；同一 task 后续执行会继承上一轮 session，导致 observe 全局错误归属错误。常规消息循环为每条消息创建 task，会掩盖被动路径问题，但 `process_direct` 和 proactive 长生命周期 loop 可真实触发。
+- 为什么这样修改：由设置上下文的入口保存 token，并在最外层 `finally` 恢复调用方上下文；busy 状态仍由内层 `finally` 独立释放。
+- 不变量与拥有层：`AgentLoop._process` 拥有单个 turn 的 session 绑定，`ProactiveLoop._tick_bound` 拥有单个 tick 的绑定；共享 ContextVar 和 observe 只读取，不承担生命周期清理。
+- 能力变化：续跑、TurnStarted、核心处理、主动 Gate → Fetch → Judge → Resolve → Deliver、异常传播和 busy 状态语义保持；成功、失败与取消离开入口后均不残留 session。
+- 性能变化：删除一处未使用计时，增加两次常数级 ContextVar token 操作；无性能收益声明。
+- 测试新增：被动成功恢复、核心失败恢复并释放 processing state、主动成功与失败恢复。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `19 passed`、全量 `1619 passed`、pyright `0 errors`；主线合入后定向 `19 passed`、全量 `1619 passed`，`git diff --check` 通过。
+- 残余风险：其他独立 ContextVar 设置点仍需按各自任务生命周期审阅，不能从本次两处修复推断全仓已覆盖。
