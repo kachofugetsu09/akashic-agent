@@ -74,10 +74,10 @@
 
 [data-akashic-plugin="wake-meter"] .meter-telemetry { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; max-width: 940px; margin: 18px auto 0; }
 [data-akashic-plugin="wake-meter"] .meter-telemetry > div { position: relative; min-width: 0; padding: 15px 17px; border: 2px solid #07090c; border-radius: 12px; background: #1a2027; box-shadow: 4px 4px 0 #07090c; }
-[data-akashic-plugin="wake-meter"] .meter-telemetry span { display: block; color: #7d8992; font-size: 10px; }
+[data-akashic-plugin="wake-meter"] .meter-telemetry span { display: flex; align-items: center; gap: 7px; color: #7d8992; font-size: 10px; }
 [data-akashic-plugin="wake-meter"] .meter-telemetry strong { display: block; margin-top: 6px; overflow: hidden; color: #e9eff2; font: 700 16px ui-monospace, monospace; text-overflow: ellipsis; }
 [data-akashic-plugin="wake-meter"] .meter-telemetry small { display: block; margin-top: 4px; color: #68747d; font-size: 9px; }
-[data-akashic-plugin="wake-meter"] .meter-telemetry i { position: absolute; right: 15px; top: 18px; width: 9px; height: 9px; border: 2px solid #07090c; border-radius: 50%; }
+[data-akashic-plugin="wake-meter"] .meter-telemetry span i { flex: 0 0 auto; width: 9px; height: 9px; border: 2px solid #07090c; border-radius: 50%; }
 [data-akashic-plugin="wake-meter"] .tone-cobalt { background: #41b8e7; }
 [data-akashic-plugin="wake-meter"] .tone-amber { background: #ffc84b; }
 [data-akashic-plugin="wake-meter"] .meter-footnote { display: flex; justify-content: space-between; gap: 20px; max-width: 940px; margin: 15px auto 0; color: #69757e; font-size: 10px; }

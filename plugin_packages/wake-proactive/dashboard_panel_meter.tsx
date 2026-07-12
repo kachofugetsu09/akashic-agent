@@ -99,8 +99,8 @@ function MeterPage(): ReactElement {
       </div>
     </Panel>
     <Stack className="meter-telemetry">
-      <div><span>持续蓄积</span><strong>{data.hazard_after.toFixed(3)}</strong><i className="tone-cobalt" /></div>
-      <div><span>瞬时兴趣推力</span><strong>{data.preference_pressure.toFixed(3)}</strong><i className="tone-amber" /></div>
+      <div><span><i className="tone-cobalt" />持续蓄积</span><strong>{data.hazard_after.toFixed(3)}</strong></div>
+      <div><span><i className="tone-amber" />瞬时兴趣推力</span><strong>{data.preference_pressure.toFixed(3)}</strong></div>
       <div><span>未读内容</span><strong>{data.unread_count}</strong><small>{data.candidate_count} 条参与本轮</small></div>
       <div><span>最近判断</span><strong>{data.last_action || "尚未触发"}</strong><small>{shortTime(data.evaluated_at)}</small></div>
     </Stack>
