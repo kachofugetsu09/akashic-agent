@@ -14,6 +14,7 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def atomic_save_json(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # 2. 写到临时文件
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + f".{uuid4().hex}.tmp")
     try:
         tmp.write_text(
             json.dumps(data, indent=indent, ensure_ascii=ensure_ascii),
