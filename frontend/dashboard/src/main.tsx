@@ -327,8 +327,8 @@ function App(): React.ReactElement {
       });
     });
     exposeRuntime();
-    void loadPluginAssets();
-  }, []);
+    void run(loadPluginAssets);
+  }, [run]);
 
   useEffect(() => {
     void run(async () => {

@@ -293,7 +293,7 @@ export function installDashboardGlobals(onRegister: (plugin: PluginConfig) => vo
 }
 
 export async function loadPluginAssets(): Promise<void> {
-  const plugins = await api<{ id: string; panels: { name: string; js_version: string; has_css: boolean }[] }[]>("/api/dashboard/plugins").catch(() => []);
+  const plugins = await api<{ id: string; panels: { name: string; js_version: string; has_css: boolean }[] }[]>("/api/dashboard/plugins");
   for (const plugin of plugins) {
     for (const panel of plugin.panels ?? []) {
       const v = panel.js_version ? `?v=${encodeURIComponent(panel.js_version)}` : "";
