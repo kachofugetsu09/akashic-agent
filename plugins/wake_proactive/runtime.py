@@ -35,6 +35,7 @@ from session.embedding_store import MessageEmbeddingStore
 logger = logging.getLogger(__name__)
 _MAX_TITLES_PER_WAKE = 120
 _MAX_HAZARD_THRESHOLD = 2.0
+_SEMANTIC_CALIBRATION_POWER = 4
 
 
 def select_content_page(
@@ -312,7 +313,10 @@ class WakeRuntime:
                 (_cosine(vector, prototype) for prototype in prototypes),
                 default=0.0,
             )
-            semantic_interest = min(0.999, max(0.0, similarity) ** 8)
+            semantic_interest = min(
+                0.999,
+                max(0.0, similarity) ** _SEMANTIC_CALIBRATION_POWER,
+            )
             event["_wake_semantic_interest"] = semantic_interest
             event["_wake_interest_score"] = 1 - (1 - base) * (1 - semantic_interest)
 

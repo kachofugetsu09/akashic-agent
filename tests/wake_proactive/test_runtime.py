@@ -754,6 +754,57 @@ def test_future_message_embeddings_do_not_affect_current_interest(tmp_path, requ
     assert "未来用户" not in recent
 
 
+def test_semantic_interest_keeps_moderate_match_meaningful(tmp_path, request):
+    session_db = tmp_path / "sessions.db"
+    with closing(sqlite3.connect(session_db)) as db:
+        db.execute(
+            """
+            CREATE TABLE messages(
+                id TEXT, session_key TEXT, seq INTEGER, role TEXT,
+                content TEXT, extra TEXT, ts TEXT
+            )
+            """
+        )
+        db.executemany(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("u", "s", 1, "user", "用户", "{}", "2026-07-11T00:00:00+00:00"),
+                ("a", "s", 2, "assistant", "助手", "{}", "2026-07-11T00:01:00+00:00"),
+            ],
+        )
+        db.commit()
+    embedding_store = MessageEmbeddingStore(session_db)
+    for message_id, content in (("u", "用户"), ("a", "助手")):
+        embedding_store.upsert(
+            message_id=message_id,
+            content=content,
+            model="test-embedding",
+            embedding=[1.0, 0.0],
+        )
+    embedding_store.close()
+    runtime = WakeRuntime(
+        _scope(
+            tmp_path,
+            FakeGateway([]),
+            SimpleNamespace(chat=AsyncMock()),
+            FakeOrchestrator(),
+            _source("content"),
+        ),
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
+    )
+    request.addfinalizer(runtime.close)
+    event = {
+        "preprocess_features": {"interest": 0.1},
+        "_event_embedding": [0.8, 0.6],
+    }
+
+    runtime._apply_semantic_interest([event], datetime(2026, 7, 12, tzinfo=UTC))
+
+    assert event["_wake_semantic_interest"] == pytest.approx(0.8**4)
+    assert event["_wake_interest_score"] == pytest.approx(0.46864)
+
+
 def test_turn_prototype_limit_uses_latest_time_across_sessions(tmp_path, request):
     session_db = tmp_path / "sessions.db"
     rows = []
