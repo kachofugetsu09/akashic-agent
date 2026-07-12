@@ -58,7 +58,7 @@ class TurnOrchestrator:
                 )
             )
         except Exception as e:
-            logger.warning("proactive outbound dispatch failed: %s", e)
+            logger.exception("proactive outbound dispatch failed: %s", e)
 
         # 3. 只有用户真正收到后，才把 proactive 消息写入可见会话历史。
         if sent:
