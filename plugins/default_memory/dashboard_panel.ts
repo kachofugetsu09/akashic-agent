@@ -30,6 +30,12 @@ interface MemoryOptimizerStatus {
   last_error: string | null;
 }
 
+interface SimilarMemoriesResult {
+  items: MemoryRow[];
+  total: number;
+  failed?: boolean;
+}
+
 // 插件脚本共享全局作用域，统一使用 dmem_ 前缀避免命名冲突。
 function dmemShortTs(value: unknown): string {
   if (!value) return "-";
@@ -108,7 +114,16 @@ function dmemRenderTypeList(counts: { memory_type: string; total: number }[], ac
 
 function dmemUpdateTotal(container: HTMLElement, counts: { memory_type: string; total: number }[]): void {
   const totalEl = container.querySelector("[data-mem-total]");
-  if (totalEl) totalEl.textContent = String(counts.reduce((sum, item) => sum + item.total, 0));
+  if (!totalEl) return;
+  totalEl.textContent = String(counts.reduce((sum, item) => sum + item.total, 0));
+  totalEl.removeAttribute("title");
+}
+
+function dmemShowCountsError(container: HTMLElement): void {
+  const totalEl = container.querySelector("[data-mem-total]");
+  if (!totalEl) return;
+  totalEl.textContent = "!";
+  totalEl.setAttribute("title", "记忆类型计数加载失败");
 }
 
 function dmemBindTypeListClicks(container: HTMLElement, dispatch: PluginDispatch): void {
@@ -147,13 +162,19 @@ function dmemRenderNavBody(container: HTMLElement, dispatch: PluginDispatch): vo
     if (currentCountsKey !== nextCountsKey) {
       container.setAttribute("data-mem-counts-key", nextCountsKey);
       dmemFetchTypeCounts(filters).then((counts) => {
+        if (container.getAttribute("data-mem-counts-key") !== nextCountsKey) return;
         dmemUpdateTotal(container, counts);
         const list = container.querySelector("[data-mem-count-list]");
         if (!list) return;
         list.innerHTML = dmemRenderTypeList(counts, activeType);
         dmemBindTypeListClicks(container, dispatch);
-      }).catch(() => { /* 计数失败时保留当前导航。 */ });
-    } else {
+      }).catch((error: unknown) => {
+        console.error("[default_memory] 加载记忆类型计数失败 endpoint=/api/dashboard/memories", error);
+        if (container.getAttribute("data-mem-counts-key") !== nextCountsKey) return;
+        dmemShowCountsError(container);
+        container.removeAttribute("data-mem-counts-key");
+      });
+    } else if (dmemCachedCountsKey === nextCountsKey) {
       dmemUpdateTotal(container, dmemCachedCounts);
     }
     return;
@@ -169,13 +190,19 @@ function dmemRenderNavBody(container: HTMLElement, dispatch: PluginDispatch): vo
   dmemBindTypeListClicks(container, dispatch);
 
   dmemFetchTypeCounts(filters).then((counts) => {
+    if (container.getAttribute("data-mem-counts-key") !== nextCountsKey) return;
     dmemUpdateTotal(container, counts);
     const list = container.querySelector("[data-mem-count-list]");
     if (list) {
       list.innerHTML = dmemRenderTypeList(counts, activeType);
       dmemBindTypeListClicks(container, dispatch);
     }
-  }).catch(() => { /* 计数失败时保留当前导航。 */ });
+  }).catch((error: unknown) => {
+    console.error("[default_memory] 加载记忆类型计数失败 endpoint=/api/dashboard/memories", error);
+    if (container.getAttribute("data-mem-counts-key") !== nextCountsKey) return;
+    dmemShowCountsError(container);
+    container.removeAttribute("data-mem-counts-key");
+  });
 }
 
 // 已挂载时只更新筛选值与范围标签，避免重建输入框导致焦点丢失。
@@ -295,7 +322,14 @@ function dmemRenderTopbarAction(container: HTMLElement, dispatch: PluginDispatch
                   : "记忆优化";
             dispatch.refresh();
           }
-        }).catch(() => { window.clearInterval(pollTimer); });
+        }).catch((error: unknown) => {
+          window.clearInterval(pollTimer);
+          console.error("[default_memory] 查询记忆优化状态失败 endpoint=/api/dashboard/memory/optimizer", error);
+          if (container.getAttribute("data-mem-render-token") === String(currentToken)) {
+            btn.disabled = true;
+            btn.textContent = "状态查询失败，请刷新";
+          }
+        });
       }, 2000);
     };
 
@@ -305,9 +339,11 @@ function dmemRenderTopbarAction(container: HTMLElement, dispatch: PluginDispatch
       api("/api/dashboard/memory/optimize", { method: "POST" }).then(() => {
         btn.textContent = "记忆优化中";
         poll();
-      }).catch(() => {
+      }).catch((error: unknown) => {
+        console.error("[default_memory] 启动记忆优化失败 endpoint=/api/dashboard/memory/optimize", error);
+        if (container.getAttribute("data-mem-render-token") !== String(currentToken)) return;
         btn.disabled = false;
-        btn.textContent = "记忆优化";
+        btn.textContent = "启动失败，请重试";
       });
     });
 
@@ -316,7 +352,12 @@ function dmemRenderTopbarAction(container: HTMLElement, dispatch: PluginDispatch
       btn.textContent = "记忆优化中";
       poll();
     }
-  }).catch(() => { /* 优化器不可用时不展示入口。 */ });
+  }).catch((error: unknown) => {
+    console.error("[default_memory] 加载记忆优化器状态失败 endpoint=/api/dashboard/memory/optimizer", error);
+    if (container.getAttribute("data-mem-render-token") === String(currentToken)) {
+      container.innerHTML = `<span class="muted-text" title="记忆优化器状态加载失败">优化状态不可用</span>`;
+    }
+  });
 }
 
 function dmemRenderDetail(
@@ -336,6 +377,7 @@ function dmemRenderDetail(
 
   const mem = item as unknown as MemoryDetail;
   const similar = (item["_similar"] as MemoryRow[] | undefined) ?? [];
+  const similarError = item["_similar_error"] === true;
   const extraJson = mem.extra_json ?? {};
   const scopeChannel = String(extraJson["scope_channel"] ?? "");
   const scopeChatId = String(extraJson["scope_chat_id"] ?? "");
@@ -343,9 +385,11 @@ function dmemRenderDetail(
 
   const typePillHtml = dmemTypePill(mem.memory_type);
   const statusPillHtml = dmemStatusPill(mem.status);
-  const similarHtml = similar.length
-    ? similar.map((s) => `<div class="detail-callout"><code>${escapeHtml(s.id)}</code><div>${escapeHtml(s.summary)}</div></div>`).join("")
-    : `<div class="muted-text">没有相似记忆。</div>`;
+  const similarHtml = similarError
+    ? `<div class="muted-text">相似记忆加载失败。</div>`
+    : similar.length
+      ? similar.map((s) => `<div class="detail-callout"><code>${escapeHtml(s.id)}</code><div>${escapeHtml(s.summary)}</div></div>`).join("")
+      : `<div class="muted-text">没有相似记忆。</div>`;
   const scopeBtnHtml = hasScopeBtn ? `<button class="ghost" type="button" data-mem-scope-btn>查看同 scope 记忆</button>` : "";
 
   container.innerHTML = `
@@ -392,11 +436,19 @@ function dmemRenderDetail(
 
 async function dmemFetchDetail(item: Record<string, unknown>): Promise<Record<string, unknown>> {
   const id = String(item["id"] ?? "");
+  const similarEndpoint = `/api/dashboard/memories/${encodePath(id)}/similar?top_k=6`;
   const [detail, similar] = await Promise.all([
     api<MemoryDetail>(`/api/dashboard/memories/${encodePath(id)}`),
-    api<{ items: MemoryRow[]; total: number }>(`/api/dashboard/memories/${encodePath(id)}/similar?top_k=6`).catch(() => ({ items: [], total: 0 })),
+    api<SimilarMemoriesResult>(similarEndpoint).catch((error: unknown) => {
+      console.error(`[default_memory] 加载相似记忆失败 endpoint=${similarEndpoint}`, error);
+      return { items: [], total: 0, failed: true };
+    }),
   ]);
-  return { ...detail as unknown as Record<string, unknown>, _similar: similar.items ?? [] };
+  return {
+    ...detail as unknown as Record<string, unknown>,
+    _similar: similar.items ?? [],
+    _similar_error: similar.failed === true,
+  };
 }
 
 async function dmemFetchPage(opts: FetchPageOpts): Promise<FetchPageResult> {
