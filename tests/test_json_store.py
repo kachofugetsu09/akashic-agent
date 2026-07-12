@@ -41,3 +41,24 @@ def test_atomic_save_json_cleans_own_temp_after_replace_failure(
 
     assert json.loads(path.read_text(encoding="utf-8")) == {"version": "old"}
     assert list(tmp_path.glob("state.json.*.tmp")) == []
+
+
+def test_atomic_save_json_logs_cleanup_failure_without_masking_replace_error(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    path = tmp_path / "state.json"
+
+    def fail_replace(source: Path, target: Path) -> Path:
+        raise OSError("replace failed")
+
+    def fail_unlink(target: Path, *, missing_ok: bool = False) -> None:
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    with pytest.raises(OSError, match="replace failed"):
+        atomic_save_json(path, {"version": "new"}, domain="test.state")
+
+    assert "[test.state] 原子写清理临时文件失败" in caplog.text
+    assert "cleanup failed" in caplog.text

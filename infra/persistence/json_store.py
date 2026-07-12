@@ -130,6 +130,11 @@ def atomic_save_json(
         # 尝试清理临时文件
         try:
             tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except OSError as cleanup_error:
+            logger.warning(
+                "[%s] 原子写清理临时文件失败: tmp=%s err=%s",
+                domain,
+                tmp,
+                cleanup_error,
+            )
         raise
