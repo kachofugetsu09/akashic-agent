@@ -23,7 +23,7 @@
   --border: 0 0% 12%;
   --input: 0 0% 18%;
   --ring: 132 42% 37%;
-  --radius: 1rem;
+  --radius: 0.75rem;
 }
 
 * {
@@ -185,14 +185,7 @@ input {
   width: min(100%, 820px);
   height: 1px;
   margin: -6px 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(148, 148, 148, 0.18) 18%,
-    rgba(148, 148, 148, 0.28) 50%,
-    rgba(148, 148, 148, 0.18) 82%,
-    transparent
-  );
+  background: rgba(148, 148, 148, 0.24);
 }
 
 .user-divider {
@@ -209,7 +202,7 @@ input {
 
 .user-bubble {
   max-width: min(74%, 720px);
-  border-radius: 24px;
+  border-radius: 14px;
   padding: 14px 22px;
   color: #eaf6ed;
   background: #2f7d3e;
@@ -256,7 +249,7 @@ input {
   margin: 0 auto;
   border-radius: 12px;
   object-fit: contain;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
 .agent-row {
@@ -322,11 +315,7 @@ input {
   bottom: 13px;
   left: 8px;
   width: 1px;
-  background: linear-gradient(
-    180deg,
-    rgba(120, 120, 120, 0.16),
-    rgba(120, 120, 120, 0.42)
-  );
+  background: rgba(120, 120, 120, 0.3);
   transform-origin: top;
   animation: trace-grow 360ms ease-out both;
 }
@@ -370,7 +359,7 @@ input {
 
 .process-item.active .process-node {
   background: #78b883;
-  box-shadow: 0 0 0 4px #000, 0 0 18px rgba(120, 184, 131, 0.34);
+  box-shadow: 0 0 0 4px #000;
 }
 
 .process-item.active .process-node.diamond {
@@ -474,10 +463,20 @@ input {
 .composer {
   min-height: 66px;
   border: 1px solid #303030;
-  border-radius: 32px;
+  border-radius: 18px;
   padding: 4px 9px;
   background: #242424;
-  box-shadow: 0 10px 42px rgba(0, 0, 0, 0.32);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.composer:focus-within {
+  border-color: hsl(var(--ring) / 0.72);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28), 0 0 0 1px hsl(var(--ring) / 0.18);
+}
+
+form.composer:focus-within [data-slot="input-group"] {
+  box-shadow: none;
 }
 
 .composer textarea {

@@ -140,11 +140,11 @@ const UI_BTN_VARIANTS: Record<UiBtnVariant, string> = {
   danger: "bg-danger/20 text-danger hover:bg-danger/30 active:bg-danger/25",
 };
 
-const UI_BADGE_BASE = "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-mono text-[11px] tabular-nums";
-const UI_BTN_BASE = "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40";
+const UI_BADGE_BASE = "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-[11px] tabular-nums";
+const UI_BTN_BASE = "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40";
 const UI_INPUT = "h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none";
 const UI_TILE = "relative rounded-lg border border-border bg-surface p-5";
-const UI_LABEL = "font-mono text-[10px] uppercase tracking-[0.2em] text-subtle";
+const UI_LABEL = "font-sans text-[11px] font-medium tracking-wide text-subtle";
 const UI_MONO = "font-mono tabular-nums";
 
 function badgeClass(tone: UiTone = "neutral"): string {

@@ -26,11 +26,10 @@ const TONE_RGB: Record<ChartTone, string> = {
 
 const toneColor = (tone: ChartTone): string => `rgb(${TONE_RGB[tone]})`;
 
-const AXIS_TICK = { fontSize: 10, fill: "rgba(138,138,143,0.6)", fontFamily: "JetBrains Mono, monospace" };
+const AXIS_TICK = { fontSize: 10, fill: "rgba(138,138,143,0.6)", fontFamily: "var(--sans)" };
 const GRID_STROKE = "rgba(255,255,255,0.07)";
 
-// Hand-rolled SVG pie — a 2-slice hit/miss filled pie with a glossy, dimensional
-// finish (radial sheen + drop shadow + rim) and a sweep-in animation on mount.
+// Hand-rolled SVG pie — a 2-slice hit/miss chart with a sweep-in animation on mount.
 export function Pie({
   rate,
   hit,
@@ -50,8 +49,6 @@ export function Pie({
   size?: number;
   className?: string;
 }) {
-  const uid = useId().replace(/:/g, "");
-
   // 1. Resolve the ratio: explicit rate wins, else derive from hit/miss totals.
   const total = hit + miss;
   const ratio = rate != null ? Math.max(0, Math.min(1, rate)) : total > 0 ? hit / total : 0;
@@ -88,42 +85,22 @@ export function Pie({
   return (
     <div className={cn("flex flex-col items-center gap-3", className)}>
       {title && (
-        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-subtle">{title}</span>
+        <span className="font-sans text-[11px] font-medium tracking-wide text-subtle">{title}</span>
       )}
       <svg
         width={size}
         height={size}
         viewBox={`0 0 ${size} ${size}`}
-        style={{ filter: "drop-shadow(0 6px 14px rgba(0,0,0,0.55))" }}
       >
-        <defs>
-          <radialGradient id={`hit-${uid}`} cx="36%" cy="30%" r="78%">
-            <stop offset="0%" stopColor="rgb(var(--color-success-rgb))" stopOpacity="1" />
-            <stop offset="100%" stopColor="rgb(var(--color-success-rgb))" stopOpacity="0.72" />
-          </radialGradient>
-          <radialGradient id={`miss-${uid}`} cx="36%" cy="30%" r="80%">
-            <stop offset="0%" stopColor="rgb(var(--color-surface-3-rgb))" stopOpacity="1" />
-            <stop offset="100%" stopColor="rgb(var(--color-bg-rgb))" stopOpacity="1" />
-          </radialGradient>
-          <radialGradient id={`gloss-${uid}`} cx="32%" cy="24%" r="62%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.22" />
-            <stop offset="55%" stopColor="#ffffff" stopOpacity="0.04" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-        <circle cx={cx} cy={cx} r={r} fill={`url(#miss-${uid})`} />
+        <circle cx={cx} cy={cx} r={r} fill="rgb(var(--color-surface-3-rgb))" />
         {shown >= 0.999 ? (
-          <circle cx={cx} cy={cx} r={r} fill={`url(#hit-${uid})`} />
+          <circle cx={cx} cy={cx} r={r} fill="rgb(var(--color-success-rgb))" />
         ) : shown > 0.001 ? (
-          <path d={slice} fill={`url(#hit-${uid})`} />
+          <path d={slice} fill="rgb(var(--color-success-rgb))" />
         ) : null}
-        {/* glossy sheen for the dimensional / glass finish */}
-        <circle cx={cx} cy={cx} r={r} fill={`url(#gloss-${uid})`} />
-        {/* crisp rim + inner top highlight */}
-        <circle cx={cx} cy={cx} r={r} fill="none" stroke="rgba(0,0,0,0.35)" strokeWidth={1.5} />
-        <circle cx={cx} cy={cx} r={r - 1} fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth={1} />
+        <circle cx={cx} cy={cx} r={r} fill="none" stroke="var(--color-border-strong)" strokeWidth={1} />
       </svg>
-      <div className="flex w-full items-center justify-center gap-4 font-mono text-[11px] tabular-nums">
+      <div className="flex w-full items-center justify-center gap-4 font-sans text-[11px] tabular-nums">
         <span className="flex items-center gap-1.5 text-success">
           <span className="h-2 w-2 rounded-full bg-success" />
           {hitLabel} {fmt(hit)} · {pct}%
@@ -160,11 +137,11 @@ export function MetricTile({
   className?: string;
 }) {
   return (
-    <div className={cn("relative overflow-hidden rounded-2xl border border-border bg-surface p-5 shadow-lift-sm", className)}>
+    <div className={cn("relative overflow-hidden rounded-lg border border-border bg-surface p-5 shadow-lift-sm", className)}>
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted">{label}</span>
+        <span className="font-sans text-[11px] font-medium tracking-wide text-muted">{label}</span>
         {typeof delta === "number" && (
-          <span className={cn("font-mono text-[11px] tabular-nums", delta >= 0 ? "text-success" : "text-danger")}>
+          <span className={cn("font-sans text-[11px] tabular-nums", delta >= 0 ? "text-success" : "text-danger")}>
             {delta >= 0 ? "+" : ""}
             {delta.toFixed(1)}%
           </span>
@@ -172,9 +149,9 @@ export function MetricTile({
       </div>
       <div className="mt-3 flex items-baseline gap-1.5">
         <span className="font-sans text-4xl font-semibold leading-none tracking-tight tabular-nums text-fg">{value}</span>
-        {unit && <span className="font-mono text-[11px] text-subtle">{unit}</span>}
+        {unit && <span className="font-sans text-[11px] text-subtle">{unit}</span>}
       </div>
-      {sub && <div className="mt-2 font-mono text-[11px] tabular-nums text-muted">{sub}</div>}
+      {sub && <div className="mt-2 font-sans text-[11px] tabular-nums text-muted">{sub}</div>}
       {spark && spark.length > 1 && (
         <Sparkline data={spark} tone={tone} className="mt-4 w-full" height={40} />
       )}
@@ -235,9 +212,9 @@ const TOOLTIP_CONTENT_STYLE = {
   border: "1px solid var(--color-border-strong)",
   borderRadius: 8,
   fontSize: 11,
-  fontFamily: "JetBrains Mono, monospace",
+  fontFamily: "var(--sans)",
   padding: "6px 10px",
-  boxShadow: "0 8px 24px -6px rgba(0,0,0,0.6)",
+  boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
 };
 
 // TrendChart — a recharts area/bar time series with a dashed horizontal grid,
