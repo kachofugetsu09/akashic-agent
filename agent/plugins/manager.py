@@ -2027,7 +2027,6 @@ class PluginManager:
             or not set(source.spec.channels).issubset({"alert", "content", "context"})
             or not source.spec.server
             or not source.spec.fetch_tool
-            or source.spec.poll_interval_seconds < 0
             or source.spec.fetch_page_size < 0
             or source.spec.server not in contributions.mcp_servers
         ]
@@ -2960,8 +2959,6 @@ def _proactive_source_spec_evidence(
             "server": source.spec.server,
             "fetch_tool": source.spec.fetch_tool,
             "ack_tool": source.spec.ack_tool,
-            "poll_tool": source.spec.poll_tool,
-            "poll_interval_seconds": source.spec.poll_interval_seconds,
             "fetch_page_size": source.spec.fetch_page_size,
         }
         for key, source in sorted(catalog.sources.items())

@@ -966,7 +966,7 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
         "    name = 'mcp_ready'\n"
         "    def __init__(self):\n"
         "        self.job_spec = PluginJobSpec(id='refresh', triggers=[IntervalTrigger(3600)], handler=self.refresh)\n"
-        "        self.source_spec = ProactiveSourceSpec(id='feed', channels=['content'], server='feed', fetch_tool='fetch_events', ack_tool='ack_events', poll_tool='poll_events')\n"
+        "        self.source_spec = ProactiveSourceSpec(id='feed', channels=['content'], server='feed', fetch_tool='fetch_events', ack_tool='ack_events')\n"
         "    @classmethod\n"
         "    def mcp_servers(cls):\n"
         "        return [McpServerSpec(name='feed', command=('python', 'server.py'))]\n"
@@ -993,7 +993,7 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     )
     _write_mcp_server(
         plugin_dir,
-        ("fetch_events", "ack_events", "poll_events"),
+        ("fetch_events", "ack_events"),
     )
     tools = ToolRegistry()
     manager = _manager(tmp_path, tools=tools)
@@ -1020,7 +1020,6 @@ async def test_candidate_mcp_catalog_uses_stable_public_names_and_closes(
     assert catalog.tool_names == (
         "mcp_feed__ack_events",
         "mcp_feed__fetch_events",
-        "mcp_feed__poll_events",
     )
     assert not any(prepared.generation_id in name for name in catalog.tool_names)
     assert tools.get_registered_names() == set()

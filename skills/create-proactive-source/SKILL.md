@@ -41,8 +41,6 @@ class DemoPlugin(Plugin):
                 server="demo",
                 fetch_tool="get_proactive_events",
                 ack_tool="acknowledge_events",
-                poll_tool="poll_events",
-                poll_interval_seconds=300,
             )
         ]
 ```
@@ -51,7 +49,7 @@ class DemoPlugin(Plugin):
 
 alert/content 的 fetch 工具返回 JSON 数组，每项至少包含 `event_id`、`kind`、`source_type`、`source_name`、`title`、`content`。context 返回 JSON 对象或对象数组。
 
-ACK 工具接收 `event_ids: list[str]`，并只确认成功投递的原始 ID。`poll_tool` 只刷新上游数据，不调用 agent，也不自行决定推送。
+ACK 工具接收 `event_ids: list[str]`，并只确认成功投递的原始 ID。MCP 在自己的生命周期中维护缓存新鲜度；`fetch_tool` 只读取稳定快照。
 
 ## 配置
 
@@ -60,7 +58,6 @@ ACK 工具接收 `event_ids: list[str]`，并只确认成功投递的原始 ID�
 ```toml
 [proactive]
 enabled = true
-poll_interval_seconds = 300
 ```
 
 文件位于 `~/.akashic-plugin/data/<plugin>-<marketplace>/config.local.toml`。关闭 proactive 只移除主动 source，不关闭插件其他能力。
@@ -73,6 +70,6 @@ poll_interval_seconds = 300
 ├─ 启动 MCP 并调用 fetch_tool
 ├─ 校验三种通道返回值
 ├─ 校验 ACK 精确匹配 event_id
-├─ 校验 poll_tool 由 runtime 周期调用
+├─ 校验 MCP 独立维护缓存新鲜度
 └─ 校验 enabled = false 时 proactive_sources() 为空
 ```

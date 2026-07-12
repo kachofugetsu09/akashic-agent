@@ -12,9 +12,6 @@ from agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-_POLL_TOOL_TIMEOUT = 180.0
-
-
 class McpGateway(Protocol):
     async def call(
         self,
@@ -157,23 +154,6 @@ async def _fetch_pages(
             return result
         offset += len(page)
     raise RuntimeError(f"分页 source 超过 256 页: {source_key(source)}")
-
-
-async def poll_source_async(
-    pool: McpGateway,
-    source: RegisteredProactiveSource,
-) -> None:
-    poll_tool = source.spec.poll_tool
-    if not poll_tool:
-        return
-    result = await pool.call(
-        source.spec.server,
-        poll_tool,
-        {},
-        timeout=_POLL_TOOL_TIMEOUT,
-    )
-    if isinstance(result, str) and result.startswith("error:"):
-        raise RuntimeError(result)
 
 
 async def acknowledge_async(

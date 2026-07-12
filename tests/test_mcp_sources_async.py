@@ -32,7 +32,7 @@ class FakePool:
         return response(args) if callable(response) else response
 
 
-def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: str, *, ack: str = "", poll: str = "", page_size: int = 0) -> RegisteredProactiveSource:
+def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: str, *, ack: str = "", page_size: int = 0) -> RegisteredProactiveSource:
     return RegisteredProactiveSource(
         plugin_id=plugin_id,
         spec=ProactiveSourceSpec(
@@ -41,8 +41,6 @@ def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: 
             server=server,
             fetch_tool=fetch,
             ack_tool=ack,
-            poll_tool=poll,
-            poll_interval_seconds=10 if poll else 0,
             fetch_page_size=page_size,
         ),
     )
@@ -215,11 +213,3 @@ async def test_ack_targets_exact_source_and_passes_feedback() -> None:
         feedback="interesting",
     )
     assert pool.calls == [("feed", "ack", {"event_ids": ["e1"], "feedback": "interesting"})]
-
-
-@pytest.mark.asyncio
-async def test_poll_uses_timeout() -> None:
-    pool = FakePool({("feed", "poll"): {"ok": True}})
-    item = source("feed", "subscriptions", ("content",), "feed", "events", poll="poll")
-    await mcp_sources.poll_source_async(cast(Any, pool), item)
-    assert pool.timeouts == [mcp_sources._POLL_TOOL_TIMEOUT]

@@ -801,7 +801,7 @@ def _install_candidate_plugins(
         "calls = Path(os.environ['AKA_PLUGIN_DATA_DIR']) / 'candidate_mcp_calls.jsonl'\n"
         "tools = [\n"
         "    {'name': name, 'description': name, 'inputSchema': {'type': 'object', 'properties': {}}}\n"
-        "    for name in ('fetch_events', 'ack_events', 'poll_events', 'candidate_version')\n"
+        "    for name in ('fetch_events', 'ack_events', 'candidate_version')\n"
         "]\n"
         "for line in sys.stdin:\n"
         "    msg = json.loads(line)\n"
@@ -920,8 +920,7 @@ def _candidate_reload_source(version: str) -> str:
         f"        return [ManagedServiceSpec(id='candidate_http', command=('python', 'candidate_service.py'), env={{'CANDIDATE_VERSION': '{version}'}}, readiness_url='http://127.0.0.1:18767/')]\n"
         "    def proactive_sources(self):\n"
         "        return [ProactiveSourceSpec(id='candidate_feed', channels=('content',), "
-        "server='candidate_feed', fetch_tool='fetch_events', ack_tool='ack_events', "
-        f"poll_tool='poll_events', poll_interval_seconds={1 if version == 'v1' else 2})]\n"
+        "server='candidate_feed', fetch_tool='fetch_events', ack_tool='ack_events')]\n"
         "    def jobs(self):\n"
         f"        return [PluginJobSpec(id='refresh', triggers=[IntervalTrigger({1 if version == 'v1' else 2})], handler=self.refresh)]\n"
         "    async def refresh(self, context):\n"
@@ -935,10 +934,9 @@ def _candidate_reload_source(version: str) -> str:
         "        source = context.proactive_catalog.sources['candidate_reload@gate:candidate_feed']\n"
         "        owned = getattr(job.spec.handler, '__self__', None) is self\n"
         "        job_interval = job.spec.triggers[0].seconds\n"
-        "        source_interval = source.spec.poll_interval_seconds\n"
         "        evidence = {'mcp': value, 'job_owned': owned, 'source': source.spec.id, "
-        "'job_interval': job_interval, 'source_interval': source_interval}\n"
-        f"        return [PluginSemanticCheck('candidate_capabilities', value == '{version}' and owned and job_interval == {1 if version == 'v1' else 2} and source_interval == {1 if version == 'v1' else 2}, evidence)]\n"
+        "'job_interval': job_interval}\n"
+        f"        return [PluginSemanticCheck('candidate_capabilities', value == '{version}' and owned and job_interval == {1 if version == 'v1' else 2}, evidence)]\n"
         "    @tool(name='candidate_reload_tool')\n"
         "    async def run(self, event):\n"
         "        \"\"\"Candidate reload tool.\"\"\"\n"
@@ -1912,7 +1910,6 @@ def _exercise_candidate_prepare(
             "mcp_candidate_feed__ack_events",
             "mcp_candidate_feed__candidate_version",
             "mcp_candidate_feed__fetch_events",
-            "mcp_candidate_feed__poll_events",
         ]
         and isinstance(valid_readiness_checks, list)
         and valid_readiness_checks
@@ -1925,7 +1922,6 @@ def _exercise_candidate_prepare(
                     "job_owned": True,
                     "source": "candidate_feed",
                     "job_interval": 2,
-                    "source_interval": 2,
                 },
             }
         ]
@@ -1946,8 +1942,7 @@ def _exercise_candidate_prepare(
                 "server": "candidate_feed",
                 "fetch_tool": "fetch_events",
                 "ack_tool": "ack_events",
-                "poll_tool": "poll_events",
-                "poll_interval_seconds": 2,
+                "fetch_page_size": 0,
             }
         }
         and return_status.get("job_specs")
@@ -1962,8 +1957,7 @@ def _exercise_candidate_prepare(
                 "server": "candidate_feed",
                 "fetch_tool": "fetch_events",
                 "ack_tool": "ack_events",
-                "poll_tool": "poll_events",
-                "poll_interval_seconds": 1,
+                "fetch_page_size": 0,
             }
         }
         and cast(dict[str, int], after_valid_calls.get("v2", {})).get(
@@ -1971,15 +1965,10 @@ def _exercise_candidate_prepare(
             0,
         )
         == 1
-        and cast(dict[str, int], initial_calls.get("v1", {})).get(
-            "poll_events",
-            0,
-        )
-        >= 1
         and all(
             cast(dict[str, int], after_valid_calls.get("v2", {})).get(tool, 0)
             == 0
-            for tool in ("fetch_events", "poll_events", "ack_events")
+            for tool in ("fetch_events", "ack_events")
         )
         and _integer(after_valid.get("job_runs_v1"))
         > _integer(initial.get("job_runs_v1"))

@@ -112,7 +112,6 @@ class PluginMcpHost:
             for role, tool_name in (
                 ("fetch", source.spec.fetch_tool),
                 ("ack", source.spec.ack_tool),
-                ("poll", source.spec.poll_tool),
             ):
                 if tool_name and tool_name not in available:
                     missing.append(f"{source.spec.id}:{role}:{tool_name}")
