@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -152,7 +151,9 @@ def build_spawn_spec(
     multimodal: bool = True,
 ) -> SubagentSpec:
     """按 profile 选择权限边界并构建子任务配置。"""
-    builder = _PROFILE_BUILDERS.get(profile, build_research_spec)
+    builder = _PROFILE_BUILDERS.get(profile)
+    if builder is None:
+        raise ValueError(f"未知 subagent profile: {profile!r}")
     return builder(
         workspace=workspace,
         task_dir=task_dir,

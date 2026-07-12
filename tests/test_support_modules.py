@@ -633,6 +633,11 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
     assert tool.validate_params({})[:2] == ["缺少必填字段：name", "缺少必填字段：count"]
     assert tool.to_schema()["function"]["name"] == "dummy"
 
+    numeric_type_errors = tool.validate_params(
+        {"name": "ok", "count": True, "items": [False]}
+    )
+    assert numeric_type_errors == ["count 应为 integer 类型", "items[0] 应为 number 类型"]
+
     class _BadSchemaTool(_DummyTool):
         @property
         def parameters(self) -> dict:
