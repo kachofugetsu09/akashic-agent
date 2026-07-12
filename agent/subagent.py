@@ -356,9 +356,19 @@ class SubAgent:
                 continue
 
             if not response.tool_calls:
-                continue
+                self.last_exit_reason = "error"
+                raise RuntimeError(
+                    "mandatory_exit 未调用指定工具: "
+                    f"expected={tool_name} actual=none"
+                )
 
             tc = response.tool_calls[0]
+            if tc.name != tool_name:
+                self.last_exit_reason = "error"
+                raise RuntimeError(
+                    "mandatory_exit 调用了错误工具: "
+                    f"expected={tool_name} actual={tc.name}"
+                )
             append_assistant_tool_calls(
                 messages,
                 content=response.content,

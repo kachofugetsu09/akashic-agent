@@ -811,3 +811,51 @@ def test_subagent_loop_path_runs_mandatory_exit_with_closed_chain():
     assert "记录" in result
     assert len(tool.calls) == 2
     assert exit_tool.called == 1
+
+
+@pytest.mark.parametrize(
+    ("exit_response", "actual"),
+    [
+        (LLMResponse(content="", tool_calls=[]), "none"),
+        (
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("wrong", "dummy", {"x": 2})],
+            ),
+            "dummy",
+        ),
+    ],
+)
+def test_subagent_mandatory_exit_rejects_missing_or_wrong_tool(
+    exit_response: LLMResponse,
+    actual: str,
+):
+    tool = _DummyTool("dummy")
+    exit_tool = _ExitTool("checkpoint")
+    provider = _FakeProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("s1", "dummy", {"x": 1})],
+            ),
+            exit_response,
+        ]
+    )
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[tool, exit_tool],
+        max_iterations=1,
+        mandatory_exit_tools=["checkpoint"],
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"expected=checkpoint actual={actual}",
+    ):
+        asyncio.run(subagent.run("do work"))
+
+    assert subagent.last_exit_reason == "error"
+    assert len(tool.calls) == 1
+    assert exit_tool.called == 0
+    assert len(provider.calls) == 2
