@@ -11,6 +11,7 @@ def build_messages(
     memory_text: str,
     proactive_context: str,
     recent_session: str,
+    current_context: str = "unknown（没有可靠 ContextEvent）",
 ) -> list[dict[str, str]]:
     lines: list[str] = []
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -48,16 +49,22 @@ def build_messages(
             )
 
     system = (
-        "这是一次由连续 hazard 激活后，拟递给内容判断模型的只读观察输入。"
-        "候选已经按来源分组，每个来源内部严格按 published_at 倒序；"
-        "预处理和唤醒分数只决定激活与候选顺序，不会提供给模型。"
-        "当前阶段不调用模型、不使用工具、不抓正文，也不发送消息；"
-        "这里只记录未来模型会看到的 MEMORY、PROACTIVE_CONTEXT、截至当时的最近对话和标题页。"
+        "你正在处理一次主动内容窗口。候选已经按来源分组，每个来源内部严格按 "
+        "published_at 倒序；预处理和唤醒分数不会提供给你。先结合 MEMORY、"
+        "PROACTIVE_CONTEXT 和最近对话快速阅读全部标题，再调用一次 scratchpad，"
+        "只记录最多八条确实值得查正文或需要确认用户兴趣的候选。"
+        "likely_interesting 用于已有明确兴趣依据的内容；uncertain 用于需要 RecallMemory "
+        "确认的内容。宁可少选，不要为了覆盖资讯而选择。不要把预测当成用户反馈，"
+        "不要在输出中提及记忆、画像、分数或筛选流程。长期记忆应该影响选题和措辞，"
+        "但不要直接复述用户的敏感经历、焦虑、健康、财务或私密关系。"
+        "关于用户此刻是否睡眠、忙碌、离线或在游戏，只允许依据当前 ContextEvent；"
+        "ContextEvent 为 unknown 时不得根据时间、历史习惯或语气猜测当前状态。"
     )
     user = (
         f"【固定 MEMORY.md】\n{memory_text}\n\n"
         f"【固定 PROACTIVE_CONTEXT.md】\n{proactive_context}\n\n"
         f"【截至当前时间的最近对话】\n{recent_session}\n\n"
+        f"【当前 ContextEvent】\n{current_context}\n\n"
         f"【本次标题页：{len(ctx.content_events)} 条，窗口内未展示 {getattr(ctx, 'content_backlog_count', 0)} 条】\n"
         + "\n".join(lines)
     )

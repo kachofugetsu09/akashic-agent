@@ -153,7 +153,7 @@ def _scope(tmp_path: Path, gateway, provider, orchestrator, source):
 
 
 @pytest.mark.asyncio
-async def test_content_vertical_slice_records_ranked_llm_input_without_calling_model(
+async def test_content_vertical_slice_filters_investigates_and_shares(
     tmp_path,
     request,
 ):
@@ -178,7 +178,48 @@ async def test_content_vertical_slice_records_ranked_llm_input_without_calling_m
         },
     ]
     ids = ["feed_plugin:main:new", "feed_plugin:main:old"]
-    provider = SimpleNamespace(chat=AsyncMock())
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            side_effect=[
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "screen",
+                            "scratchpad",
+                            {
+                                "items": [
+                                    {
+                                        "item_id": ids[0],
+                                        "initial_interest": "likely_interesting",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                ),
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "final",
+                            "share_content",
+                            {
+                                "opening": "这个变化值得留意。",
+                                "items": [
+                                    {
+                                        "item_id": ids[0],
+                                        "summary": "新内容已经发布。",
+                                        "why_it_matters": "符合你最近关注的方向",
+                                    }
+                                ],
+                            },
+                        )
+                    ],
+                ),
+            ]
+        )
+    )
     gateway = FakeGateway(events)
     orchestrator = FakeOrchestrator()
     scope = _scope(tmp_path, gateway, provider, orchestrator, _source("content"))
@@ -202,8 +243,10 @@ async def test_content_vertical_slice_records_ranked_llm_input_without_calling_m
     assert result.output is not None
     assert result.output.next_interval_seconds == 300
     assert result.slots["wake:run_state"].ctx.now_utc == datetime(2026, 7, 12, tzinfo=UTC)
-    assert provider.chat.await_count == 0
-    assert orchestrator.results == []
+    assert provider.chat.await_count == 2
+    assert len(orchestrator.results) == 1
+    assert orchestrator.results[0].decision == "reply"
+    assert "符合你最近关注的方向" in orchestrator.results[0].outbound.content
     observations = runtime._state.observations("content")
     assert len(observations) == 1
     candidates = json.loads(observations[0]["candidates_json"])
@@ -214,8 +257,13 @@ async def test_content_vertical_slice_records_ranked_llm_input_without_calling_m
     assert first_prompt.index("新标题") < first_prompt.index("旧标题")
     assert "来源：Research" in first_prompt
     assert "preprocess_score" not in first_prompt
-    assert "scratchpad" not in system_prompt
-    assert "不使用工具" in system_prompt
+    assert "scratchpad" in system_prompt
+    assert "宁可少选" in system_prompt
+    assert "当前 ContextEvent" in first_prompt
+    assert "unknown（没有可靠 ContextEvent）" in first_prompt
+    final_prompt = provider.chat.await_args_list[1].kwargs["messages"][0]["content"]
+    assert "unknown 时保持中性" in final_prompt
+    assert "敏感经历" in final_prompt
     assert gateway.acks == [{"event_ids": ["new", "old"]}]
     assert runtime._state.unread("content") == []
 
@@ -239,7 +287,26 @@ async def test_content_wake_closes_full_unread_window_when_title_page_is_capped(
     scope = _scope(
         tmp_path,
         gateway,
-        SimpleNamespace(chat=AsyncMock()),
+        SimpleNamespace(
+            chat=AsyncMock(
+                side_effect=[
+                    LLMResponse(
+                        content=None,
+                        tool_calls=[ToolCall("screen", "scratchpad", {"items": []})],
+                    ),
+                    LLMResponse(
+                        content=None,
+                        tool_calls=[
+                            ToolCall(
+                                "final",
+                                "skip_content",
+                                {"reason": "没有值得打扰用户的内容"},
+                            )
+                        ],
+                    ),
+                ]
+            )
+        ),
         FakeOrchestrator(),
         _source("content"),
     )
@@ -559,8 +626,9 @@ async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, 
 
     assert second.hazard_result is not None
     assert second.hazard_result.should_wake is True
-    assert provider.chat.await_count == 0
-    assert orchestrator.results == []
+    assert provider.chat.await_count == 2
+    assert len(orchestrator.results) == 1
+    assert orchestrator.results[0].decision == "reply"
     assert len(store.observations("content")) == 1
 
 
@@ -884,7 +952,14 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     request,
 ):
     now = datetime(2026, 7, 12, 12, tzinfo=UTC)
-    gateway = FakeContextGateway({"presence": "sleeping", "confidence": 0.9})
+    gateway = FakeContextGateway(
+        {
+            "presence": "sleeping",
+            "confidence": 0.9,
+            "observed_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=15)).isoformat(),
+        }
+    )
     provider = SimpleNamespace(chat=AsyncMock())
     orchestrator = FakeOrchestrator()
     store = WakeStateStore(tmp_path / "wake.db")
@@ -899,6 +974,7 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
 
     assert first.context_reevaluate is False
     assert store.load_context("feed_plugin:main").presence == "sleeping"
+    assert "presence=sleeping" in runtime._current_context_text(now)
     assert provider.chat.await_count == 0
     assert orchestrator.results == []
 
@@ -922,7 +998,12 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
         updated_at=now - timedelta(hours=1),
         last_wake_at=None,
     )
-    gateway.snapshot = {"presence": "active", "confidence": 0.9}
+    gateway.snapshot = {
+        "presence": "active",
+        "confidence": 0.9,
+        "observed_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=15)).isoformat(),
+    }
     second = runtime.begin(new_proactive_frame("telegram:1"))
     await runtime.ingest(second)
     await runtime.decide(second)
@@ -931,6 +1012,7 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     assert second.hazard_result is not None
     assert second.hazard_result.hazard_after > 0
     assert store.load_context("feed_plugin:main").presence == "active"
+    assert "presence=active" in runtime._current_context_text(now)
     assert len(store.unread("content")) == 1
     assert provider.chat.await_count == 0
     assert orchestrator.results == []
@@ -941,6 +1023,7 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     await runtime.decide(third)
 
     assert third.context_reevaluate is False
+    assert runtime._current_context_text(clock.now()).startswith("unknown")
     assert third.hazard_result is not None
     assert third.hazard_result.hazard_after > second.hazard_result.hazard_after
     assert len(store.unread("content")) == 1

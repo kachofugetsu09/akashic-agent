@@ -57,6 +57,8 @@ def test_tool_schemas_are_independent_three_step_flow():
     ]
     scratch_items = TOOL_SCHEMAS[0]["function"]["parameters"]["properties"]["items"]
     assert scratch_items["maxItems"] == 8
+    share_items = TOOL_SCHEMAS[2]["function"]["parameters"]["properties"]["items"]
+    assert share_items["maxItems"] == 3
 
 
 @pytest.mark.asyncio
@@ -237,9 +239,9 @@ async def test_share_content_renders_one_message_and_stable_mapping(tmp_path):
     assert ctx.terminal_action == "reply"
     assert ctx.cited_item_ids == ["feed:a"]
     assert ctx.display_event_map == {1: "feed:a"}
-    assert "新架构研究" in result["message"]
-    assert "1. 新架构研究" not in result["message"]
-    assert "原始来源：https://example.com/a" in result["message"]
+    assert "它把时间因素放进了唤醒判断。" in result["message"]
+    assert "新架构研究" not in result["message"]
+    assert "来源：https://example.com/a" in result["message"]
     assert ctx.source_refs[0]["display_index"] == 1
     saved = store.get(ctx.wake_id)
     assert saved is not None

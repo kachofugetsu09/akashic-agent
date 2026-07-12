@@ -68,3 +68,14 @@ def event_item_id(event: dict[str, Any]) -> str:
     if ack_server and item_id and ":" not in item_id:
         return f"{ack_server}:{item_id}"
     return item_id
+
+
+def event_item_aliases(event: dict[str, Any]) -> set[str]:
+    return {
+        value
+        for value in (
+            event_item_id(event),
+            str(event.get("_reservoir_source_event_id") or "").strip(),
+        )
+        if value
+    }

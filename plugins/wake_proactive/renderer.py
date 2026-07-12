@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from plugins.wake_proactive.context import event_item_id
+from plugins.wake_proactive.context import event_item_aliases
 
 
 @dataclass(slots=True)
@@ -21,7 +21,11 @@ def render_share(
     closing: str,
     events: list[dict[str, Any]],
 ) -> RenderedShare:
-    event_map = {event_item_id(event): event for event in events}
+    event_map = {
+        alias: event
+        for event in events
+        for alias in event_item_aliases(event)
+    }
     blocks: list[str] = []
     opening = opening.strip()
     closing = closing.strip()
@@ -40,12 +44,12 @@ def render_share(
         url = str(event.get("url") or "").strip()
         source = str(event.get("source") or event.get("source_name") or "").strip()
 
-        heading = title if len(items) == 1 else f"{index}. {title}"
-        lines = [heading, summary]
+        heading = summary if len(items) == 1 else f"{index}. {summary}"
+        lines = [heading]
         if why:
-            lines.append(f"和你有关的是：{why}")
+            lines.append(why)
         if url:
-            lines.append(f"原始来源：{url}")
+            lines.append(f"来源：{url}")
         blocks.append("\n".join(line for line in lines if line))
 
         evidence.append(item_id)

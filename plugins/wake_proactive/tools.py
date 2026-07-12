@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from core.memory.engine import MemoryQuery
-from plugins.wake_proactive.context import ScratchItem, WakeContext, event_item_id
+from plugins.wake_proactive.context import ScratchItem, WakeContext, event_item_aliases
 from plugins.wake_proactive.renderer import render_share
 
 if TYPE_CHECKING:
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 MAX_INVESTIGATION_CANDIDATES = 8
+MAX_SHARE_ITEMS = 3
 
 
 @dataclass
@@ -81,6 +82,7 @@ TOOL_SCHEMAS = [
                 "opening": {"type": "string"},
                 "items": {
                     "type": "array",
+                    "maxItems": MAX_SHARE_ITEMS,
                     "items": {
                         "type": "object",
                         "properties": {
@@ -109,7 +111,11 @@ TOOL_SCHEMAS = [
 
 
 def _event_map(ctx: WakeContext) -> dict[str, dict[str, Any]]:
-    return {event_item_id(event): event for event in ctx.content_events}
+    return {
+        alias: event
+        for event in ctx.content_events
+        for alias in event_item_aliases(event)
+    }
 
 
 def _save(ctx: WakeContext, deps: ToolDeps) -> None:
@@ -266,6 +272,8 @@ def _share_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> st
     items = list(args.get("items") or [])
     if not items:
         raise ValueError("share_content requires at least one item")
+    if len(items) > MAX_SHARE_ITEMS:
+        raise ValueError("share_content supports at most 3 items")
     valid_ids = set(_event_map(ctx))
     item_ids = [str(item.get("item_id") or "").strip() for item in items]
     if len(item_ids) != len(set(item_ids)):

@@ -552,7 +552,7 @@ def observe(layout: ReplayLayout) -> dict[str, Any]:
                         latest_terminal_seq = max(
                             latest_terminal_seq, int(row["run_seq"])
                         )
-            if _table_exists(connection, "wake_observations"):
+            if not _table_exists(connection, "wake_runs") and _table_exists(connection, "wake_observations"):
                 observations = [
                     dict(row)
                     for row in connection.execute(
