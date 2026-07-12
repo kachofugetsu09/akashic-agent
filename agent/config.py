@@ -11,6 +11,7 @@ import sys
 import tomllib
 import zlib
 from pathlib import Path
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from agent.config_models import (
@@ -33,6 +34,7 @@ _PRESETS: dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1",
     "openai": "https://api.openai.com/v1",
 }
+_DEFAULT_TOOLSETS = ("meta_common", "spawn", "schedule", "mcp")
 
 # CLI channel 默认 Unix socket 路径
 DEFAULT_SOCKET = "127.0.0.1:8765" if os.name == "nt" else "/tmp/akashic.sock"
@@ -281,18 +283,31 @@ def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:
+    """加载运行时装配配置，并拒绝会改变工具集语义的错误结构。"""
+
+    # 1. 选择新版 agent.wiring；空表继续兼容旧版顶层 wiring。
     agent_cfg = _as_dict(data.get("agent"))
-    raw = _as_dict(agent_cfg.get("wiring")) or data.get("wiring", {}) or {}
-    toolsets = raw.get(
-        "toolsets",
-        ["meta_common", "spawn", "schedule", "mcp"],
-    )
-    if not isinstance(toolsets, list):
-        toolsets = ["meta_common", "spawn", "schedule", "mcp"]
+    agent_wiring = agent_cfg.get("wiring")
+    if agent_wiring is not None and not isinstance(agent_wiring, dict):
+        raise ValueError("agent.wiring 必须是 TOML table")
+    raw = agent_wiring or data.get("wiring", {}) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("wiring 必须是 TOML table")
+
+    # 2. 缺失时使用默认工具集；显式数组中的名称必须非空。
+    raw_toolsets = raw.get("toolsets")
+    if raw_toolsets is None:
+        toolsets = list(_DEFAULT_TOOLSETS)
+    elif not isinstance(raw_toolsets, list) or any(
+        not isinstance(name, str) or not name.strip() for name in raw_toolsets
+    ):
+        raise ValueError("agent.wiring.toolsets 必须是字符串数组")
+    else:
+        toolsets = cast(list[str], raw_toolsets)
     return WiringConfig(
         context=str(raw.get("context", "default") or "default"),
         memory=str(raw.get("memory", "default") or "default"),
-        toolsets=[str(name) for name in toolsets if str(name).strip()],
+        toolsets=list(toolsets),
     )
 
 

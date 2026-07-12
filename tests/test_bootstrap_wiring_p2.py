@@ -69,6 +69,19 @@ def _write_toml(path: Path, payload: dict) -> None:
     path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
 
 
+def _write_wiring_config(path: Path, wiring: object) -> None:
+    _write_toml(
+        path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {"model": "m", "api_key": "k"},
+            },
+            "agent": {"system_prompt": "s", "wiring": wiring},
+        },
+    )
+
+
 def test_config_load_reads_wiring_block(tmp_path: Path):
     cfg_path = tmp_path / "config.toml"
     _write_toml(
@@ -98,6 +111,33 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
     assert cfg.wiring.context == "default"
     assert cfg.wiring.memory == "default"
     assert cfg.wiring.toolsets == ["schedule", "mcp"]
+
+
+@pytest.mark.parametrize("toolsets", ["schedule", [1, 2], ["schedule", ""]])
+def test_config_load_rejects_invalid_wiring_toolsets(
+    tmp_path: Path,
+    toolsets: object,
+):
+    cfg_path = tmp_path / "config.toml"
+    _write_wiring_config(cfg_path, {"toolsets": toolsets})
+
+    with pytest.raises(ValueError, match="agent.wiring.toolsets 必须是字符串数组"):
+        Config.load(cfg_path)
+
+
+def test_config_load_preserves_empty_wiring_toolsets(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_wiring_config(cfg_path, {"toolsets": []})
+
+    assert Config.load(cfg_path).wiring.toolsets == []
+
+
+def test_config_load_rejects_invalid_wiring_table(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    _write_wiring_config(cfg_path, "invalid")
+
+    with pytest.raises(ValueError, match="agent.wiring 必须是 TOML table"):
+        Config.load(cfg_path)
 
 
 def test_config_load_reads_memory_engine_selector(tmp_path: Path):
