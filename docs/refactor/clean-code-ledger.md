@@ -191,6 +191,20 @@
 - 验证结果：相关 plugin 测试 `142 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
 - 残余风险：已有非 object KV 文件会在首次读取时显式失败，需要插件作者修复数据。
 
+### `9d449162` `fix(session): 校验缓存向量维度`
+
+- 范围：`MessageEmbeddingStore` 的向量写入与 `sessions.db` 缓存反序列化边界。
+- 历史依据：PR #109 引入共享 message embedding cache，要求 cache hit 表示可直接复用的完整向量。
+- 原问题：写入允许空 embedding；读取忽略持久化 `dim`，空 BLOB 会被错误计为 cache hit，BLOB/dim 不一致会按实际字节静默解码。
+- 为什么这样修改：upsert 拒绝空向量；读取统一校验 BLOB 类型、正整数 dim 和 `len(blob) == dim * 4`，错误携带 message/model/dim/bytes。
+- 不变量与拥有层：非空向量由 upsert 写边界拥有；持久化 BLOB/dim 一致性由读取边界拥有；元素数值错误继续由 `struct.pack` fail-loud，不重复检查。
+- 能力变化：合法 cache、content hash miss、时间 cutoff、replay 顺序和 legacy migration 不变；空向量和损坏缓存变为即时失败。
+- 性能变化：SQL 次数不变，正常读取增加常数级类型与长度比较，不宣称提速。
+- 测试新增：空 embedding 写入拒绝且无缓存残留；空 BLOB 和维度/字节不一致覆盖 get/list/list_until。
+- 测试删除及原因：无。
+- 验证结果：Akasha/replay 相关 `84 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：已有损坏 cache 会阻止 replay，需删除或重建对应缓存；这是避免错误 cache hit 的预期行为。
+
 ### `<commit>` `<title>`
 
 - 范围：
