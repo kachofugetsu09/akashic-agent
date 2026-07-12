@@ -72,6 +72,46 @@ def test_akasha_config_does_not_expose_dynamic_budget_limits(tmp_path: Path) -> 
     assert "activate_limit" not in rendered
 
 
+def test_akasha_config_uses_defaults_only_for_missing_fields(tmp_path: Path) -> None:
+    assert load_akasha_config(plugin_dir=tmp_path) == AkashaConfig()
+
+    (tmp_path / "config.local.toml").write_text(
+        'inject_max_chars = "7000"\nactivation_threshold = "0.3"\n',
+        encoding="utf-8",
+    )
+    config = load_akasha_config(plugin_dir=tmp_path)
+
+    assert config.inject_max_chars == 7000
+    assert config.activation_threshold == 0.3
+    assert config.assistant_preview_chars == AkashaConfig().assistant_preview_chars
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("db_path", "42"),
+        ("inject_max_chars", '"many"'),
+        ("assistant_preview_chars", "1.5"),
+        ("nearby_time_seconds", "true"),
+        ("activation_threshold", "nan"),
+        ("dense_seed_threshold", "true"),
+        ("cross_boost", "[]"),
+    ],
+)
+def test_akasha_config_rejects_invalid_present_fields(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    (tmp_path / "config.local.toml").write_text(
+        f"{field} = {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=field):
+        load_akasha_config(plugin_dir=tmp_path)
+
+
 def test_akasha_dashboard_exposes_invalid_plugin_config(tmp_path: Path) -> None:
     (tmp_path / "config.local.toml").write_text("db_path = [", encoding="utf-8")
 

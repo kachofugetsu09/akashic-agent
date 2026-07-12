@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import cast
 
@@ -31,16 +32,16 @@ def load_akasha_config(
 
     # 2. 把 TOML 字段收敛成强类型配置。
     return AkashaConfig(
-        db_path=str(payload.get("db_path") or ""),
-        inject_max_chars=_int_value(payload.get("inject_max_chars"), 6000),
-        assistant_preview_chars=_int_value(payload.get("assistant_preview_chars"), 0),
-        dense_seed_threshold=_float_value(payload.get("dense_seed_threshold"), 0.675),
-        nearby_time_seconds=_int_value(payload.get("nearby_time_seconds"), 1800),
-        nearby_dense_threshold=_float_value(payload.get("nearby_dense_threshold"), 0.28),
-        activation_threshold=_float_value(payload.get("activation_threshold"), 0.22),
-        soft_recall_threshold=_float_value(payload.get("soft_recall_threshold"), 0.165),
-        soft_recall_direct_floor=_float_value(payload.get("soft_recall_direct_floor"), 0.45),
-        cross_boost=_float_value(payload.get("cross_boost"), 36.0),
+        db_path=_string_value(payload, "db_path", ""),
+        inject_max_chars=_int_value(payload, "inject_max_chars", 6000),
+        assistant_preview_chars=_int_value(payload, "assistant_preview_chars", 0),
+        dense_seed_threshold=_float_value(payload, "dense_seed_threshold", 0.675),
+        nearby_time_seconds=_int_value(payload, "nearby_time_seconds", 1800),
+        nearby_dense_threshold=_float_value(payload, "nearby_dense_threshold", 0.28),
+        activation_threshold=_float_value(payload, "activation_threshold", 0.22),
+        soft_recall_threshold=_float_value(payload, "soft_recall_threshold", 0.165),
+        soft_recall_direct_floor=_float_value(payload, "soft_recall_direct_floor", 0.45),
+        cross_boost=_float_value(payload, "cross_boost", 36.0),
     )
 
 
@@ -96,27 +97,49 @@ def _read_toml(path: Path) -> dict[str, object]:
     return cast(dict[str, object], tomllib.loads(path.read_text(encoding="utf-8")))
 
 
-# 把配置值转换成 int。
-def _int_value(value: object, default: int) -> int:
-    # 1. 支持 TOML 数字和字符串数字。
+# 读取字符串配置，缺失字段使用默认值。
+def _string_value(payload: dict[str, object], key: str, default: str) -> str:
+    if key not in payload:
+        return default
+    value = payload[key]
+    if isinstance(value, str):
+        return value
+    raise ValueError(f"Akasha 配置 {key} 必须是字符串，实际为 {value!r}")
+
+
+# 读取整数配置，缺失字段使用默认值。
+def _int_value(payload: dict[str, object], key: str, default: int) -> int:
+    if key not in payload:
+        return default
+    value = payload[key]
+    if isinstance(value, bool):
+        raise ValueError(f"Akasha 配置 {key} 必须是整数，实际为 {value!r}")
     if isinstance(value, int):
         return value
-    if isinstance(value, str | float):
+    if isinstance(value, float):
+        if isfinite(value) and value.is_integer():
+            return int(value)
+    elif isinstance(value, str):
         try:
             return int(value)
-        except (TypeError, ValueError):
-            return default
-    return default
-
-
-# 把配置值转换成 float。
-def _float_value(value: object, default: float) -> float:
-    # 1. 支持 TOML 数字和字符串数字。
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
         except ValueError:
-            return default
-    return default
+            pass
+    raise ValueError(f"Akasha 配置 {key} 必须是整数，实际为 {value!r}")
+
+
+# 读取浮点配置，缺失字段使用默认值。
+def _float_value(payload: dict[str, object], key: str, default: float) -> float:
+    if key not in payload:
+        return default
+    value = payload[key]
+    if isinstance(value, bool):
+        raise ValueError(f"Akasha 配置 {key} 必须是数字，实际为 {value!r}")
+    if isinstance(value, int | float | str):
+        try:
+            parsed = float(value)
+        except ValueError:
+            pass
+        else:
+            if isfinite(parsed):
+                return parsed
+    raise ValueError(f"Akasha 配置 {key} 必须是有限数字，实际为 {value!r}")
