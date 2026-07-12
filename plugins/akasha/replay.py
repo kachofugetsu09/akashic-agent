@@ -47,6 +47,7 @@ from plugins.akasha.engine import (
     _load_turn_card,
     _query_log_id,
     _sort_cards_by_time,
+    _source_refs,
 )
 CONTEXT_QUERY_LIMIT = 8
 
@@ -493,17 +494,6 @@ def _format_context_block(
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + f"\n...[Akasha 已截断 {len(text) - max_chars} 字]"
-
-
-def _source_refs(
-    dense_cards: list[AkashaCard],
-    ripple_cards: list[AkashaCard],
-) -> set[str]:
-    refs: set[str] = set()
-    for card in [*dense_cards, *ripple_cards]:
-        for item in json.loads(card.source_ref):
-            refs.add(str(item))
-    return refs
 
 
 def _card_to_log_item(card: AkashaCard) -> dict[str, object]:

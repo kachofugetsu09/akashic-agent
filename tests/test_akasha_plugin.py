@@ -25,6 +25,7 @@ from plugins.akasha.config import AkashaConfig, load_akasha_config, render_akash
 from plugins.akasha.dashboard import register as register_akasha_dashboard
 from plugins.akasha.engine import (
     ActivationTrace,
+    AkashaCard,
     AkashaCandidate,
     AkashaMemoryEngine,
     PendingActivation,
@@ -1485,6 +1486,50 @@ def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None
 
     assert total == 2
     assert {item["intent"] for item in items} == {"context", "answer"}
+
+
+def test_live_query_log_rejects_invalid_internal_source_ref(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._store = store
+    engine._session_db_path = tmp_path / "sessions.db"
+    engine._akasha_config = AkashaConfig()
+    result = _AkashaRetrieval(
+        dense_items=[],
+        ripple_items=[],
+        activation_items=[],
+        trace=ActivationTrace(seed_count=1, pool_count=1),
+        seq=2,
+    )
+    invalid_card = AkashaCard(
+        key="s:0",
+        source_ref="not-json",
+        user_message="历史消息",
+        assistant_preview="",
+        happened_at=QUERY_TS.isoformat(),
+        score=0.8,
+        lane="dense",
+        signals={},
+    )
+    try:
+        with pytest.raises(json.JSONDecodeError):
+            engine._write_query_log(
+                request=MemoryQuery(
+                    text="当前问题",
+                    intent="context",
+                    scope=MemoryScope(session_key="s"),
+                    timestamp=QUERY_TS,
+                ),
+                result=result,
+                seq=2,
+                dense_cards=[invalid_card],
+                ripple_cards=[],
+                text_block="",
+            )
+        _, total = store.list_query_logs(session_key="s", page=1, page_size=10)
+        assert total == 0
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio

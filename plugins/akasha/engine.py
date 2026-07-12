@@ -1058,19 +1058,7 @@ class AkashaMemoryEngine:
         text_block: str,
     ) -> None:
         # 1. 收集 source_ref 去重统计。
-        all_source_refs: set[str] = set()
-        for card in dense_cards:
-            try:
-                for ref in json.loads(card.source_ref):
-                    all_source_refs.add(str(ref))
-            except Exception:
-                pass
-        for card in ripple_cards:
-            try:
-                for ref in json.loads(card.source_ref):
-                    all_source_refs.add(str(ref))
-            except Exception:
-                pass
+        all_source_refs = _source_refs(dense_cards, ripple_cards)
 
         # 2. 批量读取 activation_items 的消息内容，填充 user_message / assistant_preview。
         session_db_path = getattr(self, "_session_db_path", None) or Path("")
@@ -1471,6 +1459,17 @@ def _normalize_card_text(text: str) -> str:
 def _card_dedupe_key(card: AkashaCard) -> tuple[str, str]:
     # 1. 同一句历史消息可能在不同 turn 重复出现，展示时只保留最高分。
     return _normalize_card_text(card.user_message), _normalize_card_text(card.assistant_preview)
+
+
+def _source_refs(
+    dense_cards: list[AkashaCard],
+    ripple_cards: list[AkashaCard],
+) -> set[str]:
+    refs: set[str] = set()
+    for card in [*dense_cards, *ripple_cards]:
+        for item in json.loads(card.source_ref):
+            refs.add(str(item))
+    return refs
 
 
 def _card_ts(card: AkashaCard) -> float:
