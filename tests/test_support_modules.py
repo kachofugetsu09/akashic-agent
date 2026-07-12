@@ -801,6 +801,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert stamped_message.startswith("[当前消息时间:")
     assert "[附加媒体]" in stamped_message
     assert f"- 文件路径: {document}" in stamped_message
+    assert f"- 不可用媒体路径: {tmp_path / 'bad.txt'}" in stamped_message
     assert "request_time=" in stamped_message
     assert "今天=" in stamped_message
     assert "昨天=" in stamped_message
@@ -864,7 +865,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         ContextRequest(
             history=[],
             current_message="看看这张图",
-            media=[str(image), str(document)],
+            media=[str(image), str(document), str(tmp_path / "bad.txt")],
             skill_names=["extra"],
             message_timestamp=now,
         )
@@ -873,8 +874,20 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert isinstance(text_media_content, str)
     assert str(image) in text_media_content
     assert str(document) in text_media_content
+    assert f"- 不可用媒体路径: {tmp_path / 'bad.txt'}" in text_media_content
     assert "read_image_vision" in text_media_content
     assert "image_url" not in text_media_content
+
+    missing_media_content = text_media_builder.render(
+        ContextRequest(
+            history=[],
+            current_message="附件呢",
+            media=[str(tmp_path / "bad.txt")],
+        )
+    ).messages[-1]["content"]
+    assert f"- 不可用媒体路径: {tmp_path / 'bad.txt'}" in missing_media_content
+    assert "没有可供 read_image_vision 读取的本地图片" in missing_media_content
+    assert "read_image_vision(path=" not in missing_media_content
 
 
 def test_context_builder_reproduces_temporal_conflict_baseline(
