@@ -271,6 +271,13 @@ class ToolRegistry:
             return view.get_documents()
         return list(self._documents.values())
 
+    def get_document(self, name: str) -> ToolDocument | None:
+        """返回指定工具的索引文档。"""
+        view = self._runtime_view()
+        if view is not self:
+            return view.get_document(name)
+        return self._documents.get(name)
+
     def get_deferred_names(
         self, visible: set[str] | None = None
     ) -> dict[str, object]:
