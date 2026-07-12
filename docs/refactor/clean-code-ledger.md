@@ -766,4 +766,18 @@
 - 测试新增：poller 首次刷新屏障、持续刷新、失败可见与下一轮恢复。
 - 测试删除及原因：删除未接线且吞掉启动错误的 `startup_force_poll()` 死代码；未删除行为测试。
 - 验证结果：Feed 插件 `11 passed`；pyright `0 errors, 0 warnings`；GitHub 已推送；`plugin-install` 安装 1.2.0；运行进程切换到 1.2.0；首次自刷新 32/32 成功，Tibo 源解析 19 条并新增 2 条，`last_polled_at` 推进到 2026-07-12 18:59 UTC。
-- 残余风险：Steam MCP 在线状态实时读取，但历史游戏时长 snapshot 仍只由手动工具更新，属于已确认的部分同类问题；Calendar 每次读取实时查询 Google API，Fitbit managed service 已自行轮询，二者不存在本次旧缓存问题。
+- 残余风险：同轮审计发现 Steam 历史 snapshot 的部分同类问题，已由下一条记录修复；Calendar 每次读取实时查询 Google API，Fitbit managed service 已自行轮询，二者不存在本次旧缓存问题。
+
+### 外部插件 `326c055` `fix(steam): refresh proactive snapshots on demand`
+
+- 范围：canonical Steam 插件 `/mnt/data/coding/akashic-plugin/steam-mcp`、GitHub `akashic-plugins/steam-mcp` 与安装版本 `steam@github 1.1.0`。
+- 历史依据：Steam proactive source 的在线状态每次实时查询，但历史游戏时长只由手动 `take_steam_snapshot` 更新；运行数据库最后快照停在 2026-06-06。
+- 原问题：`get_steam_context` 每约 5 分钟读取相同旧 snapshot；仓库没有定时调用者。即使新增定时调用，空的最近游玩列表也不会写任何行，下一轮仍会判断为从未成功刷新。
+- 为什么这样修改：Steam context owner 在读取前检查 snapshot run 的 TTL，超过 6 小时才调用一次 Recently Played API；独立 `snapshot_runs` 表记录包括空结果在内的成功刷新批次。
+- 不变量与拥有层：Steam MCP 拥有实时状态和历史快照 freshness；wake 只读取结构化 context。配置 JSON 损坏在读取边界 fail-loud；远端快照刷新失败保留实时状态并通过 `snapshot_refresh_error` 显式降级。
+- 能力变化：实时 online/in-game 查询、两周与历史时长对比、wake presence/transition 保持；旧快照自动恢复刷新，空列表不再造成重复请求。
+- 性能变化：wake 仍每轮查询轻量在线状态；Recently Played API 由过去“永不自动调用”变为最多每 6 小时一次，同 TTL 内只读 SQLite。
+- 测试新增：过期快照只刷新一次、空快照记录成功批次、刷新失败可见、TTL 内跳过刷新。
+- 测试删除及原因：无。
+- 验证结果：Steam 插件 `7 passed`；pyright `0 errors, 0 warnings`；GitHub main 已推送；安装 1.1.0；真实 context 刷新成功，freshness `0.0h`、2 个近期游戏、无刷新错误；旧 1.0.0 generation 排空后仅保留 1.1.0 MCP 进程。
+- 残余风险：Recently Played 和 Player Summary 是两个独立 Steam API 请求；其中一条失败时 context 会明确区分 snapshot 与 realtime 的降级状态，不提供跨 API 原子快照。
