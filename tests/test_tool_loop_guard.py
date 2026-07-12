@@ -393,6 +393,21 @@ def test_subagent_propagates_provider_failure():
     assert subagent.last_exit_reason == "error"
 
 
+def test_subagent_rejects_empty_final_result():
+    subagent = SubAgent(
+        provider=cast(
+            Any,
+            _FakeProvider([LLMResponse(content="   ", tool_calls=[])]),
+        ),
+        model="m",
+        tools=[],
+    )
+
+    with pytest.raises(RuntimeError, match="SubAgent 模型未返回结果"):
+        asyncio.run(subagent.run("do work"))
+    assert subagent.last_exit_reason == "error"
+
+
 def test_subagent_breaks_on_repeated_multi_tool_batch_with_closed_chain():
     tool_a = _DummyTool("a")
     tool_b = _DummyTool("b")

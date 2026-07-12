@@ -180,9 +180,13 @@ class SubAgent:
                 raise
 
             if not response.tool_calls:
+                result = (response.content or "").strip()
+                if not result:
+                    self.last_exit_reason = "error"
+                    raise RuntimeError("SubAgent 模型未返回结果")
                 logger.info("[subagent] 任务完成 iterations=%d", iteration + 1)
                 self.last_exit_reason = "completed"
-                return (response.content or "").strip()
+                return result
 
             # 追加 assistant 消息（含 tool_calls）
             append_assistant_tool_calls(
