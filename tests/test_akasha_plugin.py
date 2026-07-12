@@ -365,6 +365,64 @@ def test_message_embedding_store_reuses_only_matching_content(tmp_path: Path) ->
         store.close()
 
 
+def test_message_embedding_store_rejects_empty_vector_before_write(
+    tmp_path: Path,
+) -> None:
+    store = MessageEmbeddingStore(tmp_path / "sessions.db")
+    try:
+        with pytest.raises(ValueError, match="消息向量不能为空"):
+            store.upsert(
+                message_id="s:0",
+                content="原始内容",
+                model="m",
+                embedding=[],
+            )
+
+        assert store.get(message_id="s:0", content="原始内容", model="m") is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("blob", "dim"),
+    [
+        (b"", 2),
+        (b"\x00" * 8, 3),
+    ],
+)
+def test_message_embedding_store_rejects_corrupt_vectors(
+    tmp_path: Path,
+    blob: bytes,
+    dim: int,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    store = MessageEmbeddingStore(db_path)
+    try:
+        content = "第一条用户消息需要完整展示"
+        store.upsert(
+            message_id="s:0",
+            content=content,
+            model="m",
+            embedding=[1.0, 2.0],
+        )
+        store._db.execute(
+            "UPDATE message_embeddings SET embedding = ?, dim = ? "
+            "WHERE message_id = ? AND model = ?",
+            (blob, dim, "s:0", "m"),
+        )
+        store._db.commit()
+
+        with pytest.raises(ValueError, match=r"message_id=s:0 model=m"):
+            store.get(message_id="s:0", content=content, model="m")
+        with pytest.raises(ValueError, match=r"message_id=s:0 model=m"):
+            store.list(model="m")
+        with pytest.raises(ValueError, match=r"message_id=s:0 model=m"):
+            store.list_until(model="m", cutoff="2026-01-01T00:00:01+00:00")
+    finally:
+        store.close()
+
+
 def test_message_embedding_store_lists_only_messages_visible_at_cutoff(
     tmp_path: Path,
 ) -> None:

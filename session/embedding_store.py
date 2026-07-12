@@ -68,7 +68,7 @@ class MessageEmbeddingStore:
         with self._lock:
             row = self._db.execute(
                 """
-                SELECT embedding
+                SELECT embedding, dim
                 FROM message_embeddings
                 WHERE message_id = ? AND model = ? AND content_hash = ?
                 """,
@@ -76,7 +76,12 @@ class MessageEmbeddingStore:
             ).fetchone()
         if row is None:
             return None
-        return _deserialize_f32(row["embedding"])
+        return _deserialize_f32(
+            row["embedding"],
+            expected_dim=row["dim"],
+            message_id=message_id,
+            model=model,
+        )
 
     def upsert(
         self,
@@ -86,6 +91,8 @@ class MessageEmbeddingStore:
         model: str,
         embedding: list[float],
     ) -> None:
+        if not embedding:
+            raise ValueError("消息向量不能为空")
         blob = _serialize_f32(embedding)
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
@@ -122,6 +129,7 @@ class MessageEmbeddingStore:
                     embedding.message_id,
                     embedding.content_hash,
                     embedding.embedding,
+                    embedding.dim,
                     message.content
                 FROM message_embeddings embedding
                 INNER JOIN messages message ON message.id = embedding.message_id
@@ -130,7 +138,15 @@ class MessageEmbeddingStore:
                 (model,),
             ).fetchall()
         return [
-            (str(row["message_id"]), _deserialize_f32(row["embedding"]))
+            (
+                str(row["message_id"]),
+                _deserialize_f32(
+                    row["embedding"],
+                    expected_dim=row["dim"],
+                    message_id=str(row["message_id"]),
+                    model=model,
+                ),
+            )
             for row in rows
             if str(row["content_hash"])
             == _content_hash(str(row["content"] or ""))
@@ -151,6 +167,7 @@ class MessageEmbeddingStore:
                     embedding.message_id,
                     embedding.content_hash,
                     embedding.embedding,
+                    embedding.dim,
                     message.content
                 FROM message_embeddings embedding
                 INNER JOIN messages message ON message.id = embedding.message_id
@@ -161,7 +178,15 @@ class MessageEmbeddingStore:
                 (model, cutoff),
             ).fetchall()
         return [
-            (str(row["message_id"]), _deserialize_f32(row["embedding"]))
+            (
+                str(row["message_id"]),
+                _deserialize_f32(
+                    row["embedding"],
+                    expected_dim=row["dim"],
+                    message_id=str(row["message_id"]),
+                    model=model,
+                ),
+            )
             for row in rows
             if str(row["content_hash"])
             == _content_hash(str(row["content"] or ""))
@@ -240,7 +265,24 @@ def _serialize_f32(embedding: list[float]) -> bytes:
     return struct.pack(f"{len(embedding)}f", *embedding)
 
 
-def _deserialize_f32(blob: bytes) -> list[float]:
-    if not blob:
-        return []
-    return list(struct.unpack(f"{len(blob) // 4}f", blob))
+def _deserialize_f32(
+    blob: object,
+    *,
+    expected_dim: object,
+    message_id: str,
+    model: str,
+) -> list[float]:
+    """校验缓存维度并反序列化一条 float32 向量。"""
+
+    if (
+        not isinstance(blob, bytes)
+        or not isinstance(expected_dim, int)
+        or expected_dim <= 0
+        or len(blob) != expected_dim * 4
+    ):
+        raise ValueError(
+            "消息向量缓存损坏: "
+            f"message_id={message_id} model={model} "
+            f"dim={expected_dim} bytes={len(blob) if isinstance(blob, bytes) else 'invalid'}"
+        )
+    return list(struct.unpack(f"{expected_dim}f", blob))
