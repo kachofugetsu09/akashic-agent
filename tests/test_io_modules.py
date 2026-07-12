@@ -392,6 +392,8 @@ async def test_ipc_server_channel_covers_connection_command_and_response(
     reader = SimpleNamespace(
         readline=AsyncMock(
             side_effect=[
+                b'[]\n',
+                b'null\n',
                 b'{"content":"hello"}\n',
                 b'{"type":"command","command":"noop"}\n',
                 b'{"type":"command","command":"unknown"}\n',

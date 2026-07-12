@@ -13,7 +13,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agent.config import _normalize_cli_socket_endpoint
 from bus.events import InboundMessage, OutboundMessage
@@ -113,10 +113,17 @@ class IPCServerChannel:
                 if not line:
                     break
                 try:
-                    data = json.loads(line)
+                    raw_data: object = json.loads(line)
                 except json.JSONDecodeError:
                     logger.warning("[cli] received non-JSON payload")
                     continue
+                if not isinstance(raw_data, dict):
+                    logger.warning(
+                        "[cli] received non-object JSON payload: type=%s",
+                        type(raw_data).__name__,
+                    )
+                    continue
+                data = cast(dict[str, object], raw_data)
 
                 if data.get("type") == "command":
                     await self._handle_command(data, chat_id, writer)
@@ -215,7 +222,7 @@ class IPCServerChannel:
 
 
 def _session_override_metadata(
-    data: dict,
+    data: dict[str, object],
     *,
     default_session_key: str,
 ) -> dict[str, object]:
