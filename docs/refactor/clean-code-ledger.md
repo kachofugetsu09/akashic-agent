@@ -303,6 +303,34 @@
 - 验证结果：主动相关组合 `418 passed`、dashboard `25 passed`；pyright `0 errors`；`git diff --check` 通过。
 - 残余风险：初始化本身仍执行一次 `PRAGMA table_info`，这是兼容旧库所需的一次性成本。
 
+### `0b916a57` `fix(mcp): 校验工具调用结果结构`
+
+- 范围：MCP `tools/call` 成功结果的 result/content/block/text 边界及 stdio 响应测试。
+- 历史依据：客户端固定协商 MCP `2024-11-05`；PR #107 的 timeout 透传和 PR #105 的连接/代际清理未修改。
+- 原问题：损坏 result 有时被字符串化为“成功”工具输出，有时产生无字段上下文的属性/类型错误。
+- 为什么这样修改：按已协商协议验证 result object、必需 content list、每个内容对象和 text 字符串；字段错误携带 server/tool/path/type/value 失败。
+- 不变量与拥有层：`_recv` 拥有 JSON/id；`_response_result` 拥有 result object；`McpClient.call()` 拥有 CallToolResult content schema。
+- 能力变化：标准 text block 仍拼接文本；合法 image/resource 等无 text 对象继续保持既有字典字符串；锁、超时、取消、断连和标准 error 不变。
+- 性能变化：成功响应增加线性类型校验，与原本遍历 content 同阶，不声明性能收益。
+- 测试新增：result 标量、缺失/错误 content、标量 block、非字符串 text 五条损坏路径。
+- 测试删除及原因：无。
+- 验证结果：MCP/热重载相关 `35 passed`；副手完整测试 `1519 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：合法非文本内容仍以 Python dict 字符串传给模型，这是既有表示协议，后续若需多模态 ToolResult 应独立设计。
+
+### `3f4e2645` `fix(akasha): 暴露 dashboard 配置错误`
+
+- 范围：Akasha dashboard 注册时的插件配置来源与损坏配置回归。
+- 历史依据：PR #93 的 snapshot freshness/旧坐标复用；PR #105 的 candidate 初始化/回滚边界。
+- 原问题：dashboard 忽略 runtime 传入的真实 `plugin_dir`，并捕获所有配置加载异常后退回默认配置，可能连接或创建错误 sidecar。
+- 为什么这样修改：直接从 canonical plugin_dir 调用统一配置加载器；配置不存在仍由加载器使用默认值，配置存在但 TOML 损坏/不可读则阻止注册。
+- 不变量与拥有层：外部 TOML 结构与读取由 `load_akasha_config` 拥有；dashboard 没有推导正确 DB 路径的恢复能力。
+- 能力变化：合法配置和缺失配置默认值不变；损坏配置从静默换库变为原始配置错误；recall/replay/snapshot 算法未触及。
+- 性能变化：删除一层 helper 和异常分支，无性能声明。
+- 测试新增：真实非法 TOML 在 dashboard 注册时传播 `TOMLDecodeError`。
+- 测试删除及原因：无。
+- 验证结果：Akasha/dashboard 相关 `38 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：配置字段的数值转换仍有历史默认策略，需要按字段契约另行审计。
+
 ### `<commit>` `<title>`
 
 - 范围：
