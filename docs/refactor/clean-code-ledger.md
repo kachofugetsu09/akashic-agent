@@ -807,3 +807,16 @@
 - 测试删除及原因：无；旧 MCP 夹具补齐协议要求的 `type=text`。
 - 验证结果：副手定向 `212 passed`、全量 `1632 passed`、pyright `0 errors`；主线合入后 MCP/IO 定向 `52 passed`，`git diff --check` 通过。
 - 残余风险：客户端仍固定协商 `2024-11-05`；未来协议升级必须单独实现版本协商与新增 content union，不能在旧版本路径静默兼容。
+
+### `61fba5be` `fix(channels): close resources and validate message boundaries`
+
+- 范围：WebChat 外部消息、IPC server/client 生命周期、附件降级、渠道身份索引与 Telegram live-task 索引。
+- 原问题：WebChat 强转坏 text 并静默丢弃坏 media 元素；IPC 构造时永久订阅且 stop 不关闭客户端，Unix chmod 失败会遗留已绑定 server/socket；身份保存失败会留下未持久化内存路由；Telegram 每个完成任务扫描全部 session 并永久保留空集合；附件 fallback 吞掉所有异常且无降级日志。
+- 为什么这样修改：外部字段在 WebSocket 边界一次性严格校验；IPC 成功启动后才提交 server/subscription，停止前同步转移并 close 全部 ownership，再等待所有资源并重新抛首个 `OSError`；identity mapping 只在持久化成功后提交；任务回调按所属 session O(1) 清理；附件仅对 `OSError` 保留有日志的 `/tmp` 降级。
+- 不变量与拥有层：WebChat 拥有帧 schema；IPC channel 拥有 server、writers 与 outbound subscription；SessionIdentityIndex 拥有 metadata/mapping 一致性；Telegram channel 拥有 live-task 索引；AttachmentStore 拥有文件系统降级。
+- 能力变化：合法 WebChat、IPC、Telegram、附件上传和身份路由保持；坏帧返回明确 error 且连接可继续；IPC 启停失败不留订阅或客户端 ownership，多个关闭错误完成清理后 fail-loud。
+- 性能变化：Telegram 完成回调由 O(session 数) 降为 O(1)，并删除空 session 集合；其余仅边界/生命周期常数级操作，无量化收益声明。
+- 测试新增：WebChat 三类坏字段与连接续用、Unix chmod 失败事务回滚、server/writer wait 失败仍清理其余资源、IPC 正常 stop、identity 保存回滚、Telegram 空索引回收、附件 fallback 日志。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `45 passed`、全量 `1628 passed`、pyright `0 errors`；主线合入后 channels/MCP 交叉定向 `69 passed`，`git diff --check` 通过。
+- 残余风险：未改变 MessageBus 既有重试、FIFO、背压与取消策略；QQ/Telegram 外部 API 的独立错误策略需按具体调用链继续审阅。
