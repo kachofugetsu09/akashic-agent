@@ -275,6 +275,34 @@
 - 验证结果：`tests/test_akasha_plugin.py` `37 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
 - 残余风险：大批次仍逐 ID 执行 SQL，避免参数上限但持锁时间随批量线性增长；这是相对原实现更短的同量工作。
 
+### `c1d37dbd` `fix(mcp): 拒绝非对象调用错误`
+
+- 范围：`McpClient.call()` 的 JSON-RPC `tools/call` error 边界和真实 stdio 响应测试。
+- 历史依据：PR #105 的 MCP generation/连接清理；PR #107 的 180 秒超时贯通；PR #89 的取消边界均未触及。
+- 原问题：代码无条件对 `error` 调用 `.get()`；非对象合法 JSON 会产生无 server/tool 上下文的 `AttributeError`。
+- 为什么这样修改：JSON-RPC error 必须是 object；标准对象保持既有用户可见字符串，字符串/列表等协议损坏携带 server、tool、类型和值抛出 `RuntimeError`，不归一化为普通工具失败。
+- 不变量与拥有层：JSON 解码和 response id 由 `_recv` 拥有；tools/call error schema 与用户可见转换由 `McpClient.call()` 拥有。
+- 能力变化：正常 content、标准远端错误、同 server 串行、timeout/cancel/disconnect 不变；损坏 error 从偶发属性错误变为有上下文的 fail-loud。
+- 性能变化：仅错误路径增加常数级类型判断，不声明性能收益。
+- 测试新增：标准 error object，以及字符串/列表 error 的拒绝和上下文断言。
+- 测试删除及原因：无。
+- 验证结果：MCP/热重载相关 `30 passed`；副手完整测试 `1508 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：标准 object 内部字段继续保持既有宽松展示，不在本提交扩大协议迁移范围。
+
+### `8181bd51` `perf(proactive): 初始化时完成日志迁移`
+
+- 范围：`ProactiveStateStore` tick log schema 迁移、finish 热路径及真实 SQLite 测试。
+- 历史依据：PR #103/#109 的主动 tick 与事件流架构；迁移不改变 phase/order、delivery/feedback、hot reload 或 MCP poll。
+- 原问题：每次 tick finish 都执行 `PRAGMA table_info(tick_log)`，但 schema 在一个 store 生命周期内只可能由初始化改变。
+- 为什么这样修改：把旧库 `proactive_effects_json` 补列放入 `_init_schema()` 的建表事务；业务写入信任初始化后的 schema。
+- 不变量与拥有层：finish 前列必须存在，该不变量由 `ProactiveStateStore._init_schema()` 唯一拥有；业务写入不重复验证。
+- 能力变化：新库、旧库迁移、tick log JSON、dashboard 查询和提交时机不变；旧库在首次初始化即完成迁移。
+- 性能变化：10 次 finish 的 schema 查询 `10 → 0`；包含初始化则 `10 → 1`，总数减少 90%，热路径减少 100%。
+- 测试新增：真实旧 schema 初始化补列并写入；SQLite trace 断言连续 finish 不再查询 schema。
+- 测试删除及原因：无。
+- 验证结果：主动相关组合 `418 passed`、dashboard `25 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：初始化本身仍执行一次 `PRAGMA table_info`，这是兼容旧库所需的一次性成本。
+
 ### `<commit>` `<title>`
 
 - 范围：
