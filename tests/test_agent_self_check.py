@@ -13,6 +13,7 @@ from prompts.agent import build_current_message_time_envelope
 import agent.looping.core as loop_core
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
+from bus.queue import MessageBus
 from core.memory.markdown import ConsolidateResult
 from core.memory.runtime import MemoryRuntime
 from tests.memory_fakes import FakeMemoryEngine
@@ -29,7 +30,7 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
     )
     return AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=MagicMock(),
             tools=MagicMock(),
             session_manager=MagicMock(),

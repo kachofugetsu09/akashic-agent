@@ -9,6 +9,7 @@ from agent.provider import LLMResponse
 from agent.tools.registry import ToolRegistry
 from bus.events import SpawnCompletionItem
 from bus.internal_events import SpawnCompletionEvent
+from bus.queue import MessageBus
 from tests.memory_fakes import FakeMemoryEngine
 from session.manager import SessionManager
 
@@ -29,7 +30,7 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
     tools = ToolRegistry()
     loop = AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, provider),
             tools=tools,
             session_manager=session_manager,
@@ -80,7 +81,7 @@ async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path
     tools = ToolRegistry()
     loop = AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, provider),
             tools=tools,
             session_manager=session_manager,

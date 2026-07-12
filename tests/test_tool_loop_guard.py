@@ -7,6 +7,7 @@ import pytest
 
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryServices
+from bus.queue import MessageBus
 from agent.provider import LLMResponse, ToolCall
 from agent.subagent import SubAgent
 from agent.tool_hooks.base import ToolHook
@@ -190,7 +191,7 @@ def _make_agent_loop_with_tools(
         tools.register(tool)
     loop = AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, provider),
             tools=tools,
             session_manager=MagicMock(),
@@ -659,7 +660,7 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
     tools.register(t2)
     loop = AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, provider),
             tools=tools,
             session_manager=MagicMock(),
