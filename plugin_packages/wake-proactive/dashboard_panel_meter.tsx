@@ -102,7 +102,8 @@ function MeterPage(): ReactElement {
       <div><span><i className="tone-cobalt" />持续蓄积</span><strong>{data.hazard_after.toFixed(3)}</strong></div>
       <div><span><i className="tone-amber" />瞬时兴趣推力</span><strong>{data.preference_pressure.toFixed(3)}</strong></div>
       <div><span>未读内容</span><strong>{data.unread_count}</strong><small>{data.candidate_count} 条参与本轮</small></div>
-      <div><span>最近判断</span><strong>{data.last_action || "尚未触发"}</strong><small>{shortTime(data.evaluated_at)}</small></div>
+      <div><span>最近计算</span><strong>{shortTime(data.evaluated_at)}</strong><small>{data.candidate_count} 条已计算</small></div>
+      <div><span>最近 LLM 判断</span><strong>{data.last_action || "尚未触发"}</strong><small>{shortTime(data.last_action_at)}</small></div>
     </Stack>
     <footer className="meter-footnote">
       <span>越线只代表允许唤醒 LLM 判断，不等于一定推送。</span>

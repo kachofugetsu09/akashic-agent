@@ -10,7 +10,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable, Literal, cast
 
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from core.clock import Clock, ReplayClock, clock_from_env
@@ -18,6 +18,11 @@ from plugins.wake_proactive.context import WakeContext
 from plugins.wake_proactive.context_drive import ContextDriveResult, NormalizedContext
 from plugins.wake_proactive.drift_drive import DriftDriveResult, advance_drift_drive
 from plugins.wake_proactive.drift_prompt import build_drift_messages
+from plugins.wake_proactive.event_tools import (
+    EVENT_TOOL_SCHEMAS,
+    EventToolResult,
+    execute_event_tool,
+)
 from plugins.wake_proactive.hazard import (
     WAKE_ADMISSION_FLOOR,
     HazardResult,
@@ -39,7 +44,7 @@ _MAX_HAZARD_THRESHOLD = 2.0
 _SEMANTIC_CALIBRATION_POWER = 4
 _SCHEMA_BY_NAME = {
     schema["function"]["name"]: schema
-    for schema in TOOL_SCHEMAS
+    for schema in [*TOOL_SCHEMAS, *EVENT_TOOL_SCHEMAS]
 }
 
 
@@ -62,8 +67,10 @@ class WakeRunState:
     hazard_result: HazardResult | None = None
     context_results: list[ContextDriveResult] | None = None
     context_reevaluate: bool = False
+    context_event: dict[str, Any] | None = None
     drift_result: DriftDriveResult | None = None
     content_completed: bool = False
+    new_alert_count: int = 0
     new_content_count: int = 0
 
 
@@ -134,40 +141,100 @@ class WakeRuntime:
         )
 
     async def ingest(self, state: WakeRunState) -> None:
+        """拉取三类 source，持久化新事件并输出一条可读摘要。"""
+
+        # 1. 拉取所有 source，并刷新本轮运行状态
         await self._flush_pending_acknowledgements()
-        channels = await mcp_sources.fetch_sources_async(
-            self._scope.mcp_gateway,
-            self._scope.proactive_sources,
-        )
-        _ = self._state.ingest("alert", channels["alert"], state.ctx.now_utc)
-        state.new_content_count = self._state.ingest(
-            "content", channels["content"], state.ctx.now_utc
-        )
-        state.context_results = self._state.ingest_context(
-            channels["context"], state.ctx.now_utc
-        )
-        has_context_transition = any(
-            result.signal == "reevaluate" for result in state.context_results
-        )
-        state.context_reevaluate = (
-            self._state.claim_context_reevaluation(state.ctx.now_utc)
-            if has_context_transition
-            else False
-        )
-        state.alerts = self._state.unread("alert")
-        state.contents = self._state.unread("content")
+        channels = await self._fetch_source_channels()
+        self._ingest_source_channels(state, channels)
+        self._log_source_summary(state, channels)
+
+        # 2. Alert 不依赖内容向量；普通轮次再刷新内容兴趣
         if state.alerts:
             return
         await self._cache_event_embeddings()
         state.contents = self._state.unread("content")
         self._apply_semantic_interest(state.contents, state.ctx.now_utc)
 
+    async def _fetch_source_channels(self) -> dict[str, list[dict[str, Any]]]:
+        """拉取所有 source；全量失败时保留原始异常。"""
+
+        try:
+            return await mcp_sources.fetch_sources_async(
+                self._scope.mcp_gateway,
+                self._scope.proactive_sources,
+            )
+        except Exception:
+            logger.exception(
+                "[wake.source] poll failed sources=%d",
+                len(self._scope.proactive_sources),
+            )
+            raise
+
+    def _ingest_source_channels(
+        self,
+        state: WakeRunState,
+        channels: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        """持久化三类 source，并填充本轮单条事件状态。"""
+
+        state.new_alert_count = self._state.ingest(
+            "alert", channels["alert"], state.ctx.now_utc
+        )
+        state.new_content_count = self._state.ingest(
+            "content", channels["content"], state.ctx.now_utc
+        )
+        state.context_results = self._state.ingest_context(
+            channels["context"], state.ctx.now_utc
+        )
+        state.context_event = next(
+            (
+                snapshot
+                for snapshot, result in zip(
+                    channels["context"], state.context_results, strict=False
+                )
+                if result.signal == "reevaluate"
+            ),
+            None,
+        )
+        state.context_reevaluate = (
+            self._state.claim_context_reevaluation(state.ctx.now_utc)
+            if state.context_event is not None
+            else False
+        )
+        state.alerts = self._state.unread("alert")
+        state.contents = self._state.unread("content")
+
+    def _log_source_summary(
+        self,
+        state: WakeRunState,
+        channels: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        logger.info(
+            "[wake.source] poll ok received=alerts:%d,content:%d,context:%d "
+            "new=alerts:%d,content:%d unread=alerts:%d,content:%d "
+            "context_reevaluate=%s samples=%s",
+            len(channels["alert"]),
+            len(channels["content"]),
+            len(channels["context"]),
+            state.new_alert_count,
+            state.new_content_count,
+            len(state.alerts),
+            len(state.contents),
+            state.context_reevaluate,
+            _source_samples(channels),
+        )
+
     async def decide_content(self, state: WakeRunState) -> bool:
         if state.alerts:
-            await self._deliver_alert(state, state.alerts[0])
+            await self._decide_event(state, "alert", state.alerts[0])
             state.next_interval_seconds = (
                 1 if len(state.alerts) > 1 else self._tick_interval_seconds
             )
+            return True
+        if state.context_reevaluate and state.context_event is not None:
+            await self._decide_event(state, "context", state.context_event)
+            state.next_interval_seconds = self._tick_interval_seconds
             return True
         if state.contents:
             ranked = rank_events(state.contents, now=state.ctx.now_utc)
@@ -328,10 +395,14 @@ class WakeRuntime:
             self._tool_deps,
         )
         final_messages = [
+            base_messages[0],
             {
-                "role": "system",
+                "role": "user",
                 "content": (
-                    "标题初筛和并发调查已经完成。现在只做最终判断：调用 "
+                    f"{base_messages[1]['content']}\n\n"
+                    "【已执行的初筛与并发调查结果】\n"
+                    f"{investigation}\n\n"
+                    "【本轮最终任务】\n标题初筛和并发调查已经完成。现在只做最终判断：调用 "
                     "share_content 分享有正文证据且此刻值得告诉用户的内容，或调用 "
                     "skip_content 保持安静。通常分享一到三条；只有同时出现多个彼此独立、"
                     "都高度相关的重要变化时才可扩展到五条。不要重复标题。"
@@ -347,14 +418,6 @@ class WakeRuntime:
                     "只有当前 ContextEvent 明确支持时，才能描述用户正在睡眠、忙碌、"
                     "离线或游戏；unknown 时保持中性。唤醒只代表允许判断，不代表必须分享；"
                     "缺少新事实、用户已经知道、只有营销或泛泛观点时应调用 skip_content。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"{base_messages[1]['content']}\n\n"
-                    "【已执行的初筛与并发调查结果】\n"
-                    f"{investigation}\n\n请做最终判断。"
                 ),
             },
         ]
@@ -374,6 +437,18 @@ class WakeRuntime:
         allowed: set[str],
         forced_name: str | None,
     ) -> None:
+        call = await self._call_tool(messages, allowed, forced_name)
+        _ = await execute(call.name, call.arguments, ctx, self._tool_deps)
+
+    async def _call_tool(
+        self,
+        messages: list[dict[str, Any]],
+        allowed: set[str],
+        forced_name: str | None,
+    ) -> Any:
+        """调用一次带工具约束的 LLM，并返回经过校验的工具调用。"""
+
+        # 1. 为当前 mode 选择最小工具集合
         schemas = [_SCHEMA_BY_NAME[name] for name in sorted(allowed)]
         tool_choice: str | dict[str, Any] = "required"
         if forced_name is not None:
@@ -395,12 +470,14 @@ class WakeRuntime:
             except JSONDecodeError:
                 if attempt == 1:
                     raise
+
+        # 2. 拒绝缺失或越权的工具调用
         if not response.tool_calls:
             raise RuntimeError("wake proactive phase requires one tool call")
         call = response.tool_calls[0]
         if call.name not in allowed:
             raise RuntimeError(f"wake proactive unexpected tool in phase: {call.name}")
-        _ = await execute(call.name, call.arguments, ctx, self._tool_deps)
+        return call
 
     async def _commit_content_decision(self, state: WakeRunState) -> bool:
         events = list(state.contents)
@@ -553,24 +630,119 @@ class WakeRuntime:
         timestamped.sort(key=lambda item: (item[0], item[1], item[2]))
         return [item[3] for item in timestamped[-256:]]
 
-    async def _deliver_alert(
-        self, state: WakeRunState, alert: dict[str, Any]
+    async def _decide_event(
+        self,
+        state: WakeRunState,
+        kind: Literal["alert", "context"],
+        event: dict[str, Any],
     ) -> None:
-        title = str(alert.get("title") or "提醒").strip()
-        body = str(alert.get("content") or alert.get("body") or "").strip()
-        message = title if not body else f"{title}\n\n{body}"
-        item_id = str(alert["id"])
-        result = TurnResult(
-            decision="reply",
-            outbound=TurnOutbound(session_key=state.ctx.session_key, content=message),
-            evidence=[item_id],
-            trace=TurnTrace(source="proactive", extra={"source_refs": []}),
-            success_side_effects=[
-                AsyncEffect(lambda: self._ack_and_consume([alert], state.ctx.now_utc))
-            ],
+        """让 LLM 独立处理一条 alert 或 context，并提交发送结果。"""
+
+        # 1. 用统一 prompt 渲染单条事件并在调用前落审计
+        messages = self._build_event_messages(state, kind, event)
+        item_id = str(event.get("id") or event.get("event_id") or "")
+        self._record_event_observation(state, kind, event, item_id, messages)
+        logger.info(
+            "[wake.event] llm start kind=%s event_id=%s title=%r",
+            kind,
+            item_id,
+            str(event.get("title") or event.get("topic") or "")[:120],
         )
-        orchestrator = self._require_orchestrator()
-        await orchestrator.handle_proactive_turn(
+
+        # 2. Alert 必须自然化后发送；context 可以判断保持安静
+        allowed = {"send_event"} if kind == "alert" else {"send_event", "skip_event"}
+        call = await self._call_tool(
+            messages,
+            allowed,
+            "send_event" if kind == "alert" else None,
+        )
+        decision = execute_event_tool(call.name, call.arguments)
+        await self._commit_event_decision(state, kind, event, item_id, decision)
+        logger.info(
+            "[wake.event] llm done kind=%s event_id=%s decision=%s message=%r",
+            kind,
+            item_id,
+            decision.decision,
+            decision.message[:160],
+        )
+
+    def _build_event_messages(
+        self,
+        state: WakeRunState,
+        kind: Literal["alert", "context"],
+        event: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        return build_messages(
+            ctx=state.ctx,
+            memory_text=self._read_memory(),
+            proactive_context=str(self._scope.workspace_context_fn() or ""),
+            recent_session=self._read_recent_session(
+                state.ctx.session_key, state.ctx.now_utc
+            ),
+            current_context=self._current_context_text(state.ctx.now_utc),
+            mode=kind,
+            event=event,
+        )
+
+    def _record_event_observation(
+        self,
+        state: WakeRunState,
+        kind: Literal["alert", "context"],
+        event: dict[str, Any],
+        item_id: str,
+        messages: list[dict[str, str]],
+    ) -> None:
+        self._state.record_observation(
+            wake_id=state.ctx.wake_id,
+            session_key=state.ctx.session_key,
+            kind=kind,
+            now=state.ctx.now_utc,
+            trigger={"event_id": item_id, "source": _event_source(event)},
+            candidates=[event],
+            llm_input=messages,
+        )
+
+    async def _commit_event_decision(
+        self,
+        state: WakeRunState,
+        kind: Literal["alert", "context"],
+        event: dict[str, Any],
+        item_id: str,
+        decision: EventToolResult,
+    ) -> None:
+        """持久化单事件决策，并通过统一 orchestrator 提交副作用。"""
+
+        # 1. 保存 LLM 决策，供 Dashboard 与审计读取
+        state.ctx.terminal_action = decision.decision
+        state.ctx.final_message = decision.message
+        state.ctx.cited_item_ids = [item_id] if kind == "alert" and item_id else []
+        self._state.save(state.ctx)
+
+        # 2. 只在发送成功后消费 alert；context 不参与 reservoir ack
+        effects = (
+            [AsyncEffect(lambda: self._ack_and_consume([event], state.ctx.now_utc))]
+            if kind == "alert"
+            else []
+        )
+        result = TurnResult(
+            decision=decision.decision,
+            outbound=(
+                TurnOutbound(
+                    session_key=state.ctx.session_key,
+                    content=decision.message,
+                )
+                if decision.decision == "reply"
+                else None
+            ),
+            evidence=list(state.ctx.cited_item_ids),
+            trace=TurnTrace(
+                source="proactive",
+                extra={"source_refs": [], "event_kind": kind},
+            ),
+            side_effects=effects if decision.decision == "skip" else [],
+            success_side_effects=effects if decision.decision == "reply" else [],
+        )
+        await self._require_orchestrator().handle_proactive_turn(
             result=result,
             session_key=state.ctx.session_key,
             channel=str(getattr(self._scope.cfg, "default_channel", "")),
@@ -787,6 +959,34 @@ def _parse_optional_time(value: object) -> datetime | None:
     if value is None or not str(value).strip():
         return None
     return datetime.fromisoformat(str(value))
+
+
+def _source_samples(channels: dict[str, list[dict[str, Any]]]) -> str:
+    samples: list[str] = []
+    for kind in ("alert", "content", "context"):
+        for event in channels[kind]:
+            label = str(
+                event.get("title")
+                or event.get("topic")
+                or event.get("summary")
+                or event.get("event_id")
+                or ""
+            ).strip()
+            if label:
+                samples.append(f"{kind}:{label[:80]}")
+            if len(samples) == 3:
+                return repr(samples)
+    return repr(samples)
+
+
+def _event_source(event: dict[str, Any]) -> str:
+    return str(
+        event.get("_reservoir_original_source_id")
+        or event.get("source_id")
+        or event.get("source_name")
+        or event.get("_source")
+        or ""
+    )
 
 
 def _preprocess_interest(event: dict[str, Any]) -> float:
