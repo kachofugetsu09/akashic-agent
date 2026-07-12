@@ -794,3 +794,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `19 passed`、全量 `1619 passed`、pyright `0 errors`；主线合入后定向 `19 passed`、全量 `1619 passed`，`git diff --check` 通过。
 - 残余风险：其他独立 ContextVar 设置点仍需按各自任务生命周期审阅，不能从本次两处修复推断全仓已覆盖。
+
+### `27e1c638` `fix(mcp): enforce 2024 tool result boundaries`
+
+- 范围：MCP `tools/list`、`tools/call` 的外部 schema 与远端失败分类。
+- 原问题：缺失 `inputSchema` 会静默变成空 schema，非字符串 description 被强转；坏 content block 可能以 Python repr 当成功结果进入模型；JSON-RPC error 与 `isError=true` 都被返回为普通字符串，直接调用方无法区分成功和失败。
+- 为什么这样修改：按客户端实际协商的 `2024-11-05` 严格接受 text、image、resource 三类结果；后续版本字段明确拒绝。工具声明在 `tools/list` 边界校验，远端执行失败统一抛出带 server/tool/服务端内容的 `McpToolExecutionError`。
+- 不变量与拥有层：`McpClient` 拥有 MCP 反序列化和协议版本边界；`ToolRegistry` 继续拥有面向模型的错误日志与 `工具执行出错` 回填。边界之后的 `McpToolInfo` 和工具结果不再重复防御。
+- 能力变化：合法三类结果、stdio 串行、连接/执行 timeout、插件 generation 与热重载不变；坏 schema 不再进入工具目录，远端失败对直接调用方 fail-loud、对模型仍明确可见。
+- 性能变化：每项增加常数级字段检查，content 仍单次 O(n) 遍历；无新增 I/O、重试或缓存。
+- 测试新增：工具声明缺失/坏类型、三类有效内容、各类关键缺字段、未知与后续类型、非法 `isError`、JSON-RPC error 和 tool result error 异常。
+- 测试删除及原因：无；旧 MCP 夹具补齐协议要求的 `type=text`。
+- 验证结果：副手定向 `212 passed`、全量 `1632 passed`、pyright `0 errors`；主线合入后 MCP/IO 定向 `52 passed`，`git diff --check` 通过。
+- 残余风险：客户端仍固定协商 `2024-11-05`；未来协议升级必须单独实现版本协商与新增 content union，不能在旧版本路径静默兼容。
