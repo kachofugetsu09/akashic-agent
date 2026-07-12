@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class SpawnTool(Tool):
-    """Create a background subagent task bound to the current session."""
+    """创建绑定当前会话的子任务。"""
 
     def __init__(
         self,
@@ -170,7 +170,7 @@ subagent 没有看过当前会话。像给刚进房间的同事写交接文档�
 
 
 class SpawnManageTool(Tool):
-    """List or cancel background subagent jobs."""
+    """查询或取消后台子任务。"""
 
     def __init__(self, manager: SubagentManager) -> None:
         self._manager = manager

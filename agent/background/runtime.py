@@ -38,7 +38,7 @@ class AgentBackgroundJobResult:
 
 
 class AgentBackgroundJobRunner:
-    """Run an agent-type background job and normalize lifecycle results."""
+    """执行后台 Agent 任务，并统一完成状态与错误结果。"""
 
     def __init__(self, agent_factory: Callable[[], SubAgent]) -> None:
         self._agent_factory = agent_factory
