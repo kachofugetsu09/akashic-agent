@@ -117,7 +117,7 @@ function makeDispatch(
   };
 }
 
-function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | null>; activeSelector: string; deps: React.DependencyList }) {
+function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | null>; activeSelector: string }) {
   const [style, setStyle] = useState<React.CSSProperties>({ opacity: 0 });
 
   useEffect(() => {
@@ -160,7 +160,7 @@ function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | nul
       observer.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, props.deps);
+  }, [props.activeSelector, props.containerRef]);
 
   return <div className="magic-indicator" style={style} />;
 }
@@ -369,15 +369,19 @@ function App(): React.ReactElement {
     });
   };
 
+  const gotoSession = useEffectEvent((key: string): void => {
+    setActiveSessionKey(key);
+    setActiveMessage(null);
+    setMessagePage(1);
+    selectView("sessions");
+  });
+
   // 插件面板（如 observe 错误排障台）通过 CustomEvent 请求跳到某个 session 的对话现场。
   useEffect(() => {
     const onGoto = (e: Event): void => {
       const key = (e as CustomEvent<string>).detail;
       if (!key) return;
-      setActiveSessionKey(key);
-      setActiveMessage(null);
-      setMessagePage(1);
-      selectView("sessions");
+      gotoSession(key);
     };
     window.addEventListener("akashic:goto-session", onGoto);
     return () => window.removeEventListener("akashic:goto-session", onGoto);
@@ -526,7 +530,7 @@ function App(): React.ReactElement {
           </div>
 
           <div className="explorer-body" ref={explorerBodyRef} style={{ position: "relative" }}>
-            <MagicIndicator containerRef={explorerBodyRef} activeSelector=".active" deps={[viewMode, activeSessionKey, proactiveSection, currentPluginState?.activeRowKey]} />
+            <MagicIndicator containerRef={explorerBodyRef} activeSelector=".active" />
             {viewMode === "sessions" && (
               <>
                 <div className="filters-stack">
@@ -633,7 +637,7 @@ function App(): React.ReactElement {
               )}
               <TableHead viewMode={viewMode} plugin={currentPlugin} pluginState={currentPluginState} messageSortBy={messageSortBy} messageSortOrder={messageSortOrder} proactiveSortBy={proactiveSortBy} proactiveSortOrder={proactiveSortOrder} onSort={sort} onPluginSort={currentDispatch ? (key) => currentDispatch.setSort(key) : undefined} />
               <div className="table-body" ref={tableBodyRef} style={{ position: "relative" }}>
-                <MagicIndicator containerRef={tableBodyRef} activeSelector=".active" deps={[viewMode, activeMessage?.id, activeProactiveKey, currentPluginState?.activeRowKey]} />
+                <MagicIndicator containerRef={tableBodyRef} activeSelector=".active" />
                 <Rows
                   viewMode={viewMode}
                   messages={messages}
