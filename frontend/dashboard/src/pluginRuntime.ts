@@ -104,8 +104,8 @@ export function attachJsonViewers(container: ParentNode): void {
 }
 
 // ---------------------------------------------------------------------------
-// Shared visual vocabulary (industrial design system) handed to plugin panels.
-// Class strings are full literals so Tailwind's content scanner keeps them.
+// Shared visual vocabulary handed to plugin panels. Preset layout classes are
+// semantic and independent from the host's Tailwind implementation.
 // ---------------------------------------------------------------------------
 
 // Tone -> background + text classes, mirroring design/ui.tsx Chip.
@@ -140,11 +140,15 @@ const UI_BTN_VARIANTS: Record<UiBtnVariant, string> = {
   danger: "bg-danger/20 text-danger hover:bg-danger/30 active:bg-danger/25",
 };
 
-const UI_BADGE_BASE = "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-mono text-[11px] tabular-nums";
-const UI_BTN_BASE = "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40";
+const UI_STACK = "ak-plugin-stack";
+const UI_GRID = "ak-plugin-grid";
+const UI_PANEL = "ak-plugin-panel";
+const UI_TOOLBAR = "ak-plugin-toolbar";
+const UI_BADGE_BASE = "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-[11px] tabular-nums";
+const UI_BTN_BASE = "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40";
 const UI_INPUT = "h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-[13px] text-fg placeholder:text-subtle focus:border-border-strong focus:outline-none";
 const UI_TILE = "relative rounded-lg border border-border bg-surface p-5";
-const UI_LABEL = "font-mono text-[10px] uppercase tracking-[0.2em] text-subtle";
+const UI_LABEL = "font-sans text-[11px] font-medium tracking-wide text-subtle";
 const UI_MONO = "font-mono tabular-nums";
 
 function badgeClass(tone: UiTone = "neutral"): string {
@@ -169,6 +173,26 @@ function createDashboardUi(): DashboardUi {
     return span;
   };
   return {
+    stack(className) {
+      const div = document.createElement("div");
+      div.className = className ? `${UI_STACK} ${className}` : UI_STACK;
+      return div;
+    },
+    grid(columns = 2, className) {
+      const div = document.createElement("div");
+      div.className = className ? `${UI_GRID} ${UI_GRID}-${columns} ${className}` : `${UI_GRID} ${UI_GRID}-${columns}`;
+      return div;
+    },
+    panel(className) {
+      const section = document.createElement("section");
+      section.className = className ? `${UI_PANEL} ${className}` : UI_PANEL;
+      return section;
+    },
+    toolbar(className) {
+      const div = document.createElement("div");
+      div.className = className ? `${UI_TOOLBAR} ${className}` : UI_TOOLBAR;
+      return div;
+    },
     badge: makeBadge,
     chip: makeBadge,
     btn(text, opts) {
@@ -197,6 +221,12 @@ function createDashboardUi(): DashboardUi {
       return span;
     },
     cx: {
+      stack: UI_STACK,
+      grid(columns = 2) {
+        return `${UI_GRID} ${UI_GRID}-${columns}`;
+      },
+      panel: UI_PANEL,
+      toolbar: UI_TOOLBAR,
       badge: badgeClass,
       btn: btnClass,
       input: UI_INPUT,

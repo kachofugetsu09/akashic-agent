@@ -124,10 +124,46 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: radial-gradient(circle at 50% 0%, var(--color-surface-2) 0%, var(--color-bg) 100%);
-  background-attachment: fixed;
+  background: var(--color-bg);
   color: var(--color-fg);
 }
+
+/* Public plugin preset. Plugins may use these classes or the matching SDK components. */
+.ak-plugin-stack {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.ak-plugin-grid {
+  display: grid;
+  min-width: 0;
+  gap: 1rem;
+}
+
+.ak-plugin-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ak-plugin-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ak-plugin-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.ak-plugin-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.ak-plugin-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.ak-plugin-pre-wrap { white-space: pre-wrap; }
 
 ::selection {
   background: var(--color-accent);
@@ -186,12 +222,10 @@ body {
   .topbar {
     @apply flex h-[60px] flex-shrink-0 items-center gap-4 px-6 z-10;
     margin: 12px 16px 0 16px;
-    border-radius: 16px;
-    background-color: rgb(var(--color-surface-rgb) / 0.5);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
+    border-radius: var(--radius-lg);
+    background-color: var(--color-surface);
     border: 1px solid var(--color-border);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    box-shadow: var(--shadow);
   }
 
   .brand {
@@ -372,34 +406,28 @@ body {
   .sessions-pane {
     @apply flex min-h-0 flex-shrink-0 flex-col bg-surface-2 overflow-hidden;
     border: 1px solid var(--color-border);
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
     width: clamp(260px, 20vw, 320px);
-    background: rgb(var(--color-surface-2-rgb) / 0.6);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    background: var(--color-surface-2);
+    box-shadow: var(--shadow);
   }
 
   .messages-pane {
     @apply flex min-h-0 min-w-0 flex-1 flex-col bg-surface overflow-hidden;
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
     border: 1px solid var(--color-border);
-    background: rgb(var(--color-surface-rgb) / 0.7);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+    background: var(--color-surface);
+    box-shadow: var(--shadow);
   }
 
   .detail-pane {
     @apply min-h-0 flex-shrink-0 overflow-y-auto bg-surface overflow-hidden;
     position: relative;
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
     border: 1px solid var(--color-border);
     width: clamp(360px, 26vw, 460px);
-    background: rgb(var(--color-surface-rgb) / 0.7);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+    background: var(--color-surface);
+    box-shadow: var(--shadow);
     transition: width 0.35s cubic-bezier(0.2, 1, 0.3, 1), opacity 0.3s ease, margin 0.35s ease;
   }
 
@@ -418,7 +446,7 @@ body {
     justify-content: center;
     cursor: pointer;
     z-index: 100;
-    transition: all 0.2s ease;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
   }
   .detail-close-btn:hover {
     background: rgba(255, 255, 255, 0.15);
@@ -437,12 +465,10 @@ body {
 
   .plugin-workbench-pane {
     @apply min-h-0 min-w-0 flex-1 overflow-y-auto bg-bg;
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
     border: 1px solid var(--color-border);
-    background: rgb(var(--color-bg-rgb) / 0.7);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+    background: var(--color-bg);
+    box-shadow: var(--shadow);
   }
 
   .plugin-workbench-root {
@@ -456,7 +482,7 @@ body {
   }
 
   .pane-kicker {
-    @apply font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;
+    @apply font-sans text-[11px] font-medium tracking-wide text-subtle;
   }
 
   .pane-title {
@@ -520,7 +546,7 @@ body {
   }
 
   .nav-section-divider span {
-    @apply whitespace-nowrap font-mono text-[9.5px] uppercase tracking-[0.14em];
+    @apply whitespace-nowrap font-sans text-[10px] font-medium uppercase tracking-wide;
   }
 
   .nav-group {
@@ -653,7 +679,8 @@ body {
   }
 
   .session-actions {
-    @apply flex -translate-x-1 gap-1 opacity-0 transition-all;
+    @apply flex -translate-x-1 gap-1 opacity-0;
+    transition: opacity 150ms ease, transform 150ms ease;
   }
 
   .session-item:hover .session-actions {
@@ -748,7 +775,8 @@ body {
   /* ── Batch bar ── */
 
   .batch-bar {
-    @apply flex max-h-10 min-h-[40px] items-center gap-3 overflow-hidden border-b border-border-strong bg-accent-soft px-4 py-2 transition-all;
+    @apply flex max-h-10 min-h-[40px] items-center gap-3 overflow-hidden border-b border-border-strong bg-accent-soft px-4 py-2;
+    transition: max-height 150ms ease, min-height 150ms ease, padding 150ms ease, opacity 150ms ease, border-color 150ms ease;
   }
 
   .batch-bar.hidden {
@@ -803,10 +831,9 @@ body {
 
   /* Machined header strip: hairline top highlight, defined bottom edge */
   .table-head {
-    @apply sticky top-0 z-[1] min-h-[36px] px-5 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;
+    @apply sticky top-0 z-[1] min-h-[36px] px-5 font-sans text-[10px] font-medium uppercase tracking-wide text-subtle;
     border-bottom: 1px solid var(--color-border-strong);
-    background: rgb(var(--color-surface-2-rgb) / 0.85);
-    backdrop-filter: blur(12px);
+    background: var(--color-surface-2);
     box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04), 0 1px 0 0 rgba(0, 0, 0, 0.35);
   }
 
@@ -828,7 +855,8 @@ body {
   }
 
   .table-row {
-    @apply relative min-h-[44px] cursor-pointer transition-all;
+    @apply relative min-h-[44px] cursor-pointer;
+    transition: background-color 150ms ease, border-color 150ms ease;
     margin: 4px 12px;
     border-radius: 8px;
     padding: 0 8px;
@@ -844,15 +872,12 @@ body {
 
   .table-row:hover {
     background: rgba(255, 255, 255, 0.04);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     border: 1px solid var(--color-border);
   }
 
   /* Restrained selection: background handled by magic indicator */
   .table-row.active {
     border: 1px solid rgb(var(--color-accent-rgb) / 0.2);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
   }
 
   /* selected (batch pick) -> warning wash so it reads apart from active */
@@ -1006,9 +1031,7 @@ body {
     @apply flex items-center justify-between gap-2 border-b border-border;
     margin: -16px -16px 16px -16px;
     padding: 16px;
-    background: rgba(var(--color-surface-rgb), 0.85);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
+    background: var(--color-surface);
     position: sticky;
     top: -16px;
     z-index: 50;
@@ -1029,7 +1052,7 @@ body {
   }
 
   .detail-label {
-    @apply mb-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;
+    @apply mb-1.5 font-sans text-[11px] font-medium tracking-wide text-subtle;
   }
 
   .detail-content {
@@ -1123,7 +1146,7 @@ body {
   }
 
   .detail-chip {
-    @apply inline-flex items-center rounded-sm border border-border bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-fg;
+    @apply inline-flex items-center rounded-sm border border-border bg-surface-2 px-2.5 py-1 font-sans text-[11px] text-fg;
   }
 
   /* ── Proactive board ── */
@@ -1146,7 +1169,7 @@ body {
   }
 
   .proactive-metric-label {
-    @apply font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;
+    @apply font-sans text-[11px] font-medium tracking-wide text-subtle;
   }
 
   .proactive-metric-value {
@@ -1215,7 +1238,6 @@ body {
   .modal-backdrop {
     @apply fixed inset-0 z-[400];
     background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(4px);
   }
 
   .modal {
@@ -1358,10 +1380,10 @@ body {
   box-shadow: inset 0 0 0 1px rgba(var(--color-accent-rgb), 0.2);
   pointer-events: none;
   z-index: 0;
-  transition: transform 0.3s cubic-bezier(0.25, 1.2, 0.5, 1),
-              width 0.3s cubic-bezier(0.25, 1.2, 0.5, 1),
-              height 0.3s cubic-bezier(0.25, 1.2, 0.5, 1),
-              opacity 0.2s ease;
+  transition: transform 180ms ease-out,
+              width 180ms ease-out,
+              height 180ms ease-out,
+              opacity 120ms ease;
 }
 
 .magic-indicator::before {

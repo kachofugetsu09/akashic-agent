@@ -35,6 +35,11 @@ import type {
   ViewMode,
 } from "./types";
 
+const pluginPreset = document.createElement("link");
+pluginPreset.rel = "stylesheet";
+pluginPreset.href = "/assets/sdk/preset.css";
+document.head.appendChild(pluginPreset);
+
 // Creates a PluginDispatch bound to the given plugin + latest state getter.
 function makeDispatch(
   plugin: PluginConfig,

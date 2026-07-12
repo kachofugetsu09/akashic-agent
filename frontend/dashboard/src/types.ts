@@ -177,12 +177,20 @@ export type UiBtnVariant = "primary" | "secondary" | "ghost" | "danger";
 export type UiBtnSize = "sm" | "md" | "lg";
 
 export interface DashboardUi {
+  stack(className?: string): HTMLDivElement;
+  grid(columns?: 2 | 3 | 4, className?: string): HTMLDivElement;
+  panel(className?: string): HTMLElement;
+  toolbar(className?: string): HTMLDivElement;
   badge(text: string, opts?: { tone?: UiTone; dot?: boolean }): HTMLSpanElement;
   chip(text: string, opts?: { tone?: UiTone; dot?: boolean }): HTMLSpanElement;
   btn(label: string, opts?: { variant?: UiBtnVariant; size?: UiBtnSize; onClick?: (e: MouseEvent) => void }): HTMLButtonElement;
   tile(opts?: { label?: string; className?: string }): HTMLDivElement;
   label(text: string): HTMLSpanElement;
   cx: {
+    stack: string;
+    grid(columns?: 2 | 3 | 4): string;
+    panel: string;
+    toolbar: string;
     badge(tone?: UiTone): string;
     btn(variant?: UiBtnVariant, size?: UiBtnSize): string;
     input: string;
