@@ -6,6 +6,7 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Literal, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,11 +15,13 @@ from agent.plugins.specs import ProactiveSourceSpec, RegisteredProactiveSource
 from agent.provider import LLMResponse, ToolCall
 from core.clock import ReplayClock
 from plugins.wake_proactive.plugin import WakeProactivePlugin, WakeRuntimeFactory
+from plugins.wake_proactive.context import WakeContext
 from plugins.wake_proactive.prompt import build_messages
 from plugins.wake_proactive.runtime import WakeRuntime, select_content_page
 from plugins.wake_proactive.state import WakeStateStore
 from proactive_v2.frame import new_proactive_frame
-from proactive_v2.lifecycle import ProactiveLifecycleBuilder
+from proactive_v2.lifecycle import ProactiveLifecycleBuilder, ProactiveLifecycleSpec
+from proactive_v2.runtime_scope import ProactiveRuntimeScope
 from session.embedding_store import MessageEmbeddingStore
 
 
@@ -103,7 +106,7 @@ class FixedClock:
         self._now += delta
 
 
-def _source(channel: str) -> RegisteredProactiveSource:
+def _source(channel: Literal["alert", "content", "context"]) -> RegisteredProactiveSource:
     return RegisteredProactiveSource(
         plugin_id="feed_plugin",
         spec=ProactiveSourceSpec(
@@ -116,7 +119,7 @@ def _source(channel: str) -> RegisteredProactiveSource:
     )
 
 
-def _scope(tmp_path: Path, gateway, provider, orchestrator, source):
+def _scope(tmp_path: Path, gateway, provider, orchestrator, source) -> ProactiveRuntimeScope:
     embedding_api = SimpleNamespace(
         model_id="test-embedding",
         embed_batch=AsyncMock(return_value=[[0.1, 0.2], [0.2, 0.3]]),
@@ -130,7 +133,7 @@ def _scope(tmp_path: Path, gateway, provider, orchestrator, source):
             )
         ),
     )
-    return SimpleNamespace(
+    return ProactiveRuntimeScope(
         cfg=SimpleNamespace(
             agent_tick_model="",
             agent_tick_web_fetch_max_chars=8000,
@@ -142,12 +145,16 @@ def _scope(tmp_path: Path, gateway, provider, orchestrator, source):
         max_tokens=1000,
         memory=memory,
         state_store=SimpleNamespace(workspace_dir=tmp_path),
+        sense=None,
+        any_action_gate=None,
+        passive_busy_fn=None,
+        deduper=None,
         rng=FixedRng(),
         workspace_context_fn=lambda: "只分享真正有增量的内容",
-        mcp_gateway=gateway,
+        mcp_gateway=cast(Any, gateway),
         proactive_sources=[source],
-        shared_tools=FakeTools(),
-        turn_orchestrator=orchestrator,
+        shared_tools=cast(Any, FakeTools()),
+        turn_orchestrator=cast(Any, orchestrator),
         presence=None,
     )
 
@@ -236,7 +243,8 @@ async def test_content_vertical_slice_filters_investigates_and_shares(
     )
 
     lifecycle = ProactiveLifecycleBuilder().build(
-        WakeProactivePlugin().proactive_lifecycles()[0], runtime.build_modules()
+        cast(ProactiveLifecycleSpec, WakeProactivePlugin().proactive_lifecycles()[0]),
+        runtime.build_modules(),
     )
     result = await lifecycle.run(frame)
 
@@ -404,7 +412,7 @@ async def test_shared_ack_route_keeps_original_source_grouping_and_order(
     unread = runtime._state.unread("content")
 
     prompt = build_messages(
-        ctx=SimpleNamespace(content_events=unread),
+        ctx=WakeContext(content_events=unread),
         memory_text="",
         proactive_context="",
         recent_session="",

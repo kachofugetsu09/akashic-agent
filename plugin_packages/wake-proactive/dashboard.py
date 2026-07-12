@@ -41,7 +41,29 @@ class WakeDashboardReader:
         row = self._db().execute(
             "SELECT * FROM wake_runs WHERE wake_id = ?", (wake_id,)
         ).fetchone()
-        return self._decode(dict(row)) if row else None
+        if row is None:
+            return None
+        item = self._decode(dict(row))
+        observations = self._db().execute(
+            """
+            SELECT kind, now_utc, trigger_json, candidates_json, llm_input_json
+            FROM wake_observations
+            WHERE wake_id = ?
+            ORDER BY id
+            """,
+            (wake_id,),
+        ).fetchall()
+        item["observations"] = [
+            {
+                "kind": observation["kind"],
+                "now_utc": observation["now_utc"],
+                "trigger": json.loads(observation["trigger_json"]),
+                "candidates": json.loads(observation["candidates_json"]),
+                "llm_input": json.loads(observation["llm_input_json"]),
+            }
+            for observation in observations
+        ]
+        return item
 
     @staticmethod
     def _decode(item: dict[str, Any]) -> dict[str, Any]:

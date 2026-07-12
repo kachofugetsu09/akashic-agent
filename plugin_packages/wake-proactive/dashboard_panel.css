@@ -1,0 +1,16 @@
+[data-akashic-plugin="wake-proactive"] .wake-detail { gap: 12px; padding: 16px; }
+[data-akashic-plugin="wake-proactive"] .wake-empty { padding: 28px; color: var(--color-muted); }
+[data-akashic-plugin="wake-proactive"] .wake-summary { display: flex; align-items: center; justify-content: space-between; padding: 14px; }
+[data-akashic-plugin="wake-proactive"] .wake-summary div { display: flex; flex-direction: column; gap: 4px; }
+[data-akashic-plugin="wake-proactive"] .wake-summary span,
+[data-akashic-plugin="wake-proactive"] .wake-message > span,
+[data-akashic-plugin="wake-proactive"] .wake-phase-title { color: var(--color-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+[data-akashic-plugin="wake-proactive"] .wake-summary strong { font-size: 16px; }
+[data-akashic-plugin="wake-proactive"] .wake-message { padding: 14px; }
+[data-akashic-plugin="wake-proactive"] .wake-message .ak-markdown { margin-top: 8px; }
+[data-akashic-plugin="wake-proactive"] .wake-phase { gap: 8px; }
+[data-akashic-plugin="wake-proactive"] .wake-phase-title { padding: 4px 2px; }
+[data-akashic-plugin="wake-proactive"] .wake-audit { border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); overflow: hidden; }
+[data-akashic-plugin="wake-proactive"] .wake-audit summary { display: flex; align-items: center; justify-content: space-between; padding: 11px 12px; cursor: pointer; color: var(--color-fg); font-size: 13px; }
+[data-akashic-plugin="wake-proactive"] .wake-audit[open] > summary { border-bottom: 1px solid var(--color-border); }
+[data-akashic-plugin="wake-proactive"] .wake-audit > .json-tree { max-height: 420px; overflow: auto; border: 0; border-radius: 0; }

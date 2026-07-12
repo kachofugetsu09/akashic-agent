@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -20,6 +21,7 @@ from docker.debug.replay_controller import (
     status,
 )
 from bootstrap.tools import _resolve_plugin_dirs
+from infra.channels.contract import ChannelContext
 from proactive_v2.mcp_sources import SharedMcpGateway
 
 
@@ -48,7 +50,7 @@ async def test_capture_channel_records_replay_time(tmp_path, monkeypatch) -> Non
     push = MessagePushTool()
     channel = CaptureChannel(outbox_path)
 
-    await channel.start(SimpleNamespace(push_tool=push))
+    await channel.start(cast(ChannelContext, SimpleNamespace(push_tool=push)))
     result = await push.execute(channel="replay", chat_id="user", message="hello")
     await channel.stop()
 

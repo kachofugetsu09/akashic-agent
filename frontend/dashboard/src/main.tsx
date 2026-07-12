@@ -11,13 +11,13 @@ import {
   proactiveSectionLabel,
   proactiveTickPreview,
   relativeTime,
-  renderMarkdown,
   roleClass,
   shortTs,
   stripMarkdown,
 } from "./format";
-import { attachJsonViewers, installDashboardGlobals, jvPlaceholder, loadPluginAssets } from "./pluginRuntime";
+import { installDashboardGlobals, loadPluginAssets } from "./pluginRuntime";
 import { exposeRuntime } from "./design/runtime";
+import { JsonView, Markdown } from "./design/ui";
 import { PluginDetail, PluginMain } from "./PluginDetail";
 import type {
   DashboardColumn,
@@ -977,7 +977,7 @@ function DetailPane(props: {
         {detailRow("result", <span className={`status-pill proactive-result-${proactiveResultLabel(item)}`}>{proactiveResultLabel(item)}</span>)}
         {detailRow("flow", <span className={`type-pill proactive-flow-${proactiveFlowLabel(item).toLowerCase()}`}>{proactiveFlowLabel(item)}</span>)}
       </div>
-      {item.final_message && <div className="detail-block"><div className="detail-label">Final Message</div><div className="detail-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(item.final_message) }} /></div>}
+      {item.final_message && <div className="detail-block"><div className="detail-label">Final Message</div><Markdown className="detail-content">{item.final_message}</Markdown></div>}
       <div className="detail-block"><div className="detail-label">Steps</div>{props.activeProactiveSteps.length ? props.activeProactiveSteps.map((step) => <div key={`${step.phase}-${step.step_index}`} className="tool-step"><div className="tool-step-head"><div className="tool-step-title"><span className="status-pill">step {step.step_index}</span><span className="type-pill">{step.tool_name}</span></div></div><JsonTreeBlock data={step.tool_args} /><div className="detail-content tool-result">{step.tool_result_text}</div></div>) : <div className="muted-text">没有记录到工具调用。</div>}</div>
     </div>;
   }
@@ -990,7 +990,7 @@ function DetailPane(props: {
         {detailRow("time", <code>{message.timestamp}</code>)}
         {detailRow("id", <code>{message.id}</code>)}
       </div>
-      <div className="detail-block"><div className="detail-label">Content</div><div className="detail-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }} /></div>
+      <div className="detail-block"><div className="detail-label">Content</div><Markdown className="detail-content">{message.content}</Markdown></div>
       <div className="detail-block"><div className="detail-label">Extra</div><JsonTreeBlock data={message.extra} /></div>
       <div className="detail-block"><div className="detail-label">Tool Chain</div><JsonTreeBlock data={message.tool_chain} /></div>
     </div>;
@@ -1019,16 +1019,7 @@ function detailRow(label: string, value: React.ReactNode): React.ReactElement {
 }
 
 function JsonTreeBlock(props: { data: unknown }): React.ReactElement {
-  const ref = useRef<HTMLDivElement>(null);
-  const payload = JSON.stringify(props.data ?? null);
-
-  useEffect(() => {
-    if (!ref.current) return;
-    ref.current.innerHTML = jvPlaceholder(props.data);
-    attachJsonViewers(ref.current);
-  }, [payload, props.data]);
-
-  return <div ref={ref} />;
+  return <JsonView value={props.data} />;
 }
 
 function toggleSet(id: string, checked: boolean, source: Set<string>, update: (value: Set<string>) => void): void {

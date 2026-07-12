@@ -55,6 +55,8 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "lucide-react": "^1.23.0",
+    "micromark": "^4.0.2",
+    "micromark-extension-gfm": "^3.0.0",
     "motion": "^12.42.2",
     "nanoid": "^5.1.16",
     "react": "^19.2.5",
