@@ -952,6 +952,38 @@ async def test_active_plugins_excludes_inactive_memory_plugin(
 
 
 @pytest.mark.asyncio
+async def test_active_plugin_check_propagates_plugin_failure(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins" / "broken_active"
+    plugin_dir.mkdir(parents=True)
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class BrokenActivePlugin(Plugin):\n"
+        "    name = 'broken_active'\n"
+        "    def is_active(self):\n"
+        "        raise RuntimeError('active check failed')\n",
+        encoding="utf-8",
+    )
+    manager = _make_manager([tmp_path / "plugins"], event_bus=EventBus())
+    await manager.load_all()
+
+    with pytest.raises(RuntimeError, match="插件 active 状态检查失败") as manager_error:
+        manager.active_plugins()
+    assert isinstance(manager_error.value.__cause__, RuntimeError)
+    assert str(manager_error.value.__cause__) == "active check failed"
+    snapshot = manager.current_snapshot
+    assert snapshot is not None
+    with pytest.raises(
+        RuntimeError,
+        match="插件 active 状态检查失败: broken_active",
+    ) as snapshot_error:
+        snapshot.active_generations()
+    assert isinstance(snapshot_error.value.__cause__, RuntimeError)
+    assert str(snapshot_error.value.__cause__) == "active check failed"
+
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_installed_plugin_reads_own_toml_config(tmp_path: Path):
     bus = EventBus()
     cache_root = tmp_path / "cache"
