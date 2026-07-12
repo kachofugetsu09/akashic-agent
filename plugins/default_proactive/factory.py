@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 from agent.tools.web_fetch import WebFetchTool
 from plugins.default_proactive.source import McpGatewaySource
+from plugins.default_proactive.source_poll import DefaultSourcePollModule
 from plugins.default_proactive.runtime import (
     ProactiveFlowRuntime,
     ProactiveFlowDeps,
@@ -72,6 +73,16 @@ class AgentTickFactory:
             schedule_fn=self._deps.schedule_fn,
             event_bus=self._deps.event_bus,
             tool_hooks=self._deps.tool_hooks,
+            source_poll_module=self._build_source_poll_module(),
+        )
+
+    def _build_source_poll_module(self) -> DefaultSourcePollModule:
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        return DefaultSourcePollModule(
+            gateway=self._deps.mcp_gateway,
+            sources=self._deps.proactive_sources,
+            runtime_snapshot_lease=get_current_runtime_lease(),
         )
 
     def _get_session_key(self) -> str:

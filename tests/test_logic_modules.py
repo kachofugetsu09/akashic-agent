@@ -332,6 +332,7 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
         tick_interval_s1=3,
         tick_interval_s0=4,
         tick_jitter=0.0,
+        lifecycle="default",
         default_channel="telegram",
         default_chat_id="42",
     )

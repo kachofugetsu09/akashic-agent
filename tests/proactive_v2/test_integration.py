@@ -94,7 +94,7 @@ async def test_start_failure_always_marks_loop_stopped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mcp_runtime_keeps_snapshot_tools_in_gateway_child_task(
+async def test_mcp_gateway_keeps_snapshot_tools_in_child_task(
     tmp_path: Path,
 ) -> None:
     base_tools = ToolRegistry()
@@ -116,11 +116,11 @@ async def test_mcp_runtime_keeps_snapshot_tools_in_gateway_child_task(
 
     token = bind_runtime_snapshot(lease)
     try:
-        runtime = loop._build_mcp_runtime()
+        gateway = loop._build_mcp_gateway()
     finally:
         reset_runtime_snapshot(token)
 
     result = await asyncio.create_task(
-        runtime.pool.call("feed", "get_proactive_events", {})
+        gateway.call("feed", "get_proactive_events", {})
     )
     assert result == []
