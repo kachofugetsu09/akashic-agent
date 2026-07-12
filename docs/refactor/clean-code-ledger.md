@@ -373,6 +373,62 @@
 - 验证结果：配置定向 `8 passed`、Akasha+fast replay parity `46 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
 - 残余风险：字段领域范围未在本提交新增限制；需要先从算法和历史配置证明范围，避免武断裁剪能力。
 
+### `94e9ac6a` `fix(akasha): 对齐来源引用失败语义`
+
+- 范围：live/replay query log 的 source_ref 统计和内部共享 helper。
+- 历史依据：PR #66 要求离线快速 replay 与线上单轮路径保持一致。
+- 原问题：live 独立实现并两次吞掉任意 JSON 错误，写入 `source_ref_count=0` 的假成功诊断；replay 对相同内部契约则直接失败。
+- 为什么这样修改：`_load_turn_card` 唯一生成 JSON list source_ref；live/replay 共用解析逻辑，内部契约违反时不应由诊断写入层恢复。
+- 不变量与拥有层：card source_ref 结构由 card 构造拥有；query log 只统计并持久化，不能把损坏解释为空来源。
+- 能力变化：合法引用计数和 query log 内容不变；损坏引用从假成功改为失败且不写半条诊断。
+- 性能变化：同阶线性解析，删除重复实现，无性能声明。
+- 测试新增：构造损坏内部 card，断言 JSON 错误传播且 query log 总数仍为零。
+- 测试删除及原因：无。
+- 验证结果：Akasha+fast replay parity `50 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：source_ref 仍是 JSON 字符串内部表示；若未来开放外部构造，应升级为 typed 字段而不是下游重复校验。
+
+### `54da202c` `fix(scheduler): reject corrupt persisted jobs`
+
+- 范围：JobStore 严格读取、schema 反序列化、原子保存和持久化测试。
+- 历史依据：PR #52 的 scheduler 后台任务语义；PR #79/#89 的 timeout/cancel 行为未改。
+- 原问题：坏 JSON、顶层/任务结构和时间戳损坏全部被当成空任务集；下一次 add/cancel/save 会覆盖原文件并丢失任务；非原子保存还会制造半文件。
+- 为什么这样修改：文件不存在才为空；严格 read_text/json.loads 保留 I/O/JSON 原异常；成功解析后的 schema 错误带 path/index/field；保存改用既有同目录原子替换。
+- 不变量与拥有层：JSON→ScheduledJob 由 JobStore 拥有，下游 SchedulerService 信任完整任务；读/解析错误不能伪装为无任务。
+- 能力变化：合法 roundtrip、misfire/recovery、执行和取消不变；损坏文件阻止启动/覆盖；保存具备原子替换。
+- 性能变化：写入增加一次同目录临时文件 rename，以可靠性为目标，不声明提速。
+- 测试新增：原始 JSONDecodeError/PermissionError、顶层/条目 schema、缺失/损坏时间字段与 roundtrip。
+- 测试删除及原因：无。
+- 验证结果：定向 `33 passed`；副手完整测试 `1539 passed`；`git diff --check` 通过；worktree pyright 仅缺可选环境包产生既有 missing-import，新增路径无错误。
+- 残余风险：已有损坏 jobs.json 会在启动时明确失败，需要人工修复或从备份恢复；这是防止静默丢任务的预期行为。
+
+### `9b11ec4b` `fix(akasha): 暴露空节点向量损坏`
+
+- 范围：Akasha sidecar 节点反序列化与损坏 DB 测试。
+- 历史依据：PR #65/#66 的 sidecar/dense 图与 live/replay parity；上游 MessageEmbeddingStore 已拥有非空向量写契约。
+- 原问题：空 embedding BLOB 节点被 list/get 静默当作不存在，使节点、边、fan 和诊断计数分叉。
+- 为什么这样修改：sidecar DB 可来自旧版本或手工修改；读取边界没有正确修复动作，应携带节点 key 失败。
+- 不变量与拥有层：正常写入的非空向量由 embedding/upsert 构造链拥有；持久化 BLOB 到 AkashaNode 由 `_row_to_node` 拥有。
+- 能力变化：合法节点、召回、replay、read-only、reinforce 和 snapshot 不变；损坏节点不再被过滤。
+- 性能变化：删除 list comprehension 的 None 过滤，非性能提交。
+- 测试新增：真实写入节点后把 BLOB 改为空，断言 list_nodes 以节点 key 报错。
+- 测试删除及原因：无。
+- 验证结果：Akasha+fast replay parity `51 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：已有空向量节点会阻止整图加载，需重建 sidecar；这是避免错图运行的预期 fail-stop。
+
+### `badc79c1` `fix(proactive): 暴露记忆优化失败`
+
+- 范围：MemoryOptimizer pending 两阶段事务、SELF 更新、取消传播与历史测试替身。
+- 历史依据：PR #75 的 memory fail-stop；后台 `MemoryOptimizerLoop` 已拥有记录异常并等待下周期的 supervisor 边界。
+- 原问题：merge/provider 与 SELF 异常被吞成空内容或假成功；旧测试只提供一次模型响应，第二步 `StopAsyncIteration` 也被掩盖；marker-only snapshot 会永久遗留。
+- 为什么这样修改：snapshot 成功后，read/merge/backup/write/commit/rollback 整个 MEMORY 阶段任一步失败或取消都恢复 pending 并重抛；SELF 在事务外，不能回滚已提交 MEMORY但必须报告失败。
+- 不变量与拥有层：pending 两阶段事务由 optimizer 拥有；周期隔离由 loop supervisor 拥有；正常空 merge 明确 rollback；marker-only 空有效内容明确 commit 清理 snapshot。
+- 能力变化：正常合并、空结果保留原记忆、SELF 更新和周期续跑不变；异常/取消可见且 pending 不丢；SELF 部分失败如实暴露。
+- 性能变化：正常模型调用次数和顺序不变，无性能声明。
+- 测试新增：merge RuntimeError、真实 MEMORY 写失败、CancelledError、SELF 失败、marker-only snapshot；修正旧测试两步响应。
+- 测试删除及原因：无。
+- 验证结果：optimizer `14 passed`，相关主动组合 `422 passed`；pyright `0 errors` 且仅一个既有 warning；`git diff --check` 通过。
+- 残余风险：SELF 写入不是与 MEMORY 同一原子事务，失败会保留已提交 MEMORY；该部分成功状态现在显式可见，后续若要全局原子性需独立设计。
+
 ### `<commit>` `<title>`
 
 - 范围：
