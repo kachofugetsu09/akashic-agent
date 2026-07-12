@@ -650,6 +650,110 @@
 - 验证结果：主线持久化 `16 passed`；副手全量 `1583 passed`；pyright 无 error。
 - 残余风险：最后写入者覆盖先写入者仍是普通文件存储语义；需 CAS 的调用方必须另设版本协议。
 
+### `d0171f73` `fix(persistence): log atomic cleanup failures`
+
+- 范围：JSON 原子替换失败后的 staging 清理。
+- 原问题：replace 首错后的 `unlink` 使用宽泛捕获并静默 pass，残留临时文件没有路径和原因。
+- 为什么这样修改：仅捕获文件清理边界的 `OSError` 并记录 domain/tmp/error，随后继续抛原 replace 错误。
+- 不变量与拥有层：原事务错误保持首错；helper 只补充 best-effort cleanup 的可观测性。
+- 能力变化：成功路径和错误类型不变；清理失败不再静默。
+- 性能变化：仅失败路径增加一条日志，无性能声明。
+- 测试新增：replace 与 unlink 同时失败，断言首错和 cleanup 上下文。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1584 passed`；pyright 无 error。
+- 残余风险：cleanup 失败会保留唯一临时文件，需按日志人工清理。
+
+### `0c9e8da9` `perf(core): 限制工具发现会话缓存`
+
+- 范围：ToolDiscoveryState 跨会话和会话内解锁工具缓存。
+- 原问题：每会话已有 5 项 LRU，但 session 数无限增长；仅使用 always-on/meta 工具也会制造空项。
+- 为什么这样修改：增加默认 1024 session 的 LRU；访问刷新顺序；空会话不入表，淘汰后可重新 tool_search。
+- 不变量与拥有层：发现缓存只保存可重建的工具名，不是业务状态；registry 仍拥有真实工具可用性。
+- 能力变化：当前 1024 个活跃 session 的工具顺序与复用不变；旧 session 被淘汰后重新发现。
+- 性能变化：默认最坏驻留从无限增长收敛为约 5120 个工具名。
+- 测试新增：空项不创建、跨会话 LRU 访问刷新和最旧淘汰。
+- 测试删除及原因：无；审阅阶段删除了两个无意义 default-factory 包装函数后才合入。
+- 验证结果：副手相关 `118 passed`；主线组合 `23 passed`；pyright 无 error。
+- 残余风险：容量是实例参数；显式调大时上界随配置线性增长。
+
+### `9d54a421` `refactor(chat): 清理代码块注释`
+
+- 范围：聊天代码块组件注释。
+- 原问题：Types/Context/Token rendering 等标题式英文注释重复代码结构，必要约束也未按项目中文约定表达。
+- 为什么这样修改：删除 10 条废注释；保留并中文化 Shiki 位标志、稳定键、CSS 行号、缓存和异步展示约束。
+- 不变量与拥有层：仅注释变更，运行代码和 lint 指令不变。
+- 能力变化：无。
+- 性能变化：无。
+- 测试新增：无。
+- 测试删除及原因：无。
+- 验证结果：目标 lint、typecheck、全量 lint 和 chat build 通过。
+- 残余风险：其他前端文件的英文注释按文件继续审阅，不机械全局替换。
+
+### `ad7f7959` `fix(dashboard): 收紧 Hook 生命周期`
+
+- 范围：Dashboard MagicIndicator 与插件跨页事件 Hook。
+- 原问题：动态依赖数组无法静态验证；goto-session 订阅闭包可能调用旧 selectView。
+- 为什么这样修改：MagicIndicator 只声明真实静态依赖，DOM 选中变化继续由 MutationObserver 驱动；事件订阅用 Effect Event 读取最新跳转逻辑。
+- 不变量与拥有层：观察器拥有 DOM/class 变化；全局事件只订阅一次，不因 view state 重装。
+- 能力变化：指示器、插件跳转与 DOM 生命周期保持；消除 stale closure。
+- 性能变化：切换状态不再为依赖变化拆装观察器，无量化声明。
+- 测试新增：无；该 UI 链暂无组件测试 runner。
+- 测试删除及原因：无。
+- 验证结果：typecheck、production build 和 lint 全过，历史 3 条 Hook warning 归零。
+- 残余风险：MutationObserver 高频 mutation 的 RAF 合并仍可进一步独立评估。
+
+### `be2e828b` `fix(subagent): 暴露模型调用硬错误`
+
+- 范围：SubAgent provider 调用与同步/后台失败转换链。
+- 原问题：provider 硬错误被 SubAgent 捕获后返回空字符串，可能被上层解释为正常空结果。
+- 为什么这样修改：owner 先标记 `last_exit_reason=error`，再传播原异常；同步 spawn/后台 runner 继续在各自边界转成明确失败。
+- 不变量与拥有层：SubAgent 拥有退出原因；任务 runner 拥有面向调用方的 error status/摘要。
+- 能力变化：正常完成、loop guard、预算收尾不变；provider 故障不再假成功。
+- 性能变化：无。
+- 测试新增：provider RuntimeError 原样传播且退出原因为 error。
+- 测试删除及原因：无。
+- 验证结果：副手 SubAgent/spawn/background `40 passed`；主线相关 `34 passed`；pyright 无 error。
+- 残余风险：工具执行错误仍按 ToolResult 协议处理，不与 provider 基础设施故障混淆。
+
+### `0109b65f` `fix(proactive): reject corrupt quota state`
+
+- 范围：AnyAction 每日配额 JSON 反序列化边界。
+- 原问题：坏 JSON、权限错误和缺失文件都初始化零用量，可绕过每日动作上限；字段又被不一致地强转。
+- 为什么这样修改：仅文件不存在初始化；严格读取 version=1 完整 schema、window key、非负整数和 aware ISO 时间；TypedDict 固化下游类型。
+- 不变量与拥有层：QuotaStore 拥有持久化 schema；drift best-effort skill state 继续保留独立降级语义。
+- 能力变化：合法首版格式、空 last_action 和 rollover 保持；损坏 quota 阻止启动且保留原文件。
+- 性能变化：仅启动期校验，无性能声明。
+- 测试新增：缺失、合法、非对象、缺字段、version/used/window/time、JSON 与读取权限错误。
+- 测试删除及原因：无。
+- 验证结果：定向 `12 passed`；副手全量 `1603 passed`；pyright 无 error。
+- 残余风险：未知额外字段被忽略以保留向前兼容；schema 升级需显式版本迁移。
+
+### `fc7fae40` `fix(subagent): 拒绝空白任务结果`
+
+- 范围：SubAgent 无工具调用的最终响应契约。
+- 原问题：模型以空白 content 结束时被标记 completed，后台/同步调用方收到假成功空结果。
+- 为什么这样修改：最终响应 trim 后必须非空；否则标记 error 并由既有任务边界转换失败。
+- 不变量与拥有层：中间 tool-call 响应允许空 content；最终任务结果由 SubAgent owner 保证可展示。
+- 能力变化：正常文本、工具循环和预算收尾不变；空白最终响应明确失败。
+- 性能变化：一次常数级字符串判断，无性能声明。
+- 测试新增：空白 final response 抛错且退出原因为 error。
+- 测试删除及原因：无。
+- 验证结果：副手相关 `41 passed`；主线相关 `35 passed`；pyright 无 error。
+- 残余风险：强制收尾 helper 的空结果契约继续单独沿完整调用链审阅。
+
+### `23b08f74` `refactor(memory): 清理面板注释`
+
+- 范围：默认记忆 Dashboard 面板注释。
+- 原问题：12 条英文标题/逐段翻译注释无信息增量，必要的全局命名和增量 DOM 约束未按中文约定表达。
+- 为什么这样修改：删除废注释；保留并中文化命名冲突、计数缓存、增量 DOM、焦点保持和降级边界。
+- 不变量与拥有层：仅注释修改；运行代码和 TypeScript reference 不变。
+- 能力变化：无。
+- 性能变化：无。
+- 测试新增：无。
+- 测试删除及原因：无。
+- 验证结果：typecheck、lint、插件 esbuild 与 dashboard build 通过。
+- 残余风险：审阅同时发现文件内 catch 降级缺少可观测性，已作为下一笔功能修复处理，不能靠注释合理化静默失败。
+
 ### `<commit>` `<title>`
 
 - 范围：
