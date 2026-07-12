@@ -182,13 +182,32 @@ class McpClient:
             detail = error_object.get("message", error_object)
             return f"MCP error ({self.name}/{tool_name}): {detail}"
 
-        content = resp.get("result", {}).get("content", [])
-        if isinstance(content, list):
-            return "\n".join(
-                block.get("text", str(block)) if isinstance(block, dict) else str(block)
-                for block in content
+        result = self._response_result(resp, f"tools/call:{tool_name}")
+        raw_content = result.get("content")
+        if not isinstance(raw_content, list):
+            raise RuntimeError(
+                f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                f"content（类型={type(raw_content).__name__}，值={raw_content!r}）"
             )
-        return str(resp.get("result", ""))
+
+        rendered: list[str] = []
+        for index, raw_block in enumerate(cast(list[object], raw_content)):
+            if not isinstance(raw_block, dict):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    f"content[{index}]（类型={type(raw_block).__name__}，"
+                    f"值={raw_block!r}）"
+                )
+            block = cast(dict[str, object], raw_block)
+            text = block.get("text")
+            if "text" in block and not isinstance(text, str):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    f"content[{index}].text（类型={type(text).__name__}，"
+                    f"值={text!r}）"
+                )
+            rendered.append(text if isinstance(text, str) else str(block))
+        return "\n".join(rendered)
 
     async def disconnect(self) -> None:
         """终止子进程。"""

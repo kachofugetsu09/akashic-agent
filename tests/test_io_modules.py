@@ -690,6 +690,37 @@ async def test_mcp_call_rejects_non_object_error(error: object) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "invalid_path"),
+    [
+        ("plain text", "result"),
+        ({}, "content"),
+        ({"content": "plain text"}, "content"),
+        ({"content": ["plain text"]}, "content[0]"),
+        ({"content": [{"type": "text", "text": 123}]}, "content[0].text"),
+    ],
+)
+async def test_mcp_call_rejects_invalid_result_structure(
+    result: object,
+    invalid_path: str,
+) -> None:
+    import json
+
+    response = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.call("search", {})
+
+    message = str(exc_info.value)
+    assert "docs" in message
+    assert "tools/call:search" in message
+    assert invalid_path in message
+
+
+@pytest.mark.asyncio
 async def test_mcp_recv_timeout_includes_stage_and_recent_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
