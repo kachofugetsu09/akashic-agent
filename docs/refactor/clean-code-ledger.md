@@ -135,6 +135,34 @@
 - 验证结果：相关 plugin 测试 `78 passed`；pyright `0 errors` 且无新增 warning；字段全库搜索零残留；`git diff --check` 通过。
 - 残余风险：无已知残余；若未来重新支持 descriptor，应以新协议显式设计，而不是恢复布尔标记。
 
+### `ba83aab2` `refactor(runtime): 收紧出站总线契约`
+
+- 范围：`BusOutboundPort`、真实 `MessageBus` 测试夹具和直接出站测试。
+- 历史依据：PR #90 的 MessageBus/ChatLane 被动出站链，PR #27/#31 的 after-turn dispatch 边界。
+- 原问题：端口用 `Any + inspect.isawaitable` 兼容不存在的同步 bus，并对 typed dataclass 容器重复提供空值 fallback；测试的 `MagicMock` 反向维持了假契约。
+- 为什么这样修改：生产构造链保证 `MessageBus`，其 `publish_outbound` 明确为 async；直接 await 真实契约并让发布异常继续传播。
+- 不变量与拥有层：bus 类型由 `AgentLoopDeps`/bootstrap wiring 拥有；metadata/media 非空容器由 `OutboundDispatch` dataclass 拥有。
+- 能力变化：channel、chat_id、content、thinking、metadata、media、ChatLane 计数和异常传播不变；测试与生产异步契约一致。
+- 性能变化：删除动态 awaitable 判断和无效 fallback，但未做稳定 benchmark，不声明性能收益。
+- 测试新增：使用真实 MessageBus 验证完整 typed `OutboundMessage`。
+- 测试删除及原因：无；将违反生产契约的 MagicMock 夹具改为真实 bus。
+- 验证结果：相关 runtime/turn 测试 `36 passed`；修改文件 pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：直接测试读取 MessageBus 私有队列以避免启动长期 dispatch loop；生产 API 语义仍由 publish/dispatch 集成测试覆盖。
+
+### `8d1c4589` `fix(session): 暴露 metadata 损坏`
+
+- 范围：`sessions.metadata` 数据库反序列化边界、SessionManager 转发层和三条读取入口测试。
+- 历史依据：`708d6f251` 将 JSONL session 迁移到中心 SQLite；PR #75/#80 确立无恢复动作时的 fail-stop。
+- 原问题：损坏 JSON 被 manager 宽泛捕获并归一化为整个 channel 空列表；合法 JSON list/string 会穿透到下游 `.get()` 才无上下文失败。
+- 为什么这样修改：store 在读取 SQLite 时统一解析并验证 JSON object，错误携带 session key；manager 信任边界后的 dict。
+- 不变量与拥有层：metadata JSON schema 由 `SessionStore` 拥有；NULL 是 schema 允许的旧记录，继续明确解释为 `{}`；identity index 无修复损坏数据的能力。
+- 能力变化：有效 metadata、NULL 兼容、排序、cache 和 identity 映射不变；损坏数据由空结果或延迟错误变为带 key 的即时 `ValueError`。
+- 性能变化：仍为一次 SQL 查询和每行一次 JSON 解析，无新增 I/O。
+- 测试新增：注入损坏 JSON 和非 object JSON，覆盖 channel metadata、单 session metadata、dashboard 列表三个入口。
+- 测试删除及原因：无。
+- 验证结果：Session 相关调用方 `82 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：数据库中已有损坏 metadata 会在首次读取时显式暴露，需要人工修复数据；这是预期行为。
+
 ### `<commit>` `<title>`
 
 - 范围：
