@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
+
+import pytest
 
 import agent.plugins.install as install_module
 from agent.plugins.install import (
@@ -11,6 +14,7 @@ from agent.plugins.install import (
     set_installed_plugin_enabled,
     uninstall_plugin,
 )
+from agent.plugins.source_resolver import resolve_plugin_sources
 
 
 def test_install_git_plugin_uses_programmatic_declaration(tmp_path: Path) -> None:
@@ -78,10 +82,13 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
         plugins_home=tmp_path / "plugins-home",
     )
 
-    assert calls == [
-        ("feed venv", result.installed_path / "mcp"),
-        ("feed pip install", result.installed_path / "mcp"),
-    ]
+    assert [label for label, _ in calls] == ["feed venv", "feed pip install"]
+    assert all(
+        cwd.name == "mcp"
+        and cwd.is_relative_to(result.installed_path.parents[2])
+        and cwd != result.installed_path / "mcp"
+        for _, cwd in calls
+    )
     assert not (result.installed_path / "mcp" / "servers.json").exists()
 
 
@@ -164,6 +171,246 @@ def test_plugin_management_rejects_non_installed_plugin_id(tmp_path: Path) -> No
             raise AssertionError(f"应拒绝插件 ID: {plugin_id}")
 
 
+def test_install_failure_restores_previous_cache_and_manifest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    plugin_path = repo / "plugin.py"
+    plugin_path.write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n"
+        "    marker = 'old'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+    home = tmp_path / "plugins-home"
+    first = install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+    old_content = (first.installed_path / "plugin.py").read_text(encoding="utf-8")
+
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8").replace("'old'", "'new'"),
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    def fail_prepare(plugin_root: Path, servers) -> None:
+        resolved = resolve_plugin_sources(
+            [],
+            installed_cache_root=home / "cache",
+        )
+        assert len(resolved) == 1
+        assert resolved[0].plugin_root == first.installed_path
+        assert (first.installed_path / "plugin.py").read_text(encoding="utf-8") == old_content
+        raise RuntimeError(f"prepare failed: {plugin_root}")
+
+    monkeypatch.setattr(install_module, "_prepare_plugin_mcp_runtimes", fail_prepare)
+    with pytest.raises(RuntimeError, match="prepare failed"):
+        install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+
+    assert (first.installed_path / "plugin.py").read_text(encoding="utf-8") == old_content
+    assert tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8")) == {
+        "plugins": {"feed@lab": {"enabled": True}}
+    }
+    assert not any(
+        child.name.startswith(".feed-install-")
+        for child in (home / "cache" / "lab").iterdir()
+    )
+
+    monkeypatch.undo()
+
+    def fail_manifest(*args, **kwargs) -> Path:
+        raise OSError("manifest write failed")
+
+    monkeypatch.setattr(install_module, "upsert_plugin_manifest", fail_manifest)
+    with pytest.raises(OSError, match="manifest write failed"):
+        install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+    assert (first.installed_path / "plugin.py").read_text(encoding="utf-8") == old_content
+
+
+def test_install_rejects_unsafe_path_metadata(tmp_path: Path) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    (repo / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = '../outside'\n"
+        "    version = '1.0.0'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    with pytest.raises(ValueError, match="安全的单一路径段"):
+        install_git_plugin(
+            source=str(repo),
+            marketplace="../outside",
+            plugins_home=tmp_path / "plugins-home",
+        )
+
+    with pytest.raises(ValueError, match="安全的单一路径段"):
+        install_git_plugin(
+            source=str(repo),
+            marketplace="lab",
+            plugins_home=tmp_path / "plugins-home",
+        )
+
+
+def test_install_rejects_visible_nonversion_cache_entry(tmp_path: Path) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    (repo / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+    home = tmp_path / "plugins-home"
+    invalid_entry = home / "cache" / "lab" / "feed" / "unexpected.txt"
+    invalid_entry.parent.mkdir(parents=True)
+    invalid_entry.write_text("broken", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cache 版本不是目录"):
+        install_git_plugin(source=str(repo), marketplace="lab", plugins_home=home)
+
+    assert invalid_entry.read_text(encoding="utf-8") == "broken"
+    assert not (invalid_entry.parent / "1.0.0").exists()
+
+
+def test_install_allows_internal_source_symlink(tmp_path: Path) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    (repo / "helper.py").write_text("MARKER = 'inside'\n", encoding="utf-8")
+    (repo / "linked_helper.py").symlink_to("helper.py")
+    (repo / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    result = install_git_plugin(
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=tmp_path / "plugins-home",
+    )
+
+    linked_helper = result.installed_path / "linked_helper.py"
+    assert linked_helper.read_text(encoding="utf-8") == "MARKER = 'inside'\n"
+    assert not linked_helper.is_symlink()
+
+
+def test_install_rejects_source_symlink_escape(tmp_path: Path) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("MARKER = 'outside'\n", encoding="utf-8")
+    (repo / "linked_helper.py").symlink_to(outside)
+    (repo / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+
+    with pytest.raises(ValueError, match="符号链接越界"):
+        install_git_plugin(
+            source=str(repo),
+            marketplace="lab",
+            plugins_home=tmp_path / "plugins-home",
+        )
+
+
+def test_plugin_probe_cleans_imported_submodules(tmp_path: Path) -> None:
+    (tmp_path / "helper.py").write_text("MARKER = 'ok'\n", encoding="utf-8")
+    (tmp_path / "plugin.py").write_text(
+        "from .helper import MARKER\n"
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n"
+        "    marker = MARKER\n",
+        encoding="utf-8",
+    )
+
+    _ = install_module._load_plugin_class(tmp_path)
+
+    assert not any(name.startswith("akasic_plugin_install_") for name in sys.modules)
+
+
+def test_mcp_runtime_path_cannot_escape_plugin_root(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    plugin_root.mkdir()
+
+    with pytest.raises(ValueError, match="MCP cwd 越界"):
+        install_module._resolve_mcp_runtime_root(
+            plugin_root,
+            "../outside",
+            ["python", "mcp/run_mcp.py"],
+        )
+
+
+def test_install_accepts_branch_tag_and_commit_refs(tmp_path: Path) -> None:
+    repo = tmp_path / "feed"
+    repo.mkdir()
+    plugin_path = repo / "plugin.py"
+    plugin_path.write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '1.0.0'\n"
+        "    marker = 'initial'\n",
+        encoding="utf-8",
+    )
+    _commit(repo)
+    initial_sha = _git_output(repo, "rev-parse", "HEAD")
+    _git(repo, "branch", "release")
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8").replace("initial", "head"),
+        encoding="utf-8",
+    )
+    _commit(repo)
+    _git(repo, "tag", "v2")
+
+    for ref_name, marker in (
+        ("release", "initial"),
+        ("v2", "head"),
+        (initial_sha, "initial"),
+    ):
+        result = install_git_plugin(
+            source=str(repo),
+            marketplace="lab",
+            ref_name=ref_name,
+            plugins_home=tmp_path / f"home-{ref_name}",
+        )
+        assert f"marker = '{marker}'" in (
+            result.installed_path / "plugin.py"
+        ).read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="命令选项"):
+        install_git_plugin(
+            source=str(repo),
+            marketplace="lab",
+            ref_name="-bad",
+            plugins_home=tmp_path / "home-option",
+        )
+    with pytest.raises(ValueError, match="首尾空白"):
+        install_git_plugin(
+            source=str(repo),
+            marketplace="lab",
+            ref_name=" release",
+            plugins_home=tmp_path / "home-whitespace",
+        )
+
+
 def test_uninstall_converges_when_cache_is_already_missing(tmp_path: Path) -> None:
     home = tmp_path / "plugins-home"
     data = home / "data" / "feed-github"
@@ -201,3 +448,26 @@ def _commit(repo: Path) -> None:
             env=os.environ.copy(),
         )
         assert result.returncode == 0, result.stderr
+
+
+def _git(repo: Path, *args: str) -> None:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _git_output(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()

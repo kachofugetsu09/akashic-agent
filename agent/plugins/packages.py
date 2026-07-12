@@ -3,6 +3,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 
 @dataclass(frozen=True)
@@ -24,22 +25,35 @@ def discover_plugin_packages(project_root: Path) -> dict[str, PluginPackage]:
         package = raw.get("package")
         if not isinstance(package, dict):
             raise ValueError(f"插件包缺少 [package]: {path}")
+        package = cast(dict[str, Any], package)
         package_id = package.get("id")
         members = package.get("members")
         if not isinstance(package_id, str) or not package_id:
             raise ValueError(f"插件包 id 无效: {path}")
-        if not isinstance(members, list) or not all(
-            isinstance(item, str) and item for item in members
-        ):
+        if not isinstance(members, list):
             raise ValueError(f"插件包 members 无效: {path}")
+        member_values = cast(list[object], members)
+        if not all(isinstance(item, str) and item for item in member_values):
+            raise ValueError(f"插件包 members 无效: {path}")
+        members = cast(list[str], member_values)
+        dashboard = package.get("dashboard", False)
+        if not isinstance(dashboard, bool):
+            raise ValueError(f"插件包 dashboard 无效: {path}")
+        provides = package.get("provides", [])
+        if not isinstance(provides, list):
+            raise ValueError(f"插件包 provides 无效: {path}")
+        provide_values = cast(list[object], provides)
+        if not all(isinstance(item, str) and item for item in provide_values):
+            raise ValueError(f"插件包 provides 无效: {path}")
+        provides = cast(list[str], provide_values)
         if package_id in result:
             raise ValueError(f"插件包 id 重复: {package_id}")
         result[package_id] = PluginPackage(
             id=package_id,
             root=path.parent,
             members=tuple(members),
-            dashboard=bool(package.get("dashboard", False)),
-            provides=tuple(str(item) for item in package.get("provides", [])),
+            dashboard=dashboard,
+            provides=tuple(provides),
         )
     _validate_packages(result)
     return result
