@@ -859,3 +859,29 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `50 passed`、全量 `1675 passed`、pyright `0 errors`；主线合入后 session/config/tool 交叉定向 `113 passed`，`git diff --check` 通过。
 - 残余风险：历史 `GatewayResult` 弱类型与 SessionStore 其他用途型扫描 API 继续按各自契约审阅，未在本批扩张。
+
+### `d4f79950` `fix(provider): close streams and validate tool arguments`
+
+- 范围：OpenAI-compatible stream 生命周期与 tool-call arguments 外部响应边界。
+- 原问题：stream 成功或 timeout/回调/解析异常退出时未显式关闭，可能占用 HTTP response/连接；tool arguments 解码为数组或标量后直接进入内部 `dict` 契约。
+- 为什么这样修改：provider 作为 stream owner 在消费循环最外层 finally 调用异步 close；流式与非流式统一通过边界 helper 解析并要求 JSON object。
+- 不变量与拥有层：Provider 拥有外部 response 与 ToolCall 构造；delta 顺序、idle timeout、reasoning/provider 字段、缓存 token、retry/context guard 不变。
+- 能力变化：合法响应完全保持；资源在成功、timeout、delta 回调异常与参数解析失败路径均释放；坏 tool arguments fail-loud。
+- 性能变化：每次 stream 增加一次必要 close，无性能收益声明。
+- 测试新增：四类 stream 关闭路径，以及流式/非流式非 object arguments。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `23 passed`、全量 `1681 passed`、主文件 pyright `0 errors`；主线合入后定向 `23 passed`，`git diff --check` 通过。
+- 残余风险：provider 综合测试文件仍有既有弱类型 warnings；本批未修改 retry 分类。
+
+### `8eeaa270` `fix(lifecycle): expose subscription ownership`
+
+- 范围：TurnLifecycle 的七个 EventBus handler 注册 façade。
+- 原问题：façade 丢弃 EventBus 已返回的 `EventSubscription`，调用方无法表达和执行 handler ownership 的显式释放。
+- 为什么这样修改：直接返回已有 subscription，不新增抽象、不改变注册与执行顺序；owner 可在自身销毁时 close。
+- 不变量与拥有层：EventBus 仍拥有 handler 列表和 off；注册调用方拥有 subscription 生命周期。现有 app-lifetime 调用方忽略返回值时行为不变。
+- 能力变化：现有 handler 行为无变化；新增显式注销能力。本批不声称已经改变生产 wiring 次数。
+- 性能变化：无。
+- 测试新增：subscription close 后 handler 不执行、handler count 归零。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `60 passed`、全量 `1679 passed`、pyright `0 errors`；主线合入后 lifecycle 交叉定向 `57 passed`，`git diff --check` 通过。
+- 残余风险：多媒体主动发送存在不可原子撤回的 partial-delivery contract，需单独设计，不能在本批用 bool 假装事务成功。
