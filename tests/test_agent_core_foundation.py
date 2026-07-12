@@ -60,6 +60,28 @@ def test_agent_core_runtime_support_skips_always_on_and_tool_search():
     assert state.get_preloaded("cli:1") == {"hidden_tool"}
 
 
+def test_agent_core_runtime_support_does_not_store_empty_session_cache():
+    state = ToolDiscoveryState()
+
+    state.update("cli:1", ["always_tool", "tool_search"], {"always_tool"})
+
+    assert "cli:1" not in state._unlocked
+
+
+def test_agent_core_runtime_support_bounds_session_cache():
+    state = ToolDiscoveryState(session_capacity=2)
+    state.update("cli:1", ["tool_a"], set())
+    state.update("cli:2", ["tool_b"], set())
+
+    assert state.get_preloaded("cli:1") == {"tool_a"}
+
+    state.update("cli:3", ["tool_c"], set())
+
+    assert "cli:2" not in state._unlocked
+    assert state.get_preloaded("cli:1") == {"tool_a"}
+    assert state.get_preloaded("cli:3") == {"tool_c"}
+
+
 def test_agent_core_runtime_support_service_types_hold_objects():
     llm = LLMServices(provider=object(), light_provider=object())
     memory = MemoryServices(engine=object())

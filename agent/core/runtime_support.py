@@ -34,11 +34,19 @@ class MemoryServices:
 class ToolDiscoveryState:
     _unlocked: dict[str, OrderedDict[str, None]] = field(default_factory=dict)
     capacity: int = 5
+    session_capacity: int = 1024
+    _session_lru: OrderedDict[str, None] = field(
+        default_factory=OrderedDict,
+        init=False,
+        repr=False,
+    )
 
     def get_preloaded(self, session_key: str) -> set[str]:
+        self._touch_session(session_key)
         return set(self._unlocked.get(session_key, {}).keys())
 
     def get_preloaded_ordered(self, session_key: str) -> list[str]:
+        self._touch_session(session_key)
         return list(self._unlocked.get(session_key, {}).keys())
 
     def unlock_names_from_result(self, result_json: str) -> list[str]:
@@ -81,14 +89,17 @@ class ToolDiscoveryState:
 
     def update(self, session_key: str, tools_used: list[str], always_on: set[str]) -> None:
         skip = always_on | {"tool_search"}
+        cacheable = [name for name in tools_used if name not in skip]
+        if not cacheable:
+            self._touch_session(session_key)
+            return
         lru: OrderedDict[str, None] = self._unlocked.setdefault(
             session_key,
             OrderedDict(),
         )
+        self._touch_session(session_key)
         newly_added: list[str] = []
-        for name in tools_used:
-            if name in skip:
-                continue
+        for name in cacheable:
             if name in lru:
                 lru.move_to_end(name)
             else:
@@ -104,6 +115,16 @@ class ToolDiscoveryState:
                 newly_added,
                 list(lru.keys()),
             )
+
+    def _touch_session(self, session_key: str) -> None:
+        if session_key not in self._unlocked:
+            return
+        self._session_lru[session_key] = None
+        self._session_lru.move_to_end(session_key)
+        while self._session_lru and len(self._session_lru) > self.session_capacity:
+            evicted, _ = self._session_lru.popitem(last=False)
+            _ = self._unlocked.pop(evicted)
+            logger.info("[LRU驱逐] 移除最旧会话工具缓存: %s", evicted)
 
 
 class SessionLike(Protocol):
