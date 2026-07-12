@@ -90,7 +90,7 @@ async def ack_post_guard_fail(
     *,
     alert_ack_fn: Any = None,
 ) -> None:
-    if ack_fn is None:
+    if ack_fn is None and alert_ack_fn is None:
         return
     fetched_alert_keys = {
         f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
@@ -101,19 +101,22 @@ async def ack_post_guard_fail(
     async def _ack_alert(key: str) -> None:
         if alert_ack_fn is not None:
             await alert_ack_fn(key)
-        else:
+        elif ack_fn is not None:
             await ack_fn(key, "interesting")
 
     for key in cited_set - fetched_alert_keys:
-        await ack_fn(key, "interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "interesting")
     for key in cited_set & fetched_alert_keys:
         await _ack_alert(key)
     for key in fetched_alert_keys - cited_set:
         await _ack_alert(key)
     for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
-        await ack_fn(key, "interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "interesting")
     for key in ctx.discarded_item_ids:
-        await ack_fn(key, "not_interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "not_interesting")
 
 
 async def ack_on_success(
@@ -122,7 +125,7 @@ async def ack_on_success(
     *,
     alert_ack_fn: Any = None,
 ) -> None:
-    if ack_fn is None:
+    if ack_fn is None and alert_ack_fn is None:
         return
     fetched_alert_keys = {
         f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
@@ -134,16 +137,19 @@ async def ack_on_success(
     }
     cited_set = set(ctx.cited_item_ids)
     for key in cited_set & fetched_content_keys:
-        await ack_fn(key, "interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "interesting")
     for key in cited_set & fetched_alert_keys:
         if alert_ack_fn is not None:
             await alert_ack_fn(key)
         else:
             await ack_fn(key, "interesting")
     for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
-        await ack_fn(key, "interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "interesting")
     for key in ctx.discarded_item_ids:
-        await ack_fn(key, "not_interesting")
+        if ack_fn is not None:
+            await ack_fn(key, "not_interesting")
 
 
 async def _mark_delivery(

@@ -114,12 +114,18 @@ async def _fetch_source_async(
         raise RuntimeError(f"source 返回值必须是 list 或 context dict: {key}")
     for raw in data:
         if not isinstance(raw, dict):
-            continue
+            raise RuntimeError(
+                f"source item 必须是 object: {key} ({type(raw).__name__})"
+            )
         kind = str(raw.get("kind") or "").strip()
         if not kind and len(spec.channels) == 1:
             kind = spec.channels[0]
         if kind not in spec.channels:
             continue
+        if kind in {"alert", "content"} and not str(
+            raw.get("event_id") or raw.get("id") or ""
+        ).strip():
+            raise RuntimeError(f"source item 缺少 event_id/id: {key}")
         item = dict(raw)
         if kind == "context":
             item.setdefault("_source", key)

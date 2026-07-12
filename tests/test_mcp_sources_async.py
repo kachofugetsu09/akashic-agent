@@ -171,6 +171,25 @@ async def test_context_accepts_single_dict() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    [
+        (["not-an-event"], "必须是 object"),
+        ([{"kind": "content"}], "缺少 event_id/id"),
+    ],
+)
+async def test_fetch_source_rejects_corrupt_event_items(
+    payload: list[object],
+    error: str,
+) -> None:
+    pool = FakePool({("feed", "events"): payload})
+    item = source("feed", "content", ("content",), "feed", "events")
+
+    with pytest.raises(RuntimeError, match=error):
+        await mcp_sources._fetch_source_async(cast(Any, pool), item)
+
+
+@pytest.mark.asyncio
 async def test_fetch_isolates_single_source_failure() -> None:
     pool = FakePool(
         {("ok", "events"): [{"kind": "content", "event_id": "1"}], ("bad", "events"): []},
