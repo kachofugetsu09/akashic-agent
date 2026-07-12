@@ -464,6 +464,62 @@
 - Wave 2 收束前主分支组合验证：`1554 passed`。
 - 三次均运行 `pytest -q tests/`，未删除测试；用例增长来自真实契约、事务和性能回归。
 
+### `48a8768f` `fix(memory): 拒绝非法显式插件配置`
+
+- 范围：default-memory TOML section/字段类型收敛和配置回归。
+- 历史依据：PR #41 的默认记忆插件标准 TOML 写法全部保留。
+- 原问题：错误 section 被归为空配置；`bool("false")` 变 True；db_path/整数/浮点错误值被强转或截断。
+- 为什么这样修改：只对文件、section 或字段缺失使用默认；显式值由唯一配置 owner 严格解析并携带完整字段路径失败。
+- 不变量与拥有层：外部 TOML schema 由 `load_default_memory_config`/codec 拥有，engine 信任强类型；不在算法层重复检查。
+- 能力变化：标准 TOML、历史整数/数字字符串和整数值 float 保留；错误根/嵌套 section、bool 冒充数字、非整数 float、容器等 fail-fast；未新增范围限制。
+- 性能变化：仅初始化解析，无性能声明。
+- 测试新增：合法旧写法和九类显式错误值/section。
+- 测试删除及原因：无。
+- 验证结果：配置与 memory engine contract `39 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：字段数值范围仍需结合召回算法和历史配置设计，未武断收紧。
+
+### `e2d3a7ba` `fix(bus): report admission enqueue failures`
+
+- 范围：EventBus 热重载 admission 后台入队 task 所有权与错误日志测试。
+- 历史依据：PR #105 的 snapshot admission/lease/drain；PR #109 的事件流唤醒。
+- 原问题：暂停 admission 时创建的后台 task 只从集合删除，不读取异常；acquire 失败导致事件丢失并产生无人拥有的 asyncio 异常。
+- 为什么这样修改：EventBus 作为 task owner，done 时统一清集合；shutdown cancellation 静默，其他失败读取原异常并记录 traceback 和事件类型。
+- 不变量与拥有层：admission/acquire 由 snapshot store 拥有；task 生命周期和失败可见性由 EventBus 拥有；不新增 retry/fallback。
+- 能力变化：成功入队、lease、queue、drain/close 不变；失败仍不伪装成功，但具备领域日志。
+- 性能变化：成功路径多一次 `task.exception()` 常数操作，无性能声明。
+- 测试新增：模拟 acquire 失败，断言原 cause、日志和 pending owner 清理。
+- 测试删除及原因：无。
+- 验证结果：热重载相关 `90 passed`；副手完整测试 `1557 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：失败事件不自动重试；是否持久化事件属于 durable delivery 设计，不应局部猜测。
+
+### `7a595739` `fix(skills): 拒绝损坏的元数据配置`
+
+- 范围：SKILL.md metadata YAML/JSON 边界、requires 可用性与 loader 测试。
+- 历史依据：PR #95 的 Skill Catalog generation 与 PR #105 的候选 snapshot/hot reload。
+- 原问题：损坏或非对象 JSON metadata 被归为空配置，绕过 requires 后错误标记技能可用。
+- 为什么这样修改：metadata 缺失/空才无配置；YAML map/JSON object 正常；损坏 JSON、数组、null 携带具体 SKILL.md 路径失败。
+- 不变量与拥有层：metadata schema 和 requirements 由 SkillsLoader 拥有；snapshot 只接收已校验 SkillRecord。
+- 能力变化：合法技能、优先级、缺失 metadata 和热重载不变；损坏候选在发布前失败。
+- 性能变化：索引构建增加常数级结构判断，无性能声明。
+- 测试新增：空 metadata 两种写法、损坏 JSON、数组/null 非对象和路径上下文。
+- 测试删除及原因：无。
+- 验证结果：相关公共契约/snapshot/热重载 `224 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：requires 领域规则未扩展；未来字段必须在 owner 层显式设计。
+
+### `717e61ee` `fix(bootstrap): continue cleanup after server failure`
+
+- 范围：AppRuntime dashboard/chat task 等待与 shutdown supervisor 测试。
+- 历史依据：应用 shutdown 已定义逐项继续清理、最后抛首错；PR #105 的 watcher/services/core drain 需要完整执行。
+- 原问题：server task 已失败时，统一 cleanup supervisor 之前的直接 await 立即重抛，跳过 watcher、proactive、IPC、channels、core、memory 和 HTTP 资源清理。
+- 为什么这样修改：把两个 server wait 纳入 `_run_cleanup_steps`；server 异常仍是最终首错，但后续资源全部获得清理机会。
+- 不变量与拥有层：server should_exit/等待由 server step 拥有；跨资源继续清理和首错由 shutdown supervisor 拥有。
+- 能力变化：正常顺序和 CancelledError 语义不变；失败 shutdown 不再短路后续清理。
+- 性能变化：正常 shutdown 等待顺序不变，无性能声明。
+- 测试新增：dashboard task 预先失败，断言最终原错、core.stop、should_exit 和 HTTP close。
+- 测试删除及原因：无。
+- 验证结果：相关 `40 passed`；副手完整测试 `1568 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：server task 无限等待和 shutdown 外部取消需要整体 timeout/shield 契约，本提交不局部改变。
+
 ### `<commit>` `<title>`
 
 - 范围：
