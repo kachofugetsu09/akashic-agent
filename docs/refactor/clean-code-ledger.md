@@ -163,6 +163,34 @@
 - 验证结果：Session 相关调用方 `82 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
 - 残余风险：数据库中已有损坏 metadata 会在首次读取时显式暴露，需要人工修复数据；这是预期行为。
 
+### `6f50a391` `test(runtime): 使用真实异步消息总线`
+
+- 范围：所有直接构造 `AgentLoopDeps` 的测试夹具。
+- 历史依据：`ba83aab2` 收紧 `BusOutboundPort` 后的集成回归。
+- 原问题：10 处测试用同步 `MagicMock` 伪造生产中明确为异步 `MessageBus` 的依赖，其中两条 spawn completion 流程在完整测试中触发 `TypeError`。
+- 为什么这样修改：统一改用真实 `MessageBus`，让测试遵循生产构造契约，不恢复同步兼容层。
+- 不变量与拥有层：bus 类型与 async publish 由 `AgentLoopDeps`/`MessageBus` 拥有。
+- 能力变化：无生产行为变化；测试现在能覆盖真实出站类型。
+- 性能变化：非性能提交。
+- 测试新增：无。
+- 测试删除及原因：无；替换错误夹具。
+- 验证结果：相关测试 `49 passed`，完整测试 `1497 passed`；pyright `0 errors, 0 warnings`；全库同类 `bus=MagicMock()` 搜索零残留。
+- 残余风险：这笔修复证明目标测试不足以验收公共契约变更；后续公共类型收紧必须运行完整测试。
+
+### `6c7a4ba5` `fix(plugins): 校验 KV 根节点结构`
+
+- 范围：`PluginKVStore._read()` 数据文件反序列化边界与真实磁盘测试。
+- 历史依据：插件 KV 可被用户、旧版本和外部插件绕过正常 `_write()` 直接修改。
+- 原问题：合法 JSON array/scalar 会穿透边界，在后续 `.get()` 或赋值处以无文件上下文的异常失败。
+- 为什么这样修改：KV 根节点必须是 JSON object；在唯一读取边界校验并以包含文件路径的 `ValueError` 失败，非法 JSON 继续保留 `JSONDecodeError`。
+- 不变量与拥有层：KV object schema 由 `PluginKVStore._read()` 拥有；正常 `_write()` 始终写入 dict。
+- 能力变化：正常 get/set/increment 和跨 manager 持久化不变；错误更早且带路径；plugin generation/snapshot 状态机未触及。
+- 性能变化：非性能提交，正常路径仅增加一次 `isinstance`。
+- 测试新增：真实 `.kv.json` 数组根节点拒绝测试。
+- 测试删除及原因：无。
+- 验证结果：相关 plugin 测试 `142 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：已有非 object KV 文件会在首次读取时显式失败，需要插件作者修复数据。
+
 ### `<commit>` `<title>`
 
 - 范围：
