@@ -171,10 +171,10 @@ class EventBus:
             if snapshot is not None and not snapshot.accepting_leases:
                 task = asyncio.create_task(
                     self._enqueue_after_admission(event, queue),
-                    name="event_enqueue_admission",
+                    name=f"event_enqueue_admission:{type(event).__name__}",
                 )
                 self._pending_enqueue_tasks.add(task)
-                task.add_done_callback(self._pending_enqueue_tasks.discard)
+                task.add_done_callback(self._on_enqueue_task_done)
                 return
             snapshot_lease = self._runtime_snapshot_store.lease()
         queue.put_nowait(
@@ -192,6 +192,18 @@ class EventBus:
         assert self._runtime_snapshot_store is not None
         lease = await self._runtime_snapshot_store.acquire()
         queue.put_nowait(_QueuedEvent(event=event, snapshot_lease=lease))
+
+    def _on_enqueue_task_done(self, task: asyncio.Task[None]) -> None:
+        self._pending_enqueue_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "event enqueue admission failed: task=%s",
+                task.get_name(),
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     async def _runtime_lease(self) -> RuntimeSnapshotLease | None:
         if self._runtime_snapshot_store is None:
