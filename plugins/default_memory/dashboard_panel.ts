@@ -1,6 +1,5 @@
 /// <reference path="../../types/akashic-dashboard.d.ts" />
 
-// Local types for memory data shapes
 interface MemoryRow {
   id: string;
   memory_type: string;
@@ -31,8 +30,7 @@ interface MemoryOptimizerStatus {
   last_error: string | null;
 }
 
-// Local helpers (cannot import from format.ts)
-// Use prefix dmem_ to avoid global name collisions with other plugins.
+// 插件脚本共享全局作用域，统一使用 dmem_ 前缀避免命名冲突。
 function dmemShortTs(value: unknown): string {
   if (!value) return "-";
   const date = new Date(String(value));
@@ -56,7 +54,7 @@ function dmemStatusPill(status: string): string {
   return `<span class="status-pill memory-status-${escapeHtml(status)}">${escapeHtml(status)}</span>`;
 }
 
-// Memory type counts fetched once, cached per filter context
+// 类型计数按筛选上下文缓存，避免重复请求四种记忆类型。
 let dmemCachedCountsKey = "__initial__";
 let dmemCachedCounts: { memory_type: string; total: number }[] = [];
 
@@ -130,8 +128,7 @@ function dmemBindTypeListClicks(container: HTMLElement, dispatch: PluginDispatch
   });
 }
 
-// renderNavBody: "全部记忆" + type list
-// First call: creates DOM, fetches counts async. Subsequent calls: delta-update only.
+// 已挂载时仅增量更新；筛选上下文变化才重新获取计数，避免重建导航 DOM。
 function dmemRenderNavBody(container: HTMLElement, dispatch: PluginDispatch): void {
   const filters = dispatch.filters;
   const activeType = filters["memory_type"] ?? "";
@@ -139,7 +136,6 @@ function dmemRenderNavBody(container: HTMLElement, dispatch: PluginDispatch): vo
   const currentCountsKey = container.getAttribute("data-mem-counts-key") ?? "";
   const nextCountsKey = dmemCountsCacheKey(filters);
 
-  // Already mounted: update active states (refetch counts if filter context changed)
   const existingAll = container.querySelector("[data-mem-all]");
   if (existingAll) {
     const allBtn = container.querySelector<HTMLButtonElement>("[data-mem-all]");
@@ -156,14 +152,13 @@ function dmemRenderNavBody(container: HTMLElement, dispatch: PluginDispatch): vo
         if (!list) return;
         list.innerHTML = dmemRenderTypeList(counts, activeType);
         dmemBindTypeListClicks(container, dispatch);
-      }).catch(() => { /* ignore */ });
+      }).catch(() => { /* 计数失败时保留当前导航。 */ });
     } else {
       dmemUpdateTotal(container, dmemCachedCounts);
     }
     return;
   }
 
-  // First call: build skeleton immediately, fetch counts async
   container.setAttribute("data-mem-counts-key", nextCountsKey);
   container.innerHTML = `
     <button class="all-messages-row ${activeType === "" ? "active" : ""}" type="button" data-mem-all>
@@ -180,11 +175,10 @@ function dmemRenderNavBody(container: HTMLElement, dispatch: PluginDispatch): vo
       list.innerHTML = dmemRenderTypeList(counts, activeType);
       dmemBindTypeListClicks(container, dispatch);
     }
-  }).catch(() => { /* ignore */ });
+  }).catch(() => { /* 计数失败时保留当前导航。 */ });
 }
 
-// renderFilters: search + type select + status select + scope chip
-// First call: creates full DOM. Subsequent calls: delta update preserving focus.
+// 已挂载时只更新筛选值与范围标签，避免重建输入框导致焦点丢失。
 function dmemRenderFilters(container: HTMLElement, dispatch: PluginDispatch): void {
   const filters = dispatch.filters;
   const q = filters["q"] ?? "";
@@ -195,7 +189,6 @@ function dmemRenderFilters(container: HTMLElement, dispatch: PluginDispatch): vo
 
   const existingSearch = container.querySelector<HTMLInputElement>("[data-mem-search]");
   if (existingSearch) {
-    // Delta update: preserve focus by only updating select values and scope chip
     const typeSelect = container.querySelector<HTMLSelectElement>("[data-mem-type-select]");
     const statusSelect = container.querySelector<HTMLSelectElement>("[data-mem-status-select]");
     if (typeSelect && typeSelect.value !== memType) typeSelect.value = memType;
@@ -214,7 +207,6 @@ function dmemRenderFilters(container: HTMLElement, dispatch: PluginDispatch): vo
     return;
   }
 
-  // First call: create full DOM
   container.innerHTML = `
     <div class="filter-row">
       <label class="search"><span>⌕</span><input type="text" placeholder="搜索 memory / source_ref" value="${escapeHtml(q)}" data-mem-search /></label>
@@ -269,7 +261,6 @@ function dmemRenderFilters(container: HTMLElement, dispatch: PluginDispatch): vo
   }
 }
 
-// renderTopbarAction: memory optimizer button
 function dmemRenderTopbarAction(container: HTMLElement, dispatch: PluginDispatch): void {
   const currentToken = Number(container.getAttribute("data-mem-render-token") ?? "0") + 1;
   container.setAttribute("data-mem-render-token", String(currentToken));
@@ -325,10 +316,9 @@ function dmemRenderTopbarAction(container: HTMLElement, dispatch: PluginDispatch
       btn.textContent = "记忆优化中";
       poll();
     }
-  }).catch(() => { /* ignore, optimizer not available */ });
+  }).catch(() => { /* 优化器不可用时不展示入口。 */ });
 }
 
-// renderDetail: full memory detail view
 function dmemRenderDetail(
   item: Record<string, unknown> | null,
   container: HTMLElement,
@@ -400,7 +390,6 @@ function dmemRenderDetail(
   }
 }
 
-// fetchDetail: fetch detail + similar, merge into one record
 async function dmemFetchDetail(item: Record<string, unknown>): Promise<Record<string, unknown>> {
   const id = String(item["id"] ?? "");
   const [detail, similar] = await Promise.all([
@@ -410,7 +399,6 @@ async function dmemFetchDetail(item: Record<string, unknown>): Promise<Record<st
   return { ...detail as unknown as Record<string, unknown>, _similar: similar.items ?? [] };
 }
 
-// fetchPage: translate filters/sortBy/sortOrder into API params
 async function dmemFetchPage(opts: FetchPageOpts): Promise<FetchPageResult> {
   const filters = opts.filters ?? {};
   const params = new URLSearchParams();
