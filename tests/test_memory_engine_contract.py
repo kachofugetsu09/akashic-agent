@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from bus.event_bus import EventBus
+from bus.event_bus import EventBus, EventSubscription
 from bus.events_lifecycle import TurnCommitted
 from agent.config_models import Config, MemoryConfig
 from agent.tools.registry import ToolRegistry
@@ -34,6 +34,7 @@ from core.memory.markdown import (
     MemoryLifecycleBindRequest,
 )
 from core.memory.plugin import MemoryPluginRuntime
+from core.memory.runtime import MemoryRuntime
 
 
 def _make_default_engine(
@@ -60,6 +61,7 @@ def _make_default_engine(
     engine._post_response_worker = post_response_worker
     engine._event_bus = event_publisher
     engine.closeables = []
+    engine._event_wired = False
     engine._wire_memory2_events()
     return engine
 
@@ -298,6 +300,84 @@ async def test_default_memory_engine_handles_turn_committed_via_event_bus():
     assert event.session_key == "cli:1"
     assert event.tool_chain == [{"text": "memo", "calls": []}]
     await event_bus.aclose()
+
+
+async def test_default_memory_engine_owns_event_subscriptions_until_runtime_close():
+    event_bus = EventBus()
+    worker = SimpleNamespace(run=AsyncMock(), handle=AsyncMock())
+    engine = _make_default_engine(
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
+        event_publisher=event_bus,
+    )
+
+    assert event_bus.handler_count() == 2
+    engine._wire_memory2_events()
+    assert event_bus.handler_count() == 2
+
+    runtime = MemoryRuntime(
+        markdown=cast(Any, SimpleNamespace()),
+        engine=cast(Any, engine),
+        closeables=list(engine.closeables),
+    )
+    await runtime.aclose()
+
+    assert event_bus.handler_count() == 0
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_rolls_back_partial_event_wiring():
+    class _FailSecondOnBus(EventBus):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+            self.fail_second = True
+
+        def on(self, event_type, handler):
+            self.calls += 1
+            if self.fail_second and self.calls == 2:
+                raise RuntimeError("second subscription failed")
+            return super().on(event_type, handler)
+
+    event_bus = _FailSecondOnBus()
+    worker = SimpleNamespace(run=AsyncMock(), handle=AsyncMock())
+    engine = _make_default_engine(
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
+        event_publisher=None,
+    )
+    engine._event_bus = event_bus
+
+    with pytest.raises(RuntimeError, match="second subscription failed"):
+        engine._wire_memory2_events()
+
+    assert event_bus.handler_count() == 0
+    assert not any(
+        isinstance(closeable, EventSubscription)
+        for closeable in engine.closeables
+    )
+    assert engine._event_wired is False
+
+    event_bus.fail_second = False
+    engine._wire_memory2_events()
+    engine._wire_memory2_events()
+    assert event_bus.handler_count() == 2
+    assert engine._event_wired is True
+
+    runtime = MemoryRuntime(
+        markdown=cast(Any, SimpleNamespace()),
+        engine=cast(Any, engine),
+        closeables=list(engine.closeables),
+    )
+    await runtime.aclose()
+    await event_bus.aclose()
+
+
+async def test_default_memory_engine_does_not_mask_missing_retriever():
+    engine = _make_default_engine(retriever=None)
+
+    with pytest.raises(RuntimeError, match="memory retriever unavailable"):
+        await engine.query(MemoryQuery(text="缺失召回器", intent="context"))
 
 
 async def test_default_memory_engine_respects_skip_post_memory_event_flag():

@@ -34,6 +34,7 @@ class MemoryPlugin:
         DefaultMemoryEngine.ensure_workspace_storage(
             default_config=default_config,
             workspace=workspace,
+            embedding_dim=config.memory.embedding.output_dimensionality,
         )
         return [(db_path, existed)]
 

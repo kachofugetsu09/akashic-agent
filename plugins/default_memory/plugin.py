@@ -52,13 +52,13 @@ class DefaultMemoryInspector(Plugin):
         self._data_path.parent.mkdir(parents=True, exist_ok=True)
 
     def is_active(self) -> bool:
-        return bool(getattr(self, "_active", False))
+        return self._active
 
     def before_turn_modules(self) -> list[object]:
         return [ContextPrepareRecordModule(self)]
 
     def record_context_prepare(self, event: BeforeTurnCtx) -> None:
-        if not getattr(self, "_active", False):
+        if not self._active:
             return
         turn_id = _turn_id(event.session_key, event.timestamp.isoformat(), event.content)
         self._active_turns[event.session_key] = turn_id
@@ -88,7 +88,7 @@ class DefaultMemoryInspector(Plugin):
 
     @on_tool_result()
     async def record_recall_memory(self, event: AfterToolResultCtx) -> None:
-        if not getattr(self, "_active", False) or event.tool_name != "recall_memory":
+        if not self._active or event.tool_name != "recall_memory":
             return
         turn_id = self._active_turns.get(event.session_key)
         if not turn_id:
@@ -136,7 +136,7 @@ def _turn_id(session_key: str, timestamp: str, content: str) -> str:
 
 def _is_memory_engine(engine: object, name: str) -> bool:
     if engine is None:
-        return True
+        return False
     describe = getattr(engine, "describe", None)
     if not callable(describe):
         return False
