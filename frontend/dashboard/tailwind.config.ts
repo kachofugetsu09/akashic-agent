@@ -9,13 +9,12 @@ const repoRoot = resolve(here, "..", "..");
 
 // Industrial / precision-instrument design tokens. Solid colors use RGB-triplet
 // vars (see src/styles.css) so opacity modifiers like bg-danger/20 work.
-// Plugin panels are scanned too so their utility classes survive purging.
+// Plugin panels use the public preset or their own CSS. They are not part of
+// the host bundle's Tailwind content contract.
 export default {
   content: [
     resolve(here, "index.html"),
     resolve(here, "src/**/*.{ts,tsx}"),
-    resolve(repoRoot, "plugins/**/*.{ts,tsx}"),
-    resolve(repoRoot, "akashic-plugin/**/*.{ts,tsx}"),
   ],
   theme: {
     extend: {

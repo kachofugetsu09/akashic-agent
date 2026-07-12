@@ -24,6 +24,52 @@ class DemoPlugin(Plugin):
     desc = "最小插件"
 ```
 
+## Dashboard 前端插件样式契约
+
+Dashboard 插件的前端样式分为两层：主程序提供公共 preset，插件保留自己的 CSS 扩展能力。
+
+```text
+┌─ Host CSS
+│  └─ Dashboard 私有实现，插件不能依赖
+├─ Dashboard UI SDK
+│  ├─ @akashic/dashboard-ui 组件
+│  ├─ ak-plugin-* 布局与 token preset
+│  └─ api、格式化器和共享 React 实例
+└─ Plugin CSS
+   └─ 可选，放在 dashboard_panel.css，并限定在插件根节点内
+```
+
+插件可以直接使用 `@akashic/dashboard-ui` 的 `Grid`、`Stack`、`Panel`、`Toolbar`、`Chip` 和图表组件，也可以使用 `window.AkashicDashboard.ui.cx` 返回的公共 class。插件不应依赖主程序内部的 Tailwind utility class；需要特殊布局或动画时，在自己的 `dashboard_panel.css` 中实现。
+
+运行时会为每个插件面板提供根节点：
+
+```html
+<div data-akashic-plugin="observe">
+  <!-- plugin panel -->
+</div>
+```
+
+插件 CSS 应以根节点限定范围：
+
+```css
+[data-akashic-plugin="observe"] .observe-filter {
+  display: flex;
+  gap: 0.75rem;
+}
+```
+
+主程序构建 Dashboard 时会生成并加载公共 preset CSS。preset 只包含主程序和已安装插件声明的公共 utility；插件新增的特殊样式仍然应该随插件 CSS 发布。主程序不再把外部插件源码并入自己的 Tailwind bundle，也不维护逐插件 safelist。
+
+插件前端修改后的检查顺序：
+
+```bash
+npm run build:plugin-preset
+npm run build:dashboard
+python main.py plugin-install --source https://github.com/akashic-plugins/<plugin> --marketplace github
+```
+
+安装完成后刷新 Dashboard；插件 CSS 会和面板 JS 一起按版本加载。插件自己的配置、数据库和日志仍然保存在独立 data 目录，不随前端资源替换。
+
 目录名、`name` 与安装后的插件身份必须一致。安装到 `github` 市场后，插件 ID 是 `demo@github`。
 
 ## 全局启停清单

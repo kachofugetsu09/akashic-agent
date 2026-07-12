@@ -23,13 +23,13 @@ export function ShortcutKey({ children, className }: { children: ReactNode; clas
 
 export function Label({ children }: { children: ReactNode }) {
   return (
-    <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-subtle">{children}</span>
+    <span className="font-sans text-[11px] font-medium tracking-wide text-subtle">{children}</span>
   );
 }
 
 export function FieldLabel({ children }: { children: ReactNode }) {
   return (
-    <label className="mb-2 block font-mono text-[10px] uppercase tracking-[0.2em] text-muted">
+    <label className="mb-2 block font-sans text-[11px] font-medium tracking-wide text-muted">
       {children}
     </label>
   );
@@ -58,6 +58,30 @@ export function Tile({
   );
 }
 
+export function Stack({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("ak-plugin-stack", className)}>{children}</div>;
+}
+
+export function Grid({
+  children,
+  columns = 2,
+  className,
+}: {
+  children: ReactNode;
+  columns?: 2 | 3 | 4;
+  className?: string;
+}) {
+  return <div className={cn("ak-plugin-grid", `ak-plugin-grid-${columns}`, className)}>{children}</div>;
+}
+
+export function Panel({ children, className }: { children: ReactNode; className?: string }) {
+  return <section className={cn("ak-plugin-panel", className)}>{children}</section>;
+}
+
+export function Toolbar({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("ak-plugin-toolbar", className)}>{children}</div>;
+}
+
 // ---------------------------------------------------------------------------
 // Buttons
 // ---------------------------------------------------------------------------
@@ -73,7 +97,7 @@ const BTN_SIZES: Record<BtnSize, string> = {
 
 const BTN_VARIANTS: Record<BtnVariant, string> = {
   primary:
-    "bg-accent text-accent-ink hover:brightness-110 active:brightness-95 shadow-[0_1px_0_0_rgba(255,255,255,0.12)_inset,0_6px_14px_-6px_rgba(72,90,226,0.55)]",
+    "bg-accent text-accent-ink hover:brightness-110 active:brightness-95 shadow-[0_1px_0_0_rgba(255,255,255,0.12)_inset]",
   secondary: "bg-transparent text-fg border border-border hover:border-border-strong",
   ghost: "bg-transparent text-fg hover:bg-surface-2",
   danger: "bg-danger/20 text-danger hover:bg-danger/30 active:bg-danger/25",
@@ -104,7 +128,7 @@ export function Btn({
       onClick={onClick}
       disabled={disabled || loading}
       className={cn(
-        "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40",
+        "inline-flex select-none items-center gap-2 rounded-md font-medium tracking-tight transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40",
         BTN_SIZES[size],
         BTN_VARIANTS[variant],
         className,
@@ -156,7 +180,7 @@ export function Chip({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-mono text-[11px] tabular-nums",
+        "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-sans text-[11px] tabular-nums",
         CHIP_TONES[tone],
         className,
       )}
