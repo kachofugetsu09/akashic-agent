@@ -331,6 +331,48 @@
 - 验证结果：Akasha/dashboard 相关 `38 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
 - 残余风险：配置字段的数值转换仍有历史默认策略，需要按字段契约另行审计。
 
+### `f45b899e` `fix(proactive): 暴露上下文组装故障`
+
+- 范围：主动 prompt 的 MemoryProfile/workspace 规则读取、类型协议和 facade 测试替身。
+- 历史依据：PR #101 的 runtime clock 和 Drift 规则；PR #103 的 Prepare→Judge→Resolve→Deliver 次序。
+- 原问题：prompt builder 分别吞掉四个任意异常，把画像、长期记忆、近期上下文和 workspace 规则故障伪装成内容为空；旧测试假对象缺少真实协议方法也被掩盖。
+- 为什么这样修改：MemoryProfile 是完整内部协议；workspace callback 已在文件 I/O 边界记录失败并返回旧缓存，组装层没有第二种恢复动作。
+- 不变量与拥有层：profile 读取由 MemoryProfileApi/runtime 拥有；workspace 文件恢复由 loop callback 拥有；prompt builder 只组装；tick supervisor 记录并隔离整轮错误。
+- 能力变化：正常区块、空内容跳过和 runtime clock 位置不变；依赖故障从缺块假成功变为明确 tick 失败。
+- 性能变化：读取次数不变，删除重复异常框架，无性能声明。
+- 测试新增：三个 profile 方法和 workspace callback 的失败传播；修复 facade 使其实现真实读取协议。
+- 测试删除及原因：无。
+- 验证结果：主动相关组合 `422 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：workspace I/O 仍按设计可降级到旧缓存并记录 warning；这是拥有恢复动作的边界，不属于静默失败。
+
+### `f0af9b55` `fix(peer-agent): reject missing remote task id`
+
+- 范围：A2A `message/send` 非阻塞提交响应、Poller 注册和新直接测试。
+- 历史依据：现有请求固定 `configuration.blocking=false`，随后必须以服务端 Task ID 调用异步 Poller。
+- 原问题：响应缺少 `result.id` 时生成从未发给服务端的本地 UUID，返回 submitted 并永久轮询不存在的任务。
+- 为什么这样修改：验证顶层/result object 和非空字符串 Task ID；协议损坏进入既有公开提交失败结果，且不注册 Poller。
+- 不变量与拥有层：A2A HTTP/JSON 响应由 `_submit_task` 拥有；只有服务端 Task ID 能进入 Poller；`execute()` 拥有对用户可见的提交失败转换。
+- 能力变化：合法异步 Task、冷启动、channel/chat 绑定与后台通知不变；假成功被删除。
+- 性能变化：仅响应边界增加常数级校验，不声明性能收益。
+- 测试新增：服务端 ID 正常注册，以及数组响应、缺失/空/非对象 result、空/非字符串 id 共七条路径。
+- 测试删除及原因：无。
+- 验证结果：定向 `7 passed`；副手完整测试 `1528 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：若未来改为 blocking 请求允许直接 Message，必须单独设计同步结果分支，不能复用异步 Poller。
+
+### `e6187d6f` `fix(akasha): 拒绝非法显式配置值`
+
+- 范围：Akasha 配置字符串/整数/浮点解析及真实 TOML 参数化测试。
+- 历史依据：统一 `load_akasha_config` 被 candidate 初始化、replay、dashboard 和诊断命令共同使用，是唯一 schema owner。
+- 原问题：显式非法值被静默替换为默认值，且 `bool` 会因 Python 是 `int` 子类而可能穿透数字判断。
+- 为什么这样修改：文件或字段缺失才使用默认；合法整数、浮点和历史数字字符串继续支持；显式错误携带字段名失败。
+- 不变量与拥有层：TOML 类型收敛由配置加载器拥有，上游无法保证手工文件；算法层信任强类型且有限的数值。
+- 能力变化：缺失配置默认值和合法历史写法不变；错误 db_path、非数字字符串、非整数 float、nan、bool、容器改为 fail-fast。
+- 性能变化：仅初始化解析路径，无性能声明。
+- 测试新增：默认/合法数字字符串，以及上述显式错误类型；特别覆盖 int/float 字段的 bool 与容器。
+- 测试删除及原因：无。
+- 验证结果：配置定向 `8 passed`、Akasha+fast replay parity `46 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：字段领域范围未在本提交新增限制；需要先从算法和历史配置证明范围，避免武断裁剪能力。
+
 ### `<commit>` `<title>`
 
 - 范围：
