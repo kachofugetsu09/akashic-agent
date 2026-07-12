@@ -369,11 +369,19 @@ class SessionManager:
         }
         return {k: v for k, v in msg.items() if k not in skip}
 
-    def _persist_messages(self, session: Session, messages: list[dict[str, Any]]) -> int:
-        next_seq = self._store.next_seq(session.key)
-        inserted = 0
+    def _persist_session(
+        self,
+        session: Session,
+        messages: list[dict[str, Any]],
+        *,
+        updated_at: datetime,
+    ) -> int:
+        """原子刷新 session 元数据并追加尚未持久化的消息。"""
 
-        # 1. 只写入尚未持久化（没有 id）的消息。
+        pending_messages: list[dict[str, Any]] = []
+        pending_payloads: list[dict[str, Any]] = []
+
+        # 1. 准备尚未持久化的消息，不提前修改内存中的稳定 id。
         for msg in messages:
             if msg.get("id"):
                 continue
@@ -381,60 +389,55 @@ class SessionManager:
             content = msg.get("content", "")
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False)
-            row = self._store.insert_message(
-                session.key,
-                role=str(msg.get("role") or "assistant"),
-                content=content,
-                ts=ts,
-                seq=next_seq,
-                tool_chain=msg.get("tool_chain"),
-                extra=self._extract_extra(msg),
+            pending_messages.append(msg)
+            pending_payloads.append(
+                {
+                    "role": str(msg.get("role") or "assistant"),
+                    "content": content,
+                    "timestamp": ts,
+                    "tool_chain": msg.get("tool_chain"),
+                    "extra": self._extract_extra(msg),
+                }
             )
-            msg.update(row)
-            next_seq += 1
-            inserted += 1
 
-        # 2. 保持会话消息缓存里的时间字段完整。
+        # 2. session 元数据和消息在同一事务中提交。
+        rows = self._store.persist_session(
+            session.key,
+            created_at=session.created_at.isoformat(),
+            updated_at=updated_at.isoformat(),
+            last_consolidated=session.last_consolidated,
+            metadata=session.metadata,
+            messages=pending_payloads,
+        )
+        for msg, row in zip(pending_messages, rows):
+            msg.update(row)
+
+        # 3. 保持会话消息缓存里的时间字段完整。
         for msg in messages:
             if "timestamp" not in msg:
                 msg["timestamp"] = datetime.now().astimezone().isoformat()
 
-        return inserted
+        session.updated_at = updated_at
+        return len(rows)
 
     def save(self, session: Session) -> None:
-        session.updated_at = datetime.now()
-        self._ensure_session_meta(session)
-        self._persist_messages(session, session.messages)
-        self._store.upsert_session(
-            session.key,
-            created_at=session.created_at.isoformat(),
-            updated_at=session.updated_at.isoformat(),
-            last_consolidated=session.last_consolidated,
-            metadata=session.metadata,
+        self._persist_session(
+            session,
+            session.messages,
+            updated_at=datetime.now(),
         )
         self._cache[session.key] = session
 
     async def save_async(self, session: Session) -> None:
-        session.updated_at = datetime.now()
         async with self._lock(session.key):
             self.save(session)
 
     async def append_messages(self, session: Session, messages: list[dict]) -> None:
-        session.updated_at = datetime.now()
+        updated_at = datetime.now()
         msgs_copy = list(messages)
         async with self._lock(session.key):
-            # 1. 确保 session 元数据存在并刷新 updated_at。
-            self._ensure_session_meta(session)
-            # 2. 追加写入本次新增消息，并补齐稳定 id。
-            self._persist_messages(session, msgs_copy)
-            # 3. 回写 session 元数据（含 last_consolidated / metadata）。
-            self._store.upsert_session(
-                session.key,
-                created_at=session.created_at.isoformat(),
-                updated_at=session.updated_at.isoformat(),
-                last_consolidated=session.last_consolidated,
-                metadata=session.metadata,
-            )
+            # 1. 原子追加消息并刷新 session 元数据。
+            self._persist_session(session, msgs_copy, updated_at=updated_at)
             self._cache[session.key] = session
 
     def invalidate(self, key: str) -> None:

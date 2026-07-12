@@ -137,11 +137,16 @@ def _coerce_float(value: object, default: float = 0.0) -> float:
     return default
 
 
-def _json_object(raw: object) -> dict[str, object]:
-    if not raw:
+def _json_object(raw: object, *, context: str = "memory extra_json") -> dict[str, object]:
+    if raw is None or raw == "":
         return {}
-    data = json.loads(str(raw))
-    return cast(dict[str, object], data) if isinstance(data, dict) else {}
+    try:
+        data = json.loads(str(raw))
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"{context} JSON 损坏") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{context} 必须是 JSON object")
+    return cast(dict[str, object], data)
 
 
 def _json_embedding(raw: object) -> list[float] | None:
@@ -605,7 +610,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 "id": row_id,
                 "memory_type": memory_type,
                 "summary": summary,
-                "extra_json": json.loads(extra_json) if extra_json else {},
+                "extra_json": _json_object(
+                    extra_json, context=f"memory item {row_id} extra_json"
+                ),
                 "source_ref": source_ref,
                 "happened_at": happened_at,
                 "status": status,
@@ -679,13 +686,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                     "old_summary": row[2],
                     "old_source_ref": row[3],
                     "old_happened_at": row[4],
-                    "old_extra_json": json.loads(row[5]) if row[5] else {},
+                    "old_extra_json": _json_object(
+                        row[5], context=f"replacement old item {row[0]} extra_json"
+                    ),
                     "new_item_id": row[6],
                     "new_memory_type": row[7],
                     "new_summary": row[8],
                     "new_source_ref": row[9],
                     "new_happened_at": row[10],
-                    "new_extra_json": json.loads(row[11]) if row[11] else {},
+                    "new_extra_json": _json_object(
+                        row[11], context=f"replacement new item {row[6]} extra_json"
+                    ),
                     "relation_type": row[12],
                     "source_ref": row[13],
                     "created_at": row[14],
@@ -803,7 +814,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                     extra_json,
                     row_has_embedding,
                 ) = row
-                extra = json.loads(extra_json) if extra_json else {}
+                extra = _json_object(
+                    extra_json, context=f"memory item {row_id} extra_json"
+                )
                 items.append(
                     {
                         "id": str(row_id),
@@ -861,7 +874,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             "content_hash": content_hash,
             "reinforcement": reinforcement,
             "emotional_weight": emotional_weight,
-            "extra_json": json.loads(extra_json) if extra_json else {},
+            "extra_json": _json_object(
+                extra_json, context=f"memory item {row_id} extra_json"
+            ),
             "source_ref": source_ref,
             "happened_at": happened_at,
             "status": status,
@@ -1007,7 +1022,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 emotional_weight,
             ) = row
             emb = _json_embedding(emb_json)
-            extra = _json_object(extra_json)
+            extra = _json_object(
+                extra_json, context=f"memory item {row_id} extra_json"
+            )
             extra["_reinforcement"] = _coerce_int(reinforcement, 1)
             extra["_updated_at"] = str(updated_at) if updated_at else ""
             extra["_emotional_weight"] = _coerce_emotional_weight(emotional_weight)
@@ -1080,7 +1097,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             if not _is_memory_time_in_range(happened_at, time_start, time_end):
                 continue
             emb = _json_embedding(emb_json)
-            extra = _json_object(extra_json)
+            extra = _json_object(
+                extra_json, context=f"memory item {row_id} extra_json"
+            )
             extra["_reinforcement"] = _coerce_int(reinforcement, 1)
             extra["_updated_at"] = str(updated_at) if updated_at else ""
             extra["_emotional_weight"] = _coerce_emotional_weight(emotional_weight)
@@ -1178,6 +1197,33 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         if not query_vecs:
             return []
         if time_start is None and time_end is None:
+            use_fullscan = not self._vec_enabled or any(
+                len(query_vec) != self._vec_dim for query_vec in query_vecs
+            )
+            if use_fullscan:
+                if not self._vec_enabled and not self._vec_fallback_logged:
+                    reason = self._vec_init_error or "sqlite-vec 未启用"
+                    logger.warning("vector_search 已降级为全表扫描：%s", reason)
+                    self._vec_fallback_logged = True
+                rows = self.get_all_with_embedding(
+                    include_superseded=include_superseded
+                )
+                return [
+                    self._vector_search_fullscan(
+                        query_vec,
+                        top_k=top_k,
+                        memory_types=memory_types,
+                        score_threshold=score_threshold,
+                        include_superseded=include_superseded,
+                        scope_channel=scope_channel,
+                        scope_chat_id=scope_chat_id,
+                        require_scope_match=require_scope_match,
+                        hotness_alpha=hotness_alpha,
+                        hotness_half_life_days=hotness_half_life_days,
+                        rows=rows,
+                    )
+                    for query_vec in query_vecs
+                ]
             return [
                 self.vector_search(
                     query_vec,
@@ -1310,7 +1356,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             if similarity < score_threshold:
                 continue
 
-            extra = _json_object(extra_json)
+            extra = _json_object(
+                extra_json, context=f"memory item {row_id} extra_json"
+            )
             reinforcement_int = _coerce_int(reinforcement, 1)
             updated_at_str = str(updated_at_raw) if updated_at_raw else ""
             emotional_weight_int = _coerce_emotional_weight(emotional_weight)
@@ -1367,10 +1415,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         hotness_half_life_days: float = 14.0,
         time_start: datetime | None = None,
         time_end: datetime | None = None,
+        rows: list[_EmbeddingRow] | None = None,
     ) -> list[_MemoryHit]:
         """全表扫描回退路径（sqlite-vec 不可用时使用）。"""
         has_time_filter = time_start is not None or time_end is not None
-        if has_time_filter:
+        if rows is not None:
+            filtered_rows = rows
+        elif has_time_filter:
             rows = self._get_embedding_rows_by_time_filter(
                 memory_types=memory_types,
                 include_superseded=include_superseded,
@@ -1380,27 +1431,30 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 time_start=time_start,
                 time_end=time_end,
             )
+            filtered_rows = rows
         else:
-            rows = self.get_all_with_embedding(include_superseded=include_superseded)
-        if not rows:
+            filtered_rows = self.get_all_with_embedding(
+                include_superseded=include_superseded
+            )
+        if not filtered_rows:
             return []
 
         if memory_types and not has_time_filter:
-            rows = [r for r in rows if r[1] in memory_types]
+            filtered_rows = [r for r in filtered_rows if r[1] in memory_types]
 
         if require_scope_match and not has_time_filter:
             s_channel = (scope_channel or "").strip()
             s_chat = (scope_chat_id or "").strip()
-            rows = [
-                r
-                for r in rows
-                if str((r[4] or {}).get("scope_channel", "")).strip() == s_channel
-                and str((r[4] or {}).get("scope_chat_id", "")).strip() == s_chat
+            filtered_rows = [
+                row
+                for row in filtered_rows
+                if str((row[4] or {}).get("scope_channel", "")).strip() == s_channel
+                and str((row[4] or {}).get("scope_chat_id", "")).strip() == s_chat
             ]
 
         return self._score_embedding_rows(
             query_vec,
-            rows,
+            filtered_rows,
             top_k=top_k,
             score_threshold=score_threshold,
             hotness_alpha=hotness_alpha,
@@ -1554,7 +1608,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                     "id": row_id,
                     "memory_type": mtype,
                     "summary": summary,
-                    "extra_json": json.loads(extra_json) if extra_json else {},
+                    "extra_json": _json_object(
+                        extra_json, context=f"memory item {row_id} extra_json"
+                    ),
                     "happened_at": happened_at,
                     "reinforcement": reinforcement,
                     "emotional_weight": emotional_weight,
@@ -1687,10 +1743,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
         matched: list[dict] = []
         for row_id, summary, extra_json_str in rows:
-            try:
-                extra = json.loads(extra_json_str) if extra_json_str else {}
-            except Exception:
-                continue
+            extra = _json_object(
+                extra_json_str, context=f"memory item {row_id} extra_json"
+            )
             tags = extra.get("trigger_tags") or {}
             if tags.get("scope") != "tool_triggered":
                 continue

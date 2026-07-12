@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any, cast
 
-from memory2.store import MemoryStore2
+from memory2.store import MemoryStore2, _content_hash, _json_object
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
@@ -177,42 +178,39 @@ class Memorizer:
         """将 consolidation 的产出写入 SQLite"""
         # 1. history_entry → event
         if history_entry and history_entry.strip():
-            try:
-                text = history_entry.strip()
-                if self._store.has_consolidation_source_ref(source_ref):
+            text = history_entry.strip()
+            if self._store.has_consolidation_source_ref(source_ref):
+                logger.info(
+                    "memory2 consolidation skip duplicated source_ref=%s",
+                    source_ref,
+                )
+                text = ""
+            if text:
+                embedding = await self._embedder.embed(text)
+                if self._should_semantic_dedup_event(
+                    embedding,
+                    emotional_weight=emotional_weight,
+                ):
+                    text = ""
+            if text:
+                result = self._store.upsert_consolidation_event(
+                    source_ref=source_ref,
+                    summary=text,
+                    embedding=embedding,
+                    extra={
+                        "scope_channel": scope_channel,
+                        "scope_chat_id": scope_chat_id,
+                    },
+                    happened_at=_parse_history_entry_happened_at(text),
+                    emotional_weight=emotional_weight,
+                )
+                if result.startswith("skipped:"):
                     logger.info(
                         "memory2 consolidation skip duplicated source_ref=%s",
                         source_ref,
                     )
-                    text = ""
-                if text:
-                    embedding = await self._embedder.embed(text)
-                    if self._should_semantic_dedup_event(
-                        embedding,
-                        emotional_weight=emotional_weight,
-                    ):
-                        text = ""
-                if text:
-                    result = self._store.upsert_consolidation_event(
-                        source_ref=source_ref,
-                        summary=text,
-                        embedding=embedding,
-                        extra={
-                            "scope_channel": scope_channel,
-                            "scope_chat_id": scope_chat_id,
-                        },
-                        happened_at=_parse_history_entry_happened_at(text),
-                        emotional_weight=emotional_weight,
-                    )
-                    if result.startswith("skipped:"):
-                        logger.info(
-                            "memory2 consolidation skip duplicated source_ref=%s",
-                            source_ref,
-                        )
-                    else:
-                        logger.info(f"memory2 event saved: {result}")
-            except Exception as e:
-                logger.warning(f"memory2 event save 失败: {e}")
+                else:
+                    logger.info("memory2 event saved: %s", result)
 
         # 2. behavior_updates 统一由 post-response worker 处理，避免与 consolidation 重复写入
         if behavior_updates:
@@ -295,10 +293,6 @@ class Memorizer:
         对 procedure 类型同步重建 rule_schema，并写入 _merge_note 供溯源。
         调用方保证 merged_summary 非空且 item_id 存在。
         """
-        import json as _json
-
-        from memory2.store import _content_hash
-
         merged_summary = (merged_summary or "").strip()
         if not merged_summary or not item_id:
             return
@@ -311,12 +305,10 @@ class Memorizer:
             return
 
         memory_type, extra_json_str = row
-        old_extra: dict = {}
-        if extra_json_str:
-            try:
-                old_extra = _json.loads(extra_json_str) or {}
-            except Exception:
-                pass
+        old_extra: dict[str, Any] = cast(
+            dict[str, Any],
+            _json_object(extra_json_str, context=f"memory item {item_id} extra_json"),
+        )
 
         new_embedding = await self._embedder.embed(merged_summary)
         new_hash = _content_hash(merged_summary, memory_type)

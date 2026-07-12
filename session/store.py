@@ -634,20 +634,23 @@ class SessionStore:
             ).fetchone()
         return int((row["c"] if row else 0) or 0)
 
-    def next_seq(self, session_key: str) -> int:
-        with self._lock:
-            meta = self._conn.execute(
-                "SELECT next_seq FROM sessions WHERE key = ?",
-                (session_key,),
-            ).fetchone()
-            row = self._conn.execute(
-                "SELECT COALESCE(MAX(seq) + 1, 0) AS next_seq FROM messages WHERE session_key = ?",
-                (session_key,),
-            ).fetchone()
+    def _next_seq_locked(self, session_key: str) -> int:
+        meta = self._conn.execute(
+            "SELECT next_seq FROM sessions WHERE key = ?",
+            (session_key,),
+        ).fetchone()
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(seq) + 1, 0) AS next_seq FROM messages WHERE session_key = ?",
+            (session_key,),
+        ).fetchone()
         from_messages = int((row["next_seq"] if row else 0) or 0)
         if meta is None:
             return from_messages
         return max(int(meta["next_seq"] or 0), from_messages)
+
+    def next_seq(self, session_key: str) -> int:
+        with self._lock:
+            return self._next_seq_locked(session_key)
 
     def insert_message(
         self,
@@ -706,6 +709,110 @@ class SessionStore:
         if extra:
             row.update(extra)
         return row
+
+    def _prepare_message_batch(
+        self,
+        key: str,
+        *,
+        start_seq: int,
+        messages: list[dict[str, Any]],
+    ) -> tuple[list[tuple[Any, ...]], list[dict[str, Any]]]:
+        """序列化待写消息并构造提交成功后的内存行。"""
+
+        insert_rows: list[tuple[Any, ...]] = []
+        result_rows: list[dict[str, Any]] = []
+
+        # 1. 先完成序列化，失败时不改变数据库和内存消息。
+        for offset, message in enumerate(messages):
+            seq = start_seq + offset
+            message_id = f"{key}:{seq}"
+            tool_chain = message.get("tool_chain")
+            extra = message["extra"]
+            tool_chain_payload = (
+                json.dumps(tool_chain, ensure_ascii=False)
+                if tool_chain is not None
+                else None
+            )
+            insert_rows.append(
+                (
+                    message_id,
+                    key,
+                    seq,
+                    str(message["role"]),
+                    str(message["content"]),
+                    tool_chain_payload,
+                    json.dumps(extra, ensure_ascii=False),
+                    str(message["timestamp"]),
+                )
+            )
+            row = {
+                "id": message_id,
+                "session_key": key,
+                "seq": seq,
+                "role": str(message["role"]),
+                "content": str(message["content"]),
+                "timestamp": str(message["timestamp"]),
+            }
+            if tool_chain is not None:
+                row["tool_chain"] = tool_chain
+            row.update(extra)
+            result_rows.append(row)
+        return insert_rows, result_rows
+
+    def persist_session(
+        self,
+        key: str,
+        *,
+        created_at: str,
+        updated_at: str,
+        last_consolidated: int,
+        metadata: dict[str, Any],
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """在一个事务中更新 session 元数据并批量写入消息。"""
+
+        metadata_payload = json.dumps(metadata, ensure_ascii=False)
+        result_rows: list[dict[str, Any]] = []
+
+        # 1. 元数据和消息必须同成同败，避免磁盘留下半个 turn。
+        with self._lock:
+            with self._conn:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    """
+                    INSERT INTO sessions (key, created_at, updated_at, last_consolidated, metadata)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        updated_at = excluded.updated_at,
+                        last_consolidated = excluded.last_consolidated,
+                        metadata = excluded.metadata
+                    """,
+                    (key, created_at, updated_at, int(last_consolidated), metadata_payload),
+                )
+                if messages:
+                    start_seq = self._next_seq_locked(key)
+                    insert_rows, result_rows = self._prepare_message_batch(
+                        key,
+                        start_seq=start_seq,
+                        messages=messages,
+                    )
+                    self._conn.executemany(
+                        """
+                        INSERT INTO messages (id, session_key, seq, role, content, tool_chain, extra, ts)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        insert_rows,
+                    )
+                    next_seq = start_seq + len(insert_rows)
+                    self._conn.execute(
+                        """
+                        UPDATE sessions
+                        SET next_seq = CASE WHEN next_seq < ? THEN ? ELSE next_seq END
+                        WHERE key = ?
+                        """,
+                        (next_seq, next_seq, key),
+                    )
+        return result_rows
 
     def fetch_session_messages(self, session_key: str) -> list[dict[str, Any]]:
         with self._lock:

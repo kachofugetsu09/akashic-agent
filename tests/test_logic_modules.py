@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import Any, cast
 
 import asyncio
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +24,7 @@ from session.manager import (
     _TOOL_RESULT_CHAR_BUDGET,
     _safe_filename,
 )
+from session.store import SessionStore
 
 
 @pytest.mark.asyncio
@@ -130,6 +133,94 @@ def test_session_metadata_corruption_fails_at_database_boundary(
         manager._store.get_session_meta(session_key)
     with pytest.raises(ValueError, match=session_key):
         manager._store.list_sessions_for_dashboard()
+
+
+@pytest.mark.asyncio
+async def test_session_batch_persistence_rolls_back_all_messages_on_failure(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:atomic")
+    session.add_message("user", "第一条")
+    session.add_message("assistant", "第二条")
+    manager._store._conn.execute(
+        """
+        CREATE TRIGGER reject_assistant_message
+        BEFORE INSERT ON messages
+        WHEN NEW.role = 'assistant'
+        BEGIN
+            SELECT RAISE(ABORT, '测试写入失败');
+        END
+        """
+    )
+    manager._store._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="测试写入失败"):
+        await manager.append_messages(session, session.messages)
+
+    assert manager._store.count_messages(session.key) == 0
+    assert all("id" not in message for message in session.messages)
+
+
+@pytest.mark.asyncio
+async def test_session_batch_persistence_uses_one_commit(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:batch")
+    session.add_message("user", "第一条")
+    session.add_message("assistant", "第二条")
+    statements: list[str] = []
+    manager._store._conn.set_trace_callback(statements.append)
+
+    await manager.append_messages(session, session.messages)
+
+    assert statements.count("COMMIT") == 1
+
+
+def test_session_persistence_allocates_sequences_inside_transaction(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    store_a = SessionStore(db_path)
+    store_b = SessionStore(db_path)
+    key = "telegram:concurrent"
+
+    def persist(store: SessionStore, content: str) -> list[dict[str, Any]]:
+        return store.persist_session(
+            key,
+            created_at="2026-07-13T00:00:00+00:00",
+            updated_at="2026-07-13T00:00:01+00:00",
+            last_consolidated=0,
+            metadata={},
+            messages=[
+                {
+                    "role": "user",
+                    "content": content,
+                    "timestamp": "2026-07-13T00:00:01+00:00",
+                    "extra": {},
+                }
+            ],
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(persist, store_a, "来自 A"),
+                pool.submit(persist, store_b, "来自 B"),
+            ]
+            rows = [future.result(timeout=5) for future in futures]
+        messages = store_a.fetch_session_messages(key)
+    finally:
+        store_a.close()
+        store_b.close()
+
+    assert {str(row[0]["id"]) for row in rows} == {
+        f"{key}:0",
+        f"{key}:1",
+    }
+    assert [str(message["id"]) for message in messages] == [
+        f"{key}:0",
+        f"{key}:1",
+    ]
 
 
 def test_session_get_history_returns_empty_when_window_is_zero():

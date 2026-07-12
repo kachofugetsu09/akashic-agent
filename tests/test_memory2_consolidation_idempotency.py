@@ -1,6 +1,8 @@
 from typing import Any, cast
 import asyncio
 
+import pytest
+
 from memory2.memorizer import Memorizer, _parse_history_entry_happened_at
 from memory2.store import MemoryStore2
 
@@ -91,3 +93,25 @@ def test_save_from_consolidation_skips_duplicate_source_ref(tmp_path):
     items = store.list_by_type("event")
     assert len(items) == 1
     assert items[0]["reinforcement"] == 1
+
+
+def test_save_from_consolidation_exposes_storage_failure(tmp_path, monkeypatch):
+    store = MemoryStore2(tmp_path / "memory2.db")
+
+    def fail_upsert(**_kwargs):
+        raise RuntimeError("memory database unavailable")
+
+    monkeypatch.setattr(store, "upsert_consolidation_event", fail_upsert)
+    memorizer = Memorizer(store, cast(Any, _FakeEmbedder()))
+
+    async def _run() -> None:
+        await memorizer.save_from_consolidation(
+            history_entry="[2026-03-15 10:00] 存储失败测试",
+            behavior_updates=[],
+            source_ref="test@storage-failure",
+            scope_channel="cli",
+            scope_chat_id="1",
+        )
+
+    with pytest.raises(RuntimeError, match="memory database unavailable"):
+        asyncio.run(_run())

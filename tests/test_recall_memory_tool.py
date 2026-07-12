@@ -538,6 +538,57 @@ def test_store_vector_batch_reuses_time_filtered_embedding_rows(
     assert results[1][0]["summary"] == "[2026-04-25 10:00] 重构今日事件"
 
 
+def test_store_vector_batch_reuses_fullscan_embedding_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    store.upsert_item("event", "批量全表扫描 A", [1.0, 0.0])
+    store.upsert_item("event", "批量全表扫描 B", [0.0, 1.0])
+    store._vec_enabled = False
+    calls = 0
+    original = store.get_all_with_embedding
+
+    def counted_get_all_with_embedding(
+        include_superseded: bool = False,
+    ) -> list[_EmbeddingRow]:
+        nonlocal calls
+        calls += 1
+        return original(include_superseded=include_superseded)
+
+    monkeypatch.setattr(store, "get_all_with_embedding", counted_get_all_with_embedding)
+
+    results = store.vector_search_batch(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+        top_k=1,
+        score_threshold=0.0,
+    )
+
+    assert calls == 1
+    assert [group[0]["summary"] for group in results] == [
+        "批量全表扫描 A",
+        "批量全表扫描 B",
+        "批量全表扫描 A",
+    ]
+
+
+def test_memory_extra_json_shape_corruption_fails_at_retrieval_boundary(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db")
+    result = store.upsert_item("procedure", "损坏的流程元数据", [1.0, 0.0], extra={})
+    item_id = result.removeprefix("new:")
+    store._db.execute(
+        "UPDATE memory_items SET extra_json = ? WHERE id = ?",
+        ("[]", item_id),
+    )
+    store._db.commit()
+    store._vec_enabled = False
+
+    with pytest.raises(ValueError, match=item_id):
+        store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0)
+
+
 def test_vec_insert_failure_falls_back_to_fullscan(tmp_path: Path) -> None:
     store = MemoryStore2(tmp_path / "memory2.db", vec_dim=2)
     store._db.execute("DROP TABLE IF EXISTS vec_items")
