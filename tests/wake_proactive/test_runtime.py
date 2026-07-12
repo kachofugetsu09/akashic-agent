@@ -49,6 +49,11 @@ class FakeContextGateway:
         raise AssertionError(tool_name)
 
 
+class FailingGateway:
+    async def call(self, server, tool_name, args, *, timeout=None):
+        raise RuntimeError("source unavailable")
+
+
 class FlakyAckGateway(FakeGateway):
     def __init__(self, events: list[dict]) -> None:
         super().__init__(events)
@@ -424,6 +429,47 @@ async def test_shared_ack_route_keeps_original_source_grouping_and_order(
     assert gateway.acks == [{"event_ids": ["a-new", "a-old", "b-new"]}]
 
 
+@pytest.mark.parametrize("mode", ["content", "alert", "context"])
+def test_unified_prompt_always_exposes_current_context(mode) -> None:
+    ctx = WakeContext(
+        content_events=[
+            {
+                "id": "feed:item",
+                "title": "已有 content 标题",
+                "published_at": "2026-07-12T00:00:00+00:00",
+            }
+        ]
+    )
+    event = (
+        None
+        if mode == "content"
+        else {"event_id": "event-1", "summary": "本轮单条事件"}
+    )
+
+    messages = build_messages(
+        ctx=ctx,
+        memory_text="memory",
+        proactive_context="proactive context",
+        recent_session="recent session",
+        current_context="presence=active | confidence=0.90",
+        mode=cast(Any, mode),
+        event=event,
+    )
+
+    assert "【当前 ContextEvent】" in messages[1]["content"]
+    assert "presence=active | confidence=0.90" in messages[1]["content"]
+    assert f"mode={mode}" in messages[1]["content"]
+    assert all(
+        marker in messages[0]["content"]
+        for marker in ("mode=content", "mode=alert", "mode=context")
+    )
+    if mode == "content":
+        assert "已有 content 标题" in messages[1]["content"]
+        assert "scratchpad" in messages[0]["content"]
+    else:
+        assert "本轮单条事件" in messages[1]["content"]
+
+
 def test_legacy_reservoir_migrates_ack_and_original_sources(tmp_path) -> None:
     path = tmp_path / "legacy.db"
     connection = sqlite3.connect(path)
@@ -471,13 +517,28 @@ def test_legacy_reservoir_migrates_ack_and_original_sources(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_alerts_are_delivered_one_per_tick_without_feedback_label(tmp_path, request):
+async def test_alerts_are_naturalized_by_one_llm_call_per_tick(
+    tmp_path, request, caplog
+):
     events = [
         {"kind": "alert", "event_id": "a1", "title": "提醒一", "body": "内容一"},
         {"kind": "alert", "event_id": "a2", "title": "提醒二", "body": "内容二"},
     ]
     gateway = FakeGateway(events)
-    provider = SimpleNamespace(chat=AsyncMock())
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        "alert",
+                        "send_event",
+                        {"message": "这几天恢复状态有些往下走，今晚尽量早点休息。"},
+                    )
+                ],
+            )
+        )
+    )
     orchestrator = FakeOrchestrator()
     scope = _scope(tmp_path, gateway, provider, orchestrator, _source("alert"))
     scope.memory.embedding_api.embed_batch.side_effect = RuntimeError("embedding down")
@@ -490,16 +551,25 @@ async def test_alerts_are_delivered_one_per_tick_without_feedback_label(tmp_path
     frame = new_proactive_frame("telegram:1")
     state = runtime.begin(frame)
 
-    await runtime.ingest(state)
-    await runtime.decide(state)
+    with caplog.at_level("INFO", logger="plugins.wake_proactive.runtime"):
+        await runtime.ingest(state)
+        await runtime.decide(state)
 
     assert len(orchestrator.results) == 1
-    assert orchestrator.results[0].outbound.content in {"提醒一\n\n内容一", "提醒二\n\n内容二"}
+    assert orchestrator.results[0].outbound.content == "这几天恢复状态有些往下走，今晚尽量早点休息。"
+    assert provider.chat.await_count == 1
+    request_messages = provider.chat.await_args.kwargs["messages"]
+    assert "mode=alert" in request_messages[1]["content"]
+    assert any(title in request_messages[1]["content"] for title in ("提醒一", "提醒二"))
     assert state.next_interval_seconds == 1
     assert len(gateway.acks) == 1
     assert set(gateway.acks[0]) == {"event_ids"}
     assert len(runtime._state.unread("alert")) == 1
     assert scope.memory.embedding_api.embed_batch.await_count == 0
+    assert "[wake.source] poll ok" in caplog.text
+    assert "new=alerts:2,content:0" in caplog.text
+    assert "[wake.event] llm done kind=alert" in caplog.text
+    assert len(runtime._state.observations("alert")) == 1
 
 
 @pytest.mark.asyncio
@@ -517,7 +587,20 @@ async def test_ack_failure_does_not_repeat_delivered_alert_and_retries_next_tick
         _scope(
             tmp_path,
             gateway,
-            SimpleNamespace(chat=AsyncMock()),
+            SimpleNamespace(
+                chat=AsyncMock(
+                    return_value=LLMResponse(
+                        content=None,
+                        tool_calls=[
+                            ToolCall(
+                                "alert",
+                                "send_event",
+                                {"message": "这是一条只发送一次的自然提醒。"},
+                            )
+                        ],
+                    )
+                )
+            ),
             orchestrator,
             _source("alert"),
         ),
@@ -542,6 +625,57 @@ async def test_ack_failure_does_not_repeat_delivered_alert_and_retries_next_tick
     assert store.pending_acknowledgements() == {}
     assert store.unread("alert") == []
     assert len(orchestrator.results) == 1
+
+
+@pytest.mark.asyncio
+async def test_alert_llm_failure_keeps_event_unread_for_retry(tmp_path, request):
+    gateway = FakeGateway(
+        [{"kind": "alert", "event_id": "a1", "title": "需要自然处理"}]
+    )
+    orchestrator = FakeOrchestrator()
+    runtime = WakeRuntime(
+        _scope(
+            tmp_path,
+            gateway,
+            SimpleNamespace(chat=AsyncMock(side_effect=RuntimeError("llm down"))),
+            orchestrator,
+            _source("alert"),
+        ),
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
+    )
+    request.addfinalizer(runtime.close)
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(state)
+
+    with pytest.raises(RuntimeError, match="llm down"):
+        await runtime.decide(state)
+
+    assert len(runtime._state.unread("alert")) == 1
+    assert orchestrator.results == []
+    assert len(runtime._state.observations("alert")) == 1
+
+
+@pytest.mark.asyncio
+async def test_source_poll_failure_is_visible_in_main_log(tmp_path, request, caplog):
+    runtime = WakeRuntime(
+        _scope(
+            tmp_path,
+            FailingGateway(),
+            SimpleNamespace(chat=AsyncMock()),
+            FakeOrchestrator(),
+            _source("alert"),
+        ),
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
+    )
+    request.addfinalizer(runtime.close)
+
+    with caplog.at_level("INFO", logger="plugins.wake_proactive.runtime"):
+        with pytest.raises(RuntimeError, match="所有 proactive sources 拉取失败"):
+            await runtime.ingest(runtime.begin(new_proactive_frame("telegram:1")))
+
+    assert "[wake.source] poll failed sources=1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -977,7 +1111,20 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
             "expires_at": (now + timedelta(minutes=15)).isoformat(),
         }
     )
-    provider = SimpleNamespace(chat=AsyncMock())
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        "context",
+                        "skip_event",
+                        {"reason": "用户醒来本身不值得打扰"},
+                    )
+                ],
+            )
+        )
+    )
     orchestrator = FakeOrchestrator()
     store = WakeStateStore(tmp_path / "wake.db")
     scope = _scope(tmp_path, gateway, provider, orchestrator, _source("context"))
@@ -1026,13 +1173,15 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     await runtime.decide(second)
 
     assert second.context_reevaluate is True
-    assert second.hazard_result is not None
-    assert second.hazard_result.hazard_after > 0
+    assert second.hazard_result is None
     assert store.load_context("feed_plugin:main").presence == "active"
     assert "presence=active" in runtime._current_context_text(now)
     assert len(store.unread("content")) == 1
-    assert provider.chat.await_count == 0
-    assert orchestrator.results == []
+    assert provider.chat.await_count == 1
+    assert "mode=context" in provider.chat.await_args.kwargs["messages"][1]["content"]
+    assert len(orchestrator.results) == 1
+    assert orchestrator.results[0].decision == "skip"
+    assert len(store.observations("context")) == 1
 
     clock.advance(timedelta(hours=1))
     third = runtime.begin(new_proactive_frame("telegram:1"))
@@ -1042,10 +1191,64 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     assert third.context_reevaluate is False
     assert runtime._current_context_text(clock.now()).startswith("unknown")
     assert third.hazard_result is not None
-    assert third.hazard_result.hazard_after > second.hazard_result.hazard_after
+    assert third.hazard_result.hazard_after > 0
     assert len(store.unread("content")) == 1
-    assert provider.chat.await_count == 0
-    assert orchestrator.results == []
+    assert provider.chat.await_count == 1
+    assert len(orchestrator.results) == 1
+
+
+@pytest.mark.asyncio
+async def test_context_transition_can_be_shared_by_single_llm_call(tmp_path, request):
+    now = datetime(2026, 7, 12, 12, tzinfo=UTC)
+    gateway = FakeContextGateway(
+        {
+            "presence": "sleeping",
+            "confidence": 0.9,
+            "summary": "用户当前可能已经睡着",
+            "observed_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=15)).isoformat(),
+        }
+    )
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        "context",
+                        "send_event",
+                        {"message": "醒啦？如果刚起来，先慢慢缓一会儿。"},
+                    )
+                ],
+            )
+        )
+    )
+    orchestrator = FakeOrchestrator()
+    runtime = WakeRuntime(
+        _scope(tmp_path, gateway, provider, orchestrator, _source("context")),
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(now),
+    )
+    request.addfinalizer(runtime.close)
+
+    await runtime.ingest(runtime.begin(new_proactive_frame("telegram:1")))
+    gateway.snapshot = {
+        "presence": "active",
+        "confidence": 0.9,
+        "summary": "用户当前更可能醒着",
+        "transition": "sleeping->active",
+        "observed_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=15)).isoformat(),
+    }
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(state)
+    await runtime.decide(state)
+
+    assert provider.chat.await_count == 1
+    prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
+    assert "mode=context" in prompt
+    assert "用户当前更可能醒着" in prompt
+    assert orchestrator.results[0].outbound.content == "醒啦？如果刚起来，先慢慢缓一会儿。"
 
 
 @pytest.mark.asyncio
