@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import json
-import logging
 import mimetypes
 import re
 from dataclasses import dataclass, field
@@ -15,8 +14,6 @@ from agent.prompting import (
     build_context_frame_message,
 )
 from session.store import SessionStore
-
-logger = logging.getLogger(__name__)
 
 _TOOL_RESULT_CHAR_BUDGET = 10000
 _PROACTIVE_HISTORY_CHAR_BUDGET = 360
@@ -450,8 +447,4 @@ class SessionManager:
         return sessions
 
     def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
-        try:
-            return self._store.get_channel_metadata(channel)
-        except Exception as e:
-            logging.warning("Failed to read channel metadata for %s: %s", channel, e)
-            return []
+        return self._store.get_channel_metadata(channel)

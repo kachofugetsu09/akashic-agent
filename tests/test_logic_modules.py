@@ -108,6 +108,30 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
     loop._engine = SimpleNamespace(tick=AsyncMock(return_value=0.2))
+
+
+@pytest.mark.parametrize("payload", ["{broken", "[]"])
+def test_session_metadata_corruption_fails_at_database_boundary(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session_key = "telegram:broken"
+    manager.get_or_create(session_key)
+    manager._store._conn.execute(
+        "UPDATE sessions SET metadata = ? WHERE key = ?",
+        (payload, session_key),
+    )
+    manager._store._conn.commit()
+
+    with pytest.raises(ValueError, match=session_key):
+        manager.get_channel_metadata("telegram")
+    with pytest.raises(ValueError, match=session_key):
+        manager._store.get_session_meta(session_key)
+    with pytest.raises(ValueError, match=session_key):
+        manager._store.list_sessions_for_dashboard()
+
+
 def test_session_get_history_returns_empty_when_window_is_zero():
     session = Session("cli:1")
     session.add_message("user", "hello")

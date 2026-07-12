@@ -18,6 +18,21 @@ def _resolve_path_text(value: object) -> str:
         return ""
 
 
+def _decode_session_metadata(
+    raw: str | bytes | bytearray | None,
+    session_key: str,
+) -> dict[str, Any]:
+    """解析并校验 sessions.metadata 的 JSON object 契约。"""
+
+    try:
+        metadata = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(f"session metadata JSON 损坏: {session_key}") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError(f"session metadata 必须是 JSON object: {session_key}")
+    return cast(dict[str, Any], metadata)
+
+
 class SessionStore:
     """SQLite-backed store for session metadata and messages."""
 
@@ -234,7 +249,7 @@ class SessionStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "last_consolidated": int(row["last_consolidated"] or 0),
-            "metadata": json.loads(row["metadata"] or "{}"),
+            "metadata": _decode_session_metadata(row["metadata"], str(row["key"])),
             "last_user_at": row["last_user_at"],
             "last_proactive_at": row["last_proactive_at"],
         }
@@ -357,7 +372,9 @@ class SessionStore:
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "last_consolidated": int(row["last_consolidated"] or 0),
-                "metadata": json.loads(row["metadata"] or "{}"),
+                "metadata": _decode_session_metadata(
+                    row["metadata"], str(row["key"])
+                ),
                 "last_user_at": row["last_user_at"],
                 "last_proactive_at": row["last_proactive_at"],
                 "first_message_content": row["first_message_content"],
@@ -604,7 +621,7 @@ class SessionStore:
                 {
                     "key": key,
                     "chat_id": chat_id,
-                    "metadata": json.loads(row["metadata"] or "{}"),
+                    "metadata": _decode_session_metadata(row["metadata"], key),
                 }
             )
         return results
