@@ -833,3 +833,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `182 passed`、全量 `1646 passed`、pyright `0 errors`；主线合入后主动链交叉定向 `113 passed`，`git diff --check` 通过。
 - 残余风险：Gateway/source payload 仍使用历史弱类型 dict；本批没有扩大为跨模块 typed contract 重构。
+
+### `bcaf40e8` `fix(tools): harden exact selection and search ranking`
+
+- 范围：tool_search 精确选择、runtime snapshot 文档查询与关键词 top-k 排序。
+- 原问题：`select:` 通过宿主 registry 私有 `_documents` 做 risk 过滤，热重载 snapshot 新增/替换工具会读取错误代际元数据；重复名称产生重复结果；关键词搜索为所有命中候选生成解释并全量排序。
+- 为什么这样修改：新增经过 `_runtime_view()` 的 `get_document()`；select 按输入顺序去重；保持 score 降序和 name 字典序 tie-break，正数 top-k 用 heap 选取后只为最终结果生成解释。
+- 不变量与拥有层：ToolRegistry 拥有工具与索引文档，runtime view 拥有当前代际；ToolSearchTool 拥有 select 解析；KeywordSearchBackend 拥有评分与排序。hook、timeout、ToolResult、解锁与 snapshot 生命周期未改。
+- 能力变化：正常搜索召回、精确名称 fast path、风险过滤和排除集合保持；snapshot risk 使用正确代际；重复 select 幂等。
+- 性能变化：同机 20,000 个匹配文档、每轮 5 次 top-5 的合成负载，中位数由 `1.2399s` 降至 `0.4648s`，约 `2.67x`；不外推为整体生产延迟。
+- 测试新增：score/name tie-break、重复 select、runtime snapshot risk 过滤。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `122 passed`、全量 `1658 passed`、pyright `0 errors`；主线合入后工具交叉定向 `71 passed`，`git diff --check` 通过。
+- 残余风险：高候选、小 top-k 场景收益最大；仍需为所有候选计算基础关键词分数，这是正确排序所必需。
