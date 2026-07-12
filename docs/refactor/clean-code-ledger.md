@@ -429,6 +429,41 @@
 - 验证结果：optimizer `14 passed`，相关主动组合 `422 passed`；pyright `0 errors` 且仅一个既有 warning；`git diff --check` 通过。
 - 残余风险：SELF 写入不是与 MEMORY 同一原子事务，失败会保留已提交 MEMORY；该部分成功状态现在显式可见，后续若要全局原子性需独立设计。
 
+### `96baa0ab` `fix(proactive): 收紧时间归一化异常边界`
+
+- 范围：主动候选时间与时区归一化、直接边界测试。
+- 历史依据：PR #101 的 runtime clock；外部候选非法时间按既有契约可忽略，运行环境故障不可伪装成无时间。
+- 原问题：两个 `except Exception` 同时吞掉非法输入与 tzdata/runtime 程序错误。
+- 为什么这样修改：ISO 只恢复 `ValueError`；时区只恢复 `ValueError`/`ZoneInfoNotFoundError`；其他故障向 tick supervisor 传播。
+- 不变量与拥有层：外部字符串解析由 contracts 边界拥有；tzdata/runtime 可用性不由归一化函数恢复；tick supervisor 负责记录和续跑。
+- 能力变化：合法本地时间、非法 ISO/未知时区忽略不变；非预期时区解析故障改为明确失败。
+- 性能变化：分支和调用次数不变，无性能声明。
+- 测试新增：非法时间/时区继续恢复，以及注入非预期 ZoneInfo RuntimeError 的传播。
+- 测试删除及原因：无。
+- 验证结果：定向 `10 passed`、主动相关 `424 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：GatewayResult 动态 payload 类型仍需跨模块协议设计，不能靠局部 cast 解决。
+
+### `94534191` `fix(akasha): 对齐只读来源引用契约`
+
+- 范围：Akasha source_ref JSON-list 统一解析和 read-only query 回归。
+- 历史依据：PR #66 的 live/replay parity；PR #67 的 read-only 查询不得写 activation/query log。
+- 原问题：stateful query log 已 fail-loud，但 read-only record 构造仍把损坏 JSON 或非数组归为空 evidence，形成模式间失败语义分叉。
+- 为什么这样修改：`_source_refs()` 与 `_source_ref_ids()` 共用唯一 JSON-list parser；内部生成契约违反时直接失败。
+- 不变量与拥有层：source_ref 由 `_load_turn_card` 生成 JSON list；record/query-log 消费层不拥有修复动作。
+- 能力变化：合法 evidence、stateful/read-only 召回结果不变；read-only 损坏引用明确失败，同时仍不产生 pending activation 或 query log。
+- 性能变化：删除重复解析分支，无性能声明。
+- 测试新增：同一 read-only request 先验证合法结果，再注入非数组 source_ref，断言失败且两次均 `update_state=False`、无状态写入。
+- 测试删除及原因：无。
+- 验证结果：Akasha+fast replay parity `51 passed`；pyright `0 errors` 且无新增 warning；`git diff --check` 通过。
+- 残余风险：历史 sidecar/query log 若含坏 source_ref 会显式失败，需要迁移或重建；这是避免空证据假成功的预期行为。
+
+## 集成检查点
+
+- Wave 1 主分支组合验证：`1502 passed`。
+- Wave 2 中段主分支组合验证：`1516 passed`。
+- Wave 2 收束前主分支组合验证：`1554 passed`。
+- 三次均运行 `pytest -q tests/`，未删除测试；用例增长来自真实契约、事务和性能回归。
+
 ### `<commit>` `<title>`
 
 - 范围：
