@@ -1016,3 +1016,16 @@
 - 测试删除及原因：无。
 - 验证结果：主线独立定向 `123 passed`，全量 `1737 passed`，修改生产文件 pyright `0 errors`（64 个既有 warnings），`git diff --check` 通过。
 - 残余风险：既有历史错维 vec schema 没有证据支持自动迁移，本批只保证新建 workspace 正确；迁移必须另行设计可恢复 DB 流程。
+
+### `82b6056d` `fix(session): atomically replace trimmed history`
+
+- 范围：被动轮次在内容安全或上下文长度重试成功后的 history trim、SessionManager 内存 cache、SessionStore 消息与 embedding 持久化。
+- 原问题：retry 成功后先裁剪内存，再调用只会追加无 ID 消息的 `save_async()`；SQLite 中旧消息没有删除，进程重启后被裁历史会复活，保存失败时内存和磁盘也会分叉。
+- 为什么这样修改：reasoner 只提交裁剪意图；SessionManager 持有 per-session 写锁，SessionStore 在一个 `BEGIN IMMEDIATE` 事务内更新 session metadata、删除未保留消息及其 embedding、追加尚未持久化消息；事务成功后才更新内存视图。
+- 不变量与拥有层：reasoner 拥有 retry plan；SessionManager 拥有 session 锁和内存 cache；SessionStore 拥有 SQLite 消息、FTS、embedding 清理和 `next_seq` 高水位。保留消息 ID/seq、正常 append-save、tool discovery、stream、media 和热重载语义不变。
+- 能力变化：裁剪结果跨重启稳定；数据库失败时消息、metadata、`last_consolidated`、embedding 和内存全部保持原状；其他 session 的消息与 embedding 不受影响。
+- 性能变化：正常无 retry turn 不增加数据库操作；仅 retry trim 执行一次同事务消息枚举和删除，避免后续重启重新加载无效历史及对应 embedding。
+- 测试新增：真实重载不复活、保留 ID/seq 与后续高水位、真实 `message_embeddings` 删除/保留/跨 session 隔离、DELETE 失败时消息/metadata/embedding/内存共同回滚。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1734 passed`；主线合入后定向 `55 passed`、全量 `1739 passed in 20.53s`；修改生产文件 pyright `0 errors`（274 个既有 warnings），`git diff --check` 通过。
+- 残余风险：trim 路径仍按 session 当前消息数做一次线性 ID 枚举；只在模型 retry 成功时触发，当前没有证据支持引入更复杂的临时表或批量阈值优化。
