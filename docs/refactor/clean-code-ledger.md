@@ -1002,3 +1002,17 @@
 - 测试删除及原因：无。
 - 验证结果：主线独立 Akasha `56 passed`，全量 `1732 passed`，修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过；live DB/snapshot 只读完整性与签名相符。
 - 残余风险：完整 embedding cache 仍是 engine 启动成本；外部 graph commit 后仍必须做一次真实 signature scan，这是正确性成本，不用 TTL 或近似值替代。
+
+### `44e974c5` `fix(default-memory): close facade resources explicitly`
+
+- 范围：default_memory façade 的 EventBus wiring、内部依赖不变量、workspace storage 维度、inspector/dashboard 边界。
+- 原问题：engine 创建的三类 memory 订阅未进入 runtime closeables，reload 后旧 handler 可重复摄入；缺失 retriever/memorizer/store/embedder 被空结果或 no-op 掩盖；新 workspace provisioning 固定 1024 维，可能与配置 embedding 维度错配并触发 sqlite-vec fallback；inspector 在未绑定 engine 时仍被视为 active，损坏 JSONL 被显示为空。
+- 为什么这样修改：engine 明确持有 subscription 并随 MemoryRuntime 逆序关闭；构造后依赖通过集中 require owner fail-fast；storage 使用实际 `output_dimensionality`；inspector 只接受真实 default engine，dashboard 只把文件缺失解释为暂无记录。
+- 不变量与拥有层：DefaultMemoryEngine 构造函数拥有 store/embedder/memorizer/retriever；engine 与 MemoryRuntime 共同拥有 subscription 生命周期；Config.memory.embedding 拥有向量维度；inspector/dashboard 拥有各自激活和 JSONL 边界。召回 lanes、RRF、scope、合并/遗忘、consolidation、ranking、threshold、budget 和 prompt 不变。
+- 能力变化：reload 不再遗留旧 memory handler；内部契约违反不再伪装为空召回或假成功；新库 sqlite-vec schema 与真实 embedding 维度一致；坏 inspector 数据 fail-loud。
+- 主审修正：首次实现若第二个 `EventBus.on()` 失败会泄漏第一个 subscription 且锁死重试；amend 后失败时逆序关闭本轮订阅，清理失败以 `BaseExceptionGroup` 保留，全部成功后才设置 wired。恢复后可重试且不重复注册。
+- 性能变化：避免错维 schema 导致的 sqlite-vec fallback；正常 query/embedding/index 调用次数不变，不宣称召回延迟倍数提升。
+- 测试新增：subscription 生命周期与部分注册失败回滚/重试、缺失内部依赖 fail-fast、自定义 embedding 维度、inspector 无 engine inactive、损坏 JSONL。
+- 测试删除及原因：无。
+- 验证结果：主线独立定向 `123 passed`，全量 `1737 passed`，修改生产文件 pyright `0 errors`（64 个既有 warnings），`git diff --check` 通过。
+- 残余风险：既有历史错维 vec schema 没有证据支持自动迁移，本批只保证新建 workspace 正确；迁移必须另行设计可恢复 DB 流程。
