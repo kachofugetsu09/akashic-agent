@@ -92,7 +92,6 @@ class ProactiveStateStore:
         proactive_effects: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._lock:
-            self._ensure_tick_log_effects_column()
             self._db.execute(
                 """
                 INSERT INTO tick_log(
@@ -319,7 +318,10 @@ class ProactiveStateStore:
         return int(row[0]) if row is not None else 0
 
     def _init_schema(self) -> None:
-        self._db.executescript("""
+        """创建当前表结构并迁移旧版 tick 日志。"""
+
+        # 1. 创建当前版本所需的表与索引
+        _ = self._db.executescript("""
             CREATE TABLE IF NOT EXISTS deliveries (
                 session_key TEXT NOT NULL,
                 delivery_key TEXT NOT NULL,
@@ -386,6 +388,9 @@ class ProactiveStateStore:
             CREATE INDEX IF NOT EXISTS idx_tick_step_log_tick_step
             ON tick_step_log(tick_id, step_index);
             """)
+
+        # 2. 补齐 CREATE TABLE IF NOT EXISTS 无法新增的旧库列
+        self._ensure_tick_log_effects_column()
         self._db.commit()
 
     def _ensure_tick_log_effects_column(self) -> None:
@@ -394,7 +399,9 @@ class ProactiveStateStore:
             for row in self._db.execute("PRAGMA table_info(tick_log)").fetchall()
         }
         if "proactive_effects_json" not in columns:
-            self._db.execute("ALTER TABLE tick_log ADD COLUMN proactive_effects_json TEXT")
+            _ = self._db.execute(
+                "ALTER TABLE tick_log ADD COLUMN proactive_effects_json TEXT"
+            )
 
     def _get_session_datetime(self, session_key: str, key: str) -> datetime | None:
         with self._lock:
