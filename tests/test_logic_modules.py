@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import asyncio
+import logging
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -113,10 +114,13 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     loop._engine = SimpleNamespace(tick=AsyncMock(return_value=0.2))
 
 
-@pytest.mark.parametrize("payload", ["{broken", "[]"])
+@pytest.mark.parametrize(
+    "payload",
+    ["{broken", "[]", "", sqlite3.Binary(b"\xff"), sqlite3.Binary(b"")],
+)
 def test_session_metadata_corruption_fails_at_database_boundary(
     tmp_path: Path,
-    payload: str,
+    payload: object,
 ) -> None:
     manager = SessionManager(tmp_path)
     session_key = "telegram:broken"
@@ -221,6 +225,156 @@ def test_session_persistence_allocates_sequences_inside_transaction(
         f"{key}:0",
         f"{key}:1",
     ]
+
+
+def test_session_store_reuses_existing_fts_without_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
+    store.persist_session(
+        "telegram:fts",
+        created_at="2026-07-13T00:00:00+00:00",
+        updated_at="2026-07-13T00:00:01+00:00",
+        last_consolidated=0,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "全文索引消息",
+                "timestamp": "2026-07-13T00:00:01+00:00",
+                "extra": {},
+            }
+        ],
+    )
+    store.close()
+
+    statements: list[str] = []
+
+    original_ensure_fts = SessionStore._ensure_fts
+
+    def trace_constructor_fts(instance: SessionStore) -> None:
+        instance._conn.set_trace_callback(statements.append)
+        original_ensure_fts(instance)
+
+    monkeypatch.setattr(SessionStore, "_ensure_fts", trace_constructor_fts)
+    reopened = SessionStore(db_path)
+
+    assert reopened._has_fts is True
+    assert not any("VALUES('rebuild')" in statement for statement in statements)
+    assert reopened.search_messages("全文索引")[1] == 1
+    reopened.close()
+
+
+def test_session_store_rebuilds_fts_when_trigger_is_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
+    store.persist_session(
+        "telegram:fts-trigger",
+        created_at="2026-07-13T00:00:00+00:00",
+        updated_at="2026-07-13T00:00:01+00:00",
+        last_consolidated=0,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "触发器缺失后仍要检索",
+                "timestamp": "2026-07-13T00:00:01+00:00",
+                "extra": {},
+            }
+        ],
+    )
+    store._conn.execute("DROP TRIGGER messages_ai")
+    store._conn.commit()
+    statements: list[str] = []
+    store._conn.set_trace_callback(statements.append)
+
+    store._ensure_fts()
+
+    assert any("VALUES('rebuild')" in statement for statement in statements)
+    assert store.search_messages("触发器缺失")[1] == 1
+    store.close()
+
+
+def test_session_store_disables_fts_only_when_capability_is_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _MissingFtsConnection:
+        def execute(self, sql: str, _params: object = ()) -> object:
+            if sql.startswith("SELECT name, sql"):
+                return SimpleNamespace(fetchone=lambda: None)
+            raise sqlite3.OperationalError("no such module: fts5")
+
+    store = SessionStore.__new__(SessionStore)
+    store._conn = _MissingFtsConnection()  # type: ignore[assignment]
+    store._has_fts = True
+    store._closed = True
+
+    with caplog.at_level(logging.WARNING, logger="session.store"):
+        store._ensure_fts()
+
+    assert store._has_fts is False
+    assert "FTS5/trigram" in caplog.text
+
+
+def test_session_store_reraises_non_capability_fts_errors() -> None:
+    class _BrokenFtsConnection:
+        def execute(self, _sql: str, _params: object = ()) -> object:
+            raise sqlite3.OperationalError("database is locked")
+
+    store = SessionStore.__new__(SessionStore)
+    store._conn = _BrokenFtsConnection()  # type: ignore[assignment]
+    store._has_fts = True
+    store._closed = True
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        store._ensure_fts()
+
+    assert store._has_fts is True
+
+
+@pytest.mark.parametrize(
+    ("column", "payload", "field"),
+    [
+        ("extra", '[["role", "spoofed"]]', "message extra"),
+        ("extra", '{"role": "spoofed"}', "不得覆盖消息列字段"),
+        ("tool_chain", '{"call": "invalid"}', "message tool_chain"),
+        ("extra", "", "message extra"),
+        ("tool_chain", "", "message tool_chain"),
+    ],
+)
+def test_session_store_rejects_invalid_message_json(
+    tmp_path: Path,
+    column: str,
+    payload: str,
+    field: str,
+) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.persist_session(
+        "telegram:json",
+        created_at="2026-07-13T00:00:00+00:00",
+        updated_at="2026-07-13T00:00:01+00:00",
+        last_consolidated=0,
+        metadata={},
+        messages=[
+            {
+                "role": "user",
+                "content": "消息",
+                "timestamp": "2026-07-13T00:00:01+00:00",
+                "extra": {},
+            }
+        ],
+    )
+    store._conn.execute(
+        f"UPDATE messages SET {column} = ? WHERE id = ?",
+        (payload, "telegram:json:0"),
+    )
+    store._conn.commit()
+
+    with pytest.raises(ValueError, match=field):
+        store.fetch_session_messages("telegram:json")
+    store.close()
 
 
 def test_session_get_history_returns_empty_when_window_is_zero():

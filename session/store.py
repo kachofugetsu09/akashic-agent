@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+
+logger = logging.getLogger(__name__)
+
+_FTS_CAPABILITY_ERROR_MARKERS = (
+    "no such module: fts5",
+    "no such tokenizer: trigram",
+    "unknown tokenizer: trigram",
+)
+_MESSAGE_COLUMN_FIELDS = frozenset(
+    {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
+)
 
 
 def _resolve_path_text(value: object) -> str:
@@ -24,13 +36,30 @@ def _decode_session_metadata(
 ) -> dict[str, Any]:
     """解析并校验 sessions.metadata 的 JSON object 契约。"""
 
-    try:
-        metadata = json.loads(raw or "{}")
-    except (json.JSONDecodeError, TypeError) as exc:
-        raise ValueError(f"session metadata JSON 损坏: {session_key}") from exc
+    metadata = _decode_json_payload(
+        raw,
+        fallback="{}",
+        field="session metadata",
+        identifier=session_key,
+    )
     if not isinstance(metadata, dict):
         raise ValueError(f"session metadata 必须是 JSON object: {session_key}")
     return cast(dict[str, Any], metadata)
+
+
+def _decode_json_payload(
+    raw: str | bytes | bytearray | None,
+    *,
+    fallback: str,
+    field: str,
+    identifier: str,
+) -> object:
+    """在 SQLite 反序列化边界统一转换 JSON 损坏错误。"""
+
+    try:
+        return json.loads(fallback if raw is None else raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+        raise ValueError(f"{field} JSON 损坏: {identifier}") from exc
 
 
 class SessionStore:
@@ -110,27 +139,33 @@ class SessionStore:
                 )
 
     def _ensure_fts(self) -> None:
+        """确保全文索引可用，并仅在创建或修复时重建已有消息。"""
+
+        needs_rebuild = False
         try:
-            # Migrate to trigram tokenizer if the table exists without it.
-            # trigram supports CJK substring matching; the old unicode61 default does not.
+            # 1. 发现旧索引或缺失索引时，准备一次性重建。
             existing = self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type='table' AND name='messages_fts'"
             ).fetchone()
+            needs_rebuild = existing is None
             if existing:
-                try:
-                    cfg = dict(
-                        self._conn.execute(
-                            "SELECT * FROM messages_fts_config"
-                        ).fetchall()
-                    )
-                    is_trigram = "trigram" in cfg.get("tokenize", "")
-                except sqlite3.OperationalError:
-                    is_trigram = False
+                table_sql = "".join(str(existing["sql"] or "").split()).lower()
+                is_trigram = "tokenize='trigram'" in table_sql
                 if not is_trigram:
                     self._conn.execute("DROP TABLE IF EXISTS messages_fts")
                     for trig in ("messages_ai", "messages_ad", "messages_au"):
                         self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+                    needs_rebuild = True
 
+                trigger_rows = self._conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name IN (?, ?, ?)",
+                    ("messages_ai", "messages_ad", "messages_au"),
+                ).fetchall()
+                needs_rebuild = needs_rebuild or len(trigger_rows) < 3
+
+            # 2. 确保索引和消息写入触发器存在。
             self._conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                     content,
@@ -157,13 +192,21 @@ class SessionStore:
                     INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
                 END
                 """)
-            # Rebuild index so existing messages are covered by trigram.
-            self._conn.execute(
-                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
-            )
+            # 3. 正常重启依赖触发器增量维护，避免重复扫描整张 messages 表。
+            if needs_rebuild:
+                self._conn.execute(
+                    "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+                )
             self._conn.commit()
             self._has_fts = True
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            if not any(
+                marker in str(exc).lower() for marker in _FTS_CAPABILITY_ERROR_MARKERS
+            ):
+                raise
+            logger.warning(
+                "SQLite FTS5/trigram 不可用，已禁用 session 全文检索: %s", exc
+            )
             self._has_fts = False
 
     def _has_message_embeddings_locked(self) -> bool:
@@ -1236,18 +1279,44 @@ class SessionStore:
         return [self._row_to_message(row) for row in rows], total
 
     def _row_to_message(self, row: sqlite3.Row) -> dict[str, Any]:
+        """校验并反序列化一行消息，拒绝损坏的 JSON 载荷。"""
+
+        message_id = str(row["id"])
         message: dict[str, Any] = {
-            "id": row["id"],
+            "id": message_id,
             "session_key": row["session_key"],
             "seq": int(row["seq"]),
             "role": row["role"],
             "content": row["content"] or "",
             "timestamp": row["ts"],
         }
-        tool_chain = row["tool_chain"]
-        if tool_chain:
-            message["tool_chain"] = json.loads(tool_chain)
-        extra = json.loads(row["extra"] or "{}")
+        raw_tool_chain = row["tool_chain"]
+        if raw_tool_chain is not None:
+            tool_chain = _decode_json_payload(
+                raw_tool_chain,
+                fallback="[]",
+                field="message tool_chain",
+                identifier=message_id,
+            )
+            if not isinstance(tool_chain, list):
+                raise ValueError(f"message tool_chain 必须是 JSON array: {message_id}")
+            if tool_chain:
+                message["tool_chain"] = tool_chain
+        extra = _decode_json_payload(
+            row["extra"],
+            fallback="{}",
+            field="message extra",
+            identifier=message_id,
+        )
+        if not isinstance(extra, dict):
+            raise ValueError(f"message extra 必须是 JSON object: {message_id}")
+        extra_dict = cast(dict[str, Any], extra)
+        reserved_fields = _MESSAGE_COLUMN_FIELDS.intersection(extra_dict)
+        if reserved_fields:
+            fields = ", ".join(sorted(reserved_fields))
+            raise ValueError(
+                f"message extra 不得覆盖消息列字段 ({fields}): {message_id}"
+            )
         if extra:
-            message.update(extra)
+            message.update(extra_dict)
         return message

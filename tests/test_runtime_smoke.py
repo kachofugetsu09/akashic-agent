@@ -18,6 +18,7 @@ from agent.config import (
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
+    _validated_timezone,
     load_config,
 )
 from agent.memory import DEFAULT_SELF_MD
@@ -146,6 +147,41 @@ system_prompt = "test"
 
     assert cfg.memory_window == 40
     assert cfg.memory_optimizer_interval_seconds == 64800
+
+
+@pytest.mark.parametrize(
+    ("field", "snippet"),
+    [
+        ("llm", 'llm = []'),
+        ("llm.main", '[llm]\nmain = []'),
+        ("agent.context", '[agent]\ncontext = []'),
+        ("channels", 'channels = []'),
+        ("memory.embedding", '[memory]\nembedding = []'),
+        ("extra_body", 'extra_body = []'),
+    ],
+)
+def test_load_config_rejects_non_table_sections(
+    tmp_path: Path,
+    field: str,
+    snippet: str,
+):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "provider = \"openai\"\nmodel = \"test-model\"\n"
+        f"{snippet}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="必须是 TOML table") as exc_info:
+        load_config(config_path)
+
+    assert field in str(exc_info.value)
+
+
+@pytest.mark.parametrize("tz_name", ["", "Not/AZone"])
+def test_validated_timezone_rejects_invalid_names(tz_name: str):
+    with pytest.raises(ValueError, match="IANA"):
+        _validated_timezone(tz_name, enabled=True)
 
 
 @pytest.mark.asyncio

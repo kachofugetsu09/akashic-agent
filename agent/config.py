@@ -12,7 +12,7 @@ import tomllib
 import zlib
 from pathlib import Path
 from typing import cast
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.config_models import (
     ChannelsConfig,
@@ -61,27 +61,29 @@ def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
     if not enabled:
         return tz_name
     try:
-        ZoneInfo(tz_name)
+        _ = ZoneInfo(tz_name)
         return tz_name
-    except Exception:
+    except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError(
             f"proactive.anyaction_timezone 无效: {tz_name!r}，"
             "请使用 IANA 格式，如 'Asia/Shanghai'"
-        )
+        ) from exc
 
 
 def load_config(path: str | Path = "config.toml") -> Config:
     data = _load_config_data(path)
 
-    llm = _as_dict(data.get("llm"))
-    llm_main = _as_dict(llm.get("main"))
-    llm_fast = _as_dict(llm.get("fast"))
-    llm_agent = _as_dict(llm.get("agent"))
-    llm_vl = _as_dict(llm.get("vl"))
-    agent_cfg = _as_dict(data.get("agent"))
-    agent_context = _as_dict(agent_cfg.get("context"))
-    agent_tools = _as_dict(agent_cfg.get("tools"))
-    agent_maintenance = _as_dict(agent_cfg.get("maintenance"))
+    llm = _as_dict(data.get("llm"), field="llm")
+    llm_main = _as_dict(llm.get("main"), field="llm.main")
+    llm_fast = _as_dict(llm.get("fast"), field="llm.fast")
+    llm_agent = _as_dict(llm.get("agent"), field="llm.agent")
+    llm_vl = _as_dict(llm.get("vl"), field="llm.vl")
+    agent_cfg = _as_dict(data.get("agent"), field="agent")
+    agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
+    agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
+    agent_maintenance = _as_dict(
+        agent_cfg.get("maintenance"), field="agent.maintenance"
+    )
     provider = str(llm.get("provider") or data["provider"])
     channels = _load_channels_config(data)
     proactive = _load_proactive_config(data)
@@ -160,10 +162,11 @@ def load_config(path: str | Path = "config.toml") -> Config:
 
 
 def _load_channels_config(data: dict) -> ChannelsConfig:
-    channels_data = data.get("channels", {})
+    channels_data = _as_dict(data.get("channels"), field="channels")
 
     telegram = None
-    if tg := channels_data.get("telegram"):
+    tg = _as_dict(channels_data.get("telegram"), field="channels.telegram")
+    if tg:
         token = _normalize_optional_config_text(_resolve(str(tg.get("token", ""))))
         if bool(tg.get("enabled", True)) and token:
             telegram = TelegramChannelConfig(
@@ -175,7 +178,8 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
             )
 
     qq = None
-    if qq_data := channels_data.get("qq"):
+    qq_data = _as_dict(channels_data.get("qq"), field="channels.qq")
+    if qq_data:
         bot_uin = _normalize_optional_config_text(str(qq_data.get("bot_uin", "")))
         if bool(qq_data.get("enabled", True)) and bot_uin:
             groups = [
@@ -203,8 +207,8 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 ),
             )
 
-    cli_data = _as_dict(channels_data.get("cli"))
-    chat_data = _as_dict(channels_data.get("chat"))
+    cli_data = _as_dict(channels_data.get("cli"), field="channels.cli")
+    chat_data = _as_dict(channels_data.get("chat"), field="channels.chat")
     chat = WebChatConfig(
         enabled=bool(chat_data.get("enabled", True)),
         host=str(chat_data.get("host", "127.0.0.1") or "127.0.0.1"),
@@ -226,7 +230,6 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
         socket=_normalize_cli_socket_endpoint(socket_value),
         cli_session_key=cli_session_key,
     )
-    channels.socket = _normalize_cli_socket_endpoint(channels.socket)
     return channels
 
 
@@ -242,8 +245,8 @@ def _load_proactive_config(data: dict) -> ProactiveConfig:
 
 
 def _load_memory_config(data: dict) -> MemoryConfig:
-    memory = _as_dict(data.get("memory"))
-    embedding = _as_dict(memory.get("embedding"))
+    memory = _as_dict(data.get("memory"), field="memory")
+    embedding = _as_dict(memory.get("embedding"), field="memory.embedding")
     raw_output_dimensionality = embedding.get("output_dimensionality")
     output_dimensionality = (
         int(raw_output_dimensionality)
@@ -265,7 +268,7 @@ def _load_memory_config(data: dict) -> MemoryConfig:
 
 
 def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
-    integrations = _as_dict(data.get("integrations"))
+    integrations = _as_dict(data.get("integrations"), field="integrations")
     peer_agents = integrations.get("peer_agents", data.get("peer_agents", []))
     return [
         PeerAgentConfig(
@@ -286,7 +289,7 @@ def _load_wiring_config(data: dict) -> WiringConfig:
     """加载运行时装配配置，并拒绝会改变工具集语义的错误结构。"""
 
     # 1. 选择新版 agent.wiring；空表继续兼容旧版顶层 wiring。
-    agent_cfg = _as_dict(data.get("agent"))
+    agent_cfg = _as_dict(data.get("agent"), field="agent")
     agent_wiring = agent_cfg.get("wiring")
     if agent_wiring is not None and not isinstance(agent_wiring, dict):
         raise ValueError("agent.wiring 必须是 TOML table")
@@ -312,9 +315,9 @@ def _load_wiring_config(data: dict) -> WiringConfig:
 
 
 def _load_extra_body(data: dict) -> dict:
-    llm = _as_dict(data.get("llm"))
-    llm_main = _as_dict(llm.get("main"))
-    extra_body = dict(data.get("extra_body", {}))
+    llm = _as_dict(data.get("llm"), field="llm")
+    llm_main = _as_dict(llm.get("main"), field="llm.main")
+    extra_body = dict(_as_dict(data.get("extra_body"), field="extra_body"))
     thinking = llm_main.get("thinking")
     if isinstance(thinking, dict):
         extra_body["thinking"] = thinking
@@ -327,8 +330,12 @@ def _load_extra_body(data: dict) -> dict:
     return extra_body
 
 
-def _as_dict(value: object) -> dict:
-    return value if isinstance(value, dict) else {}
+def _as_dict(value: object, *, field: str) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} 必须是 TOML table")
+    return value
 
 
 def _resolve_config_value(value: object) -> object:
