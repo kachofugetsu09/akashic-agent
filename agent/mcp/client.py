@@ -15,6 +15,9 @@ _RECV_TIMEOUT = 30.0
 _CONNECT_TIMEOUT = 8.0
 _DISCONNECT_TIMEOUT = 5.0
 _STREAM_LIMIT = 4 * 1024 * 1024  # 4 MB，防止大响应触发 StreamReader 行限
+_MCP_CONTENT_BLOCK_TYPES = frozenset(
+    {"text", "image", "resource"}
+)
 
 
 @dataclass
@@ -22,6 +25,10 @@ class McpToolInfo:
     name: str
     description: str
     input_schema: dict[str, Any]
+
+
+class McpToolExecutionError(RuntimeError):
+    """MCP 远端工具已执行但返回失败结果。"""
 
 
 def _infer_cwd(command: list[str]) -> str | None:
@@ -128,16 +135,29 @@ class McpClient:
                 raise RuntimeError(f"MCP server {self.name!r} 返回了无效 tool")
             tool = cast(dict[str, Any], raw_tool)
             name = tool.get("name")
-            schema = tool.get(
-                "inputSchema",
-                {"type": "object", "properties": {}},
-            )
-            if not isinstance(name, str) or not name or not isinstance(schema, dict):
-                raise RuntimeError(f"MCP server {self.name!r} 返回了无效 tool")
+            schema = tool.get("inputSchema")
+            description = tool.get("description", "")
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(schema, dict)
+            ):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} 返回了无效 tool（需要 name 和 inputSchema）"
+                )
+            schema = cast(dict[str, Any], schema)
+            if schema.get("type") != "object":
+                raise RuntimeError(
+                    f"MCP server {self.name!r} 返回了无效 tool（需要 object inputSchema）"
+                )
+            if not isinstance(description, str):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} 返回了无效 tool.description"
+                )
             tool_infos.append(
                 McpToolInfo(
                     name=name,
-                    description=str(tool.get("description") or ""),
+                    description=description,
                     input_schema=cast(dict[str, Any], schema),
                 )
             )
@@ -180,7 +200,10 @@ class McpClient:
                 )
             error_object = cast(dict[str, object], err)
             detail = error_object.get("message", error_object)
-            return f"MCP error ({self.name}/{tool_name}): {detail}"
+            raise McpToolExecutionError(
+                f"MCP server {self.name!r} tools/call:{tool_name} JSON-RPC error: "
+                f"{detail}"
+            )
 
         result = self._response_result(resp, f"tools/call:{tool_name}")
         raw_content = result.get("content")
@@ -199,15 +222,96 @@ class McpClient:
                     f"值={raw_block!r}）"
                 )
             block = cast(dict[str, object], raw_block)
+            rendered.append(
+                self._render_content_block(
+                    block,
+                    tool_name=tool_name,
+                    index=index,
+                )
+            )
+
+        if "structuredContent" in result:
+            raise RuntimeError(
+                f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                "structuredContent（2024-11-05 不支持）"
+            )
+
+        is_error = result.get("isError", False)
+        if not isinstance(is_error, bool):
+            raise RuntimeError(
+                f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                f"isError（类型={type(is_error).__name__}，值={is_error!r}）"
+            )
+        output = "\n".join(rendered)
+        if is_error:
+            raise McpToolExecutionError(
+                f"MCP server {self.name!r} tools/call:{tool_name} 执行失败: "
+                f"{output or '服务端未返回错误内容'}"
+            )
+        return output
+
+    def _render_content_block(
+        self,
+        block: dict[str, object],
+        *,
+        tool_name: str,
+        index: int,
+    ) -> str:
+        """校验 MCP 内容块并转换为工具文本。"""
+        block_type = block.get("type")
+        if not isinstance(block_type, str) or block_type not in _MCP_CONTENT_BLOCK_TYPES:
+            raise RuntimeError(
+                f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                f"content[{index}].type（值={block_type!r}）"
+            )
+
+        if block_type == "text":
             text = block.get("text")
-            if "text" in block and not isinstance(text, str):
+            if not isinstance(text, str):
                 raise RuntimeError(
                     f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
                     f"content[{index}].text（类型={type(text).__name__}，"
                     f"值={text!r}）"
                 )
-            rendered.append(text if isinstance(text, str) else str(block))
-        return "\n".join(rendered)
+        elif block_type == "image":
+            for field in ("data", "mimeType"):
+                if not isinstance(block.get(field), str):
+                    raise RuntimeError(
+                        f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                        f"content[{index}].{field}"
+                    )
+        else:
+            resource = block.get("resource")
+            if not isinstance(resource, dict):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    f"content[{index}].resource"
+                )
+            resource_value = cast(dict[str, object], resource)
+            if not isinstance(resource_value.get("uri"), str):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    f"content[{index}].resource.uri"
+                )
+            mime_type = resource_value.get("mimeType")
+            if mime_type is not None and not isinstance(mime_type, str):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    f"content[{index}].resource.mimeType"
+                )
+            text = resource_value.get("text")
+            blob = resource_value.get("blob")
+            if (isinstance(text, str)) == (isinstance(blob, str)):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    f"content[{index}].resource（需要 text 或 blob）"
+                )
+
+        return cast(str, block["text"]) if block_type == "text" else json.dumps(
+            block,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     async def disconnect(self) -> None:
         """终止子进程。"""

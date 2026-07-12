@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from typing import cast
 import pytest
 import agent.mcp.client as mcp_client_module
 
-from agent.mcp.client import McpClient, _infer_cwd
+from agent.mcp.client import McpClient, McpToolExecutionError, _infer_cwd
 from agent.tool_runtime import append_tool_result
 from agent.tools.base import ToolResult
 from agent.tools.filesystem import (
@@ -504,7 +505,7 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
             b'{"jsonrpc":"2.0","method":"note"}\n',
             b'{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"tool1","description":"desc","inputSchema":{"type":"object"}}]}}\n',
             b'not json\n',
-            b'{"jsonrpc":"2.0","id":3,"result":{"content":[{"text":"ok"}]}}\n',
+            b'{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"ok"}]}}\n',
         ],
         [b"warn\n", b""],
     )
@@ -524,6 +525,43 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     client._process = proc
     with pytest.raises(ConnectionError):
         await client._recv(expected_id=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "invalid_field"),
+    [
+        ({"name": "tool"}, "inputSchema"),
+        ({"name": "tool", "inputSchema": {"type": "string"}}, "inputSchema"),
+        (
+            {"name": "tool", "inputSchema": {"type": "object"}, "description": 1},
+            "description",
+        ),
+    ],
+)
+async def test_mcp_client_rejects_invalid_tool_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tool: dict[str, object],
+    invalid_field: str,
+) -> None:
+    proc = _Proc(
+        [
+            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            (
+                '{"jsonrpc":"2.0","id":2,"result":{"tools":['
+                + json.dumps(tool)
+                + "]}}\n"
+            ).encode(),
+        ]
+    )
+    monkeypatch.setattr(
+        "agent.mcp.client.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    )
+    client = McpClient("broken", ["python", "server.py"])
+
+    with pytest.raises(RuntimeError, match=invalid_field):
+        await client.connect()
 
 
 @pytest.mark.asyncio
@@ -627,8 +665,8 @@ async def test_mcp_client_serializes_calls_on_same_server():
         def __init__(self) -> None:
             super().__init__(
                 [
-                    b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"a"}]}}\n',
-                    b'{"jsonrpc":"2.0","id":2,"result":{"content":[{"text":"b"}]}}\n',
+                    b'{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"a"}]}}\n',
+                    b'{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"b"}]}}\n',
                 ]
             )
             self.reading = False
@@ -657,18 +695,21 @@ async def test_mcp_client_serializes_calls_on_same_server():
 
 
 @pytest.mark.asyncio
-async def test_mcp_call_formats_error_object() -> None:
-    import json
-
+async def test_mcp_call_raises_for_json_rpc_error_object() -> None:
     error = {"code": -1, "message": "bad call"}
     response = json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}).encode()
     proc = _Proc([response + b"\n"])
     client = McpClient("docs", ["python", "server.py"])
     client._process = proc
 
-    result = await client.call("search", {})
+    with pytest.raises(McpToolExecutionError) as exc_info:
+        await client.call("search", {})
 
-    assert result == "MCP error (docs/search): bad call"
+    message = str(exc_info.value)
+    assert "JSON-RPC error" in message
+    assert "docs" in message
+    assert "tools/call:search" in message
+    assert "bad call" in message
 
 
 @pytest.mark.asyncio
@@ -699,15 +740,31 @@ async def test_mcp_call_rejects_non_object_error(error: object) -> None:
         ({}, "content"),
         ({"content": "plain text"}, "content"),
         ({"content": ["plain text"]}, "content[0]"),
+        ({"content": [{}]}, "content[0].type"),
+        ({"content": [{"type": "unknown"}]}, "content[0].type"),
+        ({"content": [{"type": "audio"}]}, "content[0].type"),
+        ({"content": [{"type": "resource_link"}]}, "content[0].type"),
+        ({"content": [{"type": "text"}]}, "content[0].text"),
+        ({"content": [{"type": "image", "mimeType": "image/png"}]}, "content[0].data"),
+        ({"content": [{"type": "image", "data": "AAAA"}]}, "content[0].mimeType"),
+        ({"content": [{"type": "resource"}]}, "content[0].resource"),
+        (
+            {"content": [{"type": "resource", "resource": {"text": "body"}}]},
+            "content[0].resource.uri",
+        ),
+        (
+            {"content": [{"type": "resource", "resource": {"uri": "r"}}]},
+            "content[0].resource（需要 text 或 blob）",
+        ),
         ({"content": [{"type": "text", "text": 123}]}, "content[0].text"),
+        ({"content": [], "structuredContent": {}}, "structuredContent"),
+        ({"content": [], "isError": "true"}, "isError"),
     ],
 )
 async def test_mcp_call_rejects_invalid_result_structure(
     result: object,
     invalid_path: str,
 ) -> None:
-    import json
-
     response = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
     proc = _Proc([response + b"\n"])
     client = McpClient("docs", ["python", "server.py"])
@@ -720,6 +777,66 @@ async def test_mcp_call_rejects_invalid_result_structure(
     assert "docs" in message
     assert "tools/call:search" in message
     assert invalid_path in message
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_renders_valid_content_blocks() -> None:
+    response = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {"type": "text", "text": "ok"},
+                    {"type": "image", "data": "AAAA", "mimeType": "image/png"},
+                    {
+                        "type": "resource",
+                        "resource": {
+                            "uri": "resource://report",
+                            "mimeType": "text/plain",
+                            "text": "report",
+                        },
+                    },
+                ],
+                "isError": False,
+            },
+        }
+    ).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    result = await client.call("search", {})
+
+    assert result.startswith("ok\n")
+    assert '"type": "image"' in result
+    assert '"uri": "resource://report"' in result
+
+
+@pytest.mark.asyncio
+async def test_mcp_call_raises_for_remote_tool_error() -> None:
+    response = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{"type": "text", "text": "服务端失败：限流"}],
+                "isError": True,
+            },
+        },
+        ensure_ascii=False,
+    ).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(McpToolExecutionError) as exc_info:
+        await client.call("search", {})
+
+    message = str(exc_info.value)
+    assert "docs" in message
+    assert "tools/call:search" in message
+    assert "服务端失败：限流" in message
 
 
 @pytest.mark.asyncio
