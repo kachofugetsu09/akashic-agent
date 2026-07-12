@@ -940,6 +940,24 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_telegram_live_task_index_releases_finished_session(monkeypatch: pytest.MonkeyPatch):
+    mod = _import_telegram_channel(monkeypatch)
+    channel = object.__new__(mod.TelegramChannel)
+    channel._live_tasks = set()
+    channel._live_tasks_by_session = {}
+
+    async def complete() -> None:
+        return None
+
+    channel._start_live_task("telegram:stale", complete())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert channel._live_tasks == set()
+    assert channel._live_tasks_by_session == {}
+
+
+@pytest.mark.asyncio
 async def test_qq_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     mod = _import_qq_channel(monkeypatch)
     bus = _Bus()
@@ -1196,4 +1214,3 @@ async def test_qq_private_trace_skips_empty_trace(monkeypatch: pytest.MonkeyPatc
 
     assert [item[0] for item in calls] == ["text"]
     assert calls[0] == ("text", 1, "嗯，收到。")
-

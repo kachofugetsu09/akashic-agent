@@ -491,6 +491,140 @@ async def test_ipc_server_uses_tcp_for_explicit_host_port_on_all_platforms(
 
 
 @pytest.mark.asyncio
+async def test_ipc_stop_closes_clients_and_unsubscribes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+    server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_server",
+        AsyncMock(return_value=server),
+    )
+    await channel.start()
+
+    writer = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    channel._writers["active"] = writer
+    assert len(bus._subscribers["cli"]) == 1
+
+    await channel.stop()
+
+    writer.close.assert_called_once()
+    writer.wait_closed.assert_awaited_once()
+    assert channel._writers == {}
+    assert channel._server is None
+    assert "cli" not in bus._subscribers
+
+
+@pytest.mark.asyncio
+async def test_ipc_start_failure_does_not_leave_outbound_subscription(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_server",
+        AsyncMock(side_effect=OSError("port unavailable")),
+    )
+
+    with pytest.raises(OSError, match="port unavailable"):
+        await channel.start()
+
+    assert "cli" not in bus._subscribers
+
+
+@pytest.mark.asyncio
+async def test_ipc_unix_chmod_failure_closes_server_and_socket(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    bus = MessageBus()
+    socket_path = tmp_path / "agent.sock"
+    channel = IPCServerChannel(bus, str(socket_path), None)
+    server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+
+    async def start_unix_server(*_args, **_kwargs):
+        socket_path.write_text("bound socket", encoding="utf-8")
+        return server
+
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_unix_server",
+        start_unix_server,
+    )
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.os.chmod",
+        MagicMock(side_effect=PermissionError("chmod denied")),
+    )
+
+    with pytest.raises(PermissionError, match="chmod denied"):
+        await channel.start()
+
+    server.close.assert_called_once()
+    server.wait_closed.assert_awaited_once()
+    assert channel._server is None
+    assert not socket_path.exists()
+    assert "cli" not in bus._subscribers
+
+
+@pytest.mark.asyncio
+async def test_ipc_stop_unsubscribes_before_server_wait_closed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+    server = SimpleNamespace(
+        close=MagicMock(),
+        wait_closed=AsyncMock(side_effect=OSError("close failed")),
+    )
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_server",
+        AsyncMock(return_value=server),
+    )
+    await channel.start()
+    writer = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    channel._writers["active"] = writer
+    assert "cli" in bus._subscribers
+
+    with pytest.raises(OSError, match="close failed"):
+        await channel.stop()
+
+    assert "cli" not in bus._subscribers
+    writer.close.assert_called_once()
+    writer.wait_closed.assert_awaited_once()
+    assert channel._writers == {}
+
+
+@pytest.mark.asyncio
+async def test_ipc_stop_waits_for_other_writers_after_one_wait_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bus = MessageBus()
+    channel = IPCServerChannel(bus, "127.0.0.1:8765", None)
+    server = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    monkeypatch.setattr(
+        "infra.channels.ipc_server.asyncio.start_server",
+        AsyncMock(return_value=server),
+    )
+    await channel.start()
+    failed = SimpleNamespace(
+        close=MagicMock(),
+        wait_closed=AsyncMock(side_effect=OSError("writer close failed")),
+    )
+    healthy = SimpleNamespace(close=MagicMock(), wait_closed=AsyncMock())
+    channel._writers.update(failed=failed, healthy=healthy)
+
+    with pytest.raises(OSError, match="writer close failed"):
+        await channel.stop()
+
+    failed.close.assert_called_once()
+    healthy.close.assert_called_once()
+    failed.wait_closed.assert_awaited_once()
+    healthy.wait_closed.assert_awaited_once()
+    assert channel._writers == {}
+    assert "cli" not in bus._subscribers
+
+
+@pytest.mark.asyncio
 async def test_mcp_client_and_loop_factory_cover_core_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

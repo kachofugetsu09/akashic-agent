@@ -143,8 +143,11 @@ class TelegramChannel:
 
         def _done(done_task: asyncio.Task[None]) -> None:
             self._live_tasks.discard(done_task)
-            for tasks in self._live_tasks_by_session.values():
+            tasks = self._live_tasks_by_session.get(session_key)
+            if tasks is not None:
                 tasks.discard(done_task)
+                if not tasks:
+                    self._live_tasks_by_session.pop(session_key, None)
             try:
                 _ = done_task.result()
             except asyncio.CancelledError:
