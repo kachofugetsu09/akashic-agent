@@ -222,9 +222,25 @@ async def test_lifecycle_on_before_turn():
     bus = EventBus()
     lifecycle = TurnLifecycle(bus)
     handler = AsyncMock(return_value=None)
-    lifecycle.on_before_turn(handler)
+    subscription = lifecycle.on_before_turn(handler)
     await bus.emit(_before_turn_ctx())
     handler.assert_awaited_once()
+    assert subscription.active is True
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_subscription_can_be_closed_by_owner():
+    bus = EventBus()
+    lifecycle = TurnLifecycle(bus)
+    handler = AsyncMock(return_value=None)
+    subscription = lifecycle.on_before_turn(handler)
+
+    subscription.close()
+    await bus.emit(_before_turn_ctx())
+
+    assert subscription.active is False
+    handler.assert_not_awaited()
+    assert bus.handler_count() == 0
 
 
 @pytest.mark.asyncio
