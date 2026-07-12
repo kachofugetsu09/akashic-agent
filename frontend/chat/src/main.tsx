@@ -1,14 +1,12 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { FileUIPart } from "ai";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
-  ChevronDown,
   CircleStop,
   Pencil,
   Plus,
   SendHorizontal,
-  Wrench,
 } from "lucide-react";
 import {
   Attachment,
@@ -29,11 +27,6 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import {
-  Message,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message";
-import {
   PromptInput,
   PromptInputActionAddAttachments,
   PromptInputActionMenu,
@@ -46,18 +39,6 @@ import {
   PromptInputTools,
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
-import {
-  Reasoning,
-  ReasoningTrigger,
-  useReasoning,
-} from "@/components/ai-elements/reasoning";
-import { CollapsibleContent } from "@/components/ui/collapsible";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import "./styles.css";
 
@@ -83,12 +64,12 @@ interface MessageRow {
   extra?: Record<string, unknown>;
 }
 
-interface ThinkingBlock {
+export interface ThinkingBlock {
   kind: "thinking";
   content: string;
 }
 
-interface ToolBlock {
+export interface ToolBlock {
   kind: "tool";
   callId: string;
   name: string;
@@ -98,7 +79,7 @@ interface ToolBlock {
   errorText: string | undefined;
 }
 
-type AgentBlock = ThinkingBlock | ToolBlock;
+export type AgentBlock = ThinkingBlock | ToolBlock;
 
 type ComposerFile = {
   filename?: string;
@@ -112,12 +93,12 @@ type UploadedFile = {
   upload_url?: string;
 };
 
-type MessageAttachment = FileUIPart & {
+export type MessageAttachment = FileUIPart & {
   id: string;
   path?: string;
 };
 
-interface ChatMessage {
+export interface ChatMessage {
   id: string;
   role: Role;
   content: string;
@@ -127,6 +108,10 @@ interface ChatMessage {
   startedAt?: number;
   durationMs?: number;
 }
+
+const LazyChatMessageView = lazy(() =>
+  import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
+);
 
 type ChatFrame =
   | { type: "session.created"; request_id: string; session_id: string }
@@ -293,12 +278,16 @@ function App() {
                 <h1>今天有什么计划?</h1>
               </ConversationEmptyState>
             ) : (
-              messages.map((message, index) => (
-                <React.Fragment key={message.id}>
-                  {messages[index - 1]?.role === message.role ? <RoleDivider role={message.role} /> : null}
-                  <ChatMessageView message={message} />
-                </React.Fragment>
-              ))
+              <MessageRendererErrorBoundary>
+                <Suspense fallback={<div className="message-row message-loading">正在加载消息渲染器…</div>}>
+                  {messages.map((message, index) => (
+                    <React.Fragment key={message.id}>
+                      {messages[index - 1]?.role === message.role ? <RoleDivider role={message.role} /> : null}
+                      <LazyChatMessageView message={message} />
+                    </React.Fragment>
+                  ))}
+                </Suspense>
+              </MessageRendererErrorBoundary>
             )}
           </ConversationContent>
           <AutoScroll messages={messages} status={status} />
@@ -340,6 +329,28 @@ function App() {
       </section>
     </main>
   );
+}
+
+class MessageRendererErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("消息渲染器加载失败", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return <div className="message-row message-renderer-error">消息渲染器加载失败，请刷新页面</div>;
+    }
+    return this.props.children;
+  }
 }
 
 function ComposerAttachments() {
@@ -417,29 +428,6 @@ function ComposerSubmit({
   );
 }
 
-function ChatMessageView({ message }: { message: ChatMessage }) {
-  if (message.role === "user") {
-    return (
-      <Message from="user" className="message-row user-row">
-        <MessageContent className="user-bubble">
-          {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
-          {message.content ? <MessageResponse>{message.content}</MessageResponse> : null}
-        </MessageContent>
-      </Message>
-    );
-  }
-
-  return (
-    <Message from="assistant" className="message-row agent-row">
-      <MessageContent className="agent-content">
-        {message.blocks.length ? <ProcessTrace message={message} /> : null}
-        {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
-        {message.content && <MessageResponse>{message.content}</MessageResponse>}
-      </MessageContent>
-    </Message>
-  );
-}
-
 function RoleDivider({ role }: { role: Role }) {
   return <div aria-hidden="true" className={`role-divider ${role}-divider`} />;
 }
@@ -473,114 +461,6 @@ function AutoScroll({ messages, status }: { messages: ChatMessage[]; status: Cha
   }, [escapedFromLock, isAtBottom, messages, scrollKey, status, scrollToBottom]);
 
   return null;
-}
-
-function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
-  return (
-    <Attachments className="message-attachments" variant="grid">
-      {attachments.map((attachment) => (
-        <MessageAttachmentItem attachment={attachment} key={attachment.id} />
-      ))}
-    </Attachments>
-  );
-}
-
-function MessageAttachmentItem({ attachment }: { attachment: MessageAttachment }) {
-  const isImage = getMediaCategory(attachment) === "image" && attachment.url;
-  const label = getAttachmentLabel(attachment);
-
-  if (isImage) {
-    return (
-      <Dialog>
-        <DialogTrigger asChild>
-          <Attachment
-            className="previewable-attachment"
-            data={attachment}
-            role="button"
-            tabIndex={0}
-            title="点击预览图片"
-          >
-            <AttachmentPreview />
-          </Attachment>
-        </DialogTrigger>
-        <DialogContent className="image-preview-dialog">
-          <DialogTitle className="sr-only">{label}</DialogTitle>
-          <img alt={label} className="image-preview-full" src={attachment.url} />
-        </DialogContent>
-      </Dialog>
-    );
-  }
-
-  return (
-    <AttachmentHoverCard>
-      <AttachmentHoverCardTrigger asChild>
-        <Attachment data={attachment}>
-          <AttachmentPreview />
-        </Attachment>
-      </AttachmentHoverCardTrigger>
-      <AttachmentHoverCardContent>
-        <AttachmentHover attachment={attachment} />
-      </AttachmentHoverCardContent>
-    </AttachmentHoverCard>
-  );
-}
-
-function ProcessTrace({ message }: { message: ChatMessage }) {
-  return (
-    <Reasoning
-      className="process-trace"
-      isStreaming={!!message.streaming}
-      defaultOpen={!!message.streaming}
-      duration={message.durationMs ? Math.max(1, Math.round(message.durationMs / 1000)) : undefined}
-    >
-      <ProcessTraceTrigger />
-      <CollapsibleContent className="process-content">
-        <div className="process-line" aria-hidden="true" />
-        <div className="process-items">
-          {message.blocks.map((block, index) => (
-            block.kind === "thinking"
-              ? <ThinkingStep key={`thinking-${index}`} block={block} active={!!message.streaming && index === message.blocks.length - 1} />
-              : <ToolStep key={block.callId} block={block} active={block.status === "input-available"} />
-          ))}
-        </div>
-      </CollapsibleContent>
-    </Reasoning>
-  );
-}
-
-function ProcessTraceTrigger() {
-  const { isOpen, isStreaming, duration } = useReasoning();
-  return (
-    <ReasoningTrigger className="process-trigger">
-      <span>{isStreaming ? "正在思考" : `已思考${duration ? ` ${duration}s` : ""}`}</span>
-      <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={15} />
-    </ReasoningTrigger>
-  );
-}
-
-function ThinkingStep({ block, active }: { block: ThinkingBlock; active: boolean }) {
-  return (
-    <div className={`process-item thinking-step ${active ? "active" : ""}`}>
-      <span className="process-node circle" />
-      <div className="process-text">{block.content}</div>
-    </div>
-  );
-}
-
-function ToolStep({ block, active }: { block: ToolBlock; active: boolean }) {
-  const description = toolDescription(block.input);
-  return (
-    <div className={`process-item tool-step ${active ? "active" : ""} ${block.status === "output-error" ? "error" : ""}`}>
-      <span className="process-node diamond" />
-      <div className="tool-step-body">
-        <div className="tool-step-title">
-          <Wrench className="tool-step-icon" size={14} />
-          <span>{block.name}</span>
-        </div>
-        {description ? <div className="tool-step-description">{description}</div> : null}
-      </div>
-    </div>
-  );
 }
 
 function handleFrame(
@@ -817,11 +697,6 @@ function blocksWithFinalThinking(blocks: AgentBlock[], thinking: string | undefi
   const text = thinking?.trim();
   if (!text || blocks.some((block) => block.kind === "thinking")) return blocks;
   return [{ kind: "thinking", content: text } satisfies ThinkingBlock, ...blocks];
-}
-
-function toolDescription(input: unknown) {
-  const inputRecord = recordValue(input);
-  return stringValue(inputRecord?.description);
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
