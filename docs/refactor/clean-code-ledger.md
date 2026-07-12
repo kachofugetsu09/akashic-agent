@@ -1043,3 +1043,17 @@
 - 测试删除及原因：无。
 - 验证结果：副手二审定向 `24 passed`、相关 `159 passed`、全量 `1749 passed`；主线补刀后相关 `184 passed`、live 安装 cache 20 个来源全部可解析、修改生产文件 pyright `0 errors, 0 warnings`、全量 `1752 passed in 20.31s`，`git diff --check` 通过。
 - 残余风险：最终发布仍由数次同文件系统 rename 组成，存在极短目录切换窗口；跨进程并发 installer 尚无 owner，当前 CLI 是单安装流程，没有证据支持新增锁服务。
+
+### `b1640920` `fix(peer-agent): enforce lifecycle ownership and response schemas`
+
+- 范围：Peer Agent 的 AgentCard 发现、A2A `tasks/get` 解析、pending task 归属、后台 poller 与子进程启停。
+- 原问题：live AgentCard 可覆盖配置中的进程身份和路由；pending 只以远端 task ID 为键，跨 agent 会冲突；未知状态、坏 JSON/schema 和 JSON-RPC error 可被永久轮询；同 agent 多任务完成一个就会提前终止共享进程；poller 失败 task 可被静默覆盖；spawn/health/shutdown 的取消、日志 fd 和并行清理存在泄漏或丢错路径。
+- 为什么这样修改：配置继续唯一拥有 name/base URL，live card 只补充展示信息；外部 AgentCard/A2A 响应在唯一边界按实际消费字段解析；pending 使用 `(agent_name, task_id)`；终态先投递通知、最后一个任务再回收进程；ProcessManager 明确持有进程登记、父日志 fd、健康等待和 shutdown 聚合。
+- 不变量与拥有层：PeerAgentConfig 拥有本地身份与路由；card/status parser 拥有外部 schema；Poller 拥有 pending、终态通知和 agent 任务计数；ProcessManager 拥有 subprocess、per-agent lock 和关闭顺序。网络/HTTP 临时失败保留 pending；协议、MessageBus、ownership 和进程系统调用错误 fail-loud。
+- 主审修正：终审删除了副手新增的 `PeerProcessRetryableError`。`asyncio.subprocess` 的普通 `OSError` 没有统一可恢复契约，把 PermissionError、坏 fd 等全部无限重试会再次掩盖真实错误；现在只把明确的 HTTP transport/timeout 作为 poll retry，`ProcessLookupError` 表示目标已消失，其余进程错误原样暴露且 ownership/pending 不被误删。
+- 能力变化：跨 agent 同 ID 任务互不覆盖；同一 agent 的多个 pending 全部完成后才停止进程；queued/running/submitted/working 与 completed/failed/canceled 语义明确；坏远端响应转为一次显式失败通知并回收；poller 已失败时再次 start 会先重抛旧异常；启动或关闭部分失败保留原始错误并继续清理其余资源。
+- 性能变化：`shutdown_all` 按 agent 并行回收，关闭耗时由各进程超时之和收敛为最慢进程耗时上界；正常轮询间隔、每任务查询次数和 HTTP retry budget 不变。
+- 测试新增：真实 loop 的协议失败通知、身份/路由不被 live card 覆盖、复合任务键、同 agent 多任务、通知与进程错误边界、done task 重抛、spawn/cancel/log-fd fault injection、并行 shutdown 与错误聚合。
+- 测试删除及原因：删除“任意进程 OSError 都可自动恢复”的人工测试；真实 owner 没有该恢复协议，保留会固化静默无限重试。
+- 验证结果：副手终审定向 `52 passed`、全量 `1782 passed`、pyright `0 errors`；主审补刀后定向 `51 passed`、修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
+- 残余风险：任务提交成功到登记 pending 之间仍依赖当前 Tool 调用顺序；若未来允许同一 agent 高并发提交，需要让 submit 与最后任务 terminate 共享显式 lease，不能仅靠增加下游空值检查解决。
