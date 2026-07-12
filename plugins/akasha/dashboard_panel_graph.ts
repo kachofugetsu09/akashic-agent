@@ -164,6 +164,7 @@ function renderAkashaGraph(container: HTMLElement): void {
   let currentVersion = "";
   // eslint-disable-next-line prefer-const
   let pollTimer: number | undefined;
+  let loadInFlight = false;
   let tweenFrame: number | undefined;
   let lockedColor: string | null = null;
   let hlInternalPath = new Path2D();
@@ -1177,13 +1178,19 @@ function renderAkashaGraph(container: HTMLElement): void {
   }
 
   async function load(refit: boolean): Promise<void> {
+    if (disposed || loadInFlight) return;
+    loadInFlight = true;
     if (refit) {
       stat.textContent = "加载全景快照...";
       setLoadingCard(NODES.length === 0);
     }
-    const payload = await api<GraphPayload>("/api/dashboard/akasha-graph/global");
-    if (disposed) return;
-    applyPayload(payload, refit);
+    try {
+      const payload = await api<GraphPayload>("/api/dashboard/akasha-graph/global");
+      if (disposed) return;
+      applyPayload(payload, refit);
+    } finally {
+      loadInFlight = false;
+    }
   }
 
   window.addEventListener("resize", resize);
