@@ -57,4 +57,5 @@ class MemoryPlugin:
             engine=engine,
             closeables=list(engine.closeables),
             admin=engine,
+            embedding_api=engine.embedding_api,
         )

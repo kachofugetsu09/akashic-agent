@@ -1,0 +1,342 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, cast
+
+from core.memory.engine import MemoryQuery
+from plugins.wake_proactive.context import ScratchItem, WakeContext, event_item_id
+from plugins.wake_proactive.renderer import render_share
+
+if TYPE_CHECKING:
+    from core.memory.engine import MemoryRetrievalApi
+    from plugins.wake_proactive.state import WakeStateStore
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolDeps:
+    web_fetch_tool: Any = None
+    memory: "MemoryRetrievalApi | None" = None
+    state_store: "WakeStateStore | None" = None
+    max_chars: int = 8_000
+    max_concurrency: int = 6
+
+
+def _schema(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        },
+    }
+
+
+TOOL_SCHEMAS = [
+    _schema(
+        "scratchpad",
+        "记录标题初筛计划。必须一次覆盖本轮全部标题；这里只记录预测，不产生用户反馈或训练标签。",
+        {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "item_id": {"type": "string"},
+                            "initial_interest": {
+                                "type": "string",
+                                "enum": ["likely_interesting", "not_interesting", "uncertain"],
+                            },
+                            "investigate": {
+                                "type": "string",
+                                "enum": ["none", "content", "recall", "both"],
+                            },
+                            "question": {"type": "string"},
+                            "recall_query": {"type": "string"},
+                        },
+                        "required": ["item_id", "initial_interest", "investigate"],
+                    },
+                }
+            },
+            "required": ["items"],
+        },
+    ),
+    _schema(
+        "investigate_candidates",
+        "按 scratchpad 一次并发完成全部正文抓取和兴趣记忆查询，结果按 item_id 合并。",
+        {"type": "object", "properties": {}, "required": []},
+    ),
+    _schema(
+        "share_content",
+        "把最终选中的内容渲染成一条自然消息，并保存稳定序号到 event id 的映射。",
+        {
+            "type": "object",
+            "properties": {
+                "opening": {"type": "string"},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "item_id": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "why_it_matters": {"type": "string"},
+                        },
+                        "required": ["item_id", "summary"],
+                    },
+                },
+                "closing": {"type": "string"},
+            },
+            "required": ["items"],
+        },
+    ),
+    _schema(
+        "skip_content",
+        "调查完成后确认本轮没有值得分享的内容；只消费本轮窗口，不产生兴趣反馈标签。",
+        {
+            "type": "object",
+            "properties": {"reason": {"type": "string"}},
+            "required": ["reason"],
+        },
+    ),
+]
+
+
+def _event_map(ctx: WakeContext) -> dict[str, dict[str, Any]]:
+    return {event_item_id(event): event for event in ctx.content_events}
+
+
+def _save(ctx: WakeContext, deps: ToolDeps) -> None:
+    if deps.state_store is not None:
+        deps.state_store.save(ctx)
+
+
+def _scratchpad(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
+    if ctx.scratchpad:
+        raise ValueError("scratchpad already recorded for this wake")
+    valid_ids = set(_event_map(ctx))
+    raw_items = list(args.get("items") or [])
+    item_ids = [str(item.get("item_id") or "").strip() for item in raw_items]
+    if len(item_ids) != len(set(item_ids)):
+        raise ValueError("scratchpad contains duplicate item_id")
+    if set(item_ids) != valid_ids:
+        missing = sorted(valid_ids - set(item_ids))
+        unknown = sorted(set(item_ids) - valid_ids)
+        raise ValueError(f"scratchpad must cover every title; missing={missing}, unknown={unknown}")
+
+    allowed_interest = {"likely_interesting", "not_interesting", "uncertain"}
+    allowed_investigation = {"none", "content", "recall", "both"}
+    planned: dict[str, ScratchItem] = {}
+    for raw in raw_items:
+        item_id = str(raw["item_id"]).strip()
+        interest = str(raw["initial_interest"])
+        investigation = str(raw["investigate"])
+        if interest not in allowed_interest or investigation not in allowed_investigation:
+            raise ValueError(f"invalid scratchpad decision for {item_id}")
+        if interest == "likely_interesting" and investigation not in {"content", "both"}:
+            raise ValueError(f"likely_interesting requires content investigation for {item_id}")
+        if interest == "uncertain" and investigation not in {"recall", "both"}:
+            raise ValueError(f"uncertain requires recall investigation for {item_id}")
+        if interest == "not_interesting" and investigation != "none":
+            raise ValueError(f"not_interesting must not investigate {item_id}")
+        recall_query = str(raw.get("recall_query") or "").strip()
+        if investigation in {"recall", "both"} and not recall_query:
+            raise ValueError(f"recall_query is required for {item_id}")
+        planned[item_id] = ScratchItem(
+            item_id=item_id,
+            initial_interest=cast(Any, interest),
+            investigate=cast(Any, investigation),
+            question=str(raw.get("question") or "").strip(),
+            recall_query=recall_query,
+        )
+    ctx.scratchpad = planned
+    _save(ctx, deps)
+    return json.dumps(
+        {
+            "ok": True,
+            "planned": len(ctx.scratchpad),
+            "to_investigate": sum(
+                item.investigate != "none" for item in ctx.scratchpad.values()
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+async def _fetch_content(
+    event: dict[str, Any], *, deps: ToolDeps, semaphore: asyncio.Semaphore
+) -> dict[str, Any]:
+    url = str(event.get("url") or "").strip()
+    if not url:
+        inline = str(event.get("content") or event.get("body") or "")
+        return {"text": inline[: deps.max_chars], "url": "", "truncated": len(inline) > deps.max_chars}
+    if deps.web_fetch_tool is None:
+        return {"error": "web_fetch tool not configured", "url": url}
+    try:
+        async with semaphore:
+            raw = await deps.web_fetch_tool.execute(url=url, format="text")
+        result = json.loads(raw)
+        if "error" in result:
+            return result
+        text = str(result.get("text") or "")
+        result["text"] = text[: deps.max_chars]
+        result["truncated"] = bool(result.get("truncated")) or len(text) > deps.max_chars
+        return result
+    except Exception as exc:
+        logger.warning("wake proactive web fetch failed url=%s error=%s", url, exc)
+        return {"error": str(exc), "url": url}
+
+
+async def _recall(
+    query: str, *, ctx: WakeContext, deps: ToolDeps, semaphore: asyncio.Semaphore
+) -> dict[str, Any]:
+    if deps.memory is None:
+        return {"hits": 0, "result": ""}
+    try:
+        async with semaphore:
+            result = await deps.memory.query(
+                MemoryQuery(
+                    text=query,
+                    intent="interest",
+                    effect="read_only",
+                    limit=2,
+                    timestamp=ctx.now_utc,
+                )
+            )
+        records = list(result.records)
+        return {
+            "hits": len(records),
+            "result": "\n---\n".join(
+                str(record.summary) for record in records if str(record.summary).strip()
+            ),
+        }
+    except Exception as exc:
+        logger.warning("wake proactive recall failed query=%r error=%s", query, exc)
+        return {"hits": 0, "result": "", "error": str(exc)}
+
+
+async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
+    if not ctx.scratchpad:
+        raise ValueError("investigate_candidates requires scratchpad first")
+    if ctx.investigation_completed:
+        raise ValueError("investigate_candidates already called this wake")
+    events = _event_map(ctx)
+    semaphore = asyncio.Semaphore(max(1, deps.max_concurrency))
+
+    async def investigate(item: ScratchItem) -> tuple[str, dict[str, Any]]:
+        result: dict[str, Any] = {
+            "initial_interest": item.initial_interest,
+            "question": item.question,
+        }
+        operations: list[tuple[str, Any]] = []
+        if item.investigate in {"content", "both"}:
+            operations.append(("content", _fetch_content(events[item.item_id], deps=deps, semaphore=semaphore)))
+        if item.investigate in {"recall", "both"}:
+            operations.append(("memory", _recall(item.recall_query, ctx=ctx, deps=deps, semaphore=semaphore)))
+        if operations:
+            values = await asyncio.gather(*(operation for _, operation in operations))
+            result.update({name: value for (name, _), value in zip(operations, values)})
+        return item.item_id, result
+
+    selected = [item for item in ctx.scratchpad.values() if item.investigate != "none"]
+    pairs = await asyncio.gather(*(investigate(item) for item in selected))
+    ctx.investigation_results = dict(pairs)
+    ctx.investigation_completed = True
+    _save(ctx, deps)
+    return json.dumps(
+        {"items": ctx.investigation_results, "count": len(ctx.investigation_results)},
+        ensure_ascii=False,
+    )
+
+
+def _share_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
+    if ctx.terminal_action is not None:
+        raise ValueError("wake already finished")
+    if not ctx.scratchpad or not ctx.investigation_completed:
+        raise ValueError("share_content requires scratchpad and investigate_candidates first")
+    items = list(args.get("items") or [])
+    if not items:
+        raise ValueError("share_content requires at least one item")
+    valid_ids = set(_event_map(ctx))
+    item_ids = [str(item.get("item_id") or "").strip() for item in items]
+    if len(item_ids) != len(set(item_ids)):
+        raise ValueError("share_content contains duplicate item_id")
+    unknown = sorted(set(item_ids) - valid_ids)
+    if unknown:
+        raise ValueError(f"share_content contains unknown item_id: {unknown}")
+    without_evidence: list[str] = []
+    for item_id in item_ids:
+        planned = ctx.scratchpad[item_id]
+        investigated = ctx.investigation_results.get(item_id) or {}
+        content = investigated.get("content")
+        if planned.initial_interest == "not_interesting":
+            without_evidence.append(item_id)
+            continue
+        if not isinstance(content, dict):
+            without_evidence.append(item_id)
+            continue
+        typed_content = cast(dict[str, Any], content)
+        if typed_content.get("error") or not str(
+            typed_content.get("text") or ""
+        ).strip():
+            without_evidence.append(item_id)
+    if without_evidence:
+        raise ValueError(
+            f"share_content requires successful content evidence: {without_evidence}"
+        )
+    rendered = render_share(
+        opening=str(args.get("opening") or ""),
+        items=items,
+        closing=str(args.get("closing") or ""),
+        events=ctx.content_events,
+    )
+    ctx.final_message = rendered.message
+    ctx.cited_item_ids = rendered.evidence
+    ctx.display_event_map = rendered.display_event_map
+    ctx.source_refs = rendered.source_refs
+    ctx.terminal_action = "reply"
+    _save(ctx, deps)
+    return json.dumps(
+        {
+            "ok": True,
+            "message": ctx.final_message,
+            "display_event_map": ctx.display_event_map,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _skip_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
+    if ctx.terminal_action is not None:
+        raise ValueError("wake already finished")
+    if not ctx.scratchpad or not ctx.investigation_completed:
+        raise ValueError("skip_content requires scratchpad and investigate_candidates first")
+    reason = str(args.get("reason") or "").strip()
+    if not reason:
+        raise ValueError("skip_content requires reason")
+    ctx.terminal_action = "skip"
+    _save(ctx, deps)
+    return json.dumps({"ok": True, "decision": "skip", "reason": reason}, ensure_ascii=False)
+
+
+async def execute(
+    tool_name: str, args: dict[str, Any], ctx: WakeContext, deps: ToolDeps
+) -> str:
+    ctx.steps_taken += 1
+    if tool_name == "scratchpad":
+        return _scratchpad(ctx, args, deps)
+    if tool_name == "investigate_candidates":
+        return await _investigate_candidates(ctx, deps)
+    if tool_name == "share_content":
+        return _share_content(ctx, args, deps)
+    if tool_name == "skip_content":
+        return _skip_content(ctx, args, deps)
+    raise ValueError(f"unknown wake proactive tool: {tool_name!r}")

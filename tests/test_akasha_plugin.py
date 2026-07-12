@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import threading
 from contextlib import closing
@@ -33,6 +34,7 @@ from plugins.akasha.core import (
     build_dense_message_index,
     dense_message_candidates,
     reinforce_boost_from_payload,
+    serialize_f32,
 )
 from plugins.akasha.plugin import AkashaPlugin
 from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage, _turn_messages
@@ -42,6 +44,7 @@ from plugins.akasha.store import (
     EdgeUpdate,
     SourceMessage,
 )
+from session.embedding_store import MessageEmbeddingStore
 from scripts.build_akasha_db import _iter_replay_turns, _load_embeddings_from_cache, _skip_message
 
 
@@ -113,6 +116,33 @@ def _candidate(key: str, score: float) -> AkashaCandidate:
     )
 
 
+def _seed_legacy_embedding(
+    store: AkashaStore,
+    *,
+    message: SourceMessage,
+    model: str,
+    embedding: list[float],
+) -> None:
+    now = "2026-01-01T00:00:00+00:00"
+    store.db.execute(
+        """
+        INSERT INTO akasha_embedding_cache
+            (message_id, content_hash, model, embedding, dim, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            message.id,
+            hashlib.sha256(message.content.encode("utf-8")).hexdigest(),
+            model,
+            serialize_f32(np.asarray(embedding, dtype=np.float32)),
+            len(embedding),
+            now,
+            now,
+        ),
+    )
+    store.db.commit()
+
+
 def test_reinforce_boost_payload_uses_exact_tool_chain_call_name() -> None:
     wrong_chain = [{"calls": [{"name": "not_reinforce_memory"}]}]
     reinforce_chain = [{"calls": [{"name": "reinforce_memory"}]}]
@@ -169,6 +199,7 @@ def test_akasha_engine_passes_embedding_dimension_to_embedder(
         assert captured["model"] == "embedding-model"
         assert captured["output_dimensionality"] == 768
     finally:
+        engine._embedding_store.close()
         engine._store.close()
 
 
@@ -287,7 +318,7 @@ def test_store_merges_user_and_assistant_into_turn_node(tmp_path: Path) -> None:
     assert nodes[0].emb_count == 2
 
 
-def test_reset_schema_keeps_embedding_cache(tmp_path: Path) -> None:
+def test_reset_schema_keeps_legacy_embedding_source(tmp_path: Path) -> None:
     store = AkashaStore(tmp_path / "akasha.db")
     message = SourceMessage(
         "s:0",
@@ -298,30 +329,173 @@ def test_reset_schema_keeps_embedding_cache(tmp_path: Path) -> None:
         "2026-01-01T00:00:00+00:00",
     )
     try:
-        store.upsert_cached_embedding(message=message, model="m", embedding=[1.0, 2.0])
+        _seed_legacy_embedding(
+            store,
+            message=message,
+            model="m",
+            embedding=[1.0, 2.0],
+        )
         _ = store.upsert_message_node(message, [1.0, 0.0])
         store.reset_schema()
 
-        cached = store.get_cached_embedding(message=message, model="m")
+        cached = store.list_cached_embedding_rows()
         nodes = store.list_nodes()
     finally:
         store.close()
 
-    assert cached == [1.0, 2.0]
+    assert len(cached) == 1
     assert nodes == []
+
+
+def test_message_embedding_store_reuses_only_matching_content(tmp_path: Path) -> None:
+    store = MessageEmbeddingStore(tmp_path / "sessions.db")
+    try:
+        store.upsert(
+            message_id="s:0",
+            content="原始内容",
+            model="m",
+            embedding=[1.0, 2.0],
+        )
+
+        assert store.get(message_id="s:0", content="原始内容", model="m") == [1.0, 2.0]
+        assert store.get(message_id="s:0", content="变更内容", model="m") is None
+    finally:
+        store.close()
+
+
+def test_message_embedding_store_lists_only_messages_visible_at_cutoff(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    store = MessageEmbeddingStore(db_path)
+    try:
+        store.upsert(
+            message_id="s:0",
+            content="第一条用户消息需要完整展示",
+            model="m",
+            embedding=[1.0, 0.0],
+        )
+        store.upsert(
+            message_id="s:2",
+            content="第二条用户消息只在联想块",
+            model="m",
+            embedding=[0.0, 1.0],
+        )
+
+        visible = store.list_until(
+            model="m",
+            cutoff="2026-01-01T00:00:01+00:00",
+        )
+
+        assert visible == [("s:0", [1.0, 0.0])]
+    finally:
+        store.close()
+
+
+def test_message_embedding_store_list_excludes_changed_messages(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    store = MessageEmbeddingStore(db_path)
+    try:
+        store.upsert(
+            message_id="s:0",
+            content="第一条用户消息需要完整展示",
+            model="m",
+            embedding=[1.0, 0.0],
+        )
+        with closing(sqlite3.connect(str(db_path))) as db:
+            db.execute("UPDATE messages SET content = '已编辑' WHERE id = 's:0'")
+            db.commit()
+
+        assert store.list(model="m") == []
+    finally:
+        store.close()
+
+
+def test_legacy_akasha_embeddings_migrate_to_sessions_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    message = SourceMessage(
+        "s:0",
+        "s",
+        0,
+        "user",
+        "第一条用户消息需要完整展示",
+        "2026-01-01T00:00:00+00:00",
+    )
+    legacy_store = AkashaStore(tmp_path / "akasha.db")
+    embedding_store = MessageEmbeddingStore(db_path)
+    try:
+        _seed_legacy_embedding(
+            legacy_store,
+            message=message,
+            model="m",
+            embedding=[1.0, 2.0],
+        )
+        _seed_legacy_embedding(
+            legacy_store,
+            message=SourceMessage(
+                "s:1",
+                "s",
+                1,
+                "assistant",
+                "与当前消息不一致",
+                "2026-01-01T00:00:01+00:00",
+            ),
+            model="m",
+            embedding=[2.0, 1.0],
+        )
+        _seed_legacy_embedding(
+            legacy_store,
+            message=SourceMessage(
+                "missing:0",
+                "missing",
+                0,
+                "user",
+                "已经删除",
+                "2026-01-01T00:00:00+00:00",
+            ),
+            model="m",
+            embedding=[3.0, 1.0],
+        )
+
+        imported = embedding_store.import_legacy_rows_once(
+            legacy_store.list_cached_embedding_rows()
+        )
+
+        assert imported == 1
+        assert embedding_store.get(
+            message_id=message.id,
+            content=message.content,
+            model="m",
+        ) == [1.0, 2.0]
+        assert embedding_store.delete([message.id]) == 1
+        assert embedding_store.import_legacy_rows_once(
+            legacy_store.list_cached_embedding_rows()
+        ) == 0
+        assert embedding_store.get(
+            message_id=message.id,
+            content=message.content,
+            model="m",
+        ) is None
+    finally:
+        embedding_store.close()
+        legacy_store.close()
 
 
 def test_load_embeddings_from_cache_counts_hits_and_misses(
     tmp_path: Path,
 ) -> None:
-    store = AkashaStore(tmp_path / "akasha.db")
+    store = MessageEmbeddingStore(tmp_path / "sessions.db")
     messages = [
         SourceMessage("s:0", "s", 0, "user", "已缓存", "2026-01-01T00:00:00+00:00"),
         SourceMessage("s:1", "s", 1, "assistant", "新消息", "2026-01-01T00:00:01+00:00"),
     ]
     try:
-        store.upsert_cached_embedding(
-            message=messages[0],
+        store.upsert(
+            message_id=messages[0].id,
+            content=messages[0].content,
             model="m",
             embedding=[1.0, 0.0],
         )
@@ -656,6 +830,61 @@ async def test_runtime_skips_scheduler_turn_even_without_extra_flag(tmp_path: Pa
     )
 
     engine._embedder.embed_batch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runtime_writes_message_embeddings_to_sessions_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    graph_store = AkashaStore(tmp_path / "akasha.db")
+    embedding_store = MessageEmbeddingStore(db_path)
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._session_db_path = db_path
+    engine._store = graph_store
+    engine._embedding_store = embedding_store
+    engine._embedder = SimpleNamespace(
+        embed_batch=AsyncMock(return_value=[[1.0, 0.0], [0.0, 1.0]])
+    )
+    engine._config = SimpleNamespace(
+        memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
+    )
+    engine._pending_by_session = {}
+    engine._graph_lock = threading.RLock()
+    engine._nodes = {}
+    engine._message_embeddings = {}
+    engine._message_turn_keys = {}
+    engine._message_index = build_dense_message_index({})
+    try:
+        await engine._on_turn_committed(
+            TurnCommitted(
+                session_key="s",
+                channel="telegram",
+                chat_id="1",
+                input_message="第一条用户消息需要完整展示",
+                persisted_user_message="第一条用户消息需要完整展示",
+                assistant_response="第一条助手回复会被截断展示并保留引用",
+                tools_used=[],
+            )
+        )
+
+        assert embedding_store.get(
+            message_id="s:0",
+            content="第一条用户消息需要完整展示",
+            model="m",
+        ) == [1.0, 0.0]
+        assert embedding_store.get(
+            message_id="s:1",
+            content="第一条助手回复会被截断展示并保留引用",
+            model="m",
+        ) == [0.0, 1.0]
+        with closing(sqlite3.connect(str(graph_store.db_path))) as db:
+            legacy_count = db.execute(
+                "SELECT COUNT(1) FROM akasha_embedding_cache"
+            ).fetchone()[0]
+        assert legacy_count == 0
+    finally:
+        embedding_store.close()
+        graph_store.close()
 
 
 def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> None:
@@ -1046,6 +1275,7 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
     store = AkashaStore(tmp_path / "akasha.db")
+    embedding_store = MessageEmbeddingStore(db_path)
     try:
         messages = [
             SourceMessage("s:0", "s", 0, "user", "第一条用户消息需要完整展示", "2026-01-01T00:00:00+00:00"),
@@ -1054,7 +1284,12 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
         ]
         for index, message in enumerate(messages):
             embedding = [1.0, 0.0] if index < 2 else [0.0, 1.0]
-            store.upsert_cached_embedding(message=message, model="m", embedding=embedding)
+            embedding_store.upsert(
+                message_id=message.id,
+                content=message.content,
+                model="m",
+                embedding=embedding,
+            )
             _ = store.upsert_message_node(message, embedding)
         store.upsert_edges([
             EdgeUpdate("s:0", "s:2", 1.0, 0),
@@ -1098,6 +1333,7 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
 
         engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
         engine._store = store
+        engine._embedding_store = embedding_store
         engine._session_db_path = db_path
         engine._config = SimpleNamespace(
             memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
@@ -1127,7 +1363,8 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
         assert store.list_query_logs(page=1, page_size=10)[1] == 0
         with closing(sqlite3.connect(str(store.db_path))) as db:
             event_count = db.execute("SELECT COUNT(1) FROM akasha_activation_events").fetchone()[0]
-            cache_count = db.execute("SELECT COUNT(1) FROM akasha_embedding_cache").fetchone()[0]
+        with closing(sqlite3.connect(str(db_path))) as db:
+            cache_count = db.execute("SELECT COUNT(1) FROM message_embeddings").fetchone()[0]
         assert event_count == 0
         assert cache_count == 1
         assert "s:0" not in engine._nodes
@@ -1135,6 +1372,7 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
         assert "s:0" not in engine._message_embeddings
         assert "s:1" not in engine._message_turn_keys
     finally:
+        embedding_store.close()
         store.close()
 
 

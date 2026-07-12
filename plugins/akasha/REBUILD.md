@@ -6,10 +6,11 @@
 ## 心智模型
 
 - **`sessions.db`** = 唯一真相源（原始 user/assistant 消息，不动）。
+  - `message_embeddings` —— 公共消息 embedding 缓存，供 Akasha、Proactive 等消费者复用
 - **`akasha.db`** = 在真相之上的**索引 + 图**，由重放 `sessions.db` 算出来：
   - `akasha_nodes` / `akasha_edges` / `akasha_salience_state` —— 图本体（重建会清掉重算）
   - `akasha_query_log` / `akasha_activation_events` —— 诊断（重建重算）
-  - `akasha_embedding_cache` —— **每条消息的 embedding 缓存**（重建**默认保留**）
+  - `akasha_embedding_cache` —— 旧缓存，只在升级时作为一次性迁移来源
   - `fts_token_idf` —— FTS 稀有词的 IDF 表（FTS 种子用，单独一步建）
 
 重建 = 拿 `sessions.db` 的消息，按时间顺序重放过 akasha 的激活/建边逻辑，把图算出来落回 `akasha.db`。
@@ -22,7 +23,7 @@
 
 ## 路径 A — 有缓存（常态，~3 分钟）
 
-平时聊天时线上 engine 已经把每条消息 embed 并写进 `akasha_embedding_cache`（见 `engine.py` `_on_turn_committed`）。
+平时聊天时线上 engine 已经把每条消息 embed 并写进 `sessions.db:message_embeddings`（见 `engine.py` `_on_turn_committed`）。
 所以**只要你是在用过的库上重建**，缓存就是热的，直接跑：
 
 ```bash
@@ -36,7 +37,7 @@ python scripts/build_akasha_db.py \
 
 做了什么：
 1. 自动备份旧 `akasha.db`（`*.bak-时间戳`）。
-2. `reset_schema()` 清掉图表与诊断，**保留 `embedding_cache`**。
+2. 将旧 `akasha_embedding_cache` 中缺失的记录迁入公共缓存，再清掉图表与诊断。
 3. 用内存 `MemoryStore` 全库快速重放（graph_fast + fast_dense），末尾一次性批量落库。
 4. 写迁移记录，打印 `nodes/edges/query_logs/activation_events` 计数。
 
@@ -53,7 +54,7 @@ python scripts/build_akasha_db.py \
 
 会落到这条路的情况：
 - 全新 / 空的 `akasha.db`（从没在上面聊过）；
-- 手动删过 `akasha_embedding_cache`；
+- `sessions.db:message_embeddings` 没有对应记录；
 - **换了 embedding 模型**——缓存命中键是 `(message_id, model, content_hash)`，model 一变全部失配。
 
 解决：**先预热缓存，再走路径 A。** 目前没有现成脚本，预热的最小范式（与线上同一个 `Embedder`、
@@ -63,13 +64,12 @@ python scripts/build_akasha_db.py \
 import asyncio, sqlite3
 from agent.config_models import Config
 from memory2.embedder import Embedder
-from plugins.akasha.core import SourceMessage
-from plugins.akasha.store import AkashaStore
+from session.embedding_store import MessageEmbeddingStore
 
 cfg = Config.load("config.toml")
 emb_cfg = cfg.memory.embedding          # base_url / api_key / model
 embedder = Embedder(emb_cfg.base_url, emb_cfg.api_key, model=emb_cfg.model)
-store = AkashaStore("~/.akashic/workspace/memory/akasha.db")
+store = MessageEmbeddingStore("~/.akashic/workspace/sessions.db")
 
 src = sqlite3.connect("~/.akashic/workspace/sessions.db"); src.row_factory = sqlite3.Row
 rows = src.execute(
@@ -78,10 +78,14 @@ rows = src.execute(
 ).fetchall()
 
 async def warm():
-    msgs = [SourceMessage(r["id"], r["session_key"], r["seq"], r["role"], r["content"], r["ts"]) for r in rows]
-    vecs = await embedder.embed_batch([m.content for m in msgs])
-    for m, v in zip(msgs, vecs):
-        store.upsert_cached_embedding(message=m, model=emb_cfg.model, embedding=v)
+    vecs = await embedder.embed_batch([r["content"] for r in rows])
+    for row, vector in zip(rows, vecs):
+        store.upsert(
+            message_id=row["id"],
+            content=row["content"],
+            model=emb_cfg.model,
+            embedding=vector,
+        )
 
 asyncio.run(warm())
 store.close()

@@ -40,6 +40,7 @@ from plugins.akasha.store import (
     AkashaStore,
     SourceSessionSnapshot,
 )
+from session.embedding_store import MessageEmbeddingStore
 
 
 @dataclass(frozen=True)
@@ -215,7 +216,7 @@ def _backup_existing_db(db_path: Path) -> Path | None:
 # 从 cache 读取回放需要的 embedding，缺失时跳过对应消息。
 def _load_embeddings_from_cache(
     *,
-    store: AkashaStore,
+    store: MessageEmbeddingStore,
     model: str,
     messages: list[SourceMessage],
 ) -> tuple[dict[str, list[float]], int, int]:
@@ -223,7 +224,11 @@ def _load_embeddings_from_cache(
     cache_hits = 0
     cache_misses = 0
     for message in messages:
-        embedding = store.get_cached_embedding(message=message, model=model)
+        embedding = store.get(
+            message_id=message.id,
+            content=message.content,
+            model=model,
+        )
         if embedding is None:
             cache_misses += 1
         else:
@@ -271,6 +276,8 @@ def _run() -> MigrationStats:
     # 2. 备份旧 sidecar，并初始化本次迁移记录。
     backup_path = _backup_existing_db(db_path)
     store = AkashaStore(db_path)
+    embedding_store = MessageEmbeddingStore(sessions_db)
+    _ = embedding_store.import_legacy_rows_once(store.list_cached_embedding_rows())
     if str(args.embedding_model).strip():
         embedding_model = str(args.embedding_model).strip()  # 离线重建：免读 config
     else:
@@ -284,7 +291,7 @@ def _run() -> MigrationStats:
     store.insert_session_snapshots(run_id=run_id, snapshots=snapshots)
     store.reset_schema()
 
-    # 2b. 用内存图重放，末尾一次性落库；AkashaStore 只负责 cache、迁移记录和 dump 连接。
+    # 2b. 用内存图重放，末尾一次性落库；AkashaStore 只负责图、迁移记录和 dump 连接。
     mem = CapturingMemoryStore()
     graph_install = cast("Callable[[CapturingMemoryStore], None]", getattr(graph_fast, "install"))
     dense_install = cast("Callable[[], None]", getattr(fast_dense, "install"))
@@ -295,7 +302,7 @@ def _run() -> MigrationStats:
     graph_install(mem)
     dense_install()
 
-    # 3. 只复用 embedding cache，再按消息顺序 replay 激活状态。
+    # 3. 只复用 sessions.db 公共 embedding cache，再按消息顺序 replay 激活状态。
     messages = 0
     activations = 0
     cache_hits = 0
@@ -306,15 +313,10 @@ def _run() -> MigrationStats:
         source_messages = _load_source_messages(sessions_db)
         skip_message_ids = _load_skip_message_ids(sessions_db)
         reinforce_boosts = _load_reinforce_boosts(sessions_db)
-        skipped_source_messages = [
-            message for message in source_messages if _skip_message(message, skip_message_ids)
-        ]
-        if skipped_source_messages:
-            _ = store.delete_cached_embeddings([message.id for message in skipped_source_messages])
         replay_turns = list(_iter_replay_turns(source_messages, skip_message_ids))
         replay_messages = [message for turn in replay_turns for message in turn]
         embedding_map, cache_hits, cache_misses = _load_embeddings_from_cache(
-            store=store,
+            store=embedding_store,
             model=embedding_model,
             messages=replay_messages,
         )
@@ -371,6 +373,7 @@ def _run() -> MigrationStats:
             cache_hit_count=cache_hits,
             cache_miss_count=cache_misses,
         )
+        embedding_store.close()
         store.close()
 
     return MigrationStats(

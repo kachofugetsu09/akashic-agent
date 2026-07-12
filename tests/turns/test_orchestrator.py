@@ -124,7 +124,40 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
     assert sent is True
     assert session.messages[0]["proactive"] is True
     assert session.messages[0]["content"] == "hello"
-    assert order == ["persist", "side_effect", "dispatch", "presence", "success_effect"]
+    assert order == ["side_effect", "dispatch", "persist", "presence", "success_effect"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_failed_dispatch_does_not_persist_proactive_message():
+    session = _DummySession("telegram:123")
+    session_manager = SimpleNamespace(
+        get_or_create=lambda _key: session,
+        append_messages=AsyncMock(return_value=None),
+    )
+    outbound = SimpleNamespace(dispatch=AsyncMock(return_value=False))
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=SessionServices(
+                session_manager=cast(Any, session_manager),
+                presence=None,
+            ),
+            outbound=cast(Any, outbound),
+        )
+    )
+
+    sent = await orchestrator.handle_proactive_turn(
+        result=TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(session_key="telegram:123", content="not delivered"),
+        ),
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+    )
+
+    assert sent is False
+    assert session.messages == []
+    session_manager.append_messages.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -152,14 +152,6 @@ class SourceSessionSnapshot:
     max_seq: int
 
 
-# 计算 message 内容指纹。
-def content_hash(content: str) -> str:
-    # 1. cache 命中必须同时匹配 message_id、model 和原文内容。
-    import hashlib
-
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
 # 生成 UTC ISO 时间。
 def _now_iso() -> str:
     # 1. sidecar 内部时间统一用 UTC。
@@ -207,99 +199,35 @@ class AkashaStore:
 
     # 清空并重建 Akasha 状态表。
     def reset_schema(self) -> None:
-        # 1. 只清 replay 产物，保留 embedding cache 和迁移记录。
+        # 1. 只清 replay 产物，保留旧缓存迁移源和迁移记录。
         with self._lock:
             _ = self._db.executescript(RESET_SQL)
             _ = self._db.executescript(SCHEMA)
             self._db.commit()
 
-    # 读取可复用的 message embedding。
-    def get_cached_embedding(
+    def list_cached_embedding_rows(
         self,
-        *,
-        message: SourceMessage,
-        model: str,
-    ) -> list[float] | None:
-        # 1. 同一 message id 只有在内容和模型都一致时复用。
-        digest = content_hash(message.content)
-        with self._lock:
-            row = self._db.execute(
-                """
-                SELECT embedding
-                FROM akasha_embedding_cache
-                WHERE message_id = ? AND model = ? AND content_hash = ?
-                """,
-                (message.id, model, digest),
-            ).fetchone()
-        if row is None:
-            return None
-        return deserialize_f32(row["embedding"]).astype(float).tolist()
-
-    # 写入或刷新 message embedding cache。
-    def upsert_cached_embedding(
-        self,
-        *,
-        message: SourceMessage,
-        model: str,
-        embedding: list[float],
-    ) -> None:
-        # 1. message 内容变更时覆盖同 model 的旧 embedding。
-        vector = np.array(embedding, dtype=np.float32)
-        now = _now_iso()
-        with self._lock:
-            _ = self._db.execute(
-                """
-                INSERT INTO akasha_embedding_cache
-                    (message_id, content_hash, model, embedding, dim, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(message_id, model) DO UPDATE SET
-                    content_hash = excluded.content_hash,
-                    embedding = excluded.embedding,
-                    dim = excluded.dim,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    message.id,
-                    content_hash(message.content),
-                    model,
-                    serialize_f32(vector),
-                    int(vector.size),
-                    now,
-                    now,
-                ),
-            )
-            self._db.commit()
-
-    # 读取指定模型的全部 message embedding cache。
-    def list_cached_embeddings(self, *, model: str) -> list[tuple[str, np.ndarray]]:
-        # 1. Dense 展示使用 message-level embedding，再映射回 turn。
+    ) -> list[tuple[str, str, str, bytes, int, str, str]]:
+        """读取旧 sidecar 缓存，供迁移到 sessions.db。"""
         with self._lock:
             rows = self._db.execute(
                 """
-                SELECT message_id, embedding
+                SELECT message_id, content_hash, model, embedding, dim, created_at, updated_at
                 FROM akasha_embedding_cache
-                WHERE model = ?
-                """,
-                (model,),
+                """
             ).fetchall()
         return [
-            (str(row["message_id"]), deserialize_f32(row["embedding"]))
+            (
+                str(row["message_id"]),
+                str(row["content_hash"]),
+                str(row["model"]),
+                bytes(row["embedding"]),
+                int(row["dim"]),
+                str(row["created_at"]),
+                str(row["updated_at"]),
+            )
             for row in rows
         ]
-
-    # 删除指定消息的 embedding cache。
-    def delete_cached_embeddings(self, message_ids: list[str]) -> int:
-        clean_ids = [str(item).strip() for item in message_ids if str(item).strip()]
-        if not clean_ids:
-            return 0
-        placeholders = ",".join("?" for _ in clean_ids)
-        with self._lock:
-            cur = self._db.execute(
-                f"DELETE FROM akasha_embedding_cache WHERE message_id IN ({placeholders})",
-                clean_ids,
-            )
-            self._db.commit()
-        return int(cur.rowcount or 0)
 
     # 开始记录一次 Akasha 迁移。
     def start_migration_run(

@@ -1,0 +1,817 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import closing
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from agent.plugins.specs import ProactiveSourceSpec, RegisteredProactiveSource
+from agent.provider import LLMResponse, ToolCall
+from core.clock import ReplayClock
+from plugins.wake_proactive.plugin import WakeProactivePlugin, WakeRuntimeFactory
+from plugins.wake_proactive.runtime import WakeRuntime
+from plugins.wake_proactive.state import WakeStateStore
+from proactive_v2.frame import new_proactive_frame
+from proactive_v2.lifecycle import ProactiveLifecycleBuilder
+from session.embedding_store import MessageEmbeddingStore
+
+
+class FakeGateway:
+    def __init__(self, events: list[dict]) -> None:
+        self.events = events
+        self.acks: list[dict] = []
+
+    async def call(self, server, tool_name, args, *, timeout=None):
+        if tool_name == "fetch":
+            return list(self.events)
+        if tool_name == "ack":
+            self.acks.append(dict(args))
+            return {"ok": True}
+        raise AssertionError(tool_name)
+
+
+class FakeContextGateway:
+    def __init__(self, snapshot: dict) -> None:
+        self.snapshot = snapshot
+
+    async def call(self, server, tool_name, args, *, timeout=None):
+        if tool_name == "fetch":
+            return dict(self.snapshot)
+        raise AssertionError(tool_name)
+
+
+class FlakyAckGateway(FakeGateway):
+    def __init__(self, events: list[dict]) -> None:
+        super().__init__(events)
+        self.ack_attempts = 0
+
+    async def call(self, server, tool_name, args, *, timeout=None):
+        if tool_name == "ack":
+            self.ack_attempts += 1
+            if self.ack_attempts == 1:
+                raise RuntimeError("temporary ack failure")
+        return await super().call(server, tool_name, args, timeout=timeout)
+
+
+class FakeWebFetch:
+    async def execute(self, **kwargs):
+        return json.dumps({"url": kwargs["url"], "text": f"正文 {kwargs['url']}"})
+
+
+class FakeTools:
+    def get_tool(self, name):
+        return FakeWebFetch() if name == "web_fetch" else None
+
+
+class FakeOrchestrator:
+    def __init__(self) -> None:
+        self.results = []
+
+    async def handle_proactive_turn(self, *, result, **kwargs):
+        self.results.append(result)
+        effects = result.side_effects if result.decision == "skip" else result.success_side_effects
+        for effect in effects:
+            await effect.run()
+        return result.decision == "reply"
+
+
+class FailingOrchestrator(FakeOrchestrator):
+    async def handle_proactive_turn(self, *, result, **kwargs):
+        self.results.append(result)
+        return False
+
+
+class FixedRng:
+    def gammavariate(self, shape, scale):
+        return 0.000001
+
+
+class FixedClock:
+    def __init__(self, now: datetime) -> None:
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+    def advance(self, delta: timedelta) -> None:
+        self._now += delta
+
+
+def _source(channel: str) -> RegisteredProactiveSource:
+    return RegisteredProactiveSource(
+        plugin_id="feed_plugin",
+        spec=ProactiveSourceSpec(
+            id="main",
+            channels=(channel,),
+            server="feed",
+            fetch_tool="fetch",
+            ack_tool="ack",
+        ),
+    )
+
+
+def _scope(tmp_path: Path, gateway, provider, orchestrator, source):
+    embedding_api = SimpleNamespace(
+        model_id="test-embedding",
+        embed_batch=AsyncMock(return_value=[[0.1, 0.2], [0.2, 0.3]]),
+    )
+    memory = SimpleNamespace(
+        read_long_term=lambda: "用户关心 agent 架构",
+        embedding_api=embedding_api,
+        query=AsyncMock(
+            return_value=SimpleNamespace(
+                records=[SimpleNamespace(summary="用户持续研究主动唤醒")]
+            )
+        ),
+    )
+    return SimpleNamespace(
+        cfg=SimpleNamespace(
+            agent_tick_model="",
+            agent_tick_web_fetch_max_chars=8000,
+            default_channel="telegram",
+            default_chat_id="1",
+        ),
+        provider=provider,
+        model="fake-model",
+        max_tokens=1000,
+        memory=memory,
+        state_store=SimpleNamespace(workspace_dir=tmp_path),
+        rng=FixedRng(),
+        workspace_context_fn=lambda: "只分享真正有增量的内容",
+        mcp_gateway=gateway,
+        proactive_sources=[source],
+        shared_tools=FakeTools(),
+        turn_orchestrator=orchestrator,
+        presence=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_content_vertical_slice_uses_hazard_then_fixed_three_tool_flow(tmp_path, request):
+    events = [
+        {
+            "kind": "content",
+            "event_id": "old",
+            "title": "旧标题",
+            "source_name": "Research",
+            "published_at": "2026-07-10T00:00:00+00:00",
+            "url": "https://example.com/old",
+            "preprocess_score": 0.2,
+        },
+        {
+            "kind": "content",
+            "event_id": "new",
+            "title": "新标题",
+            "source_name": "Research",
+            "published_at": "2026-07-11T00:00:00+00:00",
+            "url": "https://example.com/new",
+            "preprocess_score": 0.9,
+        },
+    ]
+    ids = ["feed_plugin:main:new", "feed_plugin:main:old"]
+    responses = [
+        LLMResponse(
+            content=None,
+            tool_calls=[ToolCall("c1", "scratchpad", {"items": [
+                {"item_id": ids[0], "initial_interest": "uncertain", "investigate": "both", "recall_query": "用户是否关心新标题"},
+                {"item_id": ids[1], "initial_interest": "not_interesting", "investigate": "none"},
+            ]})],
+        ),
+        LLMResponse(
+            content=None,
+            tool_calls=[ToolCall("c2", "share_content", {
+                "opening": "这条值得现在看。",
+                "items": [{"item_id": ids[0], "summary": "它更新了唤醒方法。", "why_it_matters": "能用于当前架构"}],
+            })],
+        ),
+    ]
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=responses))
+    gateway = FakeGateway(events)
+    orchestrator = FakeOrchestrator()
+    scope = _scope(tmp_path, gateway, provider, orchestrator, _source("content"))
+    runtime = WakeRuntime(
+        scope,
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
+    )
+    request.addfinalizer(runtime.close)
+    frame = new_proactive_frame("telegram:1")
+    frame.input = frame.input.__class__(
+        session_key="telegram:1",
+        started_at=datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    lifecycle = ProactiveLifecycleBuilder().build(
+        WakeProactivePlugin().proactive_lifecycles()[0], runtime.build_modules()
+    )
+    result = await lifecycle.run(frame)
+
+    assert result.output is not None
+    assert result.output.next_interval_seconds == 300
+    assert result.slots["wake:run_state"].ctx.now_utc == datetime(2026, 7, 12, tzinfo=UTC)
+    assert [call.kwargs["tools"][0]["function"]["name"] for call in provider.chat.await_args_list[:2]] == [
+        "scratchpad",
+        "share_content",
+    ]
+    final_messages = provider.chat.await_args_list[1].kwargs["messages"]
+    investigation_prompt = next(
+        message["content"]
+        for message in final_messages
+        if "已执行的初筛与并发调查结果" in str(message.get("content") or "")
+    )
+    assert "正文 https://example.com/new" in investigation_prompt
+    first_prompt = provider.chat.await_args_list[0].kwargs["messages"][1]["content"]
+    assert first_prompt.index("新标题") < first_prompt.index("旧标题")
+    assert "preprocess_score" not in first_prompt
+    assert len(orchestrator.results) == 1
+    assert orchestrator.results[0].evidence == [ids[0]]
+    assert orchestrator.results[0].trace.extra["display_event_map"] == {1: ids[0]}
+    assert gateway.acks == [{"event_ids": ["new", "old"]}]
+    assert runtime._state.unread("content") == []
+
+
+@pytest.mark.asyncio
+async def test_alerts_are_delivered_one_per_tick_without_feedback_label(tmp_path, request):
+    events = [
+        {"kind": "alert", "event_id": "a1", "title": "提醒一", "body": "内容一"},
+        {"kind": "alert", "event_id": "a2", "title": "提醒二", "body": "内容二"},
+    ]
+    gateway = FakeGateway(events)
+    provider = SimpleNamespace(chat=AsyncMock())
+    orchestrator = FakeOrchestrator()
+    scope = _scope(tmp_path, gateway, provider, orchestrator, _source("alert"))
+    scope.memory.embedding_api.embed_batch.side_effect = RuntimeError("embedding down")
+    runtime = WakeRuntime(
+        scope,
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
+    )
+    request.addfinalizer(runtime.close)
+    frame = new_proactive_frame("telegram:1")
+    state = runtime.begin(frame)
+
+    await runtime.ingest(state)
+    await runtime.decide(state)
+
+    assert len(orchestrator.results) == 1
+    assert orchestrator.results[0].outbound.content in {"提醒一\n\n内容一", "提醒二\n\n内容二"}
+    assert state.next_interval_seconds == 1
+    assert len(gateway.acks) == 1
+    assert set(gateway.acks[0]) == {"event_ids"}
+    assert len(runtime._state.unread("alert")) == 1
+    assert scope.memory.embedding_api.embed_batch.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ack_failure_does_not_repeat_delivered_alert_and_retries_next_tick(
+    tmp_path,
+    request,
+):
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    gateway = FlakyAckGateway(
+        [{"kind": "alert", "event_id": "a1", "title": "只发送一次"}]
+    )
+    orchestrator = FakeOrchestrator()
+    store = WakeStateStore(tmp_path / "wake.db")
+    runtime = WakeRuntime(
+        _scope(
+            tmp_path,
+            gateway,
+            SimpleNamespace(chat=AsyncMock()),
+            orchestrator,
+            _source("alert"),
+        ),
+        state_store=store,
+        clock=FixedClock(now),
+    )
+    request.addfinalizer(runtime.close)
+
+    first = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(first)
+    await runtime.decide(first)
+
+    assert len(orchestrator.results) == 1
+    assert store.unread("alert") == []
+    assert store.pending_acknowledgements() == {"feed_plugin:main": ["a1"]}
+
+    second = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(second)
+    await runtime.decide(second)
+
+    assert gateway.ack_attempts == 2
+    assert store.pending_acknowledgements() == {}
+    assert store.unread("alert") == []
+    assert len(orchestrator.results) == 1
+
+
+@pytest.mark.asyncio
+async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, request):
+    start = datetime(2026, 7, 12, 12, tzinfo=UTC)
+    clock = ReplayClock(tmp_path / "replay" / "clock.json", start)
+    events = [
+        {
+            "kind": "content",
+            "event_id": "replay-1",
+            "title": "回放时间推进",
+            "content": "一条用于验证 hazard 跨模拟时间累积的回放事件。",
+            "published_at": start.isoformat(),
+            "preprocess_score": 0.5,
+        }
+    ]
+    item_id = "feed_plugin:main:replay-1"
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            side_effect=[
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "c1",
+                            "scratchpad",
+                            {
+                                "items": [
+                                    {
+                                        "item_id": item_id,
+                                        "initial_interest": "likely_interesting",
+                                        "investigate": "content",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                ),
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "c2",
+                            "share_content",
+                            {
+                                "opening": "时间推进后，这条达到了唤醒阈值。",
+                                "items": [
+                                    {
+                                        "item_id": item_id,
+                                        "summary": "回放 hazard 已跨 tick 累积。",
+                                        "why_it_matters": "验证模拟时间有效",
+                                    }
+                                ],
+                            },
+                        )
+                    ],
+                ),
+            ]
+        )
+    )
+    gateway = FakeGateway(events)
+    orchestrator = FakeOrchestrator()
+    store = WakeStateStore(tmp_path / "wake.db")
+    store.save_hazard(
+        session_key="telegram:1",
+        hazard=0.0,
+        threshold=0.2,
+        updated_at=start,
+        last_wake_at=None,
+    )
+    runtime = WakeRuntime(
+        _scope(tmp_path, gateway, provider, orchestrator, _source("content")),
+        state_store=store,
+        clock=clock,
+    )
+    request.addfinalizer(runtime.close)
+
+    first = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(first)
+    await runtime.decide(first)
+
+    assert first.hazard_result is not None
+    assert first.hazard_result.should_wake is False
+    assert provider.chat.await_count == 0
+    assert runtime.next_interval(first) == 1
+
+    _ = clock.advance(timedelta(hours=1))
+    second = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(second)
+    await runtime.decide(second)
+
+    assert second.hazard_result is not None
+    assert second.hazard_result.should_wake is True
+    assert provider.chat.await_count == 2
+    assert len(orchestrator.results) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_owns_rng_when_live_scope_does_not_supply_one(tmp_path, request):
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    gateway = FakeGateway(
+        [
+            {
+                "kind": "content",
+                "event_id": "live-assembly",
+                "title": "真实组装不注入随机源",
+                "published_at": now.isoformat(),
+                "preprocess_score": 0.2,
+            }
+        ]
+    )
+    provider = SimpleNamespace(chat=AsyncMock())
+    scope = _scope(tmp_path, gateway, provider, FakeOrchestrator(), _source("content"))
+    scope.rng = None
+    runtime = WakeRuntime(scope, clock=FixedClock(now))
+    request.addfinalizer(runtime.close)
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+
+    await runtime.ingest(state)
+    await runtime.decide(state)
+
+    assert state.hazard_result is not None
+    assert provider.chat.await_count == 0
+
+
+def test_plugin_exposes_complete_wake_lifecycle():
+    plugin = WakeProactivePlugin()
+    assert plugin.proactive_lifecycles()[0].id == "wake"
+    assert isinstance(plugin.proactive_runtime_factories()[0], WakeRuntimeFactory)
+    assert plugin.proactive_module_factories()[0].lifecycle_id == "wake"
+
+
+def test_future_message_embeddings_do_not_affect_current_interest(tmp_path, request):
+    session_db = tmp_path / "sessions.db"
+    with closing(sqlite3.connect(session_db)) as db:
+        db.execute(
+            """
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                extra TEXT,
+                ts TEXT NOT NULL
+            )
+            """
+        )
+        db.executemany(
+            "INSERT INTO messages(id, session_key, seq, role, content, extra, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("u0", "s", -1, "user", "主动前用户", "{}", "2026-07-09T00:00:00+00:00"),
+                ("ap0", "s", 0, "assistant", "主动推送", "{\"proactive\": true}", "2026-07-09T00:01:00+00:00"),
+                ("u1", "s", 1, "user", "过去用户", "{}", "2026-07-10T00:00:00+00:00"),
+                ("a1", "s", 2, "assistant", "过去助手", "{}", "2026-07-10T00:01:00+00:00"),
+                ("u2", "s", 3, "user", "未来用户", "{}", "2026-07-13T00:00:00+00:00"),
+                ("a2", "s", 4, "assistant", "未来助手", "{}", "2026-07-13T00:01:00+00:00"),
+            ],
+        )
+        db.commit()
+    embedding_store = MessageEmbeddingStore(session_db)
+    for message_id, content, vector in (
+        ("u0", "主动前用户", [0.0, 1.0]),
+        ("ap0", "主动推送", [0.0, 1.0]),
+        ("u1", "过去用户", [1.0, 0.0]),
+        ("a1", "过去助手", [1.0, 0.0]),
+        ("u2", "未来用户", [0.0, 1.0]),
+        ("a2", "未来助手", [0.0, 1.0]),
+    ):
+        embedding_store.upsert(
+            message_id=message_id,
+            content=content,
+            model="test-embedding",
+            embedding=vector,
+        )
+    embedding_store.close()
+
+    scope = _scope(
+        tmp_path,
+        FakeGateway([]),
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    runtime = WakeRuntime(
+        scope,
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
+    )
+    request.addfinalizer(runtime.close)
+    current_event = {"preprocess_score": 0.1, "_event_embedding": [0.0, 1.0]}
+    future_event = dict(current_event)
+
+    runtime._apply_semantic_interest(
+        [current_event], datetime(2026, 7, 12, tzinfo=UTC)
+    )
+    runtime._apply_semantic_interest(
+        [future_event], datetime(2026, 7, 14, tzinfo=UTC)
+    )
+
+    assert current_event["_wake_interest_score"] == pytest.approx(0.1)
+    assert future_event["_wake_interest_score"] > 0.99
+    recent = runtime._read_recent_session("s", datetime(2026, 7, 12, tzinfo=UTC))
+    assert "主动推送" not in recent
+    assert "过去用户" in recent
+
+
+def test_turn_prototype_limit_uses_latest_time_across_sessions(tmp_path, request):
+    session_db = tmp_path / "sessions.db"
+    rows = []
+    base = datetime(2026, 7, 1, tzinfo=UTC)
+    for index in range(256):
+        session_key = f"zzz-old-{index:03d}"
+        user_id = f"old-u-{index}"
+        assistant_id = f"old-a-{index}"
+        at = base + timedelta(minutes=index)
+        rows.extend(
+            [
+                (user_id, session_key, 1, "user", user_id, "{}", at.isoformat()),
+                (
+                    assistant_id,
+                    session_key,
+                    2,
+                    "assistant",
+                    assistant_id,
+                    "{}",
+                    (at + timedelta(seconds=1)).isoformat(),
+                ),
+            ]
+        )
+    rows.extend(
+        [
+            ("latest-u", "aaa-latest", 1, "user", "latest-u", "{}", "2026-07-11T00:00:00+00:00"),
+            ("latest-a", "aaa-latest", 2, "assistant", "latest-a", "{}", "2026-07-11T00:00:01+00:00"),
+        ]
+    )
+    with closing(sqlite3.connect(session_db)) as db:
+        db.execute(
+            """
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                extra TEXT,
+                ts TEXT NOT NULL
+            )
+            """
+        )
+        db.executemany(
+            "INSERT INTO messages(id, session_key, seq, role, content, extra, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        db.commit()
+    embeddings = MessageEmbeddingStore(session_db)
+    for message_id, _session_key, _seq, _role, content, _extra, _ts in rows:
+        embeddings.upsert(
+            message_id=message_id,
+            content=content,
+            model="test-embedding",
+            embedding=[1.0, 0.0] if message_id.startswith("latest") else [0.0, 1.0],
+        )
+    embeddings.close()
+    scope = _scope(
+        tmp_path,
+        FakeGateway([]),
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    runtime = WakeRuntime(scope, clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)))
+    request.addfinalizer(runtime.close)
+
+    prototypes = runtime._load_turn_prototypes(datetime(2026, 7, 12, tzinfo=UTC))
+
+    assert len(prototypes) == 256
+    assert any(vector[0] == pytest.approx(1.0) for vector in prototypes)
+
+
+@pytest.mark.asyncio
+async def test_context_snapshot_without_event_id_only_reevaluates_queued_content(
+    tmp_path,
+    request,
+):
+    now = datetime(2026, 7, 12, 12, tzinfo=UTC)
+    gateway = FakeContextGateway({"presence": "sleeping", "confidence": 0.9})
+    provider = SimpleNamespace(chat=AsyncMock())
+    orchestrator = FakeOrchestrator()
+    store = WakeStateStore(tmp_path / "wake.db")
+    scope = _scope(tmp_path, gateway, provider, orchestrator, _source("context"))
+    clock = FixedClock(now)
+    runtime = WakeRuntime(scope, state_store=store, clock=clock)
+    request.addfinalizer(runtime.close)
+
+    first = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(first)
+    await runtime.decide(first)
+
+    assert first.context_reevaluate is False
+    assert store.load_context("feed_plugin:main").presence == "sleeping"
+    assert provider.chat.await_count == 0
+    assert orchestrator.results == []
+
+    _ = store.ingest(
+        "content",
+        [
+            {
+                "ack_server": "queued",
+                "event_id": "c1",
+                "title": "等待重评的标题",
+                "published_at": now.isoformat(),
+                "preprocess_score": 0.01,
+            }
+        ],
+        now,
+    )
+    store.save_hazard(
+        session_key="telegram:1",
+        hazard=0.0,
+        threshold=99.0,
+        updated_at=now - timedelta(hours=1),
+        last_wake_at=None,
+    )
+    gateway.snapshot = {"presence": "active", "confidence": 0.9}
+    second = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(second)
+    await runtime.decide(second)
+
+    assert second.context_reevaluate is True
+    assert second.hazard_result is not None
+    assert second.hazard_result.hazard_after > 0
+    assert store.load_context("feed_plugin:main").presence == "active"
+    assert len(store.unread("content")) == 1
+    assert provider.chat.await_count == 0
+    assert orchestrator.results == []
+
+    clock.advance(timedelta(hours=1))
+    third = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(third)
+    await runtime.decide(third)
+
+    assert third.context_reevaluate is False
+    assert third.hazard_result is not None
+    assert third.hazard_result.hazard_after > second.hazard_result.hazard_after
+    assert len(store.unread("content")) == 1
+    assert provider.chat.await_count == 0
+    assert orchestrator.results == []
+
+
+def _drift_runtime(tmp_path, provider, orchestrator, now):
+    store = WakeStateStore(tmp_path / "wake.db")
+    scope = _scope(
+        tmp_path,
+        FakeGateway([]),
+        provider,
+        orchestrator,
+        _source("content"),
+    )
+    scope.presence = SimpleNamespace(
+        get_last_user_at=lambda _session_key: now - timedelta(hours=12)
+    )
+    runtime = WakeRuntime(scope, state_store=store, clock=FixedClock(now))
+    store.save_drift_progress(
+        session_key="telegram:1",
+        hazard=0.9,
+        threshold=0.8,
+        updated_at=now - timedelta(hours=1),
+    )
+    return runtime, store
+
+
+@pytest.mark.asyncio
+async def test_drift_vertical_slice_uses_one_tool_and_records_only_on_success(
+    tmp_path,
+    request,
+):
+    now = datetime(2026, 7, 12, 12, tzinfo=UTC)
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as db:
+        db.execute(
+            """
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                session_key TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                extra TEXT,
+                ts TEXT NOT NULL
+            )
+            """
+        )
+        db.executemany(
+            """
+            INSERT INTO messages(id, session_key, seq, role, content, extra, ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "p1",
+                    "telegram:1",
+                    1,
+                    "assistant",
+                    "之前主动聊过时间回放",
+                    '{"proactive": true}',
+                    (now - timedelta(hours=2)).isoformat(),
+                ),
+                (
+                    "u2",
+                    "telegram:1",
+                    2,
+                    "user",
+                    "未来才会出现的话",
+                    "{}",
+                    (now + timedelta(hours=2)).isoformat(),
+                ),
+            ],
+        )
+        db.commit()
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        "d1",
+                        "share_drift",
+                        {"message": "刚想到，我们可以把回放里的时间边界再压实一点。"},
+                    )
+                ],
+            )
+        )
+    )
+    orchestrator = FakeOrchestrator()
+    runtime, store = _drift_runtime(tmp_path, provider, orchestrator, now)
+    request.addfinalizer(runtime.close)
+
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(state)
+    await runtime.decide(state)
+
+    assert provider.chat.await_count == 1
+    tools = provider.chat.await_args.kwargs["tools"]
+    assert {schema["function"]["name"] for schema in tools} == {
+        "share_drift",
+        "idle_drift",
+    }
+    prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
+    assert "【固定 MEMORY.md】" in prompt
+    assert "【固定 PROACTIVE_CONTEXT.md】" in prompt
+    assert "【截至当前时间的最近对话】" in prompt
+    assert "之前主动聊过时间回放" in prompt
+    assert "未来才会出现的话" not in prompt
+    assert len(orchestrator.results) == 1
+    assert "时间边界" in orchestrator.results[0].outbound.content
+    drift = store.load_drift("telegram:1")
+    assert drift["last_drift_at"] == now.isoformat()
+    assert drift["last_fingerprint"]
+    assert drift["hazard"] == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_drift_delivery_does_not_record_last_drift(tmp_path, request):
+    now = datetime(2026, 7, 12, 12, tzinfo=UTC)
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=LLMResponse(
+                content=None,
+                tool_calls=[ToolCall("d1", "share_drift", {"message": "发送会失败"})],
+            )
+        )
+    )
+    runtime, store = _drift_runtime(tmp_path, provider, FailingOrchestrator(), now)
+    request.addfinalizer(runtime.close)
+
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(state)
+    await runtime.decide(state)
+
+    drift = store.load_drift("telegram:1")
+    assert drift["last_drift_at"] is None
+    assert drift["last_fingerprint"] == ""
+
+
+@pytest.mark.asyncio
+async def test_idle_drift_uses_one_tool_without_outbound(tmp_path, request):
+    now = datetime(2026, 7, 12, 12, tzinfo=UTC)
+    provider = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=LLMResponse(
+                content=None,
+                tool_calls=[ToolCall("d1", "idle_drift", {"reason": "没有自然话题"})],
+            )
+        )
+    )
+    orchestrator = FakeOrchestrator()
+    runtime, store = _drift_runtime(tmp_path, provider, orchestrator, now)
+    request.addfinalizer(runtime.close)
+
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(state)
+    await runtime.decide(state)
+
+    assert provider.chat.await_count == 1
+    assert orchestrator.results == []
+    drift = store.load_drift("telegram:1")
+    assert drift["hazard"] == 0
+    assert drift["last_drift_at"] is None

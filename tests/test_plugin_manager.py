@@ -128,6 +128,39 @@ async def test_load_default_proactive_lifecycle():
 
 
 @pytest.mark.asyncio
+async def test_wake_proactive_manifest_disables_legacy_flow_group():
+    from agent.plugins.manifest import write_plugin_manifest
+
+    plugins_root = Path(__file__).parents[1] / "plugins"
+    write_plugin_manifest(
+        {
+            "default_proactive": False,
+            "proactive_flow": False,
+            "drift_flow": False,
+            "wake_proactive": True,
+        },
+        plugins_home=TEST_PLUGIN_HOME,
+    )
+    mgr = _make_manager(
+        [
+            plugins_root / "default_proactive",
+            plugins_root / "proactive_flow",
+            plugins_root / "drift_flow",
+            plugins_root / "wake_proactive",
+        ],
+        event_bus=EventBus(),
+    )
+
+    await mgr.load_all()
+
+    assert mgr.loaded_count == 1
+    assert [item.id for item in mgr.proactive_lifecycles] == ["wake"]
+    assert len(mgr.proactive_module_factories) == 1
+    assert len(mgr.proactive_runtime_factories) == 1
+    await mgr.terminate_all()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("plugin_name", ["proactive_flow", "drift_flow"])
 async def test_load_proactive_flow_factory(plugin_name: str):
     bus = EventBus()
@@ -140,16 +173,18 @@ async def test_load_proactive_flow_factory(plugin_name: str):
 
 
 @pytest.mark.asyncio
-async def test_builtin_plugins_complete_default_proactive_lifecycle():
+async def test_builtin_plugins_complete_proactive_lifecycles():
     bus = EventBus()
     plugin_root = Path(__file__).parents[1] / "plugins"
     mgr = _make_manager([plugin_root], event_bus=bus)
 
     await mgr.load_all()
 
-    assert len(mgr.proactive_lifecycles) == 1
-    assert len(mgr.proactive_runtime_factories) == 1
-    assert len(mgr.proactive_module_factories) == 3
+    assert [item.id for item in mgr.proactive_lifecycles] == ["default", "wake"]
+    assert [
+        item.lifecycle_id for item in mgr.proactive_runtime_factories
+    ] == ["default", "wake"]
+    assert len(mgr.proactive_module_factories) == 4
 
 
 @pytest.mark.asyncio

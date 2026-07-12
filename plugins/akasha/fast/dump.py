@@ -1,11 +1,11 @@
-"""dump_to_db —— 把内存 MemoryStore 一次性批量落进已开的 AkashaStore（sqlite），复用 embedding_cache。
+"""dump_to_db —— 把内存 MemoryStore 一次性批量落进已开的 AkashaStore（sqlite）。
 
 列与序列化严格对齐 store.py 的慢路写法：
   * embedding / salience vector_sum 用 core.serialize_f32
   * created_at/updated_at 用 _now_iso（与慢路 store._now_iso 同语义）
   * 各表 VALUES 顺序对齐 store.py 的 INSERT
 reset_schema 只清 5 张图表(nodes/edges/salience_state/query_log/activation_events)，
-保留 embedding_cache / migration_runs / source_session_snapshot。复用调用方已开的连接（单连接）。
+保留 migration_runs / source_session_snapshot。复用调用方已开的连接（单连接）。
 """
 from __future__ import annotations
 

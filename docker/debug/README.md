@@ -358,6 +358,68 @@ docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
 
 探针会预置已读取需求、已生成 `plan.json`、执行阶段遇到临时 502 的状态。验证要求模型直接使用已有计划写出结果；若重新读取需求或重写计划则失败。
 
+## 真实 Runtime 时间回放基础
+
+`replay_controller.py` 只维护隔离 profile 下的模拟时钟、历史事件和捕获消息，不读取或挂载正式 workspace。`docker-compose.yml` 会让真实 `main.py` 加载调试插件目录；`replay_debug` 插件注册 `replay` 渠道，把 outbound 原样写入 profile。
+
+```text
+┌─ replay_controller
+│  ├─ clock.json             模拟当前时间
+│  ├─ events.jsonl           历史事件输入
+│  └─ outbox.jsonl           捕获的 outbound
+│
+└─ Docker profile
+   ├─ python main.py         正式启动入口
+   ├─ SystemClock            线上默认时钟
+   ├─ ReplayClock            调试文件时钟
+   └─ CaptureChannel         channel = replay
+```
+
+初始化独立 profile 的回放状态：
+
+```bash
+python docker/debug/replay_controller.py \
+  --profile wake-replay init \
+  --start-at 2026-05-01T00:00:00+08:00
+```
+
+该 profile 仍需要自己的 `config.toml`。可以运行 `setup`，或复制另一份专用调试配置。启动前应关闭 Telegram、QQ 等外部渠道，并将待测发送目标设为 `channel = "replay"`。
+
+```bash
+AKASHIC_DEBUG_PROFILE=wake-replay \
+docker compose -f docker/debug/docker-compose.yml up akashic-debug
+```
+
+注入单条历史事件：
+
+```bash
+python docker/debug/replay_controller.py --profile wake-replay inject \
+  --event-id feed-001 \
+  --kind content \
+  --source-id rss-example \
+  --title "历史候选标题" \
+  --content "历史候选摘要" \
+  --published-at 2026-05-01T08:30:00+08:00
+```
+
+批量输入支持 JSON 数组、`{"events": [...]}` 或 JSONL：
+
+```bash
+python docker/debug/replay_controller.py \
+  --profile wake-replay import-events /path/to/history.jsonl
+```
+
+推进时间并查看当前可见事件和捕获结果：
+
+```bash
+python docker/debug/replay_controller.py \
+  --profile wake-replay advance --seconds 3600
+python docker/debug/replay_controller.py \
+  --profile wake-replay status
+```
+
+`events.jsonl` 是供后续 `plugins/wake_proactive` 消费的稳定输入面；当前旧 proactive 不读取它，也不会因为推进时钟自动触发。
+
 `agent-loop-runtime` 场景会启动真实 `AgentLoop.run()`，读取 `config.toml`，但不启动 Telegram / QQ / CLI server。它用 fake reasoner 卡住 passive turn，再并发触发 drift 发送和 scheduler soft 的 `process_direct`，验证 runtime lock 与 ChatLane 的联动。
 
 ```text

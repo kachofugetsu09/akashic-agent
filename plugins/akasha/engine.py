@@ -73,6 +73,7 @@ from core.memory.engine import (
 from memory2.embedder import Embedder
 from plugins.akasha.config import AkashaConfig, resolve_akasha_db_path
 from plugins.akasha.store import AkashaStore
+from session.embedding_store import MessageEmbeddingStore
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -116,6 +117,10 @@ class AkashaMemoryEngine:
         notes={"owner": "plugins.akasha.engine", "truth": "sessions.db/messages"},
     )
 
+    @property
+    def embedding_api(self) -> Embedder:
+        return self._embedder
+
     def __init__(
         self,
         *,
@@ -135,6 +140,10 @@ class AkashaMemoryEngine:
                 workspace=workspace,
                 akasha_config=akasha_config,
             )
+        )
+        self._embedding_store = MessageEmbeddingStore(self._session_db_path)
+        _ = self._embedding_store.import_legacy_rows_once(
+            self._store.list_cached_embedding_rows()
         )
         embedding = config.memory.embedding
         self._embedder = Embedder(
@@ -162,7 +171,11 @@ class AkashaMemoryEngine:
         self._message_index = build_dense_message_index({})
         self._load_graph_cache()
         self._ensure_idf_table()
-        self.closeables: list[object] = [self._store, self._embedder]
+        self.closeables: list[object] = [
+            self._store,
+            self._embedding_store,
+            self._embedder,
+        ]
         self._wire_events()
 
     # 启动时自动检查 / 建 FTS IDF 表。缺失或漂移过大时重建。
@@ -423,7 +436,7 @@ class AkashaMemoryEngine:
             ]
             _ = self._store.delete_items_batch(keys)
             self._store.delete_query_state_for_turns(turns)
-            _ = self._store.delete_cached_embeddings(clean_ids)
+            _ = self._embedding_store.delete(clean_ids)
             self._remove_cached_nodes(keys)
             self._remove_cached_messages(clean_ids)
         return {
@@ -655,8 +668,9 @@ class AkashaMemoryEngine:
         embeddings = await self._embedder.embed_batch([message.content for message in messages])
         current_key = ""
         for message, embedding in zip(messages, embeddings, strict=False):
-            self._store.upsert_cached_embedding(
-                message=message,
+            self._embedding_store.upsert(
+                message_id=message.id,
+                content=message.content,
                 model=self._config.memory.embedding.model,
                 embedding=embedding,
             )
@@ -733,9 +747,12 @@ class AkashaMemoryEngine:
     def _load_graph_cache(self) -> None:
         nodes = {node.key: node for node in self._store.list_nodes()}
         edges, edges_meta = self._store.load_edges_with_meta()
-        message_embeddings = dict(
-            self._store.list_cached_embeddings(model=self._config.memory.embedding.model)
-        )
+        message_embeddings = {
+            message_id: np.asarray(embedding, dtype=np.float32)
+            for message_id, embedding in self._embedding_store.list(
+                model=self._config.memory.embedding.model
+            )
+        }
         message_turn_keys = _load_message_turn_keys(self._session_db_path)
         message_index = build_dense_message_index(message_embeddings)
         with self._graph_lock:
@@ -1181,6 +1198,11 @@ def _load_message_turn_keys(session_db_path: Path) -> dict[str, str]:
     if not session_db_path.exists():
         return {}
     with closing(sqlite3.connect(str(session_db_path))) as db:
+        table = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+        ).fetchone()
+        if table is None:
+            return {}
         rows = db.execute("SELECT id, session_key, seq, role FROM messages").fetchall()
     result: dict[str, str] = {}
     for message_id, session_key, seq, role in rows:

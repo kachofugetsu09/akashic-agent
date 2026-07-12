@@ -44,19 +44,9 @@ class TurnOrchestrator:
 
         content = result.outbound.content
         media = list(result.outbound.media or [])
-        session = self._session.session_manager.get_or_create(session_key)
-        # 2. reply 路径只写 proactive session；后处理只归 passive commit 管。
-        self._persist_proactive_session(
-            session=session,
-            content=content,
-            media=media,
-            result=result,
-        )
-        await self._session.session_manager.append_messages(session, session.messages[-1:])
-
         sent = False
         try:
-            # 3. 先执行发送前 side_effects，再真正 dispatch 到 outbound。
+            # 2. 先执行发送前 side_effects，再真正 dispatch 到 outbound。
             await self._run_effects(result.side_effects)
             sent = await self._outbound.dispatch(
                 OutboundDispatch(
@@ -70,8 +60,18 @@ class TurnOrchestrator:
         except Exception as e:
             logger.warning("proactive outbound dispatch failed: %s", e)
 
-        # 4. 根据是否真正发送成功，分别执行 success / failure side_effects。
+        # 3. 只有用户真正收到后，才把 proactive 消息写入可见会话历史。
         if sent:
+            session = self._session.session_manager.get_or_create(session_key)
+            self._persist_proactive_session(
+                session=session,
+                content=content,
+                media=media,
+                result=result,
+            )
+            await self._session.session_manager.append_messages(
+                session, session.messages[-1:]
+            )
             if self._session.presence:
                 self._session.presence.record_proactive_sent(session_key)
             await self._run_effects(result.success_side_effects)
