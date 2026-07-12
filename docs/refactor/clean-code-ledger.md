@@ -950,3 +950,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手两轮全量最终 `1723 passed`；主线独立定向 `53 passed`；修改文件 pyright `0 errors`，`git diff --check` 通过。
 - 残余风险：单 SQLite connection 仍限制并行读吞吐；改为连接池或读写分离会改变事务与 sqlite-vec ownership，本批没有无证据扩张。
+
+### `0f25007b` `fix(persistence): harden JSON durability boundaries`
+
+- 范围：共享 JSON/文本原子写底座、Plugin KV、plugin/package manifest 与本地 MCP registry 配置。
+- 原问题：损坏或无权限 JSON 被静默当默认空状态；Plugin KV 和 MCP 配置直接覆盖写且 MCP 保存失败被吞；manifest 原子替换没有 file/directory fsync 和统一失败清理。
+- 为什么这样修改：仅 `FileNotFoundError` 解释为可选缺失；共享底座在同目录唯一临时文件完成序列化、flush、file fsync、replace、directory fsync；各持久化 owner 复用同一耐久契约，MCP 边界按 live 配置与历史 schema 校验。
+- 不变量与拥有层：`load_json` 拥有文件读取/JSON 边界；原子写底座拥有临时文件与落盘顺序；PluginKVStore、manifest loader 和 McpServerRegistry 分别拥有领域 schema。live `mcp_servers.json` 的 `{"servers": {}}`、合法 `{}` 和缺失 servers 均保持有效。
+- 能力变化：合法 KV/TOML/MCP 配置与插件热重载格式不变；损坏数据和保存失败改为 fail-loud；MCP connect/disconnect、注册事务与运行协议未修改。
+- 性能变化：持久化成功路径增加必要的 file/directory fsync，属于耐久性成本，不宣称提速；并发 writer 使用独立 tmp，不再互相窃取或清理 staging 文件。
+- 测试新增：缺失与损坏 JSON、并发 writer、序列化/file fsync/replace/directory fsync、cleanup 双失败、合法空 MCP schema。
+- 测试删除及原因：无；更新了过去错误期待坏 JSON 返回 default 的测试。
+- 验证结果：副手两轮全量最终 `1727 passed`；主线独立相关测试 `115 passed`；修改文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
+- 残余风险：directory fsync 在 replace 后失败时新目标可能已经可见，函数仍抛错表示耐久性未确认；文件存储不提供跨 writer CAS 或业务级回滚。
