@@ -15,6 +15,7 @@ Scheduler: 定时任务核心模块
 
 import asyncio
 from importlib import import_module
+import json
 import logging
 import re
 import statistics
@@ -24,12 +25,12 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from zoneinfo import ZoneInfo
 
 from core.common.timekit import parse_iso as _parse_iso
-from infra.persistence.json_store import load_json, save_json
+from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
 
@@ -290,19 +291,31 @@ class JobStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> list[ScheduledJob]:
-        # 1. 读取原始列表
-        raw = load_json(self.path, default=[], domain="job_store")
-
-        # 2. 反序列化
-        try:
-            return [self._from_dict(d) for d in raw]
-        except Exception as e:
-            logger.warning("[job_store] 反序列化失败: %s", e)
+        # 1. 未创建的存储按空调度处理
+        if not self.path.exists():
             return []
+
+        # 2. 严格读取并解析，保留 I/O 与 JSON 原始异常
+        raw: object = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            raise ValueError(
+                f"job_store 必须是 JSON 列表：path={self.path} value={raw!r}"
+            )
+
+        # 3. 反序列化所有任务，损坏记录直接暴露
+        jobs: list[ScheduledJob] = []
+        for index, item in enumerate(cast(list[object], raw)):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"job_store 任务必须是 JSON 对象："
+                    f"path={self.path} index={index} value={item!r}"
+                )
+            jobs.append(self._from_dict(cast(dict[str, Any], item), index=index))
+        return jobs
 
     def save(self, jobs: dict[str, ScheduledJob]) -> None:
         data = [self._to_dict(j) for j in jobs.values()]
-        save_json(self.path, data, domain="job_store")
+        atomic_save_json(self.path, data, domain="job_store")
 
     # ── private ──
 
@@ -312,15 +325,32 @@ class JobStore:
         d["created_at"] = job.created_at.isoformat()
         return d
 
-    def _from_dict(self, d: dict[str, Any]) -> ScheduledJob:
+    def _from_dict(self, d: dict[str, Any], *, index: int) -> ScheduledJob:
         d = dict(d)
-        d["fire_at"] = self._parse_dt(d["fire_at"])
-        d["created_at"] = self._parse_dt(d["created_at"])
-        return ScheduledJob(**d)
+        for field_name in ("fire_at", "created_at"):
+            if field_name not in d:
+                raise ValueError(
+                    f"job_store 任务缺少必填字段："
+                    f"path={self.path} index={index} field={field_name}"
+                )
+            d[field_name] = self._parse_dt(
+                d[field_name], index=index, field_name=field_name
+            )
+        try:
+            return ScheduledJob(**d)
+        except TypeError as e:
+            raise ValueError(
+                f"job_store 任务结构无效：path={self.path} index={index}"
+            ) from e
 
-    @staticmethod
-    def _parse_dt(s: str) -> datetime:
-        return _parse_iso(s) or datetime.now(timezone.utc)
+    def _parse_dt(self, s: str, *, index: int, field_name: str) -> datetime:
+        parsed = _parse_iso(s)
+        if parsed is None:
+            raise ValueError(
+                f"job_store 时间字段不是有效 ISO 8601："
+                f"path={self.path} index={index} field={field_name} value={s!r}"
+            )
+        return parsed
 
 
 # ── SchedulerService ─────────────────────────────────────────────
