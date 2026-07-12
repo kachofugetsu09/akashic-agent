@@ -22,6 +22,7 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
+from bus.queue import MessageBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQueryResult
 from bootstrap.wiring import wire_turn_lifecycle
@@ -252,7 +253,7 @@ def _make_loop(
     tools.register(_NoopTool())
     return AgentLoop(
         AgentLoopDeps(
-            bus=MagicMock(),
+            bus=MessageBus(),
             provider=cast(Any, _Provider()),
             light_provider=cast(Any, _Provider()),
             tools=tools,

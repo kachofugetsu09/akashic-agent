@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from bus.events import OutboundMessage
+from bus.queue import MessageBus
 
 
 @dataclass
@@ -22,22 +22,20 @@ class OutboundPort(Protocol):
 
 
 class BusOutboundPort:
-    def __init__(self, bus: Any) -> None:
+    def __init__(self, bus: MessageBus) -> None:
         self._bus = bus
 
     async def dispatch(self, outbound: OutboundDispatch) -> bool:
-        maybe = self._bus.publish_outbound(
+        await self._bus.publish_outbound(
             OutboundMessage(
                 channel=outbound.channel,
                 chat_id=outbound.chat_id,
                 content=outbound.content,
                 thinking=outbound.thinking,
-                metadata=dict(outbound.metadata or {}),
-                media=list(outbound.media or []),
+                metadata=dict(outbound.metadata),
+                media=list(outbound.media),
             )
         )
-        if inspect.isawaitable(maybe):
-            await maybe
         return True
 
 
