@@ -310,6 +310,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 self._migrate_existing_to_vec()
                 logger.info("sqlite-vec 已启用（dim=%d）", self._vec_dim)
             except Exception as exc:
+                self._vec_enabled = False
                 self._vec_init_error = str(exc)
                 logger.warning("sqlite-vec 初始化失败（%s），回退到全表扫描", exc)
         else:
@@ -355,8 +356,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 "INSERT INTO vec_items(rowid, embedding) VALUES (?, ?)",
                 (rowid, _emb_to_blob(emb)),
             )
-        except Exception as exc:
-            logger.warning("vec_insert rowid=%s 失败: %s", rowid, exc)
+        except sqlite3.Error as exc:
+            self._disable_vec("写入", exc)
 
     def _vec_delete(self, rowids: list[int]) -> None:
         """从 vec_items 批量删除。"""
@@ -366,8 +367,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             self._db.executemany(
                 "DELETE FROM vec_items WHERE rowid=?", [(r,) for r in rowids]
             )
-        except Exception as exc:
-            logger.warning("vec_delete 失败: %s", exc)
+        except sqlite3.Error as exc:
+            self._disable_vec("删除", exc)
+
+    def _disable_vec(self, operation: str, exc: sqlite3.Error) -> None:
+        self._vec_enabled = False
+        self._vec_init_error = f"sqlite-vec {operation}失败: {exc}"
+        self._vec_fallback_logged = False
+        logger.warning(
+            "sqlite-vec %s失败（%s），后续检索回退到全表扫描",
+            operation,
+            exc,
+        )
 
     # ------------------------------------------------------------------
     # 生命周期

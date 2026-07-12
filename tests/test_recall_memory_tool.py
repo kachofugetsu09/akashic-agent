@@ -538,6 +538,34 @@ def test_store_vector_batch_reuses_time_filtered_embedding_rows(
     assert results[1][0]["summary"] == "[2026-04-25 10:00] 重构今日事件"
 
 
+def test_vec_insert_failure_falls_back_to_fullscan(tmp_path: Path) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db", vec_dim=2)
+    store._db.execute("DROP TABLE IF EXISTS vec_items")
+    store._db.commit()
+    store._vec_enabled = True
+
+    result = store.upsert_item("event", "索引故障后仍应召回", [1.0, 0.0])
+    hits = store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0)
+
+    assert result.startswith("new:")
+    assert store._vec_enabled is False
+    assert [hit["summary"] for hit in hits] == ["索引故障后仍应召回"]
+
+
+def test_vec_delete_failure_falls_back_to_fullscan(tmp_path: Path) -> None:
+    store = MemoryStore2(tmp_path / "memory2.db", vec_dim=2)
+    result = store.upsert_item("event", "待删除记忆", [1.0, 0.0])
+    item_id = result.removeprefix("new:")
+    store._db.execute("DROP TABLE IF EXISTS vec_items")
+    store._db.commit()
+    store._vec_enabled = True
+
+    assert store.delete_item(item_id) is True
+
+    assert store._vec_enabled is False
+    assert store.vector_search([1.0, 0.0], top_k=1, score_threshold=0.0) == []
+
+
 def test_store_keyword_time_filter_prefilters_before_candidate_limit(
     tmp_path: Path,
 ) -> None:
