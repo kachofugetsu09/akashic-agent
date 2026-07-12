@@ -1211,6 +1211,8 @@ def create_dashboard_app(
         )
 
         def dashboard_plugin_enabled(plugin_id: str, plugin_dir: Path) -> bool:
+            if (plugin_dir / "package.toml").exists():
+                return True
             _ = plugin_dir
             current = plugin_manager.current_snapshot
             return current is not None and any(
