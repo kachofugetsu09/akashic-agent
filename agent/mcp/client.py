@@ -172,8 +172,15 @@ class McpClient:
             )
 
         if "error" in resp:
-            err = resp["error"]
-            return f"MCP error ({self.name}/{tool_name}): {err.get('message', err)}"
+            err: object = resp["error"]
+            if not isinstance(err, dict):
+                raise RuntimeError(
+                    f"MCP server {self.name!r} tools/call:{tool_name} 返回了无效 "
+                    f"error（类型={type(err).__name__}，值={err!r}）"
+                )
+            error_object = cast(dict[str, object], err)
+            detail = error_object.get("message", error_object)
+            return f"MCP error ({self.name}/{tool_name}): {detail}"
 
         content = resp.get("result", {}).get("content", [])
         if isinstance(content, list):

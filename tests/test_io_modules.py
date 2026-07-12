@@ -655,6 +655,41 @@ async def test_mcp_client_serializes_calls_on_same_server():
 
 
 @pytest.mark.asyncio
+async def test_mcp_call_formats_error_object() -> None:
+    import json
+
+    error = {"code": -1, "message": "bad call"}
+    response = json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    result = await client.call("search", {})
+
+    assert result == "MCP error (docs/search): bad call"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", ["server unavailable", ["invalid", "error"]])
+async def test_mcp_call_rejects_non_object_error(error: object) -> None:
+    import json
+
+    response = json.dumps({"jsonrpc": "2.0", "id": 1, "error": error}).encode()
+    proc = _Proc([response + b"\n"])
+    client = McpClient("docs", ["python", "server.py"])
+    client._process = proc
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client.call("search", {})
+
+    message = str(exc_info.value)
+    assert "docs" in message
+    assert "tools/call:search" in message
+    assert type(error).__name__ in message
+    assert repr(error) in message
+
+
+@pytest.mark.asyncio
 async def test_mcp_recv_timeout_includes_stage_and_recent_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
