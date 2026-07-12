@@ -233,6 +233,48 @@
 - 验证结果：plugin 相关测试 `145 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
 - 残余风险：`manager.py` 的候选 gate 和 watcher retry 属于更大的状态协议，本提交未改动。
 
+### `7b4b7821` `refactor(schedule): 收紧时间展示降级边界`
+
+- 范围：调度工具注册后的时间展示、历史任务列表展示及直接测试。
+- 历史依据：PR #52 的 scheduler 后台任务隔离；PR #79/#89 的轮询与取消边界；PR #107 的 MCP 超时透传均未触及。
+- 原问题：任务成功注册后，展示阶段用宽泛 `except Exception` 把内部程序错误也伪装成正常 ISO fallback。
+- 为什么这样修改：只恢复 datetime/时区格式化真实会产生且当前位置能处理的 `TypeError`、`ValueError`、`OverflowError`、`OSError`；历史失效时区额外处理 `ZoneInfoNotFoundError`。
+- 不变量与拥有层：调度参数结构由工具输入边界拥有；`ScheduledJob.fire_at` 的 datetime 契约由 scheduler 构造/反序列化层拥有；展示层只拥有格式降级。
+- 能力变化：合法注册、循环任务和取消不变；无效展示时区/request_time 仍回退 ISO；违反内部 job 契约的错误改为显式失败。
+- 性能变化：非性能提交。
+- 测试新增：无效字符串/错误类型 request_time 和历史失效时区的展示回退。
+- 测试删除及原因：无。
+- 验证结果：定向 `39 passed`；副手完整测试 `1505 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：ToolRegistry 当前不主动调用 schema validator，错误类型参数仍可从动态调用进入工具，因此该 TypeError 恢复路径真实可达。
+
+### `6cc15427` `fix(proactive): 暴露会话读取故障`
+
+- 范围：`Sensor` 的普通/主动历史读取、时间戳解析、配置与返回类型及直接测试。
+- 历史依据：PR #103 的 Gate→Fetch→Judge→Resolve→Deliver 次序；PR #101 的 Drift 时钟；PR #67 的 read-only 主动召回。
+- 原问题：sessions SQLite 关闭、schema 或加载故障被两个入口宽泛捕获并返回空列表，普通链误判为无上下文，主动链还可能绕过去重造成重复投递。
+- 为什么这样修改：Sensor 没有恢复数据库故障的能力；让错误传播到 `ProactiveLoop._tick_bound()` 现有的完整日志与重抛边界，仅保留非法旧时间戳到 `None` 的明确字段级恢复。
+- 不变量与拥有层：Session 持久化错误由 SessionManager/Store 拥有；Sensor 只读取筛选；tick 级失败可观察性由 loop 拥有。
+- 能力变化：无目标 session 仍返回空历史；角色、context frame、长度、主动顺序与状态标签不变；数据库故障由假空结果变为明确失败。
+- 性能变化：数据库读取次数和正常筛选复杂度不变。
+- 测试新增：普通筛选/截断、主动顺序/metadata、两个真实入口的已关闭 SQLite 传播。
+- 测试删除及原因：无。
+- 验证结果：主动相关组合 `416 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：tick 失败沿既有 supervisor 策略进入下一轮；本提交未改变重试节奏。
+
+### `bba83b52` `perf(akasha): 合并批量删除事务`
+
+- 范围：Akasha sidecar 节点/关联边批量物理删除和存储回归测试。
+- 历史依据：PR #65 的 sidecar 存储边界；PR #66 的快速路径一致性；PR #67/#68 的 scheduler/read-only 隔离与 live/replay parity 均未触及。
+- 原问题：批量接口逐项获取锁并提交事务，200 项产生 200 次 COMMIT；中途失败还会留下部分删除结果。
+- 为什么这样修改：用一次锁和一次 SQLite 事务包住逐 ID `executemany`；不构造无界 `IN (...)`，避免 dashboard 批量输入触发 SQLite 参数上限。
+- 不变量与拥有层：节点与全部入边/出边的一致物理删除由 AkashaStore 拥有；缺失和重复 ID 不增加删除计数。
+- 能力变化：最终删除计数、缺失/重复、边清理与无关边保留不变；批次从部分提交升级为全有或全无。
+- 性能变化：同一 200 项 workload、12 次测量，中位耗时 `10.208 ms → 0.926 ms`，约 `11.0x`；COMMIT `200 → 1`。
+- 测试新增：成功路径覆盖计数/重复/缺失/入出边；SQLite trigger 在批次中间失败，验证节点和边全部 rollback。
+- 测试删除及原因：无。
+- 验证结果：`tests/test_akasha_plugin.py` `37 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：大批次仍逐 ID 执行 SQL，避免参数上限但持锁时间随批量线性增长；这是相对原实现更短的同量工作。
+
 ### `<commit>` `<title>`
 
 - 范围：
