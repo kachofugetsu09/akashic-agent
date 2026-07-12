@@ -963,3 +963,16 @@
 - 测试删除及原因：无；更新了过去错误期待坏 JSON 返回 default 的测试。
 - 验证结果：副手两轮全量最终 `1727 passed`；主线独立相关测试 `115 passed`；修改文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
 - 残余风险：directory fsync 在 replace 后失败时新目标可能已经可见，函数仍抛错表示耐久性未确认；文件存储不提供跨 writer CAS 或业务级回滚。
+
+### `e323325b` `fix(frontend): 收紧运行时边界与请求生命周期`
+
+- 范围：Chat HTTP/WebSocket/上传链路、Dashboard 分页与插件边界、请求取消和 legacy plugin workbench dispatch。
+- 原问题：非 2xx、坏 JSON 和缺字段响应可变成空列表；快速切换时旧请求覆盖新状态；WebSocket 等待发送缺少 error/close 收尾；上传后的消息保留即将 revoke 的 blob URL；view 切换重复请求；legacy workbench 因 dispatch identity 重建，初稿修复又暴露 stale state 闭包。
+- 为什么这样修改：在 fetch/socket/plugin 唯一外部边界校验实际消费字段；各请求 owner 持有 AbortController；上传成功后只保留服务端 URL；view effect 唯一触发加载；稳定 dispatch 通过 `useLatestReader` 在事件期读取最新 plugin state，避免重建和旧闭包。
+- 不变量与拥有层：Chat API/WebSocket 拥有外部 frame/schema；PromptInput 拥有本地 blob URL；页面组件拥有请求取消；Dashboard plugin runtime 拥有单 panel 隔离；legacy PluginMain 拥有一次 DOM 初始化。后端 API、插件热重载协议与视觉语言未修改。
+- 能力变化：真实错误进入现有错误 UI；快速切换不回填旧结果；附件提交后预览继续有效；中断帧结束 streaming 状态；坏 plugin panel 仍只隔离该 panel 并显式记录。
+- 性能变化：移除 selectView 与 effect 的双重请求；session 选择不再重拉 sessions；legacy graph/workbench 不因无关父 rerender 重建 canvas、重复拉 snapshot 或重绑 listener。未机械 memo 普通渲染。
+- 测试新增：无；仓库没有前端 test runner，未为本批引入框架。
+- 测试删除及原因：无。
+- 验证结果：副手 `typecheck`、`lint`、`build` 通过；主线合入前主审再次运行 typecheck/lint 均通过，`git diff --check` 通过；build 仅有既有大 chunk warning。
+- 残余风险：前端外部边界目前依赖静态检查和真实 build，缺少可执行组件测试；后续引入 test runner 应优先覆盖请求竞态、socket close 与 legacy dispatch 最新状态。
