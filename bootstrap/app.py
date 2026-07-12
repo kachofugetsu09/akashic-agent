@@ -89,6 +89,20 @@ def _stop_plugin_watcher(
     return stop
 
 
+def _wait_server_task(
+    task: asyncio.Task[None] | None,
+) -> Callable[[], Awaitable[None]]:
+    async def wait() -> None:
+        if task is None:
+            return
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+
+    return wait
+
+
 class AppRuntime:
     def __init__(self, config: Config, workspace: Path) -> None:
         self.config = config
@@ -346,17 +360,9 @@ class AppRuntime:
                 self.dashboard_server.should_exit = True
             if self.chat_server is not None:
                 self.chat_server.should_exit = True
-            if self.dashboard_task is not None:
-                try:
-                    await self.dashboard_task
-                except asyncio.CancelledError:
-                    pass
-            if self.chat_task is not None:
-                try:
-                    await self.chat_task
-                except asyncio.CancelledError:
-                    pass
             await _run_cleanup_steps(
+                ("dashboard_server.wait", _wait_server_task(self.dashboard_task)),
+                ("chat_server.wait", _wait_server_task(self.chat_task)),
                 (
                     "plugin_watcher.stop",
                     _stop_plugin_watcher(self.plugin_watcher),

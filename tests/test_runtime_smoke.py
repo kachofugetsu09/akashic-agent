@@ -234,6 +234,31 @@ async def test_run_cleanup_steps_continues_after_failure():
     assert calls == ["fail", "cleanup"]
 
 
+@pytest.mark.asyncio
+async def test_app_runtime_shutdown_cleans_up_after_server_failure(tmp_path):
+    calls: list[str] = []
+
+    async def _failed_server() -> None:
+        raise RuntimeError("dashboard crashed")
+
+    class _Core:
+        async def stop(self) -> None:
+            calls.append("core.stop")
+
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    runtime.core = cast(Any, _Core())
+    runtime.dashboard_server = _FakeDashboardServer()
+    runtime.dashboard_task = asyncio.create_task(_failed_server())
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="dashboard crashed"):
+        await runtime.shutdown()
+
+    assert calls == ["core.stop"]
+    assert runtime.dashboard_server.should_exit is True
+    assert runtime.http_resources.closed is True
+
+
 def test_connect_cli_uses_socket_from_config(monkeypatch, tmp_path):
     config_path = tmp_path / "config.toml"
     socket_path = tmp_path / "cli.sock"
