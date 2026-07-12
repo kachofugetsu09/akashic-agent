@@ -58,6 +58,30 @@ export function Tile({
   );
 }
 
+export function Stack({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("ak-plugin-stack", className)}>{children}</div>;
+}
+
+export function Grid({
+  children,
+  columns = 2,
+  className,
+}: {
+  children: ReactNode;
+  columns?: 2 | 3 | 4;
+  className?: string;
+}) {
+  return <div className={cn("ak-plugin-grid", `ak-plugin-grid-${columns}`, className)}>{children}</div>;
+}
+
+export function Panel({ children, className }: { children: ReactNode; className?: string }) {
+  return <section className={cn("ak-plugin-panel", className)}>{children}</section>;
+}
+
+export function Toolbar({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("ak-plugin-toolbar", className)}>{children}</div>;
+}
+
 // ---------------------------------------------------------------------------
 // Buttons
 // ---------------------------------------------------------------------------

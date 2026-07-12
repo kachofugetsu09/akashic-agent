@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "npm run build:dashboard && npm run build:chat && npm run build:plugins",
-    "build:dashboard": "vite build --config frontend/dashboard/vite.config.ts",
+    "build:dashboard": "npm run build:plugin-preset && vite build --config frontend/dashboard/vite.config.ts",
+    "build:plugin-preset": "node scripts/build-plugin-preset.mjs",
     "build:dashboard:watch": "vite build --config frontend/dashboard/vite.config.ts --watch",
     "build:chat": "vite build --config frontend/chat/vite.config.ts",
     "build:chat:watch": "vite build --config frontend/chat/vite.config.ts --watch",

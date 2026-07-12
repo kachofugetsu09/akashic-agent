@@ -1,37 +1,20 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { homedir } from "node:os";
 import type { Config } from "tailwindcss";
 
 // Content globs are resolved against this config's own location so scanning
 // works regardless of the process cwd (npm runs from the repo root).
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
-const externalPluginRoots = [
-  resolve(repoRoot, "..", "akashic-plugin"),
-  resolve(homedir(), ".akashic-plugin", "cache"),
-];
 
 // Industrial / precision-instrument design tokens. Solid colors use RGB-triplet
 // vars (see src/styles.css) so opacity modifiers like bg-danger/20 work.
-// Plugin panels are scanned too so their utility classes survive purging.
+// Plugin panels use the public preset or their own CSS. They are not part of
+// the host bundle's Tailwind content contract.
 export default {
   content: [
     resolve(here, "index.html"),
     resolve(here, "src/**/*.{ts,tsx}"),
-    resolve(repoRoot, "plugins/**/*.{ts,tsx}"),
-    resolve(repoRoot, "akashic-plugin/**/*.{ts,tsx}"),
-    ...externalPluginRoots.map((root) => resolve(root, "**/*.{ts,tsx}")),
-  ],
-  // Installed plugin panels are compiled at runtime, so their layout utilities
-  // cannot be discovered by the static content scan.
-  safelist: [
-    "grid-cols-2",
-    "grid-cols-3",
-    "grid-cols-4",
-    "grid-cols-[340px_1fr]",
-    "grid-cols-[9px_1fr_auto]",
-    "grid-cols-[auto_1fr_auto]",
   ],
   theme: {
     extend: {

@@ -2,7 +2,7 @@
 // implementations. Plugins import named components from here.
 const U = window.__akashicRuntime.UI;
 export const {
-  ShortcutKey, Label, FieldLabel, Tile, Btn, Chip, Input, SearchInput, Select,
+  ShortcutKey, Label, FieldLabel, Tile, Stack, Grid, Panel, Toolbar, Btn, Chip, Input, SearchInput, Select,
   BrandMark, useTheme, ThemeToggle, cn, Pie, MetricTile, Sparkline, TrendChart,
   api, asPageResult, pageCount,
 } = U;
