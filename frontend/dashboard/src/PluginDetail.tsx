@@ -36,13 +36,19 @@ export function PluginMain(props: {
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null);
   const Main = props.plugin.Main;
+  const dispatchRef = useRef(props.dispatch);
+
+  useEffect(() => {
+    dispatchRef.current = props.dispatch;
+  }, [props.dispatch]);
 
   useEffect(() => {
     if (Main) return;
+    // legacy renderMain 自己拥有 DOM、timer、listener；宿主只更新 dispatch。
     if (ref.current && props.plugin.renderMain) {
-      props.plugin.renderMain(ref.current, props.dispatch);
+      props.plugin.renderMain(ref.current, dispatchRef.current);
     }
-  }, [Main, props.plugin, props.dispatch]);
+  }, [Main, props.plugin]);
 
   if (Main) {
     return (
