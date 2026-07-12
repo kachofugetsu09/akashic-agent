@@ -282,7 +282,7 @@ class LLMProvider:
                     ToolCall(
                         id=tc.id,
                         name=tc.function.name,
-                        arguments=json.loads(tc.function.arguments),
+                        arguments=_parse_tool_arguments(tc.function.arguments),
                     )
                 )
 
@@ -310,6 +310,9 @@ class LLMProvider:
         on_content_delta: Callable[[StreamDelta], Awaitable[None]],
         strategy: ProviderStrategy,
     ) -> LLMResponse:
+        """消费单个 provider stream 并组装最终响应。"""
+
+        # 1. 创建并消费流，保持既有 delta 顺序与超时语义
         stream = cast(
             Any,
             await self._create_with_retry(strategy.prepare_stream_request(kwargs)),
@@ -321,55 +324,59 @@ class LLMProvider:
         cache_prompt_tokens: int | None = None
         cache_hit_tokens: int | None = None
 
-        stream_iter = aiter(stream)
-        while True:
-            try:
-                chunk = await asyncio.wait_for(
-                    anext(stream_iter),
-                    timeout=self._stream_idle_timeout_s,
+        try:
+            stream_iter = aiter(stream)
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        anext(stream_iter),
+                        timeout=self._stream_idle_timeout_s,
+                    )
+                except StopAsyncIteration:
+                    break
+                prompt_tokens, hit_tokens = _extract_cache_usage(
+                    getattr(chunk, "usage", None)
                 )
-            except StopAsyncIteration:
-                break
-            prompt_tokens, hit_tokens = _extract_cache_usage(
-                getattr(chunk, "usage", None)
-            )
-            if prompt_tokens is not None:
-                cache_prompt_tokens = prompt_tokens
-                cache_hit_tokens = hit_tokens
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            choice = choices[0]
-            delta = getattr(choice, "delta", None)
-            if delta is None:
-                continue
+                if prompt_tokens is not None:
+                    cache_prompt_tokens = prompt_tokens
+                    cache_hit_tokens = hit_tokens
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
 
-            reasoning_piece = _get_field(delta, "reasoning_content")
-            if isinstance(reasoning_piece, str) and reasoning_piece:
-                reasoning_parts.append(reasoning_piece)
-                if not tool_call_seen:
-                    await on_content_delta({"thinking_delta": reasoning_piece})
+                reasoning_piece = _get_field(delta, "reasoning_content")
+                if isinstance(reasoning_piece, str) and reasoning_piece:
+                    reasoning_parts.append(reasoning_piece)
+                    if not tool_call_seen:
+                        await on_content_delta({"thinking_delta": reasoning_piece})
 
-            for tc in _iter_tool_call_deltas(delta):
-                tool_call_seen = True
-                chunk_index = int(tc["index"])
-                slot = tool_call_chunks.setdefault(chunk_index, {})
-                tc_id = str(tc["id"])
-                tc_name = str(tc["name"])
-                tc_arguments = str(tc["arguments"])
-                if tc_id:
-                    slot["id"] = slot.get("id", "") + tc_id
-                if tc_name:
-                    slot["name"] = slot.get("name", "") + tc_name
-                if tc_arguments:
-                    slot["arguments"] = slot.get("arguments", "") + tc_arguments
+                for tc in _iter_tool_call_deltas(delta):
+                    tool_call_seen = True
+                    chunk_index = int(tc["index"])
+                    slot = tool_call_chunks.setdefault(chunk_index, {})
+                    tc_id = str(tc["id"])
+                    tc_name = str(tc["name"])
+                    tc_arguments = str(tc["arguments"])
+                    if tc_id:
+                        slot["id"] = slot.get("id", "") + tc_id
+                    if tc_name:
+                        slot["name"] = slot.get("name", "") + tc_name
+                    if tc_arguments:
+                        slot["arguments"] = slot.get("arguments", "") + tc_arguments
 
-            content_piece = _get_field(delta, "content")
-            if isinstance(content_piece, str) and content_piece:
-                content_parts.append(content_piece)
-                if not tool_call_seen:
-                    await on_content_delta({"content_delta": content_piece})
+                content_piece = _get_field(delta, "content")
+                if isinstance(content_piece, str) and content_piece:
+                    content_parts.append(content_piece)
+                    if not tool_call_seen:
+                        await on_content_delta({"content_delta": content_piece})
+        finally:
+            await stream.close()
 
+        # 2. 将完整 tool-call 参数恢复成内部对象
         tool_calls: list[ToolCall] = []
         for idx in sorted(tool_call_chunks):
             item = tool_call_chunks[idx]
@@ -378,10 +385,11 @@ class LLMProvider:
                 ToolCall(
                     id=item.get("id", ""),
                     name=item.get("name", ""),
-                    arguments=json.loads(raw_args),
+                    arguments=_parse_tool_arguments(raw_args),
                 )
             )
 
+        # 3. 组装文本、推理和 provider 字段
         raw = "".join(content_parts).strip() or None
         thinking = "".join(reasoning_parts).strip() or None
         raw, parsed_thinking, provider_fields = strategy.extract_message(
@@ -493,6 +501,15 @@ def _coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_tool_arguments(raw_arguments: str) -> dict[str, Any]:
+    """解析 provider 工具参数并保持内部对象契约。"""
+
+    arguments = json.loads(raw_arguments)
+    if not isinstance(arguments, dict):
+        raise TypeError("LLM 工具调用参数必须是 JSON 对象")
+    return arguments
 
 
 def _save_llm_payload_snapshot(

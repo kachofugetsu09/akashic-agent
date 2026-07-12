@@ -74,6 +74,7 @@ class _FakeStream:
     def __init__(self, chunks: list[object], delay_s: float = 0.0) -> None:
         self._chunks = list(chunks)
         self._delay_s = delay_s
+        self.closed = False
 
     def __aiter__(self):
         return self
@@ -84,6 +85,9 @@ class _FakeStream:
         if self._delay_s:
             await asyncio.sleep(self._delay_s)
         return self._chunks.pop(0)
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -335,6 +339,7 @@ async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
     assert fake.calls[0]["stream"] is True
     assert result.cache_prompt_tokens == 64
     assert result.cache_hit_tokens == 16
+    assert stream.closed is True
 
 
 @pytest.mark.asyncio
@@ -404,6 +409,94 @@ async def test_provider_chat_stream_times_out_when_idle(
             max_tokens=10,
             on_content_delta=lambda chunk: _collect_delta([], chunk),
         )
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_provider_rejects_non_object_tool_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake = _FakeClient(
+        [
+            _Response(
+                content="",
+                tool_calls=[
+                    SimpleNamespace(
+                        id="1",
+                        function=SimpleNamespace(name="search", arguments="[]"),
+                    )
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+
+    with pytest.raises(TypeError, match="JSON 对象"):
+        await LLMProvider(api_key="k").chat([], [], "m", 1)
+
+
+@pytest.mark.asyncio
+async def test_provider_stream_rejects_non_object_tool_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id="1",
+                                    function=SimpleNamespace(
+                                        name="search", arguments="[]"
+                                    ),
+                                )
+                            ],
+                        )
+                    )
+                ]
+            )
+        ]
+    )
+    fake = _FakeClient([stream])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+
+    with pytest.raises(TypeError, match="JSON 对象"):
+        await LLMProvider(api_key="k").chat(
+            [], [], "m", 1, on_content_delta=lambda chunk: _collect_delta([], chunk)
+        )
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_provider_stream_closes_when_delta_callback_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="boom", tool_calls=[])
+                    )
+                ]
+            )
+        ]
+    )
+    fake = _FakeClient([stream])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+
+    async def _raise_callback(_chunk: dict[str, str]) -> None:
+        raise RuntimeError("callback failed")
+
+    with pytest.raises(RuntimeError, match="callback failed"):
+        await LLMProvider(api_key="k").chat(
+            [], [], "m", 1, on_content_delta=_raise_callback
+        )
+    assert stream.closed is True
 
 
 def test_bootstrap_providers_set_stream_idle_timeout(
