@@ -89,6 +89,56 @@ def test_skill_frontmatter_uses_yaml_parser(tmp_path: Path):
     assert record.always is True
 
 
+@pytest.mark.parametrize("metadata", ["metadata:", "metadata: ''"])
+def test_skill_index_allows_empty_metadata(tmp_path: Path, metadata: str):
+    workspace = tmp_path / "workspace"
+    _write_skill(
+        workspace / "skills",
+        "empty",
+        extra_frontmatter=metadata,
+    )
+
+    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
+
+    assert loader.build_index().records["empty"].config == {}
+
+
+def test_skill_index_rejects_invalid_metadata_json(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    skill_dir = _write_skill(
+        workspace / "skills",
+        "broken",
+        extra_frontmatter="metadata: '{broken'",
+    )
+
+    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
+
+    with pytest.raises(ValueError, match="Skill metadata 不是有效 JSON") as exc_info:
+        loader.build_index()
+
+    assert str(skill_dir / "SKILL.md") in str(exc_info.value)
+
+
+@pytest.mark.parametrize("metadata", ["'[]'", "'null'"])
+def test_skill_index_rejects_non_object_metadata_json(
+    tmp_path: Path,
+    metadata: str,
+):
+    workspace = tmp_path / "workspace"
+    skill_dir = _write_skill(
+        workspace / "skills",
+        "broken",
+        extra_frontmatter=f"metadata: {metadata}",
+    )
+
+    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
+
+    with pytest.raises(ValueError, match="Skill metadata 必须是对象") as exc_info:
+        loader.build_index()
+
+    assert str(skill_dir / "SKILL.md") in str(exc_info.value)
+
+
 @pytest.mark.asyncio
 async def test_load_skill_tool_returns_body_and_base_directory(tmp_path: Path):
     workspace = tmp_path / "workspace"

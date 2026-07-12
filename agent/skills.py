@@ -216,7 +216,10 @@ class SkillsLoader:
     ) -> SkillRecord:
         content = skill_file.read_text(encoding="utf-8")
         meta = self._parse_frontmatter(content) or {}
-        config = self._parse_skill_config(meta.get("metadata", ""))
+        config = self._parse_skill_config(
+            meta.get("metadata", ""),
+            skill_file=skill_file,
+        )
         missing = self._get_missing_requirements(config)
         return SkillRecord(
             name=name,
@@ -254,16 +257,28 @@ class SkillsLoader:
                 return content[match.end() :].strip()
         return content
 
-    def _parse_skill_config(self, raw: str | object) -> dict[str, Any]:
+    def _parse_skill_config(
+        self,
+        raw: str | object,
+        *,
+        skill_file: Path,
+    ) -> dict[str, Any]:
+        if raw is None:
+            return {}
         if isinstance(raw, dict):
             data = cast(dict[str, Any], raw)
         else:
+            text = str(raw).strip()
+            if not text:
+                return {}
             try:
-                parsed: Any = json.loads(str(raw))
-            except json.JSONDecodeError:
-                return {}
+                parsed: Any = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Skill metadata 不是有效 JSON: {skill_file}"
+                ) from exc
             if not isinstance(parsed, dict):
-                return {}
+                raise ValueError(f"Skill metadata 必须是对象: {skill_file}")
             data = cast(dict[str, Any], parsed)
         for key in ("akashic", "skill"):
             value = data.get(key)
