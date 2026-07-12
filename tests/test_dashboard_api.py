@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient as _RawTestClient
 
+import bootstrap.dashboard_api as dashboard_api
 from bootstrap.dashboard_api import (
     _dashboard_plugin_dirs,
     create_dashboard_app as _create_dashboard_app,
@@ -86,6 +87,43 @@ class _DashboardMemoryAdmin:
 def create_dashboard_app(tmp_path, **kwargs):
     kwargs.setdefault("memory_admin", _DashboardMemoryAdmin(tmp_path))
     return _create_dashboard_app(tmp_path, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_lifespan_swallows_its_own_compile_cancellation(
+    tmp_path, monkeypatch
+):
+    async def _pending_compile() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        dashboard_api,
+        "_compile_pending_plugins_async",
+        _pending_compile,
+    )
+    app = create_dashboard_app(tmp_path)
+
+    async with app.router.lifespan_context(app):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_dashboard_lifespan_exposes_unexpected_compile_failure(
+    tmp_path, monkeypatch
+):
+    async def _failed_compile() -> None:
+        raise RuntimeError("compile failed")
+
+    monkeypatch.setattr(
+        dashboard_api,
+        "_compile_pending_plugins_async",
+        _failed_compile,
+    )
+    app = create_dashboard_app(tmp_path)
+
+    with pytest.raises(RuntimeError, match="compile failed"):
+        async with app.router.lifespan_context(app):
+            await asyncio.sleep(0)
 
 
 class _ManualConsolidator:

@@ -271,6 +271,286 @@ async def test_run_cleanup_steps_continues_after_failure():
 
 
 @pytest.mark.asyncio
+async def test_run_cleanup_steps_continues_after_cancellation():
+    calls: list[str] = []
+
+    async def _cancel() -> None:
+        calls.append("cancel")
+        raise asyncio.CancelledError
+
+    async def _cleanup() -> None:
+        calls.append("cleanup")
+
+    with pytest.raises(asyncio.CancelledError):
+        await bootstrap_app._run_cleanup_steps(
+            ("cancel", _cancel),
+            ("cleanup", _cleanup),
+        )
+
+    assert calls == ["cancel", "cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_run_stops_primary_tasks_after_server_failure(tmp_path):
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    runtime.dashboard_server = _FakeDashboardServer()
+
+    async def _failed_server() -> None:
+        raise RuntimeError("dashboard crashed")
+
+    stopped = asyncio.Event()
+
+    async def _primary() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async def _start() -> None:
+        runtime.dashboard_task = asyncio.create_task(_failed_server())
+        runtime.tasks = [_primary()]
+
+    runtime.start = _start  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="dashboard crashed"):
+        await runtime.run()
+
+    assert stopped.is_set()
+    assert runtime.http_resources.closed is True
+    assert runtime.dashboard_task is None
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_run_stops_primary_tasks_after_server_return(tmp_path):
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    runtime.dashboard_server = _FakeDashboardServer()
+    stopped = asyncio.Event()
+
+    async def _returned_server() -> None:
+        return None
+
+    async def _primary() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async def _start() -> None:
+        runtime.dashboard_task = asyncio.create_task(_returned_server())
+        runtime.tasks = [_primary()]
+
+    runtime.start = _start  # type: ignore[method-assign]
+
+    await runtime.run()
+
+    assert stopped.is_set()
+    assert runtime.http_resources.closed is True
+    assert runtime.dashboard_task is None
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_run_preserves_server_error_when_shutdown_fails(tmp_path):
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    runtime.dashboard_server = _FakeDashboardServer()
+    server_error = RuntimeError("dashboard crashed")
+    shutdown_error = RuntimeError("core stop failed")
+
+    async def _failed_server() -> None:
+        raise server_error
+
+    async def _primary() -> None:
+        await asyncio.Event().wait()
+
+    class _Core:
+        async def stop(self) -> None:
+            raise shutdown_error
+
+    async def _start() -> None:
+        runtime.core = cast(Any, _Core())
+        runtime.dashboard_task = asyncio.create_task(_failed_server())
+        runtime.tasks = [_primary()]
+
+    runtime.start = _start  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="dashboard crashed") as caught:
+        await runtime.run()
+
+    assert caught.value is server_error
+    assert caught.value.__cause__ is shutdown_error
+    assert runtime.dashboard_task is None
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_run_stops_other_tasks_after_primary_failure(tmp_path):
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    stopped = asyncio.Event()
+
+    async def _failed() -> None:
+        raise RuntimeError("primary task failed")
+
+    async def _other() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    async def _start() -> None:
+        runtime.tasks = [_failed(), _other()]
+
+    runtime.start = _start  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="primary task failed"):
+        await runtime.run()
+
+    assert stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_run_waits_for_primary_sibling_cleanup(tmp_path):
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    async def _failed() -> None:
+        raise RuntimeError("primary task failed")
+
+    async def _other() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await asyncio.sleep(0)
+            await cleanup_release.wait()
+            cleanup_finished.set()
+
+    async def _start() -> None:
+        runtime.tasks = [_failed(), _other()]
+
+    runtime.start = _start  # type: ignore[method-assign]
+    running = asyncio.create_task(runtime.run())
+    await cleanup_started.wait()
+
+    assert not running.done()
+    cleanup_release.set()
+
+    with pytest.raises(RuntimeError, match="primary task failed"):
+        await running
+
+    assert cleanup_finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_run_rethrows_external_cancellation_after_shutdown(tmp_path):
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+    stopped = asyncio.Event()
+    shutdown_calls: list[str] = []
+
+    async def _primary() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    class _Core:
+        async def stop(self) -> None:
+            shutdown_calls.append("core.stop")
+
+    async def _start() -> None:
+        runtime.core = cast(Any, _Core())
+        runtime.tasks = [_primary()]
+
+    runtime.start = _start  # type: ignore[method-assign]
+    running = asyncio.create_task(runtime.run())
+    await asyncio.sleep(0)
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    assert stopped.is_set()
+    assert shutdown_calls == ["core.stop"]
+    assert runtime.http_resources.closed is True
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_task_cleanup_exposes_non_cancel_failure(tmp_path):
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+
+    async def _failed() -> None:
+        raise RuntimeError("primary task failed")
+
+    failed = asyncio.create_task(_failed())
+    await asyncio.sleep(0)
+    runtime._runtime_tasks.add(failed)
+
+    with pytest.raises(RuntimeError, match="primary task failed"):
+        await runtime._cancel_runtime_tasks()
+
+    assert not runtime._runtime_tasks
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_candidate_cleanup_exposes_non_cancel_failure(tmp_path):
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+
+    async def _failed() -> None:
+        raise RuntimeError("candidate task failed")
+
+    failed = asyncio.create_task(_failed())
+    await asyncio.sleep(0)
+    runtime._plugin_candidate_tasks.add(failed)
+
+    with pytest.raises(RuntimeError, match="candidate task failed"):
+        await runtime._cancel_plugin_candidate_tasks()
+
+    assert not runtime._plugin_candidate_tasks
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    startup_error = RuntimeError("startup failed")
+    rollback_error = RuntimeError("rollback failed")
+
+    async def _start() -> None:
+        raise startup_error
+
+    async def _stop() -> None:
+        raise rollback_error
+
+    core = types.SimpleNamespace(
+        loop=object(),
+        bus=object(),
+        event_bus=EventBus(),
+        tools=object(),
+        push_tool=object(),
+        session_manager=object(),
+        scheduler=object(),
+        provider=object(),
+        light_provider=None,
+        mcp_registry=object(),
+        memory_runtime=types.SimpleNamespace(aclose=bootstrap_app._noop_async),
+        presence=object(),
+        peer_process_manager=None,
+        peer_poller=None,
+        plugin_manager=None,
+        start=_start,
+        stop=_stop,
+    )
+    monkeypatch.setattr(bootstrap_app, "build_core_runtime", lambda *_: core)
+    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
+
+    with pytest.raises(RuntimeError, match="startup failed") as caught:
+        await runtime.start()
+
+    assert caught.value is startup_error
+    assert caught.value.__cause__ is rollback_error
+
+
+@pytest.mark.asyncio
 async def test_app_runtime_shutdown_cleans_up_after_server_failure(tmp_path):
     calls: list[str] = []
 
@@ -606,3 +886,52 @@ async def test_start_channels_skips_unfilled_optional_channels(monkeypatch, tmp_
     assert ipc is not None
     assert host.channels == []
     assert starts == ["ipc"]
+
+
+@pytest.mark.asyncio
+async def test_start_channels_preserves_construction_error_when_ipc_cleanup_fails(
+    monkeypatch, tmp_path
+):
+    fake_ipc_server = types.ModuleType("infra.channels.ipc_server")
+    start_error = RuntimeError("channel construction failed")
+    cleanup_error = RuntimeError("ipc cleanup failed")
+
+    class _IPCServerChannel:
+        def __init__(self, bus, socket, default_session_key: str = "") -> None:
+            pass
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            raise cleanup_error
+
+    def _fail_attachment_store() -> None:
+        raise start_error
+
+    fake_ipc_server.IPCServerChannel = _IPCServerChannel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "infra.channels.ipc_server", fake_ipc_server)
+    monkeypatch.setattr("bootstrap.channels.AttachmentStore", _fail_attachment_store)
+    config = Config(
+        provider="openai",
+        model="m",
+        api_key="k",
+        system_prompt="s",
+        channels=ChannelsConfig(socket=str(tmp_path / "sock")),
+    )
+    resources = SharedHttpResources()
+    try:
+        with pytest.raises(RuntimeError, match="channel construction failed") as caught:
+            await start_channels(
+                config,
+                bus=cast(Any, object()),
+                session_manager=cast(Any, object()),
+                push_tool=cast(Any, object()),
+                http_resources=resources,
+                event_bus=EventBus(),
+            )
+    finally:
+        await resources.aclose()
+
+    assert caught.value is start_error
+    assert caught.value.__cause__ is cleanup_error

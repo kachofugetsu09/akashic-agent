@@ -57,6 +57,7 @@ from bootstrap.wiring import (
 from agent.lifecycle.facade import TurnLifecycle
 from agent.plugins.jobs import ProviderPluginLlmService
 from bootstrap.providers import build_providers, build_vl_provider
+from bootstrap.cleanup import run_cleanup_steps
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -65,6 +66,10 @@ from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
 from session.manager import Session, SessionManager
+
+
+async def _noop_async() -> None:
+    return None
 
 
 @dataclass
@@ -245,20 +250,35 @@ class CoreRuntime:
         return "\n".join(parts)
 
     async def stop(self) -> None:
-        spawn_tool = self.tools.get_tool("spawn")
-        shutdown = getattr(spawn_tool, "shutdown", None)
-        if callable(shutdown):
-            result = shutdown()
-            if inspect.isawaitable(result):
-                await cast(Awaitable[object], result)
-        await self.event_bus.aclose()
-        if self.plugin_manager is not None:
-            await self.plugin_manager.terminate_all()
-        await self.mcp_registry.shutdown()
-        if self.peer_poller is not None:
-            await self.peer_poller.stop()
-        if self.peer_process_manager is not None:
-            await self.peer_process_manager.shutdown_all()
+        async def _stop_spawn() -> None:
+            spawn_tool = self.tools.get_tool("spawn")
+            shutdown = getattr(spawn_tool, "shutdown", None)
+            if callable(shutdown):
+                result = shutdown()
+                if inspect.isawaitable(result):
+                    await cast(Awaitable[object], result)
+
+        await run_cleanup_steps(
+            ("spawn.shutdown", _stop_spawn),
+            ("event_bus.aclose", self.event_bus.aclose),
+            (
+                "plugin_manager.terminate_all",
+                self.plugin_manager.terminate_all
+                if self.plugin_manager is not None
+                else _noop_async,
+            ),
+            ("mcp_registry.shutdown", self.mcp_registry.shutdown),
+            (
+                "peer_poller.stop",
+                self.peer_poller.stop if self.peer_poller is not None else _noop_async,
+            ),
+            (
+                "peer_process_manager.shutdown_all",
+                self.peer_process_manager.shutdown_all
+                if self.peer_process_manager is not None
+                else _noop_async,
+            ),
+        )
 
 
 def build_registered_tools(

@@ -35,18 +35,33 @@ class PluginServiceHost:
                 for service_id, spec in sorted(services.items()):
                     await self._start(plugin_id, service_id, spec)
                     started.append((plugin_id, service_id))
-        except BaseException:
+        except BaseException as start_error:
+            rollback_errors: list[str] = []
             for key in reversed(started):
-                await self._stop(*key)
+                try:
+                    await self._stop(*key)
+                except (asyncio.CancelledError, Exception) as error:
+                    rollback_errors.append(f"{key[0]}:{key[1]}: {error}")
+            if rollback_errors:
+                rollback_error = RuntimeError(
+                    "managed service 启动回滚失败: " + "; ".join(rollback_errors)
+                )
+                raise start_error from rollback_error
             raise
 
     async def stop_all(self) -> None:
         errors: list[str] = []
+        cancellation: asyncio.CancelledError | None = None
         for plugin_id, service_id in reversed(tuple(self._running)):
             try:
                 await self._stop(plugin_id, service_id)
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
             except Exception as error:
                 errors.append(f"{plugin_id}:{service_id}: {error}")
+        if cancellation is not None:
+            raise cancellation
         if errors:
             raise RuntimeError("managed service 停止失败: " + "; ".join(errors))
 

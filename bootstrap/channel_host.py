@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from collections.abc import Callable, Iterable
@@ -35,23 +36,33 @@ class ChannelHost:
 
     async def start_all(self) -> None:
         failures: list[str] = []
-        for channel in self._channels:
-            try:
-                await self._start_channel(channel)
-                print(f"渠道已启动: {channel.name}")
-            except Exception as e:
-                logger.error("渠道启动失败 %s: %s", channel.name, e)
-                failures.append(f"{channel.name}: {e}")
+        try:
+            for channel in self._channels:
+                try:
+                    await self._start_channel(channel)
+                    print(f"渠道已启动: {channel.name}")
+                except Exception as e:
+                    logger.error("渠道启动失败 %s: %s", channel.name, e)
+                    failures.append(f"{channel.name}: {e}")
+        except asyncio.CancelledError:
+            await self.stop_all()
+            raise
         if failures:
             raise RuntimeError("渠道启动失败: " + "; ".join(failures))
 
     async def stop_all(self) -> None:
+        cancellation: asyncio.CancelledError | None = None
         for channel in reversed(self._channels):
             try:
                 if id(channel) in self._started:
                     await self._stop_channel(channel)
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
             except Exception as e:
                 logger.warning("渠道停止失败 %s: %s", channel.name, e)
+        if cancellation is not None:
+            raise cancellation
 
     def bind_plugin_channels(
         self,
@@ -161,19 +172,26 @@ class ChannelHost:
         except BaseException:
             try:
                 await channel.stop()
-            except Exception:
+            except (asyncio.CancelledError, Exception):
                 logger.exception("Channel 部分启动清理失败: %s", channel.name)
-            resources.close()
-            _ = self._resources.pop(id(channel), None)
+            finally:
+                try:
+                    resources.close()
+                finally:
+                    _ = self._resources.pop(id(channel), None)
             raise
         self._started.add(id(channel))
 
     async def _stop_channel(self, channel: Channel) -> None:
-        await channel.stop()
-        resources = self._resources.pop(id(channel), None)
-        if resources is not None:
-            resources.close()
-        self._started.discard(id(channel))
+        try:
+            await channel.stop()
+        finally:
+            resources = self._resources.pop(id(channel), None)
+            try:
+                if resources is not None:
+                    resources.close()
+            finally:
+                self._started.discard(id(channel))
 
     @property
     def channels(self) -> list[Channel]:
@@ -196,11 +214,18 @@ class _ChannelResources:
         )
 
     def close(self) -> None:
+        first_error: Exception | None = None
         for closeable in reversed(self._closeables):
             close = getattr(closeable, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception as exc:
+                    if first_error is None:
+                        first_error = exc
         self._closeables.clear()
+        if first_error is not None:
+            raise first_error
 
 
 class _ScopedBus:

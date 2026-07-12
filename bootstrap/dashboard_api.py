@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from agent.plugins.manifest import load_package_manifest, load_plugin_manifest
 from agent.plugins.packages import enabled_plugin_packages
 from agent.plugins.source_resolver import resolve_plugin_sources
+from bootstrap.cleanup import run_cleanup_steps
 
 from agent.memory import MemoryStore
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
@@ -705,15 +706,31 @@ def create_dashboard_app(
         try:
             yield
         finally:
-            _ = compile_task.cancel()
-            try:
-                await compile_task
-            except asyncio.CancelledError:
-                pass
-            store.close()
-            _close_dashboard_value(memory_admin)
-            for closeable in reversed(plugin_closeables):
-                _close_dashboard_value(closeable)
+            async def _cancel_compile_task() -> None:
+                cancelled = compile_task.cancel()
+                if not cancelled:
+                    await compile_task
+                    return
+                try:
+                    await compile_task
+                except asyncio.CancelledError:
+                    return
+
+            async def _close_sync(value: object) -> None:
+                _close_dashboard_value(value)
+
+            await run_cleanup_steps(
+                ("plugin_panel_compile.cancel", _cancel_compile_task),
+                ("dashboard.session_store.close", lambda: _close_sync(store)),
+                ("dashboard.memory_admin.close", lambda: _close_sync(memory_admin)),
+                *[
+                    (
+                        f"dashboard.plugin_closeable[{index}].close",
+                        lambda value=closeable: _close_sync(value),
+                    )
+                    for index, closeable in enumerate(reversed(plugin_closeables))
+                ],
+            )
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
