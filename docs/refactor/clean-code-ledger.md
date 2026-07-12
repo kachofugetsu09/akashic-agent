@@ -846,3 +846,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `122 passed`、全量 `1658 passed`、pyright `0 errors`；主线合入后工具交叉定向 `71 passed`，`git diff --check` 通过。
 - 残余风险：高候选、小 top-k 场景收益最大；仍需为所有候选计算基础关键词分数，这是正确排序所必需。
+
+### `62fec3e6` `fix(session): tighten config and persistence boundaries`
+
+- 范围：TOML section、session SQLite JSON、FTS 初始化与 CLI socket 配置。
+- 原问题：显式非 table 配置被静默当空表；空/坏 JSON 与错误形状可能进入消息，extra 可覆盖 role/id 等列字段；FTS 每次启动都因错误检查 config 表而全量 rebuild，并把所有 OperationalError 当成“无 FTS”；socket 被重复规范化。
+- 为什么这样修改：只有缺失 section 使用默认空表，显式错误结构 fail-loud；SQLite 边界集中校验 metadata/extra/tool_chain 形状、空载荷和保留字段；从 sqlite_master 表定义判断 trigram，只有创建/迁移/触发器缺失才 rebuild；仅真实 FTS5/trigram 能力缺失带 warning 降级，其余数据库错误传播。
+- 不变量与拥有层：Config loader 拥有 TOML schema；SessionStore 拥有 DB JSON 与消息列；FTS initializer 拥有索引/触发器；SessionManager 正常写入已排除 extra 保留字段。合法默认配置、消息顺序、事务保存、热重载不变。
+- 能力变化：合法缺失配置和 LIKE fallback 保持；坏配置/数据不再伪装；正常重启保留中文 FTS 命中，缺触发器仍自动 rebuild；数据库锁/损坏不再静默关闭全文检索。
+- 性能变化：已有 trigram FTS 的正常启动从每次扫描全 messages rebuild 改为只检查 sqlite_master 与三条 trigger；构造阶段 trace 已证明无 rebuild。收益随消息表大小增长，本批未虚构固定倍数。
+- 测试新增：非 table section、空/坏 JSON、extra 保留字段、构造期无 rebuild、缺 trigger rebuild、FTS 能力缺失降级和普通 OperationalError 传播。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `50 passed`、全量 `1675 passed`、pyright `0 errors`；主线合入后 session/config/tool 交叉定向 `113 passed`，`git diff --check` 通过。
+- 残余风险：历史 `GatewayResult` 弱类型与 SessionStore 其他用途型扫描 API 继续按各自契约审阅，未在本批扩张。
