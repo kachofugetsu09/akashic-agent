@@ -937,3 +937,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手全量 `1697 passed`；主线合入后定向 `73 passed`、全量 `1716 passed in 20.73s`；修改文件 pyright `0 errors`，`git diff --check` 通过。
 - 残余风险：shutdown 仍按既有顺序串行执行，未引入并行关闭；这是为保持资源依赖顺序和错误上下文，不宣称关闭耗时优化。
+
+### `deb87c8a` `fix(memory2): enforce storage and boundary ownership`
+
+- 范围：MemoryStore2 共享 SQLite 连接、embedding/provider 数据边界、query rewrite task 回收和 post-response worker 错误传播。
+- 原问题：`check_same_thread=False` 的共享连接仅有部分写路径加锁，8 线程并发写可复现 `UNIQUE constraint`、`InterfaceError` 和 SQLite API misuse；数据库 embedding 与 provider batch 结构未经完整校验；query rewrite 超时只 cancel 不 await；后台 memory worker 顶层吞掉存储错误。
+- 为什么这样修改：由 store 的同一 `RLock` 串行化该连接的全部公开操作；在 SQLite/provider 唯一边界校验 JSON、有限数值、index、数量和维度；创建 task 的 rewriter 负责 cancel 后确定性 await；worker 将错误交给已有 EventBus observer 隔离层记录，同时让显式 ingest 看见失败。
+- 不变量与拥有层：MemoryStore2 拥有单连接并发与持久化 JSON；Embedder 拥有外部响应 schema；QueryRewriter 拥有其两个 task；EventBus 拥有后台观察者隔离。Retriever 的 cosine/keyword/RRF、情景 lane、scope、注入预算和热重载均未修改。
+- 能力变化：正常召回、排序、去重、合并、遗忘和 full-context 保持；并发写不再互相破坏；坏向量/响应即时带上下文失败；超时不遗留 LLM task；后台失败仍不阻断已提交用户回复，但显式 ingest 不再假成功。
+- 性能变化：共享单连接操作由隐式争用改为显式串行，未宣称吞吐提升；故障并发不再重试或产生重复写。正常检索 SQL、候选数和排序复杂度不变。
+- 测试新增：32 次并发同摘要写、SQLite embedding 损坏、provider malformed/index/数量/维度、query timeout task 回收和 worker 存储故障传播。
+- 测试删除及原因：无。
+- 验证结果：副手两轮全量最终 `1723 passed`；主线独立定向 `53 passed`；修改文件 pyright `0 errors`，`git diff --check` 通过。
+- 残余风险：单 SQLite connection 仍限制并行读吞吐；改为连接池或读写分离会改变事务与 sqlite-vec ownership，本批没有无证据扩张。
