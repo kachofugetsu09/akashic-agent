@@ -820,3 +820,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `45 passed`、全量 `1628 passed`、pyright `0 errors`；主线合入后 channels/MCP 交叉定向 `69 passed`，`git diff --check` 通过。
 - 残余风险：未改变 MessageBus 既有重试、FIFO、背压与取消策略；QQ/Telegram 外部 API 的独立错误策略需按具体调用链继续审阅。
+
+### `f30973e9` `fix(proactive): tighten source and delivery boundaries`
+
+- 范围：默认 proactive Gateway、MCP source event 边界与 success/post-guard ACK。
+- 原问题：Gateway 再次捕获共享 source snapshot 故障并伪装成三路空数据；坏 web_fetch payload 被当成普通空正文；非对象或无 ID 的 alert/content 被跳过或生成碰撞 key；仅配置独立 alert ACK 时，普通 ACK 缺失导致 helper 提前返回。
+- 为什么这样修改：单 source 隔离继续由 `fetch_sources_async` 唯一拥有，Gateway 只消费聚合 snapshot；整体失败和工具协议损坏 fail-loud。WebFetchTool 明确返回的 `{error}` 仍按可选正文降级，但记录 URL/原因 warning。source payload 在 MCP 边界拒绝无法可靠 ACK 的事件；两个 ACK 通道按实际依赖分别执行。
+- 不变量与拥有层：source 聚合层拥有单源失败隔离；Gateway 拥有 snapshot 与 web_fetch 结果形状；`mcp_sources` 拥有 event object/ID；resolve helper 拥有 alert/content ACK 路由。
+- 能力变化：正常并行抓取、单源隔离、显式 HTTP 失败空正文、ACK 顺序、发送、wake、热重载和 Gate → Fetch → Judge → Resolve → Deliver 不变；全部 source 失败不再假装无事件，独立 alert ACK 不再丢失。
+- 性能变化：三路和 URL 抓取并行度、调用次数不变；新增每 item 常数级字段检查，无性能收益声明。
+- 测试新增：三路 snapshot 失败传播、web_fetch 显式降级日志与损坏协议、坏 source item/空 ID、仅 alert ACK 的 success/post-guard 路径。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `182 passed`、全量 `1646 passed`、pyright `0 errors`；主线合入后主动链交叉定向 `113 passed`，`git diff --check` 通过。
+- 残余风险：Gateway/source payload 仍使用历史弱类型 dict；本批没有扩大为跨模块 typed contract 重构。
