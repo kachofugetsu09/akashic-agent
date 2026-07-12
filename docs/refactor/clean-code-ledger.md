@@ -598,6 +598,58 @@
 - 验证结果：typecheck、lint 与真实 esbuild 参数编译通过；未修改 static bundle。
 - 残余风险：请求失败仍沿既有显式失败路径，由下一轮定时器重试。
 
+### `64c66fb0` `fix(clock): make replay advance atomic`
+
+- 范围：ReplayClock 单实例并发推进与持久化。
+- 原问题：`advance` 的读取和写入分属两个锁区间，并发调用会丢失 delta。
+- 为什么这样修改：同一锁内完成 read-modify-write；底层同目录临时文件替换保持。
+- 不变量与拥有层：ReplayClock 实例拥有进程内串行化；不声明跨实例或跨进程互斥。
+- 能力变化：now/set/环境选择保持；同实例并发推进不再丢增量。
+- 性能变化：锁覆盖一次文件读写，以正确性为目标；无延迟优化声明。
+- 测试新增：8 线程各推进 50 次，400 个返回时间唯一且最终时间累计完整。
+- 测试删除及原因：无；初版审阅时删除了未被生产路径调用的无效 barrier 测试钩子，改为真实并发压力回归。
+- 验证结果：Clock/wake `25 passed`；副手全量 `1574 passed`；pyright `0 errors, 0 warnings`。
+- 残余风险：多个 ReplayClock 实例指向同一路径仍需文件锁或单 owner 架构，本提交不扩大承诺。
+
+### `93de1a8a` `fix(context): 显式标记不可用媒体`
+
+- 范围：MessageEnvelopeBuilder 本地媒体装配。
+- 原问题：不存在的本地附件在多模态和文本/VL 两条路径都被静默丢弃，模型无法区分“无附件”和“附件不可用”。
+- 为什么这样修改：保留文字 turn，在上下文和 warning 中明确具体不可用路径；仅缺失附件时不诱导调用读图工具。
+- 不变量与拥有层：媒体文件可访问性由上下文装配边界拥有；模型调用链信任已标注媒体引用。
+- 能力变化：有效本地图片、文档、远程图片和 VL fallback 不变；缺失附件变为可观察降级。
+- 性能变化：缺失路径增加一条 warning 和文本标记，无性能声明。
+- 测试新增：两种媒体能力路径的缺失文件，以及仅缺失附件时不生成读图调用。
+- 测试删除及原因：无。
+- 验证结果：副手 ContextBuilder/lifecycle `117 passed`；主线相关 `47 passed`；pyright 通过。
+- 残余风险：远程 URL 的可达性仍由实际 HTTP/视觉工具边界判断，装配期不预请求。
+
+### `f97e0eb9` `fix(dashboard): 暴露插件发现失败`
+
+- 范围：Dashboard 插件清单启动加载与既有错误边界。
+- 原问题：`/api/dashboard/plugins` 失败被转为空列表，UI 看似正常但插件能力全部消失。
+- 为什么这样修改：移除空列表 fallback，把失败交给 App 统一 `run()` 边界展示；单 panel import 隔离策略保留。
+- 不变量与拥有层：清单请求整体成功由启动加载拥有；单插件模块失败由 importPanel 隔离并记录。
+- 能力变化：合法插件、版本 URL、CSS 注入和 hot-reload freshness 不变；发现失败明确显示。
+- 性能变化：请求与加载次数不变，无性能声明。
+- 测试新增：无；该启动链暂无前端测试 runner。
+- 测试删除及原因：无。
+- 验证结果：typecheck、lint 和 production build 通过；lint 仍为 3 条既有 Hook warning。
+- 残余风险：单 panel import 失败仍允许其他插件继续加载，这是插件隔离边界的既有能力。
+
+### `8307360f` `fix(persistence): isolate atomic save temp files`
+
+- 范围：scheduler 与 AnyAction 共用的 JSON 原子写底座。
+- 原问题：同一目标的并发 writer 共用固定 `.tmp`；一个 writer 可替换另一个的内容，随后另一个因临时文件已移动而失败。
+- 为什么这样修改：每次写入使用同目录唯一临时文件，再原子 replace；失败仅清理本 writer 的临时文件并传播原异常。
+- 不变量与拥有层：helper 拥有 staging 文件隔离和原子替换；不声明 writer 顺序、跨进程锁或 compare-and-swap。
+- 能力变化：JSON 格式、目标路径和错误契约不变；并发写不再互相窃取/删除 staging 文件。
+- 性能变化：写入与 replace 次数不变，UUID 生成是常数开销；无提速声明。
+- 测试新增：两个真实线程同步到 replace 后均可提交且结果完整；replace 失败保持旧目标、清理本次临时文件并传播。
+- 测试删除及原因：无。
+- 验证结果：主线持久化 `16 passed`；副手全量 `1583 passed`；pyright 无 error。
+- 残余风险：最后写入者覆盖先写入者仍是普通文件存储语义；需 CAS 的调用方必须另设版本协议。
+
 ### `<commit>` `<title>`
 
 - 范围：
