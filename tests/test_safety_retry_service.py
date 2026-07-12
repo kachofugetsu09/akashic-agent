@@ -64,7 +64,13 @@ def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
         context=cast(Any, SimpleNamespace(
             render=_render,
         )),
-        session_manager=cast(Any, SimpleNamespace(save_async=AsyncMock())),
+        session_manager=cast(
+            Any,
+            SimpleNamespace(
+                save_async=AsyncMock(),
+                trim_history_async=AsyncMock(),
+            ),
+        ),
     )
 
 
@@ -132,7 +138,13 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
         context=cast(Any, SimpleNamespace(
             render=_render,
         )),
-        session_manager=cast(Any, SimpleNamespace(save_async=AsyncMock())),
+        session_manager=cast(
+            Any,
+            SimpleNamespace(
+                save_async=AsyncMock(),
+                trim_history_async=AsyncMock(),
+            ),
+        ),
     )
     reasoner.run = AsyncMock(
         side_effect=[

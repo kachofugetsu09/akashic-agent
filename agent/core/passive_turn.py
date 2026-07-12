@@ -1111,12 +1111,11 @@ class DefaultReasoner(Reasoner):
                         window,
                         sorted(plan["disabled_sections"]),
                     )
-                    if window == 0:
-                        session.messages.clear()
-                    else:
-                        session.messages = session.messages[-window:]
-                    session.last_consolidated = 0
-                    await self._session_manager.save_async(cast(Any, session))
+                    await self._session_manager.trim_history_async(
+                        cast(Any, session),
+                        window,
+                        last_consolidated=0,
+                    )
 
                 if self._tool_search_enabled and (tools_used or tools_unlocked):
                     self._discovery.update(

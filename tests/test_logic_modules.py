@@ -28,6 +28,43 @@ from session.manager import (
 from session.store import SessionStore
 
 
+def _seed_message_embeddings(store: SessionStore, message_ids: list[str]) -> None:
+    store._conn.execute(
+        """
+        CREATE TABLE message_embeddings (
+            message_id TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            model TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            dim INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (message_id, model)
+        )
+        """
+    )
+    store._conn.executemany(
+        """
+        INSERT INTO message_embeddings
+            (message_id, content_hash, model, embedding, dim, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                message_id,
+                f"hash:{message_id}",
+                "test-model",
+                f"embedding:{message_id}".encode(),
+                1,
+                "before",
+                "before",
+            )
+            for message_id in message_ids
+        ],
+    )
+    store._conn.commit()
+
+
 @pytest.mark.asyncio
 async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path):
     memory = MagicMock()
@@ -178,6 +215,120 @@ async def test_session_batch_persistence_uses_one_commit(tmp_path: Path) -> None
     await manager.append_messages(session, session.messages)
 
     assert statements.count("COMMIT") == 1
+
+
+@pytest.mark.asyncio
+async def test_session_trim_replaces_history_and_preserves_sequence_ids(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:trim")
+    for index in range(4):
+        session.add_message("user" if index % 2 == 0 else "assistant", str(index))
+    session.last_consolidated = 3
+    manager.save(session)
+    other = manager.get_or_create("telegram:other")
+    other.add_message("user", "other")
+    manager.save(other)
+    _seed_message_embeddings(
+        manager._store,
+        [
+            *[message["id"] for message in session.messages],
+            *[message["id"] for message in other.messages],
+        ],
+    )
+
+    await manager.trim_history_async(session, 2, last_consolidated=0)
+
+    assert [message["content"] for message in session.messages] == ["2", "3"]
+    assert [message["id"] for message in session.messages] == [
+        "telegram:trim:2",
+        "telegram:trim:3",
+    ]
+    assert session.last_consolidated == 0
+    assert manager._store.count_messages(session.key) == 2
+    assert manager._store.get_session_meta(session.key)["last_consolidated"] == 0
+    embedding_rows = {
+        str(row["message_id"]): bytes(row["embedding"])
+        for row in manager._store._conn.execute(
+            "SELECT message_id, embedding FROM message_embeddings"
+        ).fetchall()
+    }
+    assert embedding_rows == {
+        "telegram:trim:2": b"embedding:telegram:trim:2",
+        "telegram:trim:3": b"embedding:telegram:trim:3",
+        "telegram:other:0": b"embedding:telegram:other:0",
+    }
+
+    manager.invalidate(session.key)
+    reloaded = manager.get_or_create(session.key)
+    assert [message["content"] for message in reloaded.messages] == ["2", "3"]
+    reloaded.add_message("assistant", "4")
+    manager.save(reloaded)
+    assert reloaded.messages[-1]["id"] == "telegram:trim:4"
+    assert reloaded.messages[-1]["seq"] == 4
+
+
+@pytest.mark.asyncio
+async def test_session_trim_failure_keeps_memory_and_database_unchanged(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("telegram:trim-failure")
+    for index in range(4):
+        session.add_message("user", str(index))
+    session.metadata = {"marker": "before"}
+    session.last_consolidated = 2
+    manager.save(session)
+    original_messages = list(session.messages)
+    before_meta = manager._store.get_session_meta(session.key)
+    _seed_message_embeddings(
+        manager._store,
+        [str(message["id"]) for message in session.messages],
+    )
+    before_embeddings = [
+        tuple(row)
+        for row in manager._store._conn.execute(
+            """
+            SELECT message_id, content_hash, model, embedding, dim, created_at, updated_at
+            FROM message_embeddings
+            ORDER BY message_id
+            """
+        ).fetchall()
+    ]
+    manager._store._conn.execute(
+        """
+        CREATE TRIGGER reject_history_trim
+        BEFORE DELETE ON messages
+        BEGIN
+            SELECT RAISE(ABORT, '测试裁剪失败');
+        END
+        """
+    )
+    manager._store._conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="测试裁剪失败"):
+        await manager.trim_history_async(session, 2, last_consolidated=0)
+
+    assert session.messages == original_messages
+    assert session.last_consolidated == 2
+    assert manager._store.count_messages(session.key) == 4
+    assert manager._store.get_session_meta(session.key) == before_meta
+    assert [
+        message["content"]
+        for message in manager._store.fetch_session_messages(session.key)
+    ] == ["0", "1", "2", "3"]
+    after_embeddings = [
+        tuple(row)
+        for row in manager._store._conn.execute(
+            """
+            SELECT message_id, content_hash, model, embedding, dim, created_at, updated_at
+            FROM message_embeddings
+            ORDER BY message_id
+            """
+        ).fetchall()
+    ]
+    assert after_embeddings == before_embeddings
 
 
 def test_session_persistence_allocates_sequences_inside_transaction(

@@ -375,9 +375,16 @@ class SessionManager:
         messages: list[dict[str, Any]],
         *,
         updated_at: datetime,
+        last_consolidated: int | None = None,
+        retained_message_ids: set[str] | None = None,
     ) -> int:
-        """原子刷新 session 元数据并追加尚未持久化的消息。"""
+        """准备待写消息并原子追加；传保留 ID 时在同一事务内替换消息集合。"""
 
+        effective_last_consolidated = (
+            session.last_consolidated
+            if last_consolidated is None
+            else int(last_consolidated)
+        )
         pending_messages: list[dict[str, Any]] = []
         pending_payloads: list[dict[str, Any]] = []
 
@@ -405,9 +412,10 @@ class SessionManager:
             session.key,
             created_at=session.created_at.isoformat(),
             updated_at=updated_at.isoformat(),
-            last_consolidated=session.last_consolidated,
+            last_consolidated=effective_last_consolidated,
             metadata=session.metadata,
             messages=pending_payloads,
+            retained_message_ids=retained_message_ids,
         )
         for msg, row in zip(pending_messages, rows):
             msg.update(row)
@@ -438,6 +446,40 @@ class SessionManager:
         async with self._lock(session.key):
             # 1. 原子追加消息并刷新 session 元数据。
             self._persist_session(session, msgs_copy, updated_at=updated_at)
+            self._cache[session.key] = session
+
+    async def trim_history_async(
+        self,
+        session: Session,
+        keep_count: int,
+        *,
+        last_consolidated: int = 0,
+    ) -> None:
+        """在同一事务中裁剪 session 历史，并在成功后更新内存。"""
+
+        # 1. 在 session owner 的写锁内计算替换结果，避免覆盖并发追加。
+        async with self._lock(session.key):
+            retained = (
+                list(session.messages[-keep_count:]) if keep_count > 0 else []
+            )
+            retained_ids = {
+                str(message["id"])
+                for message in retained
+                if message.get("id")
+            }
+
+            # 2. 先让 SQLite 原子提交删除、追加和 cursor 更新。
+            self._persist_session(
+                session,
+                retained,
+                updated_at=datetime.now(),
+                last_consolidated=last_consolidated,
+                retained_message_ids=retained_ids,
+            )
+
+            # 3. 数据库成功后再提交内存视图，失败时调用方仍持有原历史。
+            session.messages[:] = retained
+            session.last_consolidated = int(last_consolidated)
             self._cache[session.key] = session
 
     def invalidate(self, key: str) -> None:
