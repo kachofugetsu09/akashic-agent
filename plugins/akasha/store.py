@@ -446,7 +446,7 @@ class AkashaStore:
         # 1. 查询阶段一次性读入节点，和 cross CLI 的内存图保持一致。
         with self._lock:
             rows = self._db.execute("SELECT * FROM akasha_nodes").fetchall()
-        return [node for row in rows if (node := _row_to_node(row)) is not None]
+        return [_row_to_node(row) for row in rows]
 
     # 读取单个 turn 节点。
     def get_node(self, key: str) -> AkashaNode | None:
@@ -840,11 +840,10 @@ class AkashaStore:
 
 
 # 把 SQLite row 转成 AkashaNode。
-def _row_to_node(row: sqlite3.Row) -> AkashaNode | None:
-    # 1. embedding 损坏时跳过该节点，避免一次坏数据打断整轮检索。
+def _row_to_node(row: sqlite3.Row) -> AkashaNode:
     embedding = deserialize_f32(row["embedding"])
     if embedding.size == 0:
-        return None
+        raise ValueError(f"Akasha 节点 {row['key']} 的 embedding 为空")
     return AkashaNode(
         key=str(row["key"]),
         anchor_id=str(row["anchor_id"]),

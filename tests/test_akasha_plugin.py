@@ -371,6 +371,32 @@ def test_store_merges_user_and_assistant_into_turn_node(tmp_path: Path) -> None:
     assert nodes[0].emb_count == 2
 
 
+def test_store_exposes_empty_node_embedding_corruption(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    try:
+        key = store.upsert_message_node(
+            SourceMessage(
+                "m:0",
+                "s",
+                0,
+                "user",
+                "用户消息",
+                "2026-01-01T00:00:00+00:00",
+            ),
+            [1.0, 0.0],
+        )
+        store.db.execute(
+            "UPDATE akasha_nodes SET embedding = ? WHERE key = ?",
+            (b"", key),
+        )
+        store.db.commit()
+
+        with pytest.raises(ValueError, match=f"节点 {key} 的 embedding 为空"):
+            store.list_nodes()
+    finally:
+        store.close()
+
+
 def test_store_batch_delete_keeps_count_and_edge_cleanup_semantics(tmp_path: Path) -> None:
     store = AkashaStore(tmp_path / "akasha.db")
     try:
