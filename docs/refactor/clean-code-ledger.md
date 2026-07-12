@@ -885,3 +885,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `60 passed`、全量 `1679 passed`、pyright `0 errors`；主线合入后 lifecycle 交叉定向 `57 passed`，`git diff --check` 通过。
 - 残余风险：多媒体主动发送存在不可原子撤回的 partial-delivery contract，需单独设计，不能在本批用 bool 假装事务成功。
+
+### `72bc91e7` `fix(bus): preserve outbound subscriber fanout`
+
+- 范围：MessageBus 单条出站消息的订阅者 fan-out。
+- 原问题：直接遍历可变订阅 list；首个回调在执行中关闭自身 subscription 时，元素左移会让 Python 迭代器跳过下一回调，静默漏发同一消息。
+- 为什么这样修改：fan-out 开始时创建不可变 tuple snapshot；当前消息对开始时的订阅者保持稳定，后续消息重新读取最新订阅列表。
+- 不变量与拥有层：MessageBus 拥有每条消息的 fan-out snapshot；EventSubscription 仍拥有后续注销。ChatLane、FIFO、重试/退避和降级不变。
+- 能力变化：回调自注销不再造成其他订阅者漏发；该回调不会收到下一条消息。
+- 性能变化：每次 fan-out 复制当前 channel 的小型订阅 tuple，O(订阅者数)；这是稳定迭代所需成本，无性能收益声明。
+- 测试新增：连续两条消息验证当前 snapshot 与后续 unsubscribe 语义。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `21 passed`、全量 `1683 passed`、范围 pyright `0 errors`；主线合入后 bus/event 定向 `26 passed`，`git diff --check` 通过。
+- 残余风险：MessageBus/EventBus 队列仍无固定容量；缺少明确容量与背压契约前不任意加限额。
