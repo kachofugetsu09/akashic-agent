@@ -5,7 +5,7 @@ import subprocess
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 T = TypeVar("T")
 
@@ -84,7 +84,10 @@ class PluginKVStore:
     def _read(self) -> dict[str, Any]:
         if not self._path.exists():
             return {}
-        return json.loads(self._path.read_text(encoding="utf-8"))
+        data = json.loads(self._path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"插件 KV 根节点必须是对象: {self._path}")
+        return cast(dict[str, Any], data)
 
     def _write(self, data: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

@@ -18,6 +18,7 @@ import pytest
 # 预热 agent.core 导入链，避免 agent.lifecycle.types 触发循环导入
 from agent.core.passive_turn import ContextStore as _  # noqa: F401
 from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCallCtx, BeforeTurnCtx
+from agent.plugins.context import PluginKVStore
 from agent.plugins.manager import PluginManager
 from agent.plugins.manifest import write_package_manifest
 from agent.plugins.jobs import PluginJobRuntime, PluginJobSpec, RegisteredPluginJob
@@ -782,6 +783,15 @@ async def test_kv_store_persists_across_manager_instances():
         assert kv_path.exists()
         data = json.loads(kv_path.read_text())
         assert data["turn_count"] == 2
+
+
+def test_kv_store_rejects_non_object_root(tmp_path: Path) -> None:
+    path = tmp_path / ".kv.json"
+    _ = path.write_text("[]", encoding="utf-8")
+    store = PluginKVStore(path)
+
+    with pytest.raises(ValueError, match="插件 KV 根节点必须是对象"):
+        store.get("turn_count")
 
 
 # ── 程序化身份声明测试 ────────────────────────────────────────────────────────
