@@ -77,6 +77,14 @@ class _NeedsMissingModuleSlotModule:
         return frame
 
 
+class _BuiltinNeedsMissingModuleSlot:
+    slot = "before_turn.consumer"
+    requires = ("before_turn.provider",)
+
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        return frame
+
+
 class _PassThroughFinalizeModule:
     async def run(self, frame: _TextFrame) -> _TextFrame:
         frame.output = frame.input
@@ -89,6 +97,13 @@ class _NeedsDisabledModuleSlotModule:
 
     async def run(self, frame: _TextFrame) -> _TextFrame:
         frame.output = "dependent module ran"
+        return frame
+
+
+class _PluginProviderModule:
+    slot = "plugin.provider"
+
+    async def run(self, frame: _TextFrame) -> _TextFrame:
         return frame
 
 
@@ -126,13 +141,28 @@ async def test_phase_requires_output():
         await phase.run("x")
 
 
-def test_phase_warns_when_slot_not_closed(caplog: pytest.LogCaptureFixture):
-    with caplog.at_level("WARNING", logger="agent.lifecycle.phase"):
+def test_phase_rejects_unclosed_slot():
+    with pytest.raises(RuntimeError, match="Phase slot 未闭合"):
         Phase[str, str, _TextFrame](
             [_NeedsMissingSlotModule()],
             frame_factory=_TextFrame,
         )
-    assert "Phase slot 未闭合" in caplog.text
+
+
+def test_phase_rejects_missing_builtin_module_dependency():
+    with pytest.raises(RuntimeError, match="Phase 模块依赖不存在"):
+        Phase[str, str, _TextFrame](
+            [_BuiltinNeedsMissingModuleSlot()],
+            frame_factory=_TextFrame,
+        )
+
+
+def test_phase_rejects_module_dependency_after_consumer():
+    with pytest.raises(RuntimeError, match="Phase 模块依赖未满足"):
+        Phase[str, str, _TextFrame](
+            [_NeedsMissingModuleSlotModule(), _PluginProviderModule()],
+            frame_factory=_TextFrame,
+        )
 
 
 def test_phase_warns_when_module_dependency_missing(
