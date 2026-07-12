@@ -124,7 +124,6 @@ class ActivePluginInfo:
     plugin_dir: Path
     manifest: dict[str, object]
     module_path: str
-    declares_aka_plugin: bool = True
     skill_roots: tuple[Path, ...] = ()
     drift_skill_roots: tuple[Path, ...] = ()
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
