@@ -5,7 +5,7 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, cast
 
 from agent.lifecycle.types import PromptRenderInput, PromptRenderResult
 
@@ -42,35 +42,41 @@ class ToolDiscoveryState:
         return list(self._unlocked.get(session_key, {}).keys())
 
     def unlock_names_from_result(self, result_json: str) -> list[str]:
+        """从工具搜索结果中提取有效且不重复的工具名。"""
+
         try:
-            data = json.loads(result_json)
-            raw_unlocked = data.get("unlocked")
-            raw_names: list[object]
-            if isinstance(raw_unlocked, list):
-                raw_names = raw_unlocked
-            else:
-                raw_names = [
-                    item.get("name")
-                    for item in data.get("matched", [])
-                    if isinstance(item, dict)
-                ]
-            names: list[str] = []
-            seen: set[str] = set()
-            for item in raw_names:
-                if isinstance(item, str) and item and item not in seen:
-                    names.append(item)
-                    seen.add(item)
-            return names
-        except Exception:
+            parsed: object = json.loads(result_json)
+        except json.JSONDecodeError:
             return []
+        if not isinstance(parsed, dict):
+            return []
+        data = cast(dict[str, object], parsed)
+
+        raw_unlocked = data.get("unlocked")
+        raw_names: list[object]
+        if isinstance(raw_unlocked, list):
+            raw_names = cast(list[object], raw_unlocked)
+        else:
+            matched = data.get("matched", [])
+            if not isinstance(matched, list):
+                return []
+            raw_names = [
+                cast(dict[str, object], item).get("name")
+                for item in cast(list[object], matched)
+                if isinstance(item, dict)
+            ]
+
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in raw_names:
+            if isinstance(item, str) and item and item not in seen:
+                names.append(item)
+                seen.add(item)
+        return names
 
     def unlock_from_result(self, result_json: str) -> set[str]:
-        """Parse a tool_search JSON result and return the tool names in 'matched'.
+        """从工具搜索结果中提取工具名集合。"""
 
-        Replaces the module-level _unlock_from_tool_search() that previously
-        lived in agent/core/reasoner.py. Pure parsing — no mutation of external
-        state; caller decides what to do with the returned names.
-        """
         return set(self.unlock_names_from_result(result_json))
 
     def update(self, session_key: str, tools_used: list[str], always_on: set[str]) -> None:

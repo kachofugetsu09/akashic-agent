@@ -145,6 +145,12 @@ def test_unlock_invalid_json_is_silent():
     assert d.unlock_from_result("not-json") == set()
 
 
+@pytest.mark.parametrize("payload", ["[]", "null", '{"matched": null}'])
+def test_unlock_invalid_structure_returns_empty(payload: str):
+    d = _make_discovery()
+    assert d.unlock_from_result(payload) == set()
+
+
 def test_unlock_item_missing_name_skipped():
     """Items without a 'name' key are silently skipped."""
     d = _make_discovery()
