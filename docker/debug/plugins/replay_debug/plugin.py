@@ -97,5 +97,6 @@ class ReplayDebugPlugin(Plugin):
                 server="replay-debug",
                 fetch_tool="fetch_replay_events",
                 ack_tool="acknowledge_replay_events",
+                fetch_page_size=50,
             )
         ]

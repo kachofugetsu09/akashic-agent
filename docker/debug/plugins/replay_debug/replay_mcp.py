@@ -12,8 +12,9 @@ from typing import Any, cast
 _ACK_LOCK = threading.Lock()
 
 
-def fetch_replay_events() -> str:
-    return json.dumps(_available_events(), ensure_ascii=False)
+def fetch_replay_events(offset: int = 0, limit: int = 50) -> str:
+    events = _available_events()
+    return json.dumps(events[max(0, offset):max(0, offset) + max(1, limit)], ensure_ascii=False)
 
 
 def _available_events() -> list[dict[str, Any]]:

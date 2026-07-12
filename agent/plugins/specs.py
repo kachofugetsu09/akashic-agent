@@ -31,6 +31,7 @@ class ProactiveSourceSpec:
     ack_tool: str = ""
     poll_tool: str = ""
     poll_interval_seconds: int = 0
+    fetch_page_size: int = 0
 
 
 @dataclass(frozen=True)

@@ -75,7 +75,8 @@ def normalize_event(event: dict[str, Any]) -> dict[str, Any]:
     if kind not in {"alert", "content", "context"}:
         raise ValueError(f"未知事件类型: {kind}")
     available_at = _parse_time(event.get("available_at") or event.get("published_at"))
-    published_at = _parse_time(event.get("published_at") or available_at)
+    raw_published_at = event.get("published_at")
+    published_at = _parse_time(raw_published_at) if raw_published_at else None
     return {
         "event_id": event_id,
         "kind": kind,
@@ -84,12 +85,18 @@ def normalize_event(event: dict[str, Any]) -> dict[str, Any]:
         "title": str(event.get("title") or ""),
         "content": str(event.get("content") or ""),
         "url": str(event.get("url") or ""),
-        "published_at": published_at.isoformat(),
+        "published_at": published_at.isoformat() if published_at else None,
         "first_seen_at": _parse_time(
             event.get("first_seen_at") or available_at
         ).isoformat(),
         "available_at": available_at.isoformat(),
         "preprocess_score": float(event.get("preprocess_score") or 0.0),
+        "preprocess_features": (
+            event.get("preprocess_features")
+            if isinstance(event.get("preprocess_features"), dict)
+            else {}
+        ),
+        "wake_eligible": event.get("wake_eligible") is not False,
         "payload": event.get("payload") if isinstance(event.get("payload"), dict) else {},
     }
 

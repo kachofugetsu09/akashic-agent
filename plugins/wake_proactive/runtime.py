@@ -5,7 +5,6 @@ import logging
 import math
 import random
 import sqlite3
-from hashlib import sha256
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,16 +17,15 @@ from plugins.wake_proactive.context import WakeContext
 from plugins.wake_proactive.context_drive import ContextDriveResult, NormalizedContext
 from plugins.wake_proactive.drift_drive import DriftDriveResult, advance_drift_drive
 from plugins.wake_proactive.drift_prompt import build_drift_messages
-from plugins.wake_proactive.drift_tools import (
-    DRIFT_TOOL_SCHEMAS,
-    DriftToolResult,
-    execute_drift_tool,
+from plugins.wake_proactive.hazard import (
+    WAKE_ADMISSION_FLOOR,
+    HazardResult,
+    advance_hazard,
+    rank_events,
 )
-from plugins.wake_proactive.hazard import HazardResult, advance_hazard
 from plugins.wake_proactive.modules import build_wake_modules
 from plugins.wake_proactive.prompt import build_messages
 from plugins.wake_proactive.state import WakeStateStore
-from plugins.wake_proactive.tools import TOOL_SCHEMAS, ToolDeps, execute
 from proactive_v2 import mcp_sources
 from proactive_v2.frame import ProactiveFrame
 from proactive_v2.runtime_scope import ProactiveRuntimeScope
@@ -35,10 +33,17 @@ from session.embedding_store import MessageEmbeddingStore
 
 
 logger = logging.getLogger(__name__)
-_SCHEMA_BY_NAME = {
-    schema["function"]["name"]: schema
-    for schema in TOOL_SCHEMAS
-}
+_MAX_TITLES_PER_WAKE = 120
+_MAX_HAZARD_THRESHOLD = 2.0
+
+
+def select_content_page(
+    events: list[dict[str, Any]],
+    *,
+    now: datetime,
+    limit: int = _MAX_TITLES_PER_WAKE,
+) -> list[dict[str, Any]]:
+    return rank_events(events, now=now)[: max(0, limit)]
 
 
 @dataclass(slots=True)
@@ -85,18 +90,6 @@ class WakeRuntime:
             else None
         )
         self._state = state_store or WakeStateStore(workspace / "wake_proactive.db")
-        web_fetch_tool = (
-            scope.shared_tools.get_tool("web_fetch")
-            if scope.shared_tools is not None
-            else None
-        )
-        self._tool_deps = ToolDeps(
-            web_fetch_tool=web_fetch_tool,
-            memory=scope.memory,
-            state_store=self._state,
-            max_chars=int(getattr(scope.cfg, "agent_tick_web_fetch_max_chars", 8_000)),
-        )
-
     def build_modules(self) -> list[object]:
         return build_wake_modules(self)
 
@@ -142,13 +135,36 @@ class WakeRuntime:
                 1 if len(state.alerts) > 1 else self._tick_interval_seconds
             )
             return
+        if state.contents:
+            ranked = rank_events(state.contents, now=state.ctx.now_utc)
+            expired_ids = {
+                str(event["id"])
+                for event in ranked
+                if float(event["_wake_rank_features"]["admission_mass"])
+                < WAKE_ADMISSION_FLOOR
+            }
+            if expired_ids:
+                expired = [
+                    event
+                    for event in state.contents
+                    if str(event["id"]) in expired_ids
+                ]
+                await self._ack_and_consume(expired, state.ctx.now_utc)
+                state.contents = [
+                    event
+                    for event in state.contents
+                    if str(event["id"]) not in expired_ids
+                ]
         should_evaluate_content = bool(state.contents)
         if should_evaluate_content:
             hazard_state = self._state.load_hazard(state.ctx.session_key)
             threshold = (
-                float(hazard_state["threshold"])
+                min(_MAX_HAZARD_THRESHOLD, float(hazard_state["threshold"]))
                 if hazard_state is not None
-                else float(self._rng.gammavariate(3.0, 1 / 3))
+                else self._sample_threshold(
+                    state.ctx.session_key,
+                    state.ctx.now_utc,
+                )
             )
             updated_at = _parse_optional_time(
                 hazard_state.get("updated_at") if hazard_state is not None else None
@@ -170,19 +186,27 @@ class WakeRuntime:
             state.hazard_result = result
             state.base_score = result.rate
             if result.should_wake:
-                state.ctx.content_events = state.contents
-                await self._run_content_tools(state.ctx)
-                completed = await self._commit_content_decision(state)
+                state.ctx.content_events = select_content_page(
+                    state.contents,
+                    now=state.ctx.now_utc,
+                )
+                state.ctx.content_backlog_count = (
+                    len(state.contents) - len(state.ctx.content_events)
+                )
+                self._record_content_observation(state.ctx, result)
+                await self._ack_and_consume(
+                    state.contents,
+                    state.ctx.now_utc,
+                )
                 self._state.save_hazard(
                     session_key=state.ctx.session_key,
-                    hazard=0.0 if completed else result.hazard_after,
-                    threshold=(
-                        float(self._rng.gammavariate(3.0, 1 / 3))
-                        if completed
-                        else result.threshold
+                    hazard=0.0,
+                    threshold=self._sample_threshold(
+                        state.ctx.session_key,
+                        state.ctx.now_utc,
                     ),
                     updated_at=state.ctx.now_utc,
-                    last_wake_at=state.ctx.now_utc if completed else last_wake_at,
+                    last_wake_at=state.ctx.now_utc,
                 )
                 state.next_interval_seconds = self._tick_interval_seconds
                 return
@@ -194,12 +218,57 @@ class WakeRuntime:
                 last_wake_at=last_wake_at,
             )
 
-        if state.context_reevaluate:
-            state.next_interval_seconds = self._tick_interval_seconds
-            return
-
         await self._decide_drift(state)
         state.next_interval_seconds = self._tick_interval_seconds
+
+    def _record_content_observation(
+        self,
+        ctx: WakeContext,
+        hazard: HazardResult,
+    ) -> None:
+        messages = build_messages(
+            ctx=ctx,
+            memory_text=self._read_memory(),
+            proactive_context=str(self._scope.workspace_context_fn() or ""),
+            recent_session=self._read_recent_session(ctx.session_key, ctx.now_utc),
+        )
+        candidates = [
+            {
+                key: event.get(key)
+                for key in (
+                    "id",
+                    "source_id",
+                    "source_name",
+                    "title",
+                    "url",
+                    "published_at",
+                    "first_seen_at",
+                    "preprocess_score",
+                    "_wake_interest_score",
+                    "_wake_semantic_interest",
+                    "_wake_rank_score",
+                    "_wake_rank_features",
+                )
+            }
+            for event in ctx.content_events
+        ]
+        self._state.record_observation(
+            wake_id=ctx.wake_id,
+            session_key=ctx.session_key,
+            kind="content",
+            now=ctx.now_utc,
+            trigger=_hazard_trace(hazard),
+            candidates=candidates,
+            llm_input=messages,
+        )
+
+    def _sample_threshold(self, session_key: str, now: datetime) -> float:
+        if isinstance(self._clock, ReplayClock):
+            seed = f"wake:{session_key}:{now.isoformat()}"
+            sampled = random.Random(seed).gammavariate(3.0, 1 / 3)
+        else:
+            sampled = self._rng.gammavariate(3.0, 1 / 3)
+        return min(_MAX_HAZARD_THRESHOLD, float(sampled))
 
     def next_interval(self, state: WakeRunState) -> int:
         return state.next_interval_seconds
@@ -232,7 +301,7 @@ class WakeRuntime:
     ) -> None:
         prototypes = self._load_turn_prototypes(now)
         for event in events:
-            base = min(0.999, max(0.0, float(event.get("preprocess_score") or 0.0)))
+            base = _preprocess_interest(event)
             raw_vector = event.get("_event_embedding")
             vector = (
                 [float(value) for value in cast(list[object], raw_vector) if isinstance(value, (int, float))]
@@ -243,7 +312,8 @@ class WakeRuntime:
                 (_cosine(vector, prototype) for prototype in prototypes),
                 default=0.0,
             )
-            semantic_interest = min(0.999, max(0.0, similarity))
+            semantic_interest = min(0.999, max(0.0, similarity) ** 8)
+            event["_wake_semantic_interest"] = semantic_interest
             event["_wake_interest_score"] = 1 - (1 - base) * (1 - semantic_interest)
 
     def _load_turn_prototypes(self, now: datetime) -> list[list[float]]:
@@ -318,146 +388,15 @@ class WakeRuntime:
             chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
         )
 
-    async def _run_content_tools(self, ctx: WakeContext) -> None:
-        base_messages = build_messages(
-            ctx=ctx,
-            memory_text=self._read_memory(),
-            proactive_context=str(self._scope.workspace_context_fn() or ""),
-            recent_session=self._read_recent_session(ctx.session_key, ctx.now_utc),
-        )
-        await self._run_phase(list(base_messages), ctx, {"scratchpad"}, "scratchpad")
-        investigation = await self._run_investigation(ctx)
-        final_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "标题初筛和并发调查已经完成。现在只做最终判断："
-                    "调用 share_content 分享有事实证据且值得现在说的内容，"
-                    "或调用 skip_content 保持安静。不得调用其他工具，不要重新初筛。"
-                    "最终最多产生一条自然消息，说明发生了什么以及为什么和用户有关。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"{base_messages[1]['content']}\n\n"
-                    "【已执行的初筛与并发调查结果】\n"
-                    f"{investigation}\n\n"
-                    "请做最终判断。"
-                ),
-            },
-        ]
-        await self._run_phase(
-            final_messages,
-            ctx,
-            {"share_content", "skip_content"},
-            None,
-        )
-        if ctx.terminal_action is None:
-            raise RuntimeError("wake proactive LLM did not finish content decision")
-
-    async def _run_investigation(
-        self,
-        ctx: WakeContext,
-    ) -> str:
-        return await execute(
-            "investigate_candidates",
-            {},
-            ctx,
-            self._tool_deps,
-        )
-
-    async def _run_phase(
-        self,
-        messages: list[dict[str, Any]],
-        ctx: WakeContext,
-        allowed: set[str],
-        forced_name: str | None,
-    ) -> None:
-        schemas = [_SCHEMA_BY_NAME[name] for name in sorted(allowed)]
-        tool_choice: str | dict[str, Any] = "required"
-        if forced_name is not None:
-            tool_choice = {"type": "function", "function": {"name": forced_name}}
-        response = await self._scope.provider.chat(
-            messages=messages,
-            tools=schemas,
-            model=str(getattr(self._scope.cfg, "agent_tick_model", "") or self._scope.model),
-            max_tokens=self._scope.max_tokens,
-            tool_choice=tool_choice,
-            disable_thinking=True,
-        )
-        if not response.tool_calls:
-            raise RuntimeError("wake proactive phase requires one tool call")
-        call = response.tool_calls[0]
-        if call.name not in allowed:
-            raise RuntimeError(f"wake proactive unexpected tool in phase: {call.name}")
-        output = await execute(call.name, call.arguments, ctx, self._tool_deps)
-        messages.append(
-            {
-                "role": "assistant",
-                "content": response.content,
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.name,
-                            "arguments": json.dumps(call.arguments, ensure_ascii=False),
-                        },
-                    }
-                ],
-            }
-        )
-        messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
-
-    async def _commit_content_decision(self, state: WakeRunState) -> bool:
-        events = list(state.contents)
-        effect = AsyncEffect(lambda: self._ack_and_consume(events, state.ctx.now_utc))
-        if state.ctx.terminal_action == "skip":
-            result = TurnResult(
-                decision="skip",
-                outbound=None,
-                evidence=[],
-                trace=TurnTrace(source="proactive"),
-                side_effects=[effect],
-            )
-            await self._require_orchestrator().handle_proactive_turn(
-                result=result,
-                session_key=state.ctx.session_key,
-                channel=str(getattr(self._scope.cfg, "default_channel", "")),
-                chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
-            )
-            return True
-
-        result = TurnResult(
-            decision="reply",
-            outbound=TurnOutbound(
-                session_key=state.ctx.session_key,
-                content=state.ctx.final_message,
-            ),
-            evidence=list(state.ctx.cited_item_ids),
-            trace=TurnTrace(
-                source="proactive",
-                extra={
-                    "source_refs": list(state.ctx.source_refs),
-                    "display_event_map": dict(state.ctx.display_event_map),
-                },
-            ),
-            success_side_effects=[effect],
-        )
-        return await self._require_orchestrator().handle_proactive_turn(
-            result=result,
-            session_key=state.ctx.session_key,
-            channel=str(getattr(self._scope.cfg, "default_channel", "")),
-            chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
-        )
-
     async def _decide_drift(self, state: WakeRunState) -> None:
         if not bool(getattr(self._scope.cfg, "drift_enabled", True)):
             return
         stored = self._state.load_drift(state.ctx.session_key) or {}
         contexts = self._active_contexts(state.ctx.now_utc)
-        last_user_at = self._last_user_at(state.ctx.session_key)
+        last_user_at = self._last_user_at(
+            state.ctx.session_key,
+            state.ctx.now_utc,
+        )
         content_evidence = max(
             (float(event.get("_wake_interest_score") or 0.0) for event in state.contents),
             default=0.0,
@@ -480,6 +419,7 @@ class WakeRuntime:
             ),
             sleeping=any(context.presence == "sleeping" for context in contexts),
             in_game=any(context.presence == "in_game" for context in contexts),
+            context_suppression=_context_suppression(contexts),
             repetition=min(1.0, float(stored.get("repeat_count") or 0) / 3.0),
         )
         state.drift_result = result
@@ -492,86 +432,46 @@ class WakeRuntime:
         )
         if result.decision != "attempt":
             return
-
-        decision = await self._run_drift_tool(state.ctx, result)
-        if decision.decision == "skip":
-            self._state.save_drift_progress(
-                session_key=state.ctx.session_key,
-                hazard=0.0,
-                threshold=result.threshold,
-                updated_at=state.ctx.now_utc,
-            )
-            return
-
-        fingerprint = _message_fingerprint(decision.message)
-        effect = AsyncEffect(
-            lambda: self._record_drift_success(
-                state.ctx.session_key,
-                state.ctx.now_utc,
-                fingerprint,
-            )
-        )
-        turn = TurnResult(
-            decision="reply",
-            outbound=TurnOutbound(
-                session_key=state.ctx.session_key,
-                content=decision.message,
-            ),
-            evidence=[],
-            trace=TurnTrace(
-                source="proactive",
-                extra={"wake_flow": "drift", "drift_drive": _drift_trace(result)},
-            ),
-            success_side_effects=[effect],
-        )
-        _ = await self._require_orchestrator().handle_proactive_turn(
-            result=turn,
-            session_key=state.ctx.session_key,
-            channel=str(getattr(self._scope.cfg, "default_channel", "")),
-            chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
-        )
-
-    async def _run_drift_tool(
-        self,
-        ctx: WakeContext,
-        drive: DriftDriveResult,
-    ) -> DriftToolResult:
         messages = build_drift_messages(
             memory_text=self._read_memory(),
             proactive_context=str(self._scope.workspace_context_fn() or ""),
             recent_session=self._read_recent_session(
-                ctx.session_key,
-                ctx.now_utc,
+                state.ctx.session_key,
+                state.ctx.now_utc,
                 include_proactive=True,
             ),
-            drive=drive,
+            drive=result,
         )
-        response = await self._scope.provider.chat(
-            messages=messages,
-            tools=DRIFT_TOOL_SCHEMAS,
-            model=str(getattr(self._scope.cfg, "agent_tick_model", "") or self._scope.model),
-            max_tokens=self._scope.max_tokens,
-            tool_choice="required",
-            disable_thinking=True,
+        self._state.record_observation(
+            wake_id=state.ctx.wake_id,
+            session_key=state.ctx.session_key,
+            kind="drift",
+            now=state.ctx.now_utc,
+            trigger=_drift_trace(result),
+            candidates=[],
+            llm_input=messages,
         )
-        if len(response.tool_calls) != 1:
-            raise RuntimeError("wake proactive drift requires one tool call")
-        call = response.tool_calls[0]
-        return execute_drift_tool(call.name, call.arguments)
-
-    async def _record_drift_success(
-        self,
-        session_key: str,
-        now: datetime,
-        fingerprint: str,
-    ) -> None:
-        self._state.record_drift_success(
-            session_key=session_key,
-            now=now,
-            fingerprint=fingerprint,
+        self._state.record_drift_observation(
+            session_key=state.ctx.session_key,
+            now=state.ctx.now_utc,
+            threshold=result.threshold,
         )
 
-    def _last_user_at(self, session_key: str) -> datetime | None:
+    def _last_user_at(self, session_key: str, now: datetime) -> datetime | None:
+        if isinstance(self._clock, ReplayClock) and self._session_db_path.exists():
+            with closing(sqlite3.connect(str(self._session_db_path))) as db:
+                row = db.execute(
+                    """
+                    SELECT ts
+                    FROM messages
+                    WHERE session_key = ? AND role = 'user'
+                      AND julianday(ts) <= julianday(?)
+                    ORDER BY julianday(ts) DESC, seq DESC
+                    LIMIT 1
+                    """,
+                    (session_key, now.isoformat()),
+                ).fetchone()
+            return _parse_optional_time(row[0]) if row is not None else None
         getter = getattr(getattr(self._scope, "presence", None), "get_last_user_at", None)
         value = getter(session_key) if callable(getter) else None
         return value if isinstance(value, datetime) else None
@@ -580,8 +480,7 @@ class WakeRuntime:
         return [
             context
             for context in self._state.list_contexts()
-            if context.confidence >= 0.55
-            and (context.expires_at is None or context.expires_at >= now)
+            if context.expires_at is None or context.expires_at >= now
         ]
 
     async def _ack_and_consume(
@@ -589,7 +488,7 @@ class WakeRuntime:
     ) -> None:
         grouped: dict[str, list[str]] = {}
         for event in events:
-            source_id = str(event.get("_reservoir_source_id") or "")
+            source_id = str(event.get("_reservoir_ack_source_id") or "")
             source_event_id = str(event.get("_reservoir_source_event_id") or "")
             if source_id and source_event_id:
                 grouped.setdefault(source_id, []).append(source_event_id)
@@ -667,6 +566,28 @@ def _parse_optional_time(value: object) -> datetime | None:
     return datetime.fromisoformat(str(value))
 
 
+def _preprocess_interest(event: dict[str, Any]) -> float:
+    raw_features: dict[str, Any] | None = None
+    candidate_features = event.get("preprocess_features")
+    if isinstance(candidate_features, dict):
+        raw_features = cast(dict[str, Any], candidate_features)
+    if raw_features is None:
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            payload_features = cast(dict[str, Any], payload).get("features")
+            if isinstance(payload_features, dict):
+                raw_features = cast(dict[str, Any], payload_features)
+    raw_interest = (
+        raw_features.get("interest")
+        if isinstance(raw_features, dict)
+        else event.get("preprocess_score")
+    )
+    try:
+        return min(0.999, max(0.0, float(raw_interest or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _normalize_weighted(user: list[float], assistant: list[float]) -> list[float]:
     if len(user) != len(assistant) or not user:
         return []
@@ -696,11 +617,6 @@ def _is_proactive_message(extra_json: object) -> bool:
     return bool(payload.get("proactive"))
 
 
-def _message_fingerprint(message: str) -> str:
-    normalized = " ".join(message.lower().split())
-    return sha256(normalized.encode("utf-8")).hexdigest()
-
-
 def _drift_trace(result: DriftDriveResult) -> dict[str, Any]:
     return {
         "hazard_before": result.hazard_before,
@@ -714,3 +630,34 @@ def _drift_trace(result: DriftDriveResult) -> dict[str, Any]:
         "repetition_suppression": result.repetition_suppression,
         "reasons": list(result.reasons),
     }
+
+
+def _hazard_trace(result: HazardResult) -> dict[str, Any]:
+    return {
+        "hazard_before": result.hazard_before,
+        "hazard_after": result.hazard_after,
+        "threshold": result.threshold,
+        "evidence": result.evidence,
+        "refractory": result.refractory,
+        "rate": result.rate,
+        "driver_item_id": result.driver_item_id,
+    }
+
+
+def _context_suppression(contexts: list[NormalizedContext]) -> float:
+    suppressions: list[float] = []
+    presence_weight = {
+        "active": 0.2,
+        "idle": 0.1,
+        "sleeping": 0.98,
+        "in_game": 0.8,
+        "offline": 0.9,
+        "unknown": 0.4,
+    }
+    for context in contexts:
+        base = max(
+            presence_weight[context.presence],
+            1.0 - context.interruptibility,
+        )
+        suppressions.append(base * context.confidence)
+    return 1.0 - math.prod(1.0 - value for value in suppressions)

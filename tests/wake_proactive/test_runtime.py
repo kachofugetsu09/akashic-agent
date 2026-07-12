@@ -14,7 +14,8 @@ from agent.plugins.specs import ProactiveSourceSpec, RegisteredProactiveSource
 from agent.provider import LLMResponse, ToolCall
 from core.clock import ReplayClock
 from plugins.wake_proactive.plugin import WakeProactivePlugin, WakeRuntimeFactory
-from plugins.wake_proactive.runtime import WakeRuntime
+from plugins.wake_proactive.prompt import build_messages
+from plugins.wake_proactive.runtime import WakeRuntime, select_content_page
 from plugins.wake_proactive.state import WakeStateStore
 from proactive_v2.frame import new_proactive_frame
 from proactive_v2.lifecycle import ProactiveLifecycleBuilder
@@ -152,7 +153,10 @@ def _scope(tmp_path: Path, gateway, provider, orchestrator, source):
 
 
 @pytest.mark.asyncio
-async def test_content_vertical_slice_uses_hazard_then_fixed_three_tool_flow(tmp_path, request):
+async def test_content_vertical_slice_records_ranked_llm_input_without_calling_model(
+    tmp_path,
+    request,
+):
     events = [
         {
             "kind": "content",
@@ -174,23 +178,7 @@ async def test_content_vertical_slice_uses_hazard_then_fixed_three_tool_flow(tmp
         },
     ]
     ids = ["feed_plugin:main:new", "feed_plugin:main:old"]
-    responses = [
-        LLMResponse(
-            content=None,
-            tool_calls=[ToolCall("c1", "scratchpad", {"items": [
-                {"item_id": ids[0], "initial_interest": "uncertain", "investigate": "both", "recall_query": "用户是否关心新标题"},
-                {"item_id": ids[1], "initial_interest": "not_interesting", "investigate": "none"},
-            ]})],
-        ),
-        LLMResponse(
-            content=None,
-            tool_calls=[ToolCall("c2", "share_content", {
-                "opening": "这条值得现在看。",
-                "items": [{"item_id": ids[0], "summary": "它更新了唤醒方法。", "why_it_matters": "能用于当前架构"}],
-            })],
-        ),
-    ]
-    provider = SimpleNamespace(chat=AsyncMock(side_effect=responses))
+    provider = SimpleNamespace(chat=AsyncMock())
     gateway = FakeGateway(events)
     orchestrator = FakeOrchestrator()
     scope = _scope(tmp_path, gateway, provider, orchestrator, _source("content"))
@@ -214,25 +202,197 @@ async def test_content_vertical_slice_uses_hazard_then_fixed_three_tool_flow(tmp
     assert result.output is not None
     assert result.output.next_interval_seconds == 300
     assert result.slots["wake:run_state"].ctx.now_utc == datetime(2026, 7, 12, tzinfo=UTC)
-    assert [call.kwargs["tools"][0]["function"]["name"] for call in provider.chat.await_args_list[:2]] == [
-        "scratchpad",
-        "share_content",
-    ]
-    final_messages = provider.chat.await_args_list[1].kwargs["messages"]
-    investigation_prompt = next(
-        message["content"]
-        for message in final_messages
-        if "已执行的初筛与并发调查结果" in str(message.get("content") or "")
-    )
-    assert "正文 https://example.com/new" in investigation_prompt
-    first_prompt = provider.chat.await_args_list[0].kwargs["messages"][1]["content"]
+    assert provider.chat.await_count == 0
+    assert orchestrator.results == []
+    observations = runtime._state.observations("content")
+    assert len(observations) == 1
+    candidates = json.loads(observations[0]["candidates_json"])
+    llm_input = json.loads(observations[0]["llm_input_json"])
+    assert [candidate["id"] for candidate in candidates] == ids
+    first_prompt = llm_input[1]["content"]
+    system_prompt = llm_input[0]["content"]
     assert first_prompt.index("新标题") < first_prompt.index("旧标题")
+    assert "来源：Research" in first_prompt
     assert "preprocess_score" not in first_prompt
-    assert len(orchestrator.results) == 1
-    assert orchestrator.results[0].evidence == [ids[0]]
-    assert orchestrator.results[0].trace.extra["display_event_map"] == {1: ids[0]}
+    assert "scratchpad" not in system_prompt
+    assert "不使用工具" in system_prompt
     assert gateway.acks == [{"event_ids": ["new", "old"]}]
     assert runtime._state.unread("content") == []
+
+
+@pytest.mark.asyncio
+async def test_content_wake_closes_full_unread_window_when_title_page_is_capped(
+    tmp_path, request
+):
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    events = [
+        {
+            "kind": "content",
+            "event_id": f"event-{index}",
+            "title": f"标题 {index}",
+            "published_at": now.isoformat(),
+            "preprocess_score": 0.9,
+        }
+        for index in range(121)
+    ]
+    gateway = FakeGateway(events)
+    scope = _scope(
+        tmp_path,
+        gateway,
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    scope.memory.embedding_api = None
+    runtime = WakeRuntime(
+        scope,
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(now),
+    )
+    request.addfinalizer(runtime.close)
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+
+    await runtime.ingest(state)
+    await runtime.decide(state)
+
+    observation = runtime._state.observations("content")[0]
+    assert len(json.loads(observation["candidates_json"])) == 120
+    assert state.ctx.content_backlog_count == 1
+    assert runtime._state.unread("content") == []
+    assert len(gateway.acks[0]["event_ids"]) == 121
+
+
+@pytest.mark.asyncio
+async def test_decayed_content_is_acknowledged_without_wake(tmp_path, request):
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    gateway = FakeGateway(
+        [
+            {
+                "kind": "content",
+                "event_id": "stale",
+                "title": "三十天前的内容",
+                "published_at": (now - timedelta(days=30)).isoformat(),
+                "preprocess_score": 0.9,
+            }
+        ]
+    )
+    scope = _scope(
+        tmp_path,
+        gateway,
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    scope.memory.embedding_api = None
+    runtime = WakeRuntime(
+        scope,
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(now),
+    )
+    request.addfinalizer(runtime.close)
+    state = runtime.begin(new_proactive_frame("telegram:1"))
+
+    await runtime.ingest(state)
+    await runtime.decide(state)
+
+    assert runtime._state.unread("content") == []
+    assert runtime._state.observations("content") == []
+    assert gateway.acks == [{"event_ids": ["stale"]}]
+
+
+@pytest.mark.asyncio
+async def test_shared_ack_route_keeps_original_source_grouping_and_order(
+    tmp_path, request
+) -> None:
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    events = [
+        {
+            "kind": "content", "event_id": "a-old", "source_id": "source-a",
+            "title": "A旧", "published_at": "2026-07-10T00:00:00+00:00",
+        },
+        {
+            "kind": "content", "event_id": "b-new", "source_id": "source-b",
+            "title": "B新", "published_at": "2026-07-12T00:00:00+00:00",
+        },
+        {
+            "kind": "content", "event_id": "a-new", "source_id": "source-a",
+            "title": "A新", "published_at": "2026-07-11T00:00:00+00:00",
+        },
+    ]
+    gateway = FakeGateway(events)
+    runtime = WakeRuntime(
+        _scope(
+            tmp_path,
+            gateway,
+            SimpleNamespace(chat=AsyncMock()),
+            FakeOrchestrator(),
+            _source("content"),
+        ),
+        state_store=WakeStateStore(tmp_path / "wake.db"),
+        clock=FixedClock(now),
+    )
+    request.addfinalizer(runtime.close)
+    enriched = [dict(event, ack_server="feed_plugin:main") for event in events]
+    assert runtime._state.ingest("content", enriched, now) == 3
+    unread = runtime._state.unread("content")
+
+    prompt = build_messages(
+        ctx=SimpleNamespace(content_events=unread),
+        memory_text="",
+        proactive_context="",
+        recent_session="",
+    )[1]["content"]
+
+    assert prompt.index("来源：source-a") < prompt.index("来源：source-b")
+    assert prompt.index("A新") < prompt.index("A旧")
+    await runtime._ack_and_consume(unread, now)
+    assert gateway.acks == [{"event_ids": ["a-new", "a-old", "b-new"]}]
+
+
+def test_legacy_reservoir_migrates_ack_and_original_sources(tmp_path) -> None:
+    path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE reservoir_events(
+            item_id TEXT PRIMARY KEY, kind TEXT NOT NULL, source_id TEXT NOT NULL,
+            source_event_id TEXT NOT NULL, published_at TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL, preprocess_score REAL NOT NULL,
+            payload_json TEXT NOT NULL, embedding_json TEXT,
+            status TEXT NOT NULL DEFAULT 'unread', consumed_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO reservoir_events VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "feed_plugin:main:event", "content", "feed_plugin:main", "event",
+            "2026-07-11T00:00:00+00:00", "2026-07-11T00:00:00+00:00", 0.0,
+            json.dumps({"source_id": "source-a"}), None, "unread", None,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    store = WakeStateStore(path)
+    try:
+        event = store.unread("content")[0]
+        assert event["_reservoir_original_source_id"] == "source-a"
+        assert event["_reservoir_ack_source_id"] == "feed_plugin:main"
+        assert store.ingest(
+            "content",
+            [
+                {
+                    "ack_server": "feed_plugin:main",
+                    "event_id": "new-event",
+                    "source_id": "source-b",
+                    "published_at": "2026-07-12T00:00:00+00:00",
+                }
+            ],
+            datetime(2026, 7, 12, tzinfo=UTC),
+        ) == 1
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio
@@ -338,7 +498,6 @@ async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, 
                                     {
                                         "item_id": item_id,
                                         "initial_interest": "likely_interesting",
-                                        "investigate": "content",
                                     }
                                 ]
                             },
@@ -373,7 +532,7 @@ async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, 
     store.save_hazard(
         session_key="telegram:1",
         hazard=0.0,
-        threshold=0.2,
+        threshold=0.04,
         updated_at=start,
         last_wake_at=None,
     )
@@ -400,8 +559,9 @@ async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, 
 
     assert second.hazard_result is not None
     assert second.hazard_result.should_wake is True
-    assert provider.chat.await_count == 2
-    assert len(orchestrator.results) == 1
+    assert provider.chat.await_count == 0
+    assert orchestrator.results == []
+    assert len(store.observations("content")) == 1
 
 
 @pytest.mark.asyncio
@@ -430,6 +590,81 @@ async def test_runtime_owns_rng_when_live_scope_does_not_supply_one(tmp_path, re
 
     assert state.hazard_result is not None
     assert provider.chat.await_count == 0
+
+
+def test_replay_threshold_is_stable_across_runtime_restart(tmp_path, request):
+    now = datetime(2026, 7, 12, 12, tzinfo=UTC)
+    clock = ReplayClock(tmp_path / "replay" / "clock.json", now)
+    scope = _scope(
+        tmp_path,
+        FakeGateway([]),
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    first = WakeRuntime(scope, clock=clock)
+    second = WakeRuntime(scope, clock=clock)
+    request.addfinalizer(first.close)
+    request.addfinalizer(second.close)
+
+    assert first._sample_threshold("telegram:1", now) == second._sample_threshold(
+        "telegram:1", now
+    )
+    assert first._sample_threshold(
+        "telegram:1", now
+    ) != first._sample_threshold("telegram:1", now + timedelta(hours=1))
+
+
+def test_hazard_threshold_is_capped_for_leaky_integrator(tmp_path, request):
+    scope = _scope(
+        tmp_path,
+        FakeGateway([]),
+        SimpleNamespace(chat=AsyncMock()),
+        FakeOrchestrator(),
+        _source("content"),
+    )
+    scope.rng = SimpleNamespace(gammavariate=lambda *_: 99.0)
+    runtime = WakeRuntime(scope, clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)))
+    request.addfinalizer(runtime.close)
+
+    assert runtime._sample_threshold("telegram:1", datetime(2026, 7, 12, tzinfo=UTC)) == 2.0
+
+
+def test_replay_last_user_time_cannot_see_future_message(tmp_path, request):
+    session_db = tmp_path / "sessions.db"
+    with closing(sqlite3.connect(session_db)) as db:
+        db.execute(
+            """
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY, session_key TEXT, seq INTEGER,
+                role TEXT, content TEXT, extra TEXT, ts TEXT
+            )
+            """
+        )
+        db.executemany(
+            "INSERT INTO messages VALUES (?, 'telegram:1', ?, 'user', '', '{}', ?)",
+            [
+                ("past", 1, "2026-07-11T00:00:00+00:00"),
+                ("future", 2, "2026-07-13T00:00:00+00:00"),
+            ],
+        )
+        db.commit()
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+    runtime = WakeRuntime(
+        _scope(
+            tmp_path,
+            FakeGateway([]),
+            SimpleNamespace(chat=AsyncMock()),
+            FakeOrchestrator(),
+            _source("content"),
+        ),
+        clock=ReplayClock(tmp_path / "replay" / "clock.json", now),
+    )
+    request.addfinalizer(runtime.close)
+
+    assert runtime._last_user_at("telegram:1", now) == datetime(
+        2026, 7, 11, tzinfo=UTC
+    )
 
 
 def test_plugin_exposes_complete_wake_lifecycle():
@@ -497,7 +732,11 @@ def test_future_message_embeddings_do_not_affect_current_interest(tmp_path, requ
         clock=FixedClock(datetime(2026, 7, 12, tzinfo=UTC)),
     )
     request.addfinalizer(runtime.close)
-    current_event = {"preprocess_score": 0.1, "_event_embedding": [0.0, 1.0]}
+    current_event = {
+        "preprocess_score": 0.9,
+        "preprocess_features": {"interest": 0.1},
+        "_event_embedding": [0.0, 1.0],
+    }
     future_event = dict(current_event)
 
     runtime._apply_semantic_interest(
@@ -512,6 +751,7 @@ def test_future_message_embeddings_do_not_affect_current_interest(tmp_path, requ
     recent = runtime._read_recent_session("s", datetime(2026, 7, 12, tzinfo=UTC))
     assert "主动推送" not in recent
     assert "过去用户" in recent
+    assert "未来用户" not in recent
 
 
 def test_turn_prototype_limit_uses_latest_time_across_sessions(tmp_path, request):
@@ -619,7 +859,7 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
                 "event_id": "c1",
                 "title": "等待重评的标题",
                 "published_at": now.isoformat(),
-                "preprocess_score": 0.01,
+                    "preprocess_score": 0.5,
             }
         ],
         now,
@@ -680,7 +920,7 @@ def _drift_runtime(tmp_path, provider, orchestrator, now):
 
 
 @pytest.mark.asyncio
-async def test_drift_vertical_slice_uses_one_tool_and_records_only_on_success(
+async def test_drift_vertical_slice_records_llm_input_without_calling_model(
     tmp_path,
     request,
 ):
@@ -726,20 +966,7 @@ async def test_drift_vertical_slice_uses_one_tool_and_records_only_on_success(
             ],
         )
         db.commit()
-    provider = SimpleNamespace(
-        chat=AsyncMock(
-            return_value=LLMResponse(
-                content=None,
-                tool_calls=[
-                    ToolCall(
-                        "d1",
-                        "share_drift",
-                        {"message": "刚想到，我们可以把回放里的时间边界再压实一点。"},
-                    )
-                ],
-            )
-        )
-    )
+    provider = SimpleNamespace(chat=AsyncMock())
     orchestrator = FakeOrchestrator()
     runtime, store = _drift_runtime(tmp_path, provider, orchestrator, now)
     request.addfinalizer(runtime.close)
@@ -748,70 +975,73 @@ async def test_drift_vertical_slice_uses_one_tool_and_records_only_on_success(
     await runtime.ingest(state)
     await runtime.decide(state)
 
-    assert provider.chat.await_count == 1
-    tools = provider.chat.await_args.kwargs["tools"]
-    assert {schema["function"]["name"] for schema in tools} == {
-        "share_drift",
-        "idle_drift",
-    }
-    prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
+    assert provider.chat.await_count == 0
+    assert orchestrator.results == []
+    observations = store.observations("drift")
+    assert len(observations) == 1
+    llm_input = json.loads(observations[0]["llm_input_json"])
+    prompt = llm_input[1]["content"]
     assert "【固定 MEMORY.md】" in prompt
     assert "【固定 PROACTIVE_CONTEXT.md】" in prompt
     assert "【截至当前时间的最近对话】" in prompt
     assert "之前主动聊过时间回放" in prompt
     assert "未来才会出现的话" not in prompt
-    assert len(orchestrator.results) == 1
-    assert "时间边界" in orchestrator.results[0].outbound.content
     drift = store.load_drift("telegram:1")
     assert drift["last_drift_at"] == now.isoformat()
-    assert drift["last_fingerprint"]
     assert drift["hazard"] == 0
 
 
-@pytest.mark.asyncio
-async def test_failed_drift_delivery_does_not_record_last_drift(tmp_path, request):
-    now = datetime(2026, 7, 12, 12, tzinfo=UTC)
-    provider = SimpleNamespace(
-        chat=AsyncMock(
-            return_value=LLMResponse(
-                content=None,
-                tool_calls=[ToolCall("d1", "share_drift", {"message": "发送会失败"})],
-            )
-        )
+def test_content_page_uses_score_with_source_diversity_decay() -> None:
+    published_at = "2026-07-12T00:00:00+00:00"
+    events = [
+        {
+            "id": f"a:{index}",
+            "_reservoir_original_source_id": "a",
+            "published_at": published_at,
+            "preprocess_score": 0.9 - index * 0.01,
+        }
+        for index in range(5)
+    ] + [
+        {
+            "id": f"b:{index}",
+            "_reservoir_original_source_id": "b",
+            "published_at": published_at,
+            "preprocess_score": 0.7 - index * 0.01,
+        }
+        for index in range(2)
+    ]
+
+    page = select_content_page(
+        events,
+        now=datetime(2026, 7, 12, tzinfo=UTC),
+        limit=4,
     )
-    runtime, store = _drift_runtime(tmp_path, provider, FailingOrchestrator(), now)
-    request.addfinalizer(runtime.close)
 
-    state = runtime.begin(new_proactive_frame("telegram:1"))
-    await runtime.ingest(state)
-    await runtime.decide(state)
-
-    drift = store.load_drift("telegram:1")
-    assert drift["last_drift_at"] is None
-    assert drift["last_fingerprint"] == ""
+    assert [event["id"] for event in page] == ["a:0", "b:0", "a:1", "b:1"]
 
 
-@pytest.mark.asyncio
-async def test_idle_drift_uses_one_tool_without_outbound(tmp_path, request):
-    now = datetime(2026, 7, 12, 12, tzinfo=UTC)
-    provider = SimpleNamespace(
-        chat=AsyncMock(
-            return_value=LLMResponse(
-                content=None,
-                tool_calls=[ToolCall("d1", "idle_drift", {"reason": "没有自然话题"})],
-            )
-        )
+def test_ineligible_backfill_stays_unread_for_continuous_downweighting(tmp_path) -> None:
+    store = WakeStateStore(tmp_path / "wake.db")
+    now = datetime(2026, 7, 12, tzinfo=UTC)
+
+    inserted = store.ingest(
+        "content",
+        [
+            {
+                "event_id": "old",
+                "ack_server": "feed:main",
+                "source_id": "source",
+                "published_at": "2025-01-01T00:00:00+00:00",
+                "wake_eligible": False,
+            }
+        ],
+        now,
     )
-    orchestrator = FakeOrchestrator()
-    runtime, store = _drift_runtime(tmp_path, provider, orchestrator, now)
-    request.addfinalizer(runtime.close)
 
-    state = runtime.begin(new_proactive_frame("telegram:1"))
-    await runtime.ingest(state)
-    await runtime.decide(state)
-
-    assert provider.chat.await_count == 1
-    assert orchestrator.results == []
-    drift = store.load_drift("telegram:1")
-    assert drift["hazard"] == 0
-    assert drift["last_drift_at"] is None
+    assert inserted == 1
+    assert len(store.unread("content")) == 1
+    status = store._conn.execute(
+        "SELECT status FROM reservoir_events"
+    ).fetchone()[0]
+    assert status == "unread"
+    store.close()

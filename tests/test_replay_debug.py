@@ -168,6 +168,7 @@ def test_replay_debug_plugin_declares_three_channel_mcp_source(
     assert source.channels == ("alert", "content", "context")
     assert source.fetch_tool == "fetch_replay_events"
     assert source.ack_tool == "acknowledge_replay_events"
+    assert source.fetch_page_size == 50
 
 
 def test_replay_debug_plugin_is_inert_without_replay_profile(monkeypatch) -> None:

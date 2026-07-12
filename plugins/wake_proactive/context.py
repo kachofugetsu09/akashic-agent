@@ -49,7 +49,9 @@ class WakeContext:
     now_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     session_key: str = ""
     content_events: list[dict[str, Any]] = field(default_factory=_event_list)
+    content_backlog_count: int = 0
     scratchpad: dict[str, ScratchItem] = field(default_factory=_scratch_dict)
+    screening_completed: bool = False
     investigation_results: dict[str, dict[str, Any]] = field(default_factory=_result_dict)
     investigation_completed: bool = False
     final_message: str = ""

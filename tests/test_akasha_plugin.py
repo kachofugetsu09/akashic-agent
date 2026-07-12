@@ -5,6 +5,7 @@ import hashlib
 import sqlite3
 import threading
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from plugins.akasha.engine import (
     _load_turn_card,
 )
 from plugins.akasha.core import (
+    AkashaActivationSnapshot,
     AkashaNode,
     activation_edge_updates,
     build_dense_message_index,
@@ -48,7 +50,7 @@ from session.embedding_store import MessageEmbeddingStore
 from scripts.build_akasha_db import _iter_replay_turns, _load_embeddings_from_cache, _skip_message
 
 
-QUERY_TS = datetime.fromtimestamp(1_700_000_000.0, timezone.utc)
+QUERY_TS = datetime(2026, 1, 2, tzinfo=timezone.utc)
 
 
 def test_akasha_config_does_not_expose_dynamic_budget_limits(tmp_path: Path) -> None:
@@ -905,6 +907,87 @@ def test_load_turn_card_uses_full_user_and_short_assistant(tmp_path: Path) -> No
     assert card.assistant_preview == "第一条助手回复会被截断展示并保..."
     assert card.source_ref == '["s:0", "s:1"]'
     assert card.happened_at == "2026-01-01T00:00:00+00:00"
+
+
+def test_historical_snapshot_excludes_future_messages_nodes_and_edges(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    _init_sessions_db(db_path)
+    embedding_store = MessageEmbeddingStore(db_path)
+    for message_id, content, vector in (
+        ("s:0", "第一条用户消息需要完整展示", [1.0, 0.0]),
+        ("s:1", "第一条助手回复会被截断展示并保留引用", [0.0, 1.0]),
+        ("s:2", "第二条用户消息只在联想块", [0.0, 1.0]),
+    ):
+        embedding_store.upsert(
+            message_id=message_id,
+            content=content,
+            model="m",
+            embedding=vector,
+        )
+    cutoff = datetime.fromisoformat("2026-01-01T00:00:00.500000+00:00").timestamp()
+    past_node = AkashaNode(
+        key="s:0",
+        anchor_id="s:0",
+        session_key="s",
+        turn_seq=0,
+        first_ts_unix=datetime.fromisoformat("2026-01-01T00:00:00+00:00").timestamp(),
+        salience=0.5,
+        strength=3.0,
+        resource=0.1,
+        recall_count=9,
+        last_activated_ts=cutoff + 10,
+        last_strength_ts=cutoff + 10,
+        last_resource_ts=cutoff + 10,
+        embedding=np.array([0.0, 1.0], dtype=np.float32),
+        emb_count=2,
+    )
+    future_node = replace(
+        past_node,
+        key="s:2",
+        anchor_id="s:2",
+        turn_seq=2,
+        first_ts_unix=cutoff + 10,
+    )
+    snapshot = AkashaActivationSnapshot(
+        nodes={"s:0": past_node, "s:2": future_node},
+        edges={("s:0", "s:2"): 1.0},
+        edges_meta={("s:0", "s:2"): cutoff + 10},
+        fan={"s:0": 1, "s:2": 1},
+        edges_by_src={"s:0": {"s:2": 1.0}},
+        message_embeddings={},
+        message_turn_keys={"s:0": "s:0", "s:1": "s:0", "s:2": "s:2"},
+        message_index=build_dense_message_index({}),
+    )
+    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine._embedding_store = embedding_store
+    engine._config = SimpleNamespace(
+        memory=SimpleNamespace(embedding=SimpleNamespace(model="m"))
+    )
+    engine._graph_snapshot = lambda: snapshot
+    try:
+        visible = engine._graph_snapshot_at(cutoff)
+        card = _load_turn_card(
+            db_path,
+            "s:0",
+            assistant_preview_chars=30,
+            score=0.8,
+            lane="dense",
+            signals={},
+            cutoff="2026-01-01T00:00:00.500000+00:00",
+        )
+
+        assert set(visible.nodes) == {"s:0"}
+        assert set(visible.message_embeddings) == {"s:0"}
+        assert visible.edges == {}
+        assert visible.nodes["s:0"].embedding.tolist() == [1.0, 0.0]
+        assert visible.nodes["s:0"].recall_count == 0
+        assert card is not None
+        assert card.assistant_preview == ""
+        assert card.source_ref == '["s:0"]'
+    finally:
+        embedding_store.close()
 
 
 @pytest.mark.asyncio

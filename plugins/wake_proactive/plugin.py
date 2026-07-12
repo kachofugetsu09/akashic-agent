@@ -46,7 +46,6 @@ class WakeProactivePlugin(Plugin):
                     "proactive:session_key",
                     "proactive:started_at",
                     "proactive:last_user_at",
-                    "proactive:base_judge_send_threshold",
                 ),
                 terminal_slots=("run:next_wakeup",),
             )

@@ -1974,6 +1974,7 @@ class PluginManager:
             or not source.spec.server
             or not source.spec.fetch_tool
             or source.spec.poll_interval_seconds < 0
+            or source.spec.fetch_page_size < 0
             or source.spec.server not in contributions.mcp_servers
         ]
         check(
@@ -2907,6 +2908,7 @@ def _proactive_source_spec_evidence(
             "ack_tool": source.spec.ack_tool,
             "poll_tool": source.spec.poll_tool,
             "poll_interval_seconds": source.spec.poll_interval_seconds,
+            "fetch_page_size": source.spec.fetch_page_size,
         }
         for key, source in sorted(catalog.sources.items())
     }

@@ -7,6 +7,7 @@ from typing import Literal
 
 
 DriftDecision = Literal["attempt", "idle"]
+_HAZARD_HALF_LIFE_HOURS = 12.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,7 @@ def advance_drift_drive(
     busy: bool = False,
     sleeping: bool = False,
     in_game: bool = False,
+    context_suppression: float | None = None,
     repetition: float = 0.0,
     max_rate_per_hour: float = 0.3,
 ) -> DriftDriveResult:
@@ -49,10 +51,14 @@ def advance_drift_drive(
     )
     idle_drive = 1.0 - math.exp(-idle_hours / 4.0)
     content_suppression = content
-    context_suppression = _combined_context_suppression(
-        busy=busy,
-        sleeping=sleeping,
-        in_game=in_game,
+    context_suppression_score = (
+        _bounded(context_suppression)
+        if context_suppression is not None
+        else _combined_context_suppression(
+            busy=busy,
+            sleeping=sleeping,
+            in_game=in_game,
+        )
     )
     recent_drift_suppression = (
         math.exp(-max(0.0, (now - last_drift_at).total_seconds()) / (6 * 3600))
@@ -63,8 +69,8 @@ def advance_drift_drive(
     rate = (
         max_rate_per_hour
         * idle_drive
-        * (1.0 - content_suppression)
-        * (1.0 - context_suppression)
+        * (1.0 - 0.95 * content_suppression)
+        * (1.0 - 0.98 * context_suppression_score)
         * (1.0 - 0.9 * recent_drift_suppression)
         * (1.0 - 0.9 * repetition_suppression)
     )
@@ -74,14 +80,13 @@ def advance_drift_drive(
         else 5 / 60
     )
     before = max(0.0, hazard)
-    after = before + max(0.0, rate) * elapsed_hours
-    hard_context_block = sleeping or busy or in_game
-    attempt = (
-        after >= threshold
-        and content < 0.5
-        and not hard_context_block
-        and repetition_score < 0.98
+    time_constant = _HAZARD_HALF_LIFE_HOURS / math.log(2.0)
+    retention = math.exp(-elapsed_hours / time_constant)
+    after = (
+        before * retention
+        + max(0.0, rate) * time_constant * (1.0 - retention)
     )
+    attempt = after >= threshold
     return DriftDriveResult(
         decision="attempt" if attempt else "idle",
         hazard_before=before,
@@ -91,7 +96,7 @@ def advance_drift_drive(
         idle_hours=idle_hours,
         idle_drive=idle_drive,
         content_suppression=content_suppression,
-        context_suppression=context_suppression,
+        context_suppression=context_suppression_score,
         recent_drift_suppression=recent_drift_suppression,
         repetition_suppression=repetition_suppression,
         reasons=_reasons(
@@ -114,7 +119,7 @@ def _combined_context_suppression(
 ) -> float:
     suppressions = (
         0.9 if busy else 0.0,
-        1.0 if sleeping else 0.0,
+        0.98 if sleeping else 0.0,
         0.8 if in_game else 0.0,
     )
     remaining = math.prod(1.0 - value for value in suppressions)

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+MAX_INVESTIGATION_CANDIDATES = 8
 
 
 @dataclass
@@ -41,28 +42,25 @@ def _schema(name: str, description: str, parameters: dict[str, Any]) -> dict[str
 TOOL_SCHEMAS = [
     _schema(
         "scratchpad",
-        "记录标题初筛计划。必须一次覆盖本轮全部标题；这里只记录预测，不产生用户反馈或训练标签。",
+        "只记录需要查正文或确认用户兴趣的候选。未列出的标题视为本轮不调查，不产生用户反馈或训练标签。",
         {
             "type": "object",
             "properties": {
                 "items": {
                     "type": "array",
+                    "maxItems": MAX_INVESTIGATION_CANDIDATES,
                     "items": {
                         "type": "object",
                         "properties": {
                             "item_id": {"type": "string"},
                             "initial_interest": {
                                 "type": "string",
-                                "enum": ["likely_interesting", "not_interesting", "uncertain"],
-                            },
-                            "investigate": {
-                                "type": "string",
-                                "enum": ["none", "content", "recall", "both"],
+                                "enum": ["likely_interesting", "uncertain"],
                             },
                             "question": {"type": "string"},
                             "recall_query": {"type": "string"},
                         },
-                        "required": ["item_id", "initial_interest", "investigate"],
+                        "required": ["item_id", "initial_interest"],
                     },
                 }
             },
@@ -120,52 +118,49 @@ def _save(ctx: WakeContext, deps: ToolDeps) -> None:
 
 
 def _scratchpad(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
-    if ctx.scratchpad:
+    if ctx.screening_completed:
         raise ValueError("scratchpad already recorded for this wake")
     valid_ids = set(_event_map(ctx))
     raw_items = list(args.get("items") or [])
+    if len(raw_items) > MAX_INVESTIGATION_CANDIDATES:
+        raise ValueError(
+            f"scratchpad supports at most {MAX_INVESTIGATION_CANDIDATES} candidates"
+        )
     item_ids = [str(item.get("item_id") or "").strip() for item in raw_items]
     if len(item_ids) != len(set(item_ids)):
         raise ValueError("scratchpad contains duplicate item_id")
-    if set(item_ids) != valid_ids:
-        missing = sorted(valid_ids - set(item_ids))
-        unknown = sorted(set(item_ids) - valid_ids)
-        raise ValueError(f"scratchpad must cover every title; missing={missing}, unknown={unknown}")
+    unknown = sorted(set(item_ids) - valid_ids)
+    if unknown:
+        raise ValueError(f"scratchpad contains unknown item_id: {unknown}")
 
-    allowed_interest = {"likely_interesting", "not_interesting", "uncertain"}
-    allowed_investigation = {"none", "content", "recall", "both"}
+    allowed_interest = {"likely_interesting", "uncertain"}
     planned: dict[str, ScratchItem] = {}
     for raw in raw_items:
         item_id = str(raw["item_id"]).strip()
         interest = str(raw["initial_interest"])
-        investigation = str(raw["investigate"])
-        if interest not in allowed_interest or investigation not in allowed_investigation:
+        if interest == "not_interesting":
+            continue
+        if interest not in allowed_interest:
             raise ValueError(f"invalid scratchpad decision for {item_id}")
-        if interest == "likely_interesting" and investigation not in {"content", "both"}:
-            raise ValueError(f"likely_interesting requires content investigation for {item_id}")
-        if interest == "uncertain" and investigation not in {"recall", "both"}:
-            raise ValueError(f"uncertain requires recall investigation for {item_id}")
-        if interest == "not_interesting" and investigation != "none":
-            raise ValueError(f"not_interesting must not investigate {item_id}")
         recall_query = str(raw.get("recall_query") or "").strip()
-        if investigation in {"recall", "both"} and not recall_query:
-            raise ValueError(f"recall_query is required for {item_id}")
+        if interest == "uncertain" and not recall_query:
+            recall_query = str(_event_map(ctx)[item_id].get("title") or item_id)
         planned[item_id] = ScratchItem(
             item_id=item_id,
             initial_interest=cast(Any, interest),
-            investigate=cast(Any, investigation),
+            investigate="content" if interest == "likely_interesting" else "both",
             question=str(raw.get("question") or "").strip(),
             recall_query=recall_query,
         )
     ctx.scratchpad = planned
+    ctx.screening_completed = True
     _save(ctx, deps)
     return json.dumps(
         {
             "ok": True,
+            "screened": len(valid_ids),
             "planned": len(ctx.scratchpad),
-            "to_investigate": sum(
-                item.investigate != "none" for item in ctx.scratchpad.values()
-            ),
+            "to_investigate": len(ctx.scratchpad),
         },
         ensure_ascii=False,
     )
@@ -224,7 +219,7 @@ async def _recall(
 
 
 async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
-    if not ctx.scratchpad:
+    if not ctx.screening_completed:
         raise ValueError("investigate_candidates requires scratchpad first")
     if ctx.investigation_completed:
         raise ValueError("investigate_candidates already called this wake")
@@ -246,13 +241,19 @@ async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
             result.update({name: value for (name, _), value in zip(operations, values)})
         return item.item_id, result
 
-    selected = [item for item in ctx.scratchpad.values() if item.investigate != "none"]
-    pairs = await asyncio.gather(*(investigate(item) for item in selected))
+    pairs = await asyncio.gather(*(investigate(item) for item in ctx.scratchpad.values()))
     ctx.investigation_results = dict(pairs)
     ctx.investigation_completed = True
     _save(ctx, deps)
+    verified_results = {
+        item_id: result
+        for item_id, result in ctx.investigation_results.items()
+        if isinstance(result.get("content"), dict)
+        and not result["content"].get("error")
+        and str(result["content"].get("text") or "").strip()
+    }
     return json.dumps(
-        {"items": ctx.investigation_results, "count": len(ctx.investigation_results)},
+        {"items": verified_results, "count": len(verified_results)},
         ensure_ascii=False,
     )
 
@@ -260,7 +261,7 @@ async def _investigate_candidates(ctx: WakeContext, deps: ToolDeps) -> str:
 def _share_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
     if ctx.terminal_action is not None:
         raise ValueError("wake already finished")
-    if not ctx.scratchpad or not ctx.investigation_completed:
+    if not ctx.screening_completed or not ctx.investigation_completed:
         raise ValueError("share_content requires scratchpad and investigate_candidates first")
     items = list(args.get("items") or [])
     if not items:
@@ -272,29 +273,31 @@ def _share_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> st
     unknown = sorted(set(item_ids) - valid_ids)
     if unknown:
         raise ValueError(f"share_content contains unknown item_id: {unknown}")
-    without_evidence: list[str] = []
+    with_evidence: list[dict[str, Any]] = []
     for item_id in item_ids:
         planned = ctx.scratchpad[item_id]
         investigated = ctx.investigation_results.get(item_id) or {}
         content = investigated.get("content")
         if planned.initial_interest == "not_interesting":
-            without_evidence.append(item_id)
             continue
         if not isinstance(content, dict):
-            without_evidence.append(item_id)
             continue
         typed_content = cast(dict[str, Any], content)
         if typed_content.get("error") or not str(
             typed_content.get("text") or ""
         ).strip():
-            without_evidence.append(item_id)
-    if without_evidence:
-        raise ValueError(
-            f"share_content requires successful content evidence: {without_evidence}"
+            continue
+        with_evidence.append(items[item_ids.index(item_id)])
+    if not with_evidence:
+        ctx.terminal_action = "skip"
+        _save(ctx, deps)
+        return json.dumps(
+            {"ok": True, "decision": "skip", "reason": "没有可验证的正文证据"},
+            ensure_ascii=False,
         )
     rendered = render_share(
         opening=str(args.get("opening") or ""),
-        items=items,
+        items=with_evidence,
         closing=str(args.get("closing") or ""),
         events=ctx.content_events,
     )
@@ -317,7 +320,7 @@ def _share_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> st
 def _skip_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> str:
     if ctx.terminal_action is not None:
         raise ValueError("wake already finished")
-    if not ctx.scratchpad or not ctx.investigation_completed:
+    if not ctx.screening_completed or not ctx.investigation_completed:
         raise ValueError("skip_content requires scratchpad and investigate_candidates first")
     reason = str(args.get("reason") or "").strip()
     if not reason:

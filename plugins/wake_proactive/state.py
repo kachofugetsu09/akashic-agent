@@ -39,10 +39,26 @@ class WakeStateStore:
         )
         _ = self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS wake_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wake_id TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                now_utc TEXT NOT NULL,
+                trigger_json TEXT NOT NULL,
+                candidates_json TEXT NOT NULL,
+                llm_input_json TEXT NOT NULL
+            )
+            """
+        )
+        _ = self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS reservoir_events (
                 item_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
                 source_id TEXT NOT NULL,
+                original_source_id TEXT NOT NULL,
+                ack_source_id TEXT NOT NULL,
                 source_event_id TEXT NOT NULL,
                 published_at TEXT NOT NULL,
                 first_seen_at TEXT NOT NULL,
@@ -54,10 +70,17 @@ class WakeStateStore:
             )
             """
         )
+        self._migrate_reservoir_sources()
+        _ = self._conn.execute(
+            "UPDATE reservoir_events SET status = 'unread' WHERE status = 'suppressed'"
+        )
+        _ = self._conn.execute("DROP INDEX IF EXISTS idx_reservoir_unread")
         _ = self._conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_reservoir_unread
-            ON reservoir_events(kind, status, source_id, published_at DESC)
+            CREATE INDEX idx_reservoir_unread
+            ON reservoir_events(
+                kind, status, original_source_id, published_at DESC
+            )
             """
         )
         _ = self._conn.execute(
@@ -111,6 +134,45 @@ class WakeStateStore:
         )
         self._conn.commit()
 
+    def _migrate_reservoir_sources(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self._conn.execute("PRAGMA table_info(reservoir_events)")
+        }
+        if "ack_source_id" not in columns:
+            _ = self._conn.execute(
+                "ALTER TABLE reservoir_events ADD COLUMN ack_source_id TEXT"
+            )
+        if "original_source_id" not in columns:
+            _ = self._conn.execute(
+                "ALTER TABLE reservoir_events ADD COLUMN original_source_id TEXT"
+            )
+        if "source_id" not in columns:
+            return
+        rows = self._conn.execute(
+            """
+            SELECT item_id, source_id, payload_json
+            FROM reservoir_events
+            WHERE ack_source_id IS NULL OR original_source_id IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(str(row["payload_json"]))
+            original_source_id = str(
+                payload.get("source_id")
+                or payload.get("source")
+                or row["source_id"]
+            ).strip()
+            _ = self._conn.execute(
+                """
+                UPDATE reservoir_events
+                SET ack_source_id = coalesce(ack_source_id, ?),
+                    original_source_id = coalesce(original_source_id, ?)
+                WHERE item_id = ?
+                """,
+                (str(row["source_id"]), original_source_id, str(row["item_id"])),
+            )
+
     def save(self, ctx: WakeContext) -> None:
         scratchpad = {
             item_id: {
@@ -161,22 +223,73 @@ class WakeStateStore:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def record_observation(
+        self,
+        *,
+        wake_id: str,
+        session_key: str,
+        kind: str,
+        now: datetime,
+        trigger: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        llm_input: list[dict[str, Any]],
+    ) -> None:
+        _ = self._conn.execute(
+            """
+            INSERT INTO wake_observations(
+                wake_id, session_key, kind, now_utc,
+                trigger_json, candidates_json, llm_input_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                wake_id,
+                session_key,
+                kind,
+                now.isoformat(),
+                json.dumps(trigger, ensure_ascii=False),
+                json.dumps(candidates, ensure_ascii=False),
+                json.dumps(llm_input, ensure_ascii=False),
+            ),
+        )
+        self._conn.commit()
+
+    def observations(self, kind: str | None = None) -> list[dict[str, Any]]:
+        if kind is None:
+            rows = self._conn.execute(
+                "SELECT * FROM wake_observations ORDER BY id"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM wake_observations WHERE kind = ? ORDER BY id",
+                (kind,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def ingest(self, kind: str, events: list[dict[str, Any]], now: datetime) -> int:
         inserted = 0
         for event in events:
-            source_id = str(event.get("ack_server") or event.get("_source") or "").strip()
+            ack_source_id = str(
+                event.get("ack_server") or event.get("_source") or ""
+            ).strip()
+            original_source_id = str(
+                event.get("source_id")
+                or event.get("source")
+                or event.get("source_name")
+                or ack_source_id
+            ).strip()
             source_event_id = str(event.get("event_id") or event.get("id") or "").strip()
-            if not source_id or not source_event_id:
+            if not ack_source_id or not original_source_id or not source_event_id:
                 continue
-            item_id = f"{source_id}:{source_event_id}"
+            item_id = f"{ack_source_id}:{source_event_id}"
             payload = dict(event)
             payload["id"] = item_id
             payload["item_id"] = item_id
             published_at = str(
-                event.get("published_at") or event.get("triggered_at") or now.isoformat()
+                event.get("published_at") or event.get("triggered_at") or ""
             )
             first_seen_at = str(event.get("first_seen_at") or now.isoformat())
             score = float(event.get("preprocess_score") or event.get("rank_score") or 0.0)
+            status = "unread"
             existing = self._conn.execute(
                 "SELECT 1 FROM reservoir_events WHERE item_id = ?",
                 (item_id,),
@@ -184,23 +297,30 @@ class WakeStateStore:
             _ = self._conn.execute(
                 """
                 INSERT INTO reservoir_events(
-                    item_id, kind, source_id, source_event_id, published_at,
-                    first_seen_at, preprocess_score, payload_json, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unread')
+                    item_id, kind, source_id, original_source_id, ack_source_id,
+                    source_event_id, published_at, first_seen_at,
+                    preprocess_score, payload_json, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(item_id) DO UPDATE SET
+                    original_source_id=excluded.original_source_id,
+                    ack_source_id=excluded.ack_source_id,
                     published_at=excluded.published_at,
                     preprocess_score=excluded.preprocess_score,
-                    payload_json=excluded.payload_json
+                    payload_json=excluded.payload_json,
+                    status=reservoir_events.status
                 """,
                 (
                     item_id,
                     kind,
-                    source_id,
+                    ack_source_id,
+                    original_source_id,
+                    ack_source_id,
                     source_event_id,
                     published_at,
                     first_seen_at,
                     score,
                     json.dumps(payload, ensure_ascii=False),
+                    status,
                 ),
             )
             inserted += int(existing is None)
@@ -212,7 +332,7 @@ class WakeStateStore:
             """
             SELECT * FROM reservoir_events
             WHERE kind = ? AND status = 'unread'
-            ORDER BY source_id ASC, published_at DESC, first_seen_at DESC
+            ORDER BY original_source_id ASC, published_at DESC, first_seen_at DESC
             """,
             (kind,),
         ).fetchall()
@@ -221,8 +341,12 @@ class WakeStateStore:
             payload = json.loads(row["payload_json"])
             payload["id"] = row["item_id"]
             payload["item_id"] = row["item_id"]
-            payload["_reservoir_source_id"] = row["source_id"]
+            payload["_reservoir_original_source_id"] = row["original_source_id"]
+            payload["_reservoir_ack_source_id"] = row["ack_source_id"]
+            payload["_reservoir_source_id"] = row["original_source_id"]
             payload["_reservoir_source_event_id"] = row["source_event_id"]
+            payload["published_at"] = str(row["published_at"] or "")
+            payload["first_seen_at"] = str(row["first_seen_at"] or "")
             payload["preprocess_score"] = row["preprocess_score"]
             if row["embedding_json"]:
                 payload["_event_embedding"] = json.loads(row["embedding_json"])
@@ -509,6 +633,28 @@ class WakeStateStore:
                 fingerprint,
                 repeat_count,
             ),
+        )
+        self._conn.commit()
+
+    def record_drift_observation(
+        self,
+        *,
+        session_key: str,
+        now: datetime,
+        threshold: float,
+    ) -> None:
+        _ = self._conn.execute(
+            """
+            INSERT INTO drift_state(
+                session_key, hazard, threshold, updated_at, last_drift_at
+            ) VALUES (?, 0, ?, ?, ?)
+            ON CONFLICT(session_key) DO UPDATE SET
+                hazard=0,
+                threshold=excluded.threshold,
+                updated_at=excluded.updated_at,
+                last_drift_at=excluded.last_drift_at
+            """,
+            (session_key, threshold, now.isoformat(), now.isoformat()),
         )
         self._conn.commit()
 

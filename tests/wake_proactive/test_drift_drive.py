@@ -33,11 +33,20 @@ def test_low_content_evidence_accumulates_with_idle_time() -> None:
     assert "leisure_ready" in idle.reasons
 
 
-def test_high_content_evidence_keeps_drift_idle() -> None:
+def test_high_content_evidence_continuously_reduces_drift_rate() -> None:
+    baseline = advance_drift_drive(
+        now=NOW,
+        hazard=0.0,
+        threshold=2.0,
+        updated_at=NOW - timedelta(hours=2),
+        last_user_at=NOW - timedelta(hours=12),
+        last_drift_at=None,
+        content_evidence=0.0,
+    )
     result = advance_drift_drive(
         now=NOW,
-        hazard=0.9,
-        threshold=0.8,
+        hazard=0.0,
+        threshold=2.0,
         updated_at=NOW - timedelta(hours=2),
         last_user_at=NOW - timedelta(hours=12),
         last_drift_at=None,
@@ -46,15 +55,25 @@ def test_high_content_evidence_keeps_drift_idle() -> None:
 
     assert result.decision == "idle"
     assert result.content_suppression == 0.8
+    assert 0 < result.rate < baseline.rate
     assert "content_evidence" in result.reasons
 
 
-def test_busy_sleeping_and_in_game_block_attempt() -> None:
+def test_busy_sleeping_and_in_game_decay_rate_without_hard_block() -> None:
+    baseline = advance_drift_drive(
+        now=NOW,
+        hazard=0.0,
+        threshold=2.0,
+        updated_at=NOW - timedelta(hours=2),
+        last_user_at=NOW - timedelta(hours=12),
+        last_drift_at=None,
+        content_evidence=0.0,
+    )
     for flag in ("busy", "sleeping", "in_game"):
         result = advance_drift_drive(
             now=NOW,
-            hazard=1.0,
-            threshold=0.8,
+            hazard=0.0,
+            threshold=2.0,
             updated_at=NOW - timedelta(hours=2),
             last_user_at=NOW - timedelta(hours=12),
             last_drift_at=None,
@@ -63,6 +82,7 @@ def test_busy_sleeping_and_in_game_block_attempt() -> None:
         )
 
         assert result.decision == "idle"
+        assert 0 < result.rate < baseline.rate
         assert flag in result.reasons
 
 

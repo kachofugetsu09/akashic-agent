@@ -9,7 +9,12 @@ import pytest
 
 from plugins.wake_proactive.context import WakeContext
 from plugins.wake_proactive.state import WakeStateStore
-from plugins.wake_proactive.tools import TOOL_SCHEMAS, ToolDeps, execute
+from plugins.wake_proactive.tools import (
+    MAX_INVESTIGATION_CANDIDATES,
+    TOOL_SCHEMAS,
+    ToolDeps,
+    execute,
+)
 
 
 def _events() -> list[dict]:
@@ -35,14 +40,8 @@ def _plan() -> dict:
             {
                 "item_id": "feed:a",
                 "initial_interest": "uncertain",
-                "investigate": "both",
                 "question": "是否有可复用的唤醒方法",
                 "recall_query": "用户是否关心主动唤醒架构",
-            },
-            {
-                "item_id": "feed:b",
-                "initial_interest": "not_interesting",
-                "investigate": "none",
             },
         ]
     }
@@ -56,34 +55,63 @@ def test_tool_schemas_are_independent_three_step_flow():
         "share_content",
         "skip_content",
     ]
+    scratch_items = TOOL_SCHEMAS[0]["function"]["parameters"]["properties"]["items"]
+    assert scratch_items["maxItems"] == 8
 
 
 @pytest.mark.asyncio
-async def test_scratchpad_must_cover_every_title_without_training_side_effect():
+async def test_scratchpad_rejects_too_many_candidates():
+    events = [
+        {"id": f"feed:{index}", "title": f"标题 {index}"}
+        for index in range(MAX_INVESTIGATION_CANDIDATES + 1)
+    ]
+    ctx = WakeContext(content_events=events)
+
+    with pytest.raises(ValueError, match="at most 8"):
+        await execute(
+            "scratchpad",
+            {
+                "items": [
+                    {
+                        "item_id": event["id"],
+                        "initial_interest": "likely_interesting",
+                    }
+                    for event in events
+                ]
+            },
+            ctx,
+            ToolDeps(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_scratchpad_records_only_candidates_without_training_side_effect():
     ctx = WakeContext(content_events=_events())
     deps = ToolDeps()
-    with pytest.raises(ValueError, match="must cover every title"):
-        await execute("scratchpad", {"items": _plan()["items"][:1]}, ctx, deps)
-    assert ctx.scratchpad == {}
-
     result = json.loads(await execute("scratchpad", _plan(), ctx, deps))
-    assert result == {"ok": True, "planned": 2, "to_investigate": 1}
+    assert result == {"ok": True, "screened": 2, "planned": 1, "to_investigate": 1}
     assert ctx.terminal_action is None
     assert ctx.cited_item_ids == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("interest", "investigation"),
-    [
-        ("likely_interesting", "none"),
-        ("uncertain", "content"),
-        ("not_interesting", "recall"),
-    ],
-)
-async def test_scratchpad_rejects_interest_investigation_contradictions(
-    interest, investigation
-):
+async def test_empty_scratchpad_can_investigate_then_skip():
+    ctx = WakeContext(content_events=_events())
+    deps = ToolDeps()
+
+    result = json.loads(await execute("scratchpad", {"items": []}, ctx, deps))
+    investigation = json.loads(await execute("investigate_candidates", {}, ctx, deps))
+    skipped = json.loads(
+        await execute("skip_content", {"reason": "没有候选"}, ctx, deps)
+    )
+
+    assert result["screened"] == 2
+    assert investigation == {"items": {}, "count": 0}
+    assert skipped["decision"] == "skip"
+
+
+@pytest.mark.asyncio
+async def test_scratchpad_rejects_invalid_interest():
     ctx = WakeContext(content_events=[{"id": "feed:a", "title": "A"}])
 
     with pytest.raises(ValueError):
@@ -93,8 +121,7 @@ async def test_scratchpad_rejects_interest_investigation_contradictions(
                 "items": [
                     {
                         "item_id": "feed:a",
-                        "initial_interest": interest,
-                        "investigate": investigation,
+                        "initial_interest": "maybe",
                         "recall_query": "query",
                     }
                 ]
@@ -102,6 +129,40 @@ async def test_scratchpad_rejects_interest_investigation_contradictions(
             ctx,
             ToolDeps(),
         )
+
+
+@pytest.mark.asyncio
+async def test_scratchpad_derives_investigation_and_recall_query():
+    ctx = WakeContext(content_events=[{"id": "feed:a", "title": "Agent memory"}])
+
+    await execute(
+        "scratchpad",
+        {"items": [{"item_id": "feed:a", "initial_interest": "uncertain"}]},
+        ctx,
+        ToolDeps(),
+    )
+
+    assert ctx.scratchpad["feed:a"].investigate == "both"
+    assert ctx.scratchpad["feed:a"].recall_query == "Agent memory"
+
+
+@pytest.mark.asyncio
+async def test_scratchpad_ignores_explicit_not_interesting_item():
+    ctx = WakeContext(content_events=_events())
+
+    await execute(
+        "scratchpad",
+        {
+            "items": [
+                {"item_id": "feed:a", "initial_interest": "not_interesting"}
+            ]
+        },
+        ctx,
+        ToolDeps(),
+    )
+
+    assert ctx.screening_completed is True
+    assert ctx.scratchpad == {}
 
 
 @pytest.mark.asyncio
@@ -198,13 +259,14 @@ async def test_investigate_failure_is_evidence_gap_not_negative_label():
 
     result = json.loads(await execute("investigate_candidates", {}, ctx, deps))
 
-    item = result["items"]["feed:a"]
+    assert result == {"items": {}, "count": 0}
+    item = ctx.investigation_results["feed:a"]
     assert item["content"]["error"] == "timeout"
     assert item["memory"]["hits"] == 0
     assert ctx.terminal_action is None
     assert ctx.cited_item_ids == []
 
-    with pytest.raises(ValueError, match="successful content evidence"):
+    shared = json.loads(
         await execute(
             "share_content",
             {
@@ -218,3 +280,6 @@ async def test_investigate_failure_is_evidence_gap_not_negative_label():
             ctx,
             deps,
         )
+    )
+    assert shared["decision"] == "skip"
+    assert ctx.terminal_action == "skip"

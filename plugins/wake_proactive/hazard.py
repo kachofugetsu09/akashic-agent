@@ -6,6 +6,17 @@ from datetime import datetime
 from typing import Any
 
 
+_FRESHNESS_HALF_LIFE_HOURS = 36.0
+_MISSING_PUBLICATION_CONFIDENCE = 0.03
+_INELIGIBLE_CONFIDENCE_MULTIPLIER = 0.01
+_EVIDENCE_RANK_DECAY = 0.7
+_EVIDENCE_LIMIT = 8
+_SOURCE_DIVERSITY_DECAY = 0.5
+_SOURCE_DIVERSITY_FLOOR = 0.05
+_HAZARD_HALF_LIFE_HOURS = 6.0
+WAKE_ADMISSION_FLOOR = 0.02
+
+
 @dataclass(frozen=True, slots=True)
 class HazardResult:
     should_wake: bool
@@ -41,20 +52,26 @@ def advance_hazard(
     if not events:
         return HazardResult(False, hazard, hazard, threshold, 0.0, 0.0, 0.0, "")
 
+    ranked = rank_events(events, now=now)
     contributions: list[tuple[str, float]] = []
-    for event in events:
-        raw_probability = event.get("_wake_interest_score")
-        if raw_probability is None:
-            raw_probability = event.get("preprocess_score")
-        probability = min(
-            0.999,
-            max(0.0, _as_float(raw_probability)),
+    preference_pressure = 0.0
+    for position, event in enumerate(ranked[:_EVIDENCE_LIMIT]):
+        features = event["_wake_rank_features"]
+        probability = float(features["interest"])
+        semantic_interest = float(features["semantic_interest"])
+        freshness = float(features["freshness"])
+        confidence = float(features["publication_confidence"])
+        preference_pressure = max(
+            preference_pressure,
+            semantic_interest * probability * freshness * confidence,
         )
-        log_evidence = -math.log1p(-probability)
-        published_at = _parse_time(event.get("published_at"), now)
-        age_hours = max(0.0, (now - published_at).total_seconds() / 3600)
-        contribution = log_evidence * (1 + math.log1p(age_hours / 6.0))
+        contribution = float(event["_wake_rank_score"]) * (
+            _EVIDENCE_RANK_DECAY ** position
+        )
         contributions.append((str(event.get("id") or ""), contribution))
+
+    if not contributions:
+        return HazardResult(False, hazard, hazard, threshold, 0.0, 0.0, 0.0, "")
 
     evidence = sum(value for _, value in contributions)
     refractory = (
@@ -62,7 +79,7 @@ def advance_hazard(
         if last_wake_at is not None
         else 0.0
     )
-    advantage = evidence - 1.0 - refractory
+    advantage = evidence - 2.0 - refractory
     scaled = max(-60.0, min(60.0, advantage / 0.5))
     rate = lambda_max / (1 + math.exp(-scaled))
     elapsed_hours = (
@@ -71,10 +88,12 @@ def advance_hazard(
         else 5 / 60
     )
     before = hazard
-    after = hazard + rate * elapsed_hours
+    time_constant = _HAZARD_HALF_LIFE_HOURS / math.log(2.0)
+    retention = math.exp(-elapsed_hours / time_constant)
+    after = hazard * retention + rate * time_constant * (1.0 - retention)
     driver = max(contributions, key=lambda pair: pair[1])[0]
     return HazardResult(
-        should_wake=after >= threshold,
+        should_wake=after + preference_pressure >= threshold,
         hazard_before=before,
         hazard_after=after,
         threshold=threshold,
@@ -82,6 +101,85 @@ def advance_hazard(
         refractory=refractory,
         rate=rate,
         driver_item_id=driver,
+    )
+
+
+def rank_events(
+    events: list[dict[str, Any]],
+    *,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    scored: list[dict[str, Any]] = []
+    for event in events:
+        raw_probability = event.get("_wake_interest_score")
+        if raw_probability is None:
+            raw_probability = event.get("preprocess_score")
+        probability = min(0.999, max(0.0, _as_float(raw_probability)))
+        semantic_interest = min(
+            0.999,
+            max(0.0, _as_float(event.get("_wake_semantic_interest"))),
+        )
+        raw_published_at = event.get("published_at")
+        raw_first_seen_at = event.get("first_seen_at")
+        reference_time = _parse_time(
+            raw_published_at or raw_first_seen_at or now,
+            now,
+        )
+        age_hours = max(0.0, (now - reference_time).total_seconds() / 3600)
+        freshness = math.exp(
+            -math.log(2.0) * age_hours / _FRESHNESS_HALF_LIFE_HOURS
+        )
+        publication_confidence = (
+            1.0 if raw_published_at else _MISSING_PUBLICATION_CONFIDENCE
+        )
+        if event.get("wake_eligible") is False:
+            publication_confidence *= _INELIGIBLE_CONFIDENCE_MULTIPLIER
+        evidence = -math.log1p(-probability) * freshness * publication_confidence
+        copied = dict(event)
+        copied["_wake_rank_score"] = evidence
+        copied["_wake_rank_features"] = {
+            "interest": probability,
+            "semantic_interest": semantic_interest,
+            "freshness": freshness,
+            "age_hours": age_hours,
+            "publication_confidence": publication_confidence,
+            "admission_mass": evidence,
+            "source_diversity": 1.0,
+        }
+        scored.append(copied)
+
+    scored.sort(
+        key=lambda event: (
+            float(event["_wake_rank_score"]),
+            str(event.get("published_at") or event.get("first_seen_at") or ""),
+        ),
+        reverse=True,
+    )
+    source_counts: dict[str, int] = {}
+    for event in scored:
+        source_id = str(
+            event.get("_reservoir_original_source_id")
+            or event.get("source_id")
+            or event.get("source")
+            or "unknown"
+        )
+        position = source_counts.get(source_id, 0)
+        multiplier = (
+            (1.0 - _SOURCE_DIVERSITY_FLOOR)
+            * (_SOURCE_DIVERSITY_DECAY ** position)
+            + _SOURCE_DIVERSITY_FLOOR
+        )
+        source_counts[source_id] = position + 1
+        event["_wake_rank_score"] = float(event["_wake_rank_score"]) * multiplier
+        event["_wake_rank_features"]["source_diversity"] = multiplier
+
+    return sorted(
+        scored,
+        key=lambda event: (
+            float(event["_wake_rank_score"]),
+            str(event.get("published_at") or event.get("first_seen_at") or ""),
+        ),
+        reverse=True,
     )
 
 
