@@ -19,7 +19,13 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
-from agent.plugins.manifest import load_plugin_manifest, write_plugin_manifest
+from agent.plugins.manifest import (
+    load_package_manifest,
+    load_plugin_manifest,
+    write_package_manifest,
+    write_plugin_manifest,
+)
+from agent.plugins.packages import discover_plugin_packages, enabled_plugin_packages
 from agent.plugins.specs import (
     ManagedServiceSpec,
     McpServerSpec,
@@ -78,6 +84,14 @@ from bus.event_bus import EventBus
 from infra.channels.contract import Channel
 
 logger = logging.getLogger(__name__)
+
+
+def _package_project_root(plugin_dirs: list[Path]) -> Path | None:
+    for plugin_dir in plugin_dirs:
+        root = plugin_dir.parent if plugin_dir.name == "plugins" else None
+        if root is not None and (root / "plugin_packages").is_dir():
+            return root
+    return None
 
 
 async def _complete_critical(awaitable: Awaitable[None]) -> bool:
@@ -363,7 +377,21 @@ class PluginManager:
 
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
+        project_root = _package_project_root(self._dirs)
+        if project_root is not None:
+            packages = discover_plugin_packages(project_root)
+            package_entries = load_package_manifest(plugins_home)
+            for package_id, package in packages.items():
+                if package_id not in package_entries:
+                    package_entries[package_id] = any(
+                        entries.get(member, False) for member in package.members
+                    )
+                for member in package.members:
+                    entries.pop(member, None)
+            _ = write_package_manifest(package_entries, plugins_home=plugins_home)
         for mod in self.discover():
+            if mod.get("package_id"):
+                continue
             _ = entries.setdefault(_resolve_plugin_id(mod), True)
         return write_plugin_manifest(entries, plugins_home=plugins_home)
 
@@ -411,11 +439,34 @@ class PluginManager:
     def discover(self) -> list[dict[str, str]]:
         mods: list[dict[str, str]] = []
         seen_names: set[str] = set()
+        project_root = _package_project_root(self._dirs)
+        packages = discover_plugin_packages(project_root) if project_root else {}
+        enabled_packages = (
+            enabled_plugin_packages(
+                project_root,
+                load_package_manifest(_plugins_home(self._installed_cache_root)),
+            )
+            if project_root
+            else {}
+        )
+        member_packages = {
+            member: package.id
+            for package in packages.values()
+            for member in package.members
+        }
+        enabled_members = {
+            member
+            for package in enabled_packages.values()
+            for member in package.members
+        }
         for source in resolve_plugin_sources(
             self._dirs,
             installed_cache_root=self._installed_cache_root,
         ):
             name = source.plugin_root.parent.name if source.source_type == "installed" else source.plugin_root.name
+            package_id = member_packages.get(name, "")
+            if package_id and name not in enabled_members:
+                continue
             if name in seen_names and source.source_type == "builtin":
                 logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
                 continue
@@ -430,6 +481,7 @@ class PluginManager:
                 "import_path": f"akasic_plugin_{import_source}_{import_suffix}",
                 "marketplace": source.marketplace,
                 "source_type": source.source_type,
+                "package_id": package_id,
             })
         return mods
 
@@ -531,8 +583,8 @@ class PluginManager:
             )
             desired = {
                 plugin_id
-                for plugin_id in discovered
-                if manifest.get(plugin_id, True)
+                for plugin_id, mod in discovered.items()
+                if mod.get("package_id") or manifest.get(plugin_id, True)
             }
             for plugin_id in sorted(set(self._active_generations) - desired):
                 results.append(await self._deactivate_plugin(plugin_id))
@@ -1247,7 +1299,7 @@ class PluginManager:
         if activate and initial_plugin_id in self._active_generations:
             return self._active_generations[initial_plugin_id]
         plugin_manifest = load_plugin_manifest(_plugins_home(self._installed_cache_root))
-        if plugin_manifest.get(initial_plugin_id, True) is False:
+        if not mod.get("package_id") and plugin_manifest.get(initial_plugin_id, True) is False:
             logger.info("插件已禁用（manifest.toml）: %s", initial_plugin_id)
             return None
         tool_names: list[str] = []
@@ -1974,6 +2026,7 @@ class PluginManager:
             or not source.spec.server
             or not source.spec.fetch_tool
             or source.spec.poll_interval_seconds < 0
+            or source.spec.fetch_page_size < 0
             or source.spec.server not in contributions.mcp_servers
         ]
         check(
@@ -2907,6 +2960,7 @@ def _proactive_source_spec_evidence(
             "ack_tool": source.spec.ack_tool,
             "poll_tool": source.spec.poll_tool,
             "poll_interval_seconds": source.spec.poll_interval_seconds,
+            "fetch_page_size": source.spec.fetch_page_size,
         }
         for key, source in sorted(catalog.sources.items())
     }

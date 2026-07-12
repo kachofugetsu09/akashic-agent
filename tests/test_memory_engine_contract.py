@@ -800,12 +800,28 @@ def test_build_memory_runtime_uses_memory_plugin(monkeypatch, tmp_path: Path):
         def describe(self):
             return SimpleNamespace(name="custom")
 
+    class _EmbeddingApi:
+        @property
+        def model_id(self):
+            return "custom-embedding"
+
+        async def embed(self, text):
+            return [float(len(text))]
+
+        async def embed_batch(self, texts):
+            return [[float(len(text))] for text in texts]
+
+    embedding_api = _EmbeddingApi()
+
     class _CustomPlugin:
         plugin_id = "custom"
 
         def build(self, deps):
             captured["deps"] = deps
-            return MemoryPluginRuntime(engine=cast(Any, _CustomEngine()))
+            return MemoryPluginRuntime(
+                engine=cast(Any, _CustomEngine()),
+                embedding_api=embedding_api,
+            )
 
     monkeypatch.setattr(
         "bootstrap.wiring.resolve_memory_plugin",
@@ -829,6 +845,8 @@ def test_build_memory_runtime_uses_memory_plugin(monkeypatch, tmp_path: Path):
 
     assert runtime.engine is not None
     assert runtime.engine.describe().name == "custom"
+    assert runtime.embedding_api is embedding_api
+    assert runtime.embedding_api.model_id == "custom-embedding"
     deps = captured["deps"]
     assert deps.config.model == "gpt-test"
     assert deps.workspace == tmp_path
@@ -929,4 +947,5 @@ def test_build_memory_runtime_exposes_default_memory_engine(
 
     assert runtime.engine is not None
     assert runtime.engine.describe().name == "default"
+    assert runtime.embedding_api is runtime.engine.embedding_api
     assert MemoryCapability.SEMANTICS_RICH_MEMORY in runtime.engine.describe().capabilities

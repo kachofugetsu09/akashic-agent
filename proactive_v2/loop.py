@@ -1,12 +1,4 @@
-"""
-ProactiveLoop - 主动触达核心循环。
-
-独立于 AgentLoop,定期:
-  1. 拉取所有内容源的最新候选事件
-  2. 获取用户最近聊天上下文
-  3. 调用 LLM 反思:有没有值得主动说的
-  4. 产出 TurnResult 并由统一 OutboundPort 发送消息
-"""
+"""运行当前插件选择的主动生命周期，并按其调度结果等待下一轮。"""
 
 from __future__ import annotations
 
@@ -44,7 +36,6 @@ from proactive_v2.config import ProactiveConfig
 from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.mcp_sources import SharedMcpGateway
 from proactive_v2.modules_schedule import ProactiveScheduler
-from proactive_v2.modules_source import McpRuntimeModule
 from proactive_v2.presence import PresenceStore
 from proactive_v2.runtime_scope import ProactiveRuntimeScope
 from proactive_v2.sensor import Sensor
@@ -171,7 +162,7 @@ class ProactiveLoop:
             workspace_context_fn=self._read_workspace_proactive_context,
             shared_tools=self._shared_tools,
             event_bus=self._event_bus,
-            mcp_gateway=self._mcp_runtime.pool,
+            mcp_gateway=self._mcp_gateway,
             proactive_sources=self._plugin_proactive_sources,
             tool_hooks=self._tool_hooks,
             schedule_fn=self._scheduler.next_interval,
@@ -192,11 +183,8 @@ class ProactiveLoop:
             raise RuntimeError("插件 proactive_runtime_factories 返回了不可调用对象")
         return factory(self._build_runtime_scope())
 
-    def _build_mcp_runtime(self) -> McpRuntimeModule:
-        from agent.plugins.snapshot import (
-            get_current_runtime_lease,
-            get_current_runtime_snapshot,
-        )
+    def _build_mcp_gateway(self) -> SharedMcpGateway:
+        from agent.plugins.snapshot import get_current_runtime_snapshot
 
         snapshot = get_current_runtime_snapshot()
         tools = (
@@ -205,20 +193,14 @@ class ProactiveLoop:
             else self._shared_tools
         )
 
-        gateway = SharedMcpGateway(
+        return SharedMcpGateway(
             Path(self._sessions.workspace),
             tools,
-        )
-        return McpRuntimeModule(
-            gateway=gateway,
-            sources=self._plugin_proactive_sources,
-            runtime_snapshot_lease=get_current_runtime_lease(),
         )
 
     def _build_kernel(self) -> ProactiveKernel:
         runtime = self._build_plugin_runtime()
         modules = [
-            self._mcp_runtime,
             *self._plugin_proactive_modules,
             *self._build_plugin_flow_modules(runtime),
         ]
@@ -287,10 +269,10 @@ class ProactiveLoop:
         self._ensure_workspace_proactive_context_file()
         # 2. 预读规则面板内容并做缓存。
         self._read_workspace_proactive_context()
-        # 3. 构建发送编排器、传感器、MCP runtime 和主动链路 kernel。
+        # 3. 构建发送编排器、传感器、MCP 网关和主动链路 kernel。
         self._turn_orchestrator = self._build_turn_orchestrator()
         self._sense = self._build_sense()
-        self._mcp_runtime: McpRuntimeModule
+        self._mcp_gateway: SharedMcpGateway
         self._proactive_kernel: ProactiveKernel
         self._scheduler = ProactiveScheduler(
             cfg=self._cfg,
@@ -300,7 +282,7 @@ class ProactiveLoop:
             trace_fn=self._trace_proactive_rate_decision,
         )
         if self._runtime_snapshot_store is None:
-            self._mcp_runtime = self._build_mcp_runtime()
+            self._mcp_gateway = self._build_mcp_gateway()
             self._proactive_kernel = self._build_kernel()
         # 4. 启动时把当前 proactive 配置落一份 trace，方便回看。
         self._trace_proactive_config_snapshot()
@@ -391,8 +373,10 @@ class ProactiveLoop:
         self._running = True
         self._stopped.clear()
         logger.info(
-            f"ProactiveLoop 已启动  "
-            f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
+            "Proactive runtime 已启动 lifecycle=%s target=%s:%s",
+            self._cfg.lifecycle,
+            self._cfg.default_channel,
+            self._cfg.default_chat_id,
         )
         try:
             if self._runtime_snapshot_store is not None:
@@ -409,19 +393,20 @@ class ProactiveLoop:
 
     async def _run_loop(self) -> None:
         last_base_score: float | None = None
-        next_interval: int | None = None
+        next_interval: int | None = 0
         while self._running:
             interval = (
                 next_interval
                 if next_interval is not None
                 else self._next_interval(last_base_score)
             )
-            logger.info("[proactive] 下次 tick 间隔=%ds", interval)
-            self._wake.clear()
-            try:
-                _ = await asyncio.wait_for(self._wake.wait(), timeout=interval)
-            except asyncio.TimeoutError:
-                pass
+            if interval > 0:
+                logger.info("[proactive] 下次运行兜底间隔=%ds", interval)
+                self._wake.clear()
+                try:
+                    _ = await asyncio.wait_for(self._wake.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    pass
             if not self._running:
                 return
             try:
@@ -433,7 +418,7 @@ class ProactiveLoop:
                     else None
                 )
             except Exception:
-                logger.exception("ProactiveLoop tick 异常")
+                logger.exception("[proactive] runtime tick 异常")
                 last_base_score = None
                 next_interval = None
 
@@ -590,7 +575,7 @@ class ProactiveLoop:
     ) -> ProactiveKernel:
         async def build_and_start() -> ProactiveKernel:
             self._apply_snapshot(snapshot)
-            self._mcp_runtime = self._build_mcp_runtime()
+            self._mcp_gateway = self._build_mcp_gateway()
             kernel = self._build_kernel()
             await kernel.start()
             return kernel

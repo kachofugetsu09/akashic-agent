@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import json
 import sqlite3
 import threading
@@ -19,6 +20,7 @@ from bootstrap.dashboard_api import (
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
+from session.embedding_store import MessageEmbeddingStore
 from session.store import SessionStore
 
 
@@ -502,6 +504,14 @@ def test_list_update_and_batch_delete_messages(tmp_path) -> None:
         payload = list_resp.json()
         assert payload["total"] == 1
         message_id = payload["items"][0]["id"]
+        embedding_store = MessageEmbeddingStore(tmp_path / "sessions.db")
+        embedding_store.upsert(
+            message_id=message_id,
+            content="还没睡呢",
+            model="m",
+            embedding=[1.0, 0.0],
+        )
+        embedding_store.close()
 
         patch_resp = client.patch(
             f"/api/dashboard/messages/{message_id}",
@@ -510,6 +520,25 @@ def test_list_update_and_batch_delete_messages(tmp_path) -> None:
         assert patch_resp.status_code == 200
         assert patch_resp.json()["content"] == "已经睡了"
         assert patch_resp.json()["edited"] is True
+        embedding_store = MessageEmbeddingStore(tmp_path / "sessions.db")
+        assert embedding_store.get(
+            message_id=message_id,
+            content="还没睡呢",
+            model="m",
+        ) is None
+        embedding_store.upsert(
+            message_id=message_id,
+            content="已经睡了",
+            model="m",
+            embedding=[1.0, 0.0],
+        )
+        embedding_store.upsert(
+            message_id="cli:local:0",
+            content="hello from cli",
+            model="m",
+            embedding=[0.0, 1.0],
+        )
+        embedding_store.close()
 
         batch_resp = client.post(
             "/api/dashboard/messages/batch-delete",
@@ -517,6 +546,16 @@ def test_list_update_and_batch_delete_messages(tmp_path) -> None:
         )
         assert batch_resp.status_code == 200
         assert batch_resp.json()["deleted_count"] == 2
+        with closing(sqlite3.connect(tmp_path / "sessions.db")) as db:
+            embedding_count = db.execute(
+                """
+                SELECT COUNT(*)
+                FROM message_embeddings
+                WHERE message_id IN (?, ?)
+                """,
+                (message_id, "cli:local:0"),
+            ).fetchone()[0]
+        assert embedding_count == 0
 
         remain_resp = client.get(
             "/api/dashboard/messages", params={"session_key": "telegram:100"}
@@ -712,7 +751,11 @@ def test_memory_dashboard_filters_survive_parallel_requests(tmp_path) -> None:
             assert "total" in payload
 
 
-def test_proactive_dashboard_endpoints(tmp_path) -> None:
+def test_proactive_dashboard_endpoints(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bootstrap.dashboard_api.load_package_manifest",
+        lambda: {"default-proactive": True, "wake-proactive": False},
+    )
     _seed_workspace(tmp_path)
     with TestClient(create_dashboard_app(tmp_path)) as client:
         overview_resp = client.get("/api/dashboard/proactive/overview")
@@ -770,6 +813,25 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
             tick_steps_resp.json()["items"][0]["tool_args"]["message"] == "记得早点休息"
         )
         assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
+
+
+def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bootstrap.dashboard_api.load_package_manifest",
+        lambda: {"default-proactive": False, "wake-proactive": True},
+    )
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        plugin_ids = {
+            item["id"] for item in client.get("/api/dashboard/plugins").json()
+        }
+        assert "wake-proactive" in plugin_ids
+        assert "default-proactive" not in plugin_ids
+        assert client.get("/api/dashboard/proactive/overview").status_code == 404
+        assert client.get("/api/dashboard/wake-proactive/runs").status_code == 200
+        meter = client.get("/api/dashboard/wake-proactive/meter")
+        assert meter.status_code == 200
+        assert meter.json()["should_wake"] == 0
+        assert meter.json()["unread_count"] == 0
 
 
 def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:

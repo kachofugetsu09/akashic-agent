@@ -10,6 +10,7 @@ from agent.tools.registry import ToolRegistry
 from core.memory.markdown import build_markdown_memory_runtime
 from core.memory.plugin import (
     DisabledMemoryEngine,
+    EmbeddingApi,
     MemoryPluginBuildDeps,
     MemoryPluginRuntime,
 )
@@ -105,6 +106,7 @@ def build_memory_runtime(
     )
 
     closeables: list[object] = []
+    embedding_api: EmbeddingApi | None = None
     if _memory_plugin_enabled(config):
         plugin_runtime = _build_memory_plugin_runtime(
             config=config,
@@ -116,6 +118,7 @@ def build_memory_runtime(
             event_publisher=event_publisher,
         )
         engine = plugin_runtime.engine
+        embedding_api = plugin_runtime.embedding_api
         closeables.extend(plugin_runtime.closeables)
         register_memory_meta_tools(
             tools,
@@ -128,6 +131,7 @@ def build_memory_runtime(
         markdown=markdown,
         engine=engine,
         closeables=closeables,
+        embedding_api=embedding_api,
     )
 
 
@@ -150,6 +154,7 @@ def build_memory_admin_runtime(
         recent_context_model=config.light_model or config.model,
     )
     closeables: list[object] = [http_resources]
+    embedding_api: EmbeddingApi | None = None
     if _memory_plugin_enabled(config):
         plugin_runtime = _build_memory_plugin_runtime(
             config=config,
@@ -161,6 +166,7 @@ def build_memory_admin_runtime(
             event_publisher=event_publisher,
         )
         engine = plugin_runtime.engine
+        embedding_api = plugin_runtime.embedding_api
         closeables[:0] = plugin_runtime.closeables
     else:
         engine = DisabledMemoryEngine()
@@ -168,6 +174,7 @@ def build_memory_admin_runtime(
         markdown=markdown,
         engine=engine,
         closeables=closeables,
+        embedding_api=embedding_api,
     )
 
 

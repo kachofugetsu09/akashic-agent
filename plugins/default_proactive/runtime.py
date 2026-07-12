@@ -49,6 +49,7 @@ from plugins.default_proactive.resolve import (
     ack_post_guard_fail,
     build_delivery_key,
 )
+from plugins.default_proactive.source_poll import DefaultSourcePollModule
 from plugins.proactive_flow.tools import ToolDeps
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,7 @@ class ProactiveFlowDeps:
     schedule_fn: Callable[[float | None], int] | None = None
     event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] | None = None
+    source_poll_module: DefaultSourcePollModule | None = None
 
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
@@ -167,6 +169,7 @@ class ProactiveFlowRuntime:
         self._schedule_fn = deps.schedule_fn
         self._event_bus = deps.event_bus
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
+        self._source_poll_module = deps.source_poll_module
         self._proactive_slots: dict[str, Any] = {}
         self._proactive_prompt_sections: list[str] = []
         self._proactive_effect_logs: list[dict[str, Any]] = []
@@ -845,7 +848,7 @@ class ProactiveScheduleModule:
 def build_default_proactive_modules(
     runtime: ProactiveFlowRuntime,
 ) -> list[object]:
-    return [
+    modules: list[object] = [
         ProactiveStartModule(runtime),
         ProactiveAdmissionModule(runtime),
         ProactiveSourceModule(runtime),
@@ -855,3 +858,6 @@ def build_default_proactive_modules(
         ProactiveCommitModule(runtime),
         ProactiveScheduleModule(runtime),
     ]
+    if runtime._source_poll_module is not None:
+        modules.insert(0, runtime._source_poll_module)
+    return modules

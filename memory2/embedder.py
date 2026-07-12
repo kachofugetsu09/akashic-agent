@@ -30,6 +30,10 @@ class Embedder:
         self._output_dimensionality = output_dimensionality
         self._requester = requester or get_default_http_requester("external_default")
 
+    @property
+    def model_id(self) -> str:
+        return self._model
+
     async def embed(self, text: str) -> list[float]:
         """单条 embed"""
         results = await self.embed_batch([text])

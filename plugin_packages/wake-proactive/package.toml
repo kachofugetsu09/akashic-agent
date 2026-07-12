@@ -1,0 +1,5 @@
+[package]
+id = "wake-proactive"
+members = ["wake_proactive", "wake_proactive_flow", "wake_drift_flow"]
+dashboard = true
+provides = ["proactive.runtime"]

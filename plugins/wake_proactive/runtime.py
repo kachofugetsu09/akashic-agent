@@ -1,0 +1,888 @@
+from __future__ import annotations
+
+import json
+import logging
+import math
+import random
+import sqlite3
+from json import JSONDecodeError
+from contextlib import closing
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Awaitable, Callable, cast
+
+from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
+from core.clock import Clock, ReplayClock, clock_from_env
+from plugins.wake_proactive.context import WakeContext
+from plugins.wake_proactive.context_drive import ContextDriveResult, NormalizedContext
+from plugins.wake_proactive.drift_drive import DriftDriveResult, advance_drift_drive
+from plugins.wake_proactive.drift_prompt import build_drift_messages
+from plugins.wake_proactive.hazard import (
+    WAKE_ADMISSION_FLOOR,
+    HazardResult,
+    advance_hazard,
+    rank_events,
+)
+from plugins.wake_proactive.prompt import build_messages
+from plugins.wake_proactive.state import WakeStateStore
+from plugins.wake_proactive.tools import TOOL_SCHEMAS, ToolDeps, execute
+from proactive_v2 import mcp_sources
+from proactive_v2.frame import ProactiveFrame
+from proactive_v2.runtime_scope import ProactiveRuntimeScope
+from session.embedding_store import MessageEmbeddingStore
+
+
+logger = logging.getLogger(__name__)
+_MAX_TITLES_PER_WAKE = 120
+_MAX_HAZARD_THRESHOLD = 2.0
+_SEMANTIC_CALIBRATION_POWER = 4
+_SCHEMA_BY_NAME = {
+    schema["function"]["name"]: schema
+    for schema in TOOL_SCHEMAS
+}
+
+
+def select_content_page(
+    events: list[dict[str, Any]],
+    *,
+    now: datetime,
+    limit: int = _MAX_TITLES_PER_WAKE,
+) -> list[dict[str, Any]]:
+    return rank_events(events, now=now)[: max(0, limit)]
+
+
+@dataclass(slots=True)
+class WakeRunState:
+    ctx: WakeContext
+    alerts: list[dict[str, Any]]
+    contents: list[dict[str, Any]]
+    base_score: float = 0.0
+    next_interval_seconds: int = 300
+    hazard_result: HazardResult | None = None
+    context_results: list[ContextDriveResult] | None = None
+    context_reevaluate: bool = False
+    drift_result: DriftDriveResult | None = None
+    content_completed: bool = False
+    new_content_count: int = 0
+
+
+@dataclass(slots=True)
+class AsyncEffect:
+    callback: Callable[[], Awaitable[None]]
+
+    async def run(self) -> None:
+        await self.callback()
+
+
+class WakeRuntime:
+    def __init__(
+        self,
+        scope: ProactiveRuntimeScope,
+        *,
+        state_store: WakeStateStore | None = None,
+        clock: Clock | None = None,
+    ) -> None:
+        self._scope = scope
+        self._clock = clock or clock_from_env()
+        self._rng = scope.rng or random.Random(
+            0 if isinstance(self._clock, ReplayClock) else None
+        )
+        self._tick_interval_seconds = 1 if isinstance(self._clock, ReplayClock) else 300
+        workspace = Path(getattr(scope.state_store, "workspace_dir", "."))
+        self._session_db_path = workspace / "sessions.db"
+        self._message_embeddings = (
+            MessageEmbeddingStore(self._session_db_path)
+            if self._session_db_path.exists()
+            else None
+        )
+        self._state = state_store or WakeStateStore(workspace / "wake_proactive.db")
+        web_fetch_tool = (
+            scope.shared_tools.get_tool("web_fetch")
+            if scope.shared_tools is not None
+            else None
+        )
+        self._tool_deps = ToolDeps(
+            web_fetch_tool=web_fetch_tool,
+            memory=scope.memory,
+            state_store=self._state,
+            max_chars=int(getattr(scope.cfg, "agent_tick_web_fetch_max_chars", 8_000)),
+        )
+
+    def build_modules(self) -> list[object]:
+        from plugins.wake_proactive.modules import (
+            build_wake_content_modules,
+            build_wake_drift_modules,
+            build_wake_runtime_modules,
+        )
+
+        return [
+            *build_wake_runtime_modules(self),
+            *build_wake_content_modules(self),
+            *build_wake_drift_modules(self),
+        ]
+
+    def begin(self, frame: ProactiveFrame) -> WakeRunState:
+        return WakeRunState(
+            ctx=WakeContext(
+                session_key=frame.input.session_key,
+                now_utc=self._clock.now(),
+            ),
+            alerts=[],
+            contents=[],
+            next_interval_seconds=self._tick_interval_seconds,
+        )
+
+    async def ingest(self, state: WakeRunState) -> None:
+        await self._flush_pending_acknowledgements()
+        channels = await mcp_sources.fetch_sources_async(
+            self._scope.mcp_gateway,
+            self._scope.proactive_sources,
+        )
+        _ = self._state.ingest("alert", channels["alert"], state.ctx.now_utc)
+        state.new_content_count = self._state.ingest(
+            "content", channels["content"], state.ctx.now_utc
+        )
+        state.context_results = self._state.ingest_context(
+            channels["context"], state.ctx.now_utc
+        )
+        has_context_transition = any(
+            result.signal == "reevaluate" for result in state.context_results
+        )
+        state.context_reevaluate = (
+            self._state.claim_context_reevaluation(state.ctx.now_utc)
+            if has_context_transition
+            else False
+        )
+        state.alerts = self._state.unread("alert")
+        state.contents = self._state.unread("content")
+        if state.alerts:
+            return
+        await self._cache_event_embeddings()
+        state.contents = self._state.unread("content")
+        self._apply_semantic_interest(state.contents, state.ctx.now_utc)
+
+    async def decide_content(self, state: WakeRunState) -> bool:
+        if state.alerts:
+            await self._deliver_alert(state, state.alerts[0])
+            state.next_interval_seconds = (
+                1 if len(state.alerts) > 1 else self._tick_interval_seconds
+            )
+            return True
+        if state.contents:
+            ranked = rank_events(state.contents, now=state.ctx.now_utc)
+            expired_ids = {
+                str(event["id"])
+                for event in ranked
+                if float(event["_wake_rank_features"]["admission_mass"])
+                < WAKE_ADMISSION_FLOOR
+            }
+            if expired_ids:
+                expired = [
+                    event
+                    for event in state.contents
+                    if str(event["id"]) in expired_ids
+                ]
+                await self._ack_and_consume(expired, state.ctx.now_utc)
+                state.contents = [
+                    event
+                    for event in state.contents
+                    if str(event["id"]) not in expired_ids
+                ]
+        should_evaluate_content = bool(state.contents)
+        if should_evaluate_content:
+            hazard_state = self._state.load_hazard(state.ctx.session_key)
+            threshold = (
+                min(_MAX_HAZARD_THRESHOLD, float(hazard_state["threshold"]))
+                if hazard_state is not None
+                else self._sample_threshold(
+                    state.ctx.session_key,
+                    state.ctx.now_utc,
+                )
+            )
+            updated_at = _parse_optional_time(
+                hazard_state.get("updated_at") if hazard_state is not None else None
+            )
+            last_wake_at = _parse_optional_time(
+                hazard_state.get("last_wake_at") if hazard_state is not None else None
+            )
+            current_hazard = (
+                float(hazard_state["hazard"]) if hazard_state is not None else 0.0
+            )
+            result = advance_hazard(
+                state.contents,
+                now=state.ctx.now_utc,
+                hazard=current_hazard,
+                threshold=threshold,
+                updated_at=updated_at,
+                last_wake_at=last_wake_at,
+            )
+            state.hazard_result = result
+            state.base_score = result.rate
+            self._state.save_hazard_monitor(
+                session_key=state.ctx.session_key,
+                hazard=result,
+                candidate_count=len(state.contents),
+                evaluated_at=state.ctx.now_utc,
+            )
+            if result.should_wake:
+                state.ctx.content_events = select_content_page(
+                    state.contents,
+                    now=state.ctx.now_utc,
+                )
+                state.ctx.content_backlog_count = (
+                    len(state.contents) - len(state.ctx.content_events)
+                )
+                self._record_content_observation(state.ctx, result)
+                await self._run_content_tools(state.ctx)
+                completed = await self._commit_content_decision(state)
+                self._state.save_hazard(
+                    session_key=state.ctx.session_key,
+                    hazard=0.0 if completed else result.hazard_after,
+                    threshold=(
+                        self._sample_threshold(
+                            state.ctx.session_key,
+                            state.ctx.now_utc,
+                        )
+                        if completed
+                        else result.threshold
+                    ),
+                    updated_at=state.ctx.now_utc,
+                    last_wake_at=state.ctx.now_utc if completed else last_wake_at,
+                )
+                state.next_interval_seconds = self._tick_interval_seconds
+                return True
+            self._state.save_hazard(
+                session_key=state.ctx.session_key,
+                hazard=result.hazard_after,
+                threshold=result.threshold,
+                updated_at=state.ctx.now_utc,
+                last_wake_at=last_wake_at,
+            )
+
+        return False
+
+    async def decide_drift(self, state: WakeRunState) -> None:
+        await self._decide_drift(state)
+        state.next_interval_seconds = self._tick_interval_seconds
+
+    async def decide(self, state: WakeRunState) -> None:
+        if not await self.decide_content(state):
+            await self.decide_drift(state)
+
+    def _record_content_observation(
+        self,
+        ctx: WakeContext,
+        hazard: HazardResult,
+    ) -> None:
+        messages = build_messages(
+            ctx=ctx,
+            memory_text=self._read_memory(),
+            proactive_context=str(self._scope.workspace_context_fn() or ""),
+            recent_session=self._read_recent_session(ctx.session_key, ctx.now_utc),
+            current_context=self._current_context_text(ctx.now_utc),
+        )
+        candidates = [
+            {
+                key: event.get(key)
+                for key in (
+                    "id",
+                    "source_id",
+                    "source_name",
+                    "title",
+                    "url",
+                    "published_at",
+                    "first_seen_at",
+                    "preprocess_score",
+                    "_wake_interest_score",
+                    "_wake_semantic_interest",
+                    "_wake_rank_score",
+                    "_wake_rank_features",
+                )
+            }
+            for event in ctx.content_events
+        ]
+        self._state.record_observation(
+            wake_id=ctx.wake_id,
+            session_key=ctx.session_key,
+            kind="content",
+            now=ctx.now_utc,
+            trigger=_hazard_trace(hazard),
+            candidates=candidates,
+            llm_input=messages,
+        )
+
+    async def _run_content_tools(self, ctx: WakeContext) -> None:
+        base_messages = build_messages(
+            ctx=ctx,
+            memory_text=self._read_memory(),
+            proactive_context=str(self._scope.workspace_context_fn() or ""),
+            recent_session=self._read_recent_session(ctx.session_key, ctx.now_utc),
+            current_context=self._current_context_text(ctx.now_utc),
+        )
+        await self._run_phase(base_messages, ctx, {"scratchpad"}, "scratchpad")
+        investigation = await execute(
+            "investigate_candidates",
+            {},
+            ctx,
+            self._tool_deps,
+        )
+        final_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "标题初筛和并发调查已经完成。现在只做最终判断：调用 "
+                    "share_content 分享有正文证据且此刻值得告诉用户的内容，或调用 "
+                    "skip_content 保持安静。通常分享一到三条；只有同时出现多个彼此独立、"
+                    "都高度相关的重要变化时才可扩展到五条。不要重复标题。"
+                    "share_content 优先使用 message 写成完整自然的一段主动消息，items 只负责"
+                    "声明引用证据。你知道自己是在主动找用户说话，可以自然地说刚看到、碰到或"
+                    "发现了什么，但不要每次套同一句开场，也不要假装亲历未发生的事情。"
+                    "语气像真正熟悉用户的协作者：可以自然接住稳定偏好和期待，例如对方特别"
+                    "喜欢某类事物时可以带一点会心的判断，也可以偶尔使用双方已经稳定使用的"
+                    "简称、昵称或梗；只有自然贴合当前内容时才用，不要每条都刻意套亲密称呼。"
+                    "不要说‘根据记忆’或复述个人档案。"
+                    "涉及敏感经历时允许共情，但必须与当前事实直接相关、轻柔且有帮助，不能"
+                    "替用户定义感受或把焦虑当作推送理由。不要制造紧迫感，不强行提问。"
+                    "只有当前 ContextEvent 明确支持时，才能描述用户正在睡眠、忙碌、"
+                    "离线或游戏；unknown 时保持中性。唤醒只代表允许判断，不代表必须分享；"
+                    "缺少新事实、用户已经知道、只有营销或泛泛观点时应调用 skip_content。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{base_messages[1]['content']}\n\n"
+                    "【已执行的初筛与并发调查结果】\n"
+                    f"{investigation}\n\n请做最终判断。"
+                ),
+            },
+        ]
+        await self._run_phase(
+            final_messages,
+            ctx,
+            {"share_content", "skip_content"},
+            None,
+        )
+        if ctx.terminal_action is None:
+            raise RuntimeError("wake proactive LLM did not finish content decision")
+
+    async def _run_phase(
+        self,
+        messages: list[dict[str, Any]],
+        ctx: WakeContext,
+        allowed: set[str],
+        forced_name: str | None,
+    ) -> None:
+        schemas = [_SCHEMA_BY_NAME[name] for name in sorted(allowed)]
+        tool_choice: str | dict[str, Any] = "required"
+        if forced_name is not None:
+            tool_choice = {"type": "function", "function": {"name": forced_name}}
+        for attempt in range(2):
+            try:
+                response = await self._scope.provider.chat(
+                    messages=messages,
+                    tools=schemas,
+                    model=str(
+                        getattr(self._scope.cfg, "agent_tick_model", "")
+                        or self._scope.model
+                    ),
+                    max_tokens=self._scope.max_tokens,
+                    tool_choice=tool_choice,
+                    disable_thinking=True,
+                )
+                break
+            except JSONDecodeError:
+                if attempt == 1:
+                    raise
+        if not response.tool_calls:
+            raise RuntimeError("wake proactive phase requires one tool call")
+        call = response.tool_calls[0]
+        if call.name not in allowed:
+            raise RuntimeError(f"wake proactive unexpected tool in phase: {call.name}")
+        _ = await execute(call.name, call.arguments, ctx, self._tool_deps)
+
+    async def _commit_content_decision(self, state: WakeRunState) -> bool:
+        events = list(state.contents)
+        effect = AsyncEffect(
+            lambda: self._ack_and_consume(events, state.ctx.now_utc)
+        )
+        if state.ctx.terminal_action == "skip":
+            result = TurnResult(
+                decision="skip",
+                outbound=None,
+                evidence=[],
+                trace=TurnTrace(source="proactive"),
+                side_effects=[effect],
+            )
+            await self._require_orchestrator().handle_proactive_turn(
+                result=result,
+                session_key=state.ctx.session_key,
+                channel=str(getattr(self._scope.cfg, "default_channel", "")),
+                chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
+            )
+            return True
+
+        result = TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(
+                session_key=state.ctx.session_key,
+                content=state.ctx.final_message,
+            ),
+            evidence=list(state.ctx.cited_item_ids),
+            trace=TurnTrace(
+                source="proactive",
+                extra={
+                    "source_refs": list(state.ctx.source_refs),
+                    "display_event_map": dict(state.ctx.display_event_map),
+                },
+            ),
+            success_side_effects=[effect],
+        )
+        return bool(
+            await self._require_orchestrator().handle_proactive_turn(
+                result=result,
+                session_key=state.ctx.session_key,
+                channel=str(getattr(self._scope.cfg, "default_channel", "")),
+                chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
+            )
+        )
+
+    def _sample_threshold(self, session_key: str, now: datetime) -> float:
+        if isinstance(self._clock, ReplayClock):
+            seed = f"wake:{session_key}:{now.isoformat()}"
+            sampled = random.Random(seed).gammavariate(3.0, 1 / 3)
+        else:
+            sampled = self._rng.gammavariate(3.0, 1 / 3)
+        return min(_MAX_HAZARD_THRESHOLD, float(sampled))
+
+    def next_interval(self, state: WakeRunState) -> int:
+        return state.next_interval_seconds
+
+    def close(self) -> None:
+        if self._message_embeddings is not None:
+            self._message_embeddings.close()
+        self._state.close()
+
+    async def _cache_event_embeddings(self) -> None:
+        embedding_api = getattr(self._scope.memory, "embedding_api", None)
+        embed_batch = getattr(embedding_api, "embed_batch", None)
+        if not callable(embed_batch):
+            return
+        embed = cast(
+            Callable[[list[str]], Awaitable[list[list[float]]]],
+            embed_batch,
+        )
+        pending = self._state.unembedded()
+        if not pending:
+            return
+        embeddings = await embed([item["text"] for item in pending])
+        self._state.save_event_embeddings(
+            [item["item_id"] for item in pending],
+            [list(vector) for vector in embeddings],
+        )
+
+    def _apply_semantic_interest(
+        self, events: list[dict[str, Any]], now: datetime
+    ) -> None:
+        prototypes = self._load_turn_prototypes(now)
+        for event in events:
+            base = _preprocess_interest(event)
+            raw_vector = event.get("_event_embedding")
+            vector = (
+                [float(value) for value in cast(list[object], raw_vector) if isinstance(value, (int, float))]
+                if isinstance(raw_vector, list)
+                else []
+            )
+            similarity = max(
+                (_cosine(vector, prototype) for prototype in prototypes),
+                default=0.0,
+            )
+            semantic_interest = min(
+                0.999,
+                max(0.0, similarity) ** _SEMANTIC_CALIBRATION_POWER,
+            )
+            event["_wake_semantic_interest"] = semantic_interest
+            event["_wake_interest_score"] = 1 - (1 - base) * (1 - semantic_interest)
+
+    def _load_turn_prototypes(self, now: datetime) -> list[list[float]]:
+        embedding_api = getattr(self._scope.memory, "embedding_api", None)
+        model = str(getattr(embedding_api, "model_id", "") or "")
+        if self._message_embeddings is None or not model:
+            return []
+        visible = dict(
+            self._message_embeddings.list_until(model=model, cutoff=now.isoformat())
+        )
+        if not visible:
+            return []
+        with closing(sqlite3.connect(str(self._session_db_path))) as db:
+            rows = db.execute(
+                """
+                SELECT id, session_key, seq, role, extra, julianday(ts)
+                FROM messages
+                WHERE julianday(ts) <= julianday(?)
+                ORDER BY session_key, seq
+                """,
+                (now.isoformat(),),
+            ).fetchall()
+        timestamped: list[tuple[float, str, int, list[float]]] = []
+        pending_user: list[float] | None = None
+        pending_session = ""
+        for message_id, session_key, seq, role, extra_json, ts_julian in rows:
+            vector = visible.get(str(message_id))
+            if role == "user":
+                pending_user = vector
+                pending_session = str(session_key)
+                continue
+            if (
+                role == "assistant"
+                and vector is not None
+                and pending_user is not None
+                and pending_session == str(session_key)
+                and not _is_proactive_message(extra_json)
+            ):
+                timestamped.append(
+                    (
+                        float(ts_julian),
+                        str(session_key),
+                        int(seq),
+                        _normalize_weighted(pending_user, vector),
+                    )
+                )
+                pending_user = None
+        timestamped.sort(key=lambda item: (item[0], item[1], item[2]))
+        return [item[3] for item in timestamped[-256:]]
+
+    async def _deliver_alert(
+        self, state: WakeRunState, alert: dict[str, Any]
+    ) -> None:
+        title = str(alert.get("title") or "提醒").strip()
+        body = str(alert.get("content") or alert.get("body") or "").strip()
+        message = title if not body else f"{title}\n\n{body}"
+        item_id = str(alert["id"])
+        result = TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(session_key=state.ctx.session_key, content=message),
+            evidence=[item_id],
+            trace=TurnTrace(source="proactive", extra={"source_refs": []}),
+            success_side_effects=[
+                AsyncEffect(lambda: self._ack_and_consume([alert], state.ctx.now_utc))
+            ],
+        )
+        orchestrator = self._require_orchestrator()
+        await orchestrator.handle_proactive_turn(
+            result=result,
+            session_key=state.ctx.session_key,
+            channel=str(getattr(self._scope.cfg, "default_channel", "")),
+            chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
+        )
+
+    async def _decide_drift(self, state: WakeRunState) -> None:
+        if not bool(getattr(self._scope.cfg, "drift_enabled", True)):
+            return
+        stored = self._state.load_drift(state.ctx.session_key) or {}
+        contexts = self._active_contexts(state.ctx.now_utc)
+        last_user_at = self._last_user_at(
+            state.ctx.session_key,
+            state.ctx.now_utc,
+        )
+        content_evidence = max(
+            (float(event.get("_wake_interest_score") or 0.0) for event in state.contents),
+            default=0.0,
+        )
+        result = advance_drift_drive(
+            now=state.ctx.now_utc,
+            hazard=float(stored.get("hazard") or 0.0),
+            threshold=float(stored.get("threshold") or 0.8),
+            updated_at=_parse_optional_time(stored.get("updated_at")),
+            last_user_at=last_user_at,
+            last_drift_at=_parse_optional_time(stored.get("last_drift_at")),
+            content_evidence=content_evidence,
+            busy=any(
+                context.presence == "offline"
+                or (
+                    context.presence not in {"sleeping", "in_game"}
+                    and context.interruptibility <= 0.1
+                )
+                for context in contexts
+            ),
+            sleeping=any(context.presence == "sleeping" for context in contexts),
+            in_game=any(context.presence == "in_game" for context in contexts),
+            context_suppression=_context_suppression(contexts),
+            repetition=min(1.0, float(stored.get("repeat_count") or 0) / 3.0),
+        )
+        state.drift_result = result
+        state.base_score = max(state.base_score, result.rate)
+        self._state.save_drift_progress(
+            session_key=state.ctx.session_key,
+            hazard=result.hazard_after,
+            threshold=result.threshold,
+            updated_at=state.ctx.now_utc,
+        )
+        if result.decision != "attempt":
+            return
+        messages = build_drift_messages(
+            memory_text=self._read_memory(),
+            proactive_context=str(self._scope.workspace_context_fn() or ""),
+            recent_session=self._read_recent_session(
+                state.ctx.session_key,
+                state.ctx.now_utc,
+                include_proactive=True,
+            ),
+            drive=result,
+        )
+        self._state.record_observation(
+            wake_id=state.ctx.wake_id,
+            session_key=state.ctx.session_key,
+            kind="drift",
+            now=state.ctx.now_utc,
+            trigger=_drift_trace(result),
+            candidates=[],
+            llm_input=messages,
+        )
+        self._state.record_drift_observation(
+            session_key=state.ctx.session_key,
+            now=state.ctx.now_utc,
+            threshold=result.threshold,
+        )
+
+    def _last_user_at(self, session_key: str, now: datetime) -> datetime | None:
+        if isinstance(self._clock, ReplayClock) and self._session_db_path.exists():
+            with closing(sqlite3.connect(str(self._session_db_path))) as db:
+                row = db.execute(
+                    """
+                    SELECT ts
+                    FROM messages
+                    WHERE session_key = ? AND role = 'user'
+                      AND julianday(ts) <= julianday(?)
+                    ORDER BY julianday(ts) DESC, seq DESC
+                    LIMIT 1
+                    """,
+                    (session_key, now.isoformat()),
+                ).fetchone()
+            return _parse_optional_time(row[0]) if row is not None else None
+        getter = getattr(getattr(self._scope, "presence", None), "get_last_user_at", None)
+        value = getter(session_key) if callable(getter) else None
+        return value if isinstance(value, datetime) else None
+
+    def _active_contexts(self, now: datetime) -> list[NormalizedContext]:
+        return [
+            context
+            for context in self._state.list_contexts()
+            if (
+                context.expires_at is not None
+                and context.expires_at >= now
+            )
+            or (
+                context.expires_at is None
+                and context.observed_at is not None
+                and 0 <= (now - context.observed_at).total_seconds() <= 30 * 60
+            )
+        ]
+
+    def _current_context_text(self, now: datetime) -> str:
+        reliable = [
+            context
+            for context in self._active_contexts(now)
+            if context.presence != "unknown" and context.confidence >= 0.55
+        ]
+        if not reliable:
+            return "unknown（没有可靠 ContextEvent）"
+        context = max(
+            reliable,
+            key=lambda item: (
+                item.confidence,
+                item.observed_at.isoformat() if item.observed_at else "",
+            ),
+        )
+        fields = [
+            f"presence={context.presence}",
+            f"interruptibility={context.interruptibility:.2f}",
+            f"confidence={context.confidence:.2f}",
+        ]
+        if context.observed_at is not None:
+            fields.append(f"observed_at={context.observed_at.isoformat()}")
+        if context.expires_at is not None:
+            fields.append(f"expires_at={context.expires_at.isoformat()}")
+        return " | ".join(fields)
+
+    async def _ack_and_consume(
+        self, events: list[dict[str, Any]], now: datetime
+    ) -> None:
+        grouped: dict[str, list[str]] = {}
+        for event in events:
+            source_id = str(event.get("_reservoir_ack_source_id") or "")
+            source_event_id = str(event.get("_reservoir_source_event_id") or "")
+            if source_id and source_event_id:
+                grouped.setdefault(source_id, []).append(source_event_id)
+        self._state.consume_and_queue_ack(
+            item_ids=[str(event["id"]) for event in events],
+            acknowledgements=grouped,
+            now=now,
+        )
+        await self._flush_pending_acknowledgements()
+
+    async def _flush_pending_acknowledgements(self) -> None:
+        grouped = self._state.pending_acknowledgements()
+        for source_id, event_ids in grouped.items():
+            try:
+                await mcp_sources.acknowledge_async(
+                    self._scope.mcp_gateway,
+                    self._scope.proactive_sources,
+                    source_id,
+                    event_ids,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "wake proactive ack pending source=%s count=%d error=%s",
+                    source_id,
+                    len(event_ids),
+                    exc,
+                )
+                continue
+            self._state.mark_acknowledged(source_id, event_ids)
+
+    def _read_memory(self) -> str:
+        reader = getattr(self._scope.memory, "read_long_term", None)
+        return str(reader() or "") if callable(reader) else ""
+
+    def _read_recent_session(
+        self,
+        session_key: str,
+        now: datetime,
+        *,
+        include_proactive: bool = False,
+    ) -> str:
+        if not self._session_db_path.exists():
+            return ""
+        with closing(sqlite3.connect(str(self._session_db_path))) as db:
+            rows = db.execute(
+                """
+                SELECT role, content, extra
+                FROM messages
+                WHERE session_key = ? AND julianday(ts) <= julianday(?)
+                ORDER BY seq DESC
+                LIMIT 20
+                """,
+                (session_key, now.isoformat()),
+            ).fetchall()
+        lines: list[str] = []
+        for role, content, extra_json in reversed(rows):
+            proactive = role == "assistant" and _is_proactive_message(extra_json)
+            if role != "user" and role != "assistant":
+                continue
+            if proactive and not include_proactive:
+                continue
+            label = "assistant(proactive)" if proactive else role
+            lines.append(f"{label}: {str(content or '')[:300]}")
+        return "\n".join(lines)[:3_000]
+
+    def _require_orchestrator(self) -> Any:
+        if self._scope.turn_orchestrator is None:
+            raise RuntimeError("wake proactive requires turn_orchestrator")
+        return self._scope.turn_orchestrator
+
+
+def _parse_optional_time(value: object) -> datetime | None:
+    if value is None or not str(value).strip():
+        return None
+    return datetime.fromisoformat(str(value))
+
+
+def _preprocess_interest(event: dict[str, Any]) -> float:
+    raw_features: dict[str, Any] | None = None
+    candidate_features = event.get("preprocess_features")
+    if isinstance(candidate_features, dict):
+        raw_features = cast(dict[str, Any], candidate_features)
+    if raw_features is None:
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            payload_features = cast(dict[str, Any], payload).get("features")
+            if isinstance(payload_features, dict):
+                raw_features = cast(dict[str, Any], payload_features)
+    raw_interest = (
+        raw_features.get("interest")
+        if isinstance(raw_features, dict)
+        else event.get("preprocess_score")
+    )
+    try:
+        return min(0.999, max(0.0, float(raw_interest or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_weighted(user: list[float], assistant: list[float]) -> list[float]:
+    if len(user) != len(assistant) or not user:
+        return []
+    combined = [0.9 * left + 0.1 * right for left, right in zip(user, assistant, strict=True)]
+    norm = math.sqrt(sum(value * value for value in combined))
+    return [value / norm for value in combined] if norm > 0 else []
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
+        return 0.0
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm <= 0 or right_norm <= 0:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
+
+
+def _is_proactive_message(extra_json: object) -> bool:
+    try:
+        extra = json.loads(str(extra_json or "{}"))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(extra, dict):
+        return False
+    payload = cast(dict[str, Any], extra)
+    return bool(payload.get("proactive"))
+
+
+def _drift_trace(result: DriftDriveResult) -> dict[str, Any]:
+    return {
+        "hazard_before": result.hazard_before,
+        "hazard_after": result.hazard_after,
+        "threshold": result.threshold,
+        "rate": result.rate,
+        "idle_hours": result.idle_hours,
+        "content_suppression": result.content_suppression,
+        "context_suppression": result.context_suppression,
+        "recent_drift_suppression": result.recent_drift_suppression,
+        "repetition_suppression": result.repetition_suppression,
+        "reasons": list(result.reasons),
+    }
+
+
+def _hazard_trace(result: HazardResult) -> dict[str, Any]:
+    return {
+        "hazard_before": result.hazard_before,
+        "hazard_after": result.hazard_after,
+        "threshold": result.threshold,
+        "evidence": result.evidence,
+        "refractory": result.refractory,
+        "rate": result.rate,
+        "preference_pressure": result.preference_pressure,
+        "should_wake": result.should_wake,
+        "driver_item_id": result.driver_item_id,
+    }
+
+
+def _context_suppression(contexts: list[NormalizedContext]) -> float:
+    suppressions: list[float] = []
+    presence_weight = {
+        "active": 0.2,
+        "idle": 0.1,
+        "sleeping": 0.98,
+        "in_game": 0.8,
+        "offline": 0.9,
+        "unknown": 0.4,
+    }
+    for context in contexts:
+        base = max(
+            presence_weight[context.presence],
+            1.0 - context.interruptibility,
+        )
+        suppressions.append(base * context.confidence)
+    return 1.0 - math.prod(1.0 - value for value in suppressions)

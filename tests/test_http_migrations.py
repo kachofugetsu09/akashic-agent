@@ -136,10 +136,12 @@ async def test_embedder_sends_configured_output_dimension():
         embedder = Embedder(
             base_url="https://embeddings.example.com/v1",
             api_key="test-key",
+            model="text-embedding-v4",
             output_dimensionality=768,
             requester=requester,
         )
         vectors = await embedder.embed_batch(["first"])
         assert vectors == [[0.1, 0.2]]
+        assert embedder.model_id == "text-embedding-v4"
     finally:
         await requester.client.aclose()

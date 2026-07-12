@@ -34,6 +34,7 @@ from plugins.akasha.core import (
     RecallBudget,
     SourceMessage,
     build_dense_message_index,
+    initial_strength,
     turn_key,
     # Algorithm functions (aliased with _ prefix for internal convention)
     activation_edge_updates as _activation_edge_updates,
@@ -73,6 +74,7 @@ from core.memory.engine import (
 from memory2.embedder import Embedder
 from plugins.akasha.config import AkashaConfig, resolve_akasha_db_path
 from plugins.akasha.store import AkashaStore
+from session.embedding_store import MessageEmbeddingStore
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -116,6 +118,10 @@ class AkashaMemoryEngine:
         notes={"owner": "plugins.akasha.engine", "truth": "sessions.db/messages"},
     )
 
+    @property
+    def embedding_api(self) -> Embedder:
+        return self._embedder
+
     def __init__(
         self,
         *,
@@ -135,6 +141,10 @@ class AkashaMemoryEngine:
                 workspace=workspace,
                 akasha_config=akasha_config,
             )
+        )
+        self._embedding_store = MessageEmbeddingStore(self._session_db_path)
+        _ = self._embedding_store.import_legacy_rows_once(
+            self._store.list_cached_embedding_rows()
         )
         embedding = config.memory.embedding
         self._embedder = Embedder(
@@ -162,7 +172,11 @@ class AkashaMemoryEngine:
         self._message_index = build_dense_message_index({})
         self._load_graph_cache()
         self._ensure_idf_table()
-        self.closeables: list[object] = [self._store, self._embedder]
+        self.closeables: list[object] = [
+            self._store,
+            self._embedding_store,
+            self._embedder,
+        ]
         self._wire_events()
 
     # 启动时自动检查 / 建 FTS IDF 表。缺失或漂移过大时重建。
@@ -308,6 +322,7 @@ class AkashaMemoryEngine:
         dense_cards = self._cards_from_keys(
             [(item.key, item.score, "dense", _candidate_signals(item)) for item in result.dense_items],
             limit=dense_limit,
+            cutoff=datetime.fromtimestamp(now_ts, timezone.utc).isoformat(),
         )
         dense_keys = {card.key for card in dense_cards}
         dense_pairs = {_card_dedupe_key(card) for card in dense_cards}
@@ -319,6 +334,7 @@ class AkashaMemoryEngine:
             ],
             limit=ripple_limit,
             skip_pairs=dense_pairs,
+            cutoff=datetime.fromtimestamp(now_ts, timezone.utc).isoformat(),
         )
         text_block = (
             self._format_context_block(dense_cards, ripple_cards, now_ts=now_ts)
@@ -423,7 +439,7 @@ class AkashaMemoryEngine:
             ]
             _ = self._store.delete_items_batch(keys)
             self._store.delete_query_state_for_turns(turns)
-            _ = self._store.delete_cached_embeddings(clean_ids)
+            _ = self._embedding_store.delete(clean_ids)
             self._remove_cached_nodes(keys)
             self._remove_cached_messages(clean_ids)
         return {
@@ -549,7 +565,7 @@ class AkashaMemoryEngine:
         update_state: bool,
     ) -> "_AkashaRetrieval":
         # 1. 准备内存图和当前查询所在的预测 seq。
-        snapshot = self._graph_snapshot()
+        snapshot = self._graph_snapshot_at(now_ts)
         seq = _current_query_seq(self._session_db_path, request.scope)
         source_db = (
             sqlite3.connect(str(self._session_db_path))
@@ -655,8 +671,9 @@ class AkashaMemoryEngine:
         embeddings = await self._embedder.embed_batch([message.content for message in messages])
         current_key = ""
         for message, embedding in zip(messages, embeddings, strict=False):
-            self._store.upsert_cached_embedding(
-                message=message,
+            self._embedding_store.upsert(
+                message_id=message.id,
+                content=message.content,
                 model=self._config.memory.embedding.model,
                 embedding=embedding,
             )
@@ -733,9 +750,12 @@ class AkashaMemoryEngine:
     def _load_graph_cache(self) -> None:
         nodes = {node.key: node for node in self._store.list_nodes()}
         edges, edges_meta = self._store.load_edges_with_meta()
-        message_embeddings = dict(
-            self._store.list_cached_embeddings(model=self._config.memory.embedding.model)
-        )
+        message_embeddings = {
+            message_id: np.asarray(embedding, dtype=np.float32)
+            for message_id, embedding in self._embedding_store.list(
+                model=self._config.memory.embedding.model
+            )
+        }
         message_turn_keys = _load_message_turn_keys(self._session_db_path)
         message_index = build_dense_message_index(message_embeddings)
         with self._graph_lock:
@@ -777,6 +797,83 @@ class AkashaMemoryEngine:
                 message_turn_keys=dict(self._message_turn_keys),
                 message_index=self._message_index,
             )
+
+    def _graph_snapshot_at(self, now_ts: float) -> AkashaActivationSnapshot:
+        snapshot = self._graph_snapshot()
+        visible_nodes: dict[str, AkashaNode] = {}
+        for key, node in snapshot.nodes.items():
+            if node.first_ts_unix > now_ts:
+                continue
+            if max(
+                node.last_activated_ts,
+                node.last_strength_ts,
+                node.last_resource_ts,
+            ) > now_ts:
+                node = replace(
+                    node,
+                    strength=initial_strength(node.salience),
+                    resource=1.0,
+                    recall_count=0,
+                    last_activated_ts=node.first_ts_unix,
+                    last_strength_ts=node.first_ts_unix,
+                    last_resource_ts=node.first_ts_unix,
+                )
+            visible_nodes[key] = node
+
+        visible_embeddings = {
+            message_id: np.asarray(embedding, dtype=np.float32)
+            for message_id, embedding in self._embedding_store.list_until(
+                model=self._config.memory.embedding.model,
+                cutoff=datetime.fromtimestamp(now_ts, timezone.utc).isoformat(),
+            )
+        }
+        visible_turn_keys = {
+            message_id: key
+            for message_id, key in snapshot.message_turn_keys.items()
+            if message_id in visible_embeddings and key in visible_nodes
+        }
+        embeddings_by_turn: dict[str, list[np.ndarray]] = {}
+        for message_id, key in visible_turn_keys.items():
+            vector = visible_embeddings[message_id]
+            norm = float(np.linalg.norm(vector))
+            if norm > 0:
+                embeddings_by_turn.setdefault(key, []).append(vector / norm)
+        for key, vectors in embeddings_by_turn.items():
+            merged = np.sum(vectors, axis=0)
+            norm = float(np.linalg.norm(merged))
+            if norm > 0:
+                visible_nodes[key] = replace(
+                    visible_nodes[key],
+                    embedding=merged / norm,
+                    emb_count=len(vectors),
+                )
+        visible_nodes = {
+            key: node
+            for key, node in visible_nodes.items()
+            if key in embeddings_by_turn
+        }
+
+        visible_edges = {
+            edge: weight
+            for edge, weight in snapshot.edges.items()
+            if edge[0] in visible_nodes
+            and edge[1] in visible_nodes
+            and snapshot.edges_meta.get(edge, 0.0) <= now_ts
+        }
+        visible_edges_meta = {
+            edge: snapshot.edges_meta.get(edge, 0.0)
+            for edge in visible_edges
+        }
+        return AkashaActivationSnapshot(
+            nodes=visible_nodes,
+            edges=visible_edges,
+            edges_meta=visible_edges_meta,
+            fan=_fan_counts(visible_edges),
+            edges_by_src=_edges_by_src(visible_edges),
+            message_embeddings=visible_embeddings,
+            message_turn_keys=visible_turn_keys,
+            message_index=build_dense_message_index(visible_embeddings),
+        )
 
     # 把查询产生的状态更新同步进内存图。
     def _apply_activation_updates(self, updates: list[ActivationUpdate]) -> None:
@@ -919,6 +1016,7 @@ class AkashaMemoryEngine:
         *,
         limit: int,
         skip_pairs: set[tuple[str, str]] | None = None,
+        cutoff: str | None = None,
     ) -> list[AkashaCard]:
         # 1. 每个 card 的正文都回 sessions.db 取，sidecar 不充当事实来源。
         cards: list[AkashaCard] = []
@@ -935,6 +1033,7 @@ class AkashaMemoryEngine:
                 score=score,
                 lane=lane,
                 signals=signals,
+                cutoff=cutoff,
             )
             if card is None:
                 continue
@@ -1181,6 +1280,11 @@ def _load_message_turn_keys(session_db_path: Path) -> dict[str, str]:
     if not session_db_path.exists():
         return {}
     with closing(sqlite3.connect(str(session_db_path))) as db:
+        table = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+        ).fetchone()
+        if table is None:
+            return {}
         rows = db.execute("SELECT id, session_key, seq, role FROM messages").fetchall()
     result: dict[str, str] = {}
     for message_id, session_key, seq, role in rows:
@@ -1272,6 +1376,7 @@ def _load_turn_card(
     score: float,
     lane: str,
     signals: dict[str, object],
+    cutoff: str | None = None,
 ) -> AkashaCard | None:
     # 1. 用 turn key 回源到 messages 表，user 全量、assistant 截断。
     parsed = _parse_turn_key(key)
@@ -1285,16 +1390,18 @@ def _load_turn_card(
             SELECT id, content, ts
             FROM messages
             WHERE session_key = ? AND seq = ? AND role = 'user'
+              AND (? IS NULL OR julianday(ts) <= julianday(?))
             """,
-            (session_key, seq),
+            (session_key, seq, cutoff, cutoff),
         ).fetchone()
         assistant_row = db.execute(
             """
             SELECT id, content, ts
             FROM messages
             WHERE session_key = ? AND seq = ? AND role = 'assistant'
+              AND (? IS NULL OR julianday(ts) <= julianday(?))
             """,
-            (session_key, seq + 1),
+            (session_key, seq + 1, cutoff, cutoff),
         ).fetchone()
     if user_row is None and assistant_row is None:
         return None

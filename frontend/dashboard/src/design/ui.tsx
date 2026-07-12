@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "./cn";
+import { renderMarkdown } from "../format";
 
 // ---------------------------------------------------------------------------
 // Shared primitives for the dashboard and the /design storybook.
@@ -80,6 +81,66 @@ export function Panel({ children, className }: { children: ReactNode; className?
 
 export function Toolbar({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn("ak-plugin-toolbar", className)}>{children}</div>;
+}
+
+export function Markdown({ children, className }: { children: unknown; className?: string }) {
+  return <div className={cn("ak-markdown", className)} dangerouslySetInnerHTML={{ __html: renderMarkdown(children) }} />;
+}
+
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (!text || (!text.startsWith("{") && !text.startsWith("[") && !text.startsWith('"'))) return value;
+  try {
+    return parseMaybeJson(JSON.parse(text));
+  } catch {
+    return value;
+  }
+}
+
+function JsonScalar({ value }: { value: unknown }) {
+  if (typeof value === "string") {
+    if (value.length > 280) {
+      const preview = value.slice(0, 160).replace(/\s+/g, " ");
+      return <details className="jt-long"><summary>{preview}…</summary><Markdown>{value}</Markdown></details>;
+    }
+    return <Markdown className="jt-str">{value}</Markdown>;
+  }
+  if (value === null) return <span className="jt-null">空值</span>;
+  if (typeof value === "boolean") return <span className="jt-bool">{value ? "是" : "否"}</span>;
+  if (typeof value === "number") return <span className="jt-num">{value}</span>;
+  return <span>{String(value)}</span>;
+}
+
+function JsonNode({ value, depth, label }: { value: unknown; depth: number; label?: string }) {
+  const parsed = parseMaybeJson(value);
+  const indent = { paddingLeft: `${12 + Math.min(depth, 8) * 14}px` };
+  if (parsed === null || typeof parsed !== "object") {
+    return <div className="jt-row" style={indent}>
+      {label && <div className="jt-key" title={label}>{label}</div>}
+      <div className="jt-value"><JsonScalar value={parsed} /></div>
+    </div>;
+  }
+  const array = Array.isArray(parsed);
+  const entries = array ? parsed.map((item, index) => [String(index), item] as const) : Object.entries(parsed);
+  return <details className="jt-node" open={depth < 2}>
+    <summary className="jt-toggle" style={indent}>
+      <span className="jt-branch-label" title={label}>{label ?? (array ? "列表" : "字段")}</span>
+      <span className="jt-meta">{array ? "列表" : "字段"} · {entries.length} 项</span>
+    </summary>
+    <div className="jt-children">
+      {entries.map(([key, child]) => <JsonNode
+        key={key}
+        value={child}
+        depth={depth + 1}
+        label={array ? `第 ${Number(key) + 1} 项` : key}
+      />)}
+    </div>
+  </details>;
+}
+
+export function JsonView({ value, className }: { value: unknown; className?: string }) {
+  return <div className={cn("json-tree", className)}><JsonNode value={value} depth={0} /></div>;
 }
 
 // ---------------------------------------------------------------------------

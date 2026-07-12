@@ -1074,6 +1074,73 @@ body {
     @apply rounded-sm bg-surface-3 px-1 py-px font-mono text-xs;
   }
 
+  .ak-markdown {
+    @apply text-[13px] leading-[1.7] text-fg;
+    overflow-wrap: anywhere;
+  }
+
+  .ak-markdown > :first-child {
+    margin-top: 0;
+  }
+
+  .ak-markdown > :last-child {
+    margin-bottom: 0;
+  }
+
+  .ak-markdown p,
+  .ak-markdown ul,
+  .ak-markdown ol,
+  .ak-markdown blockquote,
+  .ak-markdown pre {
+    margin: 0.55em 0;
+  }
+
+  .ak-markdown h1,
+  .ak-markdown h2,
+  .ak-markdown h3,
+  .ak-markdown h4 {
+    @apply mb-2 mt-4 font-semibold leading-snug text-fg;
+  }
+
+  .ak-markdown h1 { @apply text-xl; }
+  .ak-markdown h2 { @apply text-lg; }
+  .ak-markdown h3,
+  .ak-markdown h4 { @apply text-[15px]; }
+
+  .ak-markdown ul,
+  .ak-markdown ol {
+    padding-left: 1.4em;
+  }
+
+  .ak-markdown a {
+    @apply text-accent underline underline-offset-2;
+  }
+
+  .ak-markdown code {
+    @apply rounded-sm bg-surface-3 px-1 py-px font-mono text-xs;
+  }
+
+  .ak-markdown pre {
+    @apply overflow-auto rounded border border-border bg-surface-3 p-3;
+  }
+
+  .ak-markdown blockquote {
+    @apply border-l border-border-strong pl-3 text-muted;
+  }
+
+  .ak-markdown table {
+    @apply my-3 w-full border-collapse text-left text-xs;
+  }
+
+  .ak-markdown th,
+  .ak-markdown td {
+    @apply border-b border-border px-2 py-1.5 align-top;
+  }
+
+  .ak-markdown th {
+    @apply font-medium text-muted;
+  }
+
   .detail-grid {
     @apply grid;
   }
@@ -1098,41 +1165,71 @@ body {
   /* ── JSON tree ── */
 
   .json-tree {
-    @apply overflow-x-auto rounded border border-border bg-surface-2 px-4 py-3 font-mono text-xs leading-[1.75] shadow-inset-hairline;
-    word-break: break-all;
+    @apply overflow-x-auto rounded border border-border bg-surface-2 text-[12.5px] leading-[1.55];
   }
 
   .jt-children {
-    @apply ml-1 border-l border-border pl-4;
+    @apply border-t border-border;
   }
 
   .jt-row {
-    @apply block;
+    @apply grid grid-cols-[minmax(90px,0.28fr)_minmax(0,1fr)] border-b border-border py-2 pr-3 last:border-b-0;
+    column-gap: 14px;
   }
 
   .jt-toggle {
-    @apply cursor-pointer select-none text-subtle;
+    @apply flex min-w-0 cursor-pointer select-none items-center gap-3 py-2 pr-3 text-[11px] text-muted;
   }
 
-  .jt-key,
-  .jt-colon {
-    @apply text-muted;
+  .jt-key {
+    @apply min-w-0 truncate font-sans text-[11px] font-medium text-muted;
   }
 
-  .jt-str {
-    @apply text-success;
+  .jt-value {
+    @apply min-w-0 text-fg;
+    overflow-wrap: anywhere;
+  }
+
+  .jt-branch-label {
+    @apply min-w-0 truncate font-medium text-fg;
+  }
+
+  .jt-meta {
+    @apply ml-auto shrink-0 text-subtle;
+  }
+
+  .jt-str.ak-markdown {
+    font-size: inherit;
+    line-height: inherit;
   }
 
   .jt-num {
-    @apply text-accent;
+    @apply font-mono tabular-nums text-fg;
   }
 
   .jt-bool {
-    @apply text-warning;
+    @apply font-medium text-fg;
   }
 
   .jt-null {
-    @apply italic text-subtle;
+    @apply text-subtle;
+  }
+
+  .jt-long > summary {
+    @apply cursor-pointer text-muted;
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+
+  .jt-long[open] > summary {
+    @apply mb-2 border-b border-border pb-2;
+    display: block;
+  }
+
+  .jt-long > .ak-markdown {
+    font-size: inherit;
   }
 
   /* ── Similar memory items / tags ── */

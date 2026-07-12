@@ -21,12 +21,12 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from agent.plugins.manifest import load_plugin_manifest
+from agent.plugins.manifest import load_package_manifest, load_plugin_manifest
+from agent.plugins.packages import enabled_plugin_packages
 from agent.plugins.source_resolver import resolve_plugin_sources
 
 from agent.memory import MemoryStore
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
-from proactive_v2.state import ProactiveStateStore
 from core.memory.engine import MemoryAdminApi
 from session.store import SessionStore
 
@@ -58,6 +58,12 @@ def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
         if not plugin_root.is_dir():
             continue
         result[plugin_id] = plugin_root
+    for package_id, package in enabled_plugin_packages(
+        project_root,
+        load_package_manifest(),
+    ).items():
+        if package.dashboard:
+            result[package_id] = package.root
     return result
 
 
@@ -686,20 +692,12 @@ def create_dashboard_app(
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
-    proactive_reader: ProactiveDashboardReader | None = None
     optimizer_task: asyncio.Task[None] | None = None
     optimizer_last_status = "idle"
     optimizer_last_error: str | None = None
     plugin_closeables: list[object] = []
     project_root = Path(__file__).resolve().parent.parent
     static_dir = project_root / "static" / "dashboard"
-
-    def get_proactive_reader() -> ProactiveDashboardReader:
-        nonlocal proactive_reader
-        if proactive_reader is None:
-            ProactiveStateStore(workspace / "proactive.db").close()
-            proactive_reader = ProactiveDashboardReader(workspace / "proactive.db")
-        return proactive_reader
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -716,8 +714,6 @@ def create_dashboard_app(
             _close_dashboard_value(memory_admin)
             for closeable in reversed(plugin_closeables):
                 _close_dashboard_value(closeable)
-            if proactive_reader is not None:
-                get_proactive_reader().close()
 
     app = FastAPI(title="Akashic Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
@@ -738,7 +734,9 @@ def create_dashboard_app(
         if plugin_manager is None and not _plugin_dashboard_enabled(app, _plugin_dir):
             continue
         _build_plugin_panels_js(project_root, _plugin_dir)
-        if plugin_manager is None and (_plugin_dir / "dashboard.py").exists():
+        if (
+            plugin_manager is None or (_plugin_dir / "package.toml").exists()
+        ) and (_plugin_dir / "dashboard.py").exists():
             plugin_closeables.extend(
                 _load_plugin_dashboard(app, _plugin_dir, workspace)
             )
@@ -1190,83 +1188,6 @@ def create_dashboard_app(
         deleted_count = memory_admin.delete_items_batch(payload.ids)
         return {"deleted_count": deleted_count}
 
-    @app.get("/api/dashboard/proactive/overview")
-    def get_proactive_overview() -> dict[str, Any]:
-        return get_proactive_reader().get_overview()
-
-    @app.get("/api/dashboard/proactive/deliveries")
-    def list_proactive_deliveries(
-        session_key: str = "",
-        sent_from: str = "",
-        sent_to: str = "",
-        page: int = 1,
-        page_size: int = 50,
-    ) -> dict[str, Any]:
-        items, total = get_proactive_reader().list_deliveries(
-            session_key=session_key,
-            sent_from=sent_from,
-            sent_to=sent_to,
-            page=page,
-            page_size=page_size,
-        )
-        return {
-            "items": items,
-            "total": total,
-            "page": max(1, page),
-            "page_size": max(1, min(page_size, 200)),
-        }
-
-    @app.get("/api/dashboard/proactive/tick_logs")
-    def list_proactive_tick_logs(
-        session_key: str = "",
-        terminal_action: str = "",
-        gate_exit: str = "",
-        flow: str = Query(default="", pattern="^(|drift|proactive)$"),
-        started_from: str = "",
-        started_to: str = "",
-        page: int = 1,
-        page_size: int = 50,
-        sort_by: str = "started_at",
-        sort_order: str = "desc",
-    ) -> dict[str, Any]:
-        items, total = get_proactive_reader().list_tick_logs(
-            session_key=session_key,
-            terminal_action=terminal_action,
-            gate_exit=gate_exit,
-            flow=flow,
-            started_from=started_from,
-            started_to=started_to,
-            page=page,
-            page_size=page_size,
-            sort_by=sort_by,
-            sort_order=sort_order,
-        )
-        return {
-            "items": items,
-            "total": total,
-            "page": max(1, page),
-            "page_size": max(1, min(page_size, 200)),
-        }
-
-    @app.get("/api/dashboard/proactive/tick_logs/{tick_id}")
-    def get_proactive_tick_log(tick_id: str) -> dict[str, Any]:
-        item = get_proactive_reader().get_tick_log(tick_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="tick 不存在")
-        return item
-
-    @app.get("/api/dashboard/proactive/tick_logs/{tick_id}/steps")
-    def list_proactive_tick_steps(tick_id: str) -> dict[str, Any]:
-        item = get_proactive_reader().get_tick_log(tick_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="tick 不存在")
-        steps = get_proactive_reader().list_tick_steps(tick_id)
-        return {
-            "items": steps,
-            "total": len(steps),
-            "tick_id": tick_id,
-        }
-
     if plugin_manager is not None:
         from agent.plugins.dashboard_host import (
             DashboardBinding,
@@ -1290,6 +1211,8 @@ def create_dashboard_app(
         )
 
         def dashboard_plugin_enabled(plugin_id: str, plugin_dir: Path) -> bool:
+            if (plugin_dir / "package.toml").exists():
+                return True
             _ = plugin_dir
             current = plugin_manager.current_snapshot
             return current is not None and any(

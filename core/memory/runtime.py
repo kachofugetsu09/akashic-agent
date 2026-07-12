@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         MemoryQueryResult,
     )
     from core.memory.markdown import MarkdownMemoryRuntime
+    from core.memory.plugin import EmbeddingApi
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class MemoryRuntime:
     markdown: "MarkdownMemoryRuntime"
     engine: "MemoryEngine"
     closeables: list[object] = field(default_factory=list[object])
+    embedding_api: "EmbeddingApi | None" = None
 
     def read_long_term(self) -> str:
         return self.markdown.store.read_long_term()

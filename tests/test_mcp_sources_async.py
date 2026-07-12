@@ -28,10 +28,11 @@ class FakePool:
         self.timeouts.append(timeout)
         if (server, tool_name) in self.failures:
             raise RuntimeError(f"failed: {server}.{tool_name}")
-        return self.responses[(server, tool_name)]
+        response = self.responses[(server, tool_name)]
+        return response(args) if callable(response) else response
 
 
-def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: str, *, ack: str = "", poll: str = "") -> RegisteredProactiveSource:
+def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: str, *, ack: str = "", poll: str = "", page_size: int = 0) -> RegisteredProactiveSource:
     return RegisteredProactiveSource(
         plugin_id=plugin_id,
         spec=ProactiveSourceSpec(
@@ -42,6 +43,7 @@ def source(plugin_id: str, source_id: str, channels: tuple, server: str, fetch: 
             ack_tool=ack,
             poll_tool=poll,
             poll_interval_seconds=10 if poll else 0,
+            fetch_page_size=page_size,
         ),
     )
 
@@ -125,6 +127,39 @@ async def test_fetch_source_once_and_routes_multiple_channels() -> None:
     assert len(pool.calls) == 1
     assert result["alert"][0]["ack_server"] == "demo@lab:mixed"
     assert result["content"][0]["ack_server"] == "demo@lab:mixed"
+
+
+@pytest.mark.asyncio
+async def test_fetch_source_collects_declared_pages() -> None:
+    events = [{"kind": "content", "event_id": str(index)} for index in range(5)]
+    pool = FakePool(
+        {
+            ("feed", "events"): lambda args: events[
+                args["offset"]:args["offset"] + args["limit"]
+            ]
+        }
+    )
+    sources = [
+        source(
+            "feed",
+            "subscriptions",
+            ("content",),
+            "feed",
+            "events",
+            page_size=2,
+        )
+    ]
+
+    result = await mcp_sources.fetch_sources_async(cast(Any, pool), sources)
+
+    assert [event["event_id"] for event in result["content"]] == [
+        "0", "1", "2", "3", "4"
+    ]
+    assert [call[2] for call in pool.calls] == [
+        {"offset": 0, "limit": 2},
+        {"offset": 2, "limit": 2},
+        {"offset": 4, "limit": 2},
+    ]
 
 
 @pytest.mark.asyncio

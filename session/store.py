@@ -151,6 +151,25 @@ class SessionStore:
         except sqlite3.OperationalError:
             self._has_fts = False
 
+    def _has_message_embeddings_locked(self) -> bool:
+        row = self._conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'message_embeddings'
+            """
+        ).fetchone()
+        return row is not None
+
+    def _delete_message_embeddings_locked(self, message_ids: list[str]) -> None:
+        if not message_ids or not self._has_message_embeddings_locked():
+            return
+        placeholders = ",".join("?" for _ in message_ids)
+        self._conn.execute(
+            f"DELETE FROM message_embeddings WHERE message_id IN ({placeholders})",
+            tuple(message_ids),
+        )
+
     def close(self) -> None:
         with self._lock:
             if self._closed:
@@ -433,6 +452,16 @@ class SessionStore:
                 if count > 0:
                     raise ValueError("session 下仍有 messages，需使用 cascade 删除")
             else:
+                if self._has_message_embeddings_locked():
+                    self._conn.execute(
+                        """
+                        DELETE FROM message_embeddings
+                        WHERE message_id IN (
+                            SELECT id FROM messages WHERE session_key = ?
+                        )
+                        """,
+                        (key,),
+                    )
                 self._conn.execute(
                     "DELETE FROM messages WHERE session_key = ?",
                     (key,),
@@ -465,6 +494,18 @@ class SessionStore:
                         "选中的 session 中仍有 messages，需使用 cascade 删除"
                     )
             else:
+                if self._has_message_embeddings_locked():
+                    self._conn.execute(
+                        f"""
+                        DELETE FROM message_embeddings
+                        WHERE message_id IN (
+                            SELECT id
+                            FROM messages
+                            WHERE session_key IN ({placeholders})
+                        )
+                        """,
+                        tuple(clean_keys),
+                    )
                 self._conn.execute(
                     f"DELETE FROM messages WHERE session_key IN ({placeholders})",
                     tuple(clean_keys),
@@ -783,7 +824,7 @@ class SessionStore:
 
         with self._lock:
             row = self._conn.execute(
-                "SELECT session_key FROM messages WHERE id = ?",
+                "SELECT session_key, content FROM messages WHERE id = ?",
                 (message_id,),
             ).fetchone()
             if row is None:
@@ -794,6 +835,8 @@ class SessionStore:
                 f"UPDATE messages SET {', '.join(set_parts)} WHERE id = ?",
                 tuple(params),
             )
+            if content is not None and content != str(row["content"] or ""):
+                self._delete_message_embeddings_locked([message_id])
             self._conn.execute(
                 "UPDATE sessions SET updated_at = ? WHERE key = ?",
                 (datetime.now().astimezone().isoformat(), session_key),
@@ -816,6 +859,7 @@ class SessionStore:
                 "DELETE FROM messages WHERE id = ?",
                 (message_id,),
             )
+            self._delete_message_embeddings_locked([message_id])
             self._conn.execute(
                 "UPDATE sessions SET updated_at = ? WHERE key = ?",
                 (datetime.now().astimezone().isoformat(), session_key),
@@ -840,6 +884,7 @@ class SessionStore:
                 f"DELETE FROM messages WHERE id IN ({placeholders})",
                 tuple(clean_ids),
             )
+            self._delete_message_embeddings_locked(clean_ids)
             for row in rows:
                 self._conn.execute(
                     "UPDATE sessions SET updated_at = ? WHERE key = ?",
@@ -867,7 +912,7 @@ class SessionStore:
             try:
                 seq_rows = self._conn.execute(
                     f"""
-                    SELECT seq
+                    SELECT id, seq
                     FROM messages
                     WHERE session_key = ? AND id IN ({placeholders})
                     """,
@@ -876,6 +921,7 @@ class SessionStore:
                 next_seq = (
                     max(int(row["seq"]) for row in seq_rows) + 1 if seq_rows else 0
                 )
+                deleted_ids = [str(row["id"]) for row in seq_rows]
                 cur = self._conn.execute(
                     f"""
                     DELETE FROM messages
@@ -883,6 +929,7 @@ class SessionStore:
                     """,
                     tuple([session_key, *clean_ids]),
                 )
+                self._delete_message_embeddings_locked(deleted_ids)
                 self._conn.execute(
                     """
                     UPDATE sessions

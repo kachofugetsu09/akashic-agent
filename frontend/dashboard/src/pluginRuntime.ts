@@ -16,8 +16,19 @@ function parseMaybeJson(value: unknown): unknown {
 function scalarNode(value: unknown): HTMLElement {
   const span = document.createElement("span");
   if (typeof value === "string") {
-    span.className = "jt-str";
-    span.textContent = JSON.stringify(value);
+    if (value.length > 280) {
+      const details = document.createElement("details");
+      details.className = "jt-long";
+      const summary = document.createElement("summary");
+      summary.textContent = `${value.slice(0, 160).replace(/\s+/g, " ")}…`;
+      const content = document.createElement("div");
+      content.className = "ak-markdown";
+      content.innerHTML = renderMarkdown(value);
+      details.append(summary, content);
+      return details;
+    }
+    span.className = "jt-str ak-markdown";
+    span.innerHTML = renderMarkdown(value);
     return span;
   }
   if (typeof value === "number") {
@@ -27,12 +38,12 @@ function scalarNode(value: unknown): HTMLElement {
   }
   if (typeof value === "boolean") {
     span.className = "jt-bool";
-    span.textContent = String(value);
+    span.textContent = value ? "是" : "否";
     return span;
   }
   if (value === null) {
     span.className = "jt-null";
-    span.textContent = "null";
+    span.textContent = "空值";
     return span;
   }
   span.textContent = String(value);
@@ -51,10 +62,10 @@ function makeNode(value: unknown, depth: number): HTMLElement {
   wrapper.className = "jt-node";
 
   const details = document.createElement("details");
-  details.open = depth < 3;
+  details.open = depth < 2;
   const summary = document.createElement("summary");
   summary.className = "jt-toggle";
-  summary.textContent = isArray ? `Array(${entries.length})` : `Object(${entries.length})`;
+  summary.textContent = `${isArray ? "列表" : "字段"} · ${entries.length} 项`;
   details.appendChild(summary);
 
   const children = document.createElement("div");
@@ -65,12 +76,11 @@ function makeNode(value: unknown, depth: number): HTMLElement {
     const keySpan = document.createElement("span");
     keySpan.className = "jt-key";
     keySpan.textContent = isArray ? `[${key}]` : key;
-    const colon = document.createElement("span");
-    colon.className = "jt-colon";
-    colon.textContent = ": ";
+    const valueNode = document.createElement("div");
+    valueNode.className = "jt-value";
+    valueNode.appendChild(makeNode(child, depth + 1));
     row.appendChild(keySpan);
-    row.appendChild(colon);
-    row.appendChild(makeNode(child, depth + 1));
+    row.appendChild(valueNode);
     children.appendChild(row);
   }
 

@@ -59,6 +59,7 @@ def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
 
     assert loop is not None
     assert loop._memory is facade
+    assert "default.source.poll" in loop._proactive_kernel.inspect()
     for task in tasks:
         close = getattr(task, "close", None)
         if callable(close):

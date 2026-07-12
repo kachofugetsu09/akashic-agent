@@ -540,6 +540,10 @@ class DefaultMemoryEngine:
         notes={"owner": "plugins.default_memory.engine"},
     )
 
+    @property
+    def embedding_api(self) -> Embedder:
+        return cast(Embedder, self._embedder)
+
     def __init__(
         self,
         *,

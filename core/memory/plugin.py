@@ -38,11 +38,22 @@ class MemoryPluginBuildDeps:
     markdown: "MarkdownMemoryRuntime"
 
 
+@runtime_checkable
+class EmbeddingApi(Protocol):
+    @property
+    def model_id(self) -> str: ...
+
+    async def embed(self, text: str) -> list[float]: ...
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
+
+
 @dataclass
 class MemoryPluginRuntime:
     engine: MemoryEngine
     closeables: list[object] = field(default_factory=list[object])
     admin: MemoryAdminApi | None = None
+    embedding_api: EmbeddingApi | None = None
 
 
 @runtime_checkable

@@ -19,6 +19,8 @@ try:
     from plugins.akasha.fast.mem_store import CapturingMemoryStore
     from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage
     from plugins.akasha.store import AkashaStore
+    from scripts.build_akasha_db import _load_embeddings_from_cache
+    from session.embedding_store import MessageEmbeddingStore
 except Exception:  # pragma: no cover - host 依赖缺失时跳过
     pytest.skip("akasha host 依赖缺失", allow_module_level=True)
 
@@ -136,16 +138,41 @@ def _build_fast(tmp_path: Path, tag: str) -> Path:
     _init_sessions(sessions)
     db_path = tmp_path / f"fast_{tag}.db"
     store = AkashaStore(db_path)
+    embedding_store = MessageEmbeddingStore(sessions)
     mem = CapturingMemoryStore()
     graph_fast.install(mem)
     fast_dense.install()
-    embeddings, turn_keys = _message_embeddings()
+    for turn in _turn_messages():
+        for message, vector in turn:
+            embedding_store.upsert(
+                message_id=message.id,
+                content=message.content,
+                model="m",
+                embedding=vector,
+            )
+    source_messages = [message for turn in _turn_messages() for message, _ in turn]
+    loaded, hits, misses = _load_embeddings_from_cache(
+        store=embedding_store,
+        model="m",
+        messages=source_messages,
+    )
+    assert hits == len(source_messages)
+    assert misses == 0
+    embeddings = {
+        message_id: np.asarray(vector, dtype=np.float32)
+        for message_id, vector in loaded.items()
+    }
+    turn_keys = {
+        message.id: core.turn_key(message.session_key, message.seq, message.role)[2]
+        for message in source_messages
+    }
     try:
         _replay(mem, sessions, embeddings, turn_keys)
         dump_to_db(store, mem)
     finally:
         graph_fast.uninstall()
         fast_dense.uninstall()
+        embedding_store.close()
         store.close()
     return db_path
 

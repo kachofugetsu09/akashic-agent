@@ -13,6 +13,8 @@ services:
       AKASHIC_HOST_GID: "${GID:-1000}"
       AKASHIC_HOST_UID: "${UID:-1000}"
       AKASHIC_DEBUG_PROFILE: "${AKASHIC_DEBUG_PROFILE:-default}"
+      AKASHIC_EXTRA_PLUGIN_DIRS: /app/docker/debug/plugins
+      AKASHIC_REPLAY_CHANNEL: "${AKASHIC_REPLAY_CHANNEL:-replay}"
       HOME: /sandbox/home
       PYTHONUNBUFFERED: "1"
     volumes:

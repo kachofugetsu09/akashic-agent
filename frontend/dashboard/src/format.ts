@@ -1,4 +1,6 @@
 import type { ProactiveTick } from "./types";
+import { micromark } from "micromark";
+import { gfm, gfmHtml } from "micromark-extension-gfm";
 
 export function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -33,7 +35,7 @@ export function renderMarkdown(text: unknown): string {
   if (!raw) {
     return '<span class="detail-subtext">empty</span>';
   }
-  return `<span class="pre-wrap">${escapeHtml(raw).replaceAll("\n", "<br>")}</span>`;
+  return micromark(raw, { extensions: [gfm()], htmlExtensions: [gfmHtml()] });
 }
 
 export function formatSessionKeyForTable(key: unknown): string {
@@ -133,5 +135,3 @@ export function proactiveTickPreview(item: ProactiveTick): string {
   }
   return parts.join(" · ");
 }
-
-

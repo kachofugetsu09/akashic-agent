@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import inspect
+import os
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from pathlib import Path
@@ -546,7 +547,14 @@ def build_core_runtime(
 
 def _resolve_plugin_dirs(workspace: Path) -> list[Path]:
     project_root = Path(__file__).resolve().parent.parent
-    return [project_root / "plugins"]
+    roots = [project_root / "plugins"]
+    extra = os.environ.get("AKASHIC_EXTRA_PLUGIN_DIRS", "")
+    roots.extend(
+        Path(item).expanduser()
+        for item in extra.split(os.pathsep)
+        if item.strip()
+    )
+    return roots
 
 
 def _resolve_installed_plugin_cache_root() -> Path:

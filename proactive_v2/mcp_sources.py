@@ -95,13 +95,16 @@ async def _fetch_source_async(
     source: RegisteredProactiveSource,
 ) -> dict[str, list[dict[str, Any]]]:
     spec = source.spec
-    data = await pool.call(spec.server, spec.fetch_tool, {})
     key = source_key(source)
     result: dict[str, list[dict[str, Any]]] = {
         "alert": [],
         "content": [],
         "context": [],
     }
+    if spec.fetch_page_size > 0:
+        data = await _fetch_pages(pool, source)
+    else:
+        data = await pool.call(spec.server, spec.fetch_tool, {})
     if "context" in spec.channels and isinstance(data, dict):
         item = dict(data)
         item.setdefault("_source", key)
@@ -124,6 +127,30 @@ async def _fetch_source_async(
             item.setdefault("ack_server", key)
         result[kind].append(item)
     return result
+
+
+async def _fetch_pages(
+    pool: McpGateway,
+    source: RegisteredProactiveSource,
+) -> list[Any]:
+    page_size = source.spec.fetch_page_size
+    result: list[Any] = []
+    offset = 0
+    for _ in range(256):
+        page = await pool.call(
+            source.spec.server,
+            source.spec.fetch_tool,
+            {"offset": offset, "limit": page_size},
+        )
+        if not isinstance(page, list):
+            raise RuntimeError(
+                f"分页 source 返回值必须是 list: {source_key(source)}"
+            )
+        result.extend(page)
+        if len(page) < page_size:
+            return result
+        offset += len(page)
+    raise RuntimeError(f"分页 source 超过 256 页: {source_key(source)}")
 
 
 async def poll_source_async(
