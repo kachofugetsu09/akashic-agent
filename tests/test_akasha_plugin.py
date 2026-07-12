@@ -320,6 +320,81 @@ def test_store_merges_user_and_assistant_into_turn_node(tmp_path: Path) -> None:
     assert nodes[0].emb_count == 2
 
 
+def test_store_batch_delete_keeps_count_and_edge_cleanup_semantics(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    try:
+        keys = [
+            store.upsert_message_node(
+                SourceMessage(
+                    f"m:{seq}",
+                    "s",
+                    seq,
+                    "user",
+                    f"消息 {seq}",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+                [1.0, 0.0],
+            )
+            for seq in (0, 2, 4, 6)
+        ]
+        store.upsert_edges([
+            EdgeUpdate(keys[0], keys[2], 1.0, 0),
+            EdgeUpdate(keys[2], keys[1], 1.0, 0),
+            EdgeUpdate(keys[2], keys[3], 1.0, 0),
+        ])
+
+        deleted = store.delete_items_batch([keys[0], keys[1], keys[0], "missing"])
+
+        assert deleted == 2
+        assert {node.key for node in store.list_nodes()} == {keys[2], keys[3]}
+        assert set(store.load_edges()) == {(keys[2], keys[3])}
+    finally:
+        store.close()
+
+
+def test_store_batch_delete_rolls_back_nodes_and_edges_on_failure(tmp_path: Path) -> None:
+    store = AkashaStore(tmp_path / "akasha.db")
+    try:
+        keys = [
+            store.upsert_message_node(
+                SourceMessage(
+                    f"m:{seq}",
+                    "s",
+                    seq,
+                    "user",
+                    f"消息 {seq}",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+                [1.0, 0.0],
+            )
+            for seq in (0, 2, 4)
+        ]
+        store.upsert_edges([
+            EdgeUpdate(keys[0], keys[2], 1.0, 0),
+            EdgeUpdate(keys[1], keys[2], 1.0, 0),
+        ])
+        original_edges = store.load_edges()
+        store.db.execute(
+            f"""
+            CREATE TRIGGER abort_second_edge_delete
+            BEFORE DELETE ON akasha_edges
+            WHEN OLD.src_key = '{keys[1]}'
+            BEGIN
+                SELECT RAISE(ABORT, '模拟边删除失败');
+            END
+            """
+        )
+        store.db.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="模拟边删除失败"):
+            store.delete_items_batch(keys[:2])
+
+        assert {node.key for node in store.list_nodes()} == set(keys)
+        assert store.load_edges() == original_edges
+    finally:
+        store.close()
+
+
 def test_reset_schema_keeps_legacy_embedding_source(tmp_path: Path) -> None:
     store = AkashaStore(tmp_path / "akasha.db")
     message = SourceMessage(

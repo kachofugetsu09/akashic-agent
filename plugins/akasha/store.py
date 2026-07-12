@@ -670,12 +670,23 @@ class AkashaStore:
 
     # 批量物理删除 Akasha 节点。
     def delete_items_batch(self, ids: list[str]) -> int:
-        # 1. 复用单删逻辑，保持边清理一致。
-        count = 0
-        for item_id in ids:
-            if self.delete_item(item_id):
-                count += 1
-        return count
+        """在单个事务中删除节点及其关联边。"""
+        if not ids:
+            return 0
+
+        # 1. 保持逐项删除语义，同时合并锁和事务边界
+        node_params = [(item_id,) for item_id in ids]
+        edge_params = [(item_id, item_id) for item_id in ids]
+        with self._lock, self._db:
+            cur = self._db.executemany(
+                "DELETE FROM akasha_nodes WHERE key = ?",
+                node_params,
+            )
+            _ = self._db.executemany(
+                "DELETE FROM akasha_edges WHERE src_key = ? OR dst_key = ?",
+                edge_params,
+            )
+        return cur.rowcount
 
     # 删除指定 turn 的检索诊断状态。
     def delete_query_state_for_turns(self, turns: list[tuple[str, int]]) -> None:
