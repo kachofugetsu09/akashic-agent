@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException
 
-from plugins.akasha.config import AkashaConfig, load_akasha_config, resolve_akasha_db_path
+from plugins.akasha.config import load_akasha_config, resolve_akasha_db_path
 from plugins.akasha.graph_snapshot import (
     EdgeRow,
     GraphSnapshotConfig,
@@ -344,11 +344,7 @@ class AkashaGraphReader:
 
 
 def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> list[object]:
-    _ = plugin_dir
-    akasha_config = _load_akasha_config(workspace)
-    if akasha_config is None:
-        return []
-
+    akasha_config = load_akasha_config(plugin_dir=plugin_dir)
     akasha_db_path = resolve_akasha_db_path(workspace=workspace, akasha_config=akasha_config)
     store = AkashaStore(akasha_db_path)
     reader = AkashaInspectorReader(store)
@@ -414,15 +410,6 @@ def _active_memory_engine(app: FastAPI) -> str:
     if not callable(describe):
         return ""
     return str(getattr(describe(), "name", ""))
-
-
-def _load_akasha_config(workspace: Path) -> AkashaConfig | None:
-    _ = workspace
-    try:
-        plugin_dir = Path(__file__).resolve().parent
-        return load_akasha_config(plugin_dir=plugin_dir)
-    except Exception:
-        return AkashaConfig()
 
 
 def _json_items(value: object) -> list[dict[str, object]]:

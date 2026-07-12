@@ -4,6 +4,7 @@ import json
 import hashlib
 import sqlite3
 import threading
+import tomllib
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -14,12 +15,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 import numpy as np
+from fastapi import FastAPI
 
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
 from plugins.akasha.config import AkashaConfig, load_akasha_config, render_akasha_config
+from plugins.akasha.dashboard import register as register_akasha_dashboard
 from plugins.akasha.engine import (
     ActivationTrace,
     AkashaCandidate,
@@ -67,6 +70,13 @@ def test_akasha_config_does_not_expose_dynamic_budget_limits(tmp_path: Path) -> 
     assert not hasattr(config, "activate_limit")
     assert "top_k" not in rendered
     assert "activate_limit" not in rendered
+
+
+def test_akasha_dashboard_exposes_invalid_plugin_config(tmp_path: Path) -> None:
+    (tmp_path / "config.local.toml").write_text("db_path = [", encoding="utf-8")
+
+    with pytest.raises(tomllib.TOMLDecodeError):
+        register_akasha_dashboard(FastAPI(), tmp_path, tmp_path / "workspace")
 
 
 def _init_sessions_db(path: Path) -> None:
