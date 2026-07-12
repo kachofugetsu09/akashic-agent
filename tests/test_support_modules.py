@@ -692,26 +692,24 @@ def test_tool_base_and_timekit_and_json_store_cover_branches(
     save_json(path, {"x": "中"})
     assert load_json(path)["x"] == "中"
     path.write_text("{bad", encoding="utf-8")
-    assert load_json(path, default=[]) == []
+    with pytest.raises(RuntimeError, match=r"\[json_store\].*data\.json"):
+        load_json(path, default=[])
     atomic_save_json(path, {"y": 2})
     assert load_json(path)["y"] == 2
 
-    class _BadPath:
-        parent = tmp_path
-        suffix = ".json"
-
-        def with_suffix(self, suffix: str):
-            return tmp_path / "bad.json.tmp"
-
-    bad = _BadPath()
     monkeypatch.setattr(
         "pathlib.Path.write_text",
         lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad")),
     )
     with pytest.raises(RuntimeError):
         save_json(tmp_path / "x.json", {"x": 1})
+
+    monkeypatch.setattr(
+        "infra.persistence.json_store.os.fsync",
+        lambda _fd: (_ for _ in ()).throw(RuntimeError("bad")),
+    )
     with pytest.raises(RuntimeError):
-        atomic_save_json(bad, {"x": 1})  # type: ignore[arg-type]
+        atomic_save_json(tmp_path / "x.json", {"x": 1})
 
     parsed = timekit.parse_iso("2025-06-01T09:00:00Z")
     assert parsed and parsed.tzinfo is not None

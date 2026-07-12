@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+
+from infra.persistence.json_store import atomic_save_json, load_json
 
 T = TypeVar("T")
 
@@ -83,17 +84,21 @@ class PluginKVStore:
         return new_val
 
     def _read(self) -> dict[str, Any]:
-        if not self._path.exists():
-            return {}
-        data = json.loads(self._path.read_text(encoding="utf-8"))
+        data = load_json(
+            self._path,
+            default={},
+            domain=f"plugin_kv:{self._path}",
+        )
         if not isinstance(data, dict):
             raise ValueError(f"插件 KV 根节点必须是对象: {self._path}")
         return cast(dict[str, Any], data)
 
     def _write(self, data: dict[str, Any]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        _ = self._path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        atomic_save_json(
+            self._path,
+            data,
+            ensure_ascii=False,
+            domain=f"plugin_kv:{self._path}",
         )
 
     def _require_writable(self) -> None:

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
-import tempfile
 import tomllib
 from pathlib import Path
 from typing import Mapping, cast
+
+from infra.persistence.json_store import atomic_write_text
 
 
 def plugins_root(plugins_home: Path | None = None) -> Path:
@@ -167,15 +167,5 @@ def write_plugin_manifest(
 
 
 def _atomic_write(path: Path, content: str) -> Path:
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix="manifest-",
-        suffix=".toml",
-        delete=False,
-    ) as stream:
-        _ = stream.write(content)
-        temporary = Path(stream.name)
-    os.replace(temporary, path)
+    atomic_write_text(path, content, domain="plugin_manifest")
     return path

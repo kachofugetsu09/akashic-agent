@@ -5,7 +5,17 @@ from threading import Barrier
 
 import pytest
 
-from infra.persistence.json_store import atomic_save_json
+import infra.persistence.json_store as json_store
+from infra.persistence.json_store import atomic_save_json, load_json
+
+
+def test_load_json_defaults_only_for_missing_file(tmp_path) -> None:
+    path = tmp_path / "missing.json"
+    assert load_json(path, default={"missing": True}) == {"missing": True}
+
+    path.write_bytes(b"not json")
+    with pytest.raises(RuntimeError, match=r"\[test.state\].*missing\.json"):
+        load_json(path, default={"fallback": True}, domain="test.state")
 
 
 def test_atomic_save_json_uses_isolated_temp_files(monkeypatch, tmp_path) -> None:
@@ -40,6 +50,69 @@ def test_atomic_save_json_cleans_own_temp_after_replace_failure(
         atomic_save_json(path, {"version": "new"})
 
     assert json.loads(path.read_text(encoding="utf-8")) == {"version": "old"}
+    assert list(tmp_path.glob("state.json.*.tmp")) == []
+
+
+def test_atomic_save_json_cleans_temp_after_serialization_failure(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_text('{"version": "old"}', encoding="utf-8")
+
+    def fail_after_partial_write(data, stream, **kwargs) -> None:
+        stream.write('{"partial":')
+        raise TypeError("serialization failed")
+
+    monkeypatch.setattr(json_store.json, "dump", fail_after_partial_write)
+    with pytest.raises(TypeError, match="serialization failed"):
+        atomic_save_json(path, {"version": "new"})
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"version": "old"}
+    assert list(tmp_path.glob("state.json.*.tmp")) == []
+
+
+def test_atomic_save_json_cleans_temp_after_file_fsync_failure(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_text('{"version": "old"}', encoding="utf-8")
+    calls = 0
+
+    def fail_file_fsync(fd: int) -> None:
+        nonlocal calls
+        calls += 1
+        raise OSError("file fsync failed")
+
+    monkeypatch.setattr(json_store.os, "fsync", fail_file_fsync)
+    with pytest.raises(OSError, match="file fsync failed"):
+        atomic_save_json(path, {"version": "new"})
+
+    assert calls == 1
+    assert json.loads(path.read_text(encoding="utf-8")) == {"version": "old"}
+    assert list(tmp_path.glob("state.json.*.tmp")) == []
+
+
+def test_atomic_save_json_directory_fsync_failure_keeps_new_target_visible(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_text('{"version": "old"}', encoding="utf-8")
+    calls = 0
+    original_fsync = json_store.os.fsync
+
+    def fail_directory_fsync(fd: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("directory fsync failed")
+        original_fsync(fd)
+
+    monkeypatch.setattr(json_store.os, "fsync", fail_directory_fsync)
+    with pytest.raises(OSError, match="directory fsync failed"):
+        atomic_save_json(path, {"version": "new"})
+
+    assert calls == 2
+    assert json.loads(path.read_text(encoding="utf-8")) == {"version": "new"}
     assert list(tmp_path.glob("state.json.*.tmp")) == []
 
 

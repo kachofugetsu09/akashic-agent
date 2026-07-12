@@ -743,6 +743,11 @@ async def test_mcp_registry_anyaction_and_sampler_cover_core_paths(
     assert "已注销" in await registry.remove("docs")
 
     (tmp_path / "mcp.json").write_text("{bad", encoding="utf-8")
+    with pytest.raises(RuntimeError, match=r"\[mcp\.registry\].*mcp\.json"):
+        registry._load_raw_configs()
+    (tmp_path / "mcp.json").write_text("{}", encoding="utf-8")
+    assert registry._load_raw_configs() == {}
+    (tmp_path / "mcp.json").write_text('{"servers": {}}', encoding="utf-8")
     assert registry._load_raw_configs() == {}
     (tmp_path / "mcp.json").write_text(
         json.dumps({"servers": {"docs": {"command": ["x"]}}}), encoding="utf-8"
