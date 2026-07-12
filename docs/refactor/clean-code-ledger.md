@@ -1029,3 +1029,17 @@
 - 测试删除及原因：无。
 - 验证结果：副手全量 `1734 passed`；主线合入后定向 `55 passed`、全量 `1739 passed in 20.53s`；修改生产文件 pyright `0 errors`（274 个既有 warnings），`git diff --check` 通过。
 - 残余风险：trim 路径仍按 session 当前消息数做一次线性 ID 枚举；只在模型 retry 成功时触发，当前没有证据支持引入更复杂的临时表或批量阈值优化。
+
+### `7d7eeb67` `fix(plugins): make plugin installation atomic and bounded`
+
+- 范围：Git 插件 source/ref 输入、plugin metadata 与 MCP runtime 路径边界、cache 发布/回滚、installed source resolver 和 package metadata schema。
+- 原问题：同版本重装会先删除旧 cache，clone/依赖准备/manifest 写入失败可使插件消失或留下半成品；name/version/marketplace、source symlink、MCP cwd 可越过目标目录；多个可见版本或坏 cache 会被字典序选择或静默当成未安装；错误 package 类型被 `bool()`/`str()` 归一化。
+- 为什么这样修改：在隐藏 staging 完成 clone、内部 symlink 校验和 MCP 依赖准备，旧普通版本在长耗时阶段持续可发现；只在准备完成后执行最短 rename 切换并保留 hidden backup，manifest 失败恢复旧 cache；installed resolver 对可见结构违反 fail-loud。
+- 不变量与拥有层：installer 入口拥有 URL/ref/marketplace/name/version 与目标路径；cache activation 拥有 staging/backup/rollback；manifest owner 继续拥有原子 TOML 写；resolver 拥有已安装 cache 结构；package loader 拥有 package.toml schema。插件 data/config、同版本重装、热重载和 MCP 命令语义保持。
+- 主审修正：第一版在 pip/venv 阶段先隐藏所有旧版本且 resolver 忽略临时 symlink，会让 watcher 长时间看见插件消失；二审改为 staging 准备期间旧版本持续可见。主线又补充拒绝可见普通文件，避免 installer 发布成功后 resolver 才因坏版本项失败。
+- 能力变化：branch/tag/commit SHA ref 均先解析为 commit 后 detached checkout；合法仓库内 symlink 可安装并复制为普通内容，断链/循环/越界 symlink 被拒绝；cache root/marketplace/plugin/version/plugin.py 的可见 symlink、坏路径、缺文件和版本冲突显式失败。
+- 性能变化：正常安装增加一次 source tree 线性 symlink 扫描和常数次 rename；长耗时 pip/venv 本就存在且移到不可发现 staging。运行时 resolver 只增加目录结构校验，不增加网络或依赖安装。
+- 测试新增：依赖准备期间真实 resolver 仍看到旧版本、prepare/manifest 失败回滚、unsafe metadata/MCP cwd、内部/越界 symlink、probe 模块清理、branch/tag/SHA 与 option-like ref、cache symlink/缺 plugin.py/多版本/普通文件、package 类型边界。
+- 测试删除及原因：无。
+- 验证结果：副手二审定向 `24 passed`、相关 `159 passed`、全量 `1749 passed`；主线补刀后相关 `184 passed`、live 安装 cache 20 个来源全部可解析、修改生产文件 pyright `0 errors, 0 warnings`、全量 `1752 passed in 20.31s`，`git diff --check` 通过。
+- 残余风险：最终发布仍由数次同文件系统 rename 组成，存在极短目录切换窗口；跨进程并发 installer 尚无 owner，当前 CLI 是单安装流程，没有证据支持新增锁服务。
