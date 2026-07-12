@@ -136,8 +136,13 @@ class WakeRuntime:
         state.context_results = self._state.ingest_context(
             channels["context"], state.ctx.now_utc
         )
-        state.context_reevaluate = any(
+        has_context_transition = any(
             result.signal == "reevaluate" for result in state.context_results
+        )
+        state.context_reevaluate = (
+            self._state.claim_context_reevaluation(state.ctx.now_utc)
+            if has_context_transition
+            else False
         )
         state.alerts = self._state.unread("alert")
         state.contents = self._state.unread("content")

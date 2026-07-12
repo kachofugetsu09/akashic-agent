@@ -1031,6 +1031,64 @@ async def test_context_snapshot_without_event_id_only_reevaluates_queued_content
     assert orchestrator.results == []
 
 
+@pytest.mark.asyncio
+async def test_context_transitions_are_globally_throttled_to_once_per_three_hours(
+    tmp_path, request
+):
+    start = datetime(2026, 7, 12, 0, tzinfo=UTC)
+
+    def snapshot(presence: str, now: datetime) -> dict:
+        return {
+            "presence": presence,
+            "confidence": 0.9,
+            "observed_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        }
+
+    clock = FixedClock(start)
+    gateway = FakeContextGateway(snapshot("sleeping", start))
+    store = WakeStateStore(tmp_path / "wake.db")
+    runtime = WakeRuntime(
+        _scope(
+            tmp_path,
+            gateway,
+            SimpleNamespace(chat=AsyncMock()),
+            FakeOrchestrator(),
+            _source("context"),
+        ),
+        state_store=store,
+        clock=clock,
+    )
+    request.addfinalizer(runtime.close)
+
+    initial = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(initial)
+    assert initial.context_reevaluate is False
+
+    gateway.snapshot = snapshot("active", start)
+    first = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(first)
+    assert first.context_reevaluate is True
+
+    clock.advance(timedelta(hours=1))
+    gateway.snapshot = snapshot("sleeping", clock.now())
+    throttled = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(throttled)
+    assert throttled.context_reevaluate is False
+
+    clock.advance(timedelta(hours=2))
+    gateway.snapshot = snapshot("active", clock.now())
+    boundary = runtime.begin(new_proactive_frame("telegram:1"))
+    await runtime.ingest(boundary)
+    assert boundary.context_reevaluate is True
+
+    audit = store.context_reevaluation_state()
+    assert audit is not None
+    assert audit["last_signaled_at"] == clock.now().isoformat()
+    assert audit["last_candidate_at"] == clock.now().isoformat()
+    assert audit["suppressed_count"] == 1
+
+
 def _drift_runtime(tmp_path, provider, orchestrator, now):
     store = WakeStateStore(tmp_path / "wake.db")
     scope = _scope(

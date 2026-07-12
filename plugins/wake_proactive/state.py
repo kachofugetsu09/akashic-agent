@@ -111,6 +111,16 @@ class WakeStateStore:
         )
         _ = self._conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS context_reevaluate_state (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                last_signaled_at TEXT,
+                last_candidate_at TEXT,
+                suppressed_count INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        _ = self._conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS drift_state (
                 session_key TEXT PRIMARY KEY,
                 hazard REAL NOT NULL,
@@ -569,6 +579,55 @@ class WakeStateStore:
             for row in rows
             if (context := self.load_context(str(row["source_id"]))) is not None
         ]
+
+    def claim_context_reevaluation(
+        self,
+        now: datetime,
+        *,
+        min_interval_seconds: int = 3 * 60 * 60,
+    ) -> bool:
+        row = self._conn.execute(
+            "SELECT * FROM context_reevaluate_state WHERE singleton = 1"
+        ).fetchone()
+        last_signaled_at = (
+            _parse_optional_time(row["last_signaled_at"])
+            if row is not None
+            else None
+        )
+        elapsed = (
+            (now - last_signaled_at).total_seconds()
+            if last_signaled_at is not None
+            else None
+        )
+        allowed = elapsed is None or elapsed < 0 or elapsed >= min_interval_seconds
+        _ = self._conn.execute(
+            """
+            INSERT INTO context_reevaluate_state(
+                singleton, last_signaled_at, last_candidate_at, suppressed_count
+            ) VALUES (1, ?, ?, ?)
+            ON CONFLICT(singleton) DO UPDATE SET
+                last_signaled_at=coalesce(
+                    excluded.last_signaled_at,
+                    context_reevaluate_state.last_signaled_at
+                ),
+                last_candidate_at=excluded.last_candidate_at,
+                suppressed_count=context_reevaluate_state.suppressed_count + ?
+            """,
+            (
+                now.isoformat() if allowed else None,
+                now.isoformat(),
+                0 if allowed else 1,
+                0 if allowed else 1,
+            ),
+        )
+        self._conn.commit()
+        return allowed
+
+    def context_reevaluation_state(self) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM context_reevaluate_state WHERE singleton = 1"
+        ).fetchone()
+        return dict(row) if row is not None else None
 
     def load_drift(self, session_key: str) -> dict[str, Any] | None:
         row = self._conn.execute(
