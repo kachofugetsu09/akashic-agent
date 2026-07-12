@@ -281,6 +281,7 @@ async def test_message_push_non_passive_same_chat_keeps_fifo_order():
         "start:second",
         "end:second",
     ]
+    assert bus.chat_lane._states == {}
 
 
 @pytest.mark.asyncio
@@ -308,6 +309,24 @@ async def test_chat_lane_cancelled_non_passive_waiter_does_not_wedge_lane():
     )
 
     assert ran == ["second"]
+    assert lane._states == {}
+
+
+@pytest.mark.asyncio
+async def test_chat_lane_releases_idle_state_after_send_error():
+    lane = ChatLane()
+
+    await lane.mark_passive_pending("cli", "1")
+    await lane.mark_passive_done("cli", "1")
+    assert lane._states == {}
+
+    async def failed_send() -> None:
+        raise RuntimeError("send failed")
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        await lane.run_passive("cli", "1", failed_send)
+
+    assert lane._states == {}
 
 
 @pytest.mark.asyncio
