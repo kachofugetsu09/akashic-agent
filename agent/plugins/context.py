@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from collections.abc import Coroutine
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
     from agent.plugins.config import PluginConfig
     from agent.plugins.jobs import PluginLlmService
-    from agent.plugins.scope import PluginScope, ScopedEventBus
+    from agent.plugins.scope import Cleanup, PluginScope, ScopedEventBus
 
 
 @dataclass
@@ -37,12 +38,12 @@ class PluginContext:
         coroutine: Coroutine[Any, Any, T],
         *,
         name: str | None = None,
-    ) -> Any:
+    ) -> asyncio.Task[T]:
         if self.scope is None:
             raise RuntimeError(f"插件缺少资源作用域: {self.plugin_id}")
         return self.scope.create_task(coroutine, name=name)
 
-    def defer(self, resource: str, cleanup: Any) -> None:
+    def defer(self, resource: str, cleanup: "Cleanup") -> None:
         if self.scope is None:
             raise RuntimeError(f"插件缺少资源作用域: {self.plugin_id}")
         self.scope.defer(resource, cleanup)

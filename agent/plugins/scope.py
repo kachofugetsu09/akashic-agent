@@ -38,6 +38,8 @@ class PluginScope:
 
     def defer(self, resource: str, cleanup: Cleanup) -> None:
         self._ensure_open()
+        if not callable(cleanup):
+            raise TypeError(f"插件清理动作不可调用: {self.plugin_id}:{resource}")
         self._cleanups.append((resource, cleanup))
 
     def subscribe(

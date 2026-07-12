@@ -404,6 +404,19 @@ async def test_plugin_scope_cleans_in_reverse_order_after_failure():
     assert scope.resource_count == 0
 
 
+def test_plugin_scope_rejects_non_callable_cleanup() -> None:
+    scope = PluginScope("invalid-cleanup")
+    cleanup: Any = None
+
+    with pytest.raises(
+        TypeError,
+        match="插件清理动作不可调用: invalid-cleanup:broken",
+    ):
+        scope.defer("broken", cleanup)
+
+    assert scope.resource_count == 0
+
+
 @pytest.mark.asyncio
 async def test_plugin_scope_continues_after_cancelled_cleanup():
     scope = PluginScope("cancelled-cleanup")
