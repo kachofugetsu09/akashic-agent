@@ -192,7 +192,7 @@ async def test_orchestrator_logs_dispatch_error_and_runs_failure_effect(
     failures: list[str] = []
 
     class _FailureEffect:
-        def run(self) -> None:
+        async def run(self) -> None:
             failures.append("failed")
 
     orchestrator = TurnOrchestrator(

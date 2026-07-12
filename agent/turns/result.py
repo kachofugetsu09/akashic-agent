@@ -32,8 +32,14 @@ class TurnResult:
     evidence: list[str] = field(default_factory=list)
     trace: TurnTrace | None = None
     # 通用副作用：无论发送成功/失败都执行（常用于预发送状态落地）。
-    side_effects: list[Any] = field(default_factory=list)
+    side_effects: list[TurnSideEffect] = field(
+        default_factory=list[TurnSideEffect]
+    )
     # 成功副作用：仅在 outbound 成功发送后执行。
-    success_side_effects: list[Any] = field(default_factory=list)
+    success_side_effects: list[TurnSideEffect] = field(
+        default_factory=list[TurnSideEffect]
+    )
     # 失败副作用：仅在 outbound 发送失败后执行。
-    failure_side_effects: list[Any] = field(default_factory=list)
+    failure_side_effects: list[TurnSideEffect] = field(
+        default_factory=list[TurnSideEffect]
+    )
