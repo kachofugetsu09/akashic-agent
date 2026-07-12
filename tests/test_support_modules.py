@@ -387,6 +387,29 @@ async def test_message_push_passive_role_does_not_wait_for_passive_lane():
 
 
 @pytest.mark.asyncio
+async def test_message_bus_outbound_snapshot_survives_subscription_close():
+    bus = MessageBus()
+    delivered: list[str] = []
+    first_subscription = None
+
+    async def first_callback(_msg: OutboundMessage) -> None:
+        delivered.append("first")
+        assert first_subscription is not None
+        first_subscription.close()
+
+    async def second_callback(_msg: OutboundMessage) -> None:
+        delivered.append("second")
+
+    first_subscription = bus.subscribe_outbound("cli", first_callback)
+    bus.subscribe_outbound("cli", second_callback)
+
+    await bus._send_outbound(OutboundMessage("cli", "1", "first"))
+    await bus._send_outbound(OutboundMessage("cli", "1", "second"))
+
+    assert delivered == ["first", "second", "second"]
+
+
+@pytest.mark.asyncio
 async def test_memorize_tool_cover_branches(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

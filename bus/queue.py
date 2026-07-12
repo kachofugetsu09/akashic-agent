@@ -248,7 +248,7 @@ class MessageBus:
                 continue
 
     async def _send_outbound(self, msg: OutboundMessage) -> None:
-        for cb in self._subscribers.get(msg.channel, []):
+        for cb in tuple(self._subscribers.get(msg.channel, [])):
             try:
                 await cb(msg)
             except Exception as first_err:
