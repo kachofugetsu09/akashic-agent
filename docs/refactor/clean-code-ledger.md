@@ -911,3 +911,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `156 passed`、全量 `1683 passed`、pyright `0 errors`；主线合入后 hot-reload 定向 `141 passed`，`git diff --check` 通过。
 - 残余风险：旧 generation 仍按 lease 正常保留资源，这是连续性设计，不应为“清理视图”提前销毁。
+
+### `b35cd6f1` `fix(scheduler): tighten time and job boundaries`
+
+- 范围：定时任务持久化 schema、时间/时区解析、cron 依赖边界、后台执行 ownership 与调度工具输入。
+- 原问题：执行中的循环任务被用户取消后会在 finally 中重新写回；坏 interval 等持久化字段可进入运行时；`HH:MM` 没有把注入时钟转换到请求时区；长 misfire 逐 interval 循环；缺 APScheduler 时启用的自写 cron 与正式路径连 weekday 语义都不一致；`chat_id` 会把 `None`/对象静默转成字符串。
+- 为什么这样修改：JobStore 在 JSON 边界严格校验当前 15 字段 schema 与领域不变量；scheduler 显式持有后台 task，区分用户取消与 shutdown；周期推进改为算术跳跃；直接使用 requirements 中的 APScheduler 和 ZoneInfo，删除约百行近似 fallback；工具边界拒绝错误类型。
+- 不变量与拥有层：ScheduleTool 拥有外部工具输入；JobStore 拥有持久化 schema；SchedulerService 拥有运行 task、取消与重排；APScheduler 拥有 cron 语义。当前 live schedules 文件与历史提交均为相同 15 字段，不新增迁移或兼容层。
+- 能力变化：合法 at/after/every、发送顺序、soft job 工具限制和任务恢复保持；用户取消不再复活；shutdown 中断的循环任务仍持久化供重启恢复；缺少必需 APScheduler 时直接失败，不再运行语义不一致的替代实现。
+- 性能变化：365 天停机、1 秒 interval 的推进由逐秒循环改为 O(1) 算术计算；cron 删除自写扫描实现，不声明额外倍数。
+- 测试新增：坏 schema/重复 ID/时区、目标时区 HH:MM、5/6 字段 cron 与 weekday、显式取消和 shutdown 恢复、后台异常唯一日志、非法 interval、chat_id 边界、长 misfire。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1701 passed`、目标文件 pyright `0 errors`；主线合入后定向 `102 passed`，`git diff --check` 通过。
+- 残余风险：当前发送工具没有结构化 delivery outcome 与幂等键，因此本批没有擅自新增自动 retry，避免重复发送。
