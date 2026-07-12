@@ -2095,6 +2095,54 @@ async def test_repeated_disable_with_retained_snapshot_keeps_unique_id_and_alias
 
 
 @pytest.mark.asyncio
+async def test_current_plugin_views_ignore_retained_old_generation(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _write_plugin(
+        tmp_path / "plugins",
+        "current_view",
+        "from agent.plugins import Plugin\n"
+        "class CurrentViewPlugin(Plugin):\n"
+        "    name = 'current_view'\n"
+        "    version = 'v1'\n"
+        "    def telegram_bot_commands(self):\n"
+        "        return [(f'view-{self.version}', self.version)]\n",
+    )
+    manager = _manager(tmp_path)
+    await manager.load_all()
+    retained = manager.snapshot_store.lease()
+
+    _ = (plugin_dir / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class CurrentViewPlugin(Plugin):\n"
+        "    name = 'current_view'\n"
+        "    version = 'v2'\n"
+        "    def telegram_bot_commands(self):\n"
+        "        return [(f'view-{self.version}', self.version)]\n",
+        encoding="utf-8",
+    )
+    candidate = await manager.prepare_candidate("current_view")
+    assert candidate is not None
+    await manager.publish_prepared("current_view")
+
+    active = manager.active_plugins()
+    assert len(active) == 1
+    assert active[0].manifest["version"] == "v2"
+    assert manager.telegram_bot_commands == [("view-v2", "v2")]
+
+    write_plugin_manifest(
+        {"current_view": False},
+        plugins_home=tmp_path / "home",
+    )
+    await manager.reconcile_changed()
+    assert manager.active_plugins() == []
+    assert manager.telegram_bot_commands == []
+
+    await retained.release()
+    await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_publish_cancellation_after_store_commit_keeps_manager_consistent(
     tmp_path: Path,
 ) -> None:

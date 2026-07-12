@@ -285,9 +285,9 @@ class PluginManager:
 
     def active_plugins(self) -> list[ActivePluginInfo]:
         return [
-            plugin
-            for module_path, plugin in self._active_plugins.items()
-            if self._registry_active(module_path)
+            self._active_plugins[generation.module_path]
+            for generation in self._active_generations.values()
+            if self._registry_active(generation.module_path)
         ]
 
     @property
@@ -422,10 +422,10 @@ class PluginManager:
     @property
     def telegram_bot_commands(self) -> list[tuple[str, str]]:
         commands: list[tuple[str, str]] = []
-        for module_path in self._loaded:
-            instance = plugin_registry.get_instance(module_path)
-            if instance is None:
+        for generation in self._active_generations.values():
+            if not self._registry_active(generation.module_path):
                 continue
+            instance = generation.instance
             getter = getattr(instance, "telegram_bot_commands", None)
             if getter is None:
                 continue
