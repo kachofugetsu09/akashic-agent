@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, cast
 
-from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
+from agent.turns.result import TurnOutbound, TurnResult, TurnSideEffect, TurnTrace
 from core.clock import Clock, ReplayClock, clock_from_env
 from plugins.wake_proactive.context import WakeContext
 from plugins.wake_proactive.context_drive import ContextDriveResult, NormalizedContext
@@ -719,7 +719,7 @@ class WakeRuntime:
         self._state.save(state.ctx)
 
         # 2. 只在发送成功后消费 alert；context 不参与 reservoir ack
-        effects = (
+        effects: list[TurnSideEffect] = (
             [AsyncEffect(lambda: self._ack_and_consume([event], state.ctx.now_utc))]
             if kind == "alert"
             else []
