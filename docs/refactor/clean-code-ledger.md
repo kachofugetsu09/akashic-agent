@@ -205,6 +205,34 @@
 - 验证结果：Akasha/replay 相关 `84 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
 - 残余风险：已有损坏 cache 会阻止 replay，需删除或重建对应缓存；这是避免错误 cache hit 的预期行为。
 
+### `943820ee` `refactor(runtime): 收紧回合副作用契约`
+
+- 范围：`TurnResult` 三类副作用集合、`TurnOrchestrator` 执行边界和直接测试替身。
+- 历史依据：PR #27/#31 将副作用放在明确的 lifecycle/commit 阶段；PR #90/#97 要求保持发送顺序，并禁止未送达消息进入历史。
+- 原问题：副作用以 `list[Any]` 表示，orchestrator 用 `inspect.isawaitable` 兼容没有生产调用者的同步假实现。
+- 为什么这样修改：现有生产副作用全部实现异步 `TurnSideEffect` 协议；将三类集合收紧到该协议并直接 await，让协议错误即时暴露。
+- 不变量与拥有层：副作用的异步调用契约由 `TurnSideEffect` 拥有；通用、成功和失败副作用的选择与次序由 orchestrator 拥有。
+- 能力变化：通用副作用仍先于 dispatch；成功/失败副作用仍只进入对应分支；单项异常仍记录并继续；持久化和 ChatLane 语义不变。
+- 性能变化：删除一次动态 awaitable 判断，但无独立 benchmark，不声明性能收益。
+- 测试新增：无；唯一同步测试替身改为真实异步协议。
+- 测试删除及原因：无。
+- 验证结果：相关 Runtime/proactive 测试 `144 passed`；副手完整测试 `1501 passed`；pyright `0 errors`；`git diff --check` 通过。
+- 残余风险：无已知生产同步副作用；未来扩展必须显式实现协议。
+
+### `e16f2dcc` `fix(plugins): 拒绝无效清理动作`
+
+- 范围：`PluginScope.defer()` 动态插件边界、`PluginContext` cleanup/task 类型和直接测试。
+- 历史依据：PR #105 的候选初始化、回滚和 generation 换代要求资源清理动作在候选发布前有效。
+- 原问题：动态外部插件可绕过静态类型注册不可调用对象，错误延迟到卸载或换代时才暴露，候选甚至可能已经发布。
+- 为什么这样修改：在 cleanup 唯一注册入口验证 callable，并携带 plugin/resource 身份抛出 `TypeError`；同时把 context 类型收紧为 `Cleanup` 和 `Task[T]`。
+- 不变量与拥有层：进入 scope 栈的 cleanup 必须可调用，该不变量由 `PluginScope.defer()` 唯一拥有；静态类型不能覆盖动态插件边界。
+- 能力变化：合法同步/异步 cleanup、逆序排空、取消传播、task/process 跟踪不变；无效候选在 initialize/rollback 阶段提前失败。
+- 性能变化：正常注册仅增加一次常数级 callable 检查，不声明性能收益。
+- 测试新增：动态注册不可调用 cleanup 的边界测试。
+- 测试删除及原因：无；generation/snapshot/lease/drain/abort/rollback 测试全部保留。
+- 验证结果：plugin 相关测试 `145 passed`；pyright `0 errors, 0 warnings`；`git diff --check` 通过。
+- 残余风险：`manager.py` 的候选 gate 和 watcher retry 属于更大的状态协议，本提交未改动。
+
 ### `<commit>` `<title>`
 
 - 范围：
