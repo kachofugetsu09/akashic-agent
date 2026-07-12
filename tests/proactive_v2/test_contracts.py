@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
+import pytest
+
+from proactive_v2 import contracts
 from proactive_v2.contracts import (
     MAX_METRICS_KEYS,
     AlertContract,
@@ -101,3 +104,28 @@ def test_normalize_context_skips_local_time_for_naive_timestamp():
     payload = normalize_context(item).to_prompt_item()
 
     assert "updated_at_local" not in payload
+
+
+def test_normalize_context_keeps_recovering_from_invalid_time_values():
+    item = {
+        "_source": "zigbee",
+        "updated_at": "invalid",
+    }
+
+    payload = normalize_context(item, local_tz="/invalid").to_prompt_item()
+
+    assert "updated_at_local" not in payload
+    assert contracts._resolve_tz("Missing/Timezone") is None
+    assert contracts._resolve_tz("/invalid") is None
+
+
+def test_unexpected_timezone_resolution_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(_key: str) -> ZoneInfo:
+        raise RuntimeError("tzdata unavailable")
+
+    monkeypatch.setattr(contracts, "ZoneInfo", fail)
+
+    with pytest.raises(RuntimeError, match="tzdata unavailable"):
+        contracts._resolve_tz("Asia/Shanghai")

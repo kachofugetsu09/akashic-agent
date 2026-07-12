@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 
 MAX_METRICS_KEYS = 8
@@ -58,7 +58,7 @@ def _resolve_tz(value: str | tzinfo | None) -> tzinfo | None:
             return None
         try:
             return ZoneInfo(text)
-        except Exception:
+        except (ValueError, ZoneInfoNotFoundError):
             return None
     return value
 
@@ -69,7 +69,7 @@ def _format_local_time(raw: str, local_tz: str | tzinfo | None = None) -> str | 
         return None
     try:
         dt = datetime.fromisoformat(text)
-    except Exception:
+    except ValueError:
         return None
     if dt.tzinfo is None:
         return None
