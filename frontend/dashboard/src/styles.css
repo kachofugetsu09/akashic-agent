@@ -1166,7 +1166,6 @@ body {
 
   .json-tree {
     @apply overflow-x-auto rounded border border-border bg-surface-2 text-[12.5px] leading-[1.55];
-    overflow-wrap: anywhere;
   }
 
   .jt-children {
@@ -1174,23 +1173,29 @@ body {
   }
 
   .jt-row {
-    @apply grid grid-cols-[minmax(100px,0.34fr)_minmax(0,1fr)] border-b border-border last:border-b-0;
+    @apply grid grid-cols-[minmax(90px,0.28fr)_minmax(0,1fr)] border-b border-border py-2 pr-3 last:border-b-0;
+    column-gap: 14px;
   }
 
   .jt-toggle {
-    @apply cursor-pointer select-none px-3 py-2 text-[11px] text-muted;
+    @apply flex min-w-0 cursor-pointer select-none items-center gap-3 py-2 pr-3 text-[11px] text-muted;
   }
 
   .jt-key {
-    @apply border-r border-border px-3 py-2 font-sans text-[11px] font-medium text-muted;
+    @apply min-w-0 truncate font-sans text-[11px] font-medium text-muted;
   }
 
   .jt-value {
-    @apply min-w-0 px-3 py-2 text-fg;
+    @apply min-w-0 text-fg;
+    overflow-wrap: anywhere;
   }
 
-  .jt-value > .jt-node {
-    margin: -8px -12px;
+  .jt-branch-label {
+    @apply min-w-0 truncate font-medium text-fg;
+  }
+
+  .jt-meta {
+    @apply ml-auto shrink-0 text-subtle;
   }
 
   .jt-str.ak-markdown {

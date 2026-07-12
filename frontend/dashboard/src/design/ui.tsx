@@ -112,18 +112,29 @@ function JsonScalar({ value }: { value: unknown }) {
   return <span>{String(value)}</span>;
 }
 
-function JsonNode({ value, depth }: { value: unknown; depth: number }) {
+function JsonNode({ value, depth, label }: { value: unknown; depth: number; label?: string }) {
   const parsed = parseMaybeJson(value);
-  if (parsed === null || typeof parsed !== "object") return <JsonScalar value={parsed} />;
+  const indent = { paddingLeft: `${12 + Math.min(depth, 8) * 14}px` };
+  if (parsed === null || typeof parsed !== "object") {
+    return <div className="jt-row" style={indent}>
+      {label && <div className="jt-key" title={label}>{label}</div>}
+      <div className="jt-value"><JsonScalar value={parsed} /></div>
+    </div>;
+  }
   const array = Array.isArray(parsed);
   const entries = array ? parsed.map((item, index) => [String(index), item] as const) : Object.entries(parsed);
   return <details className="jt-node" open={depth < 2}>
-    <summary className="jt-toggle">{array ? "列表" : "字段"} · {entries.length} 项</summary>
+    <summary className="jt-toggle" style={indent}>
+      <span className="jt-branch-label" title={label}>{label ?? (array ? "列表" : "字段")}</span>
+      <span className="jt-meta">{array ? "列表" : "字段"} · {entries.length} 项</span>
+    </summary>
     <div className="jt-children">
-      {entries.map(([key, child]) => <div className="jt-row" key={key}>
-        <div className="jt-key">{array ? `第 ${Number(key) + 1} 项` : key}</div>
-        <div className="jt-value"><JsonNode value={child} depth={depth + 1} /></div>
-      </div>)}
+      {entries.map(([key, child]) => <JsonNode
+        key={key}
+        value={child}
+        depth={depth + 1}
+        label={array ? `第 ${Number(key) + 1} 项` : key}
+      />)}
     </div>
   </details>;
 }
