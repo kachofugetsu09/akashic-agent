@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from agent.peer_agent.card_resolver import AgentCard
@@ -139,7 +139,8 @@ class PeerAgentTool(Tool):
 
     async def _submit_task(self, goal: str, breadth: int, rounds: int) -> str:
         """通过 A2A JSON-RPC 提交任务，返回 task_id。"""
-        task_id = str(uuid4())
+
+        # 1. 构建非阻塞 A2A 请求
         payload = {
             "jsonrpc": "2.0",
             "id": "submit-1",
@@ -154,17 +155,34 @@ class PeerAgentTool(Tool):
                 "configuration": {"blocking": False},
             },
         }
+
+        # 2. 发送请求并确认 HTTP 成功
         r = await self._requester.post(
             self._card.url,
             json=payload,
             budget=RequestBudget(total_timeout_s=_SUBMIT_TIMEOUT_S),
         )
         r.raise_for_status()
-        data = r.json()
+        raw_data: object = r.json()
+        if not isinstance(raw_data, dict):
+            raise RuntimeError(
+                f"A2A message/send 返回了非对象响应："
+                f"类型={type(raw_data).__name__}，值={raw_data!r}"
+            )
+        data = cast(dict[str, object], raw_data)
 
         if "error" in data:
             raise RuntimeError(f"A2A 错误: {data['error']}")
 
-        # 优先使用服务端生成的 task_id，否则用本地生成的
-        server_id = data.get("result", {}).get("id")
-        return server_id or task_id
+        # 3. 只接受服务端返回的真实 Task ID
+        raw_result = data.get("result")
+        if not isinstance(raw_result, dict):
+            raise RuntimeError(
+                f"A2A message/send 返回了无效 result："
+                f"类型={type(raw_result).__name__}，值={raw_result!r}"
+            )
+        result = cast(dict[str, object], raw_result)
+        task_id = result.get("id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise RuntimeError(f"A2A message/send 未返回有效 Task ID：{task_id!r}")
+        return task_id
