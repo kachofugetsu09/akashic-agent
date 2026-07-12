@@ -150,54 +150,33 @@ class Retriever:
         time_start: datetime | None,
         time_end: datetime | None,
     ) -> list[dict]:
+        """并行生成查询向量，并合并批量检索返回的候选。"""
+
+        # 1. 生成各检索 lane 的向量；单个外部 embedding 失败不影响其余 lane。
         if not query_texts:
             return []
         vectors = await self._embed_lanes(query_texts)
         if not vectors:
             return []
-        hit_groups: list[list[dict]] = []
-        try:
-            hit_groups = self._store.vector_search_batch(
-                vectors,
-                top_k=actual_top_k,
-                memory_types=memory_types,
-                score_threshold=score_threshold,
-                scope_channel=scope_channel,
-                scope_chat_id=scope_chat_id,
-                require_scope_match=require_scope_match,
-                hotness_alpha=self._hotness_alpha,
-                hotness_half_life_days=self._hotness_half_life_days,
-                time_start=time_start,
-                time_end=time_end,
-            )
-        except Exception as e:
-            logger.debug("memory2 retrieve: vector_search_batch failed: %s", e)
 
+        # 2. 由 MemoryStore2 统一执行批量检索；存储故障必须向调用方暴露。
+        hit_groups = self._store.vector_search_batch(
+            vectors,
+            top_k=actual_top_k,
+            memory_types=memory_types,
+            score_threshold=score_threshold,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+            require_scope_match=require_scope_match,
+            hotness_alpha=self._hotness_alpha,
+            hotness_half_life_days=self._hotness_half_life_days,
+            time_start=time_start,
+            time_end=time_end,
+        )
+
+        # 3. 同一记忆只保留得分最高的 lane 命中。
         seen: dict[str, dict] = {}
-        if hit_groups:
-            for hits in hit_groups:
-                for hit in hits:
-                    _remember_vector_hit(seen, hit)
-            return list(seen.values())
-
-        for vector in vectors:
-            try:
-                hits = self._store.vector_search(
-                    query_vec=vector,
-                    top_k=actual_top_k,
-                    memory_types=memory_types,
-                    score_threshold=score_threshold,
-                    scope_channel=scope_channel,
-                    scope_chat_id=scope_chat_id,
-                    require_scope_match=require_scope_match,
-                    hotness_alpha=self._hotness_alpha,
-                    hotness_half_life_days=self._hotness_half_life_days,
-                    time_start=time_start,
-                    time_end=time_end,
-                )
-            except Exception as e:
-                logger.debug("memory2 retrieve: vector_search failed: %s", e)
-                continue
+        for hits in hit_groups:
             for hit in hits:
                 _remember_vector_hit(seen, hit)
         return list(seen.values())

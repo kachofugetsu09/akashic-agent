@@ -425,6 +425,24 @@ async def test_retriever_returns_keyword_hits_when_vector_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retriever_propagates_vector_store_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _FusionStore(vector_groups=[[]], keyword_hits=[])
+
+    def fail_batch(*_args: object, **_kwargs: object) -> list[list[_MemoryHit]]:
+        raise RuntimeError("vector store failed")
+
+    monkeypatch.setattr(store, "vector_search_batch", fail_batch)
+    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _StaticEmbedder()))
+
+    with pytest.raises(RuntimeError, match="vector store failed"):
+        await retriever.retrieve("支付", top_k=5)
+
+    assert store.keyword_kwargs == []
+
+
+@pytest.mark.asyncio
 async def test_retriever_keeps_strong_vector_order_when_keyword_hits_are_low_rank() -> None:
     vector_hits: list[_MemoryHit] = [
         {
