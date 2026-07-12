@@ -13,6 +13,7 @@ from plugins.wake_proactive.context_drive import (
     Presence,
     evaluate_context,
 )
+from plugins.wake_proactive.hazard import HazardResult
 
 
 class WakeStateStore:
@@ -91,6 +92,23 @@ class WakeStateStore:
                 threshold REAL NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_wake_at TEXT
+            )
+            """
+        )
+        _ = self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hazard_monitor (
+                session_key TEXT PRIMARY KEY,
+                hazard_before REAL NOT NULL,
+                hazard_after REAL NOT NULL,
+                preference_pressure REAL NOT NULL,
+                threshold REAL NOT NULL,
+                evidence REAL NOT NULL,
+                rate REAL NOT NULL,
+                driver_item_id TEXT NOT NULL,
+                candidate_count INTEGER NOT NULL,
+                should_wake INTEGER NOT NULL,
+                evaluated_at TEXT NOT NULL
             )
             """
         )
@@ -508,6 +526,58 @@ class WakeStateStore:
             ),
         )
         self._conn.commit()
+
+    def save_hazard_monitor(
+        self,
+        *,
+        session_key: str,
+        hazard: HazardResult,
+        candidate_count: int,
+        evaluated_at: datetime,
+    ) -> None:
+        """保存最新内容压力计算，供实时水位监测。"""
+
+        _ = self._conn.execute(
+            """
+            INSERT INTO hazard_monitor(
+                session_key, hazard_before, hazard_after, preference_pressure,
+                threshold, evidence, rate, driver_item_id, candidate_count,
+                should_wake, evaluated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_key) DO UPDATE SET
+                hazard_before=excluded.hazard_before,
+                hazard_after=excluded.hazard_after,
+                preference_pressure=excluded.preference_pressure,
+                threshold=excluded.threshold,
+                evidence=excluded.evidence,
+                rate=excluded.rate,
+                driver_item_id=excluded.driver_item_id,
+                candidate_count=excluded.candidate_count,
+                should_wake=excluded.should_wake,
+                evaluated_at=excluded.evaluated_at
+            """,
+            (
+                session_key,
+                hazard.hazard_before,
+                hazard.hazard_after,
+                hazard.preference_pressure,
+                hazard.threshold,
+                hazard.evidence,
+                hazard.rate,
+                hazard.driver_item_id,
+                candidate_count,
+                int(hazard.should_wake),
+                evaluated_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def load_hazard_monitor(self, session_key: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM hazard_monitor WHERE session_key = ?",
+            (session_key,),
+        ).fetchone()
+        return dict(row) if row is not None else None
 
     def ingest_context(
         self,

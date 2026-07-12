@@ -828,6 +828,10 @@ def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
         assert "default-proactive" not in plugin_ids
         assert client.get("/api/dashboard/proactive/overview").status_code == 404
         assert client.get("/api/dashboard/wake-proactive/runs").status_code == 200
+        meter = client.get("/api/dashboard/wake-proactive/meter")
+        assert meter.status_code == 200
+        assert meter.json()["should_wake"] == 0
+        assert meter.json()["unread_count"] == 0
 
 
 def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:

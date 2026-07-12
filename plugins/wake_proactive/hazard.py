@@ -26,6 +26,7 @@ class HazardResult:
     evidence: float
     refractory: float
     rate: float
+    preference_pressure: float
     driver_item_id: str
 
 
@@ -50,7 +51,7 @@ def advance_hazard(
     lambda_max: float = 0.790506,
 ) -> HazardResult:
     if not events:
-        return HazardResult(False, hazard, hazard, threshold, 0.0, 0.0, 0.0, "")
+        return HazardResult(False, hazard, hazard, threshold, 0.0, 0.0, 0.0, 0.0, "")
 
     ranked = rank_events(events, now=now)
     contributions: list[tuple[str, float]] = []
@@ -71,7 +72,7 @@ def advance_hazard(
         contributions.append((str(event.get("id") or ""), contribution))
 
     if not contributions:
-        return HazardResult(False, hazard, hazard, threshold, 0.0, 0.0, 0.0, "")
+        return HazardResult(False, hazard, hazard, threshold, 0.0, 0.0, 0.0, 0.0, "")
 
     evidence = sum(value for _, value in contributions)
     refractory = (
@@ -100,6 +101,7 @@ def advance_hazard(
         evidence=evidence,
         refractory=refractory,
         rate=rate,
+        preference_pressure=preference_pressure,
         driver_item_id=driver,
     )
 

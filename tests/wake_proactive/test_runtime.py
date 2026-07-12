@@ -624,6 +624,10 @@ async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, 
 
     assert first.hazard_result is not None
     assert first.hazard_result.should_wake is False
+    first_meter = store.load_hazard_monitor("telegram:1")
+    assert first_meter is not None
+    assert first_meter["should_wake"] == 0
+    assert first_meter["candidate_count"] == 1
     assert provider.chat.await_count == 0
     assert runtime.next_interval(first) == 1
 
@@ -634,6 +638,11 @@ async def test_replay_clock_advance_triggers_persisted_content_hazard(tmp_path, 
 
     assert second.hazard_result is not None
     assert second.hazard_result.should_wake is True
+    second_meter = store.load_hazard_monitor("telegram:1")
+    assert second_meter is not None
+    assert second_meter["should_wake"] == 1
+    assert second_meter["hazard_after"] >= second_meter["threshold"]
+    assert second_meter["evidence"] > 0
     assert provider.chat.await_count == 2
     assert len(orchestrator.results) == 1
     assert orchestrator.results[0].decision == "reply"

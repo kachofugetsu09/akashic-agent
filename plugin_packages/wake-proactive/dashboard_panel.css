@@ -14,3 +14,71 @@
 [data-akashic-plugin="wake-proactive"] .wake-audit summary { display: flex; align-items: center; justify-content: space-between; padding: 11px 12px; cursor: pointer; color: var(--color-fg); font-size: 13px; }
 [data-akashic-plugin="wake-proactive"] .wake-audit[open] > summary { border-bottom: 1px solid var(--color-border); }
 [data-akashic-plugin="wake-proactive"] .wake-audit > .json-tree { max-height: 420px; overflow: auto; border: 0; border-radius: 0; }
+
+[data-akashic-plugin="wake-meter"] { min-height: 100%; background: #090b0d; }
+[data-akashic-plugin="wake-meter"] .meter-loading { padding: 32px; color: var(--color-muted); font: 12px ui-monospace, monospace; }
+[data-akashic-plugin="wake-meter"] .excitement-console { min-height: 100%; padding: 28px; color: var(--color-fg); background: radial-gradient(circle at 50% 42%, #151a1f 0, #0c0f12 48%, #080a0c 100%); }
+[data-akashic-plugin="wake-meter"] .meter-header { display: flex; align-items: end; justify-content: space-between; max-width: 980px; margin: 0 auto 22px; }
+[data-akashic-plugin="wake-meter"] .meter-header span { color: #707982; font: 10px/1.2 ui-monospace, monospace; letter-spacing: .18em; }
+[data-akashic-plugin="wake-meter"] .meter-header h2 { margin: 5px 0 0; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+[data-akashic-plugin="wake-meter"] .meter-state { display: flex; align-items: center; gap: 8px; border: 1px solid #30363c; padding: 7px 10px; background: #111519; color: #aeb6bd; font: 11px ui-monospace, monospace; text-transform: uppercase; }
+[data-akashic-plugin="wake-meter"] .meter-state i { width: 7px; height: 7px; border-radius: 50%; background: #49728e; box-shadow: 0 0 8px #49728e; }
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-state { color: #ffd4c7; border-color: #78392e; background: #27120f; }
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-state i { background: #ff684c; box-shadow: 0 0 12px #ff3d24; }
+
+[data-akashic-plugin="wake-meter"] .meter-machine { position: relative; display: grid; grid-template-columns: minmax(270px, 390px) minmax(230px, 1fr); align-items: center; gap: 56px; max-width: 980px; min-height: 430px; margin: 0 auto; padding: 38px 64px; overflow: hidden; border: 1px solid #3a4147; border-radius: 10px; background: linear-gradient(145deg, #242a2f 0%, #111519 36%, #1b2024 72%, #0d1013 100%); box-shadow: inset 0 1px 0 #596168, inset 0 -1px 0 #050607, 0 24px 60px #0009; }
+[data-akashic-plugin="wake-meter"] .meter-machine::before { content: ""; position: absolute; inset: 10px; pointer-events: none; border: 1px solid #07090a; border-radius: 6px; box-shadow: 0 0 0 1px #343a3f; }
+[data-akashic-plugin="wake-meter"] .meter-machine::after { content: "PRESSURE UNIT · WP-01"; position: absolute; right: 30px; bottom: 20px; color: #555d63; font: 9px ui-monospace, monospace; letter-spacing: .16em; }
+[data-akashic-plugin="wake-meter"] .meter-screw { position: absolute; z-index: 2; width: 12px; height: 12px; border: 1px solid #050607; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #697178, #20252a 48%, #080a0b 80%); box-shadow: 0 1px 1px #000; }
+[data-akashic-plugin="wake-meter"] .meter-screw::after { content: ""; position: absolute; left: 2px; right: 2px; top: 5px; height: 1px; background: #0a0c0e; transform: rotate(-24deg); }
+[data-akashic-plugin="wake-meter"] .screw-a { left: 19px; top: 19px; } [data-akashic-plugin="wake-meter"] .screw-b { right: 19px; top: 19px; }
+[data-akashic-plugin="wake-meter"] .screw-c { left: 19px; bottom: 19px; } [data-akashic-plugin="wake-meter"] .screw-d { right: 19px; bottom: 19px; }
+
+[data-akashic-plugin="wake-meter"] .meter-chamber-wrap { position: relative; width: 230px; height: 340px; margin: 0 auto; }
+[data-akashic-plugin="wake-meter"] .meter-chamber { position: absolute; inset: 24px 44px 10px 18px; overflow: hidden; border: 6px solid #080a0c; border-radius: 8px 8px 16px 16px; background: repeating-linear-gradient(0deg, #0d1114 0 31px, #151a1e 32px 33px); box-shadow: 0 0 0 1px #4a535a, inset 14px 0 22px #000a, inset -8px 0 18px #0008, 0 10px 20px #0008; }
+[data-akashic-plugin="wake-meter"] .meter-chamber::after { content: ""; position: absolute; inset: 0; z-index: 5; pointer-events: none; background: linear-gradient(90deg, #fff0 0 54%, #fff2 58%, #fff0 66%); }
+[data-akashic-plugin="wake-meter"] .meter-fluid { position: absolute; left: 0; right: 0; z-index: 2; transition: height .65s cubic-bezier(.2,.8,.2,1), bottom .65s cubic-bezier(.2,.8,.2,1); }
+[data-akashic-plugin="wake-meter"] .meter-fluid.accumulated { bottom: 0; background: linear-gradient(90deg, #12364f, #2377a7 54%, #174761); box-shadow: inset 0 7px 10px #67c8ff33; }
+[data-akashic-plugin="wake-meter"] .meter-fluid.pressure { background: linear-gradient(90deg, #69340f, #e28125 56%, #7f3b0c); box-shadow: inset 0 7px 12px #ffd57f55, 0 -3px 8px #f6a13d66; }
+[data-akashic-plugin="wake-meter"] .meter-piston { position: absolute; left: -4px; right: -4px; z-index: 6; height: 13px; border: 1px solid #080a0b; background: linear-gradient(#aeb5ba, #4c545a 45%, #20252a 52%, #798188); box-shadow: 0 4px 8px #000b; transition: bottom .65s cubic-bezier(.2,.8,.2,1); }
+[data-akashic-plugin="wake-meter"] .meter-threshold { position: absolute; left: 0; right: 0; bottom: 80%; z-index: 8; border-top: 2px solid #fb5c43; filter: drop-shadow(0 0 4px #ff3c24); }
+[data-akashic-plugin="wake-meter"] .meter-threshold span { position: absolute; left: 8px; top: -20px; color: #ffb4a7; font: 9px ui-monospace, monospace; white-space: nowrap; letter-spacing: .06em; }
+[data-akashic-plugin="wake-meter"] .meter-scale { position: absolute; right: 0; top: 30px; bottom: 18px; display: flex; flex-direction: column; justify-content: space-between; color: #717b82; font: 9px ui-monospace, monospace; }
+[data-akashic-plugin="wake-meter"] .meter-scale span:nth-child(2) { color: #ff806b; }
+[data-akashic-plugin="wake-meter"] .meter-cap { position: absolute; left: 42px; top: 5px; z-index: 9; width: 122px; height: 25px; border: 1px solid #080a0b; border-radius: 4px 4px 1px 1px; background: linear-gradient(#8a9298, #343b40 55%, #15191c); box-shadow: 0 4px 7px #000a; transition: transform .35s cubic-bezier(.2,1.6,.3,1); }
+[data-akashic-plugin="wake-meter"] .meter-cap span { position: absolute; left: 45px; top: -14px; width: 30px; height: 15px; border: 1px solid #080a0b; background: #3e464c; }
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-cap { transform: translateY(-16px) rotate(-1deg); }
+[data-akashic-plugin="wake-meter"] .meter-burst { position: absolute; left: 22px; top: -6px; width: 165px; height: 65px; opacity: 0; transition: opacity .2s; }
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-burst { opacity: 1; animation: wake-burst .8s ease-out infinite alternate; }
+[data-akashic-plugin="wake-meter"] .meter-burst i { position: absolute; left: 82px; bottom: 5px; width: 2px; height: 48px; transform-origin: bottom; background: linear-gradient(#ff6042, transparent); }
+[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(2) { transform: rotate(32deg); } [data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(3) { transform: rotate(-32deg); }
+[data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(4) { transform: rotate(60deg); height: 34px; } [data-akashic-plugin="wake-meter"] .meter-burst i:nth-child(5) { transform: rotate(-60deg); height: 34px; }
+@keyframes wake-burst { from { filter: brightness(.8); transform: scale(.92); } to { filter: brightness(1.25); transform: scale(1.05); } }
+
+[data-akashic-plugin="wake-meter"] .meter-readout { position: relative; z-index: 2; padding-left: 42px; border-left: 1px solid #3b4349; }
+[data-akashic-plugin="wake-meter"] .meter-readout > span { display: block; color: #7f8991; font: 10px ui-monospace, monospace; letter-spacing: .15em; text-transform: uppercase; }
+[data-akashic-plugin="wake-meter"] .meter-readout strong { display: inline-block; margin-top: 8px; color: #e8edf0; font: 700 72px/.9 ui-monospace, monospace; letter-spacing: -.08em; text-shadow: 0 2px 0 #000; }
+[data-akashic-plugin="wake-meter"] .meter-readout em { margin-left: 12px; color: #7d878e; font: normal 18px ui-monospace, monospace; }
+[data-akashic-plugin="wake-meter"] .meter-readout p { max-width: 340px; margin: 18px 0 0; color: #a4adb4; font-size: 13px; line-height: 1.6; }
+[data-akashic-plugin="wake-meter"] .is-crossed .meter-readout strong { color: #ff927d; text-shadow: 0 0 18px #ff3d2444, 0 2px 0 #000; }
+
+[data-akashic-plugin="wake-meter"] .meter-telemetry { display: grid; grid-template-columns: repeat(4, 1fr); max-width: 980px; margin: 14px auto 0; border: 1px solid #2d3439; background: #0d1013; }
+[data-akashic-plugin="wake-meter"] .meter-telemetry > div { position: relative; min-width: 0; padding: 15px 17px; border-right: 1px solid #2d3439; }
+[data-akashic-plugin="wake-meter"] .meter-telemetry > div:last-child { border-right: 0; }
+[data-akashic-plugin="wake-meter"] .meter-telemetry span { display: block; color: #68727a; font-size: 10px; }
+[data-akashic-plugin="wake-meter"] .meter-telemetry strong { display: block; margin-top: 6px; overflow: hidden; color: #cdd4d9; font: 16px ui-monospace, monospace; text-overflow: ellipsis; }
+[data-akashic-plugin="wake-meter"] .meter-telemetry small { display: block; margin-top: 4px; color: #59636b; font-size: 9px; }
+[data-akashic-plugin="wake-meter"] .meter-telemetry i { position: absolute; right: 15px; top: 18px; width: 6px; height: 6px; border-radius: 50%; }
+[data-akashic-plugin="wake-meter"] .tone-cobalt { background: #3d91be; box-shadow: 0 0 7px #3d91be; } [data-akashic-plugin="wake-meter"] .tone-amber { background: #e28125; box-shadow: 0 0 7px #e28125; }
+[data-akashic-plugin="wake-meter"] .meter-footnote { display: flex; justify-content: space-between; gap: 20px; max-width: 980px; margin: 12px auto 0; color: #5d676f; font-size: 10px; }
+[data-akashic-plugin="wake-meter"] .meter-footnote code { max-width: 48%; overflow: hidden; color: #68727a; font: 9px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 900px) {
+  [data-akashic-plugin="wake-meter"] .excitement-console { padding: 18px; }
+  [data-akashic-plugin="wake-meter"] .meter-machine { grid-template-columns: 1fr; gap: 20px; padding: 34px; }
+  [data-akashic-plugin="wake-meter"] .meter-readout { padding: 20px 0 0; border-left: 0; border-top: 1px solid #3b4349; text-align: center; }
+  [data-akashic-plugin="wake-meter"] .meter-readout p { margin-left: auto; margin-right: auto; }
+  [data-akashic-plugin="wake-meter"] .meter-telemetry { grid-template-columns: repeat(2, 1fr); }
+  [data-akashic-plugin="wake-meter"] .meter-telemetry > div:nth-child(2) { border-right: 0; }
+  [data-akashic-plugin="wake-meter"] .meter-telemetry > div:nth-child(-n+2) { border-bottom: 1px solid #2d3439; }
+}

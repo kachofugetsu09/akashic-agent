@@ -219,6 +219,12 @@ class WakeRuntime:
             )
             state.hazard_result = result
             state.base_score = result.rate
+            self._state.save_hazard_monitor(
+                session_key=state.ctx.session_key,
+                hazard=result,
+                candidate_count=len(state.contents),
+                evaluated_at=state.ctx.now_utc,
+            )
             if result.should_wake:
                 state.ctx.content_events = select_content_page(
                     state.contents,
@@ -857,6 +863,8 @@ def _hazard_trace(result: HazardResult) -> dict[str, Any]:
         "evidence": result.evidence,
         "refractory": result.refractory,
         "rate": result.rate,
+        "preference_pressure": result.preference_pressure,
+        "should_wake": result.should_wake,
         "driver_item_id": result.driver_item_id,
     }
 

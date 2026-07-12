@@ -65,6 +65,54 @@ class WakeDashboardReader:
         ]
         return item
 
+    def meter(self) -> dict[str, Any]:
+        monitor = self._db().execute(
+            "SELECT * FROM hazard_monitor ORDER BY evaluated_at DESC LIMIT 1"
+        ).fetchone()
+        state = self._db().execute(
+            "SELECT * FROM hazard_state ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        unread = self._db().execute(
+            "SELECT count(*) FROM reservoir_events WHERE kind = 'content' AND status = 'unread'"
+        ).fetchone()
+        latest_run = self._db().execute(
+            "SELECT terminal_action, now_utc FROM wake_runs ORDER BY now_utc DESC LIMIT 1"
+        ).fetchone()
+        if monitor is not None:
+            result = dict(monitor)
+        elif state is not None:
+            result = {
+                "session_key": state["session_key"],
+                "hazard_before": state["hazard"],
+                "hazard_after": state["hazard"],
+                "preference_pressure": 0.0,
+                "threshold": state["threshold"],
+                "evidence": 0.0,
+                "rate": 0.0,
+                "driver_item_id": "",
+                "candidate_count": 0,
+                "should_wake": 0,
+                "evaluated_at": state["updated_at"],
+            }
+        else:
+            result = {
+                "session_key": "",
+                "hazard_before": 0.0,
+                "hazard_after": 0.0,
+                "preference_pressure": 0.0,
+                "threshold": 0.0,
+                "evidence": 0.0,
+                "rate": 0.0,
+                "driver_item_id": "",
+                "candidate_count": 0,
+                "should_wake": 0,
+                "evaluated_at": None,
+            }
+        result["unread_count"] = int(unread[0]) if unread is not None else 0
+        result["last_action"] = latest_run["terminal_action"] if latest_run else None
+        result["last_action_at"] = latest_run["now_utc"] if latest_run else None
+        return result
+
     @staticmethod
     def _decode(item: dict[str, Any]) -> dict[str, Any]:
         for key in (
@@ -85,6 +133,10 @@ def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> WakeDashboardRe
         page_size: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
         return {"items": reader.page(page, page_size), "total": reader.count()}
+
+    @app.get("/api/dashboard/wake-proactive/meter")
+    def meter() -> dict[str, Any]:
+        return reader.meter()
 
     @app.get("/api/dashboard/wake-proactive/runs/{wake_id}")
     def run(wake_id: str) -> dict[str, Any]:
