@@ -924,3 +924,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手全量 `1701 passed`、目标文件 pyright `0 errors`；主线合入后定向 `102 passed`，`git diff --check` 通过。
 - 残余风险：当前发送工具没有结构化 delivery outcome 与幂等键，因此本批没有擅自新增自动 retry，避免重复发送。
+
+### `246583c5` `fix(bootstrap): 收束 AppRuntime 资源生命周期`
+
+- 范围：AppRuntime 启停、primary/server/watcher task 监督、channel/managed service 启动回滚、CoreRuntime/MemoryRuntime/dashboard 资源关闭。
+- 原问题：启动取消不稳定进入回滚；dashboard/chat/watcher 提前返回或失败不会结束仍运行的核心任务；`asyncio.gather` 首个 sibling 失败后其他任务可能继续；单个 cleanup 失败或取消会跳过后续资源；IPC/channel/service 的部分启动存在资源泄漏路径；dashboard compile task 异常可跳过其他 closeable。
+- 为什么这样修改：一个 primary supervisor 唯一持有 runtime tasks，失败和取消时 cancel 并确定性 await 全部 siblings；已消费的 watched task 立即移交引用；通用 bootstrap cleanup runner 在调用方取消时仍完成所有已取得资源并重新抛出首个失败；各 owner 的启动回滚和关闭路径接入同一语义。
+- 不变量与拥有层：AppRuntime 拥有核心任务、server/watcher 和总 shutdown 顺序；ChannelHost 拥有 channel scoped resources；PluginServiceHost 拥有 managed subprocess；CoreRuntime/MemoryRuntime/dashboard lifespan 各自拥有其资源。startup/run 原错误保持主异常，rollback/shutdown 错误作为 cause 保留。
+- 能力变化：启动顺序、插件热重载事务、channel、CLI、proactive 和 dashboard 功能保持；server/watcher 正常退出或失败会触发全局收尾；外部取消完成 cleanup 后原样重抛；primary sibling 的异步 finally 完成前 `run()` 不返回。
+- 性能变化：无吞吐收益声明；新增常数级 task supervisor 与 shutdown bookkeeping，换取确定性资源回收。
+- 测试新增：server 正常返回/失败、run 与 shutdown 双失败、primary sibling 失败与异步 finally、外部取消、startup rollback、cleanup 继续执行、dashboard compile 取消/异常、IPC 构造回滚、channel scoped resource、managed service rollback。
+- 测试删除及原因：无。
+- 验证结果：副手全量 `1697 passed`；主线合入后定向 `73 passed`、全量 `1716 passed in 20.73s`；修改文件 pyright `0 errors`，`git diff --check` 通过。
+- 残余风险：shutdown 仍按既有顺序串行执行，未引入并行关闭；这是为保持资源依赖顺序和错误上下文，不宣称关闭耗时优化。
