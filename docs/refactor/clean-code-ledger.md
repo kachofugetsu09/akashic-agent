@@ -121,6 +121,20 @@
 - 验证结果：相关子系统 `58 passed`；pyright `0 errors`，无新增 warning；`git diff --check` 通过。
 - 残余风险：旧的 `dict` 裸容器类型仍存在于同模块其他协议，已拒绝在本提交中用 `Any` 顺手掩盖，留给独立类型设计。
 
+### `70f79c60` `refactor(plugins): 删除旧描述符声明标记`
+
+- 范围：`ActivePluginInfo` 和直接构造测试。
+- 历史依据：PR #96 引入旧 `.aka-plugin/plugin.json` descriptor；PR #104 明确删除 descriptor 并迁移到 `plugin.py` 程序化声明。
+- 原问题：`declares_aka_plugin` 已无生产读取者，却继续暗示 runtime 支持已删除协议，并让测试持续构造无意义参数。
+- 为什么这样修改：删除无主不变量和测试样板，不增加兼容层。
+- 不变量与拥有层：插件能力声明只由当前程序化 `plugin.py` 协议拥有。
+- 能力变化：无运行行为变化；skill/MCP 装配和 generation/snapshot/lease/rollback 未触及。
+- 性能变化：非性能提交。
+- 测试新增：无。
+- 测试删除及原因：未删除测试，只移除四处失效构造参数。
+- 验证结果：相关 plugin 测试 `78 passed`；pyright `0 errors` 且无新增 warning；字段全库搜索零残留；`git diff --check` 通过。
+- 残余风险：无已知残余；若未来重新支持 descriptor，应以新协议显式设计，而不是恢复布尔标记。
+
 ### `<commit>` `<title>`
 
 - 范围：
