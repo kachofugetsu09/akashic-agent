@@ -12,12 +12,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
+import secrets
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO, cast
 
 logger = logging.getLogger(__name__)
+_ATOMIC_WRITE_TEMP_ATTEMPTS = 100
 
 __all__ = [
     "load_json",
@@ -130,6 +132,25 @@ def atomic_write_text(
     _atomic_write(path, write_content, domain=domain)
 
 
+def _create_atomic_temp(path: Path) -> tuple[int, Path]:
+    """使用内核 umask 创建同目录的唯一临时文件。"""
+
+    # 1. 用高熵文件名和 O_EXCL 排除临时文件碰撞
+    for _ in range(_ATOMIC_WRITE_TEMP_ATTEMPTS):
+        temporary = path.parent / f"{path.name}.{secrets.token_hex(16)}.tmp"
+        try:
+            fd = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o666,
+            )
+        except FileExistsError:
+            continue
+        return fd, temporary
+
+    raise FileExistsError(f"无法为 {path} 创建唯一临时文件")
+
+
 def _atomic_write(
     path: Path,
     writer: Callable[[TextIO], None],
@@ -138,40 +159,45 @@ def _atomic_write(
 ) -> None:
     """在同目录临时文件中完成写入、替换和目录同步。"""
 
-    # 1. 创建同目录唯一临时文件
+    # 1. 创建父目录并读取现有目标的权限位
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix=f"{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as stream:
-        temporary = Path(stream.name)
-        try:
-            # 2. 序列化、写入、刷写并同步临时文件
+    try:
+        target_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        target_mode = None
+
+    # 2. 创建同目录唯一临时文件；新文件权限由内核直接应用 umask
+    fd, temporary = _create_atomic_temp(path)
+    try:
+        if target_mode is not None:
+            os.fchmod(fd, target_mode)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            fd = -1
+            # 3. 序列化、写入、刷写并同步临时文件
             writer(cast(TextIO, stream))
             stream.flush()
             os.fsync(stream.fileno())
 
-            # 3. 原子替换并同步目录项
-            temporary.replace(path)
-            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except BaseException:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                logger.warning(
-                    "[%s] 原子写清理临时文件失败: tmp=%s err=%s",
-                    domain,
-                    temporary,
-                    cleanup_error,
-                )
-            raise
+        # 4. 原子替换并同步目录项
+        _ = temporary.replace(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            logger.warning(
+                "[%s] 原子写清理临时文件失败: tmp=%s err=%s",
+                domain,
+                temporary,
+                cleanup_error,
+            )
+        raise
+    finally:
+        if fd != -1:
+            os.close(fd)
 
     logger.debug("[%s] 原子写完成 path=%s", domain, path)

@@ -1,12 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import stat
 from threading import Barrier
 
 import pytest
 
 import infra.persistence.json_store as json_store
-from infra.persistence.json_store import atomic_save_json, load_json
+from infra.persistence.json_store import atomic_save_json, atomic_write_text, load_json
 
 
 def test_load_json_defaults_only_for_missing_file(tmp_path) -> None:
@@ -135,3 +136,36 @@ def test_atomic_save_json_logs_cleanup_failure_without_masking_replace_error(
 
     assert "[test.state] 原子写清理临时文件失败" in caplog.text
     assert "cleanup failed" in caplog.text
+
+
+def test_atomic_write_text_preserves_permissions_and_new_file_umask(tmp_path) -> None:
+    existing = tmp_path / "existing.txt"
+    existing.write_bytes(b"old")
+    existing.chmod(0o751)
+    atomic_write_text(existing, "\ufeffleft\r\nright\n")
+
+    assert existing.read_bytes() == "\ufeffleft\r\nright\n".encode("utf-8")
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o751
+
+    control = tmp_path / "control.txt"
+    control.write_text("content", encoding="utf-8")
+    new_file = tmp_path / "new.txt"
+    atomic_write_text(new_file, "content")
+
+    assert stat.S_IMODE(new_file.stat().st_mode) == stat.S_IMODE(
+        control.stat().st_mode
+    )
+
+
+def test_atomic_write_text_encoding_failure_keeps_target_and_cleans_temp(
+    tmp_path,
+) -> None:
+    path = tmp_path / "state.txt"
+    old_content = b"old\r\ncontent\n"
+    path.write_bytes(old_content)
+
+    with pytest.raises(UnicodeEncodeError):
+        atomic_write_text(path, "new\ud800")
+
+    assert path.read_bytes() == old_content
+    assert list(tmp_path.glob("state.txt.*.tmp")) == []

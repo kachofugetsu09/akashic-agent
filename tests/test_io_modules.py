@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from typing import cast
 
 import pytest
 import agent.mcp.client as mcp_client_module
+import agent.tools.filesystem as filesystem_module
 
 from agent.mcp.client import McpClient, McpToolExecutionError, _infer_cwd
 from agent.tool_runtime import append_tool_result
@@ -210,9 +212,16 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     writer = WriteFileTool(base)
     result = await writer.execute("b.txt", "hello")
     assert "已写入" in result
+    b_file = base / "b.txt"
+    b_file.chmod(0o751)
+    result = await writer.execute("b.txt", "\ufeffhello\r\n")
+    assert "已写入" in result
+    assert b_file.read_bytes() == "\ufeffhello\r\n".encode("utf-8")
+    assert stat.S_IMODE(b_file.stat().st_mode) == 0o751
 
     editor = EditFileTool(base)
     assert "未找到 old_text" in await editor.execute("b.txt", "x", "y")
+    assert "不是文件" in await editor.execute(".", "x", "y")
     result = await editor.execute("b.txt", "hello", "world")
     assert "已成功编辑" in result
     assert "替换 1 处" in result, "edit_file 应在结果中报告替换数量"
@@ -221,6 +230,8 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert "+++ b.txt (after)" in result
     assert "-hello" in result
     assert "+world" in result
+    assert b_file.read_bytes() == "\ufeffworld\r\n".encode("utf-8")
+    assert stat.S_IMODE(b_file.stat().st_mode) == 0o751
     assert text_file.read_text(encoding="utf-8") == "line1\nline2\nline3\n"
 
     dup = base / "dup.txt"
@@ -354,6 +365,110 @@ async def test_file_mutation_lock_serializes_same_file_and_allows_different_file
     assert order.index("shared_a:end") < order.index("shared_b:start")
     assert order.index("other:start") < order.index("shared_a:end")
     assert not _FILE_MUTATION_LOCKS
+
+
+@pytest.mark.asyncio
+async def test_file_mutation_lock_releases_after_failure_and_cancellation(
+    tmp_path: Path,
+):
+    _FILE_MUTATION_LOCKS.clear()
+    path = tmp_path / "shared.txt"
+
+    async def fail() -> None:
+        raise AssertionError("callback failed")
+
+    with pytest.raises(AssertionError, match="callback failed"):
+        await _run_with_file_mutation_lock(path, fail)
+    assert not _FILE_MUTATION_LOCKS
+
+    entered = asyncio.Event()
+
+    async def wait_forever() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(_run_with_file_mutation_lock(path, wait_forever))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not _FILE_MUTATION_LOCKS
+
+
+@pytest.mark.asyncio
+async def test_file_mutation_lock_keeps_waiter_key_until_waiter_acquires(
+    tmp_path: Path,
+):
+    _FILE_MUTATION_LOCKS.clear()
+    path = tmp_path / "shared.txt"
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+    second_started = asyncio.Event()
+    second_release = asyncio.Event()
+    third_started = asyncio.Event()
+
+    async def first() -> None:
+        first_started.set()
+        await first_release.wait()
+
+    async def second() -> None:
+        second_started.set()
+        await second_release.wait()
+
+    async def third() -> None:
+        third_started.set()
+
+    first_task = asyncio.create_task(_run_with_file_mutation_lock(path, first))
+    await first_started.wait()
+    second_task = asyncio.create_task(_run_with_file_mutation_lock(path, second))
+    await asyncio.sleep(0)
+    first_release.set()
+    third_task: asyncio.Task[None] | None = None
+    try:
+        await first_task
+        await second_started.wait()
+        third_task = asyncio.create_task(_run_with_file_mutation_lock(path, third))
+        await asyncio.sleep(0)
+        assert not third_started.is_set()
+    finally:
+        second_release.set()
+        await second_task
+        if third_task is not None:
+            await third_task
+    assert not _FILE_MUTATION_LOCKS
+
+
+@pytest.mark.asyncio
+async def test_filesystem_tools_propagate_internal_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    base = tmp_path / "base"
+    base.mkdir()
+    file_path = base / "file.txt"
+    file_path.write_text("content\n", encoding="utf-8")
+
+    def fail_scan(*args: object) -> None:
+        raise AssertionError("scan programming error")
+
+    monkeypatch.setattr(filesystem_module, "_scan_text_file", fail_scan)
+    with pytest.raises(AssertionError, match="scan programming error"):
+        await ReadFileTool(base).execute("file.txt")
+
+    def fail_atomic(*args: object, **kwargs: object) -> None:
+        raise AssertionError("write programming error")
+
+    monkeypatch.setattr(filesystem_module, "atomic_write_text", fail_atomic)
+    with pytest.raises(AssertionError, match="write programming error"):
+        await WriteFileTool(base).execute("new.txt", "content")
+    with pytest.raises(AssertionError, match="write programming error"):
+        await EditFileTool(base).execute("file.txt", "content", "updated")
+
+    def fail_iterdir(*args: object, **kwargs: object) -> None:
+        raise AssertionError("list programming error")
+
+    monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+    with pytest.raises(AssertionError, match="list programming error"):
+        await ListDirTool(base).execute(".")
 
 
 @pytest.mark.asyncio

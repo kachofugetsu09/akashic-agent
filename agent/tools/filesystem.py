@@ -8,13 +8,26 @@ import io
 import logging
 import mimetypes
 import os
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from agent.tools.base import Tool, ToolResult
+from infra.persistence.json_store import atomic_write_text
 
 logger = logging.getLogger(__name__)
-_FILE_MUTATION_LOCKS: dict[str, asyncio.Lock] = {}
+T = TypeVar("T")
+
+
+@dataclass
+class _FileMutationState:
+    lock: asyncio.Lock
+    users: int = 0
+
+
+_FILE_MUTATION_LOCKS: dict[str, _FileMutationState] = {}
+
 
 def _is_inside(path: Path, allowed_dir: Path) -> bool:
     try:
@@ -85,20 +98,28 @@ def _get_file_mutation_key(file_path: Path) -> str:
         return os.path.realpath(str(file_path))
 
 
-async def _run_with_file_mutation_lock(file_path: Path, fn: Any) -> Any:
+async def _run_with_file_mutation_lock(
+    file_path: Path, fn: Callable[[], Awaitable[T]]
+) -> T:
+    """按规范化路径串行执行文件变更，并在异常或取消后回收锁状态。"""
+
+    # 1. 登记当前调用，等待者也必须计入生命周期
     key = _get_file_mutation_key(file_path)
-    lock = _FILE_MUTATION_LOCKS.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _FILE_MUTATION_LOCKS[key] = lock
+    state = _FILE_MUTATION_LOCKS.get(key)
+    if state is None:
+        state = _FileMutationState(lock=asyncio.Lock())
+        _FILE_MUTATION_LOCKS[key] = state
+    state.users += 1
 
-    async with lock:
-        result = await fn()
-
-    current = _FILE_MUTATION_LOCKS.get(key)
-    if current is lock and not lock.locked():
-        _FILE_MUTATION_LOCKS.pop(key, None)
-    return result
+    try:
+        # 2. 同一文件串行执行，取消也由 async with 释放底层锁
+        async with state.lock:
+            return await fn()
+    finally:
+        # 3. 最后一个持有者或等待者退出后再移除路径映射
+        state.users -= 1
+        if state.users == 0 and _FILE_MUTATION_LOCKS.get(key) is state:
+            _ = _FILE_MUTATION_LOCKS.pop(key, None)
 
 
 _READ_MAX_LINES = 400
@@ -402,7 +423,7 @@ class ReadFileTool(Tool):
             return text + suffix_note
         except PermissionError as e:
             return f"错误：{e}"
-        except Exception as e:
+        except OSError as e:
             return f"读取文件失败：{e}"
 
 
@@ -445,15 +466,15 @@ class WriteFileTool(Tool):
             async def _write() -> str:
                 if file_path.exists() and file_path.is_dir():
                     return f"写入文件失败：目标路径是目录：{path}"
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(content, encoding="utf-8")
+                atomic_write_text(file_path, content, domain="filesystem")
                 return f"已写入 {len(content)} 字节到 {path}"
 
             return await _run_with_file_mutation_lock(file_path, _write)
         except PermissionError as e:
             return f"错误：{e}"
-        except Exception as e:
+        except OSError as e:
             return f"写入文件失败：{e}"
+
 
 class EditFileTool(Tool):
     """精确替换文件中的指定文本片段。"""
@@ -508,6 +529,8 @@ class EditFileTool(Tool):
             async def _edit() -> str:
                 if not file_path.exists():
                     return f"错误：文件不存在：{path}"
+                if not file_path.is_file():
+                    return f"错误：路径不是文件：{path}"
 
                 raw_content = file_path.read_bytes().decode("utf-8")
                 content, has_bom = _strip_utf8_bom(raw_content)
@@ -535,7 +558,7 @@ class EditFileTool(Tool):
                 replaced_count = count if replace_all else 1
                 diff_text = _build_edit_diff(content, new_content, path)
                 restored_content = _restore_utf8_bom(new_content, has_bom)
-                file_path.write_text(restored_content, encoding="utf-8", newline="")
+                atomic_write_text(file_path, restored_content, domain="filesystem")
                 if diff_text:
                     return (
                         f"已成功编辑 {path}（替换 {replaced_count} 处）\n\n"
@@ -546,8 +569,9 @@ class EditFileTool(Tool):
             return await _run_with_file_mutation_lock(file_path, _edit)
         except PermissionError as e:
             return f"错误：{e}"
-        except Exception as e:
+        except OSError as e:
             return f"编辑文件失败：{e}"
+
 
 class ListDirTool(Tool):
     """列举目录内容。"""
@@ -581,7 +605,7 @@ class ListDirTool(Tool):
             if not dir_path.is_dir():
                 return f"错误：路径不是目录：{path}"
 
-            items = []
+            items: list[str] = []
             for item in sorted(dir_path.iterdir()):
                 prefix = "📁 " if item.is_dir() else "📄 "
                 items.append(f"{prefix}{item.name}")
@@ -592,5 +616,5 @@ class ListDirTool(Tool):
             return "\n".join(items)
         except PermissionError as e:
             return f"错误：{e}"
-        except Exception as e:
+        except OSError as e:
             return f"列举目录失败：{e}"
