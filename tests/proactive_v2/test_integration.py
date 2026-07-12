@@ -15,6 +15,7 @@ from agent.plugins.snapshot import (
 )
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from core.error_context import current_session_key
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 
@@ -54,6 +55,30 @@ async def test_tick_return_is_propagated() -> None:
     loop._proactive_kernel.run_tick = AsyncMock(return_value=42.0)
 
     assert await loop._tick() == 42.0
+
+
+@pytest.mark.asyncio
+async def test_tick_restores_session_context_after_success() -> None:
+    loop = make_loop()
+    token = current_session_key.set("outer-session")
+    try:
+        await loop._tick()
+        assert current_session_key.get() == "outer-session"
+    finally:
+        current_session_key.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_tick_restores_session_context_after_failure() -> None:
+    loop = make_loop()
+    loop._proactive_kernel.run_tick = AsyncMock(side_effect=RuntimeError("tick failed"))
+    token = current_session_key.set("outer-session")
+    try:
+        with pytest.raises(RuntimeError, match="tick failed"):
+            await loop._tick()
+        assert current_session_key.get() == "outer-session"
+    finally:
+        current_session_key.reset(token)
 
 
 @pytest.mark.asyncio

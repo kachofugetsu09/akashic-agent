@@ -476,53 +476,55 @@ class ProactiveLoop:
         self._wake.set()
 
     async def _tick_bound(self) -> float | None:
-        # 给本 tick 打上 session 归属，供 observe 全局错误采集关联；
-        # 纯埋点，依赖未就绪时静默跳过，绝不影响 tick 主流程。
-        _ = current_session_key.set(self._target_session_key())
-        # 主动回复全链路入口：Gate → Fetch → Judge → Resolve → Deliver。
-        started = time.perf_counter()
         session_key = self._target_session_key()
-        with diagnostic_context(session=session_key, flow="proactive", phase="tick"):
-            logger.info(
-                diagnostic_line(
-                    "ProactiveLoop._tick",
-                    event="start",
-                    flow="proactive",
-                    phase="tick",
-                    session=session_key,
-                    action="run",
-                )
-            )
-            try:
-                score = await self._proactive_kernel.run_tick(session_key)
-            except Exception as exc:
-                logger.exception(
+        session_token = current_session_key.set(session_key)
+        try:
+            # 1. 执行 Gate → Fetch → Judge → Resolve → Deliver 全链路。
+            started = time.perf_counter()
+            with diagnostic_context(session=session_key, flow="proactive", phase="tick"):
+                logger.info(
                     diagnostic_line(
                         "ProactiveLoop._tick",
-                        event="phase_error",
+                        event="start",
                         flow="proactive",
                         phase="tick",
                         session=session_key,
-                        action="fail",
-                        reason="proactive_tick_error",
-                        duration_ms=int((time.perf_counter() - started) * 1000),
-                        error_type=type(exc).__name__,
-                        note=str(exc)[:160],
+                        action="run",
                     )
                 )
-                raise
-            logger.info(
-                diagnostic_line(
-                    "ProactiveLoop._tick",
-                    event="end",
-                    flow="proactive",
-                    phase="tick",
-                    session=session_key,
-                    action="done",
-                    duration_ms=int((time.perf_counter() - started) * 1000),
+                try:
+                    score = await self._proactive_kernel.run_tick(session_key)
+                except Exception as exc:
+                    logger.exception(
+                        diagnostic_line(
+                            "ProactiveLoop._tick",
+                            event="phase_error",
+                            flow="proactive",
+                            phase="tick",
+                            session=session_key,
+                            action="fail",
+                            reason="proactive_tick_error",
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            error_type=type(exc).__name__,
+                            note=str(exc)[:160],
+                        )
+                    )
+                    raise
+                logger.info(
+                    diagnostic_line(
+                        "ProactiveLoop._tick",
+                        event="end",
+                        flow="proactive",
+                        phase="tick",
+                        session=session_key,
+                        action="done",
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                    )
                 )
-            )
-            return score
+                return score
+        finally:
+            # 2. 恢复父 task 上下文，避免跨 tick 残留会话归属。
+            current_session_key.reset(session_token)
 
     async def _start_current_snapshot(self) -> None:
         assert self._runtime_snapshot_store is not None
