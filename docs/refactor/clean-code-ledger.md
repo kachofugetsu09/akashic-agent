@@ -754,16 +754,16 @@
 - 验证结果：typecheck、lint、插件 esbuild 与 dashboard build 通过。
 - 残余风险：审阅同时发现文件内 catch 降级缺少可观测性，已作为下一笔功能修复处理，不能靠注释合理化静默失败。
 
-### `<commit>` `<title>`
+### 外部插件 `8aaeab3` `fix(feed): maintain cache freshness in MCP lifecycle`
 
-- 范围：
-- 历史依据：
-- 原问题：
-- 为什么这样修改：
-- 不变量与拥有层：
-- 能力变化：
-- 性能变化：
-- 测试新增：
-- 测试删除及原因：
-- 验证结果：
-- 残余风险：
+- 范围：canonical Feed 插件 `/mnt/data/coding/akashic-plugin/feed-mcp`、GitHub `akashic-plugins/feed-mcp` 与安装版本 `feed@github 1.2.0`。
+- 历史依据：`3b456e7b` 把 source poll 绑定到 `default_proactive` lifecycle；启用 wake package 时 manifest 会禁用 default package，但 wake 只调用 `get_proactive_events`，从而丢失 Feed 外部刷新能力。
+- 原问题：Feed MCP 进程持续运行且 wake 每约 5 分钟读取一次缓存，但 `poll_state.last_polled_at` 停在 2026-07-12 14:59 UTC；Tibo RSS 已有新消息，SQLite 仍是旧列表。现有测试只证明 default lifecycle 拥有 poll，没有覆盖 wake + Feed freshness 组合。
+- 为什么这样修改：缓存 freshness 归缓存拥有者。Feed MCP 使用 FastMCP lifespan 启动唯一后台 poller；首次主动读取等待首次刷新，之后按 `feed_mcp.json.poll_ttl_seconds` 刷新。插件不再声明宿主 `poll_tool`，default 与 wake 都只通过异步 MCP 调用读取稳定缓存。
+- 不变量与拥有层：Feed poller 唯一拥有刷新串行、首次 ready、失败状态和重试；backend 拥有单源 TTL 与 SQLite 数据；proactive lifecycle 只消费 source snapshot。系统级刷新错误使读取显式失败，单源失败继续由 Feed `_poll_rows` 隔离并记录。
+- 能力变化：default/wake 的 fetch、分页、ack 和排序不变；wake 模式恢复新消息获取。MCP 启动不等待 32 个网络源，首次 `get_proactive_events` 才等待首次刷新；手动 poll 与后台 poll 由同一异步锁串行。
+- 性能变化：外部抓取由宿主生命周期耦合改为 MCP 每 300 秒自行刷新；SQLite 启用 WAL 和 30 秒 busy timeout，轮询写入期间读取稳定快照。没有增加每次 wake 的网络抓取。
+- 测试新增：poller 首次刷新屏障、持续刷新、失败可见与下一轮恢复。
+- 测试删除及原因：删除未接线且吞掉启动错误的 `startup_force_poll()` 死代码；未删除行为测试。
+- 验证结果：Feed 插件 `11 passed`；pyright `0 errors, 0 warnings`；GitHub 已推送；`plugin-install` 安装 1.2.0；运行进程切换到 1.2.0；首次自刷新 32/32 成功，Tibo 源解析 19 条并新增 2 条，`last_polled_at` 推进到 2026-07-12 18:59 UTC。
+- 残余风险：Steam MCP 在线状态实时读取，但历史游戏时长 snapshot 仍只由手动工具更新，属于已确认的部分同类问题；Calendar 每次读取实时查询 Google API，Fitbit managed service 已自行轮询，二者不存在本次旧缓存问题。
