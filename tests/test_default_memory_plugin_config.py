@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from plugins.default_memory.config import (
+    DefaultMemoryConfig,
     load_default_memory_config,
     resolve_memory_db_path,
 )
@@ -40,6 +43,57 @@ max_chars = 3000
     assert cfg.retrieval.score_threshold == 0.7
     assert cfg.retrieval.thresholds.event == 0.8
     assert cfg.retrieval.inject.max_chars == 3000
+
+
+def test_default_memory_config_preserves_legacy_numeric_strings(tmp_path: Path) -> None:
+    (tmp_path / "config.local.toml").write_text(
+        """
+[retrieval]
+top_k_history = "9"
+score_threshold = "0.6"
+procedure_guard_enabled = false
+
+[retrieval.inject]
+max_chars = 3000.0
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_default_memory_config(plugin_dir=tmp_path)
+
+    assert cfg.retrieval.top_k_history == 9
+    assert cfg.retrieval.score_threshold == 0.6
+    assert cfg.retrieval.procedure_guard_enabled is False
+    assert cfg.retrieval.inject.max_chars == 3000
+    assert cfg.retrieval.thresholds == DefaultMemoryConfig().retrieval.thresholds
+
+
+@pytest.mark.parametrize(
+    ("content", "field"),
+    [
+        ("db_path = 42\n", "db_path"),
+        ('retrieval = "invalid"\n', "retrieval"),
+        ('[retrieval]\nthresholds = "invalid"\n', "retrieval.thresholds"),
+        ("[retrieval]\ninject = []\n", "retrieval.inject"),
+        (
+            '[retrieval]\nprocedure_guard_enabled = "false"\n',
+            "retrieval.procedure_guard_enabled",
+        ),
+        ("[retrieval]\ntop_k_history = 1.5\n", "retrieval.top_k_history"),
+        ("[retrieval]\nscore_threshold = true\n", "retrieval.score_threshold"),
+        ("[retrieval.thresholds]\nevent = []\n", "retrieval.thresholds.event"),
+        ("[retrieval.inject]\nmax_chars = true\n", "retrieval.inject.max_chars"),
+    ],
+)
+def test_default_memory_config_rejects_invalid_present_values(
+    tmp_path: Path,
+    content: str,
+    field: str,
+) -> None:
+    (tmp_path / "config.local.toml").write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=field.replace(".", r"\.")):
+        load_default_memory_config(plugin_dir=tmp_path)
 
 
 def test_default_memory_db_path_resolves_under_workspace(tmp_path: Path) -> None:
