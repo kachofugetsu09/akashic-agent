@@ -1467,8 +1467,7 @@ def _source_refs(
 ) -> set[str]:
     refs: set[str] = set()
     for card in [*dense_cards, *ripple_cards]:
-        for item in json.loads(card.source_ref):
-            refs.add(str(item))
+        refs.update(_source_ref_ids(card.source_ref))
     return refs
 
 
@@ -1612,13 +1611,10 @@ def _load_messages_batch(
 
 # 从 source_ref JSON 数组中取消息 id。
 def _source_ref_ids(source_ref: str) -> list[str]:
-    # 1. source_ref 始终由 Akasha 生成，解析失败时回退空列表。
-    try:
-        value = cast(object, json.loads(source_ref))
-    except json.JSONDecodeError:
-        return []
+    # 1. source_ref 始终由 Akasha 生成，违反内部契约时直接失败。
+    value = cast(object, json.loads(source_ref))
     if not isinstance(value, list):
-        return []
+        raise ValueError("Akasha source_ref 必须是 JSON 数组")
     items = cast(list[object], value)
     return [str(item) for item in items if str(item).strip()]
 

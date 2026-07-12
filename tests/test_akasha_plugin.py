@@ -1592,20 +1592,43 @@ async def test_read_only_query_skips_akasha_state_effects(tmp_path: Path) -> Non
     engine._remember_pending_activation = lambda *_, **__: side_effects.append("pending")
     engine._write_query_log = lambda *_, **__: side_effects.append("query_log")
 
-    result = await engine.query(
-        MemoryQuery(
-            text="用户消息",
-            intent="answer",
-            effect="read_only",
-            scope=MemoryScope(session_key="s"),
-            timestamp=QUERY_TS,
-        )
+    request = MemoryQuery(
+        text="用户消息",
+        intent="answer",
+        effect="read_only",
+        scope=MemoryScope(session_key="s"),
+        timestamp=QUERY_TS,
     )
+    result = await engine.query(request)
 
     assert update_state_values == [False]
     assert side_effects == []
     assert result.trace["effect"] == "read_only"
     assert result.records
+
+    invalid_card = AkashaCard(
+        key="s:0",
+        source_ref="{}",
+        user_message="历史消息",
+        assistant_preview="",
+        happened_at=QUERY_TS.isoformat(),
+        score=0.9,
+        lane="dense",
+        signals={},
+    )
+
+    def invalid_cards(
+        items: list[tuple[str, float, str, dict[str, object]]],
+        **_: object,
+    ) -> list[AkashaCard]:
+        return [invalid_card] if items else []
+
+    engine._cards_from_keys = invalid_cards
+    with pytest.raises(ValueError, match="source_ref 必须是 JSON 数组"):
+        await engine.query(request)
+
+    assert update_state_values == [False, False]
+    assert side_effects == []
 
 
 def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> None:
