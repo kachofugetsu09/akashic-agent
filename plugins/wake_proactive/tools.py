@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 MAX_INVESTIGATION_CANDIDATES = 8
-MAX_SHARE_ITEMS = 3
+MAX_SHARE_ITEMS = 5
 
 
 @dataclass
@@ -79,6 +79,10 @@ TOOL_SCHEMAS = [
         {
             "type": "object",
             "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "基于已验证正文写成的一条自然主动消息，不使用固定资讯模板。",
+                },
                 "opening": {"type": "string"},
                 "items": {
                     "type": "array",
@@ -273,7 +277,7 @@ def _share_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> st
     if not items:
         raise ValueError("share_content requires at least one item")
     if len(items) > MAX_SHARE_ITEMS:
-        raise ValueError("share_content supports at most 3 items")
+        raise ValueError("share_content supports at most 5 items")
     valid_ids = set(_event_map(ctx))
     item_ids = [str(item.get("item_id") or "").strip() for item in items]
     if len(item_ids) != len(set(item_ids)):
@@ -304,6 +308,7 @@ def _share_content(ctx: WakeContext, args: dict[str, Any], deps: ToolDeps) -> st
             ensure_ascii=False,
         )
     rendered = render_share(
+        message=str(args.get("message") or ""),
         opening=str(args.get("opening") or ""),
         items=with_evidence,
         closing=str(args.get("closing") or ""),

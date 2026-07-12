@@ -58,7 +58,7 @@ def test_tool_schemas_are_independent_three_step_flow():
     scratch_items = TOOL_SCHEMAS[0]["function"]["parameters"]["properties"]["items"]
     assert scratch_items["maxItems"] == 8
     share_items = TOOL_SCHEMAS[2]["function"]["parameters"]["properties"]["items"]
-    assert share_items["maxItems"] == 3
+    assert share_items["maxItems"] == 5
 
 
 @pytest.mark.asyncio
@@ -247,6 +247,32 @@ async def test_share_content_renders_one_message_and_stable_mapping(tmp_path):
     assert saved is not None
     assert json.loads(saved["display_event_map_json"]) == {"1": "feed:a"}
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_share_content_accepts_natural_message_with_evidence_sources():
+    ctx = WakeContext(content_events=_events())
+    web = MagicMock()
+    web.execute = AsyncMock(return_value=json.dumps({"text": "正文", "url": ""}))
+    deps = ToolDeps(web_fetch_tool=web)
+    await execute("scratchpad", _plan(), ctx, deps)
+    await execute("investigate_candidates", {}, ctx, deps)
+
+    result = json.loads(
+        await execute(
+            "share_content",
+            {
+                "message": "刚看到一个挺对你胃口的设计：它把时间本身放进了唤醒判断。",
+                "items": [{"item_id": "feed:a", "summary": "不会显示的模板摘要"}],
+            },
+            ctx,
+            deps,
+        )
+    )
+
+    assert "挺对你胃口" in result["message"]
+    assert "不会显示的模板摘要" not in result["message"]
+    assert "来源：https://example.com/a" in result["message"]
 
 
 @pytest.mark.asyncio
