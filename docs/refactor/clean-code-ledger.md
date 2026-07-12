@@ -898,3 +898,16 @@
 - 测试删除及原因：无。
 - 验证结果：副手定向 `21 passed`、全量 `1683 passed`、范围 pyright `0 errors`；主线合入后 bus/event 定向 `26 passed`，`git diff --check` 通过。
 - 残余风险：MessageBus/EventBus 队列仍无固定容量；缺少明确容量与背压契约前不任意加限额。
+
+### `6c47cdbb` `fix(plugins): expose only current generation views`
+
+- 范围：PluginManager 当前插件视图与 Telegram bot command 汇总。
+- 原问题：旧 snapshot lease 排空前，`_active_plugins`/`_loaded` 同时含旧代和当前代；公开视图遍历 namespace 会重复暴露旧 metadata/commands，禁用当前插件后旧代仍可能被报告。
+- 为什么这样修改：只从 `_active_generations` 当前代际映射获取 ActivePluginInfo 与 instance，并保留 registry active 检查。
+- 不变量与拥有层：snapshot/lease 拥有旧代执行连续性；PluginManager 当前代映射拥有对外 catalog。prepare/publish/rollback、drain、MCP/channel/service/dashboard 事务不变。
+- 能力变化：旧 turn 继续使用 lease 固定旧 snapshot；新查询只见当前代，禁用后不暴露旧能力；命令转换语义保持。
+- 性能变化：从遍历全部 retained namespace 收敛到当前 generation 数量；通常插件数很小，不作量化声明。
+- 测试新增：保留旧 lease 时 v1→v2 只暴露 v2，禁用后两个公开视图均为空。
+- 测试删除及原因：无。
+- 验证结果：副手定向 `156 passed`、全量 `1683 passed`、pyright `0 errors`；主线合入后 hot-reload 定向 `141 passed`，`git diff --check` 通过。
+- 残余风险：旧 generation 仍按 lease 正常保留资源，这是连续性设计，不应为“清理视图”提前销毁。
