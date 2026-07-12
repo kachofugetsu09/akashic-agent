@@ -19,13 +19,8 @@ class WakeProactiveModuleFactory:
     lifecycle_id = "wake"
 
     def __call__(self, runtime: object) -> list[object]:
-        build_modules = getattr(runtime, "build_modules", None)
-        if not callable(build_modules):
-            raise RuntimeError("wake proactive runtime must provide build_modules()")
-        modules = build_modules()
-        if not isinstance(modules, list):
-            raise RuntimeError("wake proactive build_modules() must return list")
-        return cast(list[object], modules)
+        from plugins.wake_proactive.modules import build_wake_runtime_modules
+        return cast(list[object], build_wake_runtime_modules(runtime))
 
 
 class WakeProactivePlugin(Plugin):

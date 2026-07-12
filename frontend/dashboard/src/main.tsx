@@ -329,7 +329,6 @@ function App(): React.ReactElement {
     void run(async () => {
       await loadSessions();
       await loadMessages();
-      await loadProactiveOverview();
     });
   }, [loadMessages, loadProactiveOverview, loadSessions, run]);
 
@@ -512,10 +511,6 @@ function App(): React.ReactElement {
             }}>
               <span className="section-tab-label">Sessions</span>
               <span className="section-tab-count">{sessions.length}</span>
-            </button>
-            <button type="button" className={`section-tab ${viewMode === "proactive" ? "active" : ""}`} onClick={() => { setProactiveSection("all"); setProactivePage(1); selectView("proactive"); }}>
-              <span className="section-tab-label">Proactive</span>
-              <span className="section-tab-count">{proactiveOverview?.counts.tick_logs ?? proactiveTotal}</span>
             </button>
             {plugins.filter((p) => !hiddenPlugins[p.id]).map((plugin) => (
               <button key={plugin.id} type="button" className={`section-tab ${viewMode === `plugin:${plugin.id}` ? "active" : ""}`} onClick={() => selectView(`plugin:${plugin.id}`)}>

@@ -24,7 +24,6 @@ from plugins.wake_proactive.hazard import (
     advance_hazard,
     rank_events,
 )
-from plugins.wake_proactive.modules import build_wake_modules
 from plugins.wake_proactive.prompt import build_messages
 from plugins.wake_proactive.state import WakeStateStore
 from plugins.wake_proactive.tools import TOOL_SCHEMAS, ToolDeps, execute
@@ -64,6 +63,7 @@ class WakeRunState:
     context_results: list[ContextDriveResult] | None = None
     context_reevaluate: bool = False
     drift_result: DriftDriveResult | None = None
+    content_completed: bool = False
     new_content_count: int = 0
 
 
@@ -110,7 +110,17 @@ class WakeRuntime:
         )
 
     def build_modules(self) -> list[object]:
-        return build_wake_modules(self)
+        from plugins.wake_proactive.modules import (
+            build_wake_content_modules,
+            build_wake_drift_modules,
+            build_wake_runtime_modules,
+        )
+
+        return [
+            *build_wake_runtime_modules(self),
+            *build_wake_content_modules(self),
+            *build_wake_drift_modules(self),
+        ]
 
     def begin(self, frame: ProactiveFrame) -> WakeRunState:
         return WakeRunState(
@@ -152,13 +162,13 @@ class WakeRuntime:
         state.contents = self._state.unread("content")
         self._apply_semantic_interest(state.contents, state.ctx.now_utc)
 
-    async def decide(self, state: WakeRunState) -> None:
+    async def decide_content(self, state: WakeRunState) -> bool:
         if state.alerts:
             await self._deliver_alert(state, state.alerts[0])
             state.next_interval_seconds = (
                 1 if len(state.alerts) > 1 else self._tick_interval_seconds
             )
-            return
+            return True
         if state.contents:
             ranked = rank_events(state.contents, now=state.ctx.now_utc)
             expired_ids = {
@@ -235,7 +245,7 @@ class WakeRuntime:
                     last_wake_at=state.ctx.now_utc if completed else last_wake_at,
                 )
                 state.next_interval_seconds = self._tick_interval_seconds
-                return
+                return True
             self._state.save_hazard(
                 session_key=state.ctx.session_key,
                 hazard=result.hazard_after,
@@ -244,8 +254,15 @@ class WakeRuntime:
                 last_wake_at=last_wake_at,
             )
 
+        return False
+
+    async def decide_drift(self, state: WakeRunState) -> None:
         await self._decide_drift(state)
         state.next_interval_seconds = self._tick_interval_seconds
+
+    async def decide(self, state: WakeRunState) -> None:
+        if not await self.decide_content(state):
+            await self.decide_drift(state)
 
     def _record_content_observation(
         self,

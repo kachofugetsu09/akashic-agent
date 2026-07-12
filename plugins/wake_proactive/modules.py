@@ -36,9 +36,24 @@ class WakeIngestModule:
         return frame
 
 
-class WakeDecisionModule:
-    slot = "wake.decide"
+class WakeContentDecisionModule:
+    slot = "wake.content.decide"
     requires = ("wake:reservoir",)
+    produces = ("wake:content_result",)
+
+    def __init__(self, runtime: object) -> None:
+        self._runtime = runtime
+
+    async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
+        state = frame.slots[_STATE_SLOT]
+        state.content_completed = await self._runtime.decide_content(state)  # type: ignore[attr-defined]
+        frame.slots["wake:content_result"] = state
+        return frame
+
+
+class WakeDriftDecisionModule:
+    slot = "wake.drift.decide"
+    requires = ("wake:content_result",)
     produces = ("wake:result",)
 
     def __init__(self, runtime: object) -> None:
@@ -46,7 +61,8 @@ class WakeDecisionModule:
 
     async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
         state = frame.slots[_STATE_SLOT]
-        await self._runtime.decide(state)  # type: ignore[attr-defined]
+        if not state.content_completed:
+            await self._runtime.decide_drift(state)  # type: ignore[attr-defined]
         frame.output = ProactiveTickResult(base_score=state.base_score)
         frame.slots["wake:result"] = state
         return frame
@@ -70,10 +86,17 @@ class WakeScheduleModule:
         return frame
 
 
-def build_wake_modules(runtime: object) -> list[object]:
+def build_wake_runtime_modules(runtime: object) -> list[object]:
     return [
         WakeStartModule(runtime),
         WakeIngestModule(runtime),
-        WakeDecisionModule(runtime),
         WakeScheduleModule(runtime),
     ]
+
+
+def build_wake_content_modules(runtime: object) -> list[object]:
+    return [WakeContentDecisionModule(runtime)]
+
+
+def build_wake_drift_modules(runtime: object) -> list[object]:
+    return [WakeDriftDecisionModule(runtime)]

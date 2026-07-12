@@ -751,7 +751,11 @@ def test_memory_dashboard_filters_survive_parallel_requests(tmp_path) -> None:
             assert "total" in payload
 
 
-def test_proactive_dashboard_endpoints(tmp_path) -> None:
+def test_proactive_dashboard_endpoints(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bootstrap.dashboard_api.load_package_manifest",
+        lambda: {"default-proactive": True, "wake-proactive": False},
+    )
     _seed_workspace(tmp_path)
     with TestClient(create_dashboard_app(tmp_path)) as client:
         overview_resp = client.get("/api/dashboard/proactive/overview")
@@ -809,6 +813,21 @@ def test_proactive_dashboard_endpoints(tmp_path) -> None:
             tick_steps_resp.json()["items"][0]["tool_args"]["message"] == "记得早点休息"
         )
         assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
+
+
+def test_wake_package_owns_dashboard_visibility(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bootstrap.dashboard_api.load_package_manifest",
+        lambda: {"default-proactive": False, "wake-proactive": True},
+    )
+    with TestClient(create_dashboard_app(tmp_path)) as client:
+        plugin_ids = {
+            item["id"] for item in client.get("/api/dashboard/plugins").json()
+        }
+        assert "wake-proactive" in plugin_ids
+        assert "default-proactive" not in plugin_ids
+        assert client.get("/api/dashboard/proactive/overview").status_code == 404
+        assert client.get("/api/dashboard/wake-proactive/runs").status_code == 200
 
 
 def test_dashboard_lists_installed_plugin_panels(tmp_path, monkeypatch) -> None:
