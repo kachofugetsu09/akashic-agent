@@ -1945,6 +1945,7 @@ async def test_dead_candidate_mcp_aborts_post_publish_invariant(
 @pytest.mark.asyncio
 async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugins = tmp_path / "plugins"
 
@@ -1973,9 +1974,19 @@ async def test_reconcile_changed_publishes_multiple_plugins_from_latest_snapshot
         source("snapshot_second", "v2"),
         encoding="utf-8",
     )
+    discover_calls = 0
+    original_discover = manager.discover
+
+    def count_discoveries() -> list[dict[str, str]]:
+        nonlocal discover_calls
+        discover_calls += 1
+        return original_discover()
+
+    monkeypatch.setattr(manager, "discover", count_discoveries)
 
     results = await manager.reconcile_changed()
 
+    assert discover_calls == 1
     assert [result["publication_state"] for result in results] == [
         "committed",
         "committed",

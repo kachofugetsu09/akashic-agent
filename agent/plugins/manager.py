@@ -569,7 +569,11 @@ class PluginManager:
 
     async def prepare_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
-            return await self._prepare_changed()
+            discovered = {
+                _resolve_plugin_id(mod): mod
+                for mod in self.discover()
+            }
+            return await self._prepare_changed(discovered=discovered)
 
     async def reconcile_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
@@ -590,6 +594,7 @@ class PluginManager:
                 results.append(await self._deactivate_plugin(plugin_id))
             for plugin_id in sorted(desired.intersection(self._active_generations)):
                 prepared = await self._prepare_changed(
+                    discovered=discovered,
                     plugin_ids={plugin_id},
                     force_reprepare=True,
                 )
@@ -1140,14 +1145,11 @@ class PluginManager:
     async def _prepare_changed(
         self,
         *,
+        discovered: dict[str, dict[str, str]],
         plugin_ids: set[str] | None = None,
         force_reprepare: bool = False,
     ) -> list[dict[str, object]]:
         results: list[dict[str, object]] = []
-        discovered = {
-            _resolve_plugin_id(mod): mod
-            for mod in self.discover()
-        }
         for plugin_id, active in tuple(self._active_generations.items()):
             if plugin_ids is not None and plugin_id not in plugin_ids:
                 continue
@@ -1222,7 +1224,8 @@ class PluginManager:
                 and config_revision == current_prepared.config_revision
             ):
                 continue
-            prepared = await self.prepare_candidate(plugin_id)
+            await self.discard_prepared(plugin_id)
+            prepared = await self._load_one(mod, activate=False)
             gate = self.latest_gate(plugin_id)
             result: dict[str, object] = {
                 "plugin_id": plugin_id,
