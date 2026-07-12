@@ -87,6 +87,11 @@ class _StrictProvider(_FakeProvider):
         return await super().chat(**kwargs)
 
 
+class _FailingProvider:
+    async def chat(self, **kwargs):
+        raise RuntimeError("provider unavailable")
+
+
 @pytest.fixture(autouse=True)
 def _shared_http_resources():
     resources = SharedHttpResources()
@@ -374,6 +379,18 @@ def test_subagent_marks_tool_loop_and_summarizes():
     assert subagent.last_exit_reason == "tool_loop"
     assert "最大迭代" not in result
     assert len(tool.calls) == 2
+
+
+def test_subagent_propagates_provider_failure():
+    subagent = SubAgent(
+        provider=cast(Any, _FailingProvider()),
+        model="m",
+        tools=[],
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        asyncio.run(subagent.run("do work"))
+    assert subagent.last_exit_reason == "error"
 
 
 def test_subagent_breaks_on_repeated_multi_tool_batch_with_closed_chain():

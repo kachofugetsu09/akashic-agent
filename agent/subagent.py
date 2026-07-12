@@ -154,7 +154,7 @@ class SubAgent:
 
         - 任务正常完成：返回最终结果文本
         - 命中循环保护或达到最大迭代：返回进度收尾总结
-        - LLM 调用等硬错误：返回空字符串
+        - LLM 调用等硬错误：交给调用方记录并转换为任务失败
         """
         messages: list[dict[str, Any]] = []
         self.last_exit_reason = "running"
@@ -175,10 +175,9 @@ class SubAgent:
                     max_tokens=self._max_tokens,
                     tool_choice="auto",
                 )
-            except Exception as e:
-                logger.error("[subagent] LLM 调用失败 iteration=%d: %s", iteration, e)
+            except Exception:
                 self.last_exit_reason = "error"
-                return ""
+                raise
 
             if not response.tool_calls:
                 logger.info("[subagent] 任务完成 iterations=%d", iteration + 1)
