@@ -989,3 +989,16 @@
 - 测试新增/调整：默认 phase graph 明确不含 `default.source.poll`；source、MCP catalog、热重载和探针契约移除宿主轮询字段；未删除业务场景测试，只删除已废弃 poller 的实现测试。
 - 验证结果：主仓库定向 `184 passed`，全量 `1724 passed`，范围 pyright `0 errors`（45 个既有 warnings），skill 校验通过；Fitbit `5 passed`、pyright `0 errors`；运行缓存与源码一致，plugin doctor 为 healthy。
 - 残余风险：Feed 的网络刷新仍受各订阅源可用性影响，但系统级刷新失败会显式暴露且后台继续重试；不再由 proactive runtime 提供第二套隐藏 fallback。
+
+### `902f6f44` `fix(akasha): harden runtime sidecar ownership`
+
+- 范围：Akasha engine 的历史图缓存、dashboard 图读取器、图快照 sidecar、诊断 JSON 和事件订阅生命周期。
+- 原问题：历史 query 每次通过 `MessageEmbeddingStore.list_until` 扫描 8,920 条缓存并回查 messages；dashboard 每次轮询重扫完整图签名；后台 snapshot 失败、损坏 JSON/BLOB、短 embedding batch 和 orphan cache 可被空结果或部分写入掩盖；engine 订阅未随 closeables 释放。
+- 为什么这样修改：启动边界一次加载 message embedding 的 turn key 与 timestamp，query 在同一 graph lock 快照上做内存 cutoff；以 dashboard store connection 的 `PRAGMA data_version` 驱动签名 cache；所有 sidecar/embedding/diagnostic 边界 fail-loud；创建者持有 subscription 和 rebuild thread。
+- 不变量与拥有层：sessions.db 仍拥有消息事实与时间；engine 拥有其内存 cache、dense index 和订阅；graph reader 拥有 rebuild thread 与签名 cache；snapshot loader 拥有 JSON/BLOB 边界。情景补全/增量、full-context、scope、候选排序、threshold、图节点/边语义和 dashboard API 不变。
+- 能力变化：合法召回与图输出保持；损坏 sidecar、orphan embedding 和 provider 短 batch 立即失败且不产生部分 cache；hot reload 不遗留旧 Akasha handler；dashboard close 时先等待 reader，再关闭 store。
+- 性能变化：live 8,920 条 embedding 的历史 cutoff 由约 `425.1 ms/query` SQL 路径降为约 `0.463 ms/query` 内存过滤；无外部 DB commit 时图签名不再重复扫描 4,439 节点和 153,354 边。首次 cache 加载和发生 commit 后的一次签名扫描保留。
+- 测试新增：同锁 snapshot/timestamp、orphan cache、短 embedding batch、signature cache 与外部 commit invalidation、rebuild failure、closeable 逆序、损坏 snapshot/诊断 JSON、event subscription close。
+- 测试删除及原因：无。
+- 验证结果：主线独立 Akasha `56 passed`，全量 `1732 passed`，修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过；live DB/snapshot 只读完整性与签名相符。
+- 残余风险：完整 embedding cache 仍是 engine 启动成本；外部 graph commit 后仍必须做一次真实 signature scan，这是正确性成本，不用 TTL 或近似值替代。
