@@ -3,11 +3,13 @@ import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, TypedDict, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
+from bus.queue import MessageBus
 from agent.config_models import PeerAgentConfig
 from agent.peer_agent.card_resolver import (
     AgentCard,
@@ -22,6 +24,43 @@ from agent.peer_agent.process_manager import (
 )
 from agent.peer_agent.registry import PeerAgentRegistry
 from agent.peer_agent.tool import PeerAgentTool
+from core.net.http import HttpRequester
+
+
+class _ConfigBase(TypedDict):
+    base_url: str
+    cwd: str
+    log_dir: str
+
+
+def _as_requester(fake: object) -> HttpRequester:
+    return cast(HttpRequester, fake)
+
+
+def _as_bus(fake: object) -> MessageBus:
+    return cast(MessageBus, fake)
+
+
+def _as_process_manager(fake: object) -> PeerProcessManager:
+    return cast(PeerProcessManager, fake)
+
+
+def _as_poller(fake: object) -> PeerAgentPoller:
+    return cast(PeerAgentPoller, fake)
+
+
+def _new_poller(
+    bus: object, process_manager: object, requester: object
+) -> PeerAgentPoller:
+    return PeerAgentPoller(
+        _as_bus(bus),
+        _as_process_manager(process_manager),
+        _as_requester(requester),
+    )
+
+
+def _as_process(fake: object) -> asyncio.subprocess.Process:
+    return cast(asyncio.subprocess.Process, fake)
 
 
 class _Response:
@@ -62,7 +101,7 @@ async def test_agent_card_validates_root_and_skill_fields() -> None:
         get=AsyncMock(return_value=_Response(_valid_card()))
     )
 
-    card = await fetch_agent_card("http://peer.test", requester)
+    card = await fetch_agent_card("http://peer.test", _as_requester(requester))
 
     assert card.name == "research"
     assert card.url == "http://peer.test"
@@ -90,7 +129,7 @@ async def test_agent_card_bad_schema_is_not_offline_fallback(payload: object) ->
     requester = SimpleNamespace(get=AsyncMock(return_value=_Response(payload)))
 
     with pytest.raises(AgentCardSchemaError):
-        await fetch_agent_card("http://peer.test", requester)
+        await fetch_agent_card("http://peer.test", _as_requester(requester))
 
 
 @pytest.mark.asyncio
@@ -99,9 +138,9 @@ async def test_registry_falls_back_only_for_unreachable_server() -> None:
         get=AsyncMock(side_effect=httpx.ConnectError("connection refused"))
     )
     registry = PeerAgentRegistry(
-        process_manager=SimpleNamespace(),
-        poller=SimpleNamespace(),
-        requester=requester,
+        process_manager=_as_process_manager(SimpleNamespace()),
+        poller=_as_poller(SimpleNamespace()),
+        requester=_as_requester(requester),
     )
     config = PeerAgentConfig(
         name="research",
@@ -122,9 +161,9 @@ async def test_registry_does_not_hide_bad_card_schema() -> None:
         get=AsyncMock(return_value=_Response({"name": "research", "url": ""}))
     )
     registry = PeerAgentRegistry(
-        process_manager=SimpleNamespace(),
-        poller=SimpleNamespace(),
-        requester=requester,
+        process_manager=_as_process_manager(SimpleNamespace()),
+        poller=_as_poller(SimpleNamespace()),
+        requester=_as_requester(requester),
     )
     config = PeerAgentConfig(
         name="research",
@@ -161,7 +200,11 @@ async def test_registry_keeps_config_identity_and_route_with_live_card() -> None
         yield
 
     poller.submission_lease = submission_lease
-    registry = PeerAgentRegistry(process_manager, poller, requester)
+    registry = PeerAgentRegistry(
+        _as_process_manager(process_manager),
+        _as_poller(poller),
+        _as_requester(requester),
+    )
     config = PeerAgentConfig(
         name="configured-agent",
         base_url="http://configured-peer.test",
@@ -220,7 +263,7 @@ def _build_poller(
     requester = SimpleNamespace(post=AsyncMock(return_value=response))
     bus_mock = bus or SimpleNamespace(publish_inbound=AsyncMock())
     pm_mock = process_manager or SimpleNamespace(terminate=AsyncMock())
-    poller = PeerAgentPoller(bus_mock, pm_mock, requester)
+    poller = _new_poller(bus_mock, pm_mock, requester)
     poller.register(
         task_id="task-1",
         agent_name="research",
@@ -331,7 +374,7 @@ async def test_pending_task_ids_are_scoped_by_agent() -> None:
             ]
         )
     )
-    poller = PeerAgentPoller(bus, pm, requester)
+    poller = _new_poller(bus, pm, requester)
     for agent_name in ("research-a", "research-b"):
         poller.register(
             task_id="task-1",
@@ -359,7 +402,7 @@ async def test_same_agent_tasks_keep_process_until_last_completion() -> None:
     pm = SimpleNamespace(terminate=AsyncMock())
     response = _task_response(_completed_payload())
     requester = SimpleNamespace(post=AsyncMock(side_effect=[response, response]))
-    poller = PeerAgentPoller(bus, pm, requester)
+    poller = _new_poller(bus, pm, requester)
     for task_id in ("task-1", "task-2"):
         poller.register(
             task_id=task_id,
@@ -383,7 +426,7 @@ async def test_same_agent_tasks_keep_process_until_last_completion() -> None:
 
 
 def test_duplicate_task_id_keeps_existing_pending_entry() -> None:
-    poller = PeerAgentPoller(
+    poller = _new_poller(
         SimpleNamespace(publish_inbound=AsyncMock()),
         SimpleNamespace(terminate=AsyncMock()),
         SimpleNamespace(post=AsyncMock()),
@@ -437,7 +480,7 @@ async def test_notification_does_not_block_submit_or_terminate_shared_process() 
             ]
         )
     )
-    poller = PeerAgentPoller(bus, pm, requester)
+    poller = _new_poller(bus, pm, requester)
     poller.register(
         task_id="task-old",
         agent_name="research",
@@ -453,9 +496,9 @@ async def test_notification_does_not_block_submit_or_terminate_shared_process() 
 
     tool = PeerAgentTool(
         AgentCard(name="research", url="http://research.test"),
-        pm,
-        poller,
-        requester,
+        _as_process_manager(pm),
+        _as_poller(poller),
+        _as_requester(requester),
     )
     new_submit = asyncio.create_task(tool.execute(goal="new"))
     await asyncio.wait_for(ensure_started.wait(), timeout=1)
@@ -506,7 +549,7 @@ async def test_poll_loop_turns_protocol_error_into_failure_notification(
     bus = SimpleNamespace(publish_inbound=publish)
     pm = SimpleNamespace(terminate=AsyncMock())
     requester = SimpleNamespace(post=AsyncMock(return_value=_task_response(payload)))
-    poller = PeerAgentPoller(bus, pm, requester)
+    poller = _new_poller(bus, pm, requester)
     poller.register(
         task_id="task-1",
         agent_name="research",
@@ -547,7 +590,7 @@ async def test_poll_loop_turns_malformed_json_into_failure_notification(
     requester = SimpleNamespace(
         post=AsyncMock(return_value=_MalformedJsonResponse(None))
     )
-    poller = PeerAgentPoller(bus, pm, requester)
+    poller = _new_poller(bus, pm, requester)
     poller.register(
         task_id="task-1",
         agent_name="research",
@@ -568,7 +611,7 @@ async def test_poll_loop_turns_malformed_json_into_failure_notification(
 
 @pytest.mark.asyncio
 async def test_start_reraises_done_poller_exception() -> None:
-    poller = PeerAgentPoller(
+    poller = _new_poller(
         SimpleNamespace(publish_inbound=AsyncMock()),
         SimpleNamespace(terminate=AsyncMock()),
         SimpleNamespace(post=AsyncMock()),
@@ -650,7 +693,7 @@ def _manager(
         shutdown_timeout_s=1,
         log_dir=str(tmp_path / "logs"),
     )
-    return PeerProcessManager([config], requester)
+    return PeerProcessManager([config], _as_requester(requester))
 
 
 @pytest.mark.asyncio
@@ -828,7 +871,9 @@ async def test_process_manager_spawn_timeout_releases_ownership(
 async def test_process_manager_kills_after_terminate_timeout() -> None:
     proc = _HangingProcess()
 
-    await PeerProcessManager._kill(proc, timeout_s=0.001)
+    await PeerProcessManager._kill(
+        _as_process(proc), timeout_s=cast(Any, 0.001)
+    )
 
     assert proc.terminate_calls == 1
     assert proc.kill_calls == 1
@@ -859,14 +904,15 @@ async def test_process_manager_reports_external_health_without_ownership(
 
 def test_process_manager_rejects_invalid_config(tmp_path: Path) -> None:
     requester = SimpleNamespace()
-    base = dict(
-        base_url="http://peer.test",
-        cwd=str(tmp_path),
-        log_dir=str(tmp_path / "logs"),
-    )
+    base: _ConfigBase = {
+        "base_url": "http://peer.test",
+        "cwd": str(tmp_path),
+        "log_dir": str(tmp_path / "logs"),
+    }
     with pytest.raises(ValueError, match="launcher"):
         PeerProcessManager(
-            [PeerProcessConfig(name="research", launcher=[], **base)], requester
+            [PeerProcessConfig(name="research", launcher=[], **base)],
+            _as_requester(requester),
         )
     with pytest.raises(ValueError, match="重复"):
         PeerProcessManager(
@@ -874,7 +920,7 @@ def test_process_manager_rejects_invalid_config(tmp_path: Path) -> None:
                 PeerProcessConfig(name="research", launcher=["python"], **base),
                 PeerProcessConfig(name="research", launcher=["python"], **base),
             ],
-            requester,
+            _as_requester(requester),
         )
     with pytest.raises(ValueError, match="cwd"):
         PeerProcessManager(
@@ -887,30 +933,30 @@ def test_process_manager_rejects_invalid_config(tmp_path: Path) -> None:
                     base_url="http://peer.test",
                 )
             ],
-            requester,
+            _as_requester(requester),
         )
 
 
 @pytest.mark.asyncio
 async def test_process_manager_shutdown_preserves_all_failures(tmp_path: Path) -> None:
     requester = SimpleNamespace()
-    base = dict(
-        base_url="http://peer.test",
-        cwd=str(tmp_path),
-        log_dir=str(tmp_path / "logs"),
-    )
+    base: _ConfigBase = {
+        "base_url": "http://peer.test",
+        "cwd": str(tmp_path),
+        "log_dir": str(tmp_path / "logs"),
+    }
     manager = PeerProcessManager(
         [
             PeerProcessConfig(name="one", launcher=["python"], **base),
             PeerProcessConfig(name="two", launcher=["python"], **base),
         ],
-        requester,
+        _as_requester(requester),
     )
     first = _FakeProcess()
     second = _FakeProcess()
     first.terminate = lambda: (_ for _ in ()).throw(RuntimeError("first"))
     second.terminate = lambda: (_ for _ in ()).throw(RuntimeError("second"))
-    manager._procs.update(one=first, two=second)
+    manager._procs.update(one=_as_process(first), two=_as_process(second))
 
     with pytest.raises(BaseExceptionGroup) as error:
         await manager.shutdown_all()
@@ -925,7 +971,7 @@ async def test_process_manager_shutdown_runs_terminations_in_parallel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     requester = SimpleNamespace()
-    base = {
+    base: _ConfigBase = {
         "base_url": "http://peer.test",
         "cwd": str(tmp_path),
         "log_dir": str(tmp_path / "logs"),
@@ -935,7 +981,7 @@ async def test_process_manager_shutdown_runs_terminations_in_parallel(
             PeerProcessConfig(name="one", launcher=["python"], **base),
             PeerProcessConfig(name="two", launcher=["python"], **base),
         ],
-        requester,
+        _as_requester(requester),
     )
     started: list[str] = []
     all_started = asyncio.Event()

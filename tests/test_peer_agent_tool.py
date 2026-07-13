@@ -4,14 +4,28 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agent.peer_agent.card_resolver import AgentCard
-from agent.peer_agent.poller import PeerTaskDuplicateError
-from agent.peer_agent.process_manager import PeerReady
+from agent.peer_agent.poller import PeerAgentPoller, PeerTaskDuplicateError
+from agent.peer_agent.process_manager import PeerProcessManager, PeerReady
 from agent.peer_agent.tool import PeerAgentTool
+from core.net.http import HttpRequester
+
+
+def _as_process_manager(fake: object) -> PeerProcessManager:
+    return cast(PeerProcessManager, fake)
+
+
+def _as_poller(fake: object) -> PeerAgentPoller:
+    return cast(PeerAgentPoller, fake)
+
+
+def _as_requester(fake: object) -> HttpRequester:
+    return cast(HttpRequester, fake)
 
 
 def _build_tool(
@@ -42,9 +56,9 @@ def _build_tool(
     poller.submission_lease = submission_lease
     tool = PeerAgentTool(
         AgentCard(name="research", url="http://peer.test"),
-        process_manager,
-        poller,
-        requester,
+        _as_process_manager(process_manager),
+        _as_poller(poller),
+        _as_requester(requester),
     )
     return tool, process_manager, poller.register
 
