@@ -1057,3 +1057,17 @@
 - 测试删除及原因：删除“任意进程 OSError 都可自动恢复”的人工测试；真实 owner 没有该恢复协议，保留会固化静默无限重试。
 - 验证结果：副手终审定向 `52 passed`、全量 `1782 passed`、pyright `0 errors`；主审补刀后定向 `51 passed`、修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
 - 残余风险：任务提交成功到登记 pending 之间仍依赖当前 Tool 调用顺序；若未来允许同一 agent 高并发提交，需要让 submit 与最后任务 terminate 共享显式 lease，不能仅靠增加下游空值检查解决。
+
+### `7baf4169` `fix(filesystem): harden mutation and atomic writes`
+
+- 范围：`read_file`、`write_file`、`edit_file`、`list_dir` 的错误边界，同路径 mutation lock，以及共享文本原子写底座。
+- 原问题：四个文件工具用宽泛 `except Exception` 把内部编程错误伪装成用户文件错误；mutation callback 异常或取消会泄漏 lock map，等待者存在时又可能过早移除 key、产生第二把锁；write/edit 直接覆盖目标，失败可截断文件，并丢失 BOM/换行与 executable mode。
+- 为什么这样修改：文件工具只转换可由用户处理的 `PermissionError`/`OSError`；锁状态显式计数当前持有者和等待者并在 `finally` 回收；write/edit 复用同目录临时文件、file fsync、原子 replace 和 directory fsync 的统一写入契约。
+- 不变量与拥有层：路径解析和文件/目录状态由文件工具边界拥有；规范化路径对应的 mutation 串行性由 `_run_with_file_mutation_lock` 拥有；临时 fd、目标 mode、写入/replace/fsync/cleanup 顺序由 `atomic_write_text` 拥有。BOM、CRLF/mixed newline、diff 文本和读取统计语义不变。
+- 主审修正：副手首版通过 `os.umask(0)` 读取进程 umask，模块锁无法阻止其他线程在窗口内创建出权限过宽的文件；二审改为高熵同目录临时名加 `os.open(O_CREAT|O_EXCL|O_WRONLY, 0o666)`，直接让内核应用当前 umask，已有目标再复制 `S_IMODE`。主线删除了一个只暂停临时 `open`、实际无法复现旧 `umask(0)` 窗口的误导性并发测试。
+- 能力变化：内部 AssertionError/TypeError 不再被本层吞掉；同文件并发写不会因异常、取消或 waiter 交接产生双锁；覆盖写失败保留旧文件；BOM、混合换行和 executable mode 保持；新文件权限与普通文本创建一致。
+- 性能变化：正常 write/edit 增加同目录临时文件、两次 fsync 和原子 rename，这是耐久性成本；不同路径仍可并行，同路径只增加常数级引用计数。read 分页仍完整扫描以保留总行数、总字节和解码提示，没有用能力退化换取表面提速。
+- 测试新增：mutation 异常/取消清理、等待者交接、内部错误冒泡、写入/编辑 BOM/CRLF/mode、原子写旧 mode/新文件权限、编码失败保留旧文件和清理 tmp。
+- 测试删除及原因：删除副手新增的“临时文件创建期间 mode 并发”测试；它没有在旧实现实际修改 umask 的区间同步，旧坏实现也会通过，无法证明根因。
+- 验证结果：副手二审定向 `61 passed`、全量 `1758 passed`；主线删除无效测试后定向 `60 passed`、修改生产文件 pyright `0 errors, 0 warnings`，`git diff --check` 通过。
+- 残余风险：`read_file` 为保留完整统计仍线性扫描大文件；当前没有 profile 证据支持改变输出协议或增加索引。原子 replace 只显式保持 POSIX mode，不承诺保存项目当前未使用的跨平台扩展属性。
