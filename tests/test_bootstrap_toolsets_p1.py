@@ -4,6 +4,7 @@ from typing import Any, cast
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent.config_models import Config, WiringConfig
 from agent.tools.registry import ToolRegistry
 from bootstrap.toolsets.protocol import (
     ToolsetRegistrationResult,
@@ -100,7 +101,16 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
 
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
         build_registered_tools(
-            config=cast(Any, SimpleNamespace(spawn_enabled=False, proactive=SimpleNamespace())),
+            config=Config(
+                provider="openai",
+                model="m",
+                api_key="k",
+                system_prompt="s",
+                spawn_enabled=False,
+                wiring=WiringConfig(
+                    toolsets=["meta_common", "spawn", "schedule", "mcp"]
+                ),
+            ),
             workspace=tmp_path,
             http_resources=cast(Any, SimpleNamespace()),
             bus=cast(Any, SimpleNamespace(chat_lane=None)),

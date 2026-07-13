@@ -18,6 +18,7 @@ import pytest
 
 # 预热 agent.core 导入链，避免 agent.lifecycle.types 触发循环导入
 from agent.core.passive_turn import ContextStore as _  # noqa: F401
+from agent.config_models import Config
 from agent.lifecycle.types import AfterStepCtx, AfterToolResultCtx, BeforeToolCallCtx, BeforeTurnCtx
 from agent.plugins.context import PluginKVStore
 from agent.plugins.manager import PluginManager
@@ -1974,7 +1975,12 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
     plugin_manager = FakePluginManager()
 
     runtime = CoreRuntime(
-        config=SimpleNamespace(peer_agents=[]),  # type: ignore[arg-type]
+        config=Config(
+            provider="openai",
+            model="m",
+            api_key="k",
+            system_prompt="s",
+        ),
         http_resources=SimpleNamespace(local_service=None),  # type: ignore[arg-type]
         loop=loop,  # type: ignore[arg-type]
         bus=SimpleNamespace(),  # type: ignore[arg-type]
@@ -2009,25 +2015,29 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
 
 
 @pytest.mark.asyncio
-async def test_core_runtime_stop_closes_session_manager():
+async def test_core_runtime_stop_closes_session_manager(tmp_path: Path):
     from bootstrap.tools import CoreRuntime
 
-    closed: list[str] = []
+    from session.manager import SessionManager
 
     async def _noop() -> None:
         return None
 
+    session_manager = SessionManager(tmp_path)
     runtime = CoreRuntime(
-        config=SimpleNamespace(peer_agents=[]),  # type: ignore[arg-type]
+        config=Config(
+            provider="openai",
+            model="m",
+            api_key="k",
+            system_prompt="s",
+        ),
         http_resources=SimpleNamespace(),  # type: ignore[arg-type]
         loop=SimpleNamespace(),  # type: ignore[arg-type]
         bus=SimpleNamespace(),  # type: ignore[arg-type]
         event_bus=SimpleNamespace(aclose=_noop),  # type: ignore[arg-type]
         tools=SimpleNamespace(get_tool=lambda _name: None),  # type: ignore[arg-type]
         push_tool=SimpleNamespace(),  # type: ignore[arg-type]
-        session_manager=SimpleNamespace(
-            close=lambda: closed.append("session_manager")
-        ),  # type: ignore[arg-type]
+        session_manager=session_manager,
         scheduler=SimpleNamespace(),  # type: ignore[arg-type]
         provider=SimpleNamespace(),  # type: ignore[arg-type]
         light_provider=None,
@@ -2041,4 +2051,4 @@ async def test_core_runtime_stop_closes_session_manager():
 
     await runtime.stop()
 
-    assert closed == ["session_manager"]
+    assert session_manager._store._closed is True

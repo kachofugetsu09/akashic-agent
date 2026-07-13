@@ -24,6 +24,7 @@ from bootstrap.wiring import (
     resolve_toolset_provider,
 )
 from bus.event_bus import EventBus
+from session.store import SessionStore
 
 
 def _toml_value(value):
@@ -534,6 +535,63 @@ def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, t
     )
 
     assert calls == ["memory", "schedule", "mcp"]
+
+
+def test_build_registered_tools_failure_preserves_external_session_store(
+    monkeypatch,
+    tmp_path: Path,
+):
+    class _MemoryProvider:
+        def register(self, registry, deps):
+            return SimpleNamespace(
+                extras={"memory_runtime": SimpleNamespace(engine=object())}
+            )
+
+    class _FailingToolsetProvider:
+        def register(self, registry, deps):
+            raise RuntimeError("toolset registration failed")
+
+    monkeypatch.setattr(
+        "bootstrap.tools.resolve_memory_toolset_provider",
+        lambda name: _MemoryProvider(),
+    )
+    monkeypatch.setattr(
+        "bootstrap.tools.resolve_toolset_provider",
+        lambda name, readonly_tools=None: _FailingToolsetProvider(),
+    )
+    monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_, **__: {})
+    monkeypatch.setattr(
+        "bootstrap.tools.build_scheduler",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "bootstrap.tools.build_peer_agent_resources",
+        lambda *_args, **_kwargs: (None, None),
+    )
+
+    store = SessionStore(tmp_path / "sessions.db")
+    try:
+        config = ConfigModel(
+            provider="openai",
+            model="m",
+            api_key="k",
+            system_prompt="s",
+            wiring=WiringConfig(toolsets=["schedule"]),
+        )
+        with pytest.raises(RuntimeError, match="toolset registration failed"):
+            build_registered_tools(
+                config=config,
+                workspace=tmp_path,
+                http_resources=cast(Any, SimpleNamespace()),
+                bus=cast(Any, SimpleNamespace(chat_lane=None)),
+                provider=object(),
+                light_provider=object(),
+                session_store=store,
+                tools=ToolRegistry(),
+            )
+        assert store._closed is False
+    finally:
+        store.close()
 
 
 def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
