@@ -52,6 +52,15 @@ class MemoryHit(TypedDict):
     rrf_score: NotRequired[float]
 
 
+def memory_hit_score(item: MemoryHit, field: str = "score") -> float:
+    raw = item.get(field)
+    if raw is None and field != "score":
+        raw = item.get("score")
+    if isinstance(raw, bool) or not isinstance(raw, int | float):
+        raise TypeError(f"memory hit {item['id']!r} has no numeric {field}")
+    return float(raw)
+
+
 _MemoryHit = MemoryHit
 _EmbeddingRow = tuple[
     str,
@@ -1620,71 +1629,91 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         return scored[:top_k]
 
     @_synchronized
+    def get_item_merge_metadata(
+        self,
+        item_id: str,
+    ) -> tuple[str, dict[str, object]]:
+        """读取合并所需的记忆类型和扩展元数据。"""
+        row = self._db.execute(
+            "SELECT memory_type, extra_json FROM memory_items WHERE id=?",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"找不到 memory item: {item_id}")
+        memory_type, extra_json = row
+        if not isinstance(memory_type, str):
+            raise TypeError(f"memory item {item_id} memory_type 必须是字符串")
+        return memory_type, _json_object(
+            extra_json,
+            context=f"memory item {item_id} extra_json",
+        )
+
+    @_synchronized
     def merge_item_raw(
         self,
         item_id: str,
         new_summary: str,
-        new_hash: str,
         new_embedding: list[float],
         new_extra: dict[str, object] | None = None,
     ) -> None:
-        """原子更新 merge 目标：summary + content_hash + embedding + reinforcement。
-        new_extra 若提供则同步更新 extra_json。
-        若 content_hash 冲突（极低概率），则 supersede 旧条目并由 upsert_item 写入新摘要。
-        """
+        """原子更新合并目标及其向量索引，冲突时回滚并暴露错误。"""
+
+        # 1. 从存储 owner 读取类型，并据此生成内容哈希。
+        row = self._db.execute(
+            "SELECT memory_type, rowid FROM memory_items WHERE id=?",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"找不到 memory item: {item_id}")
+        memory_type, rowid = row
+        if not isinstance(memory_type, str):
+            raise TypeError(f"memory item {item_id} memory_type 必须是字符串")
+        new_hash = _content_hash(new_summary, memory_type)
+
+        # 2. 在同一事务中更新主记录和可选向量索引。
         try:
             if new_extra is not None:
-                self._db.execute(
+                _ = self._db.execute(
                     """UPDATE memory_items
                        SET summary=?, content_hash=?, embedding=?, extra_json=?,
                            reinforcement=reinforcement+1, updated_at=?
                        WHERE id=?""",
                     (
-                        new_summary, new_hash, json.dumps(new_embedding),
-                        json.dumps(new_extra), _now_iso(), item_id,
+                        new_summary,
+                        new_hash,
+                        json.dumps(new_embedding),
+                        json.dumps(new_extra),
+                        _now_iso(),
+                        item_id,
                     ),
                 )
             else:
-                self._db.execute(
+                _ = self._db.execute(
                     """UPDATE memory_items
                        SET summary=?, content_hash=?, embedding=?,
                            reinforcement=reinforcement+1, updated_at=?
                        WHERE id=?""",
-                    (new_summary, new_hash, json.dumps(new_embedding), _now_iso(), item_id),
+                    (
+                        new_summary,
+                        new_hash,
+                        json.dumps(new_embedding),
+                        _now_iso(),
+                        item_id,
+                    ),
                 )
+            if self._vec_enabled:
+                self._vec_insert(rowid, new_embedding)
             self._db.commit()
 
-            # 同步更新 vec_items（embedding 变了）
-            if self._vec_enabled:
-                row = self._db.execute(
-                    "SELECT rowid FROM memory_items WHERE id=?", (item_id,)
-                ).fetchone()
-                if row:
-                    self._vec_insert(row[0], new_embedding)
-                    self._db.commit()
-
-        except sqlite3.IntegrityError:
-            # content_hash 撞上库中已有条目（极低概率）
-            # 安全降级：supersede 旧条目，让 upsert_item 走 reinforce 路径
-            logger.warning(
-                "merge_item_raw: content_hash collision for item %s, "
-                "superseding and falling back to upsert",
-                item_id,
-            )
-            try:
-                self._db.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            row = self._db.execute(
-                "SELECT memory_type FROM memory_items WHERE id=?", (item_id,)
-            ).fetchone()
-            if row:
-                self.mark_superseded(item_id)
-                self.upsert_item(
-                    memory_type=row[0],
-                    summary=new_summary,
-                    embedding=new_embedding,
-                )
+        # 3. 主表冲突和 SQLite 失败都回滚，不制造丢字段的替代记录。
+        except sqlite3.IntegrityError as exc:
+            self._db.rollback()
+            raise RuntimeError(
+                f"memory item {item_id} 合并后 content_hash 冲突"
+            ) from exc
+        except sqlite3.Error:
+            self._db.rollback()
+            raise
 
     @_synchronized
     def list_by_type(self, memory_type: str) -> list[dict[str, object]]:

@@ -8,7 +8,10 @@ import pytest
 from core.memory.events import MemoryWritten, TurnIngested
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
-from memory2.rule_schema import build_procedure_rule_schema
+from memory2.rule_schema import (
+    build_procedure_rule_schema,
+    resolve_procedure_rule_schema,
+)
 from memory2.store import MemoryStore2
 
 
@@ -286,6 +289,60 @@ def test_build_procedure_rule_schema_infers_constraints_without_explicit_schema(
     assert "steam_mcp" in schema["required_tools"]
     assert "web_search" in schema["forbidden_tools"]
     assert "steam" in schema["mentioned_tools"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"steps": "不是列表"}, "steps"),
+        ({"steps": ["正常步骤", 1]}, r"steps\[1\]"),
+        ({"tool_requirement": 1}, "tool_requirement"),
+        ({"rule_schema": {"required_tools": "steam_mcp"}}, "required_tools"),
+    ],
+)
+def test_resolve_procedure_rule_schema_rejects_invalid_metadata(
+    extra: dict[str, object], message: str
+) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        resolve_procedure_rule_schema("规则摘要", extra)
+
+
+def test_merge_item_rejects_corrupt_persisted_procedure_steps() -> None:
+    embedder = _StaticEmbedder(
+        {
+            "旧规则": [1.0, 0.0],
+            "合并规则": [0.9, 0.1],
+        }
+    )
+    store = MemoryStore2(":memory:")
+    memorizer = Memorizer(store, cast(Any, embedder))
+    row_ref = store.upsert_item(
+        memory_type="procedure",
+        summary="旧规则",
+        embedding=[1.0, 0.0],
+        extra={"steps": "损坏的步骤"},
+    )
+
+    with pytest.raises(TypeError, match="steps"):
+        asyncio.run(memorizer.merge_item(row_ref.split(":", 1)[1], "合并规则"))
+
+
+def test_merge_item_rolls_back_content_hash_conflict() -> None:
+    store = MemoryStore2(":memory:")
+    first_ref = store.upsert_item("procedure", "规则 A", [1.0, 0.0], extra={})
+    _ = store.upsert_item("procedure", "规则 B", [0.0, 1.0], extra={})
+    memorizer = Memorizer(
+        store,
+        cast(Any, _StaticEmbedder({"规则 B": [0.0, 1.0]})),
+    )
+
+    with pytest.raises(RuntimeError, match="content_hash 冲突"):
+        asyncio.run(
+            memorizer.merge_item(first_ref.split(":", 1)[1], "规则 B")
+        )
+
+    summaries = {item["summary"] for item in store.list_by_type("procedure")}
+    assert summaries == {"规则 A", "规则 B"}
 
 
 def test_collect_protected_memory_ids_accepts_long_mixed_id():

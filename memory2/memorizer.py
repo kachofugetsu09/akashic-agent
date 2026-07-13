@@ -6,16 +6,30 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, cast
+from collections.abc import Mapping
 
-from memory2.store import MemoryStore2, _content_hash, _json_object
 from memory2.embedder import Embedder
+from memory2.rule_schema import (
+    parse_procedure_steps,
+    parse_procedure_tool_requirement,
+    resolve_procedure_rule_schema,
+)
+from memory2.store import MemoryHit, MemoryStore2, memory_hit_score
 
 logger = logging.getLogger(__name__)
 
 _TIME_PREFIX_RE = re.compile(
     r"^\[(?P<date>\d{4}-\d{2}-\d{2})(?:[ T](?P<hour>\d{2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?)?\]"
 )
+
+
+def _validate_procedure_metadata(
+    summary: str,
+    memory_type: str,
+    extra: Mapping[str, object],
+) -> None:
+    if memory_type == "procedure":
+        _ = resolve_procedure_rule_schema(summary, extra)
 
 
 def _coerce_emotional_weight(value: object) -> int:
@@ -30,7 +44,7 @@ def _coerce_emotional_weight(value: object) -> int:
 
 
 def _parse_history_entry_happened_at(summary: str) -> str | None:
-    match = _TIME_PREFIX_RE.match((summary or "").strip())
+    match = _TIME_PREFIX_RE.match(summary.strip())
     if not match:
         return None
     date = match.group("date")
@@ -49,12 +63,13 @@ class Memorizer:
         self,
         summary: str,
         memory_type: str,
-        extra: dict,
+        extra: dict[str, object],
         source_ref: str,
         happened_at: str | None = None,
         emotional_weight: int = 0,
     ) -> str:
         """embed → content_hash → upsert，返回 'new:id' 或 'reinforced:id'"""
+        _validate_procedure_metadata(summary, memory_type, extra)
         embedding = await self._embedder.embed(summary)
         return self._store.upsert_item(
             memory_type=memory_type,
@@ -70,7 +85,7 @@ class Memorizer:
         self,
         summary: str,
         memory_type: str,
-        extra: dict,
+        extra: dict[str, object],
         source_ref: str,
         happened_at: str | None = None,
         emotional_weight: int = 0,
@@ -84,6 +99,7 @@ class Memorizer:
         - profile（status / purchase 类别）：退休相同 category 中相似度 >= supersede_threshold
           的旧条目，防止同类状态事实堆积。
         """
+        _validate_procedure_metadata(summary, memory_type, extra)
         embedding = await self._embedder.embed(summary)
 
         if memory_type in ("procedure", "preference"):
@@ -113,11 +129,10 @@ class Memorizer:
             similar = [
                 item
                 for item in similar
-                if isinstance(score := item.get("score"), int | float)
-                and float(score) >= supersede_threshold
+                if memory_hit_score(item) >= supersede_threshold
             ]
             if similar:
-                supersede_ids = [str(item["id"]) for item in similar]
+                supersede_ids = [item["id"] for item in similar]
                 self._store.mark_superseded_batch(supersede_ids)
                 logger.info(
                     "memorizer save_with_supersede: superseded %d %s items: %s",
@@ -125,7 +140,7 @@ class Memorizer:
                 )
 
         elif memory_type == "profile":
-            category = str((extra or {}).get("category") or "")
+            category = str(extra.get("category") or "")
             if category in ("status", "purchase"):
                 similar = self._store.vector_search(
                     query_vec=embedding,
@@ -133,23 +148,24 @@ class Memorizer:
                     memory_types=["profile"],
                     score_threshold=supersede_threshold,
                 )
-                same_cat = [
-                    item for item in similar
-                    if isinstance(extra_json := item.get("extra_json"), dict)
-                    and extra_json.get("category") == category
-                    and isinstance(score := item.get("score"), int | float)
-                    and float(score)
-                    >= (
+                same_cat: list[MemoryHit] = []
+                for item in similar:
+                    item_extra = _memory_hit_extra(item)
+                    threshold = (
                         0.92
                         if _coerce_emotional_weight(
-                            extra_json.get("_emotional_weight", 0)
+                            item_extra.get("_emotional_weight", 0)
                         )
                         >= 7
                         else supersede_threshold
                     )
-                ]
+                    if (
+                        item_extra.get("category") == category
+                        and memory_hit_score(item) >= threshold
+                    ):
+                        same_cat.append(item)
                 if same_cat:
-                    supersede_ids = [str(item["id"]) for item in same_cat]
+                    supersede_ids = [item["id"] for item in same_cat]
                     self._store.mark_superseded_batch(supersede_ids)
                     logger.info(
                         "memorizer save_with_supersede: superseded %d profile/%s items: %s",
@@ -169,7 +185,7 @@ class Memorizer:
     async def save_from_consolidation(
         self,
         history_entry: str,
-        behavior_updates: list[dict],
+        behavior_updates: list[dict[str, object]],
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
@@ -253,8 +269,8 @@ class Memorizer:
 
     @staticmethod
     def _merge_summary_text(old_summary: str, new_summary: str) -> str:
-        old_summary = (old_summary or "").strip()
-        new_summary = (new_summary or "").strip()
+        old_summary = old_summary.strip()
+        new_summary = new_summary.strip()
         if not old_summary:
             return new_summary
         if not new_summary:
@@ -267,19 +283,23 @@ class Memorizer:
 
     @staticmethod
     def _pick_explicit_merge_target(
-        similar: list[dict],
-        extra: dict,
+        similar: list[MemoryHit],
+        extra: dict[str, object],
         merge_threshold: float,
-    ) -> dict | None:
-        wanted_tool = str(extra.get("tool_requirement") or "").strip()
-        if not wanted_tool:
+    ) -> MemoryHit | None:
+        wanted_tool = parse_procedure_tool_requirement(
+            extra.get("tool_requirement")
+        )
+        if wanted_tool is None or not wanted_tool.strip():
             return None
         for item in similar:
-            if float(item.get("score", 0.0)) < merge_threshold:
+            if memory_hit_score(item) < merge_threshold:
                 continue
-            item_extra = item.get("extra_json") or {}
-            item_tool = str(item_extra.get("tool_requirement") or "").strip()
-            if item_tool == wanted_tool:
+            item_extra = _memory_hit_extra(item)
+            item_tool = parse_procedure_tool_requirement(
+                item_extra.get("tool_requirement")
+            )
+            if item_tool is not None and item_tool.strip() == wanted_tool.strip():
                 return item
         return None
 
@@ -287,67 +307,76 @@ class Memorizer:
         self,
         item_id: str,
         merged_summary: str,
-        extra_patch: dict | None = None,
+        extra_patch: Mapping[str, object] | None = None,
     ) -> None:
-        """原子更新 merge 目标：summary + content_hash + embedding + extra_json。
-        对 procedure 类型同步重建 rule_schema，并写入 _merge_note 供溯源。
-        调用方保证 merged_summary 非空且 item_id 存在。
-        """
-        merged_summary = (merged_summary or "").strip()
+        """合并记忆摘要和元数据，并原子更新持久化结果。"""
+
+        # 1. 校验调用契约并读取当前持久化元数据。
+        merged_summary = merged_summary.strip()
         if not merged_summary or not item_id:
-            return
+            raise ValueError("merge_item 需要非空 item_id 和 merged_summary")
 
-        with self._store._lock:
-            row = self._store._db.execute(
-                "SELECT memory_type, extra_json FROM memory_items WHERE id=?", (item_id,)
-            ).fetchone()
-        if not row:
-            logger.warning("merge_item: item %s not found", item_id)
-            return
-
-        memory_type, extra_json_str = row
-        old_extra: dict[str, Any] = cast(
-            dict[str, Any],
-            _json_object(extra_json_str, context=f"memory item {item_id} extra_json"),
-        )
-
+        memory_type, old_extra = self._store.get_item_merge_metadata(item_id)
         new_embedding = await self._embedder.embed(merged_summary)
-        new_hash = _content_hash(merged_summary, memory_type)
 
-        # 构建更新后的 extra_json
+        # 2. 合并显式更新，并严格解析 procedure 字段。
         new_extra = dict(old_extra)
-        new_extra["_merge_note"] = merged_summary   # 溯源：记录 merge 时的摘要
+        new_extra["_merge_note"] = merged_summary
         if extra_patch:
-            if extra_patch.get("tool_requirement"):
-                new_extra["tool_requirement"] = extra_patch.get("tool_requirement")
-            if extra_patch.get("steps"):
-                merged_steps: list[str] = []
-                seen_steps: set[str] = set()
-                for step in (old_extra.get("steps") or []) + (extra_patch.get("steps") or []):
-                    text = str(step or "").strip()
-                    if not text or text in seen_steps:
-                        continue
-                    seen_steps.add(text)
-                    merged_steps.append(text)
-                new_extra["steps"] = merged_steps
+            if "tool_requirement" in extra_patch:
+                tool_requirement = parse_procedure_tool_requirement(
+                    extra_patch["tool_requirement"]
+                )
+                if tool_requirement:
+                    new_extra["tool_requirement"] = tool_requirement
+            if "steps" in extra_patch:
+                incoming_steps = parse_procedure_steps(
+                    extra_patch["steps"], context="merge extra_patch steps"
+                )
+                if incoming_steps:
+                    existing_steps = (
+                        parse_procedure_steps(
+                            old_extra["steps"],
+                            context=f"memory item {item_id} steps",
+                        )
+                        if "steps" in old_extra
+                        else []
+                    )
+                    new_extra["steps"] = self._merge_steps(
+                        existing_steps, incoming_steps
+                    )
         if memory_type == "procedure":
-            from memory2.rule_schema import build_procedure_rule_schema
-            new_extra["rule_schema"] = build_procedure_rule_schema(
-                summary=merged_summary,
-                tool_requirement=new_extra.get("tool_requirement"),
-                steps=new_extra.get("steps") or [],
-                rule_schema=old_extra.get("rule_schema"),
+            new_extra["rule_schema"] = resolve_procedure_rule_schema(
+                merged_summary,
+                new_extra,
             )
-            # trigger_tags 依赖 tagger（需要 LLM），merge 时无法在线重建。
-            # 保留旧标签比没有标签更危险（可能触发错误的关键词匹配），故直接清除。
-            # 下次通过 _save_item_direct 路径写入时，tagger 会重新生成。
-            new_extra.pop("trigger_tags", None)
+            # trigger_tags 依赖 LLM tagger，旧标签与新摘要不再具备一致性。
+            _ = new_extra.pop("trigger_tags", None)
 
+        # 3. 将主记录和向量索引作为同一次存储操作提交。
         self._store.merge_item_raw(
             item_id=item_id,
             new_summary=merged_summary,
-            new_hash=new_hash,
             new_embedding=new_embedding,
             new_extra=new_extra,
         )
         logger.info("memorizer merge_item id=%s", item_id)
+
+    @staticmethod
+    def _merge_steps(existing: list[str], incoming: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for step in [*existing, *incoming]:
+            text = step.strip()
+            if text in seen:
+                continue
+            seen.add(text)
+            merged.append(text)
+        return merged
+
+
+def _memory_hit_extra(item: MemoryHit) -> dict[str, object]:
+    extra = item.get("extra_json")
+    if extra is None:
+        raise KeyError(f"memory hit {item['id']!r} has no extra_json")
+    return extra

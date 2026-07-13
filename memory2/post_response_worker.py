@@ -13,6 +13,7 @@ from agent.provider import LLMProvider
 from core.memory.events import MemoryWritten, TurnIngested
 from memory2.memorizer import Memorizer
 from memory2.retriever import Retriever
+from memory2.store import MemoryHit, memory_hit_score
 
 if TYPE_CHECKING:
     from bus.publisher import EventPublisher
@@ -188,7 +189,7 @@ class PostResponseMemoryWorker:
             high_sim = [
                 c
                 for c in candidates
-                if c["score"] >= self.SUPERSEDE_THRESHOLD
+                if memory_hit_score(c) >= self.SUPERSEDE_THRESHOLD
                 and c["id"] not in protected_ids
             ][: self.SUPERSEDE_CANDIDATE_K]
             if not high_sim:
@@ -291,7 +292,7 @@ class PostResponseMemoryWorker:
     async def _check_invalidate(
         self,
         topic: str,
-        candidates: list[dict],
+        candidates: list[MemoryHit],
         token_budget: int,
     ) -> tuple[list[str], int]:
         """用户声明旧行为有误时，判断哪些旧条目应被 supersede（无需新规则替代）。"""

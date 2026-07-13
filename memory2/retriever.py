@@ -11,7 +11,7 @@ import logging
 import re
 from typing import cast
 
-from memory2.store import MemoryHit, MemoryStore2
+from memory2.store import MemoryHit, MemoryStore2, memory_hit_score
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
@@ -287,7 +287,7 @@ class Retriever:
 
         sorted_items = sorted(
             items,
-            key=_hit_score,
+            key=memory_hit_score,
             reverse=True,
         )
         if not sorted_items:
@@ -303,7 +303,7 @@ class Retriever:
         event_count = 0
         for item in sorted_items:
             mtype = item["memory_type"]
-            score = _hit_score(item)
+            score = memory_hit_score(item)
             extra = item.get("extra_json", {})
             item_id = item["id"]
             summary = item["summary"].strip()
@@ -458,7 +458,7 @@ def _remember_vector_hit(
     if hit_id not in seen:
         seen[hit_id] = hit
         return
-    if _hit_score(hit) > _hit_score(seen[hit_id]):
+    if memory_hit_score(hit) > memory_hit_score(seen[hit_id]):
         seen[hit_id] = hit
 
 
@@ -467,15 +467,6 @@ def _hit_id(item: MemoryHit) -> str:
     if not item_id:
         raise ValueError("memory hit id must not be empty")
     return item_id
-
-
-def _hit_score(item: MemoryHit, fallback_key: str = "score") -> float:
-    raw = item.get(fallback_key)
-    if raw is None and fallback_key != "score":
-        raw = item.get("score")
-    if isinstance(raw, bool) or not isinstance(raw, int | float):
-        raise TypeError(f"memory hit {item['id']!r} has no numeric {fallback_key}")
-    return float(raw)
 
 
 def _procedure_steps(item_id: str, extra: dict[str, object]) -> list[str]:
@@ -538,7 +529,9 @@ def _rrf_merge(
 
     # 1. 记录每个 lane 的首个 rank。
     vec_rank: dict[str, int] = {}
-    for index, item in enumerate(sorted(vector_items, key=_hit_score, reverse=True)):
+    for index, item in enumerate(
+        sorted(vector_items, key=memory_hit_score, reverse=True)
+    ):
         item_id = _hit_id(item)
         if item_id not in vec_rank:
             vec_rank[item_id] = index + 1
@@ -555,7 +548,7 @@ def _rrf_merge(
         item_id = _hit_id(item)
         merged_item = cast(MemoryHit, dict(item))
         if "score" not in merged_item:
-            merged_item["score"] = _hit_score(item, fallback_key="keyword_score")
+            merged_item["score"] = memory_hit_score(item, field="keyword_score")
         id_to_item[item_id] = merged_item
     for item in vector_items:
         item_id = _hit_id(item)
@@ -569,7 +562,7 @@ def _rrf_merge(
             rrf_score += 1.0 / (k + vec_rank[item_id])
         if item_id in keyword_rank:
             rrf_score += _KEYWORD_RRF_WEIGHT / (k + keyword_rank[item_id])
-        scored.append((item_id, rrf_score, _hit_score(id_to_item[item_id])))
+        scored.append((item_id, rrf_score, memory_hit_score(id_to_item[item_id])))
 
     scored.sort(key=lambda item: (-item[1], -item[2], item[0]))
     result: list[MemoryHit] = []
