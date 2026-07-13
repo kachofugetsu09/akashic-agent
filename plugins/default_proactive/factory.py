@@ -20,11 +20,12 @@ from plugins.drift_flow.tools import DriftToolDeps
 from plugins.default_proactive.deduper import MessageDeduper
 from plugins.proactive_flow.tools import ToolDeps
 from proactive_v2.runtime_scope import ProactiveRuntimeScope
+from proactive_v2.sensor import RecentProactiveMessage
 
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 RecentChatFn = Callable[[int], Awaitable[list[dict]]]
-RecentProactiveFn = Callable[[], list[dict]] | None
+RecentProactiveFn = Callable[[], list[RecentProactiveMessage]] | None
 
 
 class AgentTickFactory:

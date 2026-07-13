@@ -13,6 +13,19 @@ from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
 logger = logging.getLogger(__name__)
 
 
+def _parse_stored_datetime(raw: object, *, table: str, key: str) -> datetime:
+    """解析 SQLite 中已存在的时间，损坏时阻止主动链路继续。"""
+
+    # 1. 读取持久化原文并沿用统一 ISO 解析规则。
+    text = str(raw or "").strip()
+    timestamp = _parse_iso(text)
+    if timestamp is None:
+        raise ValueError(
+            f"主动状态时间损坏 table={table} key={key} value={text!r}"
+        )
+    return timestamp
+
+
 class ProactiveStateStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
@@ -68,7 +81,7 @@ class ProactiveStateStore:
                 """,
                 (tick_id, session_key, started_at, gate_exit),
             )
-            self._db.commit()
+            self._commit_locked()
 
     def record_tick_log_finish(
         self,
@@ -138,7 +151,7 @@ class ProactiveStateStore:
                     json.dumps(proactive_effects or [], ensure_ascii=False),
                 ),
             )
-            self._db.commit()
+            self._commit_locked()
 
     def record_tick_step_log(
         self,
@@ -183,7 +196,7 @@ class ProactiveStateStore:
                     final_message_after,
                 ),
             )
-            self._db.commit()
+            self._commit_locked()
 
     def is_delivery_duplicate(
         self,
@@ -205,8 +218,12 @@ class ProactiveStateStore:
             ).fetchone()
         if row is None:
             return False
-        ts = _parse_iso(str(row["sent_at"]))
-        if ts is None or ts < cutoff:
+        ts = _parse_stored_datetime(
+            row["sent_at"],
+            table="deliveries",
+            key=f"{session_key}:{delivery_key}",
+        )
+        if ts < cutoff:
             return False
         logger.info(
             "[proactive.state] 命中发送去重 session=%s delivery_key=%s ts=%s window_hours=%d",
@@ -234,7 +251,7 @@ class ProactiveStateStore:
                 """,
                 (session_key, delivery_key, ts),
             )
-            self._db.commit()
+            self._commit_locked()
         logger.info(
             "[proactive.state] 已记录发送 session=%s delivery_key=%s ts=%s",
             session_key,
@@ -259,7 +276,9 @@ class ProactiveStateStore:
                 """,
                 (session_key, cutoff.isoformat()),
             ).fetchone()
-        return int(row[0]) if row is not None else 0
+        if row is None:
+            raise RuntimeError("deliveries COUNT 查询未返回结果行")
+        return int(row[0])
 
     def get_last_drift_at(self, session_key: str) -> datetime | None:
         return self._get_session_datetime(session_key, "drift_last_at")
@@ -279,22 +298,26 @@ class ProactiveStateStore:
         now = now or _utcnow()
         ts = now.isoformat()
         with self._lock:
-            self._db.execute(
-                """
-                INSERT INTO session_state(session_key, key, value)
-                VALUES(?, ?, ?)
-                ON CONFLICT(session_key, key) DO UPDATE SET value = excluded.value
-                """,
-                (session_key, "context_only_last_at", ts),
-            )
-            self._db.execute(
-                """
-                INSERT INTO context_only_timestamps(session_key, ts)
-                VALUES(?, ?)
-                """,
-                (session_key, ts),
-            )
-            self._db.commit()
+            try:
+                self._db.execute(
+                    """
+                    INSERT INTO session_state(session_key, key, value)
+                    VALUES(?, ?, ?)
+                    ON CONFLICT(session_key, key) DO UPDATE SET value = excluded.value
+                    """,
+                    (session_key, "context_only_last_at", ts),
+                )
+                self._db.execute(
+                    """
+                    INSERT INTO context_only_timestamps(session_key, ts)
+                    VALUES(?, ?)
+                    """,
+                    (session_key, ts),
+                )
+                self._commit_locked()
+            except sqlite3.Error:
+                self._db.rollback()
+                raise
         logger.info(
             "[proactive.state] context-only 发送已记录 session=%s ts=%s",
             session_key,
@@ -315,7 +338,9 @@ class ProactiveStateStore:
                 """,
                 (session_key, cutoff.isoformat()),
             ).fetchone()
-        return int(row[0]) if row is not None else 0
+        if row is None:
+            raise RuntimeError("context_only_timestamps COUNT 查询未返回结果行")
+        return int(row[0])
 
     def _init_schema(self) -> None:
         """创建当前表结构并迁移旧版 tick 日志。"""
@@ -391,7 +416,7 @@ class ProactiveStateStore:
 
         # 2. 补齐 CREATE TABLE IF NOT EXISTS 无法新增的旧库列
         self._ensure_tick_log_effects_column()
-        self._db.commit()
+        self._commit_locked()
 
     def _ensure_tick_log_effects_column(self) -> None:
         columns = {
@@ -413,7 +438,13 @@ class ProactiveStateStore:
                 """,
                 (session_key, key),
             ).fetchone()
-        return _parse_iso(str(row["value"])) if row is not None else None
+        if row is None:
+            return None
+        return _parse_stored_datetime(
+            row["value"],
+            table="session_state",
+            key=f"{session_key}:{key}",
+        )
 
     def _set_session_state(self, session_key: str, key: str, value: str) -> None:
         with self._lock:
@@ -425,9 +456,20 @@ class ProactiveStateStore:
                 """,
                 (session_key, key, value),
             )
+            self._commit_locked()
+
+    def _commit_locked(self) -> None:
+        """提交当前事务，提交失败时回滚未完成的写入。"""
+
+        try:
             self._db.commit()
+        except sqlite3.Error:
+            self._db.rollback()
+            raise
 
     def _count_rows(self, table: str) -> int:
         with self._lock:
             row = self._db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-        return int(row[0]) if row is not None else 0
+        if row is None:
+            raise RuntimeError(f"{table} COUNT 查询未返回结果行")
+        return int(row[0])

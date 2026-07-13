@@ -757,6 +757,8 @@ async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
         default_chat_id="42",
     )
     loop._running = False
+    loop._state_store_owned = False
+    loop._state_closed = False
     loop._runtime_snapshot_store = None
     loop._stopped = asyncio.Event()
     loop._wake = asyncio.Event()

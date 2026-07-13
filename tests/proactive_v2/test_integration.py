@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -32,6 +32,8 @@ class SnapshotMcpTool(Tool):
 def make_loop() -> ProactiveLoop:
     loop = object.__new__(ProactiveLoop)
     loop._cfg = ProactiveConfig()
+    loop._state_store_owned = False
+    loop._state_closed = False
     loop._sense = SimpleNamespace(target_session_key=lambda: "telegram:1")
     loop._proactive_kernel = SimpleNamespace(run_tick=AsyncMock(return_value=None))
     loop._runtime_snapshot_store = None
@@ -116,6 +118,46 @@ async def test_start_failure_always_marks_loop_stopped() -> None:
         await loop.run()
 
     assert loop._stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_run_marks_stopped_when_owned_state_close_fails() -> None:
+    loop = make_loop()
+    loop._cfg.default_channel = "cli"
+    loop._cfg.default_chat_id = "test"
+    loop._running = False
+    loop._stopped = asyncio.Event()
+    loop._state_store_owned = True
+    loop._state_closed = False
+    loop._state = SimpleNamespace(close=Mock(side_effect=OSError("state close failed")))
+    loop._proactive_kernel = SimpleNamespace(
+        start=AsyncMock(),
+        stop=AsyncMock(),
+    )
+    loop._kernel_started = False
+    loop._active_kernel_lease = None
+    loop._runtime_snapshot_store = None
+    loop._run_loop = AsyncMock()
+
+    with pytest.raises(OSError, match="state close failed"):
+        await loop.run()
+
+    assert loop._stopped.is_set()
+    loop._state.close.assert_called_once()
+
+
+def test_owned_state_close_is_idempotent() -> None:
+    loop = make_loop()
+    state = SimpleNamespace(close=Mock())
+    loop._state = state
+    loop._state_store_owned = True
+    loop._state_closed = False
+
+    loop.close()
+    loop.close()
+
+    state.close.assert_called_once()
+    assert loop._state_closed is True
 
 
 @pytest.mark.asyncio

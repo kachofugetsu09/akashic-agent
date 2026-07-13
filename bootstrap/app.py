@@ -7,7 +7,7 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
@@ -26,6 +26,9 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+
+if TYPE_CHECKING:
+    from proactive_v2.loop import ProactiveLoop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,11 +97,14 @@ def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitabl
     return stop
 
 
-def _stop_proactive(runtime: object | None) -> Callable[[], Awaitable[None]]:
+def _stop_proactive(runtime: ProactiveLoop | None) -> Callable[[], Awaitable[None]]:
     async def stop() -> None:
         if runtime is not None:
-            runtime.stop()
-            await runtime.wait_stopped()
+            try:
+                runtime.stop()
+                await runtime.wait_stopped()
+            finally:
+                runtime.close()
 
     return stop
 

@@ -81,6 +81,7 @@ def build_proactive_runtime(
         model=config.model,
         max_tokens=config.max_tokens,
         state_store=proactive_state,
+        state_store_owned=True,
         memory_store=memory_store,
         presence=presence,
         passive_busy_fn=(

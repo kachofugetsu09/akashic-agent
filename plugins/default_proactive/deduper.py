@@ -4,37 +4,29 @@ import logging
 
 from agent.provider import LLMProvider
 from proactive_v2.json_utils import extract_json_object
+from proactive_v2.sensor import RecentProactiveMessage
 
 logger = logging.getLogger(__name__)
 
 
-def _format_recent_proactive_entries(recent_proactive: list[object]) -> str:
+def _format_recent_proactive_entries(
+    recent_proactive: list[RecentProactiveMessage],
+) -> str:
     lines: list[str] = []
     for index, message in enumerate(recent_proactive, 1):
-        content = _field(message, "content")
-        if not content:
+        if not message.content:
             continue
         meta = _recent_meta(message)
         suffix = f" ({'; '.join(meta)})" if meta else ""
-        lines.append(f"[{index}]{suffix} {content}")
+        lines.append(f"[{index}]{suffix} {message.content}")
     return "\n---\n".join(lines)
 
 
-def _field(raw: object, name: str, default: str = "") -> str:
-    if isinstance(raw, dict):
-        return str(raw.get(name, default) or default).strip()
-    return str(getattr(raw, name, default) or default).strip()
-
-
-def _recent_meta(message: object) -> list[str]:
+def _recent_meta(message: RecentProactiveMessage) -> list[str]:
     meta: list[str] = []
-    timestamp = getattr(message, "timestamp", None)
-    if timestamp is not None:
-        try:
-            meta.append(f"time={timestamp.isoformat()}")
-        except Exception:
-            meta.append(f"time={timestamp}")
-    tag = _field(message, "state_summary_tag", "none")
+    if message.timestamp is not None:
+        meta.append(f"time={message.timestamp.isoformat()}")
+    tag = message.state_summary_tag.strip()
     if tag and tag != "none":
         meta.append(f"state_tag={tag}")
     return meta
@@ -55,28 +47,31 @@ class MessageDeduper:
     async def is_duplicate(
         self,
         new_message: str,
-        recent_proactive: list[object],
+        recent_proactive: list[RecentProactiveMessage],
         new_state_summary_tag: str = "none",
     ) -> tuple[bool, str]:
         if not recent_proactive:
             return False, "无近期主动消息，放行"
-        try:
-            response = await self._provider.chat(
-                messages=self._build_messages(
-                    new_message,
-                    recent_proactive,
-                    new_state_summary_tag,
-                ),
-                tools=[],
-                model=self._model,
-                max_tokens=min(128, self._max_tokens),
-            )
-            payload = extract_json_object((response.content or "").strip())
-        except Exception as exc:
-            logger.warning("[proactive.deduper] 检测失败，放行: %s", exc)
-            return False, str(exc)
-        is_duplicate = bool(payload.get("is_duplicate", False))
-        reason = str(payload.get("reason", ""))
+        messages = self._build_messages(
+            new_message,
+            recent_proactive,
+            new_state_summary_tag,
+        )
+        response = await self._provider.chat(
+            messages=messages,
+            tools=[],
+            model=self._model,
+            max_tokens=min(128, self._max_tokens),
+        )
+        payload = extract_json_object((response.content or "").strip())
+        if "is_duplicate" not in payload or not isinstance(
+            payload["is_duplicate"], bool
+        ):
+            raise ValueError("is_duplicate 必须是 boolean")
+        if "reason" not in payload or not isinstance(payload["reason"], str):
+            raise ValueError("reason 必须是 string")
+        is_duplicate = payload["is_duplicate"]
+        reason = payload["reason"]
         logger.info(
             "[proactive.deduper] is_duplicate=%s reason=%r",
             is_duplicate,
@@ -87,7 +82,7 @@ class MessageDeduper:
     def _build_messages(
         self,
         new_message: str,
-        recent_proactive: list[object],
+        recent_proactive: list[RecentProactiveMessage],
         new_state_summary_tag: str,
     ) -> list[dict[str, str]]:
         system_msg = (

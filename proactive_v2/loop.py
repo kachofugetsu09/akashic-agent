@@ -81,6 +81,7 @@ class ProactiveLoop:
         proactive_runtime_factories: list[object] | None = None,
         proactive_sources: list[RegisteredProactiveSource] | None = None,
         runtime_snapshot_store: RuntimeSnapshotStore | None = None,
+        state_store_owned: bool = False,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -88,6 +89,8 @@ class ProactiveLoop:
         self._cfg = config
         self._model = config.model or model
         self._max_tokens = max_tokens
+        self._state_store_owned = state_store is None or state_store_owned
+        self._state_closed = False
         self._state = self._build_state_store(state_store, state_path)
         self._memory = memory_store
         self._presence = presence
@@ -386,10 +389,21 @@ class ProactiveLoop:
                 self._kernel_started = True
             await self._run_loop()
         finally:
+            stop_error: BaseException | None = None
             try:
                 await self._stop_active_kernel()
+            except BaseException as exc:
+                stop_error = exc
+            try:
+                self.close()
+            except BaseException as close_error:
+                if stop_error is None:
+                    raise
+                raise stop_error from close_error
             finally:
                 self._stopped.set()
+            if stop_error is not None:
+                raise stop_error
 
     async def _run_loop(self) -> None:
         last_base_score: float | None = None
@@ -431,6 +445,15 @@ class ProactiveLoop:
     def stop(self) -> None:
         self._running = False
         self._wake.set()
+
+    def close(self) -> None:
+        """关闭由主动循环负责的 SQLite 状态存储。"""
+
+        # 1. 仅关闭明确归主动循环所有的资源，外部注入的 store 由调用方负责。
+        if not self._state_store_owned or self._state_closed:
+            return
+        self._state.close()
+        self._state_closed = True
 
     async def wait_stopped(self) -> None:
         _ = await self._stopped.wait()

@@ -4,14 +4,24 @@ import json
 import logging
 from dataclasses import dataclass
 from hashlib import sha1
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol
 
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from core.common.diagnostic_log import diagnostic_line
 from proactive_v2.config import ProactiveConfig
+from proactive_v2.sensor import RecentProactiveMessage
 from plugins.default_proactive.context import AgentTickContext
 
 logger = logging.getLogger(__name__)
+
+
+class MessageDeduper(Protocol):
+    async def is_duplicate(
+        self,
+        new_message: str,
+        recent_proactive: list[RecentProactiveMessage],
+        new_state_summary_tag: str = "none",
+    ) -> tuple[bool, str]: ...
 
 @dataclass
 class ResolveResult:
@@ -179,8 +189,8 @@ class ProactiveResolver:
         cfg: ProactiveConfig,
         session_key: str,
         state_store: Any,
-        deduper: Any,
-        recent_proactive_fn: Callable[[], list] | None,
+        deduper: MessageDeduper,
+        recent_proactive_fn: Callable[[], list[RecentProactiveMessage]] | None,
         ack_fn: Any,
         alert_ack_fn: Any,
     ) -> None:
@@ -216,7 +226,7 @@ class ProactiveResolver:
                 new_state_summary_tag="none",
             )
             if is_dup:
-                return self._build_message_dedupe_result(ctx, str(reason or ""))
+                return self._build_message_dedupe_result(ctx, reason)
 
         return self._build_send_result(ctx, delivery_key)
 
@@ -325,7 +335,7 @@ class ProactiveResolver:
                 action="skip",
                 reason="already_sent_similar",
                 counts=self._counts(ctx),
-                note=str(reason or "message_dedupe")[:160],
+                note=reason[:160],
             )
         )
         logger.info("[proactive_v2] resolve: message_dedupe hit: %s", reason)
