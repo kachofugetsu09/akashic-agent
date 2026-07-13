@@ -630,6 +630,18 @@ class DriftTurnPipeline:
                 is_static=False,
             ),
         ]
+        if ctx is not None and ctx.fetched_context:
+            sections.append(
+                PromptSectionRender(
+                    name="current_context_events",
+                    content=json.dumps(
+                        ctx.fetched_context,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    is_static=False,
+                )
+            )
         if mcp_block:
             sections.append(
                 PromptSectionRender(

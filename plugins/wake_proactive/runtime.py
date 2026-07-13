@@ -14,18 +14,18 @@ from typing import Any, Awaitable, Callable, Literal, cast
 
 from agent.turns.result import TurnOutbound, TurnResult, TurnSideEffect, TurnTrace
 from core.clock import Clock, ReplayClock, clock_from_env
+from plugins.default_proactive.context import AgentTickContext
+from plugins.drift_flow.factory import (
+    build_drift_llm_fn,
+    build_drift_pipeline,
+    build_drift_recent_chat_fn,
+)
 from plugins.wake_proactive.context import WakeContext
 from plugins.wake_proactive.context_drive import ContextDriveResult, NormalizedContext
 from plugins.wake_proactive.drift_drive import (
     DriftDriveResult,
     advance_drift_drive,
     sample_drift_delay_hours,
-)
-from plugins.wake_proactive.drift_prompt import build_drift_messages
-from plugins.wake_proactive.drift_tools import (
-    DRIFT_TOOL_SCHEMAS,
-    DriftToolResult,
-    execute_drift_tool,
 )
 from plugins.wake_proactive.event_tools import (
     EVENT_TOOL_SCHEMAS,
@@ -54,7 +54,7 @@ _CONTENT_MIN_RESIDENCE = timedelta(hours=24)
 _CONTENT_MAX_AGE = timedelta(days=14)
 _SCHEMA_BY_NAME = {
     schema["function"]["name"]: schema
-    for schema in [*TOOL_SCHEMAS, *EVENT_TOOL_SCHEMAS, *DRIFT_TOOL_SCHEMAS]
+    for schema in [*TOOL_SCHEMAS, *EVENT_TOOL_SCHEMAS]
 }
 
 
@@ -79,6 +79,7 @@ class WakeRunState:
     context_reevaluate: bool = False
     context_event: dict[str, Any] | None = None
     drift_result: DriftDriveResult | None = None
+    drift_ctx: AgentTickContext | None = None
     content_completed: bool = False
     new_alert_count: int = 0
     new_content_count: int = 0
@@ -125,6 +126,11 @@ class WakeRuntime:
             memory=scope.memory,
             state_store=self._state,
             max_chars=int(getattr(scope.cfg, "agent_tick_web_fetch_max_chars", 8_000)),
+        )
+        self._drift_llm_fn = build_drift_llm_fn(scope)
+        self._drift_pipeline = build_drift_pipeline(
+            scope,
+            build_drift_recent_chat_fn(scope),
         )
 
     def build_modules(self) -> list[object]:
@@ -787,17 +793,23 @@ class WakeRuntime:
         result = replace(result, decision="attempt")
         state.drift_result = result
         state.base_score = max(state.base_score, result.rate)
-        messages = build_drift_messages(
-            memory_text=self._read_memory(),
-            proactive_context=str(self._scope.workspace_context_fn() or ""),
-            current_context=self._current_context_text(state.ctx.now_utc),
-            recent_session=self._read_recent_session(
-                state.ctx.session_key,
-                state.ctx.now_utc,
-                include_proactive=True,
-            ),
-            drive=result,
+        if self._drift_pipeline is None:
+            raise RuntimeError("Wake Drift 到期但缺少 DriftTurnPipeline")
+
+        # 1. Wake 只决定到期时间；进入后改用 Default 的完整 Drift 上下文
+        drift_ctx = AgentTickContext(
+            now_utc=state.ctx.now_utc,
+            session_key=state.ctx.session_key,
         )
+        drift_ctx.mark_context_prefetched(
+            [dict(context.raw) for context in self._active_contexts(state.ctx.now_utc)]
+        )
+        entered = await self._drift_pipeline.run(drift_ctx, self._drift_llm_fn)
+        if not entered:
+            return
+        state.drift_ctx = drift_ctx
+
+        # 2. 只有实际进入 pipeline 才消费本次到期事件
         self._state.record_observation(
             wake_id=state.ctx.wake_id,
             session_key=state.ctx.session_key,
@@ -805,43 +817,39 @@ class WakeRuntime:
             now=state.ctx.now_utc,
             trigger=_drift_trace(result),
             candidates=[],
-            llm_input=messages,
+            llm_input=[],
         )
         self._state.record_drift_observation(
             session_key=state.ctx.session_key,
             now=state.ctx.now_utc,
             threshold=result.threshold,
         )
-        call = await self._call_tool(
-            messages,
-            {"share_drift", "idle_drift"},
-            None,
-        )
-        decision = execute_drift_tool(call.name, call.arguments)
-        await self._commit_drift_decision(state, decision)
+        await self._commit_full_drift(state, drift_ctx)
 
-    async def _commit_drift_decision(
+    async def _commit_full_drift(
         self,
         state: WakeRunState,
-        decision: DriftToolResult,
+        drift_ctx: AgentTickContext,
     ) -> None:
-        """提交 Drift 决策，并仅在消息送达后记录成功。"""
+        """按 Default 的投递语义提交完整 Drift 结果。"""
 
-        # 1. idle 只结束本次到期事件，reply 交给统一发送链
+        # 1. 将 pipeline 暂存的消息映射成统一主动 TurnResult
+        has_outbound = bool(drift_ctx.draft_message or drift_ctx.draft_media)
         result = TurnResult(
-            decision=decision.decision,
+            decision="reply" if has_outbound else "skip",
             outbound=(
                 TurnOutbound(
                     session_key=state.ctx.session_key,
-                    content=decision.message,
+                    content=drift_ctx.draft_message,
+                    media=list(drift_ctx.draft_media),
                 )
-                if decision.decision == "reply"
+                if has_outbound
                 else None
             ),
             evidence=[],
             trace=TurnTrace(
                 source="proactive",
-                extra={"source_refs": [], "event_kind": "drift"},
+                extra={"source_mode": "drift"},
             ),
         )
         delivered = await self._require_orchestrator().handle_proactive_turn(
@@ -851,12 +859,18 @@ class WakeRuntime:
             chat_id=str(getattr(self._scope.cfg, "default_chat_id", "")),
         )
 
-        # 2. 只有真实送达才更新重复抑制指纹
-        if decision.decision == "reply" and delivered:
+        # 2. 与 Default 一样，在真实投递后修正 Drift message_result
+        if has_outbound:
+            pipeline = self._drift_pipeline
+            if pipeline is None:
+                raise RuntimeError("完整 Drift 投递时 pipeline 不应为空")
+            drift_ctx.drift_message_sent = bool(delivered)
+            pipeline.record_commit_result(drift_ctx, bool(delivered))
+        if has_outbound and delivered:
             self._state.record_drift_success(
                 session_key=state.ctx.session_key,
                 now=state.ctx.now_utc,
-                fingerprint=decision.message.strip().casefold(),
+                fingerprint=drift_ctx.draft_message.strip().casefold(),
             )
 
     def _schedule_drift_attempt(

@@ -69,13 +69,38 @@ class FlakyAckGateway(FakeGateway):
 
 
 class FakeWebFetch:
+    name = "web_fetch"
+    description = "读取网页"
+    parameters = {
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"],
+    }
+
     async def execute(self, **kwargs):
         return json.dumps({"url": kwargs["url"], "text": f"正文 {kwargs['url']}"})
+
+    def to_schema(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
 
 
 class FakeTools:
     def get_tool(self, name):
         return FakeWebFetch() if name == "web_fetch" else None
+
+    def get_mcp_server_names(self):
+        return set()
+
+    def get_tool_names_by_source(self, source_type, source_name):
+        _ = (source_type, source_name)
+        return set()
 
 
 class FakeOrchestrator:
@@ -148,13 +173,15 @@ def _scope(tmp_path: Path, gateway, provider, orchestrator, source) -> Proactive
             agent_tick_web_fetch_max_chars=8000,
             default_channel="telegram",
             default_chat_id="1",
+            drift_enabled=True,
+            drift_max_steps=20,
         ),
         provider=provider,
         model="fake-model",
         max_tokens=1000,
         memory=memory,
         state_store=SimpleNamespace(workspace_dir=tmp_path),
-        sense=None,
+        sense=SimpleNamespace(collect_recent=lambda: []),
         any_action_gate=None,
         passive_busy_fn=None,
         deduper=None,
@@ -1353,59 +1380,60 @@ async def test_drift_due_event_calls_model_and_sends_reply(
     request,
 ):
     now = datetime(2026, 7, 12, 12, tzinfo=UTC)
-    with closing(sqlite3.connect(tmp_path / "sessions.db")) as db:
-        db.execute(
-            """
-            CREATE TABLE messages (
-                id TEXT PRIMARY KEY,
-                session_key TEXT NOT NULL,
-                seq INTEGER NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT,
-                extra TEXT,
-                ts TEXT NOT NULL
-            )
-            """
-        )
-        db.executemany(
-            """
-            INSERT INTO messages(id, session_key, seq, role, content, extra, ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    "p1",
-                    "telegram:1",
-                    1,
-                    "assistant",
-                    "之前主动聊过时间回放",
-                    '{"proactive": true}',
-                    (now - timedelta(hours=2)).isoformat(),
-                ),
-                (
-                    "u2",
-                    "telegram:1",
-                    2,
-                    "user",
-                    "未来才会出现的话",
-                    "{}",
-                    (now + timedelta(hours=2)).isoformat(),
-                ),
-            ],
-        )
-        db.commit()
+    skill_dir = tmp_path / "drift" / "skills" / "explore-curiosity"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: explore-curiosity\ndescription: 探索一个轻量想法\n---\n",
+        encoding="utf-8",
+    )
     provider = SimpleNamespace(
         chat=AsyncMock(
-            return_value=LLMResponse(
-                content=None,
-                tool_calls=[
-                    ToolCall(
-                        "drift",
-                        "share_drift",
-                        {"message": "突然想到，时间回放也许可以做成事件钟。"},
-                    )
-                ],
-            )
+            side_effect=[
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "select",
+                            "select_skill",
+                            {
+                                "skill_name": "explore-curiosity",
+                                "decision": "explore",
+                                "intention": "想想事件钟",
+                                "reason": "当前适合做一个轻量探索",
+                            },
+                        )
+                    ],
+                ),
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "push",
+                            "message_push",
+                            {"message": "突然想到，时间回放也许可以做成事件钟。"},
+                        )
+                    ],
+                ),
+                LLMResponse(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            "finish",
+                            "finish_drift",
+                            {
+                                "skill_used": "explore-curiosity",
+                                "status": "completed",
+                                "briefing": "分享了事件钟想法",
+                                "self_update": {
+                                    "next_tendency": "下次按当时状态自由选择",
+                                    "reflection": "本轮普通闭环",
+                                    "pattern": "ordinary",
+                                },
+                            },
+                        )
+                    ],
+                ),
+            ]
         )
     )
     orchestrator = FakeOrchestrator()
@@ -1434,21 +1462,37 @@ async def test_drift_due_event_calls_model_and_sends_reply(
     await runtime.ingest(due)
     await runtime.decide(due)
 
-    assert provider.chat.await_count == 1
+    assert provider.chat.await_count == 3
     assert len(orchestrator.results) == 1
     assert orchestrator.results[0].outbound.content == "突然想到，时间回放也许可以做成事件钟。"
     observations = store.observations("drift")
     assert len(observations) == 1
-    llm_input = json.loads(observations[0]["llm_input_json"])
-    prompt = llm_input[1]["content"]
-    assert "【固定 MEMORY.md】" in prompt
-    assert "【固定 PROACTIVE_CONTEXT.md】" in prompt
-    assert "【当前 ContextEvent 原始状态】" in prompt
+    assert json.loads(observations[0]["llm_input_json"]) == []
+    prompt = provider.chat.await_args_list[0].kwargs["messages"][1]["content"]
+    assert "drift_skills" in prompt
+    assert "explore-curiosity" in prompt
+    assert "current_context_events" in prompt
     assert '"presence": "driving"' in prompt
     assert '"road_kind": "highway"' in prompt
-    assert "【截至当前时间的最近对话】" in prompt
-    assert "之前主动聊过时间回放" in prompt
-    assert "未来才会出现的话" not in prompt
+    first_tools = {
+        schema["function"]["name"]
+        for schema in provider.chat.await_args_list[0].kwargs["tools"]
+    }
+    second_tools = {
+        schema["function"]["name"]
+        for schema in provider.chat.await_args_list[1].kwargs["tools"]
+    }
+    third_tools = {
+        schema["function"]["name"]
+        for schema in provider.chat.await_args_list[2].kwargs["tools"]
+    }
+    assert first_tools == {"select_skill", "idle_drift"}
+    assert {"read_file", "write_file", "message_push", "finish_drift"} <= second_tools
+    assert third_tools == {"finish_drift"}
+    assert state.drift_ctx is None
+    assert due.drift_ctx is not None
+    assert due.drift_ctx.drift_finished is True
+    assert due.drift_ctx.drift_message_sent is True
     drift = store.load_drift("telegram:1")
     assert drift["last_drift_at"] == (now + timedelta(minutes=1)).isoformat()
     assert drift["last_fingerprint"] == "突然想到，时间回放也许可以做成事件钟。"
