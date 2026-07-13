@@ -19,7 +19,7 @@ from agent.core.types import (
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.retrieval.protocol import RetrievalRequest, RetrievalResult
-from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutionResult, ToolExecutor
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -136,11 +136,10 @@ def _turn_log_id(key: str, msg: InboundMessage) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
 
 
-def _is_tool_loop_guard_denial(exec_result: object) -> bool:
-    traces = getattr(exec_result, "pre_hook_trace", ()) or ()
+def _is_tool_loop_guard_denial(exec_result: ToolExecutionResult) -> bool:
+    traces = exec_result.pre_hook_trace
     return any(
-        getattr(item, "decision", "") == "deny"
-        and str(getattr(item, "reason", "")).startswith("tool_loop_guard:")
+        item.decision == "deny" and item.reason.startswith("tool_loop_guard:")
         for item in traces
     )
 
@@ -272,12 +271,14 @@ class PassiveTurnPipeline:
         self._context = deps.context
         self._tools = deps.tools
         self._reasoner = deps.reasoner
-        add_before_step = getattr(self._reasoner, "add_before_step_plugin_modules", None)
-        if add_before_step is not None:
-            add_before_step(list(deps.before_step_plugin_modules or []))
-        add_after_step = getattr(self._reasoner, "add_after_step_plugin_modules", None)
-        if add_after_step is not None:
-            add_after_step(list(deps.after_step_plugin_modules or []))
+        if deps.before_step_plugin_modules is not None:
+            self._reasoner.add_before_step_plugin_modules(
+                list(deps.before_step_plugin_modules)
+            )
+        if deps.after_step_plugin_modules is not None:
+            self._reasoner.add_after_step_plugin_modules(
+                list(deps.after_step_plugin_modules)
+            )
         self._outbound_port = deps.outbound_port or _NoopOutboundPort()
         self._history_window = deps.history_window
         self._memory_consolidator = deps.memory_consolidator
@@ -2171,20 +2172,9 @@ def build_deferred_tools_hint(
     tools: "ToolRegistry",
     visible: set[str] | None = None,
 ) -> str:
-    get_deferred_names = getattr(tools, "get_deferred_names", None)
-    if not callable(get_deferred_names):
-        return ""
-    deferred_raw = get_deferred_names(visible=visible)
-    if not isinstance(deferred_raw, dict):
-        return ""
-    builtin_raw = deferred_raw.get("builtin", [])
-    mcp_raw = deferred_raw.get("mcp", {})
-    builtin = [name for name in builtin_raw if isinstance(name, str)]
-    mcp = {
-        str(server): [name for name in names if isinstance(name, str)]
-        for server, names in mcp_raw.items()
-        if isinstance(server, str) and isinstance(names, list)
-    }
+    deferred = tools.get_deferred_names(visible=visible)
+    builtin = deferred["builtin"]
+    mcp = deferred["mcp"]
 
     if not builtin and not mcp:
         return ""

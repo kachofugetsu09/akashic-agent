@@ -611,8 +611,8 @@ class TestToolSearchTool:
     def test_get_deferred_names_excludes_visible(self):
         """get_deferred_names(visible=...) 不包含已可见（preloaded）工具。"""
         reg = _make_registry()
-        deferred = cast(dict[str, object], reg.get_deferred_names(visible={"schedule"}))
-        builtin = cast(list[str], deferred.get("builtin", []))
+        deferred = reg.get_deferred_names(visible={"schedule"})
+        builtin = deferred["builtin"]
         assert "schedule" not in builtin
         # write_file 未在 visible 中，应出现在 deferred 里
         assert "write_file" in builtin

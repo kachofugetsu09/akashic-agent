@@ -2,7 +2,7 @@ import logging
 from collections.abc import Iterable, Set as AbstractSet
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from agent.tools.base import Tool, ToolResult
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
@@ -19,6 +19,11 @@ _PROGRESS_DESCRIPTION_SCHEMA: dict[str, str] = {
         "不要复述工具名，不要粘贴长参数。例如：查看目录、读取配置、搜索健康数据。"
     ),
 }
+
+
+class DeferredToolNames(TypedDict):
+    builtin: list[str]
+    mcp: dict[str, list[str]]
 
 
 def _schema_properties(parameters: dict[str, Any]) -> dict[str, Any]:
@@ -280,7 +285,7 @@ class ToolRegistry:
 
     def get_deferred_names(
         self, visible: set[str] | None = None
-    ) -> dict[str, object]:
+    ) -> DeferredToolNames:
         """返回所有 deferred 工具名，按来源分组。
 
         visible: 当前 turn 已可见工具名（always_on + preloaded），从结果中排除。

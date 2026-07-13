@@ -286,9 +286,7 @@ class AgentLoop:
     ) -> None:
         # 1. 先组基础 service ports。
         llm_svc = self._llm_services
-        memory_svc = deps.memory_services or MemoryServices(
-            engine=getattr(deps.memory_runtime, "engine", None),
-        )
+        memory_svc = MemoryServices(engine=self._memory_engine)
         session_svc = self._session_services
         # 2. 组执行层。
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
@@ -376,18 +374,24 @@ class AgentLoop:
         self._llm_config.max_iterations = int(value)
 
     async def run(self) -> None:
+        """消费入站消息，并在每轮结束时收束总线与内存状态。"""
+
         self._running = True
         logger.info(f"AgentLoop 启动  max_iter={self.max_iterations}")
         while self._running:
+            # 1. 等待下一条入站消息，空闲超时仅用于重新检查停止状态。
             try:
                 item = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
 
+            # 2. 建立本轮中断状态和执行任务。
             key = item.session_key
             self._active_turn_states[key] = self._build_initial_turn_state(item, key)
             task = asyncio.create_task(self._process_with_runtime_admission(item))
             self._active_tasks[key] = task
+
+            # 3. 发送结果，并在确认入站消息前先移除本轮内存状态。
             try:
                 await task
             except asyncio.CancelledError:
@@ -402,9 +406,9 @@ class AgentLoop:
                     )
                 )
             finally:
+                del self._active_tasks[key]
+                del self._active_turn_states[key]
                 await self.bus.complete_inbound(item)
-                self._active_tasks.pop(key, None)
-                self._active_turn_states.pop(key, None)
 
     @property
     def processing_state(self) -> ProcessingState | None:
@@ -574,7 +578,7 @@ class AgentLoop:
         if not state.original_user_message.strip():
             return
         session = self.session_manager.get_or_create(key)
-        start = len(getattr(session, "messages", []))
+        start = len(session.messages)
         session.add_message(
             "user",
             state.original_user_message,
