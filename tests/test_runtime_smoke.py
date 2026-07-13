@@ -178,6 +178,30 @@ def test_load_config_rejects_non_table_sections(
     assert field in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("field", "snippet"),
+    [
+        ("agent.dev_mode", '[agent]\ndev_mode = "false"'),
+        ("llm.main.enable_thinking", '[llm.main]\nenable_thinking = "true"'),
+        ("channels.chat.enabled", '[channels.chat]\nenabled = "false"'),
+        ("memory.enabled", '[memory]\nenabled = "false"'),
+    ],
+)
+def test_load_config_rejects_string_booleans(
+    tmp_path: Path,
+    field: str,
+    snippet: str,
+):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'provider = "openai"\nmodel = "test-model"\n' + snippet + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=field.replace(".", r"\.")):
+        load_config(config_path)
+
+
 @pytest.mark.parametrize("tz_name", ["", "Not/AZone"])
 def test_validated_timezone_rejects_invalid_names(tz_name: str):
     with pytest.raises(ValueError, match="IANA"):

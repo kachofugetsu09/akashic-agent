@@ -110,11 +110,12 @@ def load_config(path: str | Path = "config.toml") -> Config:
         extra_body=_load_extra_body(data),
         channels=channels,
         proactive=proactive,
-        memory_optimizer_enabled=bool(
+        memory_optimizer_enabled=_as_bool(
             agent_maintenance.get(
                 "memory_optimizer_enabled",
                 data.get("memory_optimizer_enabled", True),
-            )
+            ),
+            field="agent.maintenance.memory_optimizer_enabled",
         ),
         memory_optimizer_interval_seconds=int(
             agent_maintenance.get(
@@ -137,22 +138,27 @@ def load_config(path: str | Path = "config.toml") -> Config:
             llm_agent.get("base_url") or data.get("agent_base_url", "")
         ),
         memory=memory,
-        tool_search_enabled=bool(
-            agent_tools.get("search_enabled", data.get("tool_search_enabled", False))
+        tool_search_enabled=_as_bool(
+            agent_tools.get("search_enabled", data.get("tool_search_enabled", False)),
+            field="agent.tools.search_enabled",
         ),
-        spawn_enabled=bool(
-            agent_tools.get("spawn_enabled", data.get("spawn_enabled", True))
+        spawn_enabled=_as_bool(
+            agent_tools.get("spawn_enabled", data.get("spawn_enabled", True)),
+            field="agent.tools.spawn_enabled",
         ),
-        dev_mode=bool(
+        dev_mode=_as_bool(
             agent_cfg.get(
                 "dev_mode",
                 agent_cfg.get(
                     "dev_model",
                     data.get("dev_mode", data.get("dev_model", False)),
                 ),
-            )
+            ),
+            field="agent.dev_mode",
         ),
-        multimodal=bool(llm_main.get("multimodal", True)),
+        multimodal=_as_bool(
+            llm_main.get("multimodal", True), field="llm.main.multimodal"
+        ),
         vl_model=str(llm_vl.get("model") or data.get("vl_model", "")),
         vl_api_key=_resolve(str(llm_vl.get("api_key") or data.get("vl_api_key", ""))),
         vl_base_url=str(llm_vl.get("base_url") or data.get("vl_base_url", "")),
@@ -168,7 +174,9 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
     tg = _as_dict(channels_data.get("telegram"), field="channels.telegram")
     if tg:
         token = _normalize_optional_config_text(_resolve(str(tg.get("token", ""))))
-        if bool(tg.get("enabled", True)) and token:
+        if _as_bool(
+            tg.get("enabled", True), field="channels.telegram.enabled"
+        ) and token:
             telegram = TelegramChannelConfig(
                 token=token,
                 allow_from=[
@@ -181,7 +189,9 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
     qq_data = _as_dict(channels_data.get("qq"), field="channels.qq")
     if qq_data:
         bot_uin = _normalize_optional_config_text(str(qq_data.get("bot_uin", "")))
-        if bool(qq_data.get("enabled", True)) and bot_uin:
+        if _as_bool(
+            qq_data.get("enabled", True), field="channels.qq.enabled"
+        ) and bot_uin:
             groups = [
                 QQGroupConfig(
                     group_id=str(
@@ -191,7 +201,10 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                         str(u)
                         for u in g.get("allow_from", g.get("allowFrom", []))
                     ],
-                    require_at=g.get("require_at", g.get("requireAt", True)),
+                    require_at=_as_bool(
+                        g.get("require_at", g.get("requireAt", True)),
+                        field="channels.qq.groups[].require_at",
+                    ),
                 )
                 for g in qq_data.get("groups", [])
             ]
@@ -210,7 +223,9 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
     cli_data = _as_dict(channels_data.get("cli"), field="channels.cli")
     chat_data = _as_dict(channels_data.get("chat"), field="channels.chat")
     chat = WebChatConfig(
-        enabled=bool(chat_data.get("enabled", True)),
+        enabled=_as_bool(
+            chat_data.get("enabled", True), field="channels.chat.enabled"
+        ),
         host=str(chat_data.get("host", "127.0.0.1") or "127.0.0.1"),
         port=int(chat_data.get("port", 6322)),
         channel_name=str(chat_data.get("channel_name", "web") or "web"),
@@ -256,7 +271,7 @@ def _load_memory_config(data: dict) -> MemoryConfig:
     if output_dimensionality is not None and output_dimensionality <= 0:
         raise ValueError("memory.embedding.output_dimensionality 必须大于 0")
     return MemoryConfig(
-        enabled=bool(memory.get("enabled", False)),
+        enabled=_as_bool(memory.get("enabled", False), field="memory.enabled"),
         engine=str(memory.get("engine", "") or ""),
         embedding=MemoryEmbeddingConfig(
             model=str(embedding.get("model", "text-embedding-v3")),
@@ -319,10 +334,14 @@ def _load_extra_body(data: dict) -> dict:
     llm_main = _as_dict(llm.get("main"), field="llm.main")
     extra_body = dict(_as_dict(data.get("extra_body"), field="extra_body"))
     thinking = llm_main.get("thinking")
-    if isinstance(thinking, dict):
+    if thinking is not None and not isinstance(thinking, dict):
+        raise ValueError("llm.main.thinking 必须是 TOML table")
+    if thinking is not None:
         extra_body["thinking"] = thinking
     if "enable_thinking" in llm_main:
-        extra_body["enable_thinking"] = bool(llm_main.get("enable_thinking"))
+        extra_body["enable_thinking"] = _as_bool(
+            llm_main["enable_thinking"], field="llm.main.enable_thinking"
+        )
     if "reasoning_effort" in llm_main:
         effort = str(llm_main.get("reasoning_effort") or "").strip()
         if effort:
@@ -338,16 +357,6 @@ def _as_dict(value: object, *, field: str) -> dict:
     return value
 
 
-def _resolve_config_value(value: object) -> object:
-    if isinstance(value, str):
-        return _resolve(value)
-    if isinstance(value, list):
-        return [_resolve_config_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _resolve_config_value(item) for key, item in value.items()}
-    return value
-
-
 def _resolve(value: str) -> str:
     resolved = re.sub(
         r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value
@@ -359,6 +368,12 @@ def _resolve(value: str) -> str:
         if key_file.exists():
             resolved = key_file.read_text(encoding="utf-8").strip()
     return resolved
+
+
+def _as_bool(value: object, *, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field} 必须是布尔值")
+    return value
 
 
 def _normalize_optional_config_text(value: str) -> str:

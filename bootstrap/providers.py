@@ -12,7 +12,7 @@ _LIGHT_STREAM_IDLE_TIMEOUT_S = 60.0
 def build_providers(
     config: Config,
 ) -> tuple[LLMProvider, LLMProvider | None, LLMProvider | None]:
-    payload_snapshot_enabled = bool(getattr(config, "dev_mode", False))
+    payload_snapshot_enabled = config.dev_mode
     main_extra = _sanitize_extra_body(
         base_url=config.base_url,
         extra_body=config.extra_body,
@@ -31,7 +31,7 @@ def build_providers(
     light_provider: LLMProvider | None = None
     if config.light_model and (config.light_api_key or config.light_base_url):
         light_url = config.light_base_url or config.base_url or ""
-        light_extra: dict = (
+        light_extra: dict[str, object] = (
             {}
             if "googleapis.com" in light_url or "generativelanguage" in light_url
             else {"enable_thinking": False}
@@ -70,13 +70,13 @@ def build_providers(
 
 def build_vl_provider(config: Config) -> LLMProvider | None:
     """构建 VL 视觉模型 provider，仅当主模型不支持多模态且配置了 vl_model 时返回。"""
-    if not getattr(config, "multimodal", True) and getattr(config, "vl_model", ""):
-        payload_snapshot_enabled = bool(getattr(config, "dev_mode", False))
-        vl_url = getattr(config, "vl_base_url", "") or getattr(config, "base_url", "") or ""
+    if not config.multimodal and config.vl_model:
+        payload_snapshot_enabled = config.dev_mode
+        vl_url = config.vl_base_url or config.base_url or ""
         vl_extra = _sanitize_extra_body(base_url=vl_url, extra_body={})
         return LLMProvider(
-            api_key=getattr(config, "vl_api_key", "") or config.api_key,
-            base_url=getattr(config, "vl_base_url", "") or config.base_url,
+            api_key=config.vl_api_key or config.api_key,
+            base_url=config.vl_base_url or config.base_url,
             system_prompt="",
             extra_body=vl_extra,
             request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
@@ -86,9 +86,12 @@ def build_vl_provider(config: Config) -> LLMProvider | None:
     return None
 
 
-def _sanitize_extra_body(base_url: str | None, extra_body: dict | None) -> dict:
+def _sanitize_extra_body(
+    base_url: str | None,
+    extra_body: dict[str, object] | None,
+) -> dict[str, object]:
     cleaned = dict(extra_body or {})
     url = (base_url or "").lower()
     if "minimaxi.com" in url:
-        cleaned.pop("enable_thinking", None)
+        _ = cleaned.pop("enable_thinking", None)
     return cleaned

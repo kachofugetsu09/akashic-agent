@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import agent.provider as provider_module
+from agent.config_models import Config as ConfigModel
 from agent.mcp.registry import McpServerRegistry
 from agent.plugins.manager import ActivePluginInfo
 from agent.provider import (
@@ -509,7 +510,8 @@ def test_bootstrap_providers_set_stream_idle_timeout(
             created.append(kwargs)
 
     monkeypatch.setattr("bootstrap.providers.LLMProvider", _ProviderConfig)
-    cfg = SimpleNamespace(
+    cfg = ConfigModel(
+        model="main",
         api_key="main-key",
         base_url="https://example.com/v1",
         system_prompt="system",
@@ -528,8 +530,8 @@ def test_bootstrap_providers_set_stream_idle_timeout(
         vl_base_url="https://vl.example.com/v1",
     )
 
-    build_providers(cast(Any, cfg))
-    build_vl_provider(cast(Any, cfg))
+    build_providers(cfg)
+    build_vl_provider(cfg)
 
     assert [item["stream_idle_timeout_s"] for item in created] == [
         120.0,

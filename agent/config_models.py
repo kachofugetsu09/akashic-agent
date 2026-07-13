@@ -96,7 +96,7 @@ class Config:
     max_iterations: int = 10
     memory_window: int = 40
     base_url: str | None = None
-    extra_body: dict = field(default_factory=dict)
+    extra_body: dict[str, object] = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
